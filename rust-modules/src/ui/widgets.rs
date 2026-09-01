@@ -2225,46 +2225,66 @@ pub(crate) fn nav_glass_prepare() {
     );
 }
 
-/// **The profile chip's capsule, in the BAR's visual material** — but deliberately not a second
-/// backdrop surface.
+/// The band's face, weighted by how far the chip has unfurled — every alpha, not just the tint's.
+///
+/// Pure, because the shader is where it would be caught late: `fs_glass.frag` writes
+/// `max(u_tint.a * cov, rimw)`, so the rim is deliberately allowed to exceed its surface's own
+/// coverage and a tint faded to nothing leaves a full-strength hairline behind. At `e == 1` this is
+/// the track's face to the bit — the band is ONE material at rest, which is the whole claim.
+fn chip_face(face: crate::gfx::GlassFace, e: f32) -> crate::gfx::GlassFace {
+    let fade = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * e];
+    crate::gfx::GlassFace {
+        scrim_top: fade(face.scrim_top),
+        scrim_bot: fade(face.scrim_bot),
+        rim: fade(face.rim),
+        rim_lit: fade(face.rim_lit),
+        rim_w: face.rim_w,
+    }
+}
+
+/// **The focused chip's capsule, in the BAR's material** — the band's second glass surface.
 ///
 /// Returns whether it drew. `false` is the flat capsule's cue, and it is the answer in every case
 /// the track is also flat: [`BAR_MATERIAL`] says so, or the chain refuses (no render target, or a
 /// blur SOURCE pass, where `draw_blur_backdrop` declines before it records anything). The two
 /// halves of the band therefore change material together, always, because only one of them decides.
 ///
-/// The material is present even at rest: a closed round glass surround explains where the small
-/// avatar lives. Focus changes only its width and reveals the name; it does not switch the control
-/// from an uncontained image into a new material.
+/// **The unfurl fades the whole FACE, not the tint alone**, and that is the one thing this could
+/// not borrow from the flat capsule. `fs_glass.frag` emits
+/// `max(u_tint.a * cov, rimw)` — the rim deliberately EXCEEDS the surface's coverage, so that a 1px
+/// line survives its own antialiased edge — which means a tint faded toward zero leaves the rim at
+/// full strength: a bright empty hairline capsule snapping on around the avatar at the first
+/// millisecond of the unfurl. Scaling the scrim's two stops and both rim weights by `e` as well
+/// fades the material as one object, and at `e = 1` it is the track's face to the bit.
 ///
 /// The tint's alpha carries the same `e`, which cross-fades the blurred backdrop against the sharp
 /// page under it — the material arriving rather than the shape appearing.
 ///
-/// The track publishes its solved frost/rim face and this small capsule draws that face with the
-/// ordinary one-pass rounded-rect primitive.  It therefore keeps the same density and lit edge,
-/// but does not ask the renderer to blur the far-left corner.  That distinction matters more than
-/// the capsule's own area: two separated backdrop requests are unioned into one rectangular grab.
-/// On the television the 728×220 track snapshot became 1316×220 when this 76px capsule joined it,
-/// and Home's moving-grid median fell from 42 to 34–35 FPS.  A tiny lens can be a huge capture.
+/// **No second `Glass::prepare`.** The cadence belongs to the band ([`TAB_GLASS_STATE`]), was
+/// resolved by [`tab_glass_prepare`] before the page drew, and preparing again here would consume
+/// this present's refresh slot a second time.
 ///
-/// This is also why a second `Glass::prepare` is absent.  There is one dynamic backdrop owner in
-/// the band — the centred track — and the chip is a local face drawn over the already-rendered
-/// page.  [`BAND_AIR`] still prevents the two visible faces from overlapping while the name opens.
-fn chip_capsule(p: Painter, cap: Rect) -> bool {
+/// **And no second snapshot, by geometry.** The chip is drawn after the track, so a re-grab taken
+/// here would hold the track's own face — but [`GLASS_TRACK_MAX`] keeps [`BAND_AIR`] between them
+/// while both wear the material, and `gfx::blur_region_union` has the track's first call already
+/// grabbing the region both need on every frame after the first of an unfurl.
+fn chip_capsule(p: Painter, cap: Rect, e: f32) -> bool {
     let face = match unsafe { *std::ptr::addr_of!(BAR_MATERIAL) } {
         BarMaterial::Flat => return false,
-        BarMaterial::Glass(f) => f,
+        BarMaterial::Glass(f) => chip_face(f, e),
     };
-    p.rect_rimmed_w(
+    Glass::DYNAMIC_BACKDROP.backdrop(
+        p,
         cap,
+        0.0,
         cap.h * 0.5,
-        face.scrim_top,
-        face.scrim_bot,
-        face.rim,
-        (face.rim_lit[3] - face.rim[3]).max(0.0),
-        face.rim_w,
-    );
-    true
+        [1.0, 1.0, 1.0, e],
+        // A container, exactly as the track is one — same lamp, same 12px chamfer, same 24px lens.
+        // The two capsules are the same object seen twice, so nothing about the edge may differ.
+        crate::gfx::GlassRim::Standing,
+        face,
+        theme::Material::UltraThin,
+    )
 }
 
 /// **The top-left profile chip** — the whole control, not just its picture: the avatar texture (or
@@ -2307,9 +2327,28 @@ fn chip_capsule(p: Painter, cap: Rect) -> bool {
 pub(crate) fn profile_chip(p: Painter) {
     use std::ffi::CString;
     use std::ptr::addr_of_mut;
-    // This control is intentionally drawn in a blur source pass.  Its capsule no longer samples
-    // that source (see `chip_capsule`), so there is no self-reference to exclude; if another panel
-    // happens to sample this corner, the avatar is genuinely part of the page behind that panel.
+    // **A SURFACE MAY NOT APPEAR IN ITS OWN BACKDROP**, and this control is the second one in the
+    // app that could — [`draw_tab_row`]'s note is the first, and it says the whole argument. The
+    // direct source path renders the page again into a small FBO and the page includes this chip,
+    // so left in, the capsule blurred its own near-opaque FLAT fallback (`scrim_black(.72..82)`,
+    // which is what `chip_capsule` returns to inside a source pass) and then darkened that again
+    // with its own stops. Measured in the simulator over `flat:92`, at the point the capsule is
+    // clear of both the avatar and the name: the face came out at **61** where the track beside it,
+    // on the same solve and the same ground, reads **142**. On a dark ground it is invisible; over
+    // bright artwork it is a black slug beside a translucent bar, which is the exact shape of the
+    // bug the track's note measures from the other side.
+    //
+    // The WHOLE control goes, not just the capsule: the avatar disc and the name sit inside the
+    // glass rect, so blurring them would put a smeared copy of the chip behind the chip — a mirror,
+    // not a lens. It costs the backdrop nothing, because nothing else samples this corner.
+    //
+    // The test is `bar_glass_wanted` — "will the bar wear the material", the same question minus its
+    // source-pass clause, which is exactly the form `draw_tab_row` uses. When the bar is FLAT the
+    // chip belongs in the snapshot as it always did: it is then genuinely behind whatever samples
+    // it.
+    if crate::gfx::blur_source_pass() && bar_glass_wanted() {
+        return;
+    }
     static mut CHIP: Option<(u32, String, CString, CString, f32)> = None; // gen, thumb, initial, name, name w
     let r = CHIP_FRAME;
     let expand = unsafe { std::ptr::addr_of!(CHIP_EXPAND).read() }.pos;
@@ -2360,20 +2399,29 @@ pub(crate) fn profile_chip(p: Painter) {
         ));
     }
     let (_, thumb_s, initial_c, name_c, name_w) = chip.as_ref().unwrap();
-    // ---- one always-present capsule UNDER the avatar: round at rest, widening to hold the name.
+    // ---- the capsule UNDER the avatar, ALWAYS: the tab track's material, inset and radius — a
+    // round surround at rest (the control is contained before it is focused, as the track's pills
+    // are), widening rightward with the unfurl to hold the name. The face is at full strength at
+    // every `e`; only the WIDTH moves, which is what `chip_cap` expresses. It was drawn only while
+    // focused, faded in with `e`, until 2026-09-01; the resting surround is the design since, and
+    // it is real glass again since 2026-09-02 (a flat copy of the face stood in for one day). The
+    // band is priced as the union of both surfaces at rest — `band_region`, `BAND_REGION_X0` —
+    // and measured on the set with the surround up: `home-hero` and `home-fold` both clear 50.
     let e = expand.clamp(0.0, 1.0);
-    // The rect comes from [`chip_cap`] rather than being built here, because it is also what
-    // [`GLASS_TRACK_MAX`] is solved against — see there.
-    let cap = chip_cap(e, *name_w);
-    if !chip_capsule(p, cap) {
-        p.rect_sheened(
-            cap,
-            cap.h * 0.5,
-            theme::scrim_black(theme::TAB_TRACK_A_TOP),
-            theme::scrim_black(theme::TAB_TRACK_A_BOT),
-        );
-    }
-    if e > 0.004 {
+    {
+        // The rect comes from [`chip_cap`] rather than being built here, because it is also what
+        // [`GLASS_TRACK_MAX`] is solved against — see there.
+        let cap = chip_cap(e, *name_w);
+        // the tab track's own material — literally the same material: glass when the track
+        // resolved glass this frame, the flat capsule when it did not.
+        if !chip_capsule(p, cap, 1.0) {
+            p.rect_sheened(
+                cap,
+                cap.h * 0.5,
+                theme::scrim_black(theme::TAB_TRACK_A_TOP),
+                theme::scrim_black(theme::TAB_TRACK_A_BOT),
+            );
+        }
         // the name rides in on the TAIL of the widening, so the glyphs land in a capsule that has
         // already made room for them instead of smearing across the grow
         let na = ((e - 0.55) / 0.45).clamp(0.0, 1.0);
@@ -3033,7 +3081,13 @@ impl AmbientWash {
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
-        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]));
+        self.draw_with(p, r, true);
+    }
+    /// [`draw`](Self::draw) with the dither made the caller's decision: `false` for a wash that is
+    /// only ever seen THROUGH something moving (Home's hero fold and slide), where the noise buys
+    /// nothing and costs ~2.5M GPU cycles a frame at full screen. See `gfx::draw_ambient`.
+    pub(crate) fn draw_with(&self, p: Painter, r: Rect, dither: bool) {
+        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]), dither);
     }
 }
 
@@ -4315,8 +4369,9 @@ static mut TOP_STRIP: TabStrip = TabStrip::new();
 /// Live-trigger lifetime for the tab track's glass experiment. It uses the same reusable cadence
 /// machinery as a dynamic popover, without a modal's page-drawn scrim.
 ///
-/// ONE state for the band's one backdrop owner: the centred track. [`profile_chip`]'s capsule
-/// copies the solved face locally and therefore needs neither a lifetime nor a snapshot of its own.
+/// ONE state for the band's one CADENCE owner: the centred track. [`profile_chip`]'s capsule is a
+/// second glass surface on the same solve — it needs no lifetime of its own, and no snapshot,
+/// because the union grab the track already takes spans both.
 static mut TAB_GLASS_STATE: GlassState = GlassState::new();
 
 /// **What the shared top bar is made of, THIS frame** — published by [`draw_tab_row`] and consumed
@@ -4846,20 +4901,36 @@ const CHIP_CAP_MAX_R: f32 = {
 /// libraries and the strip outgrows the budget, so the material has to come off by arithmetic
 /// rather than by anyone remembering.
 ///
-/// [`profile_chip`] deliberately copies the track's solved FACE without becoming another backdrop
-/// owner.  The two constraints are therefore independent:
+/// **It is no longer the track's own arithmetic, because the track is no longer the only surface in
+/// the band.** [`profile_chip`] wears the same material now, and the two are priced and placed
+/// together:
 ///
-/// * **The BUDGET is the centred track alone.** Its blur region is `(w + 2·BLUR_MARGIN)` by
-///   [`BAND_REGION_H`]; solving that for the measured moving-host budget is
-///   [`GLASS_TRACK_BUDGET_MAX`].
-/// * **The two visible faces must not TOUCH.** The track is centred, so its left edge is `(SCR_W - w) / 2`;
+/// * **The BUDGET is the UNION.** Two glass surfaces in a frame converge on one grab
+///   (`gfx::blur_region_union`), so the bar costs one snapshot — but that snapshot spans both. Its
+///   left edge is the capsule's ([`BAND_REGION_X0`]) and its right is the track's, over
+///   [`BAND_REGION_H`]; solving that for the width is [`GLASS_TRACK_BUDGET_MAX`].
+/// * **And the two must not TOUCH.** The track is centred, so its left edge is `(SCR_W - w) / 2`;
 ///   the capsule's right edge stops at [`CHIP_CAP_MAX_R`]. Solving for [`BAND_AIR`] between them is
 ///   [`GLASS_TRACK_TOUCH_MAX`] — **848** — written as the expression so that raising
 ///   [`CHIP_NAME_MAX`] tightens the cap instead of silently letting the two meet.
 ///
-/// It remains the `min`: the current touch limit binds, while the budget test independently proves
-/// the track would still fit.  Keeping both expressions makes a future wider name or lower bar
-/// tighten the correct constraint instead of relying on today's ordering.
+/// **Which of the two BINDS moved on 2026-08-23, and this constant is now the `min` rather than the
+/// touch rule alone.** It was written as the touch expression with a comment saying the budget
+/// reached at 904 — true while the band's blurred region was 200px tall, i.e. while `TOP_BAR_Y` was
+/// 44. Dropping the bar 18px so its track clears the overscan frame (`consts::MARGIN_Y`) makes that
+/// region 218 tall, and 18 more rows of a ~1470-wide grab is 26k px², enough to put the touch width
+/// outside the budget. The two constraints were only ever ordered by coincidence; asserting one and
+/// documenting the other is what let that go unnoticed until the test caught it.
+///
+/// Overlap is what had to be made impossible, rather than handled. There is ONE blur cache: a
+/// second surface over the first gets no second blur, only a second frost and a second rim
+/// composited over material that already carries both — the double-darkening `draw_tab_row`'s
+/// source-pass note measures from the other direction. Nothing in the shader can undo that, so the
+/// geometry has to keep them apart, and the test below is what keeps them apart.
+///
+/// What it costs is stated plainly: the product's own strip is 572px, so the material survives
+/// today's bar with room for one more library and not two. What it buys is that the band is never
+/// two materials and never a doubled one, and never over the budget a measurement set.
 const GLASS_TRACK_MAX: f32 = if GLASS_TRACK_TOUCH_MAX < GLASS_TRACK_BUDGET_MAX {
     GLASS_TRACK_TOUCH_MAX
 } else {
@@ -4885,11 +4956,26 @@ const BAND_REGION_H: f32 = TOP_BAR_BOTTOM + crate::gfx::BLUR_MARGIN;
 /// comment, which is the same trade `CHIP_CAP_MAX_R` makes against the rect `chip_cap` draws.
 const BAND_REGION_BUDGET: f32 = 300_000.0;
 
-/// [`BAND_REGION_BUDGET`] solved for the centred track width.  At this limit neither horizontal
-/// edge is clamped, so the charged width is exactly `w + 2·BLUR_MARGIN`; the real-region tests below
-/// guard that assumption through `gfx::blur_region` itself.
-const GLASS_TRACK_BUDGET_MAX: f32 =
-    BAND_REGION_BUDGET / BAND_REGION_H - 2.0 * crate::gfx::BLUR_MARGIN;
+/// The band's blurred region LEFT edge — the chip capsule's own left grown [`crate::gfx::BLUR_MARGIN`],
+/// clamped to the panel. It used to clamp to 0 and no longer does: the capsule starts at `MARGIN_X`
+/// 96 (it was 82 when the chip sat at a 90px margin with no [`TAB_TRACK_PAD`] inset), so the grab
+/// begins at 8. Written out because [`GLASS_TRACK_BUDGET_MAX`] is a closed form of what
+/// `gfx::blur_region_union` computes, and an assumed-0 left edge silently overcharges it by 16px of
+/// track — which is safe but wrong, and wrong in a constant the shipping build reads.
+const BAND_REGION_X0: f32 = {
+    let x = CHIP_FRAME.x - TAB_TRACK_PAD - crate::gfx::BLUR_MARGIN;
+    if x > 0.0 {
+        x
+    } else {
+        0.0
+    }
+};
+
+/// [`BAND_REGION_BUDGET`] solved for the track width, over the union
+/// `[BAND_REGION_X0, (SCR_W + w) / 2 + BLUR_MARGIN] x BAND_REGION_H`.
+const GLASS_TRACK_BUDGET_MAX: f32 = 2.0
+    * (BAND_REGION_BUDGET / BAND_REGION_H + BAND_REGION_X0
+        - (crate::ui::consts::SCR_W * 0.5 + crate::gfx::BLUR_MARGIN));
 
 /// Is the shared tab track wearing glass this frame?
 ///
@@ -4946,6 +5032,17 @@ latched_flag!(
 /// that present's refresh slot on a surface nobody sees.
 fn tab_glass_on(track_w: f32) -> bool {
     tab_glass_wanted(track_w) && !crate::gfx::blur_source_pass()
+}
+
+/// **Will the shared bar wear glass this frame?** — [`tab_glass_wanted`], asked from OUTSIDE
+/// [`draw_tab_row`], which is where the track's own rect is not in hand.
+///
+/// It measures the strip through the same cached metrics the draw walks, so the row and its second
+/// surface cannot answer the width rule differently. Deliberately the SOURCE-PASS-blind half:
+/// [`profile_chip`] asks it in order to decide whether it is about to be drawn into a backdrop, and
+/// `tab_glass_on`'s extra clause is false during exactly that pass.
+fn bar_glass_wanted() -> bool {
+    with_tab_metrics(|_, widths| tab_glass_wanted(tab_track_w(widths)))
 }
 
 /// Resolve the tab track's glass cadence BEFORE the page it sits on draws.
@@ -7224,25 +7321,30 @@ mod tests {
         assert!(!nav_glass_on());
     }
 
-    /// The centred track's blurred region, in authored px², through `gfx::blur_region` itself.
-    /// The profile capsule is intentionally absent: it copies the solved visual face with a local
-    /// rounded rect and is not a backdrop owner.  Keeping that distinction in this helper is what
-    /// stops a future budget edit from silently pricing the expensive union back in as acceptable.
+    /// The band's blurred region, in authored px^2, for a track `w` wide with the chip unfurled
+    /// beside it — through **`gfx`'s own `blur_region` and `blur_region_union`**, not a copy of them.
+    ///
+    /// The copy is the thing to avoid here and there is a measurement to prove it: this test's
+    /// predecessor modelled the region inline and left the screen CLAMP out, which priced the tab
+    /// track at `(940+176) x 252` = 281k px^2 where the real region is `1116 x 200` = 223k — a 26%
+    /// over-estimate that sat under a passing assertion for as long as the limit existed, and the
+    /// reason the old limit read as if it had only ~7% of headroom when it had far more. Both
+    /// surfaces are grown `gfx::BLUR_MARGIN` a side and then clamped to the screen, so the capsule
+    /// at x=96 puts the union's left edge at 8 (`BAND_REGION_X0`), the band at y=36 puts its top on 0
+    /// and makes it 200 tall
+    /// rather than 252. That is `blur_region`'s business, and it is now asked rather than restated.
+    ///
+    /// The rects are the DRAWN ones: `chip_cap` at rest with a name at its budget, and the centred
+    /// track `draw_tab_row` builds. Only the chip's left edge reaches the union — the capsule grows
+    /// rightward and the clearance keeps its right edge inside the track's — so the pair prices the
+    /// same at every point of the unfurl, which is why one number can stand for the band.
     fn band_region(w: f32) -> f32 {
-        let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
-        let track = crate::gfx::blur_region((crate::ui::consts::SCR_W - w) * 0.5, y, w, h);
-        track[2] * track[3]
-    }
-
-    /// Counterfactual that reproduced the regression: charging the separated chip as a second
-    /// backdrop surface makes the renderer capture the empty space between it and the track too.
-    fn band_region_with_blurred_chip(w: f32) -> f32 {
         let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
         let track = crate::gfx::blur_region((crate::ui::consts::SCR_W - w) * 0.5, y, w, h);
         let cap = chip_cap(1.0, CHIP_NAME_MAX);
         let chip = crate::gfx::blur_region(cap.x, cap.y, cap.w, cap.h);
-        let union = crate::gfx::blur_region_union(track, chip);
-        union[2] * union[3]
+        let u = crate::gfx::blur_region_union(track, chip);
+        u[2] * u[3]
     }
 
     /// **[`GLASS_TRACK_MAX`] is the budget, solved for width** — asserted rather than asserted-in-a-
@@ -7252,6 +7354,14 @@ mod tests {
     /// [`crate::gfx::GLASS_REGION_BUDGET`], which is what a MOVING host carries at 60 fps — and this
     /// bar's host is always moving, since the page under it is what the user is scrolling.
     ///
+    /// **It is priced as the PAIR now**, and that is the change worth reading twice. This asserted
+    /// the track alone against the budget, which was the whole story while the track was the only
+    /// glass in the band; [`profile_chip`]'s capsule is a second surface of the same material, and
+    /// two glass surfaces in one frame converge on ONE grab (`gfx::blur_region_union`) that has to
+    /// span both. A track that passes on its own and fails as a pair is exactly the regression this
+    /// exists to catch, so the counterexample moved with it: the old one was a 1050-wide track,
+    /// which is far outside either limit, where 940 — the width the TRACK alone could afford — is
+    /// inside its own budget and outside the band's. That is the boundary the second surface moved.
     /// [`BAND_REGION_BUDGET`] is a restatement of a `cfg(test)` constant, so it can only be kept
     /// honest by an equality. Both halves of [`GLASS_TRACK_MAX`] are also re-derived here through
     /// `gfx::blur_region` itself, which is the check that `BAND_REGION_H`'s clamp assumption still
@@ -7266,40 +7376,29 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_tracks_glass_fits_one_region_budget() {
+    fn the_whole_bands_glass_fits_one_region_budget() {
         assert!(
             band_region(GLASS_TRACK_MAX) <= crate::gfx::GLASS_REGION_BUDGET,
-            "the track at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
+            "the band at the limit costs {:.0} px^2, past the {:.0} a moving host carries",
             band_region(GLASS_TRACK_MAX),
             crate::gfx::GLASS_REGION_BUDGET,
         );
         assert!(
-            band_region(GLASS_TRACK_BUDGET_MAX + 4.0) > crate::gfx::GLASS_REGION_BUDGET,
-            "a track past the solved budget must really exceed it: {:.0} px^2",
-            band_region(GLASS_TRACK_BUDGET_MAX + 4.0),
-        );
-    }
-
-    #[test]
-    fn the_profile_chip_must_not_expand_the_tracks_backdrop_region() {
-        let normal = [126.0, 146.0, 176.0, TAB_ICON_PILL_W];
-        let w = tab_track_w(&normal);
-        let track = band_region(w);
-        let pair = band_region_with_blurred_chip(w);
-        assert!(
-            pair > track * 1.70,
-            "the far-left chip turns a {:.0}px² track grab into {:.0}px²; it must stay a local face",
-            track,
-            pair,
+            band_region(940.0) > crate::gfx::GLASS_REGION_BUDGET,
+            "940 was the TRACK's own limit and must be outside the BAND's: {:.0} px^2",
+            band_region(940.0),
         );
     }
 
     /// **The unfurled chip and the glass track can never touch** — the one thing about this band
     /// that no shader can fix, so it is arithmetic and it is asserted.
     ///
-    /// The capsule is bounded by [`CHIP_NAME_MAX`] and the track is centred, so the clearance is
-    /// two constants and needs no font.  The chip is a local face rather than a blur owner now, but
-    /// allowing the two translucent faces to overlap would still double their frost and rim.
+    /// There is ONE blur cache. A second glass surface drawn over the first samples that same
+    /// snapshot, so an overlap gets no second blur — only a second scrim and a second rim
+    /// composited over material that already carries both, which is the doubling `draw_tab_row`'s
+    /// source-pass note measures from the other side (a face reading (52,60,38) came out at
+    /// (33,38,26) once it contained itself). The capsule is bounded by [`CHIP_NAME_MAX`] and the
+    /// track is centred, so the clearance is two constants and needs no font.
     ///
     /// **Be clear about what each half can catch, because as long as [`GLASS_TRACK_MAX`] is SOLVED
     /// for this both are identities.** That is the design working — the constant is the clearance,
@@ -7318,11 +7417,7 @@ mod tests {
     fn the_unfurled_chip_never_reaches_the_glass_track() {
         let track_x = |w: f32| (crate::ui::consts::SCR_W - w) * 0.5;
         let cap = chip_cap(1.0, CHIP_NAME_MAX);
-        assert_eq!(
-            cap.x + cap.w,
-            CHIP_CAP_MAX_R,
-            "priced and drawn are one expression"
-        );
+        assert_eq!(cap.x + cap.w, CHIP_CAP_MAX_R, "priced and drawn are one expression");
         assert!(
             cap.x + cap.w + BAND_AIR <= track_x(GLASS_TRACK_MAX) + 0.01,
             "the widest capsule ends at {} and the widest glass track starts at {} — they must \
@@ -7333,12 +7428,18 @@ mod tests {
         );
         // **The cap is TIGHT against whichever constraint binds** — a limit that gives away more
         // strip than either rule needs is a cost nobody decided to pay. This used to be pinned
-        // within a pixel of `BAND_AIR`, because the touch rule binds today.
+        // within a pixel of `BAND_AIR`, which said the same thing while the touch rule was the one
+        // that bound; since the bar dropped to clear the overscan frame the BUDGET binds instead,
+        // so the clearance above is legitimately wider and the tightness claim has to be made
+        // against the widest track the budget admits.
         //
         // Both bounds are RE-DERIVED here rather than read back: the touch one off the rect
-        // `chip_cap` draws, the budget one by searching `band_region`, which asks `gfx::blur_region`
-        // itself. Comparing `GLASS_TRACK_MAX` against the two module constants it is literally the
-        // `min` of would be an identity that only NaN could fail.
+        // `chip_cap` draws, the budget one by searching `band_region` — which asks
+        // `gfx::blur_region_union` itself. Comparing `GLASS_TRACK_MAX` against the two module
+        // constants it is literally the `min` of would be an identity that only NaN could fail, and
+        // it would have missed exactly the error this catches: `GLASS_TRACK_BUDGET_MAX`'s closed
+        // form assumed a union left edge of 0, which stopped being true when the chip moved to
+        // `MARGIN_X`.
         let touch = crate::ui::consts::SCR_W - 2.0 * (cap.x + cap.w + BAND_AIR);
         let budget = {
             let (mut lo, mut hi) = (0.0f32, crate::ui::consts::SCR_W);
@@ -7358,36 +7459,61 @@ mod tests {
             "the cap is {GLASS_TRACK_MAX} where the binding constraint allows {want} \
              (touch {touch}, budget {budget})",
         );
-        assert!(
-            touch < budget,
-            "the visible-face clearance is what binds today — if that flips, so does the note above"
-        );
+        assert!(budget < touch, "the BUDGET is what binds today — if that flips, so does the note above");
         // the capsule only ever grows RIGHTWARD off a fixed edge, which is what lets one number
         // stand for the band at every point of the unfurl (see `band_region`).
         for e in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let c = chip_cap(e, CHIP_NAME_MAX);
-            assert_eq!(
-                (c.x, c.y, c.h),
-                (cap.x, cap.y, cap.h),
-                "only the width moves"
-            );
+            assert_eq!((c.x, c.y, c.h), (cap.x, cap.y, cap.h), "only the width moves");
             assert!(c.w <= cap.w + 0.01, "the rest capsule is the widest");
         }
     }
 
-    /// The chip is a contained control before it is focused.  The closed state is therefore a
-    /// circle in the same inset band as the tab track; focus may widen it but never creates the
-    /// surround from nothing.
+    /// The unfurl fades the whole FACE, and the two rim weights are the half that matters.
+    ///
+    /// `fs_glass.frag` writes `max(u_tint.a * cov, rimw)`: the rim is deliberately allowed to exceed
+    /// its own surface's coverage, so that a 1px line survives its antialiased edge. Fade only the
+    /// tint and the consequence is a bright empty hairline capsule snapping on around the avatar in
+    /// the first milliseconds of focus — visible, and not something the tint can walk back.
+    ///
+    /// And at rest it is the track's face to the bit, which is the claim the whole arrangement
+    /// rests on: one solve, one material, two surfaces.
+    #[test]
+    fn the_chips_capsule_fades_its_rim_with_its_scrim_and_rests_on_the_tracks_own_face() {
+        let face = crate::gfx::GlassFace {
+            scrim_top: [0.0, 0.0, 0.0, 0.40],
+            scrim_bot: [0.0, 0.0, 0.0, 0.52],
+            rim: [1.0, 1.0, 1.0, 0.14],
+            rim_lit: [1.0, 1.0, 1.0, 0.28],
+            rim_w: 1.0,
+        };
+        let rest = chip_face(face, 1.0);
+        for (a, b) in [
+            (rest.scrim_top, face.scrim_top),
+            (rest.scrim_bot, face.scrim_bot),
+            (rest.rim, face.rim),
+            (rest.rim_lit, face.rim_lit),
+        ] {
+            assert_eq!(a, b, "at rest the chip wears the track's face unchanged");
+        }
+        let half = chip_face(face, 0.5);
+        assert_eq!(half.scrim_top[3], 0.20, "the scrim fades with the unfurl");
+        assert_eq!(half.rim[3], 0.07, "…and so does the perimeter");
+        assert_eq!(half.rim_lit[3], 0.14, "…and the lit edge, which the tint alone cannot reach");
+        assert_eq!(half.rim[..3], face.rim[..3], "the lamp's COLOUR does not move; its weight does");
+        assert_eq!(half.rim_w, face.rim_w, "one design-system pixel, at every point of the unfurl");
+    }
+
+    /// The chip is a contained control before it is focused: the resting surround is a circle in
+    /// the same inset band as the tab track, and focus only WIDENS it rightward for the name —
+    /// `profile_chip` draws `chip_cap(e, …)` at every `e`, at full face.
     #[test]
     fn the_profile_chip_has_a_round_surround_at_rest_and_only_widens_on_focus() {
         let closed = chip_cap(0.0, CHIP_NAME_MAX);
         let open = chip_cap(1.0, CHIP_NAME_MAX);
         assert_eq!(closed.w, closed.h, "the resting surround is circular");
         assert_eq!((closed.x, closed.y, closed.h), (open.x, open.y, open.h));
-        assert!(
-            open.w > closed.w,
-            "focus reveals the name by widening rightward"
-        );
+        assert!(open.w > closed.w, "focus reveals the name by widening rightward");
     }
 
     /// The width rule is the only refusal a SECTION TABLE can trip on its own, so it has to hold

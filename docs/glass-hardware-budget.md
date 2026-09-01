@@ -616,7 +616,7 @@ its labels.
 it read and what it chose. The Account popover uses a cached backdrop and a one-copy full host
 `FrameCache`; its menu animation no longer redraws or dynamically resamples Home underneath.
 
-**Profile chip correction (2026-09-01).** Making the always-visible 76px account surround a second
+**Profile chip correction (2026-09-01) — SUPERSEDED 2026-09-02.** The chip is glass again (`widgets::chip_capsule`, a round surround at rest), the band is priced as the union of both surfaces, and the regression this paragraph blames on the second surface was `fs_ambient.frag`'s dither hash; the record is `docs/backdrop-blur-profiling.md`'s 2026-09-02 section, and the numbers below describe a since-retired configuration. Making the always-visible 76px account surround a second
 backdrop owner looked local but was not local in the renderer: the shared capture is a rectangle.
 On the device the track's `728×220` snapshot became `1316×220` once the far-left chip joined its
 union. In uninstrumented interleaved `home-grid` runs, removing only that request raised median

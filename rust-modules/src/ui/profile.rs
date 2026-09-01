@@ -1,9 +1,14 @@
-//! Draw-phase instrumentation with two intentionally separate measurement modes.
+//! Draw-phase instrumentation with three intentionally separate measurement modes — arm exactly
+//! one per run.
 //!
 //! `/tmp/plxnative-profile` selects one phase for asynchronous
 //! `GL_EXT_disjoint_timer_query` timing. It does not call `glFinish`; results are read on later
 //! frames. `/tmp/plxnative-hwcnt` selects one phase for direct Mali Midgard vinstr attribution.
-//! An empty trigger selects `frame.ui` in either mode. Never enable both modes in one run.
+//! An empty trigger selects `frame.ui` in either mode. `/tmp/plxnative-cpuprof` is the third and
+//! the only one that measures the CPU: the render thread's own inclusive wall time for EVERY
+//! phase at once, no filter, no `glFinish`, logged as `PROFILE CPU` lines (a `~src` suffix marks
+//! a phase met inside the blur source pass). It takes precedence in [`phase`] over the two GPU
+//! modes, so arming it beside either silently pre-empts them.
 //!
 //! A selected HWCNT phase is delimited as:
 //!
@@ -35,7 +40,7 @@ mod imp {
     /// and must be kept beside them. Its only job is to refuse a trigger that names nothing: an
     /// unknown filter arms the profiler, logs `on`, and then silently never matches — which reads
     /// exactly like "this phase costs nothing".
-    pub(crate) const PHASES: [&str; 27] = [
+    pub(crate) const PHASES: [&str; 32] = [
         "profile.empty",
         "frame.ui",
         "main.ui",
@@ -60,8 +65,13 @@ mod imp {
         "dt.related",
         "dt.tabs",
         "hm.backdrop",
+        "hm.chip",
+        "hm.clear",
         "hm.grid",
         "hm.hero",
+        "hm.layout",
+        "hm.status",
+        "hm.tabs",
         "menu.panel",
         "menu.scrim",
     ];
@@ -87,6 +97,100 @@ mod imp {
     const LOG_EVERY: u32 = 60;
     const NCOUNTERS: usize = COUNTERS.len();
     static ON: AtomicBool = AtomicBool::new(false);
+
+    /// `/tmp/plxnative-cpuprof` — the THIRD mode, and the only one that measures the CPU.
+    ///
+    /// The timer-query and HWCNT modes price GPU work, and both are blind to the case the
+    /// frame-drop detector reports as `draw=24ms swap=0.3ms`: a frame whose time is spent on the
+    /// render thread ISSUING the page rather than on the GPU drawing it. This mode wraps every
+    /// `phase` call in `Instant::now()` — nested phases are inclusive, and a phase met inside the
+    /// blur SOURCE pass is accounted under its own `~src` key rather than folded into the visible
+    /// pass — and logs one `PROFILE CPU phase=… n=… mean_ms=… max_ms=…` line per phase every
+    /// [`LOG_EVERY`] drawn frames. No `glFinish`, no filter, every phase at once: two clock reads
+    /// per phase is the whole perturbation, so it can run beside a scene's `fps=`.
+    static CPU_ON: AtomicBool = AtomicBool::new(false);
+
+    struct CpuAcc {
+        name: &'static str,
+        src: bool,
+        samples: u32,
+        total_ns: u128,
+        max_ns: u128,
+    }
+
+    struct CpuState {
+        frames: u32,
+        acc: Vec<CpuAcc>,
+    }
+
+    thread_local! {
+        static CPU: RefCell<CpuState> = const { RefCell::new(CpuState { frames: 0, acc: Vec::new() }) };
+    }
+
+    pub(crate) fn set_cpu_enabled() {
+        CPU_ON.store(true, Ordering::Relaxed);
+        log("PROFILE CPU on: every phase, inclusive wall time on the render thread, no glFinish");
+    }
+
+    #[inline]
+    fn cpu_enabled() -> bool {
+        CPU_ON.load(Ordering::Relaxed)
+    }
+
+    fn cpu_phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
+        let src = crate::gfx::blur_source_pass();
+        let t0 = Instant::now();
+        let result = draw();
+        let ns = t0.elapsed().as_nanos();
+        CPU.with(|cpu| {
+            let mut cpu = cpu.borrow_mut();
+            match cpu.acc.iter_mut().find(|a| a.name == name && a.src == src) {
+                Some(a) => {
+                    a.samples += 1;
+                    a.total_ns += ns;
+                    a.max_ns = a.max_ns.max(ns);
+                }
+                None => cpu.acc.push(CpuAcc { name, src, samples: 1, total_ns: ns, max_ns: ns }),
+            }
+        });
+        result
+    }
+
+    fn cpu_frame_end() {
+        if !cpu_enabled() {
+            return;
+        }
+        let messages = CPU.with(|cpu| {
+            let mut cpu = cpu.borrow_mut();
+            cpu.frames += 1;
+            if cpu.frames < LOG_EVERY {
+                return Vec::new();
+            }
+            let frames = cpu.frames;
+            let mut out: Vec<String> = cpu
+                .acc
+                .iter()
+                .map(|a| {
+                    format!(
+                        "PROFILE CPU phase={}{} n={} per_frame_ms={:.2} mean_ms={:.2} max_ms={:.2}",
+                        a.name,
+                        if a.src { "~src" } else { "" },
+                        a.samples,
+                        a.total_ns as f64 / frames as f64 / 1e6,
+                        a.total_ns as f64 / a.samples.max(1) as f64 / 1e6,
+                        a.max_ns as f64 / 1e6,
+                    )
+                })
+                .collect();
+            out.sort();
+            cpu.acc.clear();
+            cpu.frames = 0;
+            out
+        });
+        for message in messages {
+            log(&message);
+        }
+    }
 
     struct Acc {
         name: &'static str,
@@ -438,6 +542,9 @@ mod imp {
 
     #[inline]
     pub(crate) fn phase<R>(name: &'static str, draw: impl FnOnce() -> R) -> R {
+        if cpu_enabled() {
+            return cpu_phase(name, draw);
+        }
         if crate::gpu_timer::enabled() {
             crate::gpu_timer::phase(name, draw)
         } else {
@@ -448,17 +555,21 @@ mod imp {
     pub(crate) fn frame_end() {
         crate::gpu_timer::frame_end();
         hwcnt_frame_end();
+        cpu_frame_end();
     }
 }
 
 #[cfg(feature = "devtriggers")]
-pub(crate) use imp::{frame_end, note_blur_config, phase, set_enabled, set_hwcnt_enabled};
+pub(crate) use imp::{frame_end, note_blur_config, phase, set_cpu_enabled, set_enabled, set_hwcnt_enabled};
 
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn set_enabled(_filter: &str) {}
 
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn set_hwcnt_enabled(_filter: &str) {}
+
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn set_cpu_enabled() {}
 
 #[cfg(not(feature = "devtriggers"))]
 #[inline]

@@ -637,7 +637,12 @@ impl View for Backdrop {
         if !wash_hidden(sp, a_in, slide.map(|_| a_out))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
         {
-            self.wash.draw(p, Rect::FULL);
+            // Dithered only while it can be LOOKED at: at rest with the photograph absent or
+            // still arriving. Mid-fold (`sp` off zero) or mid-slide the wash is behind a moving,
+            // fading picture, and the noise is a full-screen cost for a gradient nobody sees as
+            // one — measured 2026-09-02 as the difference between the fold's 45 and its 50 fps.
+            let still = sp <= 0.005 && slide.is_none();
+            self.wash.draw_with(p, Rect::FULL, still);
         }
         // EXPERIMENT (`/tmp/plxnative-heroground`): draw the art and BOTH scrim fields in one
         // pass. The four quads below are 2.78M fragments a frame — 52% of everything this screen
@@ -1853,10 +1858,13 @@ pub(crate) fn home_update(dt: f32) {
 
 pub(crate) fn home_draw() {
     guard(|| {
-        crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        use crate::ui::profile::phase;
+        phase("hm.clear", || {
+            crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2)
+        });
         let h = scene();
         let env = h.env(0.0);
-        h.grid.layout(env.screen, &env); // &mut layout before the &self composite draw
+        phase("hm.layout", || h.grid.layout(env.screen, &env)); // &mut layout before the &self composite draw
                                          // THE page transition, as ONE cascade-alpha push at the root of the tree: the backdrop,
                                          // hero, grid and read-out are what a route change REPLACES, so they dip to the app ground
                                          // and back (`ui::nav`). Nothing per-element is needed — `Painter::alpha` is multiplicative
@@ -1867,7 +1875,7 @@ pub(crate) fn home_draw() {
         h.draw(&env, pc);
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands
         // in for the hero and grid above it), so the top chrome below still paints over it.
-        draw_status(&env, pc);
+        phase("hm.status", || draw_status(&env, pc));
         // …and, when armed, the SYNTHETIC ground replaces all of it: drawn here so it is what the
         // bar samples and what the backdrop blur sources, and on the page's own alpha so a route
         // change still dips it. `testpat` is a no-op unless a spec is set.
@@ -1882,7 +1890,7 @@ pub(crate) fn home_draw() {
         // tab press read as the whole screen blinking — and the capsule travelling across a bar
         // that stays put IS the transition the tab bar is supposed to show.
         let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
-        crate::ui::widgets::draw_tab_row(pk);
+        phase("hm.tabs", || crate::ui::widgets::draw_tab_row(pk));
         // the chip goes on TOP of the tab track, not under it. Its focused capsule unfurls the
         // profile name to its right, and under the track the name was painted over by the track's
         // own scrim. The order also publishes before it reads: the chip wears the material this
@@ -1893,7 +1901,7 @@ pub(crate) fn home_draw() {
         // it stopped being true when the track became glass: two glass surfaces share ONE blur, so
         // an overlap gets a second scrim and a second rim and no second blur. They cannot reach
         // each other any more — `widgets::GLASS_TRACK_MAX` is solved for the clearance.
-        crate::ui::widgets::profile_chip(pk);
+        phase("hm.chip", || crate::ui::widgets::profile_chip(pk));
     });
 }
 

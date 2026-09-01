@@ -47,6 +47,7 @@ pub(crate) use glsl;
 const VS_SRC: &CStr = glsl!("shaders/vs_src.vert");
 const FS_SRC: &CStr = glsl!("shaders/fs_src.frag");
 const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
+const VS_AMBIENT: &CStr = glsl!("shaders/vs_ambient.vert");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
@@ -179,9 +180,11 @@ const GL_UNPACK_ALIGNMENT: c_uint = 0x0CF5;
 const GL_TEXTURE_MIN_FILTER: c_uint = 0x2801;
 const GL_TEXTURE_MAG_FILTER: c_uint = 0x2800;
 const GL_TEXTURE_WRAP_S: c_uint = 0x2802;
+const GL_NEAREST: c_int = 0x2600;
 const GL_TEXTURE_WRAP_T: c_uint = 0x2803;
 const GL_LINEAR: c_int = 0x2601;
 const GL_CLAMP_TO_EDGE: c_int = 0x812F;
+const GL_REPEAT: c_int = 0x2901;
 
 const GL_COLOR_BUFFER_BIT: c_uint = 0x0000_4000;
 const GL_SCISSOR_TEST: c_uint = 0x0C11;
@@ -330,6 +333,45 @@ static mut AL_TR: c_int = 0;
 static mut AL_BR: c_int = 0;
 static mut AL_BL: c_int = 0;
 static mut AL_NOISE: c_int = 0;
+/// The ambient wash's dither source: a [`NOISE_DIM`]-square tile of white noise, `GL_REPEAT`,
+/// `GL_NEAREST`, sampled at `gl_FragCoord / NOISE_DIM`. A TEXTURE rather than a hash for one reason
+/// the counters made plain: on this part the arithmetic pipe is what binds a full-screen quad, and
+/// the texture pipe sits nearly idle beside it. The interleaved-gradient hash that preceded it —
+/// two `fract`s, a `dot` and a multiply, all in highp because `gl_FragCoord` is — cost the fold's
+/// full-screen wash ~2 GPU cycles a pixel, 4M of a 14.4M-cycle frame (2026-09-02). One fetch on
+/// the other pipe costs the arithmetic pipe a single multiply.
+static mut NOISE_TEX: c_uint = 0;
+/// Side of the noise tile. 64 is well past the eye's ability to see a repeat at ±½ LSB amplitude
+/// and small enough to live in the texture cache whole.
+const NOISE_DIM: usize = 64;
+
+/// Build the dither tile. White noise from a 32-bit integer hash of the texel index — no
+/// dependency, deterministic, and its quality is irrelevant at half an 8-bit quantum: what matters
+/// is only that neighbouring texels are uncorrelated, which a structured pattern (Bayer) is not.
+fn noise_tex() -> c_uint {
+    let mut px = vec![0u8; NOISE_DIM * NOISE_DIM * 4];
+    for i in 0..NOISE_DIM * NOISE_DIM {
+        // lowbias32 (Chris Wellons): a full-avalanche integer hash.
+        let mut x = i as u32 ^ 0x9E37_79B9;
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7FEB_352D);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846C_A68B);
+        x ^= x >> 16;
+        let v = (x >> 24) as u8;
+        px[i * 4..i * 4 + 4].copy_from_slice(&[v, v, v, 255]);
+    }
+    unsafe {
+        let tex = upload_rgba(0, NOISE_DIM as c_int, NOISE_DIM as c_int, px.as_ptr());
+        // `upload_rgba` leaves it bound: nearest (one texel, one noise value — filtering would
+        // average the tile into grey) and repeating, so one small tile covers any drawable.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        tex
+    }
+}
 
 static mut SPROG: c_uint = 0;
 static mut SL_RECT: c_int = 0;
@@ -582,7 +624,7 @@ pub(crate) fn init_gl() {
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, std::ptr::null());
 
-        APROG = link_program(VS_SRC.as_ptr(), FS_AMBIENT.as_ptr()).unwrap_or_else(|| {
+        APROG = link_program(VS_AMBIENT.as_ptr(), FS_AMBIENT.as_ptr()).unwrap_or_else(|| {
             log("ambient prog link failed");
             0 // draw_ambient then binds program 0 and draws nothing — the corner wash is a nicety
         });
@@ -594,6 +636,7 @@ pub(crate) fn init_gl() {
             AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
             AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
             AL_NOISE = glGetUniformLocation(APROG, c"u_noise".as_ptr());
+            NOISE_TEX = noise_tex();
         }
 
         // Soft-shadow program (own program so the hot FS_SRC pays nothing; mirrors init_image).
@@ -722,6 +765,13 @@ pub(crate) fn draw_rect(
         return;
     }
     unsafe {
+        // A flat two-stop gradient STAYS on this program, and that was measured rather than assumed
+        // (`plxnative-hwcnt`, 2026-09-02): routed through the ambient program instead, the hero's
+        // two full-width ramp quads made the frame 0.6M GPU cycles DEARER, because `fs_src`'s
+        // early-out below is one `mix` where a four-corner field is three. What this program pays
+        // for on a flat quad is its size — Midgard sizes the register file for the whole shader,
+        // so the capsule arcs and the glow lower the occupancy of a path that never runs them —
+        // and that is still cheaper than the extra arithmetic.
         use_prog(PROG);
         // Only the rounded/focus SDF path needs the AA bleed; a plain rect takes the fast-path fill
         // and must stay exactly its bounds (a 1px overhang would fatten scrims/backgrounds).
@@ -827,6 +877,7 @@ pub(crate) fn draw_ambient(
     tr: *const f32,
     br: *const f32,
     bl: *const f32,
+    dither: bool,
 ) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
@@ -864,7 +915,18 @@ pub(crate) fn draw_ambient(
             1.0,
         );
         // ±half one 8-bit framebuffer quantum: enough to break a contour, below visible grain.
-        glUniform1f(AL_NOISE, 1.0 / 255.0);
+        // **`dither` is the caller's word on whether this ground is what the eye RESTS on.** The
+        // noise exists for a still, opaque, slow gradient — the one case 8-bit output bands
+        // visibly. A wash behind a moving translucent photograph (Home's hero fold and slide) is
+        // never seen as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are
+        // ~2.5M GPU cycles a frame on the set (2026-09-02) — the difference between the fold
+        // passing its 50 fps gate and not. Off, the shader's uniform branch skips the whole term.
+        glUniform1f(AL_NOISE, if dither { 1.0 / 255.0 } else { 0.0 });
+        if dither {
+            // The dither tile, on unit 0 — `u_noise_tex` is sampler 0 by default and nothing else
+            // in this program samples. `draw_grad4` never takes the branch, so it binds nothing.
+            glBindTexture(GL_TEXTURE_2D, NOISE_TEX);
+        }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -4194,12 +4256,41 @@ mod tests {
         assert_eq!(uv[1] + uv[3], 0.0, "the bottom row lands at screen bottom");
     }
 
+    /// The ambient program is drawn over more pixels than any other in the app — the hero's
+    /// corner scrim, the atmospheric ramps and the page wash are all full-width quads — so its
+    /// per-fragment contract is pinned by text: fp16 coordinates (a highp varying promoted the
+    /// mixes to fp32 and cost 3.2M cycles a frame on the set), a dither that exists for the opaque
+    /// ground, and that dither behind a UNIFORM branch so a scrim never evaluates the hash. The
+    /// hash itself is interleaved gradient noise, not the `sin` textbook one — `sin` is a range
+    /// reduction plus a polynomial on Midgard and was 5.3M cycles a frame, 38% of Home.
     #[test]
-    fn full_screen_ambient_has_high_precision_coordinates_and_local_dither() {
-        let src = FS_AMBIENT.to_str().unwrap();
-        assert!(src.contains("varying highp vec2 v_uv"));
+    fn full_screen_ambient_is_mediump_with_a_uniform_gated_cheap_dither() {
+        // The CODE, not the comments — the account of the old hash above it names `sin` on purpose.
+        let src: String = FS_AMBIENT
+            .to_str()
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(src.contains("varying vec2 v_uv"), "the coordinate stays fp16");
+        assert!(!src.contains("varying highp vec2 v_uv"));
+        assert!(
+            src.contains("mix(v_top, v_bot, v_uv.y)"),
+            "ONE mix per fragment: the corner mixes are exact varyings from vs_ambient.vert"
+        );
+        assert!(!src.contains("u_atl"), "the corners are the vertex shader's business now");
+        let vs = VS_AMBIENT.to_str().unwrap();
+        assert!(vs.contains("v_top = mix(u_atl, u_atr, a_pos.x)"));
+        assert!(vs.contains("v_bot = mix(u_abl, u_abr, a_pos.x)"));
         assert!(src.contains("uniform float u_noise"));
-        assert!(src.contains("hash(gl_FragCoord.xy)"));
+        assert!(src.contains("if (u_noise > 0.0)"), "the dither is behind a uniform branch");
+        assert!(
+            src.contains("texture2D(u_noise_tex, gl_FragCoord.xy"),
+            "the dither is a texture fetch on the idle pipe, not arithmetic"
+        );
+        assert!(!src.contains("fract("), "no hash arithmetic on a full-screen quad");
+        assert!(!src.contains("sin("), "no transcendental in a full-screen fragment shader");
     }
 
     /// Thick diffuse material collects radiance across the WHOLE support. It must not inherit the

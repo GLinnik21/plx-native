@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 20] = [
+const DIAG: [&str; 21] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -49,6 +49,10 @@ const DIAG: [&str; 20] = [
     "plxnative-gputime.jsonl",
     "plxnative-hwcnt",
     "plxnative-hwcnt.jsonl",
+    // The render thread's own per-phase clock ([`crate::ui::profile`]'s CPU mode). DIAG for the
+    // reason the two GPU profilers are: it observes a screen, and must not move the boot away
+    // from the screen it was armed to observe.
+    "plxnative-cpuprof",
     "plxnative-anim",
     "plxnative-remote",
     "plxnative-capture",

@@ -766,7 +766,11 @@ impl Painter {
     /// corner RGB is touched, so the write stays opaque and no blending is added. This does NOT make
     /// a wash cross-fadeable BETWEEN two items — dissolving one item's colours into another's is
     /// still a spring per corner channel; see `AmbientWash`.
-    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
+    ///
+    /// `dither` says whether this ground is what the eye RESTS on — a still, opaque, slow gradient
+    /// wants the ±½-LSB noise or it bands; a wash under a moving translucent picture does not, and
+    /// on the set the noise is ~2.5M GPU cycles a frame at full screen (`gfx::draw_ambient`).
+    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4], dither: bool) {
         let a = self.a.clamp(0.0, 1.0);
         let g = theme::SURFACE_APP; // `theme::mix` is rgba; a wash corner is rgb
         let k = if a >= 1.0 {
@@ -785,6 +789,7 @@ impl Painter {
             k[1].as_ptr(),
             k[2].as_ptr(),
             k[3].as_ptr(),
+            dither,
         );
     }
     /// Bilinear 4-corner gradient with real per-corner ALPHA, folded through the cascade — the

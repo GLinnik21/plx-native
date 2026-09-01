@@ -53,8 +53,9 @@ implemented with smaller lower-left viewports and UV windows; it does not reallo
 
 The twelve phases this note is about are `profile.empty`, `frame.ui`, `main.ui`, `blur.copy`,
 `blur.reduce1`, `blur.reduce2`, `blur.tap1`, `blur.tap2`, `blur.up`, `glass.composite`,
-`glass.frost` and `glass.foreground`. They are **not the whole set** — there are 25, the rest being
-per-section phases on Home and the detail page — and `ui::profile::PHASES` is the authority. A
+`glass.frost` and `glass.foreground`. They are **not the whole set** — the rest are per-section
+phases on Home and the detail page, and the count here has rotted twice, so take it from
+`ui::profile::PHASES`, which is the authority. A
 trigger naming something outside that list is now refused with the valid names, rather than arming
 a profiler that silently never matches. `profile.empty` issues no GL work and measures the
 per-query floor, which is not zero on this driver and must be quoted beside every result.
@@ -591,3 +592,85 @@ Two consequences worth carrying:
   active units: the app's arithmetic partly hides behind the compositor's texture stalls, so
   removing one class frees less than removing it in isolation would. Price a real change by its own
   A/B, exactly as this note has said since Part 4 — do not build a budget by adding these rows up.
+
+## 2026-09-02: the Home motion regression — a census, and what a full-screen fragment costs
+
+Reported: Hero paging ~46 fps and the Hero→first-shelf fold ~38 fps against a 50 fps gate (the
+`home-hero` / `home-fold` scenes, `plxnative-heroosc` / `plxnative-homefoldosc`). The previous
+diagnosis blamed the profile chip's second glass surface and the top bar's blur source pass. Both
+were measured and both were wrong; what follows is the record, because every step of it
+contradicted a reasonable expectation.
+
+**1. The frame-drop detector reads as CPU and is not.** `plxnative-framedrop=1` on the hero scene:
+`draw=24.0 ms p50, swap=0.3 ms`. A new profiler mode, **`/tmp/plxnative-cpuprof`** — the render
+thread's own inclusive wall time per `ui::profile::phase`, every phase at once, no `glFinish` —
+put 26 ms of that in **`hm.clear`**, the frame's first framebuffer-0 command, and ~2 ms in the whole
+of Home's real work (`hm.hero` 0.9, `hm.grid` 0.5, `hm.tabs` 0.2, the blur source pass 0.8 CPU
+including its three FBO passes). On this driver the wait for the GPU lands in the first command
+that needs the back buffer, so a fat `draw=` is a GPU-bound frame until this mode says otherwise.
+
+**2. Glass ON is faster than glass OFF, three times running.** Same scene, interleaved:
+
+| leg | hero fps | fold fps | GPU_ACTIVE / frame (hero) |
+|---|---|---|---|
+| shipped: glass, refresh every present (`glasshz=1`) | 46 | 38 | 14.44M |
+| `plxnative-flattabs` — no glass, no source pass | 35 | 30 | 13.81M |
+| `plxnative-glasshz=8` — glass, refresh 1 present in 8 | 36 | 30 | — |
+
+More GPU work, seven milliseconds less frame period. The only structural difference is that the
+direct source pass submits FBO render passes immediately after the swap, before anything touches
+framebuffer 0. Whether that is Mali kbase DVFS reacting to a gap-free submission
+(`/sys/devices/platform/mali.0/dvfs_period` exists; `power_policy` is `demand`) or the driver
+starting the frame's fragment work earlier is NOT settled — but the consequence is: **lowering
+the glass cadence or removing the source pass to "save work" costs 20% of the frame rate, and any
+change to that path has to be re-measured on the set.**
+
+**3. The census: `plxnative-hwcnt` (`frame.ui`) + `plxnative-drawmask=<class>`, hero paging,
+flat tabs.** Control 13.81M GPU_ACTIVE per frame — against 8.76M for a hero frame on 2026-08-22,
+which is the regression stated in cycles.
+
+| class refused | Δ GPU_ACTIVE | Δ ARITH_WORDS | px removed | cycles / px |
+|---|---|---|---|---|
+| `grad` — the hero corner scrim, `draw_grad4` | **−5.30M (38%)** | −10.6M | 1.43M | **3.7** |
+| `rect` — the two atmospheric ramps, track, buttons | −2.65M | −5.0M | 1.44M | 1.8 |
+| `image` — the photograph | −2.17M | −4.3M | 2.15M | 1.0 |
+| `card` — the peek row's tiles | −1.41M | −2.7M | 0.46M | 3.1 |
+| `text` | −0.13M | −0.1M | 0.10M | 1.3 |
+| `ambient` — hidden under opaque art on this scene | −0.00M | — | — | — |
+
+The Aug-22 table priced "the ramp + the wedge" at 0.025 cycles/px. `dec32f2e` (2026-09-01) had
+rewritten `fs_ambient.frag` — the ONE program behind both `draw_grad4` and the page wash — with a
+`fract(sin(dot()))` dither hash evaluated on every fragment (`u_noise` only scaled it to zero for
+a scrim) and a highp coordinate. `sin` on Midgard is a range reduction plus a polynomial; the
+scrim went to ~7 arithmetic words a fragment.
+
+**4. Three fixes, each measured on its own (hero frame, flat tabs, GPU_ACTIVE per frame):**
+
+| state | hero GPU/frame | hero fps (glass) | fold fps (glass) |
+|---|---|---|---|
+| as found | 13.81M | 46 | 38 |
+| dither behind a uniform branch, cheap hash | 11.68M | 54 | 41 |
+| + highp→mediump coordinate, flat rects routed to the ambient program | 12.30M | 52 | 39 |
+| − that routing, + bilinear as ONE fragment mix (corner mixes as varyings, `vs_ambient.vert`) | 10.63M | 59 | 43 |
+| + the wash's dither as a 64x64 noise TEXTURE fetch (`gfx::noise_tex`) | 10.63M | 59 | 45 |
+| + the wash undithered while Home's hero is in motion | 10.63M (fold 11.15M) | **59** | **53** |
+
+Three of those rows are lessons rather than steps. **A three-mix bilinear fragment costs ~2.3
+cycles a pixel on this part even with no hash** — the two horizontal corner mixes are linear in
+`u`, a varying interpolates a linear function exactly, so they moved into the vertex shader and
+the fragment keeps one mix. **Routing a flat rect to that program made the frame 0.6M cycles
+DEARER** than `fs_src`'s one-mix early-out, even though `fs_src` itself now prices a flat pixel at
+~1.8 cycles (Midgard sizes the register file for the whole grown shader — capsule arcs, glow —
+and the early-out runs at that occupancy). And **an interleaved-gradient hash in highp still cost
+the fold's full-screen wash ~4M cycles**: `gl_FragCoord` is highp, so the hash was fp32 on 2M
+pixels. The texture fetch moved it to the idle pipe (`TEX_WORDS` +1.7M, `ARITH_WORDS` −5M), and
+the wash then still cost 2.5M for one mix plus the blend — which is why it is now undithered while
+the hero is mid-fold or mid-slide, the only times it is visible on Home and the only times it is
+behind a moving translucent picture nobody reads as a gradient. At rest, with the photograph absent
+or still arriving, it dithers as before.
+
+**The rule this leaves behind:** on the T820 the arithmetic pipe binds, and a 60 fps frame is about
+11M cycles ≈ 22M words for EVERYTHING on the panel, compositor included — roughly ten words per
+screen pixel, total. A full-screen quad therefore cannot afford more than a couple of operations
+per fragment. Uniform-branch every optional term, push anything linear into a varying, put lookups
+on the texture pipe, and price the result with `hwcnt` + `drawmask`, never by reading the GLSL.

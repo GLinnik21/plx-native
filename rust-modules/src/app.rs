@@ -5096,6 +5096,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
             (None, None) => {}
         }
+        // dev: /tmp/plxnative-cpuprof — the render thread's OWN time per phase, every phase at
+        // once, no glFinish. The one mode that can see a frame the frame-drop detector reports as
+        // all `draw=` and no `swap=`; the two GPU modes above are blind to it by construction.
+        if crate::dev::flag("cpuprof") {
+            crate::ui::profile::set_cpu_enabled();
+        }
         // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
         // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
         // precisely so an A/B costs one file and does not also change which screen you boot to —
