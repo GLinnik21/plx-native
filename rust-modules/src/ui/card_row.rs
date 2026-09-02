@@ -364,18 +364,14 @@ pub(crate) fn draw_focused(
             play_label(p, rect, sty, t.as_ptr(), ty);
             UNDER_LINE_H
         } else if sty.title_lines > 1 {
+            // A two-line wrap is its own overflow strategy (item 10 §d) — it already shows far
+            // more of a long title than one elided run could, so it gets the widened budget above
+            // and nothing more; a marquee under a WRAPPED block would have to loop two lines in
+            // lockstep for no legibility gain a wider single line doesn't already give a
+            // one-line-styled row.
             wrapped_title(p, rect, sty, t.as_ptr(), ty)
         } else {
-            under_label(
-                p,
-                rect,
-                sty,
-                t.as_ptr(),
-                ty,
-                theme::size::LABEL,
-                1,
-                theme::TEXT_PRIMARY,
-            );
+            title_marquee(p, rect, sty, t.as_ptr(), ty);
             UNDER_LINE_H
         };
         ty += drawn + UNDER_LINE_GAP;
@@ -500,7 +496,147 @@ fn wrapped_title(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
         .max(UNDER_LINE_H)
 }
 
-/// The under-tile text budget: the tile plus one gap either side, from the style's UNSCALED width.
+// ---- The focused single-line title's marquee (item 10) ---------------------------------------
+//
+// Widening the budget ([`under_budget`]) is enough for most real titles; a handful still overflow
+// it ("Everything Everywhere All at Once" under a 250px card at LABEL-bold), and eliding those to
+// "Everything Ev…" is exactly the defect item 10 reports. So the single-line title falls through
+// to a looping marquee whenever it still does not fit: a beat of rest so the couch can start
+// reading, a slow glide left, a gap, then the same run re-entering from the right, forever while
+// this tile holds focus.
+
+/// How long the run rests before it starts gliding — long enough to read the opening words of an
+/// ordinary title before it moves.
+const MARQUEE_HOLD_MS: f32 = 1000.0;
+/// Glide speed, in px/s. Chosen to be readable from a couch rather than merely legible paused — a
+/// scrolling news-ticker speed blurs on a TV's own motion smoothing.
+const MARQUEE_SPEED: f32 = 40.0;
+/// Air between the outgoing run's tail and its follower's head — enough that the two never read as
+/// one run with a repeated word running into itself.
+const MARQUEE_GAP: f32 = 60.0;
+
+/// The marquee's horizontal offset at `t_ms` since this run became (or stayed) the focused title,
+/// for a run `text_w` px wide inside a `budget` px window.
+///
+/// A pure function of elapsed time, which is what makes it trivially unit-testable and trivially
+/// resettable — the caller just starts `t_ms` back at zero. `0` for the first [`MARQUEE_HOLD_MS`]
+/// (the run sits at rest, left edge in the window), then glides at [`MARQUEE_SPEED`] until the run
+/// plus [`MARQUEE_GAP`] of air has fully passed, then loops. A run that already fits (`text_w <=
+/// budget`) is inert at every `t_ms` — the caller should not even reach here for one, but this
+/// stays harmless if it does.
+///
+/// Draw TWO copies at `x - offset` and `x - offset + text_w + MARQUEE_GAP` (the follower), both
+/// clipped to `budget` — the follower is what makes the wrap seamless instead of a visible pop back
+/// to the start: by the time `offset` reaches the full travel distance the follower has arrived
+/// exactly where the primary run started, so the loop boundary is invisible.
+fn marquee_x(t_ms: f32, text_w: f32, budget: f32) -> f32 {
+    if text_w <= budget {
+        return 0.0;
+    }
+    let travel = text_w + MARQUEE_GAP; // one full cycle's glide distance
+    let glide_ms = travel / MARQUEE_SPEED * 1000.0;
+    let period = MARQUEE_HOLD_MS + glide_ms;
+    let t = t_ms.max(0.0) % period;
+    if t < MARQUEE_HOLD_MS {
+        0.0
+    } else {
+        (t - MARQUEE_HOLD_MS) / 1000.0 * MARQUEE_SPEED
+    }
+}
+
+/// Is the marquee actually GLIDING at `t_ms` — i.e. is this the frame that must keep
+/// [`crate::ui::idle`] awake? `false` during the rest beat and whenever the run fits, so a settled
+/// screen full of short (or currently-resting) titles still meets the idle present gate's fps
+/// ceiling — see [`title_marquee`]'s doc for why this has to be a separate question from
+/// [`marquee_x`] rather than "moved since last frame": the rest beat's `offset == 0` is not motion,
+/// but it is also not the screen being settled in the sense the gate cares about — nothing is
+/// drawn differently between two resting frames, which is exactly what should NOT report.
+fn marquee_moving(t_ms: f32, text_w: f32, budget: f32) -> bool {
+    if text_w <= budget {
+        return false;
+    }
+    let travel = text_w + MARQUEE_GAP;
+    let glide_ms = travel / MARQUEE_SPEED * 1000.0;
+    let period = MARQUEE_HOLD_MS + glide_ms;
+    t_ms.max(0.0) % period >= MARQUEE_HOLD_MS
+}
+
+thread_local! {
+    /// Which title currently owns the marquee clock below, and since when. Only one tile can hold
+    /// focus app-wide, so ONE clock is enough — keyed by the drawn TEXT rather than a catalog id,
+    /// because `draw_focused` is called from five sites across three lanes' files (home, library,
+    /// detail, person, profiles) with no uniform notion of "item identity" to key on. A coincidental
+    /// identical title on a genuinely different item simply keeps the marquee running rather than
+    /// resetting it, which is invisible — the two runs read the same either way.
+    static MARQUEE_KEY: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+    /// Elapsed ms since `MARQUEE_KEY` last changed, advanced from [`crate::ui::idle::dt`] because
+    /// this runs inside `draw`, which — unlike [`CardRow::update`] — gets no `dt` of its own.
+    static MARQUEE_MS: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Advance (or restart) the marquee clock for `text`, returning its value in ms. Called once per
+/// frame from [`title_marquee`], which is called at most once per frame (the focused tile is drawn
+/// exactly once) — so this cannot double-advance within a frame the way a naively-shared clock read
+/// from two draws in the same pass would.
+fn marquee_clock(text: &str) -> f32 {
+    let changed = MARQUEE_KEY.with(|k| {
+        let mut k = k.borrow_mut();
+        if k.as_str() == text {
+            false
+        } else {
+            *k = text.to_string();
+            true
+        }
+    });
+    if changed {
+        MARQUEE_MS.with(|m| m.set(0.0));
+        0.0
+    } else {
+        MARQUEE_MS.with(|m| {
+            let v = m.get() + crate::ui::idle::dt() * 1000.0;
+            m.set(v);
+            v
+        })
+    }
+}
+
+/// The focused tile's single-line title: the plain elided [`under_label`] whenever the run fits the
+/// widened [`under_budget`], else a looping [`marquee_x`] — see the section doc above for why.
+/// Reports to [`crate::ui::idle`] only on a frame the marquee is actually gliding, so a screen full
+/// of short (or resting) titles costs the present gate nothing.
+fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32) {
+    let (sz, bold) = (theme::size::LABEL, 1);
+    let budget = under_budget(sty);
+    let w = crate::text::text_width(text, sz, bold);
+    if w <= budget {
+        under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY);
+        return;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+    let t_ms = marquee_clock(&s);
+    if marquee_moving(t_ms, w, budget) {
+        crate::ui::idle::invalidate();
+    }
+    let off = marquee_x(t_ms, w, budget);
+    let travel = w + MARQUEE_GAP;
+    // Left edge of the budget window — same screen-space clamp the other two blocks use, but
+    // left-aligned (align 0) rather than centred: the marquee owns its own horizontal motion, so
+    // centring it around a moving run would fight the offset instead of hosting it.
+    let x0 = edge_clamp(p, rect.cx() - budget * 0.5, budget);
+    p.clip(Rect::new(x0, y - 6.0, budget, UNDER_LINE_H + 12.0));
+    p.text(text, x0 - off, y, sz, theme::TEXT_PRIMARY, 0, bold);
+    p.text(text, x0 - off + travel, y, sz, theme::TEXT_PRIMARY, 0, bold);
+    p.clip_clear();
+}
+
+/// The under-tile text budget: the tile, a gap either side, PLUS half of each neighbouring tile's
+/// width (item 10) — a focused label may bleed into the gap and up to the midpoint of the next
+/// tile without visually colliding with it, which is what makes a real Plex title ("Wallace &
+/// Gromit: The Curse of the Were-Rabbit") legible instead of "Wallace & Gr…". Two neighbours
+/// contributing half their width each is one extra tile-width overall, hence `+ sty.w` once more
+/// on top of the plain tile-plus-gaps budget. Still edge-clamped by [`edge_clamp`] — widening the
+/// budget never lets a block run off the panel, it only lets it reach further into open space
+/// before [`title_marquee`] takes over for whatever still does not fit.
 ///
 /// **Unscaled is load-bearing, not tidiness.** `rect` is the focus-popped tile, so a budget taken
 /// from it sweeps ~310→332px across a pop — which re-keys `TextView`'s and `elide`'s width-keyed
@@ -509,7 +645,7 @@ fn wrapped_title(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
 /// breaks mid-pop. The block's y anchor is already unscaled two lines up, for the same reason.
 #[inline]
 fn under_budget(sty: &RowStyle) -> f32 {
-    sty.w + 2.0 * sty.gap
+    2.0 * sty.w + 2.0 * sty.gap
 }
 /// Air kept between an edge tile's label block and the panel edge.
 const EDGE_PAD: f32 = 16.0;
@@ -746,6 +882,87 @@ mod tests {
         assert!(
             (row.scale(0) - sty.focus_scale).abs() < 0.01,
             "and the in-array cell pops as ever"
+        );
+    }
+
+    // ---- item 10: the focused title marquee -------------------------------------------------
+
+    /// A run that already fits the budget never moves and never reports — the case that must cost
+    /// the idle present gate nothing.
+    #[test]
+    fn a_title_that_fits_the_budget_never_moves() {
+        assert_eq!(marquee_x(0.0, 100.0, 300.0), 0.0);
+        assert_eq!(marquee_x(50_000.0, 100.0, 300.0), 0.0);
+        assert!(!marquee_moving(0.0, 100.0, 300.0));
+        assert!(!marquee_moving(50_000.0, 100.0, 300.0));
+    }
+
+    /// An over-wide run sits at rest for the whole hold beat: `t_ms < MARQUEE_HOLD_MS` must read
+    /// zero offset and report no motion, so a title lands and holds still long enough to start
+    /// reading before anything moves.
+    #[test]
+    fn an_overflowing_title_rests_before_it_glides() {
+        let (w, budget) = (500.0, 300.0);
+        assert_eq!(marquee_x(0.0, w, budget), 0.0);
+        assert_eq!(marquee_x(MARQUEE_HOLD_MS - 1.0, w, budget), 0.0);
+        assert!(!marquee_moving(0.0, w, budget));
+        assert!(!marquee_moving(MARQUEE_HOLD_MS - 1.0, w, budget));
+    }
+
+    /// Past the hold beat it glides at the documented speed and reports motion — and the offset is
+    /// monotone through the glide (no snap-back mid-cycle).
+    #[test]
+    fn an_overflowing_title_glides_at_the_documented_speed_and_reports_motion() {
+        let (w, budget) = (500.0, 300.0);
+        assert!(marquee_moving(MARQUEE_HOLD_MS + 1.0, w, budget));
+        let a = marquee_x(MARQUEE_HOLD_MS + 100.0, w, budget);
+        let b = marquee_x(MARQUEE_HOLD_MS + 600.0, w, budget);
+        assert!(b > a, "the run must keep moving left through the glide");
+        // 500ms of glide at 40px/s = 20px
+        assert!((b - a - 20.0).abs() < 0.01, "got {} vs expected 20", b - a);
+    }
+
+    /// The cycle LOOPS: a full period (hold + the whole glide) must land back at the rest offset,
+    /// exactly like the first cycle did — a marquee that drifted cycle to cycle would slowly
+    /// desync its two drawn copies from the clip window.
+    #[test]
+    fn the_marquee_loops_cleanly() {
+        let (w, budget) = (500.0, 300.0);
+        let travel = w + MARQUEE_GAP;
+        let glide_ms = travel / MARQUEE_SPEED * 1000.0;
+        let period = MARQUEE_HOLD_MS + glide_ms;
+        assert_eq!(marquee_x(period, w, budget), marquee_x(0.0, w, budget));
+        assert_eq!(
+            marquee_x(period + 50.0, w, budget),
+            marquee_x(50.0, w, budget)
+        );
+        // just before the wrap the run has travelled (almost) the full distance
+        let just_before = marquee_x(period - 0.001, w, budget);
+        assert!(
+            (just_before - travel).abs() < 0.1,
+            "got {just_before} vs travel {travel}"
+        );
+    }
+
+    /// [`marquee_clock`] restarts at zero the instant the focused text changes, and keeps
+    /// advancing by real elapsed time while it stays the same — the pure half of "the phase clock
+    /// resets when focus moves to another tile" (the impure half, reading `idle::dt`, is not
+    /// unit-testable and is exercised by [`title_marquee`] instead).
+    #[test]
+    fn the_marquee_clock_restarts_when_the_focused_text_changes() {
+        MARQUEE_KEY.with(|k| k.borrow_mut().clear());
+        MARQUEE_MS.with(|m| m.set(0.0));
+        assert_eq!(marquee_clock("Alpha"), 0.0, "first sight of a title starts at 0");
+        // idle::dt() defaults to 1/60s on a thread that never called frame_begin — advancing while
+        // the key is unchanged must add real, nonzero time.
+        let t1 = marquee_clock("Alpha");
+        assert!(t1 > 0.0, "the clock must advance while the title holds focus");
+        let t2 = marquee_clock("Alpha");
+        assert!(t2 > t1, "and keep advancing frame over frame");
+        assert_eq!(
+            marquee_clock("Beta"),
+            0.0,
+            "a different focused title restarts the clock at 0"
         );
     }
 }

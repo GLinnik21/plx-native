@@ -236,6 +236,17 @@ pub(crate) fn frame_begin(dt: f32) {
     DT.with(|d| d.set(dt));
 }
 
+/// This frame's `dt`, for a clock-driven animator that has no `dt` of its own to hand it — the
+/// same hazard the module doc calls out for [`Xfade`](crate::ui::xfade::Xfade) and
+/// [`Spinner`](crate::ui::widgets::Spinner): a millisecond ramp is invisible to [`note_spring`] and
+/// must report through [`invalidate`] itself. `card_row`'s focused-title marquee is the third —
+/// it advances from inside `draw`, which gets no `dt` parameter at all, so it reads this instead of
+/// a fourth screen threading one through five call sites across three lanes' files.
+#[inline]
+pub(crate) fn dt() -> f32 {
+    DT.with(|d| d.get())
+}
+
 /// Run one host page's update with an isolated view of spring motion, then merge its result back
 /// into the frame-wide motion bit. This is not dirty-rectangle tracking: it only prevents a modal's
 /// foreground springs from masquerading as movement in the page captured behind that modal.
