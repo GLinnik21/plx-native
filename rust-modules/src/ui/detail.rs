@@ -3502,16 +3502,49 @@ fn draw_disc(
     b.draw(env, p);
 }
 
-/// Visibility (0..1) of the pinned compact title at scroll depth `scroll`: 1 while the first
-/// below-hero sections (season tabs + episodes) hold the top, fading to 0 across the 300px before
-/// the first DEEP section (cast/related/about) lifts to the top margin.
+/// Which position (within `sections()`'s array `s[..n]`) the pinned compact title should hide
+/// across, or `None` when the item has no below-hero section at all.
+///
+/// A SHOW's first below-hero block is season tabs/episodes, so the original rule — hide across
+/// the approach of the FIRST below-hero block — was right for it. A MOVIE has no tabs/episodes
+/// (`sections()` never adds them for `!is_show`), so its first below-hero block is already a
+/// "deep" section (cast/related/about): the old rule faded the logo on the very first scroll,
+/// which is the reported bug. The fix hides across the SECOND below-hero block for a movie
+/// instead — the report's "second block in the About section" — falling back to the first when
+/// there is only one (nothing to reach for a second of).
+///
+/// Kept pure and separate from [`compact_title_vis`] so it is host-testable without touching
+/// [`view()`]/[`ScrollColumn`]: once `Column for DetailView`'s generic dispatch is monomorphized
+/// (as `lift_target`/`draw` do), the whole draw path — SDL2_ttf/GL included — has to link, the
+/// same reason [`crate::gfx::diffuse_ground_mean`] stays pure and separate from its GL-backed
+/// caller.
+fn compact_title_hide_pos(s: &[c_int], n: usize, is_show: bool) -> Option<usize> {
+    let want = if is_show { 0 } else { 1 };
+    let mut seen = 0usize;
+    let mut first_pos = None;
+    for (pos, &x) in s[..n].iter().enumerate() {
+        if x >= 3 && pos >= 1 {
+            // first deep section id (cast=4 / related=3 / about=5)
+            if first_pos.is_none() {
+                first_pos = Some(pos);
+            }
+            if seen == want {
+                return Some(pos);
+            }
+            seen += 1;
+        }
+    }
+    first_pos
+}
+
+/// Visibility (0..1) of the pinned compact title at scroll depth `scroll`: 1 while the below-hero
+/// block(s) [`compact_title_hide_pos`] names hold the top, fading to 0 across the 300px before it
+/// lifts to the top margin.
 fn compact_title_vis(scroll: f32) -> f32 {
     let v = view();
     let (s, n) = sections();
-    let hide_at = s[..n]
-        .iter()
-        .position(|&x| x >= 3) // first deep section id (cast=4 / related=3 / about=5)
-        .filter(|&pos| pos >= 1)
+    let is_show = metadata::current().map(|d| d.is_show).unwrap_or(false);
+    let hide_at = compact_title_hide_pos(&s, n, is_show)
         .map(|pos| {
             let col = v.column;
             col.lift_target(v, pos - 1)
@@ -6100,6 +6133,53 @@ mod tests {
             four < bottom,
             "the block is measured upward from its bottom edge"
         );
+    }
+
+    /// Reported: on a MOVIE, scrolling down makes the pinned compact title vanish almost at once.
+    /// The old rule hid across the 300px before the FIRST below-hero block lifted to the top
+    /// margin — right for a show, whose first block is the season tabs/episodes strip, but wrong
+    /// for a movie, whose first below-hero block is already a "deep" section
+    /// (cast=4/related=3/about=5), so the fade started on the very first scroll. `sections()`
+    /// stacks cast before related before about (see its own doc), so a movie with both present
+    /// looks like `[hero(0), cast(4), related(3), about(5)]` — position 1 is the old (wrong) hide
+    /// point, position 2 is the fix's target.
+    ///
+    /// Exercised through the pure [`compact_title_hide_pos`], not [`compact_title_vis`]/[`view()`]:
+    /// the latter's generic `Column` dispatch monomorphizes the whole draw path (SDL2_ttf/GL
+    /// included) once touched, which a bare host test cannot link — the same reason
+    /// `gfx::diffuse_ground_mean` is kept apart from its GL-backed caller.
+    #[test]
+    fn a_movie_hides_across_its_second_below_hero_block_not_its_first() {
+        let s = [0, 4, 3, 5, 0, 0];
+        assert_eq!(
+            super::compact_title_hide_pos(&s, 4, false),
+            Some(2),
+            "a movie with two below-hero blocks before About must reach for the SECOND one"
+        );
+        // …and a SHOW, over the very same array shape, keeps today's first-block rule — this bug
+        // was specific to the movie branch, and the fix must not move the show's answer.
+        assert_eq!(
+            super::compact_title_hide_pos(&s, 4, true),
+            Some(1),
+            "a show still hides across its first below-hero block"
+        );
+    }
+
+    /// A movie whose below-hero flow has only ONE block before "about" (no cast, no related) keeps
+    /// the original first-block rule — there is no "second block" to defer to.
+    #[test]
+    fn a_movie_with_only_one_below_hero_block_keeps_the_first_block_rule() {
+        let s = [0, 5, 0, 0, 0, 0];
+        assert_eq!(super::compact_title_hide_pos(&s, 2, false), Some(1));
+    }
+
+    /// An item with no below-hero section at all (metadata not yet loaded) hides nothing — the
+    /// title stays pinned until there is something to lift.
+    #[test]
+    fn no_below_hero_section_means_nothing_to_hide_across() {
+        let s = [0, 0, 0, 0, 0, 0];
+        assert_eq!(super::compact_title_hide_pos(&s, 1, false), None);
+        assert_eq!(super::compact_title_hide_pos(&s, 1, true), None);
     }
 
     use super::*;
