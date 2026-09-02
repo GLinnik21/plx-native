@@ -78,8 +78,31 @@ def version() -> str:
     panel says `0.5.1-dev`: the very ambiguity the suffix exists to remove, recreated on the one
     artifact that is handed to somebody who has none of this checkout.
 
-    A non-numeric `CFBundleShortVersionString` is fine here and is the point: this bundle is
-    ad-hoc signed, sent directly, and submitted nowhere that parses it.
+    This is the string for the ZIP NAME and the display metadata. The two numeric plist keys take
+    `package_version()` below instead — see `write_plist`.
+    """
+    pkg = package_version()
+    if os.environ.get("PLX_RELEASE"):
+        return pkg
+    major, minor, patch = (int(p) for p in pkg.split("."))
+    return f"{major}.{minor}.{patch + 1}-dev"
+
+
+def package_version() -> str:
+    """The version this bundle was CUT FROM — three integers, straight out of the manifest.
+
+    It is what the two Info.plist version keys take, because those are a FORMAT CONTRACT: Apple
+    specifies `CFBundleShortVersionString` and `CFBundleVersion` as period-separated integers, and
+    that does not relax for an ad-hoc-signed bundle — LaunchServices and anything else that
+    compares or displays a bundle version is entitled to assume the shape and to do what it likes
+    with `0.5.1-dev`.
+
+    **Not `version()` with the suffix stripped**, which is the obvious spelling and is wrong: that
+    yields `0.5.1`, a version no release has ever carried, so the numeric field would claim a
+    release that does not exist — strictly worse than naming the one it was built from. The dev
+    distinction goes where it costs nothing instead: the archive filename, `CFBundleGetInfoString`
+    (free-form by definition), and the app's own About page and diagnostics panel, which is where
+    somebody reporting a bug is asked to read it from anyway.
     """
     m = re.search(r'^version\s*=\s*"([^"]+)"',
                   (REPO / "rust-modules/Cargo.toml").read_text(), re.M)
@@ -89,10 +112,7 @@ def version() -> str:
     parts = pkg.split(".")
     if len(parts) != 3 or not all(p.isdigit() for p in parts):
         sys.exit(f"mkmacapp: Cargo.toml version {pkg!r} is not three integers")
-    if os.environ.get("PLX_RELEASE"):
-        return pkg
-    major, minor, patch = (int(p) for p in parts)
-    return f"{major}.{minor}.{patch + 1}-dev"
+    return pkg
 
 
 def build_binary(tdir: Path) -> Path:
@@ -139,8 +159,13 @@ def write_plist(contents: Path, ver: str):
         "CFBundleIconFile": "AppIcon",
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": ver,
-        "CFBundleVersion": ver,
+        # Numeric by contract (see `package_version`), so these two can read 0.5.0 while the
+        # binary beside them reports 0.5.1-dev. That gap is why the free-form key below exists.
+        "CFBundleShortVersionString": package_version(),
+        "CFBundleVersion": package_version(),
+        # Free-form by definition, and the one plist field that may carry the suffix. It is what
+        # Finder's Get Info shows, so "which build is this?" is answerable without launching it.
+        "CFBundleGetInfoString": f"PlxNative {ver}",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright":
