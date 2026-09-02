@@ -357,6 +357,22 @@
       }
     },
     {
+      "name": "chapters-panel",
+      "tier": "player",
+      "route": "player",
+      "overlay": "chapters",
+      "loop_floor": 45,
+      "run_secs": 26,
+      "warmup_s": 9,
+      "item": "movie_hevc_4k_hdr10_truehd",
+      "comment": "The Chapters strip: the third glass overlay the player can raise, and the last one with a boot trigger of its own (plxnative-chapters, app.rs). It sat outside the suite while info-panel and track-menu were gated, which is the gap this closes -- the strip carries a horizontal row of chapter THUMBNAILS over live video, so it is the only player overlay whose cost scales with artwork rather than with rows of text.",
+      "_floor_note": "45, the player-overlay tier, exactly as info-panel and track-menu: same route, same live decode underneath, same cached-glass popover over it. No fps_floor and no fps_ceiling, and that is the tier's shape rather than an omission -- the present gate deliberately EXCLUDES the player route (system.rs slaves the video plane to our surface), so fps= on a player scene grades neither an animator nor an idle screen. loop= is the signal that exists here.",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-chapters": true
+      }
+    },
+    {
       "name": "home-acct-glass",
       "tier": "ui",
       "route": "account",

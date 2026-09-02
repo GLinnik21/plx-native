@@ -674,3 +674,131 @@ or still arriving, it dithers as before.
 screen pixel, total. A full-screen quad therefore cannot afford more than a couple of operations
 per fragment. Uniform-branch every optional term, push anything linear into a varying, put lookups
 on the texture pipe, and price the result with `hwcnt` + `drawmask`, never by reading the GLSL.
+
+## 2026-09-02 (later): the ambient wash's dither — a 64px plaid, and what an overlay actually costs
+
+Two reported items, measured on the dev set (webOS 4.5, Mali-T820) in one session. The first was
+a picture bug with three candidate causes and the measurement killed two of them; the second was a
+performance question whose answer turned out to be "there is no problem", which is only worth
+anything because the numbers are written down.
+
+### Item 6 — "banding and strange visual patterns" on the Person page
+
+The wash is `route_screen`'s full-screen `AmbientWash`, which — unlike Home's and Detail's, both of
+which pass `dither=false` while the hero moves — dithers on EVERY frame it draws. Three hypotheses
+were on the table: (a) the 64px noise tile repeating visibly, (b) ±½ LSB being too little dither to
+break a contour, (c) the mediump `v_uv` quantising over a 1080px span.
+
+**The instrument first, because two of these are invisible to it.** A `tools/tv-session.sh shot` is
+the composited panel output, so it shows the app's own 8-bit result and NOT what LG's picture
+processing does to it afterwards. It can therefore see a tile repeat and a contour; it cannot see
+sharpening amplifying either. It does resolve the dither — residual std 0.47 LSB against a clean
+region — so its silence would have meant something, which is the precondition for reading it.
+
+Region: `y 450–1050, x 1500–1900` of the person page, right of the poster shelf and below the bio
+panel, i.e. wash and nothing else. The gradient there is **4.6 LSB over 600 rows — one 8-bit step
+per ~130 rows**, which is the slowest ramp in the app and the worst case for contouring.
+
+**(c) is arithmetic, and it is not close.** An fp16 `v_uv` steps by 1/2048 of the quad; across a
+span of 4.6 LSB that is 0.0045 LSB per step, **445x below one 8-bit quantum**. The shader header
+already argued this and the measurement agrees with it. Nothing was changed here, and a `highp`
+coordinate remains the wrong fix — it was priced at 3.2M cycles a frame earlier the same day.
+
+**(a) is the defect, and it is unambiguous.** Autocorrelation of the residual after removing a
+fitted ramp, on the panel capture:
+
+| lag | 63 | **64** | 65 | 128 |
+|---|---|---|---|---|
+| horizontal, 64px tile | +0.131 | **+0.570** | +0.134 | +0.277 |
+| vertical, 64px tile | +0.186 | **+0.366** | +0.185 | **+0.703** |
+| horizontal, 256px tile | +0.089 | +0.083 | +0.089 | +0.016 |
+| vertical, 256px tile | +0.144 | +0.141 | +0.141 | +0.124 |
+
+A spike four times its own neighbours at exactly the tile period, and a bigger one at twice it: the
+tile was repeating **30 times across the panel** as a plaid. That is the "strange visual patterns".
+The old justification — "64 is well past the eye's ability to see a repeat at ±½ LSB amplitude" —
+confuses two thresholds: a PERIODIC signal is found far below the contrast at which its own grain
+is resolved. At 256 the curve is a smooth monotone decay with no spike anywhere.
+
+**(b) is real but second-order, and the simulation says so plainly.** On this measured ramp the
+existing ±½ LSB uniform dither already flattens the staircase about tenfold, and triangular dither
+is marginally WORSE on absolute blurred error because it is more noise. What ±1 LSB TPDF removes is
+noise MODULATION — under uniform dither the quantisation error's variance still tracks the signal,
+which reads as the wash breathing or clumping rather than as grain. Per-row error-variance
+coefficient of variation falls **0.44 → 0.08**. The amplified-residual crops show it: the 64px
+image has visible horizontal clumping, the 256px one is structureless.
+
+The measured residual std moved **0.4692 → 0.5502 LSB**. That is not a loose "it got noisier": the
+capture's own noise floor solves to 0.369 LSB from the first number, and TPDF at ±1 LSB then
+predicts 0.550 — an independent confirmation that the dither really is triangular at the intended
+amplitude, from a number nobody tuned.
+
+**The triangle is baked into the TILE, and that is the whole trick.** Forming it in the shader would
+be a second channel plus an add on 2M fragments; storing the mean of two independent hashes leaves
+the fragment expression byte-for-byte identical and moves the entire difference into `u_noise`'s
+scale (`1/255` → `2/255`). **Zero shader change.** The only cost that exists is the tile's footprint.
+
+**Cost, `fps:settings-root` with `plxnative-hwcnt`, phase `frame.ui`, n=60 per sample, steady state
+(the first sample after launch is a 13.7M settle frame and is discarded):**
+
+| counter, per frame | 64px RPDF | 256px TPDF | Δ |
+|---|---|---|---|
+| GPU_ACTIVE | 8.761M | 8.766M | **+0.06%** |
+| ARITH_WORDS | 15.637M | 15.639M | +0.01% |
+| TEX_WORDS | 4.308M | 4.312M | +0.08% |
+| L2_EXT_READ_BEATS | 160k | 256k | **+60%** |
+| L2 read hit rate | 82.6% | 74.1% | −8.5 pt |
+
+The cost lands exactly and only where theory puts it — a 256 KB tile misses L2 far more often than a
+16 KB one and pulls ~96k more external read beats a frame — and **none of it reaches GPU_ACTIVE**,
+because on this part the arithmetic pipe binds and the memory pipe beside it has headroom. The
++0.06% is inside the 64px leg's own ±17k sample spread. Pacing, taken in a separate run with NO
+profiler armed: `fps:settings-root` **60 fps median (60–61) against its floor of 50**, and the whole
+tier 25/25. The old "small enough to live in the texture cache whole" argument is genuinely given
+up, and it was worth less than it read: the mapping is 1:1 in screen space under `GL_NEAREST`, so
+each fragment fetches a distinct texel in tile order — a coherent streaming read, which is the
+pattern a texture cache is best at, not the random re-reads a resident tile protects against.
+
+### Item 12 — every popover/modal with a blur backdrop, measured
+
+`./tests/run.py --fps --fps-player`, no profiler armed, medians over post-warmup 1 Hz samples.
+`fps=` is frames swapped and `loop=` is loop iterations; a settled overlay is SUPPOSED to read ~0
+`fps` (the present gate), so an idle number near zero beside a healthy `loop=` is a pass, not a
+stall. Player-tier scenes carry no `fps` gate at all by design — `ui::idle` excludes the player
+route, so `fps=` there grades nothing.
+
+| overlay (scene) | glass | loop/s | fps median | fps range | verdict |
+|---|---|---|---|---|---|
+| Settings root (`settings-root`) | route ground | 60 | 60 | 60–61 | PASS ≥50 |
+| Settings privacy (`settings-privacy`) | route ground | 60 | 60 | 60–60 | PASS ≥50 |
+| Settings home picker (`settings-home`) | route ground | 60 | 60 | 60–60 | PASS ≥50 |
+| Legal (`settings-legal`) | route ground | 60 | 60 | 60–60 | PASS ≥50 |
+| Settings idle (`settings-idle`) | route ground | 62 | 0 | 0–1 | PASS ≤5 |
+| Consent crash (`consent-crash`) | route ground | 60 | 60 | 60–60 | PASS ≥50 |
+| Consent product (`consent-product`) | route ground | 60 | 60 | 60–60 | PASS ≥50 |
+| Account menu (`home-acct-glass`) | `CACHED` | 60 | 60 | 60–60 | PASS ≥50 |
+| Item context menu (`item-menu`) | `CACHED` | 62 | 0 | 0–1 | PASS ≤5 |
+| Person page + bio row (`person-page`) | route ground | 62 | 0 | 0–1 | PASS ≤5 |
+| Library sort/filter/tab (`library-switch`) | `CACHED` + nav glass | 61 | 18 | 0–60 | PASS ≥8 |
+| Search shelves (`search-type`) | nav glass | 62 | 43 | 17–60 | PASS ≥20 |
+| Search idle (`search-idle`) | nav glass | 62 | 0 | 0–1 | PASS ≤5 |
+| Player info panel (`info-panel`) | `CACHED` | 59 | 60 | 58–60 | PASS ≥45 loop |
+| Player track menu (`track-menu`) | `CACHED` | 60 | — | — | PASS ≥45 loop |
+| Player chapters (`chapters-panel`, NEW) | `CACHED` | 59 | — | — | PASS ≥45 loop |
+
+**25/25 with the new scene added, and there is no blur performance problem to fix.** Every glass
+surface holds the panel rate while something animates over it and falls to the keepalive when it
+settles — which is the pair of properties the floors and ceilings exist to pin, and passing both is
+the thing a single number cannot show. The optimisation this item anticipated (a cached glass being
+re-sourced every frame, a scrim drawn twice, a full-resolution source pass) was looked for and is
+not present. Note also the standing measured warning that still applies: **the glass source pass
+refreshing every present runs FASTER than a rarer refresh on this GPU** (the 2026-09-02 section
+above), so nothing here should be "saved" by lowering `DEFAULT_DYNAMIC_PERIOD` without an fps A/B.
+
+**Three overlays remain without a scene, and all three are blocked on something outside this file.**
+`more_menu` (`overlay=more`) and `alt_sources` have no boot trigger at all — reaching them needs a
+new `dev::flag` in `app.rs`. `tracks_panel` has `plxnative-tracks` but emits no `overlay=` tag, so a
+scene naming one would fail as "never entered this screen"; it needs the tag added beside the other
+five in `app.rs`'s heartbeat match. `person_bio` is the interesting one — the ONLY
+`Glass::DYNAMIC_BACKDROP` popover in the app, so it is the only surface where the refresh cadence is
+live — and it is opened by a key press on the person page, which no boot trigger expresses.
