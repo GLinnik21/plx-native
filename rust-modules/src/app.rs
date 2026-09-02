@@ -412,6 +412,24 @@ fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
     ev
 }
 
+/// The bytes a synthetic HARDWARE AUTO-REPEAT edge carries — `encode_key`'s down edge with the
+/// 0x101 shape (`state & 0x100 != 0`) `on_auto_repeat` requires, in whichever layout `decode_key`
+/// reads. `encode_key` itself must never produce this (`key_bytes_round_trip` pins that a synthetic
+/// EDGE "must never look like auto-repeat"), so it is a second, deliberately separate function
+/// rather than a third argument threaded through the first — item 13's `holdrep:<name>` FIFO token
+/// is the only caller, and it exists so a script can exercise `on_auto_repeat`'s
+/// Settings/Consent/Legal forwarding without a real remote's own repeat cadence.
+fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
+    let mut ev = encode_key(sym, wcode, true);
+    if cfg!(feature = "hostsim") {
+        ev[13] = 1; // the `repeat` byte `decode_key`'s hostsim arm folds into `state & 0x100`
+    } else {
+        let state = rd_u32(&ev, 16) | 0x100;
+        ev[16..20].copy_from_slice(&state.to_ne_bytes());
+    }
+    ev
+}
+
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
 /// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
 ///
@@ -437,6 +455,10 @@ fn ptr_xy(ev: &[u8]) -> (f32, f32) {
 
 fn rd_i32(ev: &[u8], off: usize) -> i32 {
     i32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
+}
+
+fn rd_f32(ev: &[u8], off: usize) -> f32 {
+    f32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 
 /// Map a remote-control token (from the `crate::remote` FIFO) to the `(sym, wcode)` a
@@ -544,6 +566,29 @@ fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
 
+/// ONE hardware auto-repeat edge — item 13's `holdrep:<name>` FIFO token, which lets a script
+/// exercise `on_auto_repeat`'s Settings/Consent/Legal forwarding (and the player scrubber's
+/// existing continuous-scrub path) without a real remote's own repeat cadence. Only recognised as a
+/// repeat by `on_auto_repeat`'s caller when `held_key.down_sym` already equals `sym` — i.e. after a
+/// `holddown:<name>` and before its matching `holdup:<name>`, the same split `okdown`/`okup`
+/// already uses for a press-and-hold.
+fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
+    let ev = encode_key_repeat(sym, wcode);
+    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
+}
+
+/// Synthesize one Magic-Remote scroll-wheel tick — item 13's `wheel:<dy>` FIFO token, so a script
+/// can drive the wheel with no mouse in the room. Encoded in the plain, real-SDL2 shape
+/// (`Sint32 y` at `+20`) unconditionally: it is the READING side that has to branch by platform
+/// now, not this one — see the wheel arm's own comment on why `+20` decodes to 0 on this host and
+/// where the value actually lands after `SDL_PushEvent` round-trips it.
+fn remote_synth_wheel(dy: i32) {
+    let mut ev = [0u8; 128];
+    ev[0..4].copy_from_slice(&SDL_MOUSEWHEEL.to_ne_bytes());
+    ev[20..24].copy_from_slice(&dy.to_ne_bytes());
+    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
+}
+
 /// Dispatch one synthetic-input token. Shared by the SSH-only development FIFO and Lab Control's
 /// outbound HTTPS command channel, so a cloud command cannot grow a second interpretation of
 /// `down`, raw key pairs, pointer coordinates or text input beside the one the harness uses.
@@ -576,6 +621,44 @@ fn dispatch_remote_token(tok: &str) -> bool {
         // The two halves of OK let a driver hold it past press::LONG_MS and reach the item menu.
         remote_synth_key_edge(SDLK_RETURN, 0, tok == "okdown");
         true
+    } else if let Some(spec) = tok.strip_prefix("wheel:") {
+        // Item 13: `wheel:<dy>` drives Settings/Consent/Legal's wheel arm (and every other route's)
+        // without a mouse in the room.
+        match spec.parse::<i32>() {
+            Ok(dy) => {
+                remote_synth_wheel(dy);
+                true
+            }
+            Err(_) => false,
+        }
+    } else if let Some(name) = tok.strip_prefix("holddown:") {
+        // Item 13's press-and-hold triple, generalising `okdown`/`okup` to any named key so a
+        // script can drive a genuine long-press and its hardware auto-repeats with no device:
+        // `holddown:<name>` (physical press, arms `held_key.down_sym`), `holdrep:<name>` (one
+        // 0x101 repeat edge, as many times as the script wants), `holdup:<name>` (release).
+        match remote_token_key(name) {
+            Some((sym, wcode)) => {
+                remote_synth_key_edge(sym, wcode, true);
+                true
+            }
+            None => false,
+        }
+    } else if let Some(name) = tok.strip_prefix("holdrep:") {
+        match remote_token_key(name) {
+            Some((sym, wcode)) => {
+                remote_synth_key_repeat(sym, wcode);
+                true
+            }
+            None => false,
+        }
+    } else if let Some(name) = tok.strip_prefix("holdup:") {
+        match remote_token_key(name) {
+            Some((sym, wcode)) => {
+                remote_synth_key_edge(sym, wcode, false);
+                true
+            }
+            None => false,
+        }
     } else if tok == "diag" || tok == "diagnostics" {
         if crate::lab::menu_row_enabled() {
             crate::lab::request_upload("command");
@@ -2943,6 +3026,91 @@ impl HeldKey {
         self.last_rep = now;
     }
 }
+
+/// UP/DOWN as a step of ±1, or `None` for anything else — the mapping the fresh-press ladder
+/// spells out arm by arm for Settings/Consent/Legal (`sym == SDLK_UP` → `on_updown(-1)`, …),
+/// pulled out so a REPEAT (a forwarded hardware auto-repeat, or one wheel tick) can reuse the
+/// same mapping instead of re-deriving which sym means which direction.
+fn updown_delta(sym: c_uint) -> Option<i32> {
+    if sym == SDLK_UP {
+        Some(-1)
+    } else if sym == SDLK_DOWN {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// LEFT/RIGHT as a step of ±1 — `updown_delta`'s twin, for Consent's and Legal's `on_left_right`.
+fn leftright_delta(sym: c_uint) -> Option<i32> {
+    if sym == SDLK_LEFT {
+        Some(-1)
+    } else if sym == SDLK_RIGHT {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Rate-limits a REPEAT-DRIVEN discrete step — a forwarded hardware auto-repeat, or one tick of a
+/// scroll-wheel gesture — to a couch-comfortable cadence, independent of the SOURCE's own cadence.
+/// A held hardware key repeats roughly every 50ms; a wheel gesture can deliver several ticks in one
+/// pass. Settings, Consent and Legal move a whole table row — or, inside a document, a full page of
+/// reading text — per step, so letting either source drive `on_updown` at its own rate reads as a
+/// blur rather than a scroll: item 13's whole ask.
+///
+/// Pure and host-testable — no `SDL_GetTicks` inside; `now` is threaded in by the caller, the same
+/// shape `HeldKey`'s own `wrapping_sub` timing takes, so it survives the tick wrap the same way.
+struct RepeatGate {
+    /// The tick of the last step this gate admitted; `None` before the first one.
+    last: Option<u32>,
+}
+impl RepeatGate {
+    /// Minimum time between two repeat-driven steps this gate allows. Slower than the discrete
+    /// focus-list repeat (110ms, `HeldKey`'s own client-side timer) on purpose — a home-grid card
+    /// is a glance, a settings row or a line of reading text is not.
+    const STEP_MS: u32 = 160;
+    const IDLE: RepeatGate = RepeatGate { last: None };
+    /// True at most once per [`Self::STEP_MS`]; always true the first call, or after a gap at
+    /// least that long (which is also what makes a long-idle gate behave like a fresh one).
+    fn ready(&mut self, now: u32) -> bool {
+        let due = match self.last {
+            None => true,
+            Some(last) => now.wrapping_sub(last) >= Self::STEP_MS,
+        };
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+}
+
+#[cfg(test)]
+mod repeat_gate_tests {
+    use super::RepeatGate;
+
+    #[test]
+    fn a_gate_admits_the_first_step_then_holds_the_cadence() {
+        let mut gate = RepeatGate::IDLE;
+        assert!(gate.ready(1_000), "nothing has fired yet");
+        assert!(!gate.ready(1_050), "too soon");
+        assert!(!gate.ready(1_159), "still short of the step");
+        assert!(gate.ready(1_160), "exactly one step later");
+        assert!(!gate.ready(1_161));
+    }
+
+    /// SDL ticks wrap at 2^32ms; the same arithmetic `HeldKey`'s lost-keyup net and client-side
+    /// repeat already rely on, so this gate must survive it the same way.
+    #[test]
+    fn the_gate_survives_the_tick_wrap() {
+        let mut gate = RepeatGate::IDLE;
+        let at = u32::MAX - 50;
+        assert!(gate.ready(at));
+        assert!(!gate.ready(at.wrapping_add(100)));
+        assert!(gate.ready(at.wrapping_add(160)));
+    }
+}
+
 /// Scrub-seek gesture state. This Magic Remote emits a HELD key as auto-repeat keydowns
 /// (state 0x101, ~50ms apart) followed by ONE keyup on release; a TAP is a lone
 /// keydown(0x001)+keyup(0x000). So: a fresh press does the fixed jump; the 0x101 repeats
@@ -4500,11 +4668,21 @@ unsafe fn on_key_up(
     }
 }
 
-/// A hardware AUTO-REPEAT (held key): the ONLY thing it drives directly is the player's continuous
-/// accelerating scrub (a ramp, not a discrete move). Every discrete focus list — home grid, detail,
-/// track menu, info, chapters — repeats through the unified client-side held-key timer in the loop,
-/// so hold-to-move feels identical everywhere and doesn't depend on the remote's hardware repeat
-/// delay.
+/// A hardware AUTO-REPEAT (held key). Over playback the ONLY thing it drives directly is the
+/// player's continuous accelerating scrub (a ramp, not a discrete move); every OTHER discrete focus
+/// list — home grid, detail, track menu, info, chapters — repeats through the unified client-side
+/// held-key timer in the loop, so hold-to-move feels identical everywhere and doesn't depend on the
+/// remote's hardware repeat delay.
+///
+/// **Settings, Consent and Legal are the one exception**, and deliberately not routed through that
+/// same client-side timer: they are `Popover`s layered over a `Route`, not a route themselves, so
+/// their fresh-press arms (the ladder just above `settings_root_owns_input`'s call site) never call
+/// `HeldKey::arm` the way `key_move_focus` does for an actual route. Rather than teach that ladder a
+/// second focus-list shape, a held key's own hardware repeat is forwarded here, straight to
+/// `on_updown`/`on_left_right`, in the SAME priority order the ladder tries them (consent above
+/// legal above the settings root) — one ownership question, asked the same way whether the press is
+/// fresh or repeating. [`RepeatGate`] throttles it: unthrottled ~50ms hardware repeats would blur
+/// past rows and reading text nobody could track (item 13).
 unsafe fn on_auto_repeat(
     sym: c_uint,
     isnav: bool,
@@ -4513,6 +4691,7 @@ unsafe fn on_auto_repeat(
     hud_nav: HudNav,
     held: &mut HeldKey,
     scrubber: &mut Scrub,
+    modal_repeat: &mut RepeatGate,
 ) {
     let n = SDL_GetTicks();
     if held.sym != 0 && sym == held.sym {
@@ -4536,6 +4715,36 @@ unsafe fn on_auto_repeat(
             // already sitting on — a full reopen + prime and a visible stall, out of a press the
             // reveal rule promises moves nothing. The advance clears it once there is real travel.
             log("scrub: hold engaged (0x101 repeat)");
+        }
+    } else if crate::ui::consent::is_open() {
+        if let Some(delta) = updown_delta(sym) {
+            if modal_repeat.ready(n) {
+                crate::ui::consent::on_updown(delta);
+            }
+        } else if let Some(delta) = leftright_delta(sym) {
+            if modal_repeat.ready(n) {
+                crate::ui::consent::on_left_right(delta);
+            }
+        }
+    } else if crate::ui::legal::is_open() {
+        if let Some(delta) = updown_delta(sym) {
+            if modal_repeat.ready(n) {
+                crate::ui::legal::on_updown(delta);
+            }
+        } else if let Some(delta) = leftright_delta(sym) {
+            if modal_repeat.ready(n) {
+                crate::ui::legal::on_left_right(delta);
+            }
+        }
+    } else if settings_root_owns_input(
+        route,
+        crate::ui::settings::is_open(),
+        crate::ui::onboard::settings_mode(),
+    ) {
+        if let Some(delta) = updown_delta(sym) {
+            if modal_repeat.ready(n) {
+                crate::ui::settings::on_updown(delta);
+            }
         }
     }
 }
@@ -6799,6 +7008,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
         let mut held_key = HeldKey::IDLE;
         let mut scrubber = Scrub::IDLE;
+        // Item 13: rate-limits a hardware auto-repeat (or a wheel tick) forwarded into
+        // Settings/Consent/Legal's `on_updown`/`on_left_right` — see `on_auto_repeat`'s doc.
+        let mut modal_repeat = RepeatGate::IDLE;
         let mut hud = HudState::IDLE;
         let mut marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
         let mut foreground = ForegroundLifecycle::IDLE;
@@ -7119,6 +7331,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             hud.nav,
                             &mut held_key,
                             &mut scrubber,
+                            &mut modal_repeat,
                         );
                         continue;
                     }
@@ -7995,10 +8208,47 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     last_input = SDL_GetTicks();
                     if last_input.wrapping_sub(ptr.last_wheel) > 250 {
                         ptr.last_wheel = last_input;
-                        let dy = rd_i32(&ev, 20);
+                        // **The host reads a DIFFERENT offset, and this one is not the LG-fork
+                        // shift `decode_key` documents — it is macOS `libSDL2` again being
+                        // sdl2-compat forwarding into SDL3.** `SDL_MouseWheelEvent` on real SDL2
+                        // (what the television runs) carries a plain `Sint32 y` at +20, which is
+                        // what production code always read. Measured 2026-09-02 by dumping the
+                        // polled bytes of an injected -40 tick on this host: `+20` came back 0, and
+                        // -40.0 arrived instead as the FLOAT `preciseY` field at `+32` — SDL2's own
+                        // struct gained that field in 2.0.18 for fractional trackpad scroll, and
+                        // sdl2-compat's round trip apparently only forwards it, leaving the legacy
+                        // integer field zeroed for both a genuine trackpad tick and anything
+                        // `SDL_PushEvent`d in this shape (item 13's `wheel:<dy>` FIFO token hit
+                        // this the first time anything synthesized a wheel event at all — nothing
+                        // needed one before). `cfg!`, not `#[cfg]`, so both arms keep compiling.
+                        let dy = if cfg!(feature = "hostsim") {
+                            rd_f32(&ev, 32).round() as i32
+                        } else {
+                            rd_i32(&ev, 20)
+                        };
                         // the wheel scrolls VERTICALLY only, and only on routes with a vertical
                         // flow (it used to drive home's focus behind every other screen)
-                        if matches!(route, Route::Home) {
+                        //
+                        // Item 13: a modal overlay takes the wheel BEFORE the route dispatch below
+                        // ever sees it — otherwise a wheel tick over Settings/Consent/Legal fell
+                        // through to whatever route sat behind the popover (Home's own hero/grid
+                        // dive, a Detail scroll, …), which is the same ownership question the key
+                        // ladder answers for a fresh press, asked here for the wheel instead.
+                        // `on_updown` already forwards to the open document's own `move_by` once
+                        // one is pushed (`legal.rs`/`consent.rs`), so there is no separate reader
+                        // case to spell out here.
+                        let delta = if dy < 0 { 1 } else { -1 };
+                        if crate::ui::consent::is_open() {
+                            crate::ui::consent::on_updown(delta);
+                        } else if crate::ui::legal::is_open() {
+                            crate::ui::legal::on_updown(delta);
+                        } else if settings_root_owns_input(
+                            route,
+                            crate::ui::settings::is_open(),
+                            crate::ui::onboard::settings_mode(),
+                        ) {
+                            crate::ui::settings::on_updown(delta);
+                        } else if matches!(route, Route::Home) {
                             if crate::ui::home::snap_pos() < 0.5 {
                                 if dy < 0 {
                                     set_snap(1.0); // hero → dive into the grid
@@ -10813,7 +11063,7 @@ mod script_schedule_tests {
 
 #[cfg(test)]
 mod key_layout_tests {
-    use super::{decode_key, encode_key};
+    use super::{decode_key, encode_key, encode_key_repeat};
     use crate::ui::consts::{SDLK_DOWN, SDLK_RETURN, WCODE_BACK, WCODE_PAUSE};
 
     /// `encode_key` and `decode_key` must agree, in whichever layout this build compiled.
@@ -10863,6 +11113,26 @@ mod key_layout_tests {
                     "a synthetic edge must never look like auto-repeat"
                 );
             }
+        }
+    }
+
+    /// `encode_key_repeat`'s twin of the round trip above: a `holdrep:<name>` token must decode as
+    /// a genuine hardware auto-repeat (`state & 0x100 != 0`), the exact shape `on_auto_repeat`'s
+    /// caller gates on (`state & 0x100 != 0 && sym == held_key.down_sym`) — the one case
+    /// `key_bytes_round_trip` just pinned an ordinary edge must NEVER produce.
+    #[test]
+    fn encode_key_repeat_round_trips_as_a_hardware_repeat() {
+        for (sym, wcode) in [(SDLK_DOWN, 0), (0, WCODE_PAUSE), (8, 42)] {
+            let ev = encode_key_repeat(sym, wcode);
+            let (state, got_wcode, got_sym) = decode_key(&ev);
+            assert_eq!(got_sym, sym, "sym lost (wcode={wcode})");
+            assert_eq!(got_wcode, wcode, "wcode lost (sym={sym})");
+            assert_eq!(state & 0xff, 1, "a repeat is a DOWN edge, not a release");
+            assert_eq!(
+                state & 0x100,
+                0x100,
+                "must decode as auto-repeat, or `on_auto_repeat` never sees it (sym={sym})"
+            );
         }
     }
 
