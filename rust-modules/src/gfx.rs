@@ -333,7 +333,7 @@ static mut AL_TR: c_int = 0;
 static mut AL_BR: c_int = 0;
 static mut AL_BL: c_int = 0;
 static mut AL_NOISE: c_int = 0;
-/// The ambient wash's dither source: a [`NOISE_DIM`]-square tile of white noise, `GL_REPEAT`,
+/// The ambient wash's dither source: a [`NOISE_DIM`]-square tile of TPDF noise, `GL_REPEAT`,
 /// `GL_NEAREST`, sampled at `gl_FragCoord / NOISE_DIM`. A TEXTURE rather than a hash for one reason
 /// the counters made plain: on this part the arithmetic pipe is what binds a full-screen quad, and
 /// the texture pipe sits nearly idle beside it. The interleaved-gradient hash that preceded it —
@@ -341,24 +341,61 @@ static mut AL_NOISE: c_int = 0;
 /// full-screen wash ~2 GPU cycles a pixel, 4M of a 14.4M-cycle frame (2026-09-02). One fetch on
 /// the other pipe costs the arithmetic pipe a single multiply.
 static mut NOISE_TEX: c_uint = 0;
-/// Side of the noise tile. 64 is well past the eye's ability to see a repeat at ±½ LSB amplitude
-/// and small enough to live in the texture cache whole.
-const NOISE_DIM: usize = 64;
+/// Side of the noise tile. It must stay a POWER OF TWO: `GL_REPEAT` on an NPOT texture is not
+/// GLES2 without an extension, so this is the one axis here that cannot be tuned freely.
+///
+/// **256, not 64 — and the 64 was measured VISIBLE on the television.** It was chosen as "well past
+/// the eye's ability to see a repeat at ±½ LSB amplitude", and that reasoning does not hold: a tile
+/// is a PERIODIC signal, and the eye finds periodic structure far below the contrast at which it
+/// resolves the grain making it up. On the person page's wash — the app's slowest gradient, measured
+/// at 4.6 LSB over 600 rows — a panel capture autocorrelates at **+0.570 at horizontal lag 64**
+/// against +0.13 at lags 63 and 65, and **+0.703 at vertical lag 128**: a 30-across plaid, which is
+/// exactly the "strange visual patterns" the wash was reported for. 256 quarters that spatial
+/// frequency to 7.5 repeats across a 1920px panel.
+///
+/// It costs 256 KB of texture instead of 16 KB, giving up the old "small enough to live in the
+/// texture cache whole" argument — which was worth less than it read. The mapping is 1:1 in screen
+/// space under `GL_NEAREST`, so each fragment fetches a DISTINCT texel in tile order: a coherent
+/// streaming read, which is the access pattern a texture cache is best at, rather than the random
+/// re-reads a resident tile would be protecting against. Measured cost of the change on the set:
+/// the dated section in `docs/backdrop-blur-profiling.md`.
+const NOISE_DIM: usize = 256;
 
-/// Build the dither tile. White noise from a 32-bit integer hash of the texel index — no
-/// dependency, deterministic, and its quality is irrelevant at half an 8-bit quantum: what matters
-/// is only that neighbouring texels are uncorrelated, which a structured pattern (Bayer) is not.
+/// Build the dither tile: **TPDF** (triangular) noise, from two independent full-avalanche hashes
+/// of the texel index — no dependency, deterministic, built once at boot.
+///
+/// **The triangle is baked HERE, on the CPU, and that is what makes it free.** Textbook dither is
+/// triangular over ±1 LSB, which is the sum of two independent ±½ LSB uniforms. Formed in the
+/// shader that is a second channel plus an add on a full-screen quad, and `fs_ambient.frag`'s
+/// header prices what one extra arithmetic word costs on this part. Summing the two hashes into the
+/// STORED byte instead leaves the fragment expression byte-for-byte unchanged — `(texel - 0.5) *
+/// u_noise` — and moves the entire difference into `u_noise`, which [`draw_ambient`] doubles to
+/// `2/255`. Same one fetch, same one multiply, 2M times a frame.
+///
+/// What it buys is NOT less contour: the ±½ LSB uniform it replaces already flattened this
+/// gradient's staircase about tenfold, and simulation on the measured person-page ramp says
+/// triangular is marginally WORSE on absolute blurred error, because it is more noise. What it
+/// removes is noise MODULATION — under uniform dither the quantisation error's variance still
+/// tracks the signal, which reads as a slow wash breathing or going blotchy rather than as grain.
+/// On that same ramp the per-row error variance's coefficient of variation falls 0.44 → 0.08.
 fn noise_tex() -> c_uint {
-    let mut px = vec![0u8; NOISE_DIM * NOISE_DIM * 4];
-    for i in 0..NOISE_DIM * NOISE_DIM {
-        // lowbias32 (Chris Wellons): a full-avalanche integer hash.
-        let mut x = i as u32 ^ 0x9E37_79B9;
+    /// lowbias32 (Chris Wellons): a full-avalanche integer hash.
+    fn lowbias32(mut x: u32) -> u32 {
         x ^= x >> 16;
         x = x.wrapping_mul(0x7FEB_352D);
         x ^= x >> 15;
         x = x.wrapping_mul(0x846C_A68B);
         x ^= x >> 16;
-        let v = (x >> 24) as u8;
+        x
+    }
+    let mut px = vec![0u8; NOISE_DIM * NOISE_DIM * 4];
+    for i in 0..NOISE_DIM * NOISE_DIM {
+        // Two INDEPENDENT streams — the same avalanche under different seeds — averaged into one
+        // byte. Their mean is triangular on [0, 255]; `draw_ambient`'s 2/255 scale then places it
+        // at ±1 LSB about zero, i.e. the sum of two ±½ LSB uniforms, which is the definition.
+        let a = lowbias32(i as u32 ^ 0x9E37_79B9) >> 24;
+        let b = lowbias32(i as u32 ^ 0x85EB_CA6B) >> 24;
+        let v = ((a + b + 1) / 2) as u8;
         px[i * 4..i * 4 + 4].copy_from_slice(&[v, v, v, 255]);
     }
     unsafe {
@@ -914,14 +951,15 @@ pub(crate) fn draw_ambient(
             c3(bl, 2) * dim,
             1.0,
         );
-        // ±half one 8-bit framebuffer quantum: enough to break a contour, below visible grain.
+        // ±1 one 8-bit framebuffer quantum, TRIANGULAR — the tile already carries the triangle
+        // (`noise_tex`), so this scale is the only place the ±½-LSB uniform it replaced differed.
         // **`dither` is the caller's word on whether this ground is what the eye RESTS on.** The
         // noise exists for a still, opaque, slow gradient — the one case 8-bit output bands
         // visibly. A wash behind a moving translucent photograph (Home's hero fold and slide) is
         // never seen as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are
         // ~2.5M GPU cycles a frame on the set (2026-09-02) — the difference between the fold
         // passing its 50 fps gate and not. Off, the shader's uniform branch skips the whole term.
-        glUniform1f(AL_NOISE, if dither { 1.0 / 255.0 } else { 0.0 });
+        glUniform1f(AL_NOISE, if dither { 2.0 / 255.0 } else { 0.0 });
         if dither {
             // The dither tile, on unit 0 — `u_noise_tex` is sampler 0 by default and nothing else
             // in this program samples. `draw_grad4` never takes the branch, so it binds nothing.
@@ -4297,6 +4335,14 @@ mod tests {
         assert!(
             src.contains("texture2D(u_noise_tex, gl_FragCoord.xy"),
             "the dither is a texture fetch on the idle pipe, not arithmetic"
+        );
+        // The tile is sampled 1:1 in SCREEN space, so this divisor and `NOISE_DIM` are one number
+        // written in two languages. Nothing tied them together before, and the failure is silent
+        // in the worst way: a divisor left behind when the tile grows does not band or blank, it
+        // magnifies the tile into exactly the periodic pattern the 256 was measured to remove.
+        assert!(
+            src.contains(&format!("(1.0 / {NOISE_DIM}.0)")),
+            "fs_ambient.frag must sample the noise tile at 1/NOISE_DIM ({NOISE_DIM})"
         );
         assert!(
             !src.contains("fract("),
