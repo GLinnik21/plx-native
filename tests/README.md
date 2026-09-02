@@ -504,7 +504,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `seek_transcode` | `movie_av1_no_dp_audio` | transcode seek (`seek(transcode)` **or** `reload_at: fresh Load at 140s`), timeline reaches ~140s |
 | `resume_directplay` | `movie_h264_ac3_1080p` | viewOffset 600s honored — first `timeline` near 600s, not 0 |
 | `resume_transcode` | `movie_av1_no_dp_audio` | `resume(transcode): restart at offset 600s`, first timeline near 600s |
-| `audio_switch_native` | `episode_hevc_4k_hdr10_eac3` | native audio switch (eac3→eac3) — `audio switch (native)`, codec **stays 174** |
+| `audio_switch_native` | `episode_hevc_4k_hdr10_eac3` | native audio switch (eac3→eac3) — `route transition: native audio idx=` (older logs: `audio switch (native)`), codec **stays 174** |
 | `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
 | `subtitle_text_srt` | `movie_h264_ac3_1080p` | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] len=<n>` lines |
 | `subtitle_image_pgs` | `movie_hevc_4k_pgs_subs` | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
@@ -520,7 +520,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
   `smp_cb type=18` / **no** `Playing error`.
 - **seek:** `seek(in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
   `reload_at: fresh Load at 140s`.
-- **audio switch:** `audio switch (native)` / `re-transcode:` + `reload_transcode:`.
+- **audio switch:** `route transition: native audio idx=` / `route transition: user retranscode` + `reload_transcode:` (older logs: `audio switch (native)` / `re-transcode:`; both spellings grade).
 - **subtitles (text):** `sub cue [<a>..<b>ms] len=<n>` — the cue's character COUNT, never its
   text; `len>0` means a text cue for the selected track arrived. The obvious "improvement" to
   this line is to put the text back, and it must not be made: subtitle text is LG Content
