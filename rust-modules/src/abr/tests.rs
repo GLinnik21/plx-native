@@ -7260,3 +7260,190 @@ fn a_lower_candidate_failure_cannot_erase_a_stronger_higher_failure() {
         "the 10s top failure was erased by the later 5s lower failure",
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The flap budget: `tests/manifest.json`'s `pipe_abr_oscillating_link`, on the host.
+// ---------------------------------------------------------------------------------------------
+
+/// The manifest's own link profile, as `(until_ms, kbps)` boundaries.
+///
+/// **A leg is an absolute BOUNDARY, not a duration** — the same trap `abr/sim.rs`'s disturbance
+/// matrix documents, and it fails silently in the same way: a list of durations collapses to its
+/// first entry, the run then holds 20 Mbit/s for the whole horizon, every oscillation quietly does
+/// not happen and the commit count comes in comfortably under the cap.
+///
+/// Transcribed from `pipe_abr_oscillating_link.network_profile`. Five link changes in 44 s, then a
+/// 3 Mbit/s tail. `tests/run.py` grades that run with `abr_shape.max_commits: 8`, counting
+/// `abr: committed` lines, which is the same event [`commit_trail`] collects.
+const OSCILLATING_LINK: [(i64, u32); 6] = [
+    (12_000, 20_000),
+    (20_000, 3_000),
+    (28_000, 20_000),
+    (36_000, 3_000),
+    (44_000, 20_000),
+    (240_000, 3_000),
+];
+
+/// The reachable reserve at one rung, from queue geometry and the catalog's wire rate.
+///
+/// The constants come from `abr::sim`, by import rather than by transcription, so the two models
+/// of this pipeline cannot drift apart: that module already carries them by value from
+/// `player::engine` and has a test that fails when the engine's own constants move. The audio lane
+/// is `AbrPolicy::assumed_audio_kbps`, which is what the controller itself assumes for a rung it
+/// has not measured.
+///
+/// A rung's ceiling is inversely proportional to its rate, and that is the whole reason this is not
+/// the flat 30 s [`settle_link`] uses: at 20 Mbit/s the reserve tops out near five seconds, so a
+/// fixture that let it integrate to thirty would hand the controller a runway no television has and
+/// would never let a collapse become unsurvivable.
+fn reachable_reserve_ms(rung: Rung, catalog: HlsActuatorCatalog) -> i64 {
+    let audio = i64::from(AbrPolicy::measured().assumed_audio_kbps);
+    let wire = i64::from(catalog.candidate(rung).expected_wire_kbps);
+    let video = (wire - audio).max(1);
+    let video_lane =
+        crate::abr::sim::VIDEO_LEAD_MS + (crate::abr::sim::VIDEO_QUEUE_BYTES as i64 * 8) / video;
+    let audio_lane =
+        crate::abr::sim::AUDIO_LEAD_MS + (crate::abr::sim::AUDIO_QUEUE_BYTES as i64 * 8) / audio;
+    video_lane.min(audio_lane)
+}
+
+/// **Drive the controller over a link profile and collect every committed rung change.**
+///
+/// A profile-driven sibling of [`settle_link`], and a deliberate hand-rolled plant rather than a
+/// call into `abr::sim`: that plant refuses an uncalibrated operating point, and the census covers
+/// seven of the thirteen rungs — none of 6 000, 8 000, 12 000, 14 000 or 18 000, which is exactly
+/// the 1080p band this case's staircase walks. Restricting the catalog until every rung is
+/// calibrated leaves the four-rung 720p ladder, on which the pathology does not exist: the same
+/// profile produces six commits there and nothing to grade. So this models the fixture's own
+/// ladder — a 1080p source on a device that decodes it, [`hd_catalog`] — and states its physics
+/// inline, one line of the plant's own state equation:
+///
+/// ```text
+/// acquire = D * R_wire / C          wall = max(acquire, B + D - B_max)
+/// B'      = min(B_max, max(0, B - wall) + D)
+/// ```
+///
+/// A transaction is charged the same way the device pays for one: the candidate's own acquisition
+/// drains the reserve and advances the clock before its verdict is taken, and only a commit credits
+/// its media. What it deliberately does NOT model is the control plane, PMS session setup and the
+/// warm-up object — all three make a transaction more expensive, so every one of them is omitted in
+/// the direction that makes flapping CHEAPER than it really is. A commit count graded here is
+/// therefore a lower bound on the device's.
+fn commit_trail(catalog: HlsActuatorCatalog, legs: &[(i64, u32)]) -> Vec<(u64, Direction, u32)> {
+    const SEGMENT_MS: i64 = 2_000;
+    // The device seeds every one of these cases at 480p/720 kbps (`abr: seed rung=720kbps`).
+    let mut controller = Controller::starting_at(Rung::P480, None, catalog);
+    let mut trail = Vec::new();
+    let mut buffered_ms: i64 = 0;
+    let mut now_ms: i64 = 0;
+    let horizon_ms = legs.last().expect("a profile has at least one leg").0;
+    let capacity_at = |at_ms: i64| -> i64 {
+        i64::from(
+            legs.iter()
+                .find(|&&(until_ms, _)| at_ms < until_ms)
+                .map(|&(_, kbps)| kbps)
+                .unwrap_or_else(|| legs.last().expect("a profile has at least one leg").1),
+        )
+        .max(1)
+    };
+    // Every leg of every profile here advances the clock by at least one segment or one candidate
+    // acquisition, so this bound is unreachable on a healthy model and exists only so a controller
+    // that stopped advancing fails as a hang rather than hanging.
+    let mut segments = 0;
+    while now_ms < horizon_ms {
+        segments += 1;
+        assert!(
+            segments < 8_000,
+            "the model stopped advancing at {now_ms}ms of a {horizon_ms}ms profile",
+        );
+        let capacity = capacity_at(now_ms);
+        let rung = controller.current();
+        let wire = i64::from(catalog.candidate(rung).expected_wire_kbps);
+        let ceiling = reachable_reserve_ms(rung, catalog);
+        let acquire_ms = (SEGMENT_MS * wire / capacity).max(1);
+        let wall_ms = acquire_ms.max(buffered_ms + SEGMENT_MS - ceiling).max(1);
+        buffered_ms = ((buffered_ms - wall_ms).max(0) + SEGMENT_MS).min(ceiling);
+        now_ms += wall_ms;
+        let ratio_pm = u32::try_from((wire * 1_000 / capacity).max(1)).unwrap_or(u32::MAX);
+        let observed = sample(
+            u32::try_from(capacity).unwrap_or(u32::MAX),
+            ratio_pm,
+            buffered_ms,
+        );
+        let Decision::Prime(proposal) =
+            controller.observe(observed, u64::try_from(now_ms).unwrap_or(0))
+        else {
+            continue;
+        };
+        // The candidate runs inline on the demux worker: the current stream is not read while it
+        // does, so its acquisition is wall time with no fill.
+        let capacity = capacity_at(now_ms);
+        let candidate_wire = i64::from(catalog.candidate(proposal.rung).expected_wire_kbps);
+        let candidate_acquire_ms = (SEGMENT_MS * candidate_wire / capacity).max(1);
+        buffered_ms = (buffered_ms - candidate_acquire_ms).max(0);
+        now_ms += candidate_acquire_ms;
+        let candidate_ratio_pm =
+            u32::try_from((candidate_wire * 1_000 / capacity).max(1)).unwrap_or(u32::MAX);
+        let candidate = sample(
+            u32::try_from(capacity).unwrap_or(u32::MAX),
+            candidate_ratio_pm,
+            buffered_ms,
+        );
+        let at_ms = u64::try_from(now_ms).unwrap_or(0);
+        if controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
+            assert!(controller.commit(proposal, at_ms));
+            controller.commit_candidate_evidence(candidate);
+            buffered_ms =
+                (buffered_ms + SEGMENT_MS).min(reachable_reserve_ms(proposal.rung, catalog));
+            trail.push((at_ms, proposal.direction, proposal.rung.kbps()));
+        } else {
+            assert!(controller.reject(proposal, RejectCause::Candidate, at_ms));
+        }
+    }
+    trail
+}
+
+/// **`pipe_abr_oscillating_link`, on the host: a link that flips must not flip the picture with
+/// it.**
+///
+/// Device, 2026-09-02: ten committed rung changes against the manifest's cap of eight —
+/// `u10000, d320, u6000, u10000, u12000, d320, u6000, u10000, d320, u2000`. Two shapes inside it
+/// say what was wrong. `u6000 -> u10000 -> u12000` is three commits inside ONE eight-second leg,
+/// the last of them buying nothing at all on the quality curve (10 000 and 12 000 sit in the same
+/// band); and `320 -> 6000 -> 10000` then happens again, identically, after the next collapse. The
+/// controller was pricing the fourth visible quality change exactly as it priced the first, which
+/// `AbrPolicy::visible_switch_penalty` exists to stop it doing — but that penalty was reachable
+/// only from `mode::transition_cost`, which returns 0 for `Hls -> Hls`.
+///
+/// **Both halves of the case are asserted, because refusing to move at all passes the first.** The
+/// manifest says so in its own note and backs it with `min_pos_climb_s` and `no_playing_error`;
+/// here it is the 1080p rung on the fast legs and the descent on the 3 Mbit/s ones.
+#[test]
+fn an_oscillating_link_does_not_commit_a_rung_change_per_oscillation() {
+    let trail = commit_trail(hd_catalog(), &OSCILLATING_LINK);
+    let story = trail
+        .iter()
+        .map(|(at_ms, direction, kbps)| format!("{direction:?}{kbps}@{}s", at_ms / 1_000))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(
+        trail.len() <= 8,
+        "{} committed rung changes over five link changes, want <= 8 \
+         (`pipe_abr_oscillating_link.expect.abr_shape.max_commits`): {story}",
+        trail.len(),
+    );
+
+    let reached = trail.iter().map(|&(_, _, kbps)| kbps).max().unwrap_or(0);
+    assert!(
+        reached >= Rung::P1080M6.kbps(),
+        "the fast legs carry 20 Mbit/s and the controller never reached a 1080p rung — \
+         a controller that will not move is the opposite failure: {story}",
+    );
+    assert!(
+        trail
+            .iter()
+            .any(|&(_, direction, _)| direction == Direction::Down),
+        "the link really does collapse to 3 Mbit/s and nothing descended: {story}",
+    );
+}
