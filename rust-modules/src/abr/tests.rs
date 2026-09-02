@@ -7260,3 +7260,150 @@ fn a_lower_candidate_failure_cannot_erase_a_stronger_higher_failure() {
         "the 10s top failure was erased by the later 5s lower failure",
     );
 }
+
+/// **The `pipe_abr_reject_up_4000` device leg, replayed against the shipped conservation law.**
+///
+/// The pipeline case declares a flat 8 300 kbps leg and asserts `settle_max_kbps: 4000`, on the
+/// derivation in its own `_reject_note`: "`candidate_prime_budget` gives the candidate 4/5 of one
+/// media duration, 1600 ms … rung 6000's warm-up costs 1718 ms and overruns its budget, so every
+/// proposal is rejected". That budget is the historical `4/5·d` transaction deadline
+/// (`docs/adaptive-playback-plan.md:945`). It is not the shipped admission rule, and its
+/// single-observation form `A <= 0.8·D` is listed among the three tests
+/// `docs/adaptive-playback-spec.md` §4 REMOVED — "a bare 800 … refuted at ~37%". The shipped
+/// contract (`docs/adaptive-playback.md`, "A completed upward candidate is accepted exactly when
+/// `A <= D and B_post >= A`") admits on the media duration itself, and
+/// `candidate_prime_budget` is `#[allow(dead_code)]` compatibility that the live path never calls.
+///
+/// So this test pins what the device measured, not what the note predicted. Every number below is
+/// read out of `pipe_abr_reject_up_4000.log` (2026-09-01, webOS 4.10.0, the shaped 8 300 kbps leg):
+/// the 4000->6000 boundary object acquired 2 000 ms of media in 1 950 ms with 4 709 ms of reserve
+/// behind it, and rung 6000 then ran 33 further objects at `demand=62926ms supply=70000ms`
+/// (`A/D = 0.899`) with a WORST acquisition of 1 983 ms, a reserve climbing to 13 710 ms and no
+/// stall. Rung 6000 is sustainable on that link; refusing it would be refusing an operating point
+/// the evidence proves, which is exactly the failure mode §4's removed `0.8` test produced.
+///
+/// The two proposals the same run DID refuse are pinned beside it, because they are what makes the
+/// admission path discriminating rather than permissive.
+///
+/// Two artifacts in this repository already say the same thing without any of the above.
+/// [`lg_network_legs_settle_on_sustainable_rungs`] asserts that a flat **7 000** kbps plant settles
+/// on rung **6000**, and `tests/manifest.json`'s own `pipe_abr_steady_modest_link` permits rung
+/// 6000 on a flat **6 000** kbps leg — so a rule that refuses rung 6000 at **8 300** kbps makes a
+/// faster link settle lower than a slower one, and breaks both.
+///
+/// # Why re-tuning the leg rate does not rescue the case either
+///
+/// Under the shipped rule a flat leg cannot both PROPOSE rung 6000 and reliably REFUSE it, and the
+/// reason is structural rather than a matter of picking a better number. From the fixture's own
+/// medians on this run (1 093 596 B at rung 4000, 1 571 868 B at rung 6000) and the case's measured
+/// 272 ms fixed cost, refusing 6000 needs `12575/C + 272 > 2000`, i.e. `C < 7277` kbps; while
+/// proposing it at all needs the conservative estimate (`0.8 * slow`) to reach 6000, i.e.
+/// `C >= 7500` kbps. The window is empty, and it is empty BY DESIGN:
+/// `docs/adaptive-playback-spec.md` §4 requires that "selection and admission must evaluate the
+/// same rule or the controller livelocks". A rejected upshift is therefore reachable only from a
+/// stimulus in which the link, the encoder or the rendition changes BETWEEN the proposal and the
+/// candidate fetch — which is exactly what this run's two real refusals (rungs 8000 and 12000,
+/// pinned below) are, and what its `E_tx(up, reject)` evidence comes from.
+#[test]
+fn the_measured_8300kbps_leg_admits_rung_6000_and_still_refuses_8000_and_12000() {
+    // A candidate object exactly as the device stamped it: wire bytes, the body transfer implied
+    // by the run's own `net=` reading, and the acquisition `ff.rs` reports as `candidate_acq=`.
+    let device_object = |bytes: u64, net_kbps: u64, total_ms: u64, buffered_ms: i64| {
+        let active_us = bytes * 8_000 / net_kbps;
+        sample_bytes_with_total(bytes, active_us, total_ms * 1_000, 2_000, buffered_ms)
+    };
+    let propose_up_to = |rung: Rung| {
+        let mut controller =
+            Controller::starting_at(Rung::P720, None, hd_catalog()).pinned_to(Some(rung));
+        let proposal = match controller.observe_next(sample(20_000, 300, 14_000)) {
+            Decision::Prime(proposal) => proposal,
+            Decision::Stay => panic!("the pinned rung must create one candidate transaction"),
+        };
+        assert_eq!(proposal.direction, Direction::Up);
+        assert_eq!(proposal.rung, rung);
+        (controller, proposal)
+    };
+
+    // `abr: tx Up 4000->6000kbps outcome=committed … warmup=1950ms buf_decided=4709ms
+    //  candidate_bytes=1729224 candidate_dur=2000ms net=7452kbps`
+    let (controller, proposal) = propose_up_to(Rung::P1080M6);
+    let boundary = device_object(1_729_224, 7_452, 1_950, 4_709);
+    assert_eq!(boundary.media_duration_ms(), 2_000);
+    assert!(
+        boundary.total_fetch_us() <= u64::from(boundary.media_duration_ms()) * 1_000,
+        "the device boundary object acquired 2000ms of media in 1950ms",
+    );
+    assert_eq!(
+        controller.candidate_boundary_verdict(proposal, boundary, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+        "A=1950ms <= D=2000ms with B_post=4709ms >= A is the shipped acceptance law",
+    );
+
+    // The first ORDINARY object of the same encoder, one segment later on the live cursor:
+    // `hls: segment=1 bytes=1731856 … total_ms=1923` at `net=7711kbps`. The boundary object was
+    // the DEARER of the two, which is what makes deciding on it sound rather than lucky.
+    let repeatable = device_object(1_731_856, 7_711, 1_923, 6_793);
+    assert!(repeatable.total_fetch_us() < boundary.total_fetch_us());
+    assert_eq!(
+        controller.candidate_verdict(proposal, repeatable, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+        "the repeatable cadence of rung 6000 on this leg is also inside D",
+    );
+
+    // `abr: window current=6000kbps … demand=62926ms supply=70000ms` after 35 objects, and the
+    // slowest single acquisition the whole rung produced was 1983ms. Both are strictly inside the
+    // conservation law, so the commit above is the correct verdict on this link and not a miss.
+    assert!(62_926 <= 70_000, "the settled rung-6000 episode is sustainable");
+    let worst = device_object(1_729_224, 7_452, 1_983, 6_793);
+    assert_eq!(
+        controller.candidate_verdict(proposal, worst, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+        "even the worst measured rung-6000 acquisition fits inside its own media duration",
+    );
+
+    // `abr: tx Up 4000->8000kbps outcome=repeatable_deadline … warmup=2555ms buf_start=5751ms`,
+    // logged as `abr: setup-bearing candidate retains one staged observation budget=1126ms`.
+    let (controller, proposal) = propose_up_to(Rung::P1080);
+    let boundary_8000 = device_object(2_229_680, 7_702, 2_555, 3_184);
+    assert_eq!(
+        controller.candidate_boundary_verdict(proposal, boundary_8000, declared_bps(proposal.rung)),
+        CandidateVerdict::SetupBearing,
+        "A=2555ms > D funded by B_post=3184ms buys exactly one ordinary observation",
+    );
+
+    // `abr: tx Up 4000->12000kbps outcome=not_ready_discarded … warmup=3640ms graded=3826ms`,
+    // logged as `abr: candidate verdict=Unsustainable; discarded 2 staged segment(s)`.
+    let (controller, proposal) = propose_up_to(Rung::P1080M12);
+    let boundary_12000 = device_object(3_225_140, 7_748, 3_640, 8_736);
+    assert_eq!(
+        controller.candidate_boundary_verdict(
+            proposal,
+            boundary_12000,
+            declared_bps(proposal.rung),
+        ),
+        CandidateVerdict::SetupBearing,
+    );
+    let graded_12000 = device_object(3_383_436, 7_748, 3_826, 4_751);
+    assert_eq!(
+        controller.candidate_verdict(proposal, graded_12000, declared_bps(proposal.rung)),
+        CandidateVerdict::Unsustainable,
+        "the ordinary object of a 12000 candidate loses 1826ms of reserve per segment",
+    );
+
+    // And the upshift the same run committed one rung earlier, which any change to the admission
+    // threshold has to keep: `abr: tx Up 2000->4000kbps outcome=committed … warmup=1228ms`.
+    let (controller, proposal) = {
+        let mut controller =
+            Controller::starting_at(Rung::P720Low, None, hd_catalog()).pinned_to(Some(Rung::P720));
+        let proposal = match controller.observe_next(sample(20_000, 300, 14_000)) {
+            Decision::Prime(proposal) => proposal,
+            Decision::Stay => panic!("the pinned rung must create one candidate transaction"),
+        };
+        (controller, proposal)
+    };
+    let sustainable = device_object(1_093_596, 7_865, 1_228, 9_584);
+    assert_eq!(
+        controller.candidate_boundary_verdict(proposal, sustainable, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+    );
+}
