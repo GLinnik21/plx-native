@@ -8237,6 +8237,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // `on_updown` already forwards to the open document's own `move_by` once
                         // one is pushed (`legal.rs`/`consent.rs`), so there is no separate reader
                         // case to spell out here.
+                        if dy == 0 {
+                            // a fractional trackpad tick that rounded to nothing (hostsim), or a
+                            // `wheel:0` token — not a step in either direction
+                            continue;
+                        }
                         let delta = if dy < 0 { 1 } else { -1 };
                         if crate::ui::consent::is_open() {
                             crate::ui::consent::on_updown(delta);

@@ -5417,6 +5417,8 @@ fn pair_last_line_cap_y(y: f32, value: &str) -> f32 {
 /// to re-format ~20 strings (info pairs, the audio list, the accessibility rows) every frame it
 /// was on screen.
 struct AboutRows {
+    /// The item's SERVER with its key: a ratingKey is server-local, and two servers number from 1.
+    sid: crate::plex::ServerId,
     rk: String,
     info: Vec<(&'static str, String)>,
     orig_audio: Option<String>,
@@ -5426,7 +5428,11 @@ struct AboutRows {
 static mut ABOUT: Option<AboutRows> = None;
 fn about_rows(d: &metadata::Detail) -> &'static AboutRows {
     let slot = unsafe { &mut *addr_of_mut!(ABOUT) };
-    if slot.as_ref().map(|c| c.rk != d.rk).unwrap_or(true) {
+    if slot
+        .as_ref()
+        .map(|c| c.sid != d.sid || c.rk != d.rk)
+        .unwrap_or(true)
+    {
         // Information: (label, value) pairs
         let mut info: Vec<(&'static str, String)> = Vec::new();
         let released = pretty_date(&d.aired, d.year);
@@ -5489,6 +5495,7 @@ fn about_rows(d: &metadata::Detail) -> &'static AboutRows {
             .map(|(_, l, ds)| (*l, *ds))
             .collect();
         *slot = Some(AboutRows {
+            sid: d.sid,
             rk: d.rk.clone(),
             info,
             orig_audio,
@@ -5653,7 +5660,9 @@ fn draw_about(p: Painter) {
     p.text(
         c"MORE".as_ptr(),
         tx + cw - pad,
-        syn.last_line_cap_y(sy, syn_hh) + syn_more_drop - mt,
+        // `draw` returns 0 for an EMPTY summary; the card reserved one line for it, so the mark
+        // sits on that line rather than a leading above it
+        syn.last_line_cap_y(sy, syn_hh.max(syn.line_h())) + syn_more_drop - mt,
         theme::size::CAPTION,
         theme::TEXT_TERTIARY,
         2,

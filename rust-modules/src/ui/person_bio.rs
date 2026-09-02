@@ -463,12 +463,17 @@ pub(crate) fn scrim() {
 /// [`prepare_present`], folded out so the decision can be asserted without a `Popover`. See the
 /// module doc's point 4 for what bug this exists to fix: `underlay_changed` alone cannot tell the
 /// host page moving from this panel's OWN page-turn setting the same process-wide flag.
-fn glass_refresh(underlay_changed: bool, appear_settled: bool) -> bool {
-    // Still ramping open: refresh regardless of what the caller reports, because the contrast
-    // argument (module doc, point 1) needs every frame of that ramp to sample the page as it
-    // actually dims. Settled: trust the caller's flag, which by then means the person PAGE itself
-    // changed (a landing, a route-adjacent redraw) rather than this panel's own scroll.
-    !appear_settled || underlay_changed
+fn glass_refresh(_underlay_changed: bool, appear_settled: bool) -> bool {
+    // Still ramping open: refresh every frame, because the contrast argument (module doc, point 1)
+    // needs the ramp to sample the page as it actually dims. Settled: NEVER — and the caller's flag
+    // is deliberately ignored. It cannot be trusted here: `app.rs` folds `present_dirty()` into it,
+    // which every key press sets, and the person route's scoped motion includes THIS panel's own
+    // scroll spring (`person::update` steps `person_bio::update`), so "the page changed" was true on
+    // every page-turn key and every frame of the glide — exactly the per-frame re-blur this gate
+    // exists to end (Codex review, 2026-09-02). The page under an open panel is standing still by
+    // construction (the panel opens from the header, which freezes every shelf), so the settled
+    // snapshot is the CACHED contract every other alert already lives on.
+    !appear_settled
 }
 
 /// Resolve the glass cadence before the host page draws — every popover's route arm calls this
@@ -673,8 +678,8 @@ mod tests {
             "ramping AND the page changed — still a refresh"
         );
         assert!(
-            glass_refresh(true, true),
-            "settled, but the caller reports the host page itself changed — must still refresh"
+            !glass_refresh(true, true),
+            "settled — the caller's flag carries this panel's own scroll and key presses, so it must not refresh"
         );
         assert!(
             !glass_refresh(false, true),

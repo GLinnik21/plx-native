@@ -3300,11 +3300,6 @@ class AbrCasesAreWiredUp(unittest.TestCase):
         self.assertLess(12 + seek.get("delay_ms", 0) / 1000 + 60, c["run_secs"])
         self.assertEqual(c["expect"].get("max_reloads"), 0)
 
-
-if __name__ == "__main__":
-    unittest.main(verbosity=1)
-
-
 class FpsRunToken(unittest.TestCase):
     """A UI-tier `--fps` run resolves the test identity whenever any selected scene needs it —
     the plain `./tests/run.py --fps` used to skip it and boot every route scene to QR sign-in."""
@@ -3318,3 +3313,7 @@ class FpsRunToken(unittest.TestCase):
     def test_the_player_tier_and_a_shared_server_still_force_it(self):
         self.assertTrue(run.fps_run_needs_token([{"route": "login"}], True, False))
         self.assertTrue(run.fps_run_needs_token([{"route": "login"}], False, True))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

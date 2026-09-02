@@ -578,7 +578,9 @@ thread_local! {
     static MARQUEE_KEY: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
     /// Elapsed ms since `MARQUEE_KEY` last changed, advanced from [`crate::ui::idle::dt`] because
     /// this runs inside `draw`, which — unlike [`CardRow::update`] — gets no `dt` of its own.
-    static MARQUEE_MS: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+    /// `f64`: an `f32` accumulator stops moving at ~2^29 ms (six days on one title), where a
+    /// 16 ms frame is below its precision floor.
+    static MARQUEE_MS: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
 }
 
 /// Advance (or restart) the marquee clock for `text`, returning its value in ms. Called once per
@@ -600,9 +602,9 @@ fn marquee_clock(text: &str) -> f32 {
         0.0
     } else {
         MARQUEE_MS.with(|m| {
-            let v = m.get() + crate::ui::idle::dt() * 1000.0;
+            let v = m.get() + crate::ui::idle::dt() as f64 * 1000.0;
             m.set(v);
-            v
+            v as f32
         })
     }
 }
@@ -616,6 +618,9 @@ fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
     let budget = under_budget(sty);
     let w = crate::text::text_width(text, sz, bold);
     if w <= budget {
+        // a fitting title RELEASES the clock, so an overflowing one focused again later starts
+        // from its rest beat rather than resuming mid-glide
+        MARQUEE_KEY.with(|k| k.borrow_mut().clear());
         under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY);
         return;
     }
