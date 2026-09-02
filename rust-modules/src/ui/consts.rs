@@ -40,7 +40,6 @@ pub const MARGIN_X: f32 = 96.0;
 /// dimension, not one distance.
 pub const MARGIN_Y: f32 = 54.0;
 pub const ROW_TITLE_H: f32 = 30.0;
-pub const ROW_PITCH: f32 = CARD_H + ROW_TITLE_H + 144.0; // 549: room for the shelf title above + the focused card's title AND caption below (clears the next shelf's title)
 /// Hub-title cap top above the shelf's `row_y` origin — the heading draws at `row_y − TITLE_DY`,
 /// minus whatever `CardRow::lift` has raised it by. Named because it is a LAYOUT relationship two
 /// other constants here are derived against ([`CARD_DY`]'s air, [`GRID_TOP_Y`]'s clearance under the
@@ -50,6 +49,23 @@ pub const TITLE_DY: f32 = 34.0;
 /// between a section title and its posters, held on magnification too because `title_lift` raises the
 /// title by the same amount the popped card's top rises.
 pub const CARD_DY: f32 = 26.0;
+/// Air kept between the bottom of a focused label block ([`crate::ui::card_row::UNDER_LABEL_H`])
+/// and the next row's topmost ink — item 11. The one number Home and Library now BOTH derive their
+/// row pitch from, instead of each hand-authoring its own: Home always gave this 22px (folded,
+/// unnamed, into the old `ROW_PITCH = CARD_H + ROW_TITLE_H + 144.0`), while Library's old
+/// `PITCH = CARD_H + 96.0` gave a two-line label block only 4px of air — glued to the next row's
+/// card, which is the bug this item reports. Derived by working the layout backward from the code:
+/// `ROW_PITCH − TITLE_DY − CARD_DY − CARD_H − UNDER_LABEL_H` and the old `PITCH − CARD_H −
+/// UNDER_LABEL_H` both land here once expressed against the SAME [`crate::ui::card_row::UNDER_LABEL_H`],
+/// confirmed against sim screenshots of both grids with a two-line focused label.
+pub const UNDER_LABEL_AIR: f32 = 22.0;
+/// Room for the shelf title above the row, plus the focused card's under-label block
+/// ([`crate::ui::card_row::UNDER_LABEL_H`]) and [`UNDER_LABEL_AIR`] of air below it before the next
+/// shelf's own title. Replaces the old `CARD_H + ROW_TITLE_H + 144.0` — same 549px total
+/// (`34 + 26 + 375 + 92 + 22`), now built from the same two named constants Library's `PITCH` uses,
+/// instead of a bare `144` that silently baked in a DIFFERENT air than Library's `96` did.
+pub const ROW_PITCH: f32 =
+    TITLE_DY + CARD_DY + CARD_H + crate::ui::card_row::UNDER_LABEL_H + UNDER_LABEL_AIR;
 pub const CONTENT_Y: f32 = 200.0;
 pub const GLOW_PAD: f32 = 48.0;
 pub(crate) use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};

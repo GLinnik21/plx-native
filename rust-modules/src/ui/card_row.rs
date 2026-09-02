@@ -464,6 +464,12 @@ const UNDER_LINE_GAP: f32 = 4.0;
 /// exactly the band `detail.rs` hand-authored for its one-line-title-plus-role cast tiles — the
 /// coincidence that confirms the decomposition.
 const UNDER_CAPTION_H: f32 = 28.0;
+/// The focused label block's total height with a caption line (item 11) — the same 92 the doc
+/// comment above derives, exposed so a SCREEN's row pitch can be built from the one number that
+/// also drives [`TileLabel::height`], instead of a screen re-deriving or (worse) hand-copying it.
+/// `consts::UNDER_LABEL_AIR` is this constant's other half: the two together are what unifies
+/// Home's and Library's row spacing.
+pub(crate) const UNDER_LABEL_H: f32 = UNDER_DROP + UNDER_LINE_H + UNDER_LINE_GAP + UNDER_CAPTION_H;
 
 /// The focused tile's title WORD-WRAPPED to `sty.title_lines`, centred under the tile — for rows
 /// whose items have real titles rather than short ones ([`RowStyle::title_lines`]). Returns the

@@ -75,8 +75,12 @@ pub(crate) const GRID_TOP: f32 = 232.0;
 // toolbar chips (bottom y≈186) solidly backed while the tail crosses the RESTING popped card's top
 // (`GRID_TOP - CARD_H*0.045 ≈ 197`) at ≤~26% — a soft entering-the-shadow veil, not a wash. One
 // short linear ramp instead of the knee read as a harsh bar shadow with a visible bottom edge.
-/// Row pitch: card + the focused under-label band (title + caption) before the next row.
-const PITCH: f32 = CARD_H + 96.0;
+/// Row pitch: card + the focused under-label band (title + caption) + air before the next row —
+/// item 11. Used to read `CARD_H + 96.0`: a two-line label block (`card_row::UNDER_LABEL_H` = 92)
+/// left only 4px of air before the next row's card, glued to it, while Home's shelves left 22px
+/// (`consts::UNDER_LABEL_AIR`) under the identical block. Both screens now derive their pitch from
+/// the same two named constants instead of each hand-authoring its own air.
+const PITCH: f32 = CARD_H + crate::ui::card_row::UNDER_LABEL_H + crate::ui::consts::UNDER_LABEL_AIR;
 
 // ---- screen state (main-thread statics, same discipline as home.rs) -------------------------
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1353,8 +1357,10 @@ pub(crate) fn update(dt: f32) {
         // agree, which is why this line moved with that one.
         let max_y = (n_rows() as f32 * PITCH - (SCR_H - GRID_TOP) + MARGIN_Y).max(0.0);
         // …and the reveal leaves the card + its label band a MARGIN_Y clear of the bottom edge: a
-        // focused tile's caption used to settle 16px off the panel, i.e. inside the overscan frame
-        let lo = row_top + CARD_H + 96.0 - (SCR_H - GRID_TOP - MARGIN_Y);
+        // focused tile's caption used to settle 16px off the panel, i.e. inside the overscan frame.
+        // `CARD_H + 96.0` used to be re-typed here instead of read off `PITCH`, even though the two
+        // were the same value by construction (item 11) — one row's span IS card + label + air.
+        let lo = row_top + PITCH - (SCR_H - GRID_TOP - MARGIN_Y);
         let hi = row_top;
         let want = if matches!(area(), Area::Grid | Area::Rail) {
             card_row::reveal((*addr_of!(SCROLL)).pos, lo, hi, max_y) // rail jumps scroll the grid too
@@ -3036,16 +3042,36 @@ mod tests {
         for n_rows in [1usize, 2, 3, 7, 40] {
             let row_top = (n_rows - 1) as f32 * PITCH;
             let max_y = (n_rows as f32 * PITCH - (SCR_H - GRID_TOP) + MARGIN_Y).max(0.0);
-            let lo = row_top + CARD_H + 96.0 - (SCR_H - GRID_TOP - MARGIN_Y);
+            let lo = row_top + PITCH - (SCR_H - GRID_TOP - MARGIN_Y);
             // scrolled to the very bottom already, then asked to reveal the last row
             let scroll = card_row::reveal(max_y, lo, row_top, max_y);
-            let caption_bottom = GRID_TOP + row_top + CARD_H + 96.0 - scroll;
+            let caption_bottom = GRID_TOP + row_top + PITCH - scroll;
             assert!(
                 caption_bottom <= SCR_H - MARGIN_Y + 0.01,
                 "{n_rows} rows: the last caption settles at {caption_bottom}, past the frame at {}",
                 SCR_H - MARGIN_Y,
             );
         }
+    }
+
+    /// Item 11: Home's shelf pitch and Library's grid pitch must leave the SAME air under a
+    /// focused label block before the next row's top-most ink, which is the whole point of
+    /// deriving both from `card_row::UNDER_LABEL_H` + `consts::UNDER_LABEL_AIR` instead of each
+    /// screen hand-authoring its own trailing constant (Library's old `96.0` gave a two-line label
+    /// only 4px of air; Home's old `144.0` gave it 22px, unnamed and undiscoverable as the same
+    /// quantity). Home's pitch spends `TITLE_DY + CARD_DY` on the NEXT shelf's own heading band
+    /// before the air is even reached, so that band must be subtracted back out before comparing.
+    #[test]
+    fn home_and_library_leave_the_same_air_under_a_focused_label() {
+        use crate::ui::consts::{CARD_DY, ROW_PITCH, TITLE_DY, UNDER_LABEL_AIR};
+        let home_air = ROW_PITCH - TITLE_DY - CARD_DY - CARD_H - card_row::UNDER_LABEL_H;
+        let library_air = PITCH - CARD_H - card_row::UNDER_LABEL_H;
+        assert_eq!(home_air, UNDER_LABEL_AIR);
+        assert_eq!(library_air, UNDER_LABEL_AIR);
+        assert_eq!(
+            home_air, library_air,
+            "Home and Library must agree on the air under a focused label"
+        );
     }
 
     /// spinning exactly as before.
