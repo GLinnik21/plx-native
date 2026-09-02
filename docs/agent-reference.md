@@ -688,16 +688,23 @@ which the linking section explains is load-bearing rather than tidy.
   the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics has two layers.** With error-report consent and a compiled Sentry endpoint,
   Sentry Native's patched ARM32 backend replaces the signal disposition and wakes the shipped
-  `sentry-crash` daemon. The dying process stays stopped while the daemon copies its `ucontext`,
-  enumerates the other Linux LWPs, `PTRACE_ATTACH`es them, snapshots PC/SP/FP with
-  `PTRACE_GETREGS`, and keeps them stopped while it walks every APCS frame chain. That lifetime is
-  the Linux counterpart of KSCrash's suspend → context → unwind → resume sequence; enumerating
-  `/proc/<pid>/task` alone only produces names and zeroed contexts. The crashed thread keeps up to
-  128 frames and each other thread up to 32 to reduce pressure on the 256 KiB durable-record
-  ceiling; the importer still rejects an oversized envelope rather than claiming a bound for an
-  arbitrary 256-LWP process. The JSON therefore carries ARM registers and real multi-frame stacks
-  for all successfully captured threads, plus modules and both Linux-kernel and webOS firmware
-  context.
+  `sentry-crash` daemon. The dying process stays stopped while the daemon copies its `ucontext`
+  and walks the crashed thread's APCS frame chain out of a copy of its stack; for every other
+  Linux LWP in `/proc/<pid>/task` it `PTRACE_ATTACH`es, unwinds **remotely through libunwind's
+  ptrace accessors** (DWARF, with `function` names from the ELF symbol tables), and detaches — that
+  is upstream sentry-native's own machinery since 0.16 (#1747), and it replaced a hand-written
+  suspend/`PTRACE_GETREGS`/frame-walk block this repo carried against 0.13.9 until 2026-09-02. The
+  crashed thread keeps up to 128 frames and each other thread up to 32 to reduce pressure on the
+  256 KiB durable-record ceiling; the importer still rejects an oversized envelope rather than
+  claiming a bound for an arbitrary 256-LWP process. The JSON therefore carries ARM registers and
+  real multi-frame stacks for all successfully captured threads, plus modules and both Linux-kernel
+  and webOS firmware context. The pin is **0.16.5** (`ci/build-sentry-native.sh`), and the patch
+  beside it (`vendor/sentry-native/webos-arm32.patch`) is down to what upstream does not do: a
+  `process_vm_readv` wrapper for glibc 2.12, ARM32 registers in the event, a frame-pointer walk that
+  reads BOTH ARM32 frame records — GCC leaves `fp` on the LR slot (`[fp-4]`/`[fp]`), rustc/LLVM on
+  the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds both — pointer-width stack reads, the 32-frame cap for non-crashed threads,
+  the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process libunwind,
+  no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
   The SDK has **no HTTP transport and writes no minidump**: it launches the
   same `plxnative` binary in spool-only mode, which moves the bounded envelope into the install's
   runtime root. A healthy launch rejects user/request scope, strips path prefixes and queues the

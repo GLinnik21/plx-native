@@ -463,7 +463,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
         "release": concat!("plxnative@", env!("PLX_VERSION")),
         "environment": super::sender::ENVIRONMENT,
         "dist": "<ELF build id>",
-        "sdk": {"name": "plxnative", "version": "0.13.9"},
+        "sdk": {"name": "plxnative", "version": "0.16.5"},
         "contexts": {
             "os": {"type": "os", "name": "Linux", "version": "<kernel release>",
                 "build": "<kernel build suffix>", "kernel_version": "<kernel release>"},
@@ -922,7 +922,7 @@ mod tests {
                 "request": {"url": "must-not-pass"},
                 "extra": {"future_sdk_field": "must-not-pass"},
                 "arbitrary": "must-not-pass",
-                "sdk": {"name": "plxnative", "version": "0.13.9", "future": "must-not-pass"},
+                "sdk": {"name": "plxnative", "version": "0.16.5", "future": "must-not-pass"},
                 "contexts": {
                     "os": {"name": "Linux", "future": "must-not-pass"},
                     "webos": {"type": "webos", "name": "webOS TV", "release": "4.10.2",

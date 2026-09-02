@@ -217,7 +217,7 @@ WERROR      ?= -Werror
 # The out-of-process crash walker follows ARM's APCS frame chain. Keeping r11 frame pointers in
 # every C frame is therefore part of the crash-reporting ABI, not debug-only codegen; without it a
 # valid envelope contains only the faulting PC. Rust's matching flag is in RUST_ENV/config.toml.
-CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -funwind-tables -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
 # DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
