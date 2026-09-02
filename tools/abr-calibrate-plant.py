@@ -169,6 +169,22 @@ def capture_added_at(directory: pathlib.Path):
     return int(stamp) if out.returncode == 0 and stamp else None
 
 
+def capture_added_commit(directory: pathlib.Path):
+    """SHA of the commit that FIRST ADDED this capture, or `None` if it is uncommitted."""
+    out = subprocess.run(
+        ["git", "log", "--diff-filter=A", "--format=%H", "-1", "--", str(directory)],
+        cwd=ROOT, capture_output=True, text=True)
+    sha = out.stdout.strip()
+    return sha if out.returncode == 0 and sha else None
+
+
+def history_positions():
+    """`sha -> distance from HEAD`, so 0 is the newest commit. One `git rev-list` for the whole
+    census rather than a subprocess per capture."""
+    out = subprocess.run(["git", "rev-list", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    return {sha: i for i, sha in enumerate(out.stdout.split())}
+
+
 def captures_newest_first():
     """Every capture directory that exists, newest first, **derived from git**.
 
@@ -209,13 +225,27 @@ def captures_newest_first():
             "cannot answer: every capture would read as uncommitted and therefore newest, and the "
             "census would silently pick the wrong log per rung. Fetch full history "
             "(`git fetch --unshallow`, or `fetch-depth: 0` in the workflow).")
+    # **Order by POSITION IN HISTORY, not by commit timestamp.** `%ct` has one-second resolution
+    # and these captures were committed in bursts: 15 of them hold 7 distinct timestamps, and six
+    # share a single second while sitting in five different commits. Ties then fell through to
+    # `glob`, i.e. to readdir order, which is APFS on this Mac and ext4 on the runner — so the
+    # census picked a different log per rung on each and `test_abr_calibrate_plant.py` reported
+    # sim.rs disagreeing with logs it agrees with. `git rev-list HEAD` is a total order over the
+    # same commits and needs no resolution at all.
+    order = history_positions()
     out = []
     for d in glob.glob(str(ROOT / "docs/measurements/*-logs")):
         path = pathlib.Path(d)
-        added = capture_added_at(path)
-        # An uncommitted capture sorts newest: it is a capture being taken right now.
-        out.append((added if added is not None else float("inf"), path))
-    return [pathlib.Path(path) for _, path in sorted(out, key=lambda pair: pair[0], reverse=True)]
+        sha = capture_added_commit(path)
+        # An uncommitted capture sorts newest: it is a capture being taken right now. So does one
+        # whose adding commit is not an ancestor of HEAD, which is the same statement about a
+        # branch that has not been merged.
+        pos = order.get(sha, -1) if sha is not None else -1
+        # `path.name` only ever separates captures added by the SAME commit, where chronology has
+        # no answer to give. It is a determinism tie-break and is not claimed to be chronological —
+        # that claim is exactly what the hand-written list got wrong.
+        out.append((pos, path.name, path))
+    return [path for _, _, path in sorted(out, key=lambda t: (t[0], t[1]))]
 
 
 def operating_points(fixtures: pathlib.Path):
