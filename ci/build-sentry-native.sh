@@ -8,14 +8,17 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VERSION=0.13.9
+VERSION=0.16.5
 ARCHIVE="$ROOT/vendor/sentry-native-$VERSION.tar.gz"
 SOURCE="$ROOT/vendor/sentry-native-src"
 BUILD="$ROOT/vendor/sentry-native-build"
 PREFIX="$ROOT/vendor/sentry-native-prefix"
 PATCH="$ROOT/vendor/sentry-native/webos-arm32.patch"
+# Two hunks of that patch are upstream PRs and drop out of it once they land in a release we pin:
+# pointer-width stack reads (getsentry/sentry-native#2052) and the ARM32 registers + both
+# frame-record shapes (#2053). The rest is webOS-only and stays.
 URL="https://github.com/getsentry/sentry-native/archive/refs/tags/$VERSION.tar.gz"
-SHA256=d43a41197ffaa218ceaef8cfcc7ecf584ca1a2c5bda2426b7ab4032875c67167
+SHA256=8d3f63f092ab24ab7f5d30cd8f0e80dc78670a3b3be3f1237948667907cdc3a4
 
 WEBOS_SDK=${WEBOS_SDK:-"$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot"}
 CC="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-gcc"
@@ -68,6 +71,7 @@ patch -d "$SOURCE" -p1 < "$PATCH"
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="-funwind-tables -fno-omit-frame-pointer" \
     -DSENTRY_BACKEND=native \
     -DSENTRY_TRANSPORT=none \
     -DSENTRY_BUILD_SHARED_LIBS=OFF \

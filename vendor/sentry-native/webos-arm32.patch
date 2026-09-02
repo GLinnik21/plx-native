@@ -1,8 +1,7 @@
-diff --git a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/native/minidump/sentry_minidump_linux.c
-index a30e19e..2712a39 100644
---- a/src/backends/native/minidump/sentry_minidump_linux.c
-+++ b/src/backends/native/minidump/sentry_minidump_linux.c
-@@ -11,6 +11,7 @@
+diff -ruN a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/native/minidump/sentry_minidump_linux.c
+--- a/src/backends/native/minidump/sentry_minidump_linux.c	2026-09-01 09:07:33
++++ b/src/backends/native/minidump/sentry_minidump_linux.c	2026-09-03 01:03:38
+@@ -12,6 +12,7 @@
  #    include <string.h>
  #    include <sys/ptrace.h>
  #    include <sys/stat.h>
@@ -10,12 +9,14 @@ index a30e19e..2712a39 100644
  #    include <sys/types.h>
  #    include <sys/uio.h>
  #    include <sys/user.h>
-@@ -19,6 +20,19 @@
+@@ -19,6 +20,20 @@
+ #    include <sys/wait.h>
  #    include <time.h>
  #    include <unistd.h>
- 
++
 +#    if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 +#        if !__GLIBC_PREREQ(2, 15)
++// glibc before 2.15 has the process_vm_readv system call but no wrapper.
 +static ssize_t
 +process_vm_readv(pid_t pid, const struct iovec *local_iov,
 +    unsigned long local_iov_count, const struct iovec *remote_iov,
@@ -26,107 +27,32 @@ index a30e19e..2712a39 100644
 +}
 +#        endif
 +#    endif
-+
- #    include "../../../modulefinder/sentry_modulefinder_linux.h"
- #    include "sentry_alloc.h"
- #    include "sentry_logger.h"
-diff --git a/src/backends/sentry_backend_native.c b/src/backends/sentry_backend_native.c
---- a/src/backends/sentry_backend_native.c
-+++ b/src/backends/sentry_backend_native.c
-@@ -638,7 +638,7 @@ native_backend_write_attachments(const sentry_path_t *event_path)
--
-+
- static void
- native_backend_flush_scope(
--    sentry_backend_t *backend, const sentry_options_t *UNUSED(options))
-+    sentry_backend_t *backend, const sentry_options_t *options)
- {
-     native_backend_state_t *state = (native_backend_state_t *)backend->data;
-     if (!state || !state->event_path) {
-@@ -653,12 +653,36 @@ native_backend_flush_scope(
-     }
--
-+
-     // Create event with current scope
--    sentry_value_t event = sentry_value_new_object();
-+    //
-+    // On webOS/ARM this is the last safe point at which the process may use
-+    // libc time-zone state and the SDK allocator. The fatal-signal handler
-+    // deliberately does not call sentry_handle_exception() there: glibc's
-+    // gmtime_r() reaches getenv("TZ") and a real TV reproduced a recursive
-+    // SIGSEGV before the daemon could be notified. Give the daemon a complete
-+    // event identity and fixed option metadata ahead of time instead.
-+    sentry_value_t event = sentry_value_new_event();
-     sentry_value_set_by_key(
-         event, "level", sentry__value_new_level(SENTRY_LEVEL_FATAL));
--
-+
-     // Apply scope with contexts (includes OS, device info from Sentry)
-     SENTRY_WITH_SCOPE (scope) {
-+        if (scope->release && scope->release[0]) {
-+            sentry_value_set_by_key(event, "release",
-+                sentry_value_new_string(scope->release));
-+        }
-+        if (options && options->dist && options->dist[0]) {
-+            sentry_value_set_by_key(
-+                event, "dist", sentry_value_new_string(options->dist));
-+        }
-+        if (scope->environment && scope->environment[0]) {
-+            sentry_value_set_by_key(event, "environment",
-+                sentry_value_new_string(scope->environment));
-+        }
-+        if (!sentry_value_is_null(scope->client_sdk)) {
-+            sentry_value_set_by_key(event, "sdk", scope->client_sdk);
-+            sentry_value_incref(scope->client_sdk);
-+        }
-+
-         // Get contexts from scope (includes OS info)
-         sentry_value_t os_context
-             = sentry_value_get_by_key(scope->contexts, "os");
-@@ -691,6 +691,38 @@ native_backend_flush_scope(
-             sentry_value_set_by_key(event, "contexts", event_contexts);
-         }
  
-+        // PlxNative adds two privacy-reviewed compatibility contexts. Do not
-+        // copy all custom contexts into the crash snapshot: the application-
-+        // side importer deliberately allowlists only `os`, `webos` and
-+        // `hardware`.
-+        sentry_value_t webos_context
-+            = sentry_value_get_by_key(scope->contexts, "webos");
-+        if (!sentry_value_is_null(webos_context)) {
-+            sentry_value_t event_contexts
-+                = sentry_value_get_by_key(event, "contexts");
-+            if (sentry_value_is_null(event_contexts)) {
-+                event_contexts = sentry_value_new_object();
-+                sentry_value_set_by_key(event, "contexts", event_contexts);
-+            }
-+            sentry_value_set_by_key(
-+                event_contexts, "webos", webos_context);
-+            sentry_value_incref(webos_context);
-+        }
-+
-+        sentry_value_t hardware_context
-+            = sentry_value_get_by_key(scope->contexts, "hardware");
-+        if (!sentry_value_is_null(hardware_context)) {
-+            sentry_value_t event_contexts
-+                = sentry_value_get_by_key(event, "contexts");
-+            if (sentry_value_is_null(event_contexts)) {
-+                event_contexts = sentry_value_new_object();
-+                sentry_value_set_by_key(event, "contexts", event_contexts);
-+            }
-+            sentry_value_set_by_key(
-+                event_contexts, "hardware", hardware_context);
-+            sentry_value_incref(hardware_context);
-+        }
-+
-         // Also copy other scope data (user, tags, extra, etc.)
-         sentry_value_t user = scope->user;
-         if (!sentry_value_is_null(user)) {
-diff --git a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
-index a2cf4df..a39bd85 100644
---- a/src/backends/native/sentry_crash_daemon.c
-+++ b/src/backends/native/sentry_crash_daemon.c
-@@ -37,10 +37,28 @@
+ #    include "sentry_alloc.h"
+ #    include "sentry_elf.h"
+diff -ruN a/src/backends/native/sentry_crash_context.h b/src/backends/native/sentry_crash_context.h
+--- a/src/backends/native/sentry_crash_context.h	2026-09-01 09:07:33
++++ b/src/backends/native/sentry_crash_context.h	2026-09-03 01:03:38
+@@ -93,6 +93,15 @@
+ #    define SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS                               \
+         10000 // 10s max wait for daemon
+ #endif
++// The webOS 4.5 Cortex-A9 needs more than the upstream 10-second budget on a
++// cold first crash: the daemon was still enumerating /proc/<pid>/maps when the
++// handler timed out and let the process die, so the resulting event had no
++// modules and could not be symbolicated. Keep the parent alive long enough for
++// the out-of-process walk; warm crashes normally finish inside 10 seconds.
++#if defined(SENTRY_PLATFORM_LINUX) && defined(__arm__)
++#    undef SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS
++#    define SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS 30000
++#endif
+ #define SENTRY_CRASH_DAEMON_WAIT_TIMEOUT_MS                                    \
+     5000 // 5 seconds between daemon health checks
+ #define SENTRY_CRASH_HANDLER_POLL_INTERVAL_MS                                  \
+diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
+--- a/src/backends/native/sentry_crash_daemon.c	2026-09-01 09:07:33
++++ b/src/backends/native/sentry_crash_daemon.c	2026-09-03 01:34:04
+@@ -38,10 +38,24 @@
  #    include <inttypes.h>
  #    include <signal.h>
  #    include <sys/stat.h>
@@ -135,13 +61,9 @@ index a2cf4df..a39bd85 100644
  #    include <sys/uio.h>
  #    include <sys/wait.h>
  #    include <unistd.h>
-+#    if (defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)) \
-+        && defined(__arm__)
-+#        include <sys/ptrace.h>
-+#        include <sys/user.h>
-+#    endif
 +#    if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 +#        if !__GLIBC_PREREQ(2, 15)
++// glibc before 2.15 has the process_vm_readv system call but no wrapper.
 +static ssize_t
 +process_vm_readv(pid_t pid, const struct iovec *local_iov,
 +    unsigned long local_iov_count, const struct iovec *remote_iov,
@@ -155,7 +77,140 @@ index a2cf4df..a39bd85 100644
  #    if defined(SENTRY_PLATFORM_MACOS)
  #        include <crt_externs.h>
  #        include <mach-o/dyld.h>
-@@ -393,6 +411,41 @@ build_registers_from_ctx(const sentry_crash_context_t *ctx, size_t thread_idx)
+@@ -50,6 +64,132 @@
+ #    if defined(SENTRY_PLATFORM_LINUX)
+ #        include "unwinder/sentry_unwinder.h"
+ #    endif
++#    if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
++/**
++ * Read one logical line of `/proc/<pid>/maps`. A pathname longer than the
++ * buffer is truncated, and the rest of that line is consumed rather than
++ * handed to the next `fgets` as if it were a mapping of its own.
++ */
++static bool
++read_maps_line(FILE *f, char *line, size_t size)
++{
++    if (!fgets(line, size, f)) {
++        return false;
++    }
++    size_t len = strlen(line);
++    if (len > 0 && line[len - 1] == '\n') {
++        return true;
++    }
++    int c;
++    while ((c = fgetc(f)) != EOF && c != '\n') {
++    }
++    return true;
++}
++#    endif
++#    if defined(__arm__)
++/**
++ * Every mapping of the crashed process, recorded while `/proc/<pid>/maps` is
++ * parsed for modules. Unlike the module inventory this includes anonymous and
++ * special mappings and keeps the permission bits, so the ARM32 frame-pointer
++ * walk can answer "is this a return address" (executable, not writable) and
++ * "is this a saved frame pointer" (writable, above the current frame) without
++ * guessing. `g_vma_complete` is true only when the whole file was read and
++ * recorded; `vma_snapshot_unchanged` lets the walk notice a snapshot that
++ * changed under it, since only the crashing thread is stopped while the
++ * daemon works.
++ * ARM32 only: nothing else consumes it, so nothing else pays for it.
++ */
++typedef struct {
++    uint64_t start;
++    uint64_t end;
++    bool write;
++    bool exec;
++} vma_range_t;
++static vma_range_t *g_vmas = NULL;
++static size_t g_vma_count = 0;
++static size_t g_vma_capacity = 0;
++static bool g_vma_alloc_failed = false;
++static bool g_vma_complete = false;
++
++static bool
++vma_record(uint64_t start, uint64_t end, const char *perms)
++{
++    if (g_vma_alloc_failed) {
++        return false;
++    }
++    if (g_vma_count == g_vma_capacity) {
++        size_t capacity = g_vma_capacity ? g_vma_capacity * 2 : 256;
++        if (capacity < g_vma_capacity
++            || capacity > SIZE_MAX / sizeof(vma_range_t)) {
++            g_vma_alloc_failed = true;
++            return false;
++        }
++        vma_range_t *grown = sentry_malloc(capacity * sizeof(vma_range_t));
++        if (!grown) {
++            g_vma_alloc_failed = true;
++            return false;
++        }
++        if (g_vmas) {
++            memcpy(grown, g_vmas, g_vma_count * sizeof(vma_range_t));
++            sentry_free(g_vmas);
++        }
++        g_vmas = grown;
++        g_vma_capacity = capacity;
++    }
++    g_vmas[g_vma_count].start = start;
++    g_vmas[g_vma_count].end = end;
++    g_vmas[g_vma_count].write = perms[1] == 'w';
++    g_vmas[g_vma_count].exec = perms[2] == 'x';
++    g_vma_count++;
++    return true;
++}
++
++static const vma_range_t *
++vma_containing(uint64_t addr)
++{
++    for (size_t i = 0; i < g_vma_count; i++) {
++        if (addr >= g_vmas[i].start && addr < g_vmas[i].end) {
++            return &g_vmas[i];
++        }
++    }
++    return NULL;
++}
++
++/**
++ * Re-read the mappings and answer whether every one of them still matches
++ * the recorded snapshot, field by field and in order. Called after the stack
++ * bytes have been copied, so a mapping change between the two reads is
++ * detected rather than reasoned about.
++ */
++static bool
++vma_snapshot_unchanged(pid_t pid)
++{
++    char maps_path[64];
++    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
++    FILE *f = fopen(maps_path, "r");
++    if (!f) {
++        return false;
++    }
++    char line[1024];
++    size_t i = 0;
++    bool same = true;
++    while (same && read_maps_line(f, line, sizeof(line))) {
++        unsigned long long start, end;
++        char perms[5];
++        if (sscanf(line, "%llx-%llx %4s", &start, &end, perms) != 3) {
++            same = false;
++            break;
++        }
++        same = i < g_vma_count && g_vmas[i].start == start
++            && g_vmas[i].end == end && g_vmas[i].write == (perms[1] == 'w')
++            && g_vmas[i].exec == (perms[2] == 'x');
++        i++;
++    }
++    same = same && i == g_vma_count && !ferror(f);
++    fclose(f);
++    return same;
++}
++#    endif
+ #elif defined(SENTRY_PLATFORM_WINDOWS)
+ #    include <dbghelp.h>
+ #    include <fcntl.h>
+@@ -420,6 +560,41 @@
          registers, "sp", sentry__value_new_addr(uctx->uc_mcontext.sp));
      sentry_value_set_by_key(
          registers, "pc", sentry__value_new_addr(uctx->uc_mcontext.pc));
@@ -197,7 +252,7 @@ index a2cf4df..a39bd85 100644
  #    endif
  
  #elif defined(SENTRY_PLATFORM_MACOS)
-@@ -537,6 +590,12 @@
+@@ -582,6 +757,12 @@
   */
  #define MAX_STACK_FRAMES 128
  
@@ -210,22 +265,68 @@ index a2cf4df..a39bd85 100644
  /**
   * Read a pointer-sized value from the stack buffer.
   * Returns true if successful, false if address is outside the buffer.
-@@ -546,11 +605,12 @@ read_stack_value(const uint8_t *stack_buf, uint64_t stack_start,
+@@ -590,15 +771,57 @@
+ read_stack_value(const uint8_t *stack_buf, uint64_t stack_start,
      uint64_t stack_size, uint64_t addr, uint64_t *out_value)
  {
-     if (addr < stack_start
+-    if (addr < stack_start
 -        || addr + sizeof(uint64_t) > stack_start + stack_size) {
-+        || addr + sizeof(uintptr_t) > stack_start + stack_size) {
++    // Range-check by subtraction: `addr` comes from a frame pointer in a
++    // crashed process, and a corrupted value near the top of the address
++    // space would wrap an `addr + size` sum past the naive comparison.
++    if (addr < stack_start) {
          return false;
      }
      uint64_t offset = addr - stack_start;
 -    memcpy(out_value, stack_buf + offset, sizeof(uint64_t));
-+    *out_value = 0;
-+    memcpy(out_value, stack_buf + offset, sizeof(uintptr_t));
++    if (offset > stack_size || stack_size - offset < sizeof(uintptr_t)) {
++        return false;
++    }
++    uintptr_t value = 0;
++    memcpy(&value, stack_buf + (size_t)offset, sizeof(value));
++    *out_value = (uint64_t)value;
      return true;
  }
  
-@@ -635,6 +695,9 @@ build_stacktrace_for_thread(
++#if defined(__arm__)
++/**
++ * Does a (saved fp, return address) pair look like a frame record?
++ *
++ * Judged against the crashed process's mappings. A return address must be in
++ * an executable mapping that is not writable: that is what separates code
++ * from a stack (writable, and on some systems executable too) and from the
++ * heap. A non-zero saved fp must be above the current frame and in a
++ * writable mapping: stacks are writable, code is not, so the other compiler's
++ * record shape - whose "saved fp" is really a return address - is rejected
++ * even when code sits numerically below the stack. The walk reads frame
++ * records out of the one captured window, so a chain is followed only while
++ * it stays inside that window; a signal stack or a split stack that links to
++ * a lower or non-contiguous segment ends the walk. Not walked either: JIT
++ * code in writable mappings.
++ */
++static bool
++arm_frame_record_plausible(
++    uint64_t saved_fp, uint64_t return_addr, uint64_t current_fp)
++{
++    const vma_range_t *code = vma_containing(return_addr);
++    if (!code || !code->exec || code->write) {
++        return false;
++    }
++    if (saved_fp == 0) {
++        return true;
++    }
++    if (saved_fp <= current_fp) {
++        return false;
++    }
++    const vma_range_t *stack = vma_containing(saved_fp);
++    return stack && stack->write;
++}
++#endif
++
+ #if defined(SENTRY_PLATFORM_MACOS) && defined(__aarch64__)
+ #    define SENTRY__STRIP_PAC(addr) ((addr) & 0x00007FFFFFFFFFFFULL)
+ #else
+@@ -693,6 +916,9 @@
      uint64_t ip = 0;
      uint64_t fp = 0;
      uint64_t sp = 0;
@@ -235,7 +336,34 @@ index a2cf4df..a39bd85 100644
  #if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
      // Use thread-specific context, defaulting to crashed thread
      const ucontext_t *thread_context = &ctx->platform.context;
-@@ -937,7 +1000,7 @@
+@@ -959,7 +1185,7 @@
+                 = sentry_malloc(sizeof(*remote_frames) * MAX_STACK_FRAMES);
+             size_t remote_count = remote_frames
+                 ? sentry__unwind_stack_from_thread(
+-                      tid, remote_frames, MAX_STACK_FRAMES, &registers)
++                      tid, remote_frames, (size_t)frame_limit, &registers)
+                 : 0;
+ 
+             if (remote_count > 0) {
+@@ -967,7 +1193,7 @@
+                     remote_count, tid);
+ 
+                 for (size_t i = 0;
+-                    i < remote_count && frame_count < MAX_STACK_FRAMES; i++) {
++                    i < remote_count && frame_count < frame_limit; i++) {
+                     if (remote_frames[i].ip == 0
+                         || !is_valid_code_addr(remote_frames[i].ip)) {
+                         continue;
+@@ -1036,7 +1262,7 @@
+             ctx->platform.backtrace_count);
+ 
+         for (size_t i = 0;
+-            i < ctx->platform.backtrace_count && frame_count < MAX_STACK_FRAMES;
++            i < ctx->platform.backtrace_count && frame_count < frame_limit;
+             i++) {
+             uint64_t frame_ip = ctx->platform.backtrace_ips[i];
+             if (frame_ip == 0 || !is_valid_code_addr(frame_ip)) {
+@@ -1079,7 +1305,7 @@
  #endif
  
      // Add the crashing frame (instruction pointer)
@@ -244,7 +372,7 @@ index a2cf4df..a39bd85 100644
          temp_frames[frame_count] = sentry_value_new_object();
          sentry_value_set_by_key(temp_frames[frame_count], "instruction_addr",
              sentry__value_new_addr(ip));
-@@ -949,7 +1012,7 @@
+@@ -1095,9 +1321,21 @@
      }
  
      // Walk the frame pointer chain if we have stack memory
@@ -252,8 +380,22 @@ index a2cf4df..a39bd85 100644
 +    if (stack_buf && fp != 0 && frame_count < frame_limit) {
          uint64_t current_fp = fp;
          int walk_count = 0;
++#if defined(__arm__)
++        // Fail closed: without a complete and still-current picture of the
++        // mappings neither frame-record shape can be told from the other,
++        // and guessing would emit fabricated frames rather than a shorter,
++        // honest stack. Only the crashing thread is stopped, so the mappings
++        // are re-read now that the stack bytes are in hand.
++        if (!g_vma_complete || !vma_snapshot_unchanged(ctx->crashed_pid)) {
++            SENTRY_TRACE("Mappings incomplete or changed; skipping the ARM32 "
++                         "frame-pointer walk");
++            walk_count = frame_limit;
++        }
++#endif
  
-@@ -961,14 +1024,23 @@
+         // Check if FP is within captured stack range
+         uint64_t stack_end = stack_start + stack_size;
+@@ -1107,10 +1345,47 @@
                  (unsigned long long)stack_end);
          }
  
@@ -262,277 +404,135 @@ index a2cf4df..a39bd85 100644
              uint64_t saved_fp = 0;
              uint64_t return_addr = 0;
  
--            // Read saved frame pointer and return address
--            // Frame layout: [FP+0] = saved FP, [FP+8] = return addr
-+            // Read saved frame pointer and return address. ARM's APCS frame
-+            // record puts the saved FP immediately before the return address:
-+            // [FP-4] = saved FP, [FP] = return address. Other supported
-+            // architectures use [FP] followed by the return address.
 +#if defined(__arm__)
-+            uint64_t saved_fp_addr = current_fp - sizeof(uintptr_t);
-+            uint64_t return_addr_addr = current_fp;
++            // Two frame-record shapes coexist in one ARM32 process. GCC's
++            // `push {.., fp, lr}; add fp, sp, #N` leaves fp on the LR slot
++            // ([fp-4] = saved fp, [fp] = return address), while rustc/LLVM's
++            // leaves it on the saved-fp slot ([fp] = saved fp, [fp+4] = return
++            // address). Read both records and keep the one shaped like a
++            // frame: a return address outside this stack, and a saved fp that
++            // is zero or further up the same stack.
++            {
++                uint64_t fp_a = 0, ret_a = 0, fp_b = 0, ret_b = 0;
++                bool ok_a = read_stack_value(stack_buf, stack_start,
++                                stack_size, current_fp, &fp_a)
++                    && read_stack_value(stack_buf, stack_start, stack_size,
++                        current_fp + sizeof(uintptr_t), &ret_a);
++                bool ok_b = read_stack_value(stack_buf, stack_start,
++                                stack_size, current_fp - sizeof(uintptr_t),
++                                &fp_b)
++                    && read_stack_value(stack_buf, stack_start, stack_size,
++                        current_fp, &ret_b);
++                if (ok_a
++                    && arm_frame_record_plausible(fp_a, ret_a, current_fp)) {
++                    saved_fp = fp_a;
++                    return_addr = ret_a;
++                } else if (ok_b
++                    && arm_frame_record_plausible(fp_b, ret_b, current_fp)) {
++                    saved_fp = fp_b;
++                    return_addr = ret_b;
++                } else {
++                    SENTRY_TRACEF("No frame record at FP=0x%llx (stack: 0x%llx "
++                                  "- 0x%llx)",
++                        (unsigned long long)current_fp,
++                        (unsigned long long)stack_start,
++                        (unsigned long long)stack_end);
++                    break;
++                }
++            }
 +#else
-+            uint64_t saved_fp_addr = current_fp;
-+            uint64_t return_addr_addr = current_fp + sizeof(uintptr_t);
-+#endif
+             // Read saved frame pointer and return address
+             // Frame layout: [FP+0] = saved FP, [FP+8] = return addr
              if (!read_stack_value(stack_buf, stack_start, stack_size,
--                    current_fp, &saved_fp)) {
-+                    saved_fp_addr, &saved_fp)) {
-                 SENTRY_DEBUGF(
-                     "Cannot read saved FP at 0x%llx (stack: 0x%llx - 0x%llx)",
-                     (unsigned long long)current_fp,
-@@ -977,9 +1049,9 @@
+@@ -1123,11 +1398,12 @@
                  break;
              }
              if (!read_stack_value(stack_buf, stack_start, stack_size,
 -                    current_fp + sizeof(uint64_t), &return_addr)) {
-+                    return_addr_addr, &return_addr)) {
-                 SENTRY_DEBUGF("Cannot read return addr at 0x%llx",
++                    current_fp + sizeof(uintptr_t), &return_addr)) {
+                 SENTRY_TRACEF("Cannot read return addr at 0x%llx",
 -                    (unsigned long long)(current_fp + sizeof(uint64_t)));
-+                    (unsigned long long)return_addr_addr);
++                    (unsigned long long)(current_fp + sizeof(uintptr_t)));
                  break;
              }
++#endif
+             saved_fp = SENTRY__STRIP_PAC(saved_fp);
+             return_addr = SENTRY__STRIP_PAC(return_addr);
  
-@@ -1056,6 +1128,86 @@
- #if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
- #    include <elf.h>
+@@ -1711,9 +1987,13 @@
  
+     char line[1024];
+     ctx->module_count = 0;
 +#    if defined(__arm__)
-+// KSCrash's all-thread report first suspends every non-crashing Mach thread,
-+// then snapshots its register state and unwinds while the thread is still
-+// stopped. Linux exposes the same primitive per LWP through ptrace. Keep every
-+// successfully captured LWP stopped until the native event has been serialized;
-+// otherwise its stack can move after PC/SP/FP were sampled and the frame chain
-+// becomes a hybrid of two moments.
-+static pid_t g_attached_threads[SENTRY_CRASH_MAX_THREADS];
-+static size_t g_attached_thread_count = 0;
-+
-+static bool
-+capture_arm_thread_context(pid_t tid, ucontext_t *uctx)
-+{
-+    if (ptrace(PTRACE_ATTACH, tid, NULL, NULL) != 0) {
-+        SENTRY_DEBUGF("ptrace(PTRACE_ATTACH) failed for thread %d: %s", tid,
-+            strerror(errno));
-+        return false;
-+    }
-+
-+    int status = 0;
-+    pid_t waited;
-+    do {
-+        waited = waitpid(tid, &status, __WALL);
-+    } while (waited < 0 && errno == EINTR);
-+    if (waited != tid || !WIFSTOPPED(status)) {
-+        SENTRY_DEBUGF("waitpid after PTRACE_ATTACH failed for thread %d: %s",
-+            tid, waited < 0 ? strerror(errno) : "thread did not stop");
-+        ptrace(PTRACE_DETACH, tid, NULL, NULL);
-+        return false;
-+    }
-+
-+    struct user_regs regs;
-+    memset(&regs, 0, sizeof(regs));
-+    if (ptrace(PTRACE_GETREGS, tid, NULL, &regs) != 0) {
-+        SENTRY_DEBUGF("PTRACE_GETREGS failed for thread %d: %s", tid,
-+            strerror(errno));
-+        ptrace(PTRACE_DETACH, tid, NULL, NULL);
-+        return false;
-+    }
-+
-+    memset(uctx, 0, sizeof(*uctx));
-+    uctx->uc_mcontext.arm_r0 = regs.uregs[0];
-+    uctx->uc_mcontext.arm_r1 = regs.uregs[1];
-+    uctx->uc_mcontext.arm_r2 = regs.uregs[2];
-+    uctx->uc_mcontext.arm_r3 = regs.uregs[3];
-+    uctx->uc_mcontext.arm_r4 = regs.uregs[4];
-+    uctx->uc_mcontext.arm_r5 = regs.uregs[5];
-+    uctx->uc_mcontext.arm_r6 = regs.uregs[6];
-+    uctx->uc_mcontext.arm_r7 = regs.uregs[7];
-+    uctx->uc_mcontext.arm_r8 = regs.uregs[8];
-+    uctx->uc_mcontext.arm_r9 = regs.uregs[9];
-+    uctx->uc_mcontext.arm_r10 = regs.uregs[10];
-+    uctx->uc_mcontext.arm_fp = regs.uregs[11];
-+    uctx->uc_mcontext.arm_ip = regs.uregs[12];
-+    uctx->uc_mcontext.arm_sp = regs.uregs[13];
-+    uctx->uc_mcontext.arm_lr = regs.uregs[14];
-+    uctx->uc_mcontext.arm_pc = regs.uregs[15];
-+    uctx->uc_mcontext.arm_cpsr = regs.uregs[16];
-+
-+    g_attached_threads[g_attached_thread_count++] = tid;
-+    SENTRY_DEBUGF(
-+        "Thread %d stopped and captured: PC=0x%lx SP=0x%lx FP=0x%lx", tid,
-+        (unsigned long)regs.uregs[15], (unsigned long)regs.uregs[13],
-+        (unsigned long)regs.uregs[11]);
-+    return true;
-+}
-+
-+static void
-+release_captured_arm_threads(void)
-+{
-+    while (g_attached_thread_count > 0) {
-+        pid_t tid = g_attached_threads[--g_attached_thread_count];
-+        if (ptrace(PTRACE_DETACH, tid, NULL, NULL) != 0 && errno != ESRCH) {
-+            SENTRY_DEBUGF(
-+                "PTRACE_DETACH failed for thread %d: %s", tid, strerror(errno));
-+        }
-+    }
-+}
++    g_vma_count = 0;
++    g_vma_complete = false;
++    bool vma_ok = true;
 +#    endif
-+
- /**
-  * Extract Build ID from ELF file (for debug_meta)
-  * Returns the Build ID length, or 0 if not found
-@@ -1215,13 +1367,23 @@ capture_modules_from_proc_maps(sentry_crash_context_t *ctx)
-         const char *pathname = line + pathname_offset;
-         // Trim newline
-         size_t len = strlen(pathname);
-         if (len > 0 && pathname[len - 1] == '\n') {
-+            line[pathname_offset + len - 1] = '\0';
-             len--;
-         }
-         if (len == 0) {
+ 
+-    while (fgets(line, sizeof(line), f)
+-        && ctx->module_count < SENTRY_CRASH_MAX_MODULES) {
++    while (read_maps_line(f, line, sizeof(line))) {
+ 
+         // Parse line: "start-end perms offset dev inode pathname"
+         unsigned long long start, end, offset;
+@@ -1724,9 +2004,26 @@
+             perms, &offset, &pathname_offset);
+ 
+         if (parsed < 4) {
++#    if defined(__arm__)
++            vma_ok = false; // a line this parser cannot read is a mapping it
++                            // does not know about
++#    endif
              continue;
          }
--
-+
-+        // /proc/maps also contains character devices such as /dev/mali0.
-+        // Reading one as an ELF file can block the crash daemon inside the
-+        // driver's read(), so debug images are regular mapped files only.
-+        struct stat st;
-+        if (stat(pathname, &st) != 0 || !S_ISREG(st.st_mode)) {
-+            SENTRY_DEBUGF("Skipping non-regular mapping: %s", pathname);
-+            continue;
-+        }
-+
-         // Check if this file is already captured - if so, extend size if needed
-         sentry_module_info_t *existing_mod = NULL;
-         for (uint32_t j = 0; j < ctx->module_count; j++) {
-@@ -1367,6 +1529,18 @@
-     ctx->platform.num_threads = thread_count;
-     SENTRY_DEBUGF("Enumerated %zu threads from /proc/%d/task", thread_count,
-         ctx->crashed_pid);
-+
-+#    if defined(__arm__)
-+    size_t captured = 0;
-+    for (size_t i = 1; i < thread_count; i++) {
-+        if (capture_arm_thread_context(ctx->platform.threads[i].tid,
-+                &ctx->platform.threads[i].context)) {
-+            captured++;
-+        }
-+    }
-+    SENTRY_DEBUGF("Captured %zu of %zu non-crashed thread contexts", captured,
-+        thread_count > 0 ? thread_count - 1 : 0);
-+#    endif
- }
- #endif // SENTRY_PLATFORM_LINUX || SENTRY_PLATFORM_ANDROID
  
-@@ -1963,8 +2127,14 @@ build_native_crash_event(
++#    if defined(__arm__)
++        if (!vma_record(start, end, perms)) {
++            vma_ok = false;
++        }
++        if (ctx->module_count >= SENTRY_CRASH_MAX_MODULES) {
++            continue; // module inventory is full; keep reading for mappings
++        }
++#    else
++        if (ctx->module_count >= SENTRY_CRASH_MAX_MODULES) {
++            break;
++        }
++#    endif
++
+         // Must have a valid pathname (not [stack], [heap], etc.)
+         if (pathname_offset <= 0 || line[pathname_offset] == '\0'
+             || line[pathname_offset] == '[' || line[pathname_offset] == '\n') {
+@@ -1801,6 +2098,11 @@
+         ctx->module_count++;
+     }
+ 
++#    if defined(__arm__)
++    g_vma_complete = vma_ok && !ferror(f);
++    SENTRY_DEBUGF("Captured %zu mappings (%s) from /proc/%d/maps", g_vma_count,
++        g_vma_complete ? "complete" : "INCOMPLETE", ctx->crashed_pid);
++#    endif
+     fclose(f);
+     SENTRY_DEBUGF("Captured %u modules from /proc/%d/maps", ctx->module_count,
+         ctx->crashed_pid);
+@@ -3143,6 +3445,12 @@
      // Set platform to native
      sentry_value_set_by_key(
          event, "platform", sentry_value_new_string("native"));
--
 +
 +    // The daemon is ordinary process context; stamp the actual crash-processing
 +    // time here rather than asking the fatal-signal handler to enter libc's
 +    // non-signal-safe time-zone machinery.
 +    sentry_value_set_by_key(event, "timestamp", sentry__value_new_string_owned(
 +        sentry__usec_time_to_iso8601(sentry__usec_time())));
-+
-     // Set level to fatal
-     sentry_value_set_by_key(event, "level", sentry_value_new_string("fatal"));
--
-+
-     // Build exception
-@@ -3443,6 +3607,13 @@
-         sentry_options_free(options);
-     }
-     if (crash_processed) {
-+#if (defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)) \
-+    && defined(__arm__)
-+        // Match KSCrash's suspend/snapshot/unwind/resume lifetime. Do this
-+        // immediately before waking the fatal-signal handler so no captured
-+        // stack can move while the event is being serialized or handed off.
-+        release_captured_arm_threads();
-+#endif
-         // Mark as done
-         SENTRY_DEBUG("Marking crash state as DONE");
-         sentry__atomic_store(&ipc->shmem->state, SENTRY_CRASH_STATE_DONE);
-diff --git a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
-index a361dba..d25c5c6 100644
---- a/src/modulefinder/sentry_modulefinder_linux.c
-+++ b/src/modulefinder/sentry_modulefinder_linux.c
-@@ -20,7 +20,15 @@
- #include <sys/uio.h>
- #include <unistd.h>
  
--#if defined(__ANDROID_API__) && __ANDROID_API__ < 23
-+#if defined(__ANDROID_API__) && __ANDROID_API__ < 23
-+#    define SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL 1
-+#elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
-+#    if !__GLIBC_PREREQ(2, 15)
-+#        define SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL 1
-+#    endif
-+#endif
-+
-+#if defined(SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL)
- static ssize_t
- process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
-     unsigned long __local_iov_count, const struct iovec *__remote_iov,
-@@ -29,6 +37,7 @@ process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
-     return syscall(__NR_process_vm_readv, __pid, __local_iov, __local_iov_count,
-         __remote_iov, __remote_iov_count, __flags);
- }
-+#    undef SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL
- #endif
+     sentry_value_set_by_key(event, "level", sentry_value_new_string(level));
  
- #define ENSURE(Ptr)                                                            \
-diff --git a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sentry_crash_handler.c
-index 1fba605..49bf295 100644
---- a/src/backends/native/sentry_crash_handler.c
-+++ b/src/backends/native/sentry_crash_handler.c
-@@ -243,6 +243,33 @@ safe_build_stack_path(
-     return pos;
- }
- #    endif
-+
-+// Invoke the signal disposition Sentry replaced. PlxNative installs an
-+// async-signal-safe bounded tracer first, so every crash leaves a local
-+// PC/register record even if the daemon reaches DONE after failing to write
-+// its envelope. The next healthy boot imports the native envelope first and
-+// consumes a matching local record by build ID + signal, preserving one
-+// Sentry event per process death.
-+static void
-+chain_previous_handler(int signum, siginfo_t *info, void *context)
-+{
-+    for (size_t i = 0; i < g_crash_signal_count; i++) {
-+        if (g_crash_signals[i] != signum) {
-+            continue;
-+        }
-+        struct sigaction *previous = &g_previous_handlers[i];
-+        if (previous->sa_handler == SIG_DFL
-+            || previous->sa_handler == SIG_IGN) {
-+            return;
-+        }
-+        if ((previous->sa_flags & SA_SIGINFO) != 0) {
-+            previous->sa_sigaction(signum, info, context);
-+        } else if (previous->sa_handler) {
-+            previous->sa_handler(signum);
-+        }
-+        return;
-+    }
-+}
+diff -ruN a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sentry_crash_handler.c
+--- a/src/backends/native/sentry_crash_handler.c	2026-09-01 09:07:33
++++ b/src/backends/native/sentry_crash_handler.c	2026-09-03 01:03:38
+@@ -360,10 +360,13 @@
+         sizeof(ctx->platform.threads[0].context));
  
- /**
-  * Signal handler (signal-safe)
-@@ -262,7 +289,8 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
- 
-     sentry_crash_ipc_t *ipc = g_crash_ipc;
-     if (!ipc || !ipc->shmem) {
--        // No IPC available, just re-raise
-+        // No IPC available: preserve the application's bounded fallback.
-+        chain_previous_handler(signum, info, context);
-         raise(signum);
-         return;
-     }
-@@ -294,8 +322,11 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
      // Capture backtrace using libunwind (DWARF-based, works without frame
 -    // pointers). This runs in the signal handler, which is safe because
 -    // libunwind's core unwinding API (unw_init_local2, unw_step, unw_get_reg)
@@ -548,13 +548,16 @@ index 1fba605..49bf295 100644
      ctx->platform.backtrace_count = 0;
      {
          unw_cursor_t cursor;
-@@ -649,12 +677,16 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+@@ -754,13 +757,17 @@
+     sentry__page_allocator_enable();
+ #    endif
+ 
 -    // Call Sentry's exception handler to invoke on_crash/before_send hooks
 -    // Note: With page allocator enabled, this is now signal-safe
 +    // Ordinary platforms run the SDK hooks here. webOS/ARM must not: its
 +    // gmtime_r() enters getenv("TZ") and reproduced a recursive SIGSEGV before
 +    // this handler could notify the daemon. The native backend has already
-+    // persisted the fixed scope fields that the out-of-process builder needs.
++    // persisted the scope fields that the out-of-process builder needs.
 +#    if !(defined(SENTRY_PLATFORM_LINUX) && defined(__arm__))
      sentry_ucontext_t sentry_uctx;
      sentry_uctx.signum = signum;
@@ -565,36 +568,29 @@ index 1fba605..49bf295 100644
  
      // Try to notify daemon
      if (sentry__atomic_compare_swap(&ctx->state, SENTRY_CRASH_STATE_READY,
-             SENTRY_CRASH_STATE_CRASHED)) {
+diff -ruN a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
+--- a/src/modulefinder/sentry_modulefinder_linux.c	2026-09-01 09:07:33
++++ b/src/modulefinder/sentry_modulefinder_linux.c	2026-09-03 01:03:38
+@@ -22,6 +22,14 @@
+ #include <unistd.h>
  
-@@ -686,6 +714,11 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
-     }
- 
- daemon_handling:
-+    // The saved PlxNative tracer writes its bounded local record, then
-+    // re-raises and normally does not return. If another saved handler does,
-+    // Sentry's termination path below remains final.
-+    chain_previous_handler(signum, info, context);
-+
-     // Re-raise signal to let system handle it
-     SENTRY_DEBUG("Wait complete, allowing process to terminate");
-
-diff --git a/src/backends/native/sentry_crash_context.h b/src/backends/native/sentry_crash_context.h
---- a/src/backends/native/sentry_crash_context.h
-+++ b/src/backends/native/sentry_crash_context.h
-@@ -89,6 +89,15 @@
-         10000 // 10s max wait for daemon
- #endif
-+// The webOS 4.5 Cortex-A9 needs more than the upstream 10-second budget on a
-+// cold first crash: the daemon was still enumerating /proc/<pid>/maps when the
-+// handler timed out and let the process die, so the resulting event had no
-+// modules and could not be symbolicated. Keep the parent alive long enough for
-+// the out-of-process walk; warm crashes normally finish inside 10 seconds.
-+#if defined(SENTRY_PLATFORM_LINUX) && defined(__arm__)
-+#    undef SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS
-+#    define SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS 30000
+ #if defined(__ANDROID_API__) && __ANDROID_API__ < 23
++#    define SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL 1
++#elif defined(__GLIBC__) && defined(__GLIBC_PREREQ)
++#    if !__GLIBC_PREREQ(2, 15)
++#        define SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL 1
++#    endif
 +#endif
- #define SENTRY_CRASH_DAEMON_WAIT_TIMEOUT_MS                                    \
-     5000 // 5 seconds between daemon health checks
- #define SENTRY_CRASH_HANDLER_POLL_INTERVAL_MS                                  \
++
++#if defined(SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL)
+ static ssize_t
+ process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
+     unsigned long __local_iov_count, const struct iovec *__remote_iov,
+@@ -30,6 +38,7 @@
+     return syscall(__NR_process_vm_readv, __pid, __local_iov, __local_iov_count,
+         __remote_iov, __remote_iov_count, __flags);
+ }
++#    undef SENTRY_NEEDS_PROCESS_VM_READV_SYSCALL
+ #endif
  
+ #define ENSURE(Ptr)                                                            \
