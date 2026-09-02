@@ -1112,9 +1112,81 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        open_failure_action, prime_before_play, rebuffer_request_is_current,
-        should_begin_hls_rebuffer, OpenFailureAction,
+        hls_buffered_ms, open_failure_action, prime_before_play, rebuffer_request_is_current,
+        should_begin_hls_rebuffer, OpenFailureAction, SHARED,
     };
+    use std::sync::atomic::Ordering::{Relaxed, Release};
+
+    /// The device's measured position-callback period, so the replay below advances in the same
+    /// steps the television reports in (`vtick=5 vgap=201ms`; `player::sf_on_event`).
+    const POSITION_PERIOD_MS: u32 = 201;
+
+    /// Put the three atomics `hls_buffered_ms` samples back where a fresh session leaves them, so
+    /// a replay cannot leak a frozen playhead into another test holding the same serial lock.
+    fn clear_hls_reserve_sample() {
+        SHARED.hls_video_tail_ns.store(-1, Release);
+        SHARED.hls_audio_tail_ns.store(-1, Release);
+        SHARED.disp_base.store(0, Relaxed);
+        SHARED.playpos_ns.store(0, Relaxed);
+    }
+
+    /// **Regression: `pipe_abr_down_collapse` on the television, 2026-09-02.** A 40000 kbps link
+    /// collapsed to 500 kbps at t=25 s while a 20000 kbps rung was active. The controller's
+    /// descent was correct once it could run, but it could not run for 82 s, and the case failed
+    /// its `pos_climb` gate with 38 s of progress in a 120 s run.
+    ///
+    /// What stopped it is the terminal boundary being defined arithmetically. Segment 9 was
+    /// demuxed to a video tail of ~29.96 s; the pipeline then stopped reporting a position
+    /// altogether (`play=0pm vtick=0 vgap=0ms`, log line 248, holding `pos=29s` for the next
+    /// 77 s) with the playhead parked SHORT of that tail, because the last fed access units
+    /// cannot be presented until the ones behind them arrive. So `hls_buffered_ms` stuck at a
+    /// small positive remnant forever, `should_begin_hls_rebuffer`'s `buffered_ms == Some(0)`
+    /// never became true, no `hls: auto-rebuffer pause` was ever written, and the worker's
+    /// `StallGuard` — which reads that same hold as `terminal_hold_started` — never abandoned the
+    /// fetch. The 5.17 MB object therefore ran to completion on a 500 kbps link
+    /// (`open_probe_ms=82431 total_ms=82682`, log line 323) before any rung decision existed.
+    ///
+    /// The physical fact the arithmetic cannot see is that the clock has STOPPED. This replays
+    /// the numbers the log carries and asserts the hold begins about a second after it stops,
+    /// not when the fetch completes.
+    #[test]
+    fn a_stopped_native_clock_reaches_the_terminal_boundary_the_arithmetic_never_will() {
+        let _serial = crate::testlock::serial();
+        // Segment 9 demuxed: 48 video AUs at 24 fps and 94 AAC frames, ending the tenth 2 s
+        // segment of the stream (`hls: segment=9 ... v=48 a=94`, log line 235).
+        SHARED.hls_video_tail_ns.store(29_958_000_000, Release);
+        SHARED.hls_audio_tail_ns.store(29_980_000_000, Release);
+        SHARED.disp_base.store(0, Relaxed);
+        // The playhead then froze. The log prints whole seconds, so the exact remnant is not
+        // recoverable from it; what the log does prove is that it never reached zero, because the
+        // auto-rebuffer line that an exact zero writes was never written in those 77 s.
+        SHARED.playpos_ns.store(29_700_000_000, Relaxed);
+        let buffered_ms = hls_buffered_ms();
+        assert_eq!(
+            buffered_ms,
+            Some(258),
+            "the arithmetic reserve the main thread samples is positive and stays there"
+        );
+
+        // Walk the silence forward one position-callback period at a time and find the first tick
+        // at which the main thread holds the clock. That tick is also what the worker's
+        // `StallGuard` reads as `terminal_hold_started`, so it is when the oversized fetch is
+        // abandoned and a cheaper rung becomes decidable.
+        let mut held_at_ms: Option<u32> = None;
+        let mut silence_ms = 0u32;
+        while silence_ms <= 82_682 {
+            if should_begin_hls_rebuffer(false, -1, 5_668, buffered_ms) {
+                held_at_ms = Some(silence_ms);
+                break;
+            }
+            silence_ms += POSITION_PERIOD_MS;
+        }
+        clear_hls_reserve_sample();
+        assert!(
+            held_at_ms.is_some_and(|ms| ms <= 1_500),
+            "a presentation clock that has physically stopped is the terminal reserve boundary:              expected the hold within 1500 ms of the last position callback, got {held_at_ms:?}              (the device waited 82682 ms for the fetch to complete instead)"
+        );
+    }
 
     #[test]
     fn a_failed_original_open_prefers_rollback_then_cold_auto_before_error() {
