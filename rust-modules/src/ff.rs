@@ -4375,6 +4375,7 @@ fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
         Some(Hls(R::ReserveUnknown)) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
         Some(Hls(R::DeadlineRollback)) => crate::player::ABR_WHY_DEADLINE_ROLLBACK,
         Some(Hls(R::ResponseLimited)) => crate::player::ABR_WHY_RESPONSE_LIMITED,
+        Some(Hls(R::SwitchCost)) => crate::player::ABR_WHY_SWITCH_COST,
     }
 }
 

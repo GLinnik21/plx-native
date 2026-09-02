@@ -55,6 +55,16 @@ pub(crate) enum HlsReason {
     ReserveUnknown,
     /// No technically feasible rung exists above the current actuator.
     AtBestRung,
+    /// **The upshift is admissible and does not pay for the picture change it would make.**
+    ///
+    /// Every committed rung change is a visible quality change to the person watching, and this
+    /// playback has already made some. `AbrPolicy::visible_switch_penalty` prices the next one
+    /// against them and halves that price every `visible_switch_decay_ms`, so the constraint is
+    /// history rather than a cooldown counter: the first move is free, and one taken while three
+    /// others are still recent has to buy a step of picture worth more than they cost. It is a
+    /// Stay that names the VIEWER as the binding constraint rather than the link, which is why it
+    /// is not folded into `RejectBackoff` — nothing about the network refused anything here.
+    SwitchCost,
     /// The current actuator is already the largest request, but PMS returned a response whose
     /// decoded geometry is provably below that request/source.  It remains refreshable as the
     /// same actuator after strictly stronger completed-service evidence; the request ceiling is
@@ -388,6 +398,15 @@ pub(crate) struct Controller {
     /// the common disposable-budget frontier paces later retries; the demand-capped response is
     /// not asked to identify dormant path capacity.
     active_variant_evidence_kbps: Option<u32>,
+    /// **Committed rung changes the viewer has already seen in this playback, and when the last
+    /// one landed.** The anti-flap history for the RUNG axis, held here rather than in
+    /// `route::session` because a rung commit never leaves this object: `ff.rs::hls_demux` swaps
+    /// the cursor in place, so unlike an Original/HLS handoff there is no route mutation and no
+    /// Engine reload for `route::note_visible_switch` to hang off. A seek builds a fresh
+    /// `Controller` and therefore a fresh flap budget, which is the same rule every other piece of
+    /// live state here follows.
+    visible_switches: u32,
+    last_switch_ms: Option<u64>,
 }
 
 impl Controller {
@@ -430,6 +449,8 @@ impl Controller {
             last_window: AdmissionReadout::default(),
             active_variant: None,
             active_variant_evidence_kbps: None,
+            visible_switches: 0,
+            last_switch_ms: None,
         }
     }
 
@@ -1197,6 +1218,18 @@ impl Controller {
             self.last_reason = Some(DecisionReason::Hls(HlsReason::RejectBackoff));
             return Decision::Stay;
         };
+        // **Everything above this line is physics; this line is the viewer.** The rule so far has
+        // asked only whether a larger request is affordable and unblocked, and on a link that
+        // alternates it is affordable again a few seconds after every collapse — which is how one
+        // oscillating link produced ten committed rung changes, each of them a picture the person
+        // watching saw change. `AbrPolicy::visible_switch_penalty` is the price of that, and until
+        // now nothing on the rung axis read it: `mode::transition_cost` returns 0 for `Hls -> Hls`
+        // and `route::note_visible_switch` is only reached from `install_auto_hls`, so the whole
+        // anti-flap mechanism was scoped to Original/HLS handoffs.
+        if !self.upshift_earns_its_visible_switch(target) {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::SwitchCost));
+            return Decision::Stay;
+        }
         // **And there is no `stable_samples` here any more (N8).** Three consecutive samples on
         // which every conjunct above held was pure counting layered on a model that had already
         // passed every risk, budget and buffer condition, reset at seven separate
@@ -1211,6 +1244,81 @@ impl Controller {
         self.pending_reserve_policy = Some(ReservePolicy::Preserve);
         self.last_reason = Some(DecisionReason::Hls(HlsReason::SafeBudgetIncrease));
         Decision::Prime(proposal)
+    }
+
+    /// The rung-change flap history as the mode comparison's own type, so both axes are priced by
+    /// one function (`TransitionHistory::penalty`) rather than by two that can drift.
+    pub(super) fn visible_switch_history(&self) -> TransitionHistory {
+        TransitionHistory {
+            visible_switches: self.visible_switches,
+            since_last_ms: self
+                .last_switch_ms
+                .map(|at| self.now_ms.saturating_sub(at)),
+        }
+    }
+
+    /// **Does this upshift buy more picture than the interruption it costs?**
+    ///
+    /// The price is history alone, so the FIRST rung change of a playback is free and cannot be
+    /// refused here — a controller that will not leave its bootstrap rung is the opposite failure,
+    /// and the one `tests/manifest.json`'s `min_pos_climb_s` and `floor_kbps` bounds exist to
+    /// catch. Each committed change since then raises the price by `visible_switch_penalty`, and
+    /// `visible_switch_decay_ms` halves it: a move made two minutes ago costs the next one half of
+    /// what it did, four minutes ago a quarter, so the constraint dissolves on its own without a
+    /// cooldown counter to reset.
+    ///
+    /// The benefit is the SAME concave quality curve the Original/HLS argmax scores rungs with, in
+    /// the same units the price is denominated in — which is the whole reason `visible_switch_cost`
+    /// has a doc paragraph explaining that "15 is about one step of the ladder". So 6 Mbps to 10 is
+    /// worth exactly one recent switch and 10 Mbps to 12 is worth none — which is the distinction
+    /// the old rule could not make: on the device those two upshifts were priced identically at
+    /// zero and committed one after the other inside a single eight-second leg.
+    ///
+    /// Two readings of that curve differ from the mode axis's, and both are deliberate.
+    ///
+    /// It reads the INTERPOLATED [`quality_score_pm_at_kbps`] rather than the banded
+    /// `quality_score_at_kbps`, because the banded form scores a real step of the ladder — 14 000
+    /// to 16 000, both inside one band — as exactly zero, and a zero benefit is refused at every
+    /// price however long it decays. That is not this gate declining a marginal move, it is the
+    /// gate becoming permanent, and it would have parked a settled 17.5 Mbit/s link one rung below
+    /// the one it can afford (`lg_network_legs_settle_on_sustainable_rungs`).
+    ///
+    /// And it reads `expected_wire_kbps` rather than `mode::hls_scoring_kbps`: that function's
+    /// `transcode <= source` cap needs the source rate, which this controller does not carry, and
+    /// the cap could only ever lower BOTH sides of a difference between two rungs.
+    ///
+    /// **Downshifts never reach this test.** They are recovery, not preference, and they are
+    /// refused by nothing here — the reserve, not the viewer, decides how far to fall.
+    pub(super) fn upshift_earns_its_visible_switch(&self, target: Rung) -> bool {
+        // A fresh session at the SAME request changes no picture: it is the response-limited
+        // refresh, whose whole purpose is to obtain the rendition already asked for.
+        if target == self.current {
+            return true;
+        }
+        // Per-mille of a quality point, because that is the resolution the benefit below is read
+        // at; see `quality_score_pm_at_kbps` for why the banded form cannot be used here.
+        let price = self
+            .visible_switch_history()
+            .penalty(&self.policy)
+            .saturating_mul(1_000);
+        if price <= 0 {
+            return true;
+        }
+        // **A bigger bounding box is a different picture, not a step along the same one**, and the
+        // rate curve below cannot see it: on a 4K source the whole 1080p band and the 4K actuator
+        // sit inside one open `quality_score_at_kbps` band, so 16 000 -> 22 000 scores +4 for what
+        // is actually 1920x1080 -> 3840x2160. `HlsActuatorCatalog::admits` is what makes this
+        // sound rather than merely convenient: it has already removed every box larger than the
+        // smallest one that covers the source, so a strictly larger box inside THIS catalog is
+        // always a raster the current actuator cannot produce.
+        let (width, height) = target.raster();
+        let (current_width, current_height) = self.current.raster();
+        if width > current_width || height > current_height {
+            return true;
+        }
+        let score =
+            |rung: Rung| quality_score_pm_at_kbps(self.catalog.candidate(rung).expected_wire_kbps);
+        score(target) - score(self.current) >= price
     }
 
     /// Candidate-session acceptance. The larger request is the excitation: only its own completed
@@ -1381,6 +1489,13 @@ impl Controller {
         if proposal.rung != previous {
             self.active_variant = None;
             self.active_variant_evidence_kbps = None;
+            // **The one seam every committed rung change passes through** — `commit_candidate`
+            // (the runtime and simulator path) and the direct `commit` the host fixtures use both
+            // land here, in either direction, so the flap history cannot be recorded on one arm
+            // and missed on the other. A same-request refresh moves no picture and is excluded by
+            // the same test that already skips the variant reset.
+            self.visible_switches = self.visible_switches.saturating_add(1);
+            self.last_switch_ms = Some(now_ms);
         }
         self.pending = None;
         self.pending_reserve_policy = None;

@@ -1315,6 +1315,10 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
         crate::player::ABR_WHY_RESERVE_UNKNOWN => Some("waiting for audio"),
         crate::player::ABR_WHY_DEADLINE_ROLLBACK => Some("fetch deadline rollback"),
         crate::player::ABR_WHY_RESPONSE_LIMITED => Some("PMS output below request"),
+        // The one code here whose constraint is the VIEWER rather than the link or the server, so
+        // it says so: the picture could improve and the improvement is not worth another visible
+        // change this soon after the last one.
+        crate::player::ABR_WHY_SWITCH_COST => Some("holding after a recent quality change"),
         _ => None,
     }
 }
