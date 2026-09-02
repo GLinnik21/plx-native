@@ -2236,8 +2236,9 @@ pub(crate) fn draw() {
     let m = selected();
     let scroll = view().column.scroll.pos;
     let amb = view().amb; // Copy, like `let col = view().column` below
+    let still = backdrop_is_still(view().column.scroll.vel);
     use crate::ui::profile::phase;
-    phase("dt.backdrop", || draw_backdrop(p, m, scroll, amb));
+    phase("dt.backdrop", || draw_backdrop(p, m, scroll, amb, still));
     let hero_a = hero_alpha(scroll, HERO_FADE);
     let ps = p.translate(0.0, -scroll);
     // hero fades out as the page scrolls down into the rows (pinned but scrolled)
@@ -2411,7 +2412,18 @@ pub(crate) fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
         * ((y - HERO_BASE_SCRIM_Y0).max(0.0) / (SCR_H - HERO_BASE_SCRIM_Y0)).min(1.0)
 }
 
-fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash) {
+/// Whether the page's ground is something the eye can REST on this frame, from the vertical
+/// scroll spring's velocity. Home's wash learned this rule on 2026-09-02 (`home.rs`: dithered
+/// only while still): the ±½-LSB dither is a full-screen fragment cost of ~2.5M GPU cycles on the
+/// set, and under a moving, fading hero nobody reads the ground as a gradient. The detail page
+/// kept dithering through its whole scroll, and `fps:detail-transition` measured 42-44 fps
+/// against a 45 floor on the merged tree (53 before `dec32f2e`; 34 at that commit). The
+/// threshold is the `ui::idle` rest test's own quarter pixel per frame at 60 Hz.
+pub(crate) fn backdrop_is_still(scroll_vel_px_per_s: f32) -> bool {
+    scroll_vel_px_per_s.abs() < 15.0
+}
+
+fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash, still: bool) {
     // 0 at the hero, 1 when scrolled down into the rows
     let sf = (scroll / SCROLLED).clamp(0.0, 1.0);
     // Scroll-darkening for the BACKDROP ART's tail, so the row text reads over the last of it.
@@ -2454,7 +2466,8 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
     // colour `frame_clear` laid down one line earlier, so without this test such a page pays a
     // ~2.07M-fragment opaque gradient every frame to write the pixels that are already there.
     if (art_tex == 0 || art_a < 0.99) && !amb.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
-        amb.draw(p, Rect::FULL);
+        // Dithered only at rest; see `backdrop_is_still`.
+        amb.draw_with(p, Rect::FULL, still);
     }
     if art_tex != 0 {
         // COVER, never stretch. `Painter::tex` maps UV 0..1 across the rect, so a source that is not
@@ -3041,6 +3054,17 @@ enum PlayNote {
 pub(crate) const CONVERTS_ON_SERVER_C: &std::ffi::CStr = c"Converts on server";
 /// [`CONVERTS_ON_SERVER_C`] as a `&str`. Same bytes, asserted by a test rather than by eye.
 pub(crate) const CONVERTS_ON_SERVER: &str = "Converts on server";
+
+/// `fps:detail-transition`, 2026-09-02: the wash must stop dithering while the scroll spring
+/// moves and dither again at rest, at the idle rest test's quarter-pixel-per-frame threshold.
+#[cfg(test)]
+#[test]
+fn the_backdrop_dithers_only_while_the_scroll_is_at_rest() {
+    assert!(backdrop_is_still(0.0));
+    assert!(backdrop_is_still(-14.9));
+    assert!(!backdrop_is_still(15.0), "a quarter pixel per frame at 60 Hz is motion");
+    assert!(!backdrop_is_still(-400.0));
+}
 
 #[cfg(test)]
 #[test]
