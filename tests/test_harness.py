@@ -3303,3 +3303,18 @@ class AbrCasesAreWiredUp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class FpsRunToken(unittest.TestCase):
+    """A UI-tier `--fps` run resolves the test identity whenever any selected scene needs it —
+    the plain `./tests/run.py --fps` used to skip it and boot every route scene to QR sign-in."""
+
+    def test_a_route_scene_alone_needs_the_token(self):
+        self.assertTrue(run.fps_run_needs_token([{"route": "home"}], False, False))
+
+    def test_the_login_spinner_alone_does_not(self):
+        self.assertFalse(run.fps_run_needs_token([{"route": "login"}], False, False))
+
+    def test_the_player_tier_and_a_shared_server_still_force_it(self):
+        self.assertTrue(run.fps_run_needs_token([{"route": "login"}], True, False))
+        self.assertTrue(run.fps_run_needs_token([{"route": "login"}], False, True))
