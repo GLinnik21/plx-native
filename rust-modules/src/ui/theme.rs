@@ -1170,8 +1170,9 @@ pub mod alert {
     /// READ-ONLY alerts share; a panel with a different job (a destructive decision, a picker over
     /// prose) still states its own, which is a design choice rather than a stray literal.
     pub const SCRIM_A: f32 = 0.46;
-    /// The scrolled-viewport edge ramp (`widgets::edge_feather`) — how far the cut is softened at
-    /// the top and bottom of a scissor-clipped body.
+    /// The scrolled-viewport edge dissolve (`ui::text_view::TextView::edge_fade`, since
+    /// 2026-09-02 — was `widgets::edge_feather`'s opaque gradient) — how far the crossing text
+    /// fades at the top and bottom of a scissor-clipped body.
     pub const FEATHER: f32 = 88.0;
     /// `line-height: 1` on the eyebrow — a caps run has no descenders to clear.
     pub const EYEBROW_LEAD: f32 = super::size::CAPTION as f32; // 24

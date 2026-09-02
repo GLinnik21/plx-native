@@ -196,6 +196,16 @@ static mut TLF_SCREEN: c_int = 0;
 static mut TLF_COL: c_int = 0;
 static mut TLF_TEX: c_int = 0;
 static mut TLF_FADE: c_int = 0;
+/// **Vertical edge-fade bands, in logical screen y** (the same absolute space `u_trect`'s `y`
+/// lives in) — the counterpart of [`TLF_FADE`]'s horizontal one. `(0.0, 0.0)` (the default, since
+/// `y1 > y0` is then false) means "off": the shader's gate skips the multiply rather than relying
+/// on a sentinel width like the horizontal band's, because a vertical band has no natural "past
+/// the string" edge to sentinel against. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
+/// replacement note in `ui::person_bio` for why this exists — a scrolling viewport's edge used to
+/// be an OPAQUE panel-coloured gradient painted over the glass, which read as a grey band rather
+/// than the text dissolving.
+static mut TLF_VTOP: c_int = 0;
+static mut TLF_VBOT: c_int = 0;
 static mut FONTS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
 static mut FONTS_B: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
 static mut TEXT_OK: c_int = 0;
@@ -640,6 +650,8 @@ pub(crate) fn init_text() {
             TLF_COL = glGetUniformLocation(TPROGF, c"u_tcol".as_ptr());
             TLF_TEX = glGetUniformLocation(TPROGF, c"u_tex".as_ptr());
             TLF_FADE = glGetUniformLocation(TPROGF, c"u_tfade".as_ptr());
+            TLF_VTOP = glGetUniformLocation(TPROGF, c"u_vfadeT".as_ptr());
+            TLF_VBOT = glGetUniformLocation(TPROGF, c"u_vfadeB".as_ptr());
         }
         // Constant uniforms, set once per program (per-program state): the fixed 1920x1080
         // screen and sampler unit 0. draw_text/_fade no longer re-send them per string.
@@ -1101,11 +1113,16 @@ pub(crate) fn draw_text(
     }
 }
 
-/// [`draw_text`] with a horizontal fade-out (its OWN GL program, so plain text pays no per-fragment
-/// fade cost): glyph alpha runs 1→0 between `fade_from`..`fade_to` px from the string's LEFT edge
-/// (regardless of `align`). Used for a truncated line that must dissolve before an overlapping
-/// affordance (the About card's MORE label). Falls back to plain [`draw_text`] if the fade program
-/// failed to link.
+/// [`draw_text`] with up to three independent fades (its OWN GL program, so plain text pays no
+/// per-fragment fade cost — see the shader's own header for why every ordinary glyph stays off
+/// it): a HORIZONTAL one (`hfade`, glyph alpha 1→0 between `from`..`to` px from the string's LEFT
+/// edge regardless of `align` — the About card's and the person header bio's `MORE` dissolve), and
+/// two VERTICAL ones in absolute logical screen y (`vfade_top` ramps 0→1 rising through the band,
+/// `vfade_bot` ramps 1→0 falling through it — a line crossing a SCROLLING viewport's clipped edge,
+/// see `ui::text_view::TextView::edge_fade`). Each is `None` by default and costs the shader
+/// nothing extra to skip (a uniform compare, not a texture sample). Falls back to plain
+/// [`draw_text`] if the fade program failed to link — a device with no working fade shader still
+/// shows every word, just without the dissolve.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_text_fade(
     s: *const c_char,
@@ -1115,8 +1132,9 @@ pub(crate) fn draw_text_fade(
     col: *const f32,
     align: c_int,
     bold: c_int,
-    fade_from: f32,
-    fade_to: f32,
+    hfade: Option<(f32, f32)>,
+    vfade_top: Option<(f32, f32)>,
+    vfade_bot: Option<(f32, f32)>,
 ) -> f32 {
     unsafe {
         if TPROGF == 0 {
@@ -1141,9 +1159,16 @@ pub(crate) fn draw_text_fade(
         };
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
-        // px → string-texture uv (the varying spans the one-quad string)
+        // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
+        // the shader gates on `to > from`, so a caller with no horizontal fade need not sentinel
+        // against the string's own width.
         let wf = w as f32;
-        glUniform2f(TLF_FADE, fade_from / wf, fade_to / wf);
+        let (hf0, hf1) = hfade.unwrap_or((0.0, 0.0));
+        glUniform2f(TLF_FADE, hf0 / wf, hf1 / wf);
+        let (vt0, vt1) = vfade_top.unwrap_or((0.0, 0.0));
+        glUniform2f(TLF_VTOP, vt0, vt1);
+        let (vb0, vb1) = vfade_bot.unwrap_or((0.0, 0.0));
+        glUniform2f(TLF_VBOT, vb0, vb1);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(
             TLF_RECT,

@@ -852,8 +852,50 @@ impl Painter {
             c.as_ptr(),
             0,
             bold,
-            fade_from,
-            fade_to,
+            Some((fade_from, fade_to)),
+            None,
+            None,
+        )
+    }
+    /// [`text`](Self::text) with a VERTICAL edge fade instead of [`text_fade`](Self::text_fade)'s
+    /// horizontal one: glyph alpha ramps across up to two bands in ABSOLUTE LOGICAL SCREEN y —
+    /// `top` rising 0→1 through the band, `bot` falling 1→0 through it — for a line that crosses a
+    /// SCROLLING viewport's clipped edge rather than a fixed truncation mark past the string's own
+    /// width. `None` leaves a band off.
+    ///
+    /// This is what replaced `widgets::edge_feather` in `ui::person_bio`'s bio panel: that widget
+    /// painted an OPAQUE `SURFACE_PANEL`-coloured gradient over the glass, which read as a distinct
+    /// grey band rather than the text itself dissolving — the report this method exists to fix.
+    /// See `ui::text_view::TextView::edge_fade` for the caller that decides, per line, which lines
+    /// actually need this program (every ordinary glyph stays on the cheaper plain one).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_fade_v(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        bold: c_int,
+        top: Option<(f32, f32)>,
+        bot: Option<(f32, f32)>,
+    ) -> f32 {
+        let c = self.c(col);
+        // The bands are given in this painter's LOCAL space (the same space `y` is), so the
+        // cascade translate that shifts `y` below has to shift them too, or a popover's entry
+        // slide would fade a line against a band that stayed put while the text itself moved.
+        let shift = |b: Option<(f32, f32)>| b.map(|(a, z)| (a + self.dy, z + self.dy));
+        crate::text::draw_text_fade(
+            s,
+            x + self.dx,
+            y + self.dy,
+            sz,
+            c.as_ptr(),
+            0,
+            bold,
+            None,
+            shift(top),
+            shift(bot),
         )
     }
     /// Hard-clip subsequent draws to `r` (in this painter's space — the cascade translate is folded

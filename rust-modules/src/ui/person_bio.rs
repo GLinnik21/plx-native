@@ -102,7 +102,7 @@ const BIO_LEAD: f32 = 40.0;
 /// replaces every visible line gives the eye nothing to re-anchor on, so a step leaves several
 /// lines of overlap.
 const STEP: f32 = 200.0;
-/// The feather band at each end of the viewport — see [`widgets::edge_feather`].
+/// The dissolve band at each end of the viewport — see [`draw_bio`]'s `TextView::edge_fade` call.
 const FEATHER: f32 = theme::alert::FEATHER;
 /// Air between the prose column and the rail beside it.
 const RAIL_GAP: f32 = theme::space::MD;
@@ -518,11 +518,7 @@ pub(crate) fn draw() {
     rule(view.y - theme::space::MD - 1.0);
     rule(view.y + view.h + theme::space::MD);
 
-    draw_bio(p, person, view, scroll);
-    // The feather is drawn AFTER the clip is released and over the same band: each edge appears
-    // only when there is prose on the far side of it, which is what keeps a short biography free of
-    // a permanent shadow across its first and last lines.
-    widgets::edge_feather(p, view, FEATHER, scroll > 0.5, scroll < max_scroll - 0.5);
+    draw_bio(p, person, view, scroll, max_scroll);
     widgets::scroll_rail(
         p,
         Rect::new(c.x + c.w - widgets::RAIL_W, view.y, widgets::RAIL_W, view.h),
@@ -595,23 +591,33 @@ fn draw_head(p: Painter, person: &Person, c: Rect) {
 
 /// The scrolling prose: every paragraph stacked at `-scroll`, inside a hard scissor at the viewport.
 ///
-/// **The clip is the cut and the feather is only cosmetic** — `ui/CLAUDE.md`'s rule for a bounded
-/// panel, and the arrangement its "the old edge-fade-mask trick is gone" note leaves open. Set and
-/// clear are paired inside this one function, because the scissor is global GL state.
+/// **The clip is the hard cut; the DISSOLVE is the text's own glyphs fading, not a shape painted
+/// over the glass.** This used to be `widgets::edge_feather` — an opaque `SURFACE_PANEL`-tinted
+/// gradient laid over the viewport's edge, which read fine over an opaque sheet but produced a
+/// distinct GREY BAND over this panel's frosted glass (the reported bug this replaces). Every
+/// paragraph's [`TextView`] now carries [`TextView::edge_fade`] instead, so `text::draw_text_fade`
+/// dissolves each line's glyph alpha directly against the SURFACE BEHIND it — nothing new is
+/// painted at all. `top`/`bot` are computed ONCE, outside the loop: each edge appears only when
+/// there is prose on the far side of it, exactly as the feather it replaced did, which is what
+/// keeps a short biography free of a permanent dissolve across its first and last lines. Set and
+/// clear of the clip are still paired inside this one function, because the scissor is global GL
+/// state.
 ///
 /// Paragraphs off the viewport are CULLED through the shared [`crate::ui::on_axis`] rather than
 /// merely clipped: a `TextView::draw` submits every one of its wrapped lines, so a long biography
 /// would otherwise pay for the whole document on every frame of a page transition.
-fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32) {
+fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32, max_scroll: f32) {
     let paras = paragraphs(&person.bio);
     if paras.is_empty() {
         return;
     }
     let w = text_w();
+    let top = (scroll > 0.5).then_some((view.y, view.y + FEATHER));
+    let bot = (scroll < max_scroll - 0.5).then_some((view.y + view.h - FEATHER, view.y + view.h));
     p.clip(view);
     let mut y = view.y - scroll;
     for para in paras {
-        let v = para_view(para);
+        let v = para_view(para).edge_fade(top, bot);
         let h = v.measure_h(w);
         if crate::ui::on_axis(y - view.y, h, view.h, 0.0) {
             v.draw(p, Rect::new(view.x, y, w, 0.0));

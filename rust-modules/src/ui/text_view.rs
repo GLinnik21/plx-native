@@ -68,6 +68,24 @@ pub struct TextView<'a> {
     /// is the lead run drawn BOLD (`lead`) or at the block's own weight (`lead_quiet`)
     lead_bold: bool,
     fade_last: f32, // px reserved at the wrap width's right edge; >0 fades a truncated last line out before it
+    /// Vertical edge-dissolve bands, in the SAME absolute coordinate space `draw`'s `frame.y` is
+    /// drawn in — see [`edge_fade`](Self::edge_fade). `None` on each axis by default.
+    vfade_top: Option<(f32, f32)>,
+    vfade_bot: Option<(f32, f32)>,
+}
+
+/// **Does a line's own box cross an [`edge_fade`](TextView::edge_fade) band?** Pure, and pulled out
+/// of `draw`'s loop so the routing decision (fade program vs. the cheaper plain one) can be
+/// asserted without a `Painter` — `draw` calls this once per line per band.
+///
+/// `row_y` is the line's cap-top y (the same space the band's `(y0, y1)` is given in) and `lh` its
+/// full line pitch — a conservative over-estimate of the glyph ink it actually covers, which only
+/// ever widens the band a line participates in, never narrows it, so a line is never silently
+/// dropped to the plain path while a sliver of it still crosses the fade. `None` (band absent, or
+/// the line entirely on one side of it) means "route this line the cheap way"; `Some` hands back
+/// the same band unchanged, which is what the fade program's uniform expects.
+fn line_overlaps_band(row_y: f32, lh: f32, band: Option<(f32, f32)>) -> Option<(f32, f32)> {
+    band.filter(|&(y0, y1)| row_y + lh > y0 && row_y < y1)
 }
 
 impl<'a> TextView<'a> {
@@ -84,6 +102,8 @@ impl<'a> TextView<'a> {
             lead: None,
             lead_bold: true,
             fade_last: 0.0,
+            vfade_top: None,
+            vfade_bot: None,
         }
     }
     pub fn bold(mut self) -> Self {
@@ -158,6 +178,32 @@ impl<'a> TextView<'a> {
     pub fn fade_last(mut self, px: f32) -> Self {
         self.fade_last = px;
         self.trailing = None; // exclusive — see above
+        self
+    }
+
+    /// **Dissolve lines at the edges of a SCROLLING viewport instead of cutting them at the clip.**
+    /// `top`/`bot` are each `(y0, y1)` in the SAME absolute coordinate space `frame.y` is drawn in
+    /// (a viewport's own screen rect, not a wrap-relative offset): a line crossing `top` fades IN
+    /// rising through it (0 at `y0`, opaque by `y1`); one crossing `bot` fades OUT falling through
+    /// it (opaque at `y0`, 0 by `y1`). Either may be `None`.
+    ///
+    /// **This replaced `widgets::edge_feather`, and the reason is what that widget got wrong**: it
+    /// painted an OPAQUE `SURFACE_PANEL`-tinted gradient over the glass panel at the viewport's
+    /// edge, which is a legible trick over an opaque sheet but reads as a distinct GREY BAND over a
+    /// frosted one — the fade is supposed to be the TEXT disappearing, not a patch of different
+    /// background. `draw` decides PER LINE whether it actually intersects a band (only those pay
+    /// for `text::draw_text_fade`'s program; everything else stays on the plain, cheaper one — see
+    /// that shader's own header for why), so a paragraph mostly inside the viewport costs nothing
+    /// extra for the handful of lines actually crossing an edge.
+    ///
+    /// Independent of [`fade_last`](Self::fade_last)/[`trailing`](Self::trailing) — nothing in this
+    /// app combines a truncation dissolve with a scrolling viewport today (the two live on
+    /// different screens: `person.rs`'s header preview truncates but does not scroll; this panel's
+    /// own bio scrolls but never truncates by `max_lines`), so `draw` does not attempt to combine
+    /// them on one line and asserts against it in debug rather than silently dropping one.
+    pub fn edge_fade(mut self, top: Option<(f32, f32)>, bot: Option<(f32, f32)>) -> Self {
+        self.vfade_top = top;
+        self.vfade_bot = bot;
         self
     }
 
@@ -321,6 +367,9 @@ impl<'a> TextView<'a> {
 
     /// Draw into `frame`: `frame.w` is the wrap width, `frame.x/y` the top-left. Line 0's cap band
     /// sits at `frame.y`, each subsequent line one `leading` below. Returns the consumed height.
+    ///
+    /// See [`line_overlaps_band`] for the pure per-line decision [`edge_fade`](Self::edge_fade)
+    /// draws through.
     pub fn draw(&self, p: Painter, frame: Rect) -> f32 {
         let lh = self.line_h();
         let wrapped = self.wrap(frame.w);
@@ -384,11 +433,22 @@ impl<'a> TextView<'a> {
             let row = Rect::new(frame.x + dx, frame.y + i as f32 * lh, frame.w - dx, 0.0);
             // a truncated last line with a fade_last reservation dissolves into the affordance zone
             // instead of colliding with it (only when it actually reaches that far)
-            if is_last
+            let last_line_dissolves = is_last
                 && wrapped.truncated
                 && self.fade_last > 0.0
-                && self.measure_c(tc) > fade_from
-            {
+                && self.measure_c(tc) > fade_from;
+            // Does THIS line's own box cross a vertical edge band at all? Most lines of a
+            // viewport's prose answer no on both counts and stay on the cheap plain path below —
+            // see `edge_fade`'s doc for why that matters, and [`line_overlaps_band`] for the test.
+            let vtop = line_overlaps_band(row.y, lh, self.vfade_top);
+            let vbot = line_overlaps_band(row.y, lh, self.vfade_bot);
+            debug_assert!(
+                !(last_line_dissolves && (vtop.is_some() || vbot.is_some())),
+                "a line cannot dissolve both into a fade_last affordance and a scrolling \
+                 viewport's edge — nothing in this app needs both at once (see edge_fade's doc); \
+                 pick one on this TextView"
+            );
+            if last_line_dissolves {
                 let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
                 // cap band at row.y, like Label's VAlign::CapTop
                 p.text_fade(
@@ -400,6 +460,20 @@ impl<'a> TextView<'a> {
                     self.bold,
                     fade_from,
                     fade_to,
+                );
+                continue;
+            }
+            if vtop.is_some() || vbot.is_some() {
+                let (ct, _) = crate::text::text_cap_band(self.sz, self.bold);
+                p.text_fade_v(
+                    tc.as_ptr(),
+                    row.x,
+                    row.y - ct,
+                    self.sz,
+                    self.col,
+                    self.bold,
+                    vtop,
+                    vbot,
                 );
                 continue;
             }
@@ -432,6 +506,29 @@ impl<'a> TextView<'a> {
 mod tests {
     use super::*;
     use crate::ui::theme;
+
+    /// **Item 8's grey-band regression, as a pure decision.** `edge_feather` used to paint an
+    /// opaque gradient over a scrolling viewport's edge regardless of which lines actually needed
+    /// it; `line_overlaps_band` is what lets `draw` route ONLY the lines crossing a band through
+    /// the fade program, so a paragraph safely inside the viewport never pays for it at all.
+    #[test]
+    fn a_line_only_overlaps_a_band_its_own_box_actually_crosses() {
+        let band = Some((100.0, 140.0));
+        // fully above the band (a line that has already scrolled clear of the top edge)
+        assert_eq!(line_overlaps_band(40.0, 40.0, band), None);
+        // touches the band's floor exactly at its own bottom edge — no overlap (open interval)
+        assert_eq!(line_overlaps_band(60.0, 40.0, band), None);
+        // straddles the band's start — must fade
+        assert_eq!(line_overlaps_band(80.0, 40.0, band), band);
+        // entirely inside the band
+        assert_eq!(line_overlaps_band(110.0, 20.0, band), band);
+        // straddles the band's end
+        assert_eq!(line_overlaps_band(130.0, 40.0, band), band);
+        // fully below the band — clear again
+        assert_eq!(line_overlaps_band(140.0, 40.0, band), None);
+        // no band at all — never a match, whatever the line's position
+        assert_eq!(line_overlaps_band(110.0, 20.0, None), None);
+    }
 
     /// **The two truncation affordances are ONE choice, and the builder is what enforces it.**
     /// `draw`'s fade branch ends in `continue`, so a view carrying both loses its inline run on

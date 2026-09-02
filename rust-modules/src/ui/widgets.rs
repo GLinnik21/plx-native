@@ -1493,49 +1493,6 @@ pub(crate) fn continuous_scroll_rail(
     );
 }
 
-// ---- Edge feather: the soft end of a hard-clipped viewport ---------------------------------------
-
-/// Feather the top and/or bottom `band` px of a **scissor-clipped** viewport, so prose that
-/// continues past the edge dissolves into the panel instead of being guillotined mid-glyph.
-///
-/// **It is cosmetic; the CLIP is what actually cuts.** `ui/CLAUDE.md` records that the old
-/// fade-mask-INSTEAD-of-a-clip trick was removed because a linear fade cannot cut a tall two-line
-/// row evenly and read as a broken clip. This is the other arrangement: `Painter::clip` makes the
-/// exact cut and the ramp only softens the last `band` px in front of it, which is sound precisely
-/// because a prose block has uniform leading — the objection was about rows of unequal height.
-///
-/// Each edge is drawn only when there is something on the far side of it (`top` = the block is
-/// scrolled off the top, `bot` = more remains below). An unconditional pair puts a permanent
-/// shadow across the first and last lines of a document that fits, which reads as content hidden
-/// where none is.
-///
-/// The ink is [`theme::SURFACE_PANEL`], whose documented role is exactly this ("opaque menu panel /
-/// fade mask"), at four alphas through [`Painter::grad4`] — one rgb at four alphas, which is the
-/// only way that primitive interpolates exactly (its own doc). Alpha reaches 1 AT the clip line, so
-/// the ramp is opaque precisely where the scissor bites and the seam has nothing left to show.
-pub(crate) fn edge_feather(p: Painter, view: Rect, band: f32, top: bool, bot: bool) {
-    let band = band.min(view.h * 0.5);
-    if band <= 0.0 {
-        return;
-    }
-    let ink = theme::SURFACE_PANEL;
-    let solid = theme::with_a(ink, 1.0);
-    let clear = theme::with_a(ink, 0.0);
-    if top {
-        // tl, tr, br, bl — opaque at the top edge, gone `band` px down
-        p.grad4(
-            Rect::new(view.x, view.y, view.w, band),
-            [solid, solid, clear, clear],
-        );
-    }
-    if bot {
-        p.grad4(
-            Rect::new(view.x, view.y + view.h - band, view.w, band),
-            [clear, clear, solid, solid],
-        );
-    }
-}
-
 // ---- Tracked caps: a kicker drawn letter by letter -----------------------------------------------
 
 /// Draw a letter-tracked kicker. The text backend has no letter-spacing, so tracking is always a
