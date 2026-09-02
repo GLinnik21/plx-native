@@ -39,6 +39,22 @@
 //! that gate because they integrate milliseconds, and a hand-rolled scroll offset here would have
 //! been the third. The discrete transitions ([`open`]/[`close`]/[`move_focus`]) still call
 //! `idle::invalidate` because a state change is not motion.
+//!
+//! **4. The panel's own paging must not re-source its own backdrop, and that took a measured FPS
+//! regression to notice.** Every `move_focus` page turn calls `idle::invalidate` (point 3), which
+//! is exactly right for the present gate — a page turn is real content damage and has to present.
+//! It is exactly WRONG for [`prepare_present`]'s `underlay_changed` argument, though: `app.rs`'s
+//! route arm hands it `underlay_moving || idle::present_dirty()`, and `present_dirty` cannot tell
+//! "the PAGE BEHIND this panel changed" from "this panel's own page-turn just fired the very
+//! `invalidate` point 3 documents" — both set the same process-wide flag. Taken straight through,
+//! every keypress re-sources the WHOLE host page into the blur target and re-blurs it, although
+//! nothing under the panel moved at all: the person page's header and shelves sit exactly still
+//! while the reader pages the biography. [`prepare_present`] therefore does not trust the caller's
+//! flag alone — it ALSO asks this panel's own [`Popover::appear_settled`], and refreshes only while
+//! the appear choreography is still ramping (where a stale backdrop under a mid-fade scrim is the
+//! contrast bug point 1 exists to prevent) or the caller's flag is true for some OTHER reason (a
+//! landing on the person page itself, which does redraw the header/shelves this panel sits over).
+//! Once settled, the panel's own scroll no longer forces a refresh — see [`glass_refresh`].
 use crate::person::Person;
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::label::{Label, VAlign};
@@ -443,10 +459,28 @@ pub(crate) fn scrim() {
     }
 }
 
+/// **Whether the dynamic backdrop should re-source this present** — the pure half of
+/// [`prepare_present`], folded out so the decision can be asserted without a `Popover`. See the
+/// module doc's point 4 for what bug this exists to fix: `underlay_changed` alone cannot tell the
+/// host page moving from this panel's OWN page-turn setting the same process-wide flag.
+fn glass_refresh(underlay_changed: bool, appear_settled: bool) -> bool {
+    // Still ramping open: refresh regardless of what the caller reports, because the contrast
+    // argument (module doc, point 1) needs every frame of that ramp to sample the page as it
+    // actually dims. Settled: trust the caller's flag, which by then means the person PAGE itself
+    // changed (a landing, a route-adjacent redraw) rather than this panel's own scroll.
+    !appear_settled || underlay_changed
+}
+
 /// Resolve the glass cadence before the host page draws — every popover's route arm calls this
 /// unconditionally; a closed one prepares nothing.
+///
+/// `underlay_changed` is NOT passed straight through — see the module doc's point 4 and
+/// [`glass_refresh`]. This module folds in its own [`Popover::appear_settled`] rather than asking
+/// `app.rs`'s route arm to know that this one panel's internal paging must not count as page
+/// motion; the caller only ever reports the PAGE's state, which is right for every other route.
 pub(crate) fn prepare_present(underlay_changed: bool) {
-    pop().prepare_present(underlay_changed);
+    let refresh = glass_refresh(underlay_changed, pop().appear_settled());
+    pop().prepare_present(refresh);
 }
 
 pub(crate) fn draw() {
@@ -615,6 +649,32 @@ fn draw_foot(p: Painter, person: &Person, c: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The FPS regression, as a pure decision (item 7).** Confirmed red against the code this
+    /// replaces before the fix: `prepare_present` used to hand `underlay_changed` straight to
+    /// `Popover::prepare_present`, so a settled panel with `underlay_changed == true` (this
+    /// panel's OWN page-turn, misread as page motion by `app.rs`'s shared `present_dirty` flag —
+    /// see the module doc's point 4) forced a refresh every such keypress. `glass_refresh` is what
+    /// stops trusting the caller once the appear ramp has finished.
+    #[test]
+    fn the_backdrop_refreshes_while_ramping_or_the_page_moved_never_for_the_panels_own_scroll() {
+        assert!(
+            glass_refresh(false, false),
+            "still ramping open — must refresh even with nothing reported changed"
+        );
+        assert!(
+            glass_refresh(true, false),
+            "ramping AND the page changed — still a refresh"
+        );
+        assert!(
+            glass_refresh(true, true),
+            "settled, but the caller reports the host page itself changed — must still refresh"
+        );
+        assert!(
+            !glass_refresh(false, true),
+            "settled and nothing reported — the panel's own paging must not force a refresh"
+        );
+    }
 
     /// **The paging arithmetic, at every boundary that has an off-by-one in it.** The rail is drawn
     /// straight from these two numbers, so a wrong `pages` is a fill of the wrong height sitting in

@@ -139,6 +139,19 @@ impl Popover {
         self.appear.pos.clamp(0.0, 1.0)
     }
 
+    /// **Has the appear choreography finished ramping?** True once the fade+slide has visibly
+    /// arrived — `pos` need not have decayed to the exact analytic rest [`Spring::step`] reports
+    /// through `note_spring` (a fraction of a percent short of 1 is not a frame anybody can see),
+    /// so this is a coarser, visual-arrival test rather than that motion-detector's own tolerance.
+    ///
+    /// The one caller today is a `DYNAMIC_BACKDROP` popover deciding whether ITS OWN opening
+    /// motion is still a reason to keep resampling the host page — see
+    /// `person_bio::prepare_present`'s module note. A popover with no reason to ask this (a cached
+    /// one, or one with no backdrop at all) simply never calls it.
+    pub(crate) fn appear_settled(&self) -> bool {
+        self.appear.pos >= 0.999
+    }
+
     /// Resolve this popover's glass cadence BEFORE its host page draws. `underlay_changed`
     /// describes that page, not this popover's own springs. Capture is still deferred to [`panel`],
     /// after the host page is complete; this resolves only cadence invalidation.
@@ -306,6 +319,29 @@ mod tests {
             Glass::DYNAMIC_BACKDROP.needs_page_scrim(),
             "a refreshing backdrop re-renders the page, which must therefore carry the dim"
         );
+    }
+
+    /// **A fresh open is not settled, and stepping the appear spring to rest is.** The one caller
+    /// (`person_bio::prepare_present`) uses this to tell "still ramping open" from "at rest with
+    /// only my own foreground moving" — a popover whose spring never reaches this true would keep
+    /// re-sourcing its backdrop forever, which is the FPS regression this predicate exists to end.
+    #[test]
+    fn appear_settled_is_false_on_open_and_true_once_the_spring_arrives() {
+        // `open`/`close` touch the shared `OPEN_COUNT` static — the same reason the round-trip
+        // test below takes this lock, and for the same reason this one must not skip it: two
+        // popovers opening at once on different threads would otherwise race that counter.
+        let _g = crate::testlock::serial();
+        let mut pop = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
+        pop.open();
+        assert!(!pop.appear_settled(), "a fresh open has not ramped in yet");
+        for _ in 0..240 {
+            pop.update(1.0 / 60.0);
+        }
+        assert!(
+            pop.appear_settled(),
+            "four seconds at K_APPEAR must have settled the spring"
+        );
+        pop.close();
     }
 
     #[test]
