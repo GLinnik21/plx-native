@@ -3238,3 +3238,50 @@ mod lifecycle_clock_tests {
         SHARED.cancel_clock_session_start();
     }
 }
+
+/// **LG App Self Checklist #46 — replay after completion.** A `plxnative-playurl` stream that
+/// reaches EOS is started AGAIN, and that second start does not travel the UI's asynchronous
+/// request path: `app.rs` re-arms `auto_tried`, the fixture entry calls `start_playback`, and
+/// `start_bufferfeed_tracked` asks the reducer for a start owner directly. So the phase a
+/// completed stop leaves behind is the whole contract between the two halves.
+/// Gated on `hostsim` for the same reason [`lifecycle_clock_tests`] is: `stop_bufferfeed` reaches
+/// the Starfish/ACB seam, whose symbols exist only in the host build.
+#[cfg(all(test, feature = "hostsim"))]
+mod replay_after_stop_tests {
+    use super::*;
+
+    /// Device-observed 2026-09-02 (`pipe_replay_after_eos`): `stop_bufferfeed: torn down` was
+    /// followed by `replay: starting the finished stream again (0 left)` and then
+    /// `start_bufferfeed: route reducer refused a start owner` — one Load and one HTTP fetch
+    /// where the case requires two. The stop parks the reducer in `Stopping`, which is the fence
+    /// for the *duration* of the synchronous main-thread teardown; nothing moved it out once that
+    /// teardown returned, and `begin_route_start` mints a transaction only from a phase which owns
+    /// no live Engine to preserve.
+    #[test]
+    fn a_completed_stop_grants_the_next_start_a_route_owner() {
+        let _serial = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        crate::route::reset_player_control_for_test();
+        assert!(
+            !engine_is_live(&mt),
+            "test requires an empty main-thread Engine slot"
+        );
+
+        stop_bufferfeed(&mt);
+
+        let start = crate::route::begin_route_start()
+            .expect("a completed stop must grant the replay a start owner");
+        assert!(
+            crate::route::prepare_route_start(start),
+            "the replay owns the transaction it was just granted"
+        );
+        let attempt = crate::route::claim_route_start_attempt(start)
+            .expect("a granted transaction must mint one physical Load attempt");
+        assert!(crate::route::settle_route_start(
+            attempt,
+            crate::route::RouteStartResult::Started
+        ));
+
+        crate::route::reset_player_control_for_test();
+    }
+}
