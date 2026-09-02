@@ -215,8 +215,22 @@ pub(crate) fn note_jump(changed: bool) {
 /// - a `Spring::jump` that actually teleported something (via [`note_jump`])
 /// - an `Xfade` ramp mid-flight, and a `Spinner` being drawn — the two time-driven animators
 ///   `note_spring` cannot see
+///
+/// **A report raised while the host page is FROZEN is dropped** ([`crate::gfx::page_frozen`]).
+/// Two of the call sites above — the focused-title marquee and the spinner — report from inside a
+/// DRAW, and under an open popover that draw produces no pixels: the page is one cached quad.
+/// Honouring them would invalidate the very snapshot they were drawn from, i.e. a full page redraw
+/// every frame with nothing on screen to show for it, and it is the one way a page could defeat the
+/// cache without any screen doing anything wrong. It is also the correct PICTURE — a decoration on
+/// a page the user cannot reach is meant to pause, which is what the profile menu's frozen host has
+/// always done. Nothing genuine can be swallowed: the freeze is armed only for the length of the
+/// page draw, and every real landing (server data, a poster texture, input) reports from the update
+/// phase or from a worker, with the freeze off.
 #[inline]
 pub(crate) fn invalidate() {
+    if crate::gfx::page_frozen() {
+        return;
+    }
     DIRTY.store(true, Relaxed);
     DAMAGE_GEN.fetch_add(1, Relaxed);
 }
@@ -251,14 +265,35 @@ pub(crate) fn dt() -> f32 {
 /// into the frame-wide motion bit. This is not dirty-rectangle tracking: it only prevents a modal's
 /// foreground springs from masquerading as movement in the page captured behind that modal.
 pub(crate) fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
-    let before = MOVING.with(|m| m.replace(false));
+    let scope = MotionScope::open();
     let value = f();
-    let own = MOVING.with(|m| {
-        let own = m.get();
-        m.set(before || own);
-        own
-    });
-    (value, own)
+    (value, scope.close())
+}
+
+/// [`scoped_motion`] as an explicit open/close pair, for a caller whose scoped region is a whole
+/// function body rather than a closure — a popover's `update`, which steps three or four springs
+/// through several early returns and would otherwise have to be reindented into a closure to say
+/// the same thing.
+pub(crate) struct MotionScope {
+    before: bool,
+}
+
+impl MotionScope {
+    pub(crate) fn open() -> Self {
+        Self {
+            before: MOVING.with(|m| m.replace(false)),
+        }
+    }
+
+    /// Merge the scope back into the frame-wide bit and report whether anything inside it moved.
+    pub(crate) fn close(self) -> bool {
+        let before = self.before;
+        MOVING.with(|m| {
+            let own = m.get();
+            m.set(before || own);
+            own
+        })
+    }
 }
 
 /// Should this iteration draw and swap?

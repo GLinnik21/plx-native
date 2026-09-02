@@ -235,7 +235,9 @@ pub(crate) fn panel_rect(content_h: f32) -> Rect {
 
 // ---- state -----------------------------------------------------------------------------------
 
-static mut POP: Popover = Popover::new();
+/// The card page under this alert does not move while it is up, so it is served from the shared
+/// host snapshot — see [`crate::ui::popover::host`].
+static mut POP: Popover = Popover::new().caching_host();
 
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
@@ -254,6 +256,17 @@ pub(crate) fn open() {
 
 pub(crate) fn close() {
     if is_open() {
+        pop().dismiss();
+        crate::ui::idle::invalidate();
+    }
+}
+/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
+/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
+/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
+/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
+/// spring ran out (Codex review, 2026-09-02).
+pub(crate) fn hide() {
+    if pop().visible() {
         pop().close();
         crate::ui::idle::invalidate();
     }
@@ -271,6 +284,10 @@ pub(crate) fn on_ok() {
 }
 
 pub(crate) fn update(dt: f32) {
+    // The appear spring is this panel's motion, not the page's behind it — `popover::own_motion`.
+    // Unguarded on `is_open` like the rest of this function has always been: a closed `Popover`
+    // steps nothing, so the scope closes empty.
+    let _own = crate::ui::popover::own_motion();
     pop().update(dt);
 }
 
@@ -291,15 +308,20 @@ pub(crate) fn update(dt: f32) {
 /// card says, at length — lifting it would put a truncated copy of this panel's own first three runs
 /// alongside it. The mock lifts nothing either.
 pub(crate) fn draw_scrim() {
-    if is_open() {
+    if pop().visible() {
+        // FIRST lift of the frame on this page, so this is where the host snapshot is taken —
+        // before the dim, which is what makes the snapshot the UNDIMMED page.
+        let _live = crate::ui::popover::host::live();
         pop().scrim(SCRIM_A);
     }
 }
 
 pub(crate) fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // Live over the frozen host — see `popover::host::live`.
+    let _live = crate::ui::popover::host::live();
     let Some(d) = metadata::current() else {
         return;
     };

@@ -34,5 +34,9 @@ void main(){
   }
   float d = sdBox(p, hsz, min(u_radius, min(hsz.x, hsz.y)));
   float a = (1.0 - smoothstep(-u_blur, u_blur, d)) * u_col.a;
-  gl_FragColor = vec4(u_col.rgb, a);
+  // ONE colour at a varying coverage, so the ramp is entirely in the ALPHA: `plx_dither_a`, never
+  // `plx_dither`. A wide soft shadow is the app's slowest ramp of all — a 60px penumbra carrying
+  // 0.28 of alpha steps a code every ~9 rows — and it is the surface `GL_DITHER` used to cover
+  // before that was turned off for making an ordered dot pattern out of it.
+  gl_FragColor = vec4(u_col.rgb, plx_dither_a(a));
 }

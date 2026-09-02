@@ -25,6 +25,14 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 
 ## Working rules
 
+- **Trunk-based development, and `main` takes SQUASH merges only.** Work happens on short-lived
+  branches or worktrees cut from `main`; when a piece of work is verified it lands on `main` as ONE
+  commit (`git merge --squash <branch>` on `main`, then a single commit whose message is the
+  change's own account), never as a fast-forward of a working branch's history and never as a
+  merge commit. A fleet of lanes integrates into its integration branch however it likes; what
+  reaches `main` is the squash of the whole. The reason is the history itself: `main` is read by
+  `git log`, by the release audit and by `git bisect`, and a trunk of "fix typo" / "wip" / merge
+  commits pollutes all three. Push `main` only when the user asked for it.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,

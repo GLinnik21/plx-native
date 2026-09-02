@@ -80,7 +80,7 @@ pub fn open() {
 }
 
 pub fn close() {
-    alert().close();
+    alert().dismiss();
 }
 
 pub fn update(dt: f32) {

@@ -193,9 +193,11 @@ fn list_frame() -> Rect {
     RouteLayout::screen().sectioned_table()
 }
 
-/// The action pill's FOCUS POP ([`crate::ui::widgets::CtlPop`]) — focus walks between it and the
-/// library list beside it, so it animates both ways.
-static mut ACTION_POP: crate::ui::widgets::CtlPop<1> = crate::ui::widgets::CtlPop::new();
+/// The action pill's press surface ([`crate::ui::route_screen::ActionRow`], the shared type every
+/// route-family action row now owns rather than a private `CtlPop`) — focus walks between it and
+/// the library list beside it, so it animates both ways.
+static mut ACTION_POP: crate::ui::route_screen::ActionRow<1> =
+    crate::ui::route_screen::ActionRow::new();
 
 pub fn update(dt: f32) {
     unsafe {

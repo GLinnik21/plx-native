@@ -5,10 +5,16 @@
 //!
 //! It is a popover on **whichever of the three screens wears the shared top bar** — Home, the
 //! Library or Search — because the chip is a stop on all three. That page is drawn once into the
-//! shared renderer [`crate::gfx::FrameCache`]; later menu frames reuse the one texture while the
-//! page's focus/artwork springs pause until dismissal. `app.rs`'s `Route::Account { over: BarHost }`
-//! carries both that host and the return destination. This module was "the HOME profile menu"
-//! while Home was the only screen whose chip could be pressed.
+//! shared host snapshot ([`crate::ui::popover::host`]); later menu frames reuse the one texture
+//! while the page's focus/artwork springs pause until dismissal. `app.rs`'s
+//! `Route::Account { over: BarHost }` carries both that host and the return destination. This
+//! module was "the HOME profile menu" while Home was the only screen whose chip could be pressed.
+//!
+//! **This module owned that mechanism privately until 2026-09-02** — a `static mut HOST_FRAME:
+//! gfx::FrameCache` plus a `draw_cached_host`/`capture_host` pair `app.rs` special-cased around the
+//! page closure — and no other popover could reach it. It is `popover::host` now, opted into with
+//! one `caching_host()` on the constructor, and the account arm in `app.rs` lost its special case
+//! with it.
 //!
 //! **The rows are a function of the account state, and that state is the persisted session** —
 //! `Session::account`, read fresh at each [`open`]. It used to be `session::current().is_some()`,
@@ -58,14 +64,10 @@ const HEADER_FALLBACK: &str = "Account";
 
 /// One cached snapshot per open. The host page is deliberately frozen while this modal owns input,
 /// so a dynamic policy would repeatedly resample identical pixels during the menu's own appear
-/// spring and spend the exact blur work the freeze exists to avoid.
-static mut POP: Popover = Popover::new();
+/// spring and spend the exact blur work the freeze exists to avoid — and `caching_host` is the
+/// other half of that same argument, applied to the page rather than to the blur.
+static mut POP: Popover = Popover::new().caching_host();
 static mut TABLE: TableView = TableView::new(); // main-thread only
-/// The stationary host page below this compact modal. Freezing update state is not enough under a
-/// double-buffered renderer: without this cache Home still redraws every hero, shelf and glyph on
-/// each menu frame. The shared renderer primitive turns that tree into one quad after its first
-/// complete visible draw.
-static mut HOST_FRAME: crate::gfx::FrameCache = crate::gfx::FrameCache::new();
 /// The ordered rows captured at [`open`] — the ONE place row order lives, so [`on_ok`]'s index
 /// mapping cannot drift from what was actually drawn.
 static mut ROWS: &[Action] = &[];
@@ -175,7 +177,6 @@ pub fn open() {
     // ROWS *is* the index→action map, so it must stay one-to-one with what was built above; a row
     // appended here and not to `rows_for` is exactly the drift this replaced.
     debug_assert_eq!(rows.len() as i32, table().n_rows());
-    unsafe { (*addr_of_mut!(HOST_FRAME)).invalidate() };
     pop().open();
 }
 
@@ -203,19 +204,7 @@ pub fn click(mx: f32, my: f32) -> Action {
 }
 
 pub fn close() {
-    pop().close();
-    unsafe { (*addr_of_mut!(HOST_FRAME)).invalidate() };
-}
-
-/// Draw the already captured host. `false` means this is the first frame and `app.rs` must draw the
-/// real page once before calling [`capture_host`].
-pub(crate) fn draw_cached_host() -> bool {
-    unsafe { (*addr_of!(HOST_FRAME)).draw() }
-}
-
-/// Capture the complete host page before this menu's live scrim and panel are layered over it.
-pub(crate) fn capture_host() -> bool {
-    unsafe { (*addr_of_mut!(HOST_FRAME)).capture() }
+    pop().dismiss();
 }
 
 pub fn move_focus(sym: c_int) {
@@ -224,7 +213,11 @@ pub fn move_focus(sym: c_int) {
         table().move_sel(-1);
     } else if s == SDLK_DOWN {
         table().move_sel(1);
+    } else {
+        return;
     }
+    // The selection moved and nothing behind this menu did — see `popover::note_own_damage`.
+    crate::ui::popover::note_own_damage();
 }
 
 /// Commit the highlighted row and close.
@@ -270,9 +263,12 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, crate::ui::Rect)>) {
 }
 
 pub fn update(dt: f32) {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // Scoped: the appear spring and the selection glide are this menu's motion, not the frozen
+    // page's — see `popover::own_motion`.
+    let _own = crate::ui::popover::own_motion();
     pop().update(dt);
     let ph = panel_rect().h;
     table().update(dt, ph - 40.0);
@@ -299,7 +295,8 @@ const SCRIM_A: f32 = 0.5;
 ///
 /// [`Opener`]: crate::ui::popover::Opener
 pub fn draw_scrim() {
-    if is_open() {
+    if pop().visible() {
+        let _live = crate::ui::popover::host::live();
         pop().scrim_lifting(SCRIM_A, &OPENER);
     }
 }
@@ -313,10 +310,12 @@ const OPENER: crate::ui::popover::Opener =
     crate::ui::popover::Opener::drawn(crate::ui::widgets::redraw_profile_chip);
 
 pub fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
     use crate::ui::profile::phase;
+    // Everything below is LIVE over the frozen host page — see `popover::host::live`.
+    let _live = crate::ui::popover::host::live();
     // `content_painter`, NOT `painter`: the scrim is already on the page — see [`draw_scrim`].
     let p = pop().content_painter(-16.0);
     let r = panel_rect();

@@ -594,7 +594,10 @@ pub(crate) fn feather_alpha(y: f32, top: f32, bottom: f32, edges: (bool, bool)) 
 
 // ---- state --------------------------------------------------------------------------------------
 
-static mut POP: Popover = Popover::new();
+/// The page under this panel is standing still, so it is served from the shared host snapshot
+/// while the panel is up — `caching_host`. Measured on the television: without it, every presented
+/// frame of a page turn cost `draw≈75 ms` and the loop ran at 30.
+static mut POP: Popover = Popover::new().caching_host();
 /// 1-based page. The panel's whole cursor: it has no focusable control, so there is nothing else
 /// a key press can move.
 static mut PAGE: c_int = 1;
@@ -654,8 +657,19 @@ pub(crate) fn open() {
 }
 
 pub(crate) fn close() {
-    pop().close();
+    pop().dismiss();
     crate::ui::idle::invalidate();
+}
+/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
+/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
+/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
+/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
+/// spring ran out (Codex review, 2026-09-02).
+pub(crate) fn hide() {
+    if pop().visible() {
+        pop().close();
+        crate::ui::idle::invalidate();
+    }
 }
 
 /// Jump straight to 1-based `page` — the headless door, for `/tmp/plxnative-tracks=<n>`.
@@ -682,13 +696,22 @@ pub(crate) fn move_focus(sym: c_int) {
     } else {
         p
     };
-    unsafe { addr_of_mut!(PAGE).write(np) };
+    if np != p {
+        unsafe { addr_of_mut!(PAGE).write(np) };
+        // A page turn is this panel's own damage, not the page's behind it — without this the
+        // shared ledger reads every keypress as the host moving and re-renders it.
+        crate::ui::popover::note_own_damage();
+        crate::ui::idle::invalidate();
+    }
 }
 
 pub(crate) fn update(dt: f32) {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // The appear spring and the body's scroll glide are this panel's motion, not the page's behind
+    // it — see `popover::own_motion`.
+    let _own = crate::ui::popover::own_motion();
     pop().update(dt);
     let view = body_rect().h;
     let content = unsafe { addr_of!(CONTENT_H).read() };
@@ -974,9 +997,12 @@ fn body_flow(
 }
 
 pub(crate) fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // Everything this function draws is LIVE over the frozen host page, and constructing the guard
+    // is what takes the snapshot on the panel's first frame — see `popover::host::live`.
+    let _live = crate::ui::popover::host::live();
     let Some(d) = metadata::current() else { return };
     let r = panel_rect();
     // CACHED glass over a page that is standing still, so the scrim rides `painter` and lands in

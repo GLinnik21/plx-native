@@ -62,10 +62,25 @@ const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
 // and never ink a control; together they stand in for an artwork UltraBlur envelope before the
 // catalog has supplied one. The range stays on PlxNative's graphite/amber axis so first-run does
 // not invent a rainbow identity before any actual artwork exists.
-const ATMOS_CHARCOAL: [f32; 4] = rgb8(0x20, 0x20, 0x22);
-const ATMOS_WARM_GREY: [f32; 4] = rgb8(0x3a, 0x37, 0x34);
-const ATMOS_UMBER: [f32; 4] = rgb8(0x4a, 0x31, 0x20);
-const ATMOS_ASH: [f32; 4] = rgb8(0x31, 0x30, 0x32);
+//
+// **Corrected 2026-09-02.** The first cut of these four stops sat within ~15 8-bit codes of
+// `SURFACE_APP` (0x2c,0x2c,0x2e) in BOTH hue and luminance — three of the four were, to the eye,
+// the app's own flat ground with one warm corner — which is exactly what a device capture of
+// first-run consent showed: "no ambient light on the privacy onboarding screen", not a wash. A
+// real keyed hero ground (`AmbientWash::keyed`, capped at `GROUND_LUMA` 0.42 and mixed toward the
+// surface at `GROUND_W` 0.26) can and does land in a similarly narrow band when the source artwork
+// itself is flat — the difference is that a `RouteGround` fallback bypasses that mix entirely
+// (`RouteGround::latch_target` `jump`s the literal quad, unmixed) and has no artwork to fall back
+// on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
+// pipeline's. These four now spread across a ~3x luminance range (see
+// `route_screen::tests::the_pre_home_fallback_reads_as_a_directional_wash`) on the same diagonal
+// an authored key light would use — bright near one corner, dark at its opposite — while every
+// corner still clears 3:1 against `TEXT_TERTIARY` and 7:1 against `TEXT_PRIMARY`, the same floors
+// `AmbientWash::keyed` holds a real hero to.
+const ATMOS_CHARCOAL: [f32; 4] = rgb8(0x18, 0x18, 0x1a);
+const ATMOS_WARM_GREY: [f32; 4] = rgb8(0x4a, 0x46, 0x40);
+const ATMOS_UMBER: [f32; 4] = rgb8(0x5e, 0x3e, 0x24);
+const ATMOS_ASH: [f32; 4] = rgb8(0x42, 0x42, 0x4a);
 
 // Semantic — amber / red / green: state and verdict, never decoration.
 const AMBER_300: [f32; 4] = rgb8(0xfa, 0xb8, 0x2e);

@@ -2822,7 +2822,15 @@ mod tests {
     #[test]
     fn an_unknown_firmware_is_named_as_unknown() {
         let _g = crate::testlock::serial();
+        // "No session" is a PRECONDITION on three crate globals, not a property of a default
+        // `Diag`: `player::state()` derives from the pump's `pb_state` and the route's refusal
+        // flags, and the hostsim engine tests drive the real pump — which stores `Error` on a
+        // refused Load/Play — without restoring it. Establish the state this test asserts about,
+        // and hand back whatever was there (see `[[test-suite-global-pollution]]`).
+        let prev = crate::player::swap_state_for_test(crate::player::PlaybackState::Idle);
+        crate::route::clear_play_verdict_for_test();
         let head = header(&crate::player::Diag::default(), 1_000);
+        crate::player::restore_state_for_test(prev);
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
         // being one array is what stops the firmware taking the verdict's slot again.
         let line = &head[0];

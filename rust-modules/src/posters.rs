@@ -633,6 +633,9 @@ pub(crate) fn poster_pump(budget: c_int) {
         };
         // GL upload off the lock (synchronous glTexImage2D — counted for the frame-drop detector)
         let t = img::img_upload_rgba(px as *const c_uchar, w, h);
+        // ...and make it resident NOW rather than on the next draw that samples it — see
+        // `gfx::warm_tex` for the 116 ms frame this moves out of the draw.
+        crate::gfx::warm_tex(t);
         UP_CT.fetch_add(1, Ordering::Relaxed);
         UP_PX.fetch_add((w.max(0) as u64) * (h.max(0) as u64), Ordering::Relaxed);
         img::img_free(px as *mut c_uchar);

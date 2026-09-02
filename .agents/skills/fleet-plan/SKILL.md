@@ -315,3 +315,8 @@ the `UNMERGED:` branch actually fires.)
 
 Then the integrator — and only the integrator — does the one cross-build, and takes the television
 for whatever the fleet could not verify on the host.
+
+**And what reaches `main` is ONE squash commit**, never the integration branch's history
+(`AGENTS.md`, Working rules): on the main checkout, `git merge --squash <integration>` and a single
+commit whose message is the fleet's own account. Lane merges into the integration branch are the
+fleet's business; a trunk of lane commits and merge commits is not.

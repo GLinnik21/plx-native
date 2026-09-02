@@ -115,6 +115,67 @@ space. Prefer coherent surfaces (a bar, a sheet, a card) and measure each new ge
 
 ---
 
+## 3b. The page under a panel is not redrawn, and the panel's own ground is not either
+
+**A modal costs its host page every frame, and on this GPU that is the whole cost of having one up.**
+Measured 2026-09-02 on the debug install, detail page 2012 with the track-information panel open and
+paging with DOWN: every presented frame `draw≈83 ms`, `loop=41`, `fps=9`. The same page with no
+panel presents at 60 with worst frames ≈29 ms. The draw-class bisect (`/tmp/plxnative-drawmask`)
+priced it as fill and nothing else.
+
+`ui::popover::host` is the answer, and it applies to every popover that asks for it rather than to
+one — `Popover::caching_host()`. The page is drawn ONCE into a snapshot and served from it as a
+single textured quad; the freeze is a REFUSAL at `gfx::culled`, the renderer's one shared gate, so
+the page's draw code still runs (layout, hit rects, poster uploads) and only the fill is removed.
+That is what lets it serve the four panels which draw from inside their page, which "skip the page
+and draw the panel after it" never could.
+
+**The snapshot has two stages, and the second is where the frames are.** Freezing the page alone got
+83 → 58 ms; the bisect on that build said the survivors were `glass` and `rect` at ~25 ms each — the
+popover's own full-screen modal scrim and its own glass composite, redrawn every frame although
+NEITHER CHANGES once the appear spring has settled. So the snapshot grows to page + scrim + lifted
+`Opener` + the panel's own ground, taken by `Popover::panel`/`sheet` on the first settled frame, and
+only the panel's foreground stays live:
+
+| | draw / presented frame | `loop=` | `fps=` |
+|---|---|---|---|
+| before | 83 ms | 41 | 9 |
+| page frozen | 58 ms | 34–51 | — |
+| + panel ground frozen | **40 ms** | **60** | **37–38** |
+| `drawmask=all` control, shipped build | 40 ms | — | — |
+
+That last row is the point: with the app submitting no quad at all the frame still costs 40 ms, so
+nothing the app draws remains in it. The person page's bio panel is the same shape — `draw≈75 ms` /
+`loop=26–52` before, `draw≈24–33 ms` / `loop=61–62` after — and it keeps its DYNAMIC backdrop,
+because the scrim is drawn live above the snapshot and a re-source therefore still sees the ramp it
+is meant to. A blur SOURCE pass is never served the ground stage; it contains the panel's own frost,
+so a backdrop re-sourced from it would frost a picture of itself.
+
+---
+
+## 3c. Banding is an output problem, and there is one dither
+
+The frost is a slow gradient over a broad area, which is the exact case an 8-bit framebuffer turns
+into flat plateaus. Reported as "too discreet colours and strange patterns"; measured on Settings
+over Home as a 700-row column spanning luma 55.7 → 59.1 in **four** levels, treads of 158, 157 and
+146 rows.
+
+Two rules, both of which this material got wrong on its own before 2026-09-02:
+
+- **It is not a precision problem.** Promoting a mix to fp32 changes nothing visible and costs ~4.5
+  arithmetic words a fragment. The cure is noise at the OUTPUT.
+- **The noise is a texture fetch behind a uniform branch, never a hash.** `fs_glass.frag` carried
+  `fract(sin(dot(p,k))*43758.5)` and evaluated it on EVERY fragment of every glass surface — the
+  same construction `fs_ambient.frag`'s own header had been recording as a mistake that cost 38% of
+  a Home frame. A sine hash is also structured, which is the "strange patterns" half of the report.
+
+`shaders/dither.glsl` is now the one answer for all five gradient programs, `gfx::dither_for_ramp`
+the one policy for which draws pay. Measured on the panel afterwards: the flat runs that ARE the
+staircase fall from 9.6 px / 15.7 px to 2.2 px, the horizontal autocorrelation at lag 64 from
++0.144 to −0.010, and the paging numbers in §3b are unchanged.
+
+---
+
 ## 4. It is free at rest; moving glass uses the saved 3-present policy
 
 `widgets::Glass::CACHED`, the default, takes **one snapshot per opening** over a still page. A modal

@@ -59,9 +59,27 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   runtime major-selected table returning: this picks between two ABIs of ONE version at COMPILE
   time, on evidence the compiler holds — and deriving the second half is what found
   `AVSubtitleRect` modelled with `flags` in the wrong place.
-- `make deploy` — scp the binary + native crash handler + this flavour's `appinfo.json` + the fonts (UNCONDITIONALLY —
-  the old `test -f || scp` guard meant a changed font could never reach the TV) into that
-  install's app dir. Refuses if the flavour has never been installed, naming
+- `make deploy` — ships the binary and the native crash handler through a `.new` + `mv` dance (a
+  running process holds their inodes), the bundled FFmpeg libraries with a retirement loop for any
+  previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
+  which is `APP_FILES` (the exact list `ipk` stages into the `.ipk`) minus those three carve-outs:
+  this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the three font files
+  (UNCONDITIONALLY, including the 21 MB CJK face — the old `test -f || scp` guard on the fonts
+  meant a changed one could never reach the TV, and a separate md5 guard on the CJK face alone had
+  the same failure mode by omission: it kept `pkg/splash.png`, both icons, `pkg/OFL.txt` and
+  `THIRD-PARTY-NOTICES.md` off the deploy path for as long as this recipe spelled its file list out
+  by hand instead of sharing `ipk`'s), `pkg/OFL.txt` and `THIRD-PARTY-NOTICES.md`. `deploy`'s last
+  step is now `verify-deploy`: it md5sums every shipped file **on the television** (`ci/verify-
+  deploy.py` against the local copy) and fails loudly on any mismatch or absence, which is the
+  check that would have caught the splash regression instead of leaving a stale launch image on a
+  debug install for weeks. **Whether webOS itself also caches `splashBackground` somewhere outside
+  the app directory is not settled** — webosbrew's own `appinfo.json` guide documents SAM caching
+  the *appinfo.json* JSON at boot for BUILT-IN apps only ("you will likely have to restart sam"),
+  which is a different claim (metadata, not the referenced PNG's bytes) about a different install
+  class (built-in, not a sideloaded native app whose directory `deploy` overwrites in place); no
+  vendor or community source found describes a separate cache of the image itself. Community tier
+  only, and unverified either way — settling it needs a real device (deploy a changed splash,
+  relaunch without reinstalling, and see which image shows). Refuses if the flavour has never been installed, naming
   `make FLAVOR=… install`, and refuses a dev build on the stable id (see `release-guard`).
 - `make run` — close any running instance, wipe this install's event log (`make -s print-eventlog`),
   launch, keep alive `RUN_SECS` (default 18s), then `cat` the on-device event log back to your

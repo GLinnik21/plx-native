@@ -56,11 +56,17 @@
 //! shelf landing or a poster texture arriving on the person page itself, which does redraw the
 //! header/shelves this panel sits over — `person::update` keeps pumping under an open panel, and
 //! the media fetch is independent of the profile fetch that made the panel openable, so this is
-//! the ordinary case on a cold page, not a corner). The panel therefore keeps its OWN ledger of
-//! the damage it caused this frame ([`OWN_DAMAGE`]: a page turn, or its scroll spring still
-//! gliding) and subtracts that from the caller's flag — see [`glass_refresh`]. A settled panel
-//! over a page that nothing but the panel touched never refreshes; one over a page that just
-//! grew a shelf refreshes once.
+//! the ordinary case on a cold page, not a corner). The panel therefore needs a ledger of the
+//! damage it caused this frame — a page turn, or its scroll spring still gliding — subtracted from
+//! the caller's flag.
+//!
+//! **That ledger and that decision are SHARED now** (2026-09-02). They lived here as a private
+//! `OWN_DAMAGE` static and a private `glass_refresh`, because this was the first panel whose frame
+//! rate was measured; the bug is a property of every popover with a scroll or a selection in it.
+//! They are `popover::note_own_damage` / `popover::own_motion` and `popover::glass_refresh`, and
+//! `Popover::prepare_present` folds them in itself — so this module's `prepare_present` is now a
+//! plain forward, and the panels that never had the fix have it. The decision is unchanged and so
+//! is its test, which moved to `popover.rs` with the function it grades.
 use crate::person::Person;
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::label::{Label, VAlign};
@@ -151,19 +157,13 @@ const META_SEP_PAD: f32 = 10.0;
 /// scrim-belongs-to-the-page rule mandatory rather than stylistic here: `Glass::needs_page_scrim`
 /// is true for this policy, and `Popover::painter` `debug_assert`s against a panel that tries to
 /// draw its own dim.
-static mut POP: Popover = Popover::with_glass(crate::ui::widgets::Glass::DYNAMIC_BACKDROP);
+static mut POP: Popover =
+    Popover::with_glass(crate::ui::widgets::Glass::DYNAMIC_BACKDROP).caching_host();
 /// The current page, 1-based. The scroll spring chases [`scroll_for_page`] of it, rather than the
 /// page being derived from the scroll: paging is the input, and a spring that is still travelling
 /// must not be read back as a different page half way there.
 static mut PAGE: usize = 1;
 static mut SCROLL: Spring = Spring::at(0.0);
-/// Set on every frame THIS panel is the reason the process-wide dirty/motion flags are up — a page
-/// turn ([`move_focus`]) or its scroll spring still travelling ([`update`]) — and taken by
-/// [`prepare_present`] on the same frame, so the backdrop gate can tell the panel's own activity
-/// from the host page's (module doc, point 4). `update` runs before `prepare_present` in
-/// `app.rs`'s frame, which is what makes a same-frame flag sufficient.
-static OWN_DAMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
 }
@@ -198,13 +198,27 @@ pub(crate) fn close() {
     if is_open() {
         crate::ui::idle::invalidate();
     }
+    pop().dismiss();
+}
+/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
+/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
+/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
+/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
+/// spring ran out (Codex review, 2026-09-02).
+pub(crate) fn hide() {
+    if pop().visible() {
+        crate::ui::idle::invalidate();
+    }
     pop().close();
 }
 
 pub(crate) fn update(dt: f32) {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // This panel's appear and scroll springs are ITS motion, not the person page's — the shared
+    // ledger the module doc's point 4 is about, now `popover::own_motion`.
+    let _own = crate::ui::popover::own_motion();
     pop().update(dt);
     // Re-clamp before springing: the store can land a longer (or empty) biography while the panel
     // is up — `person::pump` applies a profile whenever it arrives — and a page index past the end
@@ -216,10 +230,12 @@ pub(crate) fn update(dt: f32) {
     let sc = unsafe { &mut *addr_of_mut!(SCROLL) };
     sc.step(want, crate::ui::consts::K_SCROLL, dt);
     crate::ui::anim::probe("personbio.scroll", sc.pos, sc.vel, want, dt);
-    // A generous rest test on purpose: while this spring is anywhere near moving, the route's
-    // scoped motion reports it as the PAGE moving, and that must not re-source the backdrop.
+    // A generous rest test on purpose, and kept even though `own_motion` above already catches the
+    // spring through `note_spring`: that reporter has a visibility-relative rest tolerance, and the
+    // tail it calls "at rest" is still a tail the route's scoped motion can report as the PAGE
+    // moving. Belt and braces on the side that costs a frame rather than a wrong picture.
     if (sc.pos - want).abs() > 0.01 || sc.vel.abs() > 0.01 {
-        OWN_DAMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+        crate::ui::popover::note_own_damage();
     }
 }
 
@@ -252,7 +268,7 @@ pub(crate) fn move_focus(sym: c_uint) {
     };
     if next != pg {
         unsafe { addr_of_mut!(PAGE).write(next) };
-        OWN_DAMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+        crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
     }
 }
@@ -472,48 +488,29 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 /// `Popover::scrim` contract, and the contrast argument that makes a heavy scrim load-bearing on
 /// this particular page.
 pub(crate) fn scrim() {
-    if is_open() {
+    // `visible()`, not `is_open()`: a dismissed panel is still fading, and the dim must go with
+    // it rather than vanish on the press frame under a nearly opaque sheet.
+    if pop().visible() {
+        // First lift of the frame on this page: the host snapshot is taken here, BEFORE the dim,
+        // which is what makes it a snapshot of the undimmed page — see `popover::host::live`.
+        let _live = crate::ui::popover::host::live();
         pop().scrim(SCRIM_A);
     }
-}
-
-/// **Whether the dynamic backdrop should re-source this present** — the pure half of
-/// [`prepare_present`], folded out so the decision can be asserted without a `Popover`. See the
-/// module doc's point 4 for what bug this exists to fix: `underlay_changed` alone cannot tell the
-/// host page moving from this panel's OWN page-turn setting the same process-wide flag, so the
-/// panel's own ledger (`own_damage`) is subtracted from it.
-fn glass_refresh(underlay_changed: bool, appear_settled: bool, own_damage: bool) -> bool {
-    // Still ramping open: refresh every frame, because the contrast argument (module doc, point 1)
-    // needs the ramp to sample the page as it actually dims. Settled: only for damage this panel
-    // did NOT cause. The caller's flag alone cannot be trusted here — `app.rs` folds
-    // `present_dirty()` into it, which every key press sets, and the person route's scoped motion
-    // includes THIS panel's own scroll spring (`person::update` steps `person_bio::update`), so
-    // "the page changed" was true on every page-turn key and every frame of the glide — the
-    // per-frame re-blur the first Codex review (2026-09-02) caught. Ignoring the flag outright was
-    // the first fix and the second review caught its other half: the page under an open panel is
-    // NOT standing still — `person::update` keeps pumping, the media shelves land independently of
-    // the profile that opened the panel, and poster textures keep arriving — so a settled frost
-    // kept showing the spinner/skeleton the page had at open while the margins showed the posters.
-    // A swallowed key the panel does nothing with (LEFT/RIGHT/OK) still costs one refresh, which
-    // is bounded by the press and not by the frame.
-    !appear_settled || (underlay_changed && !own_damage)
 }
 
 /// Resolve the glass cadence before the host page draws — every popover's route arm calls this
 /// unconditionally; a closed one prepares nothing.
 ///
-/// `underlay_changed` is NOT passed straight through — see the module doc's point 4 and
-/// [`glass_refresh`]. This module folds in its own [`Popover::appear_settled`] rather than asking
-/// `app.rs`'s route arm to know that this one panel's internal paging must not count as page
-/// motion; the caller only ever reports the PAGE's state, which is right for every other route.
+/// **A plain forward now.** `underlay_changed` is still not passed straight through — see the
+/// module doc's point 4 — but the folding is `Popover::prepare_present`'s, through the shared
+/// `popover::glass_refresh` and the shared own-damage ledger. This module kept both privately until
+/// 2026-09-02, which meant the panels that were not this one silently had the bug.
 pub(crate) fn prepare_present(underlay_changed: bool) {
-    let own = OWN_DAMAGE.swap(false, std::sync::atomic::Ordering::Relaxed);
-    let refresh = glass_refresh(underlay_changed, pop().appear_settled(), own);
-    pop().prepare_present(refresh);
+    pop().prepare_present(underlay_changed);
 }
 
 pub(crate) fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
     // **A surface may not appear in its own backdrop.** The direct blur-source path re-renders the
@@ -524,6 +521,9 @@ pub(crate) fn draw() {
     if crate::gfx::blur_source_pass() {
         return;
     }
+    // Live over the frozen host — see `popover::host::live`. (The `scrim` above normally takes the
+    // snapshot; this guard is what lifts the freeze for the panel itself.)
+    let _live = crate::ui::popover::host::live();
     let Some(person) = crate::person::current() else {
         return;
     };
@@ -684,38 +684,6 @@ fn draw_foot(p: Painter, person: &Person, c: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// **The FPS regression, as a pure decision (item 7).** Confirmed red against the code this
-    /// replaces before the fix: `prepare_present` used to hand `underlay_changed` straight to
-    /// `Popover::prepare_present`, so a settled panel with `underlay_changed == true` (this
-    /// panel's OWN page-turn, misread as page motion by `app.rs`'s shared `present_dirty` flag —
-    /// see the module doc's point 4) forced a refresh every such keypress. `glass_refresh` is what
-    /// subtracts the panel's own activity from the caller's flag once the appear ramp has finished
-    /// — and, since the second review the same day, still refreshes for damage the panel did NOT
-    /// cause (a shelf landing, a poster texture) rather than freezing the frost at its open frame.
-    #[test]
-    fn the_backdrop_refreshes_while_ramping_or_for_host_damage_never_for_the_panels_own_scroll() {
-        assert!(
-            glass_refresh(false, false, false),
-            "still ramping open — must refresh even with nothing reported changed"
-        );
-        assert!(
-            glass_refresh(true, false, true),
-            "ramping AND the page changed — still a refresh, whoever caused it"
-        );
-        assert!(
-            !glass_refresh(true, true, true),
-            "settled — the caller's flag carries this panel's own scroll or page turn, so it must not refresh"
-        );
-        assert!(
-            !glass_refresh(false, true, false),
-            "settled and nothing reported — no refresh"
-        );
-        assert!(
-            glass_refresh(true, true, false),
-            "settled and the HOST changed (a shelf landed, a poster arrived) — the frost must follow it"
-        );
-    }
 
     /// **The paging arithmetic, at every boundary that has an off-by-one in it.** The rail is drawn
     /// straight from these two numbers, so a wrong `pages` is a fill of the wrong height sitting in

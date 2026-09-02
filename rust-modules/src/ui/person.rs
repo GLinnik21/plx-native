@@ -123,13 +123,11 @@ const SHELF_GAP: f32 = theme::space::XL;
 /// both pages. (The band BELOW the row is not a constant here — see [`shelf_block_h`].)
 const SHELF_LABEL_H: f32 = 46.0;
 /// The shelves' own row style: [`RowStyle::HOME`]'s motion and geometry verbatim — one source, so a
-/// poster here animates exactly as it does on Home — plus the **two-line** title a shelf of real
-/// Plex names needs (one elided line loses two thirds of "Wallace & Gromit: The Curse of the
-/// Were-Rabbit").
-const SHELF_STYLE: RowStyle = RowStyle {
-    title_lines: 2,
-    ..RowStyle::HOME
-};
+/// poster here animates exactly as it does on Home. A long Plex title ("Wallace & Gromit: The Curse
+/// of the Were-Rabbit") no longer wraps to a second line — every focused tile in the app shares the
+/// one single-line title that marquees when it overflows [`card_row`]'s widened budget, so this
+/// shelf reads exactly like Home's and Library's instead of growing its own label band.
+const SHELF_STYLE: RowStyle = RowStyle::HOME;
 /// A focused shelf lifts no higher than this from the screen top — [`HEADER_TOP`]'s twin.
 const TOP_MARGIN: f32 = HEADER_TOP;
 /// Air kept under the lowest visible content when a shelf is revealed by scrolling.
@@ -511,7 +509,7 @@ fn content_h(sc: &Scene) -> f32 {
 /// a hand-authored 112 did here, because it assumed the mock's 24px poster→title drop where the
 /// shared code uses 30.
 fn shelf_block_h() -> f32 {
-    SHELF_LABEL_H + CARD_H + card_row::TileLabel::height(&SHELF_STYLE, true)
+    SHELF_LABEL_H + CARD_H + card_row::TileLabel::height(true)
 }
 
 /// The MINIMAL scroll that reveals the block `[top, top+h)` inside `content` px of flow — the
@@ -618,8 +616,9 @@ pub(crate) fn leave() {
     // some unrelated OK several screens later
     scene().requested = false;
     // the bio panel is THIS page's, so it dies with it — a panel left open would come back up over
-    // whatever the trail puts here next, with the previous person's biography still in it
-    crate::ui::person_bio::close();
+    // whatever the trail puts here next, with the previous person's biography still in it —
+    // and at once, not faded: the page is going.
+    crate::ui::person_bio::hide();
     crate::person::close();
 }
 
@@ -1212,8 +1211,8 @@ fn draw_shelf(p: Painter, person: &Person, kind: usize, sc: &Scene) {
         SCR_W,
         |i| Art::Poster(items.get(i)),
         |i| items.get(i).and_then(|m| m.resume_frac()),
-        // the focused tile's two lines: the title (wrapped to two, per SHELF_STYLE) over the
-        // character this person played in it
+        // the focused tile's two lines: the single-line title (marqueeing if it overflows) over
+        // the character this person played in it
         |i| match items.get(i) {
             Some(m) => card_row::TileLabel::titled(&m.title, person.role(kind, i)),
             None => card_row::TileLabel::default(),

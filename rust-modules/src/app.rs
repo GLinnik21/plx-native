@@ -6274,6 +6274,34 @@ fn key_exit_alert(sym: c_uint, wcode: c_uint, now: u32, ok_armed: &mut bool) {
 /// Commit the exit alert's focused answer — the deferred half of [`key_exit_alert`], run from the
 /// per-frame loop on the press spring-back. The `running` flip lives HERE and nowhere else, which is
 /// the invariant `exit_alert_tests` guards: this is still the app's one door.
+/// Commit the consent screen's focused stop — the answer pill on the press spring-back
+/// (`consent::focus_is_ctl`), or a document row on its key-down. One function for both, because the
+/// erase-everything outcome underneath is the same whichever way the press arrived.
+fn commit_consent(route: &mut Route, trail: &mut crate::ui::trail::Trail) {
+    crate::ui::consent::on_ok();
+    if crate::ui::consent::take_delete_request() {
+        let leftovers = delete_all_local_data();
+        let outcome = delete_outcome(leftovers.len());
+        if outcome.report_leftovers {
+            crate::log(&format!(
+                "privacy: local data erased; {} file(s) could not be removed: {}",
+                leftovers.len(),
+                leftovers.join("; ")
+            ));
+        }
+        if outcome.to_sign_in {
+            crate::ui::settings::hide(); // the screen under it is going — no fade to run over
+            // Tell the read-out what the sweep actually achieved BEFORE it is mounted: a survivor
+            // can be the telemetry decision, which comes back on the next launch, so the screen
+            // must not claim to have removed it.
+            crate::ui::login::note_delete_leftovers(leftovers.len());
+            crate::ui::login::enter();
+            trail.reset();
+            *route = Route::Login;
+        }
+    }
+}
+
 fn commit_exit_alert(running: &mut bool) {
     if crate::ui::exit_alert::on_ok() == crate::ui::exit_alert::Choice::Exit {
         *running = false;
@@ -7389,29 +7417,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // a decision. Settings BACK discards its draft.
                     if crate::ui::consent::is_open() {
                         if is_ok(sym) {
-                            crate::ui::consent::on_ok();
-                            if crate::ui::consent::take_delete_request() {
-                                let leftovers = delete_all_local_data();
-                                let outcome = delete_outcome(leftovers.len());
-                                if outcome.report_leftovers {
-                                    crate::log(&format!(
-                                        "privacy: local data erased; {} file(s) could not be \
-                                         removed: {}",
-                                        leftovers.len(),
-                                        leftovers.join("; ")
-                                    ));
-                                }
-                                if outcome.to_sign_in {
-                                    crate::ui::settings::close();
-                                    // Tell the read-out what the sweep actually achieved BEFORE
-                                    // it is mounted: a survivor can be the telemetry decision,
-                                    // which comes back on the next launch, so the screen must not
-                                    // claim to have removed it.
-                                    crate::ui::login::note_delete_leftovers(leftovers.len());
-                                    crate::ui::login::enter();
-                                    trail.reset();
-                                    route = Route::Login;
-                                }
+                            if crate::ui::consent::focus_is_ctl() {
+                                // An answer pill is a control face with a pop of its own
+                                // (`route_screen::ActionRow`), so OK takes the tvOS press: dip
+                                // now, commit in `commit_consent` on the spring-back — the exit
+                                // alert's shape, for the same reason (the sheet is up through the
+                                // whole animation, so the answer being taken stays legible).
+                                crate::ui::press::begin_ctl(last_input);
+                                ok_armed = true;
+                            } else {
+                                // a TableView row (the two documents) commits on the key-down,
+                                // as every row in the app does
+                                commit_consent(&mut route, &mut trail);
                             }
                         } else if is_back(sym, wcode) {
                             // BACK reverses Product → Crash and is swallowed at Crash: the step
@@ -8468,15 +8485,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 continue;
                             }
                         };
-                        let idx = crate::pms::index_of_rk(sid, rk);
-                        // BLOCKING both ways: the sub-triggers below replay move_focus/on_ok in
-                        // THIS frame, and they walk sections() — which is hero-only until the
-                        // item lands.
-                        if idx >= 0 {
-                            crate::ui::detail::open(idx);
-                        } else {
-                            crate::ui::detail::open_rk_now(sid, rk);
-                        }
+                        // BLOCKING, deliberately: the sub-triggers below replay move_focus/on_ok
+                        // in THIS frame, and they walk sections() — which is hero-only until the
+                        // item lands. `open_rk_now` resolves the catalog index itself; the old
+                        // `open(idx)` arm here was the one caller that made `open` block for
+                        // everyone, including Home's OK on a cold card (the "freeze for a second").
+                        crate::ui::detail::open_rk_now(sid, rk);
                         log(&format!(
                             "plxnative-detail: rk={rk} server={} start",
                             sid.raw()
@@ -9264,6 +9278,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // a Home activation.
                     if crate::ui::exit_alert::is_open() {
                         commit_exit_alert(&mut running);
+                    } else if crate::ui::consent::is_open() {
+                        commit_consent(&mut route, &mut trail);
                     } else if matches!(route, Route::Onboard) {
                         if let Some(next) = apply_onboarding_action(commit_onboarding(), &mut trail)
                         {
@@ -10200,6 +10216,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // the toggle, is a right-edge popover.
                             crate::ui::stats::draw();
                         } else {
+                            // Open the shared popover frame FIRST: it takes this frame's own-damage
+                            // ledger, which every glass owner below then reads through
+                            // `Popover::prepare_present`, and decides whether the frozen-host
+                            // snapshot still describes the page. Route-agnostic by construction —
+                            // see `ui::popover::host::begin_frame`.
+                            crate::ui::popover::host::begin_frame();
                             // Resolve every glass owner BEFORE anything on this route draws — that is
                             // `Glass::prepare`'s contract, and the shared top tab track is an owner on
                             // every route that wears it.
@@ -10249,11 +10271,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             //
                             // **`page_of`, not the bare route** — the same reason one altitude up: a
                             // POPOVER names the page it stands on, and BOTH of them can stand on more
-                            // than one. ItemMenu keeps its screen live because the popover is anchored
-                            // beside a tile that has to remain there. Account instead draws that page
-                            // once into `FrameCache` and keeps only its menu live, but it still needs
-                            // the correct host on that first frame. It may sit over any of the three
-                            // screens that wear the top bar. Spelled out as
+                            // than one. Both stand on a FROZEN host now (`Popover::caching_host()`,
+                            // `popover::host`) — ItemMenu is no longer the live-page exception it was —
+                            // and that is exactly why the page still matters: the snapshot's FIRST frame
+                            // draws the real tree, and it has to be the right tree. Account may sit over
+                            // any of the three screens that wear the top bar. Spelled out as
                             // routes, only the detail arm ever said so and this closure's `else` meant
                             // "Home" — so the Library, Search and person page all fell through to
                             // `home_draw` the moment they became menu hosts, and the account popover
@@ -10268,14 +10290,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             } else {
                                 page_of(route)
                             };
-                            // A compact modal still exposes most of its host, so unlike Settings it
-                            // cannot replace the page with an opaque ground. Account freezes that
-                            // page into one framebuffer texture instead: first frame draws the real
-                            // tree once, later frames submit one quad while the menu's own scrim,
-                            // selection spring and panel stay live above it.
-                            let cached_account_host = matches!(route, Route::Account { .. })
-                                && crate::ui::account_menu::draw_cached_host();
                             let mut page = || {
+                                // A compact modal still exposes most of its host, so unlike
+                                // Settings it cannot replace the page with an opaque ground. It
+                                // freezes that page into one framebuffer texture instead: the first
+                                // frame draws the real tree once, later frames submit one quad while
+                                // the popover's own scrim, springs and panel stay live above it.
+                                //
+                                // **Inside the closure, so BOTH passes get it** — the visible one
+                                // and the direct blur-source one below, which re-renders this same
+                                // closure into a small FBO. The guard is RAII because `home_draw`
+                                // catches panics; see `popover::host::PagePass`.
+                                //
+                                // This was `account_menu`'s private `FrameCache` and applied to
+                                // exactly one popover. Every popover that asked for it now gets it,
+                                // including the four that draw from INSIDE their page and so could
+                                // never have used the old shape.
+                                let _host = crate::ui::popover::host::page_pass();
                                 if matches!(page_route, Route::Login) {
                                     crate::ui::login::draw();
                                 } else if matches!(page_route, Route::Onboard) {
@@ -10319,14 +10350,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 // and one more: the un-dimmed copy has to be in the SNAPSHOT too, or
                                 // the panel's glass frosts a dimmed picture of the very card it is
                                 // about (`Popover::scrim_lifting`).
-                                // Account's VISIBLE pass draws this after capturing the undimmed
-                                // host. The direct blur-source pass still needs it here so the
-                                // panel's one cached backdrop contains the same dim + lifted chip.
-                                if !matches!(route, Route::Account { .. })
-                                    || crate::gfx::blur_source_pass()
-                                {
-                                    crate::ui::account_menu::draw_scrim();
-                                }
+                                //
+                                // **The account arm's special case is gone.** It used to skip this
+                                // call on the visible pass and repeat it further down, after
+                                // `capture_host` — because the capture had to land between the page
+                                // and the dim. `popover::host::live` now owns that instant for every
+                                // popover: the first lift of the frame takes the snapshot, so the
+                                // scrim and its lift are live above the quad on both passes, in one
+                                // place, in the draw order they always occupied.
+                                crate::ui::account_menu::draw_scrim();
                                 crate::ui::item_menu::draw_scrim();
                                 // The third member of that class, and the only one with no opener to
                                 // lift: the alert is about the APP, not about an element on the page,
@@ -10339,26 +10371,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 // And the consent question over all of them, mirroring the key ladder.
                                 crate::ui::consent::draw_scrim();
                             };
-                            if !cached_account_host {
-                                if let Some(reg) = crate::gfx::blur_direct_region() {
-                                    crate::gfx::blur_snapshot_direct(reg, &mut page);
-                                }
+                            if let Some(reg) = crate::gfx::blur_direct_region() {
+                                crate::gfx::blur_snapshot_direct(reg, &mut page);
                             }
                             // Settings owns a frozen, already-blurred image of the host. After its
                             // first visible draw, repainting the full Home hero and shelves beneath
                             // an opaque full-screen modal only burns fill-rate on the T820. Closing
                             // Settings clears the flag, so the live page resumes on the next frame.
-                            if !cached_account_host
-                                && !crate::ui::settings::host_ground_ready()
+                            //
+                            // The compact modals do NOT take this branch: they expose most of their
+                            // host, so the page still has to be on the framebuffer. `page` runs, and
+                            // the freeze inside it is what makes running it cheap.
+                            if !crate::ui::settings::host_ground_ready()
                                 && !crate::ui::consent::host_ground_ready()
                             {
                                 crate::ui::profile::phase("main.ui", || page());
-                            }
-                            if matches!(route, Route::Account { .. }) {
-                                if !cached_account_host {
-                                    crate::ui::account_menu::capture_host();
-                                }
-                                crate::ui::account_menu::draw_scrim();
                             }
                             // The diagnostics read-out, off the player. It drew ONLY inside the branch
                             // above until 2026-08-29, which is why its module doc had to warn that a
@@ -10376,12 +10403,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // controls. Two call sites, and the `else` covers every non-player route,
                             // so a new route still cannot be forgotten.
                             crate::ui::stats::draw();
-                            if matches!(route, Route::Account { .. }) {
-                                crate::ui::account_menu::draw(); // profile popover, over the page it opened on
-                            }
-                            if matches!(route, Route::ItemMenu { .. }) {
-                                crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
-                            }
+                            // Both self-gated on `Popover::visible`, not on the route: a dismissed
+                            // menu's route flips back to its host on the press frame while the
+                            // panel is still fading out over it (`Popover::dismiss`).
+                            crate::ui::account_menu::draw(); // profile popover, over the page it opened on
+                            crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
                             // …and the alert over all of it — self-gated, because it is modal state
                             // rather than a route. Drawn AFTER the two popovers for the reason its
                             // key arm is drawn first: nothing outranks it.

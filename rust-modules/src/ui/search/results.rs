@@ -153,13 +153,9 @@ fn tile_size(kind: Kind) -> (f32, f32, bool) {
 }
 
 /// A shelf's row style: [`RowStyle::HOME`]'s motion verbatim — one source, so a poster here
-/// animates exactly as it does on Home — with only the tile's own size and shape per kind.
-///
-/// `title_lines` stays at HOME's **one**, and this is the one place the search shelves cannot copy
-/// the person page (which wraps to two). [`super::LABEL_BLOCK`] is the band this screen reserves
-/// and it is fixed at 114 by the keyboard clearance the whole layout is built around; a two-line
-/// title makes [`card_row::TileLabel::height`] 122, which would put the caption 8px inside the next
-/// shelf's heading. The host test below grades exactly that.
+/// animates exactly as it does on Home — with only the tile's own size and shape per kind. The
+/// focused title is always a single line now (it marquees rather than wraps when it overflows), so
+/// every shelf in the app — this one included — reserves the same fixed [`card_row::TileLabel::height`].
 fn style(kind: Kind) -> RowStyle {
     let (w, h, circular) = tile_size(kind);
     RowStyle {
@@ -180,10 +176,10 @@ fn style(kind: Kind) -> RowStyle {
 ///
 /// **[`super::LABEL_BLOCK`] must stay at least [`card_row::TileLabel::height`] for the [`style`]
 /// this module draws with** — that function is `ui/CLAUDE.md`'s named single authority on the band,
-/// and this expression is what has to reserve it. At `title_lines: 1` it is 92, so the 114 declared
-/// there holds it with 22 to spare (the same 22 home's `ROW_PITCH` carries); at 2 it is **122 and
-/// the constant is 8 short**, which is the cross-file cost of raising `title_lines` and is graded
-/// by `the_reserved_caption_band_holds_the_block_the_shared_component_draws` below.
+/// and this expression is what has to reserve it. The focused title is always one line (92px with a
+/// caption), so the 114 declared there holds it with 22 to spare — the same 22 home's `ROW_PITCH`
+/// carries — with no per-row variation left to grow it, which
+/// `the_reserved_caption_band_holds_the_block_the_shared_component_draws` below still pins.
 fn block_h(kind: Kind) -> f32 {
     HEAD_TO_ROW + tile_size(kind).1 + LABEL_BLOCK
 }
@@ -855,21 +851,14 @@ mod tests {
 
     /// **The band this screen RESERVES must hold the block `card_row` actually draws.**
     /// [`super::super::LABEL_BLOCK`] is fixed by the keyboard clearance the whole layout is built
-    /// around, so it is the tile label that has to fit inside it — and it only does at one title
-    /// line. This is the test that fails the day someone raises `title_lines` for a shelf of long
-    /// Plex titles: the caption would land 8px inside the next shelf's heading.
+    /// around, so it is the tile label that has to fit inside it — and now that a long title
+    /// marquees rather than wrapping to a second line, the block's height is fixed for every kind.
     #[test]
     fn the_reserved_caption_band_holds_the_block_the_shared_component_draws() {
-        for k in ALL {
-            let drawn = TileLabel::height(&style(k), true);
-            assert!(
-                drawn <= LABEL_BLOCK,
-                "{k:?}: the label block draws {drawn}px into a band of {LABEL_BLOCK}"
-            );
-        }
+        let drawn = TileLabel::height(true);
         assert!(
-            TileLabel::height(&RowStyle { title_lines: 2, ..style(Kind::Movie) }, true) > LABEL_BLOCK,
-            "a two-line title is what this band cannot hold — if that stops being true, say so here"
+            drawn <= LABEL_BLOCK,
+            "the label block draws {drawn}px into a band of {LABEL_BLOCK}"
         );
     }
 

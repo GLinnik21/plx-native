@@ -131,8 +131,15 @@ __pycache__/
 
 # The HOST FFmpeg the desktop simulator streams through (ci/build-ffmpeg.sh HOST=1) — derived,
 # ~2 MB of Mach-O, and never shipped: APP_FILES is an explicit list, so it cannot reach an .ipk.
-vendor/ffmpeg-build-host/
-vendor/ffmpeg-prefix-host/
+#
+# SLASHLESS, for exactly the reason spelled out above `vendor/ffmpeg-prefix` — a fleet lane
+# SYMLINKS these at another checkout's prebuilt trees so it does not rebuild FFmpeg, and a trailing
+# slash matches a directory and NOT a link to one. So the trailing-slash form ignored the real
+# directory and let the symlink through: one `git add -A` on 2026-09-02 committed a machine-local
+# absolute path that resolves to nothing on anyone else's disk, and a later one re-committed it
+# after it had been removed. Both forms are covered without the slash.
+vendor/ffmpeg-build-host
+vendor/ffmpeg-prefix-host
 pkg/*.dylib
 pkg/.ffabi-host-ok
 rust-modules/target-sym/

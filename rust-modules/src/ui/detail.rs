@@ -1553,30 +1553,6 @@ fn reset_view_state(v: &mut DetailView) {
     v.amb.jump(amb_target(row_blur(row_at(v.selected))));
 }
 
-/// Open the detail page for a catalog row. BLOCKING: its only caller is the headless
-/// `plxnative-detail` trigger, which replays `move_focus`/`on_ok` in the same frame (and the
-/// `detail-transition` FPS scene needs the sections present before `detailosc` starts swinging
-/// the scroll — an async load there would measure a static hero and pass vacuously).
-pub(crate) fn open(idx: c_int) {
-    let v = view();
-    v.selected = idx;
-    reset_view_state(v);
-    // …until the row below names the item this page is about
-    crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
-    if idx >= 0 {
-        if let Some(m) = crate::pms::movie(idx as usize) {
-            // the row's OWN server, never the current one — a merged shelf holds rows from more
-            // than one, and the row is the only thing that knows which
-            v.mounted_sid = m.sid;
-            v.mounted_rk = m.rk.clone(); // keep the index reconcilable — see `reselect`
-            crate::ui::alt_sources::reset(m.sid, &m.rk);
-            if !m.rk.is_empty() {
-                metadata::load_detail_now(m.sid, &m.rk);
-            }
-        }
-    }
-}
-
 /// BACK on the detail page, handled INSIDE the screen: dismiss whichever of the page's own panels
 /// is up, and report whether the press was spent. `false` means the page has nothing of its own to
 /// close and `app.rs` should pop the BACK trail — the shape `library::back()` established, for the
@@ -1608,12 +1584,12 @@ pub(crate) fn close() {
     // the panels are this page's, so they die with it — and with an unset server and an empty rk
     // nothing can land in the "Also available" store for a page that is gone
     crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
-    // …and so do both ALERTS. The About panel draws `metadata::current()`, which the next line
+    // …and so do both ALERTS — hidden at ONCE (`hide`, not the BACK fade): the page is going. The About panel draws `metadata::current()`, which the next line
     // clears, so a survivor would print the last item's synopsis over the next one's hero — or,
     // past `clear()`, draw nothing while still eating every key the page sends it. Track
     // information is the same argument about the same item.
-    crate::ui::about_panel::close();
-    crate::ui::tracks_panel::close();
+    crate::ui::about_panel::hide();
+    crate::ui::tracks_panel::hide();
     metadata::clear();
     // Every latch dies with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
@@ -5060,8 +5036,8 @@ fn mount_rk(sid: crate::plex::ServerId, rk: &str) {
     // The About alert dies with the item it was opened for, exactly as the copy list does. It draws
     // `metadata::current()` and the page is about to clear that for the whole fetch window, so a
     // surviving panel would be a modal over an item that is no longer loaded — trapping every key
-    // the page sends it while showing nothing.
-    crate::ui::about_panel::close();
+    // the page sends it while showing nothing. Hidden at once, not faded: the item is going.
+    crate::ui::about_panel::hide();
 }
 
 /// Re-open the detail page for an arbitrary ratingKey (e.g. a Related item). Uses the
@@ -9352,6 +9328,46 @@ mod tests {
         }
         // the dead air between them belongs to the still above it — no band answers for neither row
         assert_eq!(ep_row_at(EP_H + 1.0), EpRow::Text);
+    }
+
+    /// **The reported freeze**: a by-index `open` used to block the SDL loop on
+    /// `metadata::load_detail_now` — the same 2-5 round-trip stall `open_rk`'s own doc says was
+    /// fixed everywhere else. That wrapper is gone (its one caller, the headless `plxnative-detail`
+    /// trigger, wants the BLOCKING `open_rk_now` on purpose), so this pins the one interactive entry
+    /// point that is left: `open_rk` mounts on the row and returns THIS frame, leaving the fetch for
+    /// `pump_detail` — see its doc for why `metadata::current()` must read `None` for that whole
+    /// window (the hero, the Play arm and the watched toggle all key off it).
+    #[test]
+    fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
+        let _serial = crate::testlock::serial();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        metadata::clear();
+        assert!(
+            metadata::current().is_none(),
+            "nothing loaded before the open"
+        );
+
+        // catalog row 1 (0-based) is rk "2" — `build_test`'s `(i + 1).to_string()`
+        let row = crate::pms::movie(1).expect("seeded row");
+        super::open_rk(row.sid, &row.rk);
+
+        assert_eq!(
+            mounted_rk(),
+            "2",
+            "the page must be pointed at the row's identity on the press frame"
+        );
+        assert!(
+            metadata::current().is_none(),
+            "opening by index must not run the fetch to completion inline — a synchronous \
+             `load_detail_now` here is exactly the one-second freeze the bug report describes"
+        );
+        assert!(
+            metadata::detail_loading(),
+            "the fetch must be in flight, not skipped"
+        );
+
+        metadata::clear();
+        crate::pms::seed_for_test(0, crate::pms::HubState::Ready);
     }
 }
 

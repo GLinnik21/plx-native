@@ -156,7 +156,7 @@ enum RowId {
     Delete,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     FirstRun,
     Settings,
@@ -203,7 +203,15 @@ fn row_ids() -> Vec<RowId> {
 // ---- state -----------------------------------------------------------------------------------
 
 static mut POP: Popover = Popover::new();
-static mut TABLE: TableView = TableView::new(); // main-thread only
+static mut TABLE: TableView = TableView::new(); // Settings mode only — see `list()`
+/// **First run's two stages, each its own table.** Unlike Settings' `TABLE`, these hold FIXED
+/// content (no toggle values, nothing draft-dependent), built once by [`build_first_run_tables`]
+/// and never rebuilt again — which is exactly what lets both exist at once. `STAGE_PUSH` needs the
+/// OUTGOING stage's real content still on screen while the incoming one arrives, and a single
+/// shared table cannot provide that: the moment `choose`/`on_back` flips [`STAGE`], its rows would
+/// already read as the new question while the departing side was still fading past it.
+static mut TABLE_CRASH: TableView = TableView::new();
+static mut TABLE_PRODUCT: TableView = TableView::new();
 /// The answer being composed. Settings mirrors the stored decision and commits it through Done;
 /// first run starts empty and commits both choices only after the second question. It is never
 /// written straight to `consent::CURRENT`, so a half-made choice cannot let events through.
@@ -215,6 +223,10 @@ static mut PREVIEW_KIND: PreviewKind = PreviewKind::Crash;
 static mut DELETE_REQUESTED: bool = false;
 static mut DOCUMENT_OPEN: bool = false;
 static mut DOCUMENT_MORPH: RoutePush = RoutePush::new();
+/// **Crash → Product, as a real push** — Crash is always the fixed PARENT role and Product the
+/// fixed CHILD, exactly as `legal.rs`'s index/document pair never swap roles: BACK just runs the
+/// amount from 1 back to 0, it never relabels which stage is which. See `draw_stage`.
+static mut STAGE_PUSH: RoutePush = RoutePush::new();
 static mut READER: DocumentReader = DocumentReader::new();
 /// Whether the route's bottom action band holds focus — Settings' Done, or first run's two
 /// answers.
@@ -225,6 +237,13 @@ static mut ANSWER_SHARE: bool = true;
 static mut DELETE_ALERT: DecisionAlert = DecisionAlert::new();
 static mut GROUND: RouteGround = RouteGround::new();
 static mut GROUND_DRAWN: bool = false;
+/// First run's two answers' shared press surface (index 0 = Share, 1 = Don't share — the same
+/// order `draw_action_row`'s loop draws them in). Before this, the two buttons drew through
+/// `Button::focused()` alone: a colour change on arrival, no pop, no press dip on a click.
+static mut ANSWER_POP: crate::ui::route_screen::ActionRow<2> =
+    crate::ui::route_screen::ActionRow::new();
+/// Settings' single Done control's own press surface, same reason.
+static mut DONE_POP: crate::ui::route_screen::ActionRow<1> = crate::ui::route_screen::ActionRow::new();
 
 #[allow(static_mut_refs)]
 fn pop() -> &'static mut Popover {
@@ -233,6 +252,68 @@ fn pop() -> &'static mut Popover {
 #[allow(static_mut_refs)]
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
+}
+#[allow(static_mut_refs)]
+fn table_crash() -> &'static mut TableView {
+    unsafe { &mut *addr_of_mut!(TABLE_CRASH) }
+}
+#[allow(static_mut_refs)]
+fn table_product() -> &'static mut TableView {
+    unsafe { &mut *addr_of_mut!(TABLE_PRODUCT) }
+}
+
+/// The list actually on screen this frame — the shared Settings table, or whichever first-run
+/// stage [`STAGE_PUSH`] currently shows. Every UP/DOWN, OK-on-a-row and pointer hit-test goes
+/// through this rather than a raw static, so input can never act on a table that split-second push
+/// motion has already carried off screen.
+fn list() -> &'static mut TableView {
+    match mode() {
+        Mode::Settings => table(),
+        Mode::FirstRun => match stage() {
+            Stage::Crash => table_crash(),
+            Stage::Product => table_product(),
+        },
+    }
+}
+
+/// Build first run's two fixed-content lists once. Both are pure functions of which channel each
+/// stage previews — never of `draft`/`errors`/`usage`, which is what lets them be built once at
+/// [`open`] and never rebuilt for the life of the ceremony (compare Settings' `TABLE`, whose rows
+/// carry live toggle values and must rebuild on every change).
+fn build_first_run_tables() {
+    fn seed(t: &mut TableView) {
+        t.header_ink = theme::TEXT_READING;
+        // Same two labels on both stages — `ROW_EXAMPLE` names no channel, since the row's own
+        // wording is generic ("See an example report") and it is `row_ids()`/`on_ok`'s job to
+        // send the click to the channel THIS stage is actually asking about (item 14).
+        t.set_sections(
+            vec![Section::new("")
+                .row(Row::new(ROW_EXAMPLE).chevron(true))
+                .row(Row::new(ROW_POLICY).chevron(true))],
+            0,
+            false,
+        );
+        // First run always opens focused on the ANSWERS, never on this reading list — see
+        // `enter_first_run_stage`, which restates this every time a stage becomes current so a
+        // rebuild is never the only place the invariant holds.
+        t.list_focused = false;
+    }
+    seed(table_crash());
+    seed(table_product());
+}
+
+/// Re-seat focus on the CURRENT first-run stage's own two answers. Called on `open` and again
+/// whenever `choose`/`on_back` change which stage is showing, so a stage change is always an
+/// arrival at its own question rather than inheriting whatever the previous one left the cursor on
+/// — the same rule [`rebuild_with_motion`]'s old first-run branch stated, kept here now that the
+/// two stages are no longer one shared table to write it onto.
+fn enter_first_run_stage() {
+    unsafe {
+        ACTION_FOCUSED = true;
+        ANSWER_SHARE = true;
+    }
+    table_crash().list_focused = false;
+    table_product().list_focused = false;
 }
 
 pub(crate) fn is_open() -> bool {
@@ -267,6 +348,23 @@ fn action_visible() -> bool {
         Mode::FirstRun => true,
         Mode::Settings => draft() != base(),
     }
+}
+
+/// Whether the route's focus is currently on a CONTROL FACE — first run's Share/Don't-share, or
+/// Settings' Done — rather than a `TableView` row. The same shape `onboard::focus_is_ctl` and
+/// `profiles::focus_is_ctl` already answer for their own screens: a caller (`app.rs`'s
+/// `key_onboarding`-style dispatch) arms [`crate::ui::press::begin_ctl`] on OK-down exactly when
+/// this is `true`, so the control dips and rings back instead of activating flat on the key-down.
+///
+/// Wired from `app.rs`'s consent arm (the popover chain above the route arms): OK arms the press
+/// when this is `true` and `commit_consent` runs on the spring-back; a document row still commits
+/// on its key-down.
+pub(crate) fn focus_is_ctl() -> bool {
+    menu_open()
+        && !preview_open()
+        && !delete_alert().is_open()
+        && action_visible()
+        && unsafe { *addr_of!(ACTION_FOCUSED) }
 }
 
 fn mode() -> Mode {
@@ -317,13 +415,15 @@ pub(crate) fn open(prev: &Consent) {
         addr_of_mut!(DRAFT).write((false, false));
         DOCUMENT_OPEN = false;
         (*addr_of_mut!(DOCUMENT_MORPH)).jump(false);
+        (*addr_of_mut!(STAGE_PUSH)).jump(false);
         ACTION_FOCUSED = false;
         (*addr_of_mut!(GROUND)).reset();
         GROUND_DRAWN = false;
     }
     reader().reset();
     delete_alert().close();
-    rebuild_initial(0);
+    build_first_run_tables();
+    enter_first_run_stage();
     pop().open();
     crate::ui::idle::invalidate();
 }
@@ -334,8 +434,14 @@ pub(crate) fn open(prev: &Consent) {
 /// the harness seam here means the app cannot construct a half-valid consent draft of its own.
 pub(crate) fn show_product_for_dev() {
     if menu_open() && mode() == Mode::FirstRun {
-        unsafe { addr_of_mut!(STAGE).write(Stage::Product) };
-        rebuild(0);
+        unsafe {
+            addr_of_mut!(STAGE).write(Stage::Product);
+            // A boot trigger lands directly on this stage rather than pressing through Crash, so
+            // it jumps the push instead of animating it — see `route_screen`'s module doc on when
+            // `jump` is the right call.
+            (*addr_of_mut!(STAGE_PUSH)).jump(true);
+        }
+        enter_first_run_stage();
         crate::ui::idle::invalidate();
     }
 }
@@ -378,8 +484,13 @@ pub(crate) fn freezes_host() -> bool {
     menu_open() && mode() == Mode::FirstRun
 }
 
-/// Rebuild the rows against the current draft. Called on every toggle, because a `TableView` holds
-/// its rows by value — the checkmark is state in the row, not a live read.
+/// Rebuild the SETTINGS rows against the current draft. Called on every toggle, because a
+/// `TableView` holds its rows by value — the checkmark is state in the row, not a live read.
+///
+/// **Settings only, now.** First run's two stages carry no draft-dependent value (no toggle, no
+/// sub-line that changes), so they no longer rebuild at all — `build_first_run_tables` seeds both
+/// once at `open` and `enter_first_run_stage` only ever moves focus between them. See `TABLE_CRASH`
+/// / `TABLE_PRODUCT`'s doc for why a stage change needed two tables instead of one shared rebuild.
 fn rebuild(sel: i32) {
     rebuild_with_motion(sel, true);
 }
@@ -389,64 +500,39 @@ fn rebuild_initial(sel: i32) {
 }
 
 fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
+    debug_assert_eq!(mode(), Mode::Settings, "first run no longer rebuilds a shared table");
     let (errors, usage) = draft();
     table().header_ink = theme::TEXT_READING;
-    if mode() == Mode::FirstRun {
-        // One headerless section holding only the two things you may READ before answering, and
-        // no sub-lines: each row says all it needs in its label, and the question this screen is
-        // actually asking is in the narrative column, not in this list.
-        // One row either way — which CHANNEL it previews is `row_ids()`'s call, scoped to the
-        // question this stage is actually asking (item 14).
-        table().set_sections(
-            vec![Section::new("")
-                .row(Row::new(ROW_EXAMPLE).chevron(true))
-                .row(Row::new(ROW_POLICY).chevron(true))],
-            sel,
-            preserve_motion,
-        );
-        // Focus opens on the ANSWERS, not on the reading list — this route exists to be answered,
-        // and a stage change is an arrival at a fresh question, so it re-seats focus the same way
-        // the first one did. `list_focused` is what keeps a row from being plated meanwhile.
-        unsafe {
-            ACTION_FOCUSED = true;
-            ANSWER_SHARE = true;
-        }
-        table().list_focused = false;
-    } else {
-        let reporting = Section::new("Reporting")
-            .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
-            .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage));
-        // Item 14: two rows, one per telemetry channel, each opening ITS OWN document — a
-        // combined preview left it unclear which report actually carried which field.
-        let info = Section::new("Information")
-            .row(
-                Row::new(ROW_PREVIEW_CRASH)
-                    .detail("Field-by-field preview of the crash/error report.")
-                    .chevron(true),
-            )
-            .row(
-                Row::new(ROW_PREVIEW_USAGE)
-                    .detail("Field-by-field preview of product analytics events.")
-                    .chevron(true),
-            )
-            .row(
-                Row::new(ROW_POLICY)
-                    .detail("The complete PlxNative privacy policy for this build.")
-                    .chevron(true),
-            );
-        let local = Section::new("On this TV").row(
-            Row::new(ROW_DELETE)
-                .detail("Sign out and remove PlxNative data from this TV.")
+    let reporting = Section::new("Reporting")
+        .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
+        .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage));
+    // Item 14: two rows, one per telemetry channel, each opening ITS OWN document — a
+    // combined preview left it unclear which report actually carried which field.
+    let info = Section::new("Information")
+        .row(
+            Row::new(ROW_PREVIEW_CRASH)
+                .detail("Field-by-field preview of the crash/error report.")
+                .chevron(true),
+        )
+        .row(
+            Row::new(ROW_PREVIEW_USAGE)
+                .detail("Field-by-field preview of product analytics events.")
+                .chevron(true),
+        )
+        .row(
+            Row::new(ROW_POLICY)
+                .detail("The complete PlxNative privacy policy for this build.")
                 .chevron(true),
         );
-        table().set_sections(vec![reporting, info, local], sel, preserve_motion);
-        // Settings opens on the LIST, and this has to be said rather than assumed: `TABLE` is a
-        // crate global shared with first run, which parks it `list_focused = false` because its
-        // focus lives in the answer band. Without restoring it here, opening Privacy from
-        // Settings after a first run in the same process draws no focus anywhere — while UP/DOWN
-        // and OK still act on the invisible selection.
-        table().list_focused = true;
-    }
+    let local = Section::new("On this TV").row(
+        Row::new(ROW_DELETE)
+            .detail("Sign out and remove PlxNative data from this TV.")
+            .chevron(true),
+    );
+    table().set_sections(vec![reporting, info, local], sel, preserve_motion);
+    // Settings opens on the LIST — `TABLE` parks `list_focused = false` while a document reader
+    // is open over it, so this restores it every rebuild rather than assuming it survived.
+    table().list_focused = true;
     debug_assert_eq!(row_ids().len() as i32, table().n_rows());
 }
 
@@ -523,7 +609,7 @@ pub(crate) fn on_back() -> bool {
             close();
         } else if stage() == Stage::Product {
             unsafe { addr_of_mut!(STAGE).write(Stage::Crash) };
-            rebuild(0);
+            enter_first_run_stage();
             crate::ui::idle::invalidate();
         }
         // …and at Crash, BACK is SWALLOWED. There is no previous step to restore — this question
@@ -541,7 +627,7 @@ fn choose(share: bool) {
             addr_of_mut!(DRAFT).write((share, u));
             addr_of_mut!(STAGE).write(Stage::Product);
         }
-        rebuild(0);
+        enter_first_run_stage();
         crate::ui::idle::invalidate();
     } else {
         unsafe { addr_of_mut!(DRAFT).write((e, share)) };
@@ -576,14 +662,14 @@ pub(crate) fn on_ok() -> bool {
         return true;
     }
     let rows = row_ids();
-    let sel = table().sel.clamp(0, rows.len() as i32 - 1);
+    let sel = list().sel.clamp(0, rows.len() as i32 - 1);
     match rows[sel as usize] {
         RowId::Errors => {
             let (e, u) = draft();
             unsafe { addr_of_mut!(DRAFT).write((!e, u)) };
             rebuild(sel);
             unsafe { ACTION_FOCUSED = true };
-            table().list_focused = false;
+            list().list_focused = false;
             crate::ui::idle::invalidate();
         }
         RowId::Usage => {
@@ -591,7 +677,7 @@ pub(crate) fn on_ok() -> bool {
             unsafe { addr_of_mut!(DRAFT).write((e, !u)) };
             rebuild(sel);
             unsafe { ACTION_FOCUSED = true };
-            table().list_focused = false;
+            list().list_focused = false;
             crate::ui::idle::invalidate();
         }
         RowId::PreviewCrash => {
@@ -649,18 +735,18 @@ pub(crate) fn on_updown(delta: i32) -> bool {
         if unsafe { *addr_of!(ACTION_FOCUSED) } {
             if delta < 0 {
                 unsafe { ACTION_FOCUSED = false };
-                table().list_focused = true;
+                list().list_focused = true;
                 crate::ui::idle::invalidate();
             }
             return true;
         }
-        if action_visible() && delta > 0 && table().sel == table().n_rows() - 1 {
+        if action_visible() && delta > 0 && list().sel == list().n_rows() - 1 {
             unsafe { ACTION_FOCUSED = true };
-            table().list_focused = false;
+            list().list_focused = false;
             crate::ui::idle::invalidate();
             return true;
         }
-        table().move_sel(delta);
+        list().move_sel(delta);
         crate::ui::idle::invalidate();
         return true;
     }
@@ -696,18 +782,26 @@ pub(crate) fn update(dt: f32) {
     delete_alert().update(dt);
     unsafe {
         (*addr_of_mut!(DOCUMENT_MORPH)).update(DOCUMENT_OPEN, dt);
+        (*addr_of_mut!(STAGE_PUSH)).update(stage() == Stage::Product, dt);
     }
     reader().update(dt);
     // `sel` changes immediately so the focused row's ink can change in the same frame; the white
     // plate is a pair of springs and only advances here. Omitting this made Privacy the lone
     // Settings child whose text moved while its plate stayed where the screen opened.
     let layout = RouteLayout::screen();
-    let table_frame = if mode() == Mode::Settings {
-        layout.sectioned_table()
+    let action_focused = unsafe { *addr_of!(ACTION_FOCUSED) };
+    if mode() == Mode::Settings {
+        table().update(dt, layout.sectioned_table().h);
+        unsafe { (*addr_of_mut!(DONE_POP)).step(action_focused.then_some(0), dt) };
     } else {
-        layout.content
-    };
-    table().update(dt, table_frame.h);
+        // Both stages, not just the current one: `STAGE_PUSH` keeps the outgoing stage's own
+        // table on screen (fading/sliding) for the whole transition, so both must stay warm.
+        table_crash().update(dt, layout.content.h);
+        table_product().update(dt, layout.content.h);
+        let on_share = unsafe { *addr_of!(ANSWER_SHARE) };
+        let focused_index = action_focused.then_some(if on_share { 0 } else { 1 });
+        unsafe { (*addr_of_mut!(ANSWER_POP)).step(focused_index, dt) };
+    }
 }
 
 // ---- the payload previews ----------------------------------------------------------------------
@@ -890,19 +984,23 @@ pub(crate) fn draw() {
     delete_alert().draw(c"Delete all local data?", c"Cancel", c"Delete");
 }
 
-/// Where BACK goes from this route, named on the crumb above the title — `None` where BACK goes
-/// nowhere.
-///
-/// Derived rather than passed in because every entrance to this screen is known here: the Settings
-/// root, and — for the second question — the first one.
-fn crumb() -> Option<&'static str> {
-    match (mode(), stage()) {
+/// Where BACK goes from `which` stage, named on the crumb above the title — `None` where BACK goes
+/// nowhere. Takes an explicit `Stage` rather than reading the global one because [`draw_stage`]
+/// needs BOTH stages' crumbs during a transition, not only whichever is current.
+fn crumb_for(mode: Mode, which: Stage) -> Option<&'static str> {
+    match (mode, which) {
         (Mode::Settings, _) => Some(CRUMB_SETTINGS),
         // The ROOT of the ceremony: sign-in is behind it and cannot be undone, so there is
         // nothing honest to name. See the module doc.
         (Mode::FirstRun, Stage::Crash) => None,
         (Mode::FirstRun, Stage::Product) => Some(CRASH_TITLE),
     }
+}
+
+/// Where BACK goes from the CURRENT route, for a caller that only ever means "right now" — the
+/// pushed document panel, and the tests that pin the census.
+fn crumb() -> Option<&'static str> {
+    crumb_for(mode(), stage())
 }
 
 /// The route's bottom action band.
@@ -928,6 +1026,7 @@ fn draw_action_row(p: crate::ui::Painter, layout: RouteLayout) {
             Rect::new(layout.action.x, layout.action.y, w, layout.action.h),
         )
         .focused(unsafe { *addr_of!(ACTION_FOCUSED) })
+        .scale(unsafe { (*addr_of!(DONE_POP)).scale(0) })
         .palette(crate::ui::settings::control_palette())
         .draw(&Env::inert(), p);
         return;
@@ -942,11 +1041,57 @@ fn draw_action_row(p: crate::ui::Painter, layout: RouteLayout) {
     let focused = unsafe { *addr_of!(ACTION_FOCUSED) };
     let on_share = unsafe { *addr_of!(ANSWER_SHARE) };
     let palette = unsafe { (*addr_of!(GROUND)).palette() };
-    for (label, rect, is_share) in [(share, share_r, true), (decline, decline_r, false)] {
+    for (i, (label, rect, is_share)) in [(share, share_r, true), (decline, decline_r, false)]
+        .into_iter()
+        .enumerate()
+    {
         Button::new(label.as_ptr(), theme::size::BODY, rect)
             .focused(focused && on_share == is_share)
+            .scale(unsafe { (*addr_of!(ANSWER_POP)).scale(i) })
             .palette(palette)
             .draw(&Env::inert(), p);
+    }
+}
+
+/// Whether `which` stage still has anything worth drawing at this `amount` of [`STAGE_PUSH`] —
+/// pure, so the mid-transition claim "both stages are on screen at once" is a host-testable fact
+/// rather than something only a captured frame sequence can show. Crash is the parent (visible
+/// while the push has not fully completed) and Product the child (visible once it has begun) —
+/// the same fixed-role split `draw_stage` draws with.
+fn stage_visible(which: Stage, amount: f32) -> bool {
+    match which {
+        Stage::Crash => amount < 0.999,
+        Stage::Product => amount > 0.001,
+    }
+}
+
+/// Draw one first-run stage's narrative + table + (for the current stage only) action row, pushed
+/// through [`STAGE_PUSH`] under its FIXED role — Crash always via
+/// [`RoutePush::parent`](crate::ui::route_screen::RoutePush::parent), Product always via
+/// [`RoutePush::child`](crate::ui::route_screen::RoutePush::child) — exactly the way `legal.rs`
+/// never swaps its index/document roles when BACK runs the same spring backward.
+///
+/// Both stages have their own real, unrebuildable table ([`TABLE_CRASH`]/[`TABLE_PRODUCT`]), which
+/// is what lets the OUTGOING stage's content still be on screen, correctly, while the incoming one
+/// arrives — a single shared table would already have been overwritten the instant `choose`/
+/// `on_back` flipped [`STAGE`], long before the animation finished showing it leave.
+fn draw_stage(route_layer: crate::ui::Painter, layout: RouteLayout, which: Stage) {
+    let amount = unsafe { (*addr_of!(STAGE_PUSH)).amount() };
+    if !stage_visible(which, amount) {
+        return;
+    }
+    let p = match which {
+        Stage::Crash => unsafe { (*addr_of!(STAGE_PUSH)).parent(route_layer) },
+        Stage::Product => unsafe { (*addr_of!(STAGE_PUSH)).child(route_layer) },
+    };
+    let (stage_title, stage_body, stage_table) = match which {
+        Stage::Crash => (CRASH_TITLE, CRASH_BODY, table_crash()),
+        Stage::Product => (PRODUCT_TITLE, PRODUCT_BODY, table_product()),
+    };
+    layout.draw_narrative(p, crumb_for(Mode::FirstRun, which), stage_title, stage_body, theme::size::BODY);
+    stage_table.draw(p, layout.content);
+    if which == stage() && !preview_open() {
+        draw_action_row(p, layout);
     }
 }
 
@@ -973,36 +1118,28 @@ fn draw_question() {
     };
     let entrance = ground.alpha(a).translate(SCR_W as f32 * (1.0 - a), 0.0);
     let t = unsafe { (*addr_of!(DOCUMENT_MORPH)).amount() };
-    let p = unsafe { (*addr_of!(DOCUMENT_MORPH)).parent(entrance) };
+    // The layer BELOW the pushed document — either mode's own route content rides here, so the
+    // document push nests cleanly outside whichever stage push first run is also running.
+    let route_layer = unsafe { (*addr_of!(DOCUMENT_MORPH)).parent(entrance) };
     let layout = RouteLayout::screen();
-    let copy = if mode() == Mode::Settings {
-        "Control optional reporting, review exactly what may be shared, and manage data stored by PlxNative on this television."
+    if mode() == Mode::Settings {
+        layout.draw_narrative(
+            route_layer,
+            crumb(),
+            SETTINGS_TITLE,
+            "Control optional reporting, review exactly what may be shared, and manage data stored by PlxNative on this television.",
+            theme::size::LABEL,
+        );
+        table().draw(route_layer, layout.sectioned_table());
+        if !preview_open() {
+            draw_action_row(route_layer, layout);
+        }
     } else {
-        body()
-    };
-    layout.draw_narrative(
-        p,
-        crumb(),
-        if mode() == Mode::Settings {
-            SETTINGS_TITLE
-        } else {
-            title()
-        },
-        copy,
-        if mode() == Mode::Settings {
-            theme::size::LABEL
-        } else {
-            theme::size::BODY
-        },
-    );
-    let table_frame = if mode() == Mode::Settings {
-        layout.sectioned_table()
-    } else {
-        layout.content
-    };
-    table().draw(p, table_frame);
-    if !preview_open() {
-        draw_action_row(p, layout);
+        // Crash is the fixed PARENT role and Product the fixed CHILD — `STAGE_PUSH` never
+        // relabels which is which, so both are always drawn (each conditionally, at its own
+        // visibility threshold) rather than picking one by "which is current".
+        draw_stage(route_layer, layout, Stage::Crash);
+        draw_stage(route_layer, layout, Stage::Product);
     }
 
     if t > 0.01 {
@@ -1116,6 +1253,10 @@ mod tests {
     #[test]
     fn the_consent_update_advances_the_shared_table_focus_pill() {
         let _serial = crate::testlock::serial();
+        // Settings' TABLE, explicitly: `rebuild_with_motion` only ever writes it in this mode now
+        // that first run's two stages have their own fixed, unrebuilt tables (`TABLE_CRASH`/
+        // `TABLE_PRODUCT`) — see their doc.
+        unsafe { addr_of_mut!(MODE).write(Mode::Settings) };
         unsafe { addr_of_mut!(DRAFT).write((true, true)) };
         rebuild_initial(0);
         table().move_sel(1);
@@ -1139,6 +1280,7 @@ mod tests {
     #[test]
     fn toggling_a_value_preserves_in_flight_focus_motion() {
         let _serial = crate::testlock::serial();
+        unsafe { addr_of_mut!(MODE).write(Mode::Settings) };
         unsafe { addr_of_mut!(DRAFT).write((true, true)) };
         rebuild_initial(0);
         table().move_sel(1);
@@ -1322,17 +1464,22 @@ mod tests {
     /// index bug that makes a menu act on the wrong line.
     #[test]
     fn every_row_id_has_a_row() {
-        // `DRAFT` and `TABLE` are crate globals, so this takes the shared lock rather than a local
-        // one — `[[test-suite-global-pollution]]`'s rule, and the reason the whole `auth` block
-        // once aborted under load.
+        // `DRAFT`, `TABLE` and the first-run tables are crate globals, so this takes the shared
+        // lock rather than a local one — `[[test-suite-global-pollution]]`'s rule, and the reason
+        // the whole `auth` block once aborted under load.
         let _g = crate::testlock::serial();
         unsafe {
             addr_of_mut!(MODE).write(Mode::FirstRun);
+            addr_of_mut!(STAGE).write(Stage::Crash);
             addr_of_mut!(BASE).write((false, false));
             addr_of_mut!(DRAFT).write((false, false));
         }
+        build_first_run_tables();
+        assert_eq!(list().n_rows(), row_ids().len() as i32, "first run, Crash stage");
+
+        unsafe { addr_of_mut!(MODE).write(Mode::Settings) };
         rebuild(0);
-        assert_eq!(table().n_rows(), row_ids().len() as i32);
+        assert_eq!(list().n_rows(), row_ids().len() as i32, "settings");
     }
 
     #[test]
@@ -1369,7 +1516,7 @@ mod tests {
             "only the two readable documents remain in the list, and the preview is the \
              crash channel's own — Stage::Crash is where a fresh question always starts"
         );
-        assert_eq!(table().n_rows(), 2);
+        assert_eq!(list().n_rows(), 2);
         assert!(
             action_visible(),
             "first run always carries its answers in the band"
@@ -1378,7 +1525,7 @@ mod tests {
             unsafe { *addr_of!(ACTION_FOCUSED) },
             "focus opens on the answers, not on the reading list"
         );
-        assert!(!table().list_focused, "so no row is plated meanwhile");
+        assert!(!list().list_focused, "so no row is plated meanwhile");
         close();
     }
 
@@ -1424,8 +1571,8 @@ mod tests {
         open(&Consent::default());
         assert!(on_updown(-1));
         assert!(!unsafe { *addr_of!(ACTION_FOCUSED) });
-        assert!(table().list_focused);
-        table().sel = table().n_rows() - 1;
+        assert!(list().list_focused);
+        list().sel = list().n_rows() - 1;
         assert!(on_updown(1));
         assert!(
             unsafe { *addr_of!(ACTION_FOCUSED) },
@@ -1442,11 +1589,11 @@ mod tests {
     fn settings_opens_on_the_list_after_a_first_run_left_focus_in_the_answer_band() {
         let _g = crate::testlock::serial();
         open(&Consent::default());
-        assert!(!table().list_focused, "first run parks it here");
+        assert!(!list().list_focused, "first run parks it here");
         close();
         open_settings(&Consent::default());
         assert!(
-            table().list_focused,
+            list().list_focused,
             "…and Settings has to put it back, or its focus is invisible"
         );
         assert!(!unsafe { *addr_of!(ACTION_FOCUSED) }, "and not on a Done that is not there yet");
@@ -1494,6 +1641,41 @@ mod tests {
         );
         open_settings(&Consent::default());
         assert_eq!(crumb(), Some(CRUMB_SETTINGS));
+        close();
+    }
+
+    /// **Crash → Product is a real push, not a cut.** Before `STAGE_PUSH` existed, answering Crash
+    /// swapped the whole route's text on the very next frame with no transition at all — the same
+    /// document-push spring `consent.rs` already used for its own preview reader, just never
+    /// reused for the stage change beside it. This is the host-testable half of "both pages must
+    /// move": mid-transition, BOTH stages are visible (one fading/travelling out, one arriving),
+    /// and at either endpoint only the settled one is.
+    #[test]
+    fn crash_to_product_is_a_push_where_both_stages_are_visible_mid_transition() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert!(
+            stage_visible(Stage::Crash, 0.0) && !stage_visible(Stage::Product, 0.0),
+            "settled on Crash: only Crash draws"
+        );
+        choose(true); // -> Stage::Product, STAGE_PUSH now animating toward 1.0
+        for _ in 0..3 {
+            update(1.0 / 60.0);
+        }
+        let mid = unsafe { (*addr_of!(STAGE_PUSH)).amount() };
+        assert!(mid > 0.0 && mid < 1.0, "still mid-flight after 3 frames: {mid}");
+        assert!(
+            stage_visible(Stage::Crash, mid) && stage_visible(Stage::Product, mid),
+            "mid-transition: BOTH the departing Crash and the arriving Product must be on screen"
+        );
+        for _ in 0..600 {
+            update(1.0 / 60.0);
+        }
+        let settled = unsafe { (*addr_of!(STAGE_PUSH)).amount() };
+        assert!(
+            stage_visible(Stage::Product, settled) && !stage_visible(Stage::Crash, settled),
+            "settled on Product: only Product draws"
+        );
         close();
     }
 

@@ -22,41 +22,21 @@
 // DITHER: framebuffer GL_DITHER is intentionally disabled globally because its ordered dot pattern
 // damaged shadows and rounded edges. An opaque ambient field still needs unstructured noise or its
 // deliberately slow gradient bands. `draw_ambient` enables that one-code dither; `draw_grad4` sets
-// u_noise to zero because its alpha gradient is a scrim, not a ground.
+// `u_dither` to zero because its alpha gradient is a scrim over ARTWORK, not a ground the eye rests
+// on — dithering it would be adding grain to a photograph.
 //
-// The noise is **TPDF at ±1 LSB**, and both halves of that are in the TILE rather than here: the
-// texture stores the mean of two independent hashes, so the expression below is exactly the one the
-// old ±½ LSB uniform dither used and the whole difference is `u_noise`'s scale (`gfx::noise_tex`).
-// Forming a triangle in the shader would be a second channel plus an add on 2M fragments; forming
-// it at boot is free. And the tile is **256** square, not 64: at 64 the repeat was measured on the
-// panel as a 30-across plaid (autocorrelation +0.570 at horizontal lag 64 against +0.13 either
-// side of it), which is the "strange visual patterns" the wash was reported for — a periodic
-// signal is visible far below the contrast at which its own grain is. The divisor below is
-// `1/NOISE_DIM` and `gfx.rs`'s shader test pins the two together.
-//
-// COST, measured on the television (Mali-T820, `plxnative-hwcnt` + `plxnative-drawmask=grad`,
-// 2026-09-02): the first version of this dither was the textbook `fract(sin(dot(p, k)) * 43758.5)`
-// and it ran UNCONDITIONALLY, `u_noise` only scaling the result. `sin` is a range reduction plus a
-// polynomial on this part, so every fragment of every gradient paid ~7 arithmetic words for a value
-// it then multiplied by zero: the hero's corner scrim went from 0.025 to ~3.7 GPU cycles per pixel
-// — 5.3M of a 13.8M-cycle Home frame, 38% of it — and Hero paging fell to 46 fps, the hero→shelf
-// fold to 38. Two rules fall out of it, and both are load-bearing rather than tidy:
-//   * the noise is behind a UNIFORM branch — Midgard resolves that per draw, not per fragment —
-//     so a scrim pays nothing for a ground's dither;
-//   * the ground's noise is a TEXTURE FETCH (`gfx::noise_tex`, the 256-square TPDF tile above), not a
-//     hash: an interleaved-gradient hash was tried in between and, in highp because
-//     `gl_FragCoord` is, still cost the fold's full-screen wash ~2 cycles a pixel — 4M of a 14.4M
-//     frame. The arithmetic pipe is what binds here; the texture pipe beside it is idle.
+// **This shader's dither is `dither.glsl`'s now** (2026-09-02). It was written here first and every
+// other slow gradient in the app either had a worse answer or none — `fs_glass.frag`, the popover
+// background, had a `fract(sin(dot(…)))` hash running UNCONDITIONALLY, which is the exact mistake
+// this file's own COST note records having made and fixed. The whole of the reasoning, the three
+// measured cost rules and the tile's size argument moved to that prelude; nothing about the picture
+// this program produces changed, and `gfx.rs`'s shader test still pins the divisor to `NOISE_DIM`.
 precision mediump float;
 varying vec2 v_uv;
 varying vec4 v_top;
 varying vec4 v_bot;
-uniform float u_noise;
-uniform sampler2D u_noise_tex; // 256x256 TPDF tile, GL_REPEAT + GL_NEAREST (gfx::noise_tex)
 void main(){
   vec4 outc = mix(v_top, v_bot, v_uv.y);
-  if (u_noise > 0.0) {
-    outc.rgb += (texture2D(u_noise_tex, gl_FragCoord.xy * (1.0 / 256.0)).r - 0.5) * u_noise;
-  }
+  outc.rgb = plx_dither(outc.rgb);
   gl_FragColor = outc;
 }

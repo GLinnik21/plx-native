@@ -139,7 +139,7 @@ pub(crate) fn open_about() {
     crate::ui::idle::invalidate();
 }
 pub(crate) fn close() {
-    pop().close();
+    pop().dismiss();
     crate::ui::idle::invalidate();
 }
 pub(crate) fn on_back() -> bool {
@@ -207,12 +207,12 @@ pub(crate) fn update(dt: f32) {
     table().update(dt, RouteLayout::screen().sectioned_table().h);
 }
 pub(crate) fn draw_scrim() {
-    if is_open() {
+    if pop().visible() {
         pop().scrim(theme::alert::SCRIM_A);
     }
 }
 pub(crate) fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
     let pop = pop();

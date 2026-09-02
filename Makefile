@@ -157,7 +157,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,8911)
 .DEFAULT_GOAL := all
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
-              print-simbin
+              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -170,6 +170,15 @@ print-tv:       ; @echo '$(TV)'
 # `macapp` build has its own — so a tool that restates the path silently runs another lane's
 # binary. Same argument as `print-appdir`: ask, never restate.
 print-simbin:   ; @echo '$(SIM_BIN)'
+# The four queries `ci/test_deploy_manifest.py` asks instead of running `make -p` (which prints a
+# RECURSIVE variable's unexpanded definition — see the ban on it elsewhere in this file — and
+# would in any case hand a host test the SAME string for two different flavours). Defined once
+# `APP_FILES`/`DEPLOY_FILES`/`SENTRY_HANDLER`/`FFMPEG_STAGED` exist, further down this file; make
+# reads the whole file before running a recipe, so the forward reference is fine.
+print-app-files:      ; @echo '$(APP_FILES)'
+print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
+print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
+print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
@@ -713,6 +722,20 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             THIRD-PARTY-NOTICES.md \
             $(LAB_FILES) \
             $(FFMPEG_STAGED)
+
+# Everything `deploy` scp's as a PLAIN file, in one connection — the SAME set `ipk` stages via
+# `cp $(APP_FILES) $(STAGE)/`, minus the three entries that need their own handling for a reason
+# documented at each recipe rather than a plain copy: the binary and the crash handler (a running
+# process holds their inodes, so both go through a `.new` + `mv` dance), the bundled FFmpeg
+# libraries (their own retirement loop removes a superseded major after the copy), and the LAB
+# session file (a non-LAB deploy must actively REMOVE it, which a plain copy must never do to any
+# other entry). `filter-out` rather than a second hand-typed list is the whole fix: this recipe
+# used to scp the binary, the handler, the appinfo and the fonts BY NAME, one line per file, while
+# `ipk` staged whatever `APP_FILES` said — so `pkg/splash.png`, both icon sizes, `pkg/OFL.txt` and
+# `THIRD-PARTY-NOTICES.md` were in every `.ipk` and in NO deployed app directory, silently, for as
+# long as nobody compared the two by hand. `ci/test_deploy_manifest.py` pins the relationship
+# itself (via `print-app-files`/`print-deploy-files`), not just today's four names.
+DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LAB_FILES),$(APP_FILES))
 # appfont-cjk.ttf is the fallback face (Noto Sans CJK KR, tools/cut-noto-cjk.py) and it is the
 # single largest thing in the package — 21 MB raw, ~11 MB of the .ipk. It is PAYLOAD, not an
 # optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
@@ -797,27 +820,18 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 	@if [ -n "$(LAB)" ]; then $(SCP) pkg/lab.json root@$(TV):$(APPDIR)/lab.json && \
 	   $(SSH) 'chmod 644 $(APPDIR)/lab.json'; \
 	 else $(SSH) 'rm -f $(APPDIR)/lab.json'; fi
-	$(SCP) $(APPINFO) root@$(TV):$(APPDIR)/appinfo.json
-	# Copy the fonts unconditionally: the old `test -f || scp` guard meant a CHANGED font could
-	# never reach the TV, so a font swap looked like it had no effect. They are ~300 KB.
-	$(SCP) pkg/appfont.ttf root@$(TV):$(APPDIR)/appfont.ttf
-	$(SCP) pkg/appfont-bold.ttf root@$(TV):$(APPDIR)/appfont-bold.ttf
-	# ...and the CJK fallback face, which is 21 MB — the one exception to "unconditional", because
-	# it is a minute of scp on every deploy and it changes only when tools/cut-noto-cjk.py is
-	# re-run. Without it text.rs's chain has no link 2 and CJK falls through to the system face.
-	# The .ipk path (APP_FILES) has no guard at all and is what a real install uses.
-	#
-	# The guard is an MD5, deliberately not a size compare, and this is not hypothetical caution:
-	# the very first re-cut of this font (adding `recalcTimestamp=False` for reproducibility)
-	# produced a file of IDENTICAL SIZE and different bytes, because only `head.modified` moved. A
-	# size guard would have kept the old font on the television and said nothing — which is exactly
-	# the failure the `test -f || scp` guard above was removed for. One ssh round trip either way.
-	@l=`md5 -q pkg/appfont-cjk.ttf 2>/dev/null || md5sum pkg/appfont-cjk.ttf | cut -d' ' -f1`; \
-	 t=`$(SSH) 'md5sum $(APPDIR)/appfont-cjk.ttf 2>/dev/null | cut -d" " -f1'`; \
-	 if [ "$$l" != "$$t" ]; then \
-	   echo "  scp pkg/appfont-cjk.ttf (21 MB — absent or re-cut)"; \
-	   $(SCP) pkg/appfont-cjk.ttf root@$(TV):$(APPDIR)/appfont-cjk.ttf; \
-	 fi
+	# The rest of the payload — appinfo, both icon sizes, the splash/launch image, the three font
+	# files (including the 21 MB CJK fallback face — unconditional now, like everything else in
+	# this list: `verify-deploy` below is what makes a stale copy visible instead of a scp that
+	# quietly never ran), the OFL licence and the third-party notices — in ONE scp, ONE connection,
+	# from `DEPLOY_FILES`: the SAME list `ipk` stages via `cp $(APP_FILES) $(STAGE)/`. `scp` to a
+	# DIRECTORY preserves each source's basename, which is exactly what `ipk`'s plain `cp` does too
+	# and is why the flavour-dependent entries (`$(APPINFO)`, `$(ICONS)`) are safe to mix in here:
+	# their basenames (`appinfo.json`, `icon.png`, `largeIcon.png`) are the same regardless of which
+	# flavour's directory they were read from. A file added to `APP_FILES` now reaches the
+	# television with no separate line to remember here — which is what `pkg/splash.png` needed and
+	# never got: it was staged into every `.ipk` and never scp'd by this recipe.
+	$(SCP) $(DEPLOY_FILES) root@$(TV):$(APPDIR)/
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
 	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) root@$(TV):$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
@@ -826,6 +840,26 @@ deploy: pkg/plxnative $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) $(APPINFO) release
 	@# same-uid external reporter could not `execv` it to spool a crash envelope. The .ipk builder
 	@# already normalises this member to 0755; make the fast deploy path identical.
 	$(SSH) 'mv $(APPDIR)/plxnative.new $(APPDIR)/plxnative && chmod 755 $(APPDIR)/plxnative'
+	@$(MAKE) --no-print-directory verify-deploy FLAVOR=$(FLAVOR) RELEASE=$(RELEASE) LAB=$(LAB) TV=$(TV)
+
+# --- proving the payload actually landed ---------------------------------------------------------
+#
+# `deploy`'s last step, and also runnable on its own. The bug this exists for was silent for
+# weeks: `pkg/splash.png` was staged into every `.ipk` and never scp'd by `deploy`, so a debug
+# install kept whatever launch image it was first installed with, and nothing anywhere compared
+# the two. This asks the television, in ONE ssh round trip, for the md5sum of every file `deploy`
+# just shipped by basename (`md5sum` on busybox), and hands that text plus the LOCAL paths to
+# `ci/verify-deploy.py`, which does the comparison (`md5 -q` on this Mac, matching busybox's hex
+# output) and fails loudly, naming every mismatch, rather than leaving a stale file for a bug
+# report to find weeks later. `VERIFY_FILES` is deliberately not `DEPLOY_FILES` alone: the binary,
+# the crash handler and the FFmpeg libraries take their own path to the device above and are just
+# as capable of silently drifting, so they are verified too.
+VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) \
+               $(if $(LAB),pkg/lab.json,)
+verify-deploy: tv-lock-require
+	@echo "verify-deploy: comparing $(words $(VERIFY_FILES)) files against $(APPID) [$(FLAVOR)]"
+	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(VERIFY_FILES)) 2>&1' | \
+	  python3 ci/verify-deploy.py $(VERIFY_FILES)
 
 # NB (this webOS build): luna-send must stay subscribed (-i) for the launch to
 # take; SAM keeps stale "running" state after a hard kill, so close via SAM
@@ -1006,6 +1040,13 @@ check: lint
 	python3 tools/test_abr_calibrate_plant.py
 	python3 tools/test_abr_window_grade.py
 	python3 tools/test_scrub_logs.py
+	@# `deploy`'s payload check, both halves, host-only. `test_deploy_manifest.py` re-derives
+	@# `DEPLOY_FILES` from `APP_FILES` via `make -s print-*` (never `make -p` — see the ban on it
+	@# elsewhere in this file) and would have caught the drift that let `pkg/splash.png` sit in
+	@# every `.ipk` and reach no deployed app directory; `test_verify_deploy.py` covers the md5
+	@# comparison `verify-deploy` runs against the television, with no ssh and no device.
+	python3 ci/test_deploy_manifest.py
+	python3 ci/test_verify_deploy.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -1437,5 +1478,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: symbols sentry-symbols sentry-native all setup-env telemetry-local deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

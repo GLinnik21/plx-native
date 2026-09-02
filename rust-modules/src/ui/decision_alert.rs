@@ -79,9 +79,19 @@ impl DecisionAlert {
         self.pop.open();
         crate::ui::idle::invalidate();
     }
+    /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
         self.pop.close();
         crate::ui::idle::invalidate();
+    }
+    /// The shared exit choreography, in reverse of the entry (`Popover::dismiss`).
+    pub(crate) fn dismiss(&mut self) {
+        self.pop.dismiss();
+        crate::ui::idle::invalidate();
+    }
+    /// Open or still fading out — the DRAW gate, never the input gate.
+    pub(crate) fn visible(&self) -> bool {
+        self.pop.visible()
     }
     pub(crate) fn choice(&self) -> Choice {
         self.choice
@@ -99,7 +109,7 @@ impl DecisionAlert {
         crate::ui::idle::invalidate();
     }
     pub(crate) fn update(&mut self, dt: f32) {
-        if !self.is_open() {
+        if !self.visible() {
             return;
         }
         self.pop.update(dt);
@@ -109,7 +119,7 @@ impl DecisionAlert {
         );
     }
     pub(crate) fn draw_scrim(&self) {
-        if self.is_open() {
+        if self.visible() {
             self.pop.scrim(0.55);
         }
     }
@@ -119,7 +129,7 @@ impl DecisionAlert {
         cancel: &core::ffi::CStr,
         destructive: &core::ffi::CStr,
     ) {
-        if !self.is_open() {
+        if !self.visible() {
             return;
         }
         let qh = crate::text::text_height(theme::size::TITLE, 1);

@@ -10,5 +10,10 @@ void main(){
   vec4 c = texture2D(u_tex, v_cuv);
   float y = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
   vec3 rgb = mix(vec3(y), c.rgb, u_saturation) * u_tint.rgb;
-  gl_FragColor = vec4(rgb, c.a * u_tint.a);
+  // The grade is a DESATURATE plus a tint MULTIPLY, and both compress: the blurred source is
+  // already an 8-bit near-flat field, and scaling it toward one hue leaves a handful of distinct
+  // output codes across the whole screen. Measured on the television before this line existed —
+  // Settings over Home, a 700-row column through the ground — luma 55.7 to 59.1 in FOUR levels,
+  // treads of 158, 157 and 146 rows. See `dither.glsl`.
+  gl_FragColor = vec4(plx_dither(rgb), c.a * u_tint.a);
 }

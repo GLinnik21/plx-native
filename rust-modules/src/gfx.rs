@@ -44,17 +44,40 @@ macro_rules! glsl {
 }
 pub(crate) use glsl;
 
+/// [`glsl`] with the SHARED OUTPUT DITHER prepended — `shaders/dither.glsl`, whose header is the
+/// argument for all of it.
+///
+/// A textual prelude rather than a second shader object, because GLSL ES 2 has no `#include` and no
+/// separate compilation: a program is one vertex source and one fragment source, so "shared code"
+/// can only mean shared TEXT. The prelude opens with its own `precision mediump float;` and gives
+/// every declaration it introduces an explicit type, so it does not depend on — and does not
+/// disturb — the precision statement the shader below it makes for itself. (Repeating the statement
+/// is legal; the last one before a declaration is the one that applies to it.)
+///
+/// Every program built with this owes `gfx` two things at link time: `u_dither_tex` set to texture
+/// unit 2 ([`bind_dither_tile`]), and `u_dither` set per draw from [`dither_for_ramp`].
+macro_rules! glsl_dithered {
+    ($file:literal) => {
+        // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!(include_str!("shaders/dither.glsl"), include_str!($file), "\0").as_bytes(),
+            )
+        }
+    };
+}
+
 const VS_SRC: &CStr = glsl!("shaders/vs_src.vert");
-const FS_SRC: &CStr = glsl!("shaders/fs_src.frag");
-const FS_AMBIENT: &CStr = glsl!("shaders/fs_ambient.frag");
+const FS_SRC: &CStr = glsl_dithered!("shaders/fs_src.frag");
+const FS_AMBIENT: &CStr = glsl_dithered!("shaders/fs_ambient.frag");
 const VS_AMBIENT: &CStr = glsl!("shaders/vs_ambient.vert");
-const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
+const FS_SHADOW: &CStr = glsl_dithered!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
-const FS_MODAL_GROUND: &CStr = glsl!("shaders/fs_modal_ground.frag");
+const FS_MODAL_GROUND: &CStr = glsl_dithered!("shaders/fs_modal_ground.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
-const FS_GLASS: &CStr = glsl!("shaders/fs_glass.frag");
+const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
@@ -74,6 +97,8 @@ const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TEXTURE0: c_uint = 0x84C0;
 const GL_TEXTURE1: c_uint = 0x84C1;
+/// The shared dither tile's unit — see `gfx::bind_dither_tile`.
+const GL_TEXTURE2: c_uint = 0x84C2;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
@@ -281,6 +306,13 @@ pub(crate) fn clip_clear() {
 /// clear the framebuffer to an opaque color — the retui frame's first op, so the
 /// framework doesn't have to link GLES itself (it draws only through gfx/text).
 pub(crate) fn frame_clear(r: f32, g: f32, b: f32) {
+    // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
+    // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
+    // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
+    // quad and so cannot ride on [`culled`].
+    if page_frozen() {
+        return;
+    }
     unsafe {
         glClearColor(r, g, b, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -332,8 +364,13 @@ static mut AL_TL: c_int = 0;
 static mut AL_TR: c_int = 0;
 static mut AL_BR: c_int = 0;
 static mut AL_BL: c_int = 0;
-static mut AL_NOISE: c_int = 0;
-/// The ambient wash's dither source: a [`NOISE_DIM`]-square tile of TPDF noise, `GL_REPEAT`,
+/// `u_dither` on each `glsl_dithered!` program. Five programs, one uniform name, one policy —
+/// `shaders/dither.glsl`.
+static mut LOC_DITHER: c_int = 0;
+static mut SL_DITHER: c_int = 0;
+static mut ML_DITHER: c_int = 0;
+static mut AL_DITHER: c_int = 0;
+/// The ONE dither source for every `glsl_dithered!` program: a [`NOISE_DIM`]-square tile of TPDF noise, `GL_REPEAT`,
 /// `GL_NEAREST`, sampled at `gl_FragCoord / NOISE_DIM`. A TEXTURE rather than a hash for one reason
 /// the counters made plain: on this part the arithmetic pipe is what binds a full-screen quad, and
 /// the texture pipe sits nearly idle beside it. The interleaved-gradient hash that preceded it —
@@ -368,9 +405,10 @@ const NOISE_DIM: usize = 256;
 /// triangular over ±1 LSB, which is the sum of two independent ±½ LSB uniforms. Formed in the
 /// shader that is a second channel plus an add on a full-screen quad, and `fs_ambient.frag`'s
 /// header prices what one extra arithmetic word costs on this part. Summing the two hashes into the
-/// STORED byte instead leaves the fragment expression byte-for-byte unchanged — `(texel - 0.5) *
-/// u_noise` — and moves the entire difference into `u_noise`, which [`draw_ambient`] doubles to
-/// `2/255`. Same one fetch, same one multiply, 2M times a frame.
+/// STORED byte instead leaves the fragment expression byte-for-byte unchanged — `plx_noise() *
+/// u_dither` in `shaders/dither.glsl` — and moves the entire difference into the amplitude every
+/// caller passes, [`DITHER_LSB`] (2/255), through `dither_for_ramp`/`dither_for_field` or
+/// [`draw_ambient`] directly. Same one fetch, same one multiply, 2M times a frame.
 ///
 /// What it buys is NOT less contour: the ±½ LSB uniform it replaces already flattened this
 /// gradient's staircase about tenfold, and simulation on the measured person-page ramp says
@@ -638,6 +676,9 @@ pub(crate) fn init_gl() {
         LOC_RADIUS = glGetUniformLocation(PROG, c"u_radius".as_ptr());
         LOC_COLTOP = glGetUniformLocation(PROG, c"u_colTop".as_ptr());
         LOC_COLBOT = glGetUniformLocation(PROG, c"u_colBot".as_ptr());
+        // Binds PROG itself — see `dither_uniforms`. PROG is what the rest of this block wants
+        // current anyway.
+        LOC_DITHER = dither_uniforms(PROG);
         LOC_FOCUS = glGetUniformLocation(PROG, c"u_focus".as_ptr());
         LOC_FOCUS_RGB = glGetUniformLocation(PROG, c"u_focus_rgb".as_ptr());
         LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
@@ -672,8 +713,8 @@ pub(crate) fn init_gl() {
             AL_TR = glGetUniformLocation(APROG, c"u_atr".as_ptr());
             AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
             AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
-            AL_NOISE = glGetUniformLocation(APROG, c"u_noise".as_ptr());
-            NOISE_TEX = noise_tex();
+            AL_DITHER = dither_uniforms(APROG);
+            bind_dither_tile();
         }
 
         // Soft-shadow program (own program so the hot FS_SRC pays nothing; mirrors init_image).
@@ -690,6 +731,7 @@ pub(crate) fn init_gl() {
             SL_OFF = glGetUniformLocation(SPROG, c"u_off".as_ptr());
             SL_CUT = glGetUniformLocation(SPROG, c"u_cut".as_ptr());
             SL_COL = glGetUniformLocation(SPROG, c"u_col".as_ptr());
+            SL_DITHER = dither_uniforms(SPROG);
         }
 
         // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
@@ -824,6 +866,7 @@ pub(crate) fn draw_rect(
         glUniform1f(LOC_RADR, radius);
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
+        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, radius, top, bot));
         glUniform1f(LOC_FOCUS, focus);
         // Fill/rim colours arrive pre-scaled by Painter::rgb. The focus ring/glow is generated in
         // the shader, so it needs the same RGB gain explicitly while its alpha coverage stays put.
@@ -891,6 +934,7 @@ pub(crate) fn draw_rect_shaped(
         glUniform1f(LOC_RADR, radius);
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
+        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, radius, top, bot));
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
@@ -959,12 +1003,10 @@ pub(crate) fn draw_ambient(
         // never seen as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are
         // ~2.5M GPU cycles a frame on the set (2026-09-02) — the difference between the fold
         // passing its 50 fps gate and not. Off, the shader's uniform branch skips the whole term.
-        glUniform1f(AL_NOISE, if dither { 2.0 / 255.0 } else { 0.0 });
-        if dither {
-            // The dither tile, on unit 0 — `u_noise_tex` is sampler 0 by default and nothing else
-            // in this program samples. `draw_grad4` never takes the branch, so it binds nothing.
-            glBindTexture(GL_TEXTURE_2D, NOISE_TEX);
-        }
+        // The tile lives permanently on unit 2 (`bind_dither_tile`), so this is one uniform and no
+        // binding — the ambient program used to bind it on unit 0 per draw, which only worked
+        // because it samples nothing else.
+        glUniform1f(AL_DITHER, if dither { DITHER_LSB } else { 0.0 });
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -996,7 +1038,7 @@ pub(crate) fn draw_grad4(
         glUniform4fv(AL_TR, 1, tr);
         glUniform4fv(AL_BR, 1, br);
         glUniform4fv(AL_BL, 1, bl);
-        glUniform1f(AL_NOISE, 0.0);
+        glUniform1f(AL_DITHER, 0.0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -1020,6 +1062,8 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
         glUniform1f(LOC_RADR, rad_r);
         glUniform4fv(LOC_COLTOP, 1, col);
         glUniform4fv(LOC_COLBOT, 1, col);
+        // A single colour: no ramp to quantise, so the policy answers 0 and the branch is skipped.
+        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, rad_l.max(rad_r), col, col));
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
@@ -1055,6 +1099,8 @@ pub(crate) fn draw_rrect_sheened(
         glUniform1f(LOC_RADR, rad_r);
         glUniform4fv(LOC_COLTOP, 1, col);
         glUniform4fv(LOC_COLBOT, 1, col);
+        // A single colour: no ramp to quantise, so the policy answers 0 and the branch is skipped.
+        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, rad_l.max(rad_r), col, col));
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
@@ -1110,6 +1156,21 @@ pub(crate) fn draw_shadow(
         glUniform1f(SL_OFF, off); // occluder (tile) offset above the shadow box; shader discards the covered interior
         glUniform1f(SL_CUT, cut); // <0 = the opaque tile's box cut; >=0 = cut the occluder's rounded shape
         glUniform4fv(SL_COL, 1, col);
+        // The penumbra is an ALPHA ramp from `u_col.a` to 0 over `b` px on each side — so the ramp
+        // this shader quantises is `2*b` long and crosses `col.a * 255` codes, which is what the
+        // policy is asked here. It goes to `plx_dither_a`, not `plx_dither`: dithering the rgb of a
+        // single-colour shadow changes nothing the destination can see.
+        let a = *col.add(3);
+        glUniform1f(
+            SL_DITHER,
+            dither_for_ramp(
+                qw,
+                2.0 * b,
+                b,
+                [0.0, 0.0, 0.0, 0.0].as_ptr(),
+                [a, a, a, 0.0].as_ptr(),
+            ),
+        );
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -1269,6 +1330,7 @@ pub(crate) fn init_image() {
             use_prog(MPROG);
             glUniform2f(ML_SCREEN, SCR_W, SCR_H);
             glUniform1i(ML_TEX, 0);
+            ML_DITHER = dither_uniforms(MPROG);
         } else {
             log("modal-ground prog link failed — using the plain cached blur");
         }
@@ -1425,6 +1487,26 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         tex
     }
+}
+
+/// Force a freshly uploaded texture RESIDENT now, on the upload's own frame, by sampling it once.
+///
+/// On this driver `glTexImage2D` returns after the copy and defers the rest — the allocation and
+/// the tile/layout conversion the GPU actually samples from — to the FIRST DRAW that binds the
+/// texture. Measured on the television (2026-09-02, `plxnative-framedrop`): a 1280x720 backdrop
+/// landing cost 6 ms in the pump and then 116 ms in the NEXT frame's draw, billed to the frame's
+/// first framebuffer command (`hm.clear`) where this driver parks its GPU wait — while `dt.cast`,
+/// the row that was actually scrolling, took under 1 ms. That is the hitch a headshot shelf shows
+/// while it rolls, and the "freeze" a cold detail page shows as its backdrop, logo and posters
+/// land one after another. Paying it HERE moves the cost into the pump, whose budget already
+/// bounds uploads per frame, and off the draw, which cannot bound anything. One pixel is enough:
+/// residency is per texture, not per texel. The page's `frame_clear` overwrites the pixel.
+pub(crate) fn warm_tex(tex: c_uint) {
+    if tex == 0 {
+        return;
+    }
+    const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+    draw_tex(tex, 0.0, 0.0, 1.0, 1.0, 0.0, WHITE.as_ptr());
 }
 
 /// Delete a texture created by upload_rgba (0 = no-op). Main-thread only.
@@ -1624,10 +1706,16 @@ impl FrameCache {
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
     /// [`frame_cache_uv`] is the one orientation rule shared by every future owner.
+    ///
+    /// **It lifts [`PAGE_FROZEN`] around its own quad.** This is the one draw in the app that
+    /// exists BECAUSE the page is frozen, so it cannot be subject to the refusal — and lifting it
+    /// here rather than relying on the caller arming the freeze afterwards removes an ordering trap
+    /// that would show up as a blank screen with no error anywhere.
     pub(crate) fn draw(&self) -> bool {
         if !self.valid || self.tex == 0 {
             return false;
         }
+        let was = set_page_frozen(false);
         let uv = frame_cache_uv();
         draw_tex_core(
             Class::Image,
@@ -1646,6 +1734,7 @@ impl FrameCache {
             0.0,
             NO_RIM.as_ptr(),
         );
+        set_page_frozen(was);
         true
     }
 }
@@ -2200,10 +2289,6 @@ const GLASS_LIGHT: [f32; 3] = [-0.35, -0.94, 0.0];
 /// changed pixels on the panel. 3 gives ~0.35 on the sides, i.e. a highlight that travels along the
 /// edge and gathers at the corner, which is what a rim reflection looks like.
 const GLASS_SPEC: [f32; 4] = [-0.7071, -0.7071, 3.0, 0.80];
-/// Dither amplitude, as a fraction of full scale: one 8-bit quantum peak-to-peak (±half). Enough
-/// to break a band, below the level at which it reads as grain. Not optional — see `fs_glass.frag`.
-const GLASS_NOISE: f32 = 1.0 / 255.0;
-
 /// How wide a surface's rim is — the ONE thing about the material that is not the same for every
 /// glass surface, and the only per-draw material parameter.
 ///
@@ -2411,7 +2496,7 @@ static mut GL_LENS: c_int = 0;
 static mut GL_EDGE: c_int = 0;
 static mut GL_LIGHT: c_int = 0;
 static mut GL_SPEC: c_int = 0;
-static mut GL_NOISE: c_int = 0;
+static mut GL_DITHER_AMT: c_int = 0;
 static mut GL_SCRIM_TOP: c_int = 0;
 static mut GL_SCRIM_BOT: c_int = 0;
 static mut GL_RIMCOL_G: c_int = 0;
@@ -2431,6 +2516,11 @@ static mut GL_DEEP: c_int = 0;
 /// underlay outside those policies still owes an explicit invalidation.
 pub(crate) fn blur_invalidate() {
     unsafe { BLUR_VALID = false };
+    // A popover's GROUND snapshot contains that popover's frost, composited from the very snapshot
+    // being dropped here. Keeping it would serve the old frost as a picture, on a still page, with
+    // nothing to show that it had stopped following the blur. The PAGE stage is untouched — it is
+    // below all of this and cannot have changed.
+    crate::ui::popover::host::ground_invalidate();
 }
 
 /// How far outside a panel's own rect the snapshot must actually contain pixels, in authored px.
@@ -2716,7 +2806,7 @@ fn blur_lazy_init() -> bool {
         GL_EDGE = glGetUniformLocation(GPROG, c"u_edge".as_ptr());
         GL_LIGHT = glGetUniformLocation(GPROG, c"u_light".as_ptr());
         GL_SPEC = glGetUniformLocation(GPROG, c"u_spec".as_ptr());
-        GL_NOISE = glGetUniformLocation(GPROG, c"u_noise".as_ptr());
+        GL_DITHER_AMT = dither_uniforms(GPROG);
         GL_SCRIM_TOP = glGetUniformLocation(GPROG, c"u_scrim_top".as_ptr());
         GL_SCRIM_BOT = glGetUniformLocation(GPROG, c"u_scrim_bot".as_ptr());
         GL_RIMCOL_G = glGetUniformLocation(GPROG, c"u_rimcol".as_ptr());
@@ -2741,7 +2831,12 @@ fn blur_lazy_init() -> bool {
         let (edge, light) = chamfer();
         glUniform4fv(GL_EDGE, 1, edge.as_ptr());
         glUniform3f(GL_LIGHT, light[0], light[1], light[2]);
-        glUniform1f(GL_NOISE, GLASS_NOISE);
+        // Hoisted, like the screen size beside it: every glass surface in the app is a panel or a
+        // track, i.e. always past `DITHER_MIN_SPAN`, and its ramp is a BLUR — the slowest field the
+        // app produces. So the policy's answer is constant for this program and the uniform is set
+        // once rather than per draw. It was `GLASS_NOISE` (½ LSB, uniform) feeding an unconditional
+        // sine hash; it is the shared TPDF tile at ±1 LSB behind a uniform branch now.
+        glUniform1f(GL_DITHER_AMT, DITHER_LSB);
         // `GL_UVPX` is NOT set here. It was, back when the grab was always the whole screen and one
         // authored pixel was therefore always `1/SCR_W` of the texture — but the snapshot is a
         // REGION now and that ratio moves with it, so it belongs to the draw. `draw_blur_backdrop`
@@ -3437,10 +3532,180 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
     }
 }
 
+// ---- the shared output dither: one amplitude, one policy ---------------------------------------
+
+/// Amplitude of the shared output dither, in colour units: **±1 LSB of an 8-bit framebuffer**.
+///
+/// Triangular rather than uniform, and the triangle is already in the tile ([`noise_tex`]), so this
+/// is the ONE place the TPDF form differs from the ±½ LSB uniform it replaced — a factor of two on
+/// a number, not a second channel on two million fragments.
+const DITHER_LSB: f32 = 2.0 / 255.0;
+
+/// **THE ONE RULE for whether a surface's output needs dithering**, shared by every program built
+/// with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
+///
+/// It is a CPU decision because the question is about the RAMP — how many 8-bit codes it crosses,
+/// over how many pixels — and only the caller holds both. Two conditions, and both have to hold:
+///
+///  * **The ramp must be SLOW.** Banding is treads of one flat code; a tread is
+///    `span / codes_crossed`, and one at or under a pixel is not a stair, it is the gradient. The
+///    threshold is deliberately low ([`DITHER_MIN_TREAD`]) because the cost of dithering something
+///    that did not need it is invisible grain at ±1 LSB, while the cost of missing one is the
+///    horizontal lines this exists to remove.
+///  * **The area must be BROAD.** A 40px chip with a subtle vertical gradient has treads too, and
+///    nobody has ever seen them: there is not enough of the ramp on screen for the eye to find the
+///    edge between two plateaus. [`DITHER_MIN_SPAN`] is the smallest surface where one is findable,
+///    and keeping small quads off the branch is most of what makes this free — the app draws far
+///    more chips, pills and row highlights than panels.
+///  * **It must be a CONTAINER, not a page-level field** ([`DITHER_MIN_RADIUS`]).
+///
+/// A FLAT fill (`top == bot`) returns 0: there is no ramp in it to quantise, and the destination it
+/// blends over is not this shader's to dither.
+fn dither_for_ramp(w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32) -> f32 {
+    if radius < DITHER_MIN_RADIUS || w < DITHER_MIN_SPAN || h < DITHER_MIN_SPAN {
+        return 0.0;
+    }
+    // SAFETY: every caller passes a 4-float colour, exactly as `glUniform4fv` beside it requires.
+    let (t, b) = unsafe { (std::slice::from_raw_parts(top, 4), std::slice::from_raw_parts(bot, 4)) };
+    let codes = (0..3)
+        .map(|i| (t[i] - b[i]).abs() * 255.0)
+        .fold(0.0f32, f32::max);
+    if codes < 1.0 {
+        return 0.0; // flat, or a ramp that does not cross a single output code
+    }
+    // The gradient runs down the quad, so its span is the height.
+    if h / codes < DITHER_MIN_TREAD {
+        return 0.0;
+    }
+    DITHER_LSB
+}
+
+/// **The same rule for a surface whose ramp is in SAMPLED DATA rather than in two uniforms** — the
+/// frosted glass over a blurred snapshot, and the Settings ground's desaturate-and-tint grade.
+///
+/// The tread cannot be computed here: the ramp is whatever the blur chain produced, and a blur is
+/// by construction the slowest field the app ever puts on screen (that is what a blur IS). So the
+/// area test is the whole of it, and the answer above the threshold is always yes. Measured on the
+/// television, Settings over Home before this existed: a 700-row column through the ground spanned
+/// luma 55.7 to 59.1 in FOUR distinct levels, treads of 158, 157 and 146 rows.
+fn dither_for_field(w: f32, h: f32) -> f32 {
+    if w < DITHER_MIN_SPAN || h < DITHER_MIN_SPAN {
+        return 0.0;
+    }
+    DITHER_LSB
+}
+
+/// The smallest surface on which a staircase is findable by eye, in authored px, applied to BOTH
+/// axes. Below it the branch is never taken and the fragment pays nothing.
+const DITHER_MIN_SPAN: f32 = 96.0;
+
+/// **The corner radius that separates a CONTAINER from a page-level field**, and the one axis of
+/// this policy that is about what a surface IS rather than how big it is.
+///
+/// The distinction that actually matters is whether the eye RESTS on the surface or reads it
+/// THROUGH something moving, and the renderer cannot know that. It can tell a container from a
+/// page-level fill, though, and here the two coincide: every panel, sheet and menu ground in this
+/// design has a corner, and every full-screen page field — the hero's two full-width ramp quads,
+/// the modal scrim, the ambient wash — has none.
+///
+/// **It was measured, not assumed.** Without this term the hero's ramps took the branch, and
+/// `fps:home-fold` — the scene that exists to price exactly that quad — failed at `robust_min=46`
+/// against its 50 floor. `fs_ambient.frag`'s own header had already written the finding down for
+/// the wash beside them ("a wash behind a moving translucent photograph is never seen as a
+/// gradient, and the fetch plus its two arithmetic ops on 2M pixels are ~2.5M GPU cycles a frame —
+/// the difference between the fold passing its 50 fps gate and not"); this is the same sentence
+/// applied to the ramps, rather than one surface's exception.
+///
+/// A page that genuinely does want a dithered ground already has the way to ask: `draw_ambient`
+/// takes an explicit `dither` flag from its caller, because only the caller knows.
+const DITHER_MIN_RADIUS: f32 = 4.0;
+
+/// Pixels per output code below which a ramp is not a staircase. At 1.0 each code gets its own row
+/// and the "band" is one pixel wide; 2.0 is one step of slack under that.
+const DITHER_MIN_TREAD: f32 = 2.0;
+
+/// Bind the dither tile on texture unit 2 for the LIFE OF THE PROCESS, and leave the active unit
+/// back on 0.
+///
+/// Unit 0 is every program's own texture and unit 1 is `fs_glass.frag`'s sharp source, so 2 is the
+/// first free one. Binding it once here rather than per draw is what keeps the drawing path free of
+/// `glActiveTexture` entirely: nothing else in this renderer ever selects unit 2, so the binding
+/// cannot be disturbed, and each program only has to be told its sampler's unit once at link time.
+unsafe fn bind_dither_tile() {
+    NOISE_TEX = noise_tex();
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, NOISE_TEX);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+/// Point a freshly linked `glsl_dithered!` program's sampler at unit 2 and return its `u_dither`
+/// location.
+///
+/// **It binds `prog` itself, and that is not defensiveness.** `glUniform*` writes to the CURRENTLY
+/// BOUND program, and a uniform LOCATION is an index into that program's own table — so calling
+/// this with somebody else's program current does not fail, warn or link-error: it writes 2 into
+/// whatever uniform happens to sit at that index in the neighbour. Written without the bind, it
+/// set `u_dither_tex`'s index on the ambient program while the fill program was current, and the
+/// television came up with a blank mid-grey Home — every shelf, card and glyph gone, the tab bar
+/// still there, and nothing in any log. Restoring the caller's program is left to `use_prog`'s own
+/// caching at the end of init, which every other program-scoped uniform here already relies on.
+unsafe fn dither_uniforms(prog: c_uint) -> c_int {
+    use_prog(prog);
+    let tex = glGetUniformLocation(prog, c"u_dither_tex".as_ptr());
+    if tex >= 0 {
+        glUniform1i(tex, 2);
+    }
+    glGetUniformLocation(prog, c"u_dither".as_ptr())
+}
+
 /// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
+/// **Is the host page being served from [`FrameCache`] rather than rasterized?**
+///
+/// Armed for the length of the page draw underneath an open popover that holds a snapshot, and
+/// LIFTED around the popover's own drawing — [`crate::ui::popover::host`] owns both edges. While it
+/// is on, every primitive in this module refuses its quad, because the pixels it would produce are
+/// already on the framebuffer, one textured quad ago.
+///
+/// **It is a REFUSAL, not a skipped call tree**, and that is what makes it safe to apply to a page
+/// this module knows nothing about: the page's draw code still runs, so its layout is still
+/// measured, its pointer hit rects are still recorded and its poster textures are still uploaded.
+/// Only the FILL is removed — which on this GPU is the whole of the cost. A detail page under an
+/// open track panel measured `draw≈75 ms` per presented frame, entirely in fragments, against a
+/// `drawmask=all` floor of 17 ms.
+///
+/// Main-render-thread only, like every other piece of draw state here.
+static mut PAGE_FROZEN: bool = false;
+
+/// Arm or lift the page freeze, returning the state that was in force.
+///
+/// Callers restore what they were handed rather than storing `false`, so a popover's lift NESTS
+/// inside the page pass instead of ending it — the page draw that follows the popover (another
+/// panel, another scrim) is still frozen.
+#[inline]
+pub(crate) fn set_page_frozen(on: bool) -> bool {
+    unsafe {
+        let was = PAGE_FROZEN;
+        PAGE_FROZEN = on;
+        was
+    }
+}
+
+/// Is the host page frozen right now?
+///
+/// Read by the primitives below, and by [`crate::ui::idle::invalidate`]: a decoration that reports
+/// damage from inside a draw which produced no pixels (a marquee, a spinner) must not keep
+/// re-dirtying the snapshot it is standing in.
+#[inline]
+pub(crate) fn page_frozen() -> bool {
+    unsafe { PAGE_FROZEN }
+}
+
 /// Should this quad be skipped entirely?
+///
+/// Two independent reasons. The frozen page ([`PAGE_FROZEN`]) is tested first because it is a
+/// whole-pass state rather than a per-quad geometric one.
 ///
 /// The scissor bounds what a source pass may WRITE, but on a tile-based GPU it does not stop the
 /// tiler binning geometry or the fragment jobs walking tiles: measured on the television, a source
@@ -3453,6 +3718,9 @@ static mut CULL_RECT: Option<[f32; 4]> = None;
 /// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
 #[inline]
 pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
+    if unsafe { PAGE_FROZEN } {
+        return true;
+    }
     match unsafe { CULL_RECT } {
         None => false,
         // A slack margin covers the AA bleed and the SDF rim, which paint a pixel or so beyond the
@@ -3770,6 +4038,13 @@ pub(crate) fn draw_blur_backdrop(
         if BLUR_IN_PASS {
             return false;
         }
+        // A glass surface belonging to a FROZEN page is in the snapshot already, and the chain it
+        // would run writes FBOs that `culled` cannot refuse — so it is turned away here, where the
+        // whole surface is decided. The popover's own glass never reaches this branch: its draw is
+        // wrapped in `popover::host::live`, which lifts the freeze.
+        if PAGE_FROZEN {
+            return false;
+        }
         // DEV: a `drawmask=glass` leg removes the WHOLE surface — chain, composite and the region
         // bookkeeping — rather than only the panel quad, so the leg it prices is "this glass is
         // not here". `false` puts the caller on its opaque ground, exactly as a latched-off blur
@@ -4007,6 +4282,9 @@ pub(crate) fn draw_blur_snapshot_flat(
             use_prog(MPROG);
             glUniform4fv(ML_TINT, 1, tint);
             glUniform1f(ML_SATURATION, saturation);
+            // A grade over a BLUR: the slowest field this app produces, so `dither_for_field` — the
+            // ramp is in the sampled data and no pair of uniforms describes it.
+            glUniform1f(ML_DITHER, dither_for_field(w, h));
             glUniform4f(ML_UVRECT, uv[0], uv[1], uv[2], uv[3]);
             glBindTexture(GL_TEXTURE_2D, c.out);
             glUniform4f(ML_RECT, x, y, w, h);
@@ -4294,23 +4572,26 @@ mod tests {
         assert_eq!(uv[1] + uv[3], 0.0, "the bottom row lands at screen bottom");
     }
 
-    /// The ambient program is drawn over more pixels than any other in the app — the hero's
-    /// corner scrim, the atmospheric ramps and the page wash are all full-width quads — so its
-    /// per-fragment contract is pinned by text: fp16 coordinates (a highp varying promoted the
-    /// mixes to fp32 and cost 3.2M cycles a frame on the set), a dither that exists for the opaque
-    /// ground, and that dither behind a UNIFORM branch so a scrim never evaluates the hash. The
-    /// hash itself is interleaved gradient noise, not the `sin` textbook one — `sin` is a range
-    /// reduction plus a polynomial on Midgard and was 5.3M cycles a frame, 38% of Home.
-    #[test]
-    fn full_screen_ambient_is_mediump_with_a_uniform_gated_cheap_dither() {
-        // The CODE, not the comments — the account of the old hash above it names `sin` on purpose.
-        let src: String = FS_AMBIENT
-            .to_str()
+    /// Strip comments so a claim in the CODE is graded and an account of a mistake in the PROSE is
+    /// not — several of these shaders' headers name `sin` and `fract` on purpose, describing what
+    /// they used to do.
+    fn shader_code(src: &CStr) -> String {
+        src.to_str()
             .unwrap()
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+    }
+
+    /// The ambient program is drawn over more pixels than any other in the app — the hero's
+    /// corner scrim, the atmospheric ramps and the page wash are all full-width quads — so its
+    /// per-fragment contract is pinned by text: fp16 coordinates (a highp varying promoted the
+    /// mixes to fp32 and cost 3.2M cycles a frame on the set) and ONE mix. Its dither is the
+    /// shared one now and is graded by the case below, across all five programs that carry it.
+    #[test]
+    fn full_screen_ambient_is_mediump_with_one_mix_per_fragment() {
+        let src = shader_code(FS_AMBIENT);
         assert!(
             src.contains("varying vec2 v_uv"),
             "the coordinate stays fp16"
@@ -4327,13 +4608,33 @@ mod tests {
         let vs = VS_AMBIENT.to_str().unwrap();
         assert!(vs.contains("v_top = mix(u_atl, u_atr, a_pos.x)"));
         assert!(vs.contains("v_bot = mix(u_abl, u_abr, a_pos.x)"));
-        assert!(src.contains("uniform float u_noise"));
+    }
+
+    /// **The shared output dither, graded across every program that carries it.**
+    ///
+    /// Written as one case over a LIST rather than five cases, because the failure this guards is
+    /// exactly "one of them did it differently". That is not hypothetical: `fs_glass.frag` — the
+    /// popover background — carried a `fract(sin(dot(p,k))*43758.5)` hash, evaluated
+    /// UNCONDITIONALLY on every fragment of every glass surface, for as long as `fs_ambient.frag`'s
+    /// own header had been recording that same construction as a mistake it had made and fixed
+    /// (38% of a Home frame). Five programs, four answers, and nothing compiling the difference.
+    ///
+    /// The three properties are the three cost rules in `shaders/dither.glsl`: a uniform branch, a
+    /// texture fetch rather than arithmetic, and the tile sampled 1:1 at `1/NOISE_DIM`.
+    #[test]
+    fn every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own() {
+        let prelude = shader_code(unsafe {
+            CStr::from_bytes_with_nul_unchecked(
+                concat!(include_str!("shaders/dither.glsl"), "\0").as_bytes(),
+            )
+        });
+        assert!(prelude.contains("uniform float u_dither"));
         assert!(
-            src.contains("if (u_noise > 0.0)"),
-            "the dither is behind a uniform branch"
+            prelude.contains("if (u_dither > 0.0)"),
+            "the dither is behind a uniform branch — Midgard resolves that per draw"
         );
         assert!(
-            src.contains("texture2D(u_noise_tex, gl_FragCoord.xy"),
+            prelude.contains("texture2D(u_dither_tex, gl_FragCoord.xy"),
             "the dither is a texture fetch on the idle pipe, not arithmetic"
         );
         // The tile is sampled 1:1 in SCREEN space, so this divisor and `NOISE_DIM` are one number
@@ -4341,17 +4642,84 @@ mod tests {
         // in the worst way: a divisor left behind when the tile grows does not band or blank, it
         // magnifies the tile into exactly the periodic pattern the 256 was measured to remove.
         assert!(
-            src.contains(&format!("(1.0 / {NOISE_DIM}.0)")),
-            "fs_ambient.frag must sample the noise tile at 1/NOISE_DIM ({NOISE_DIM})"
+            prelude.contains(&format!("(1.0 / {NOISE_DIM}.0)")),
+            "dither.glsl must sample the noise tile at 1/NOISE_DIM ({NOISE_DIM})"
         );
-        assert!(
-            !src.contains("fract("),
-            "no hash arithmetic on a full-screen quad"
+
+        for (name, src) in [
+            ("fs_src.frag", FS_SRC),
+            ("fs_ambient.frag", FS_AMBIENT),
+            ("fs_shadow.frag", FS_SHADOW),
+            ("fs_modal_ground.frag", FS_MODAL_GROUND),
+            ("fs_glass.frag", FS_GLASS),
+        ] {
+            let code = shader_code(src);
+            assert!(
+                code.contains("uniform float u_dither"),
+                "{name} must be built with glsl_dithered! (the prelude is missing)"
+            );
+            assert!(
+                code.contains("plx_dither"),
+                "{name} carries the prelude but never applies it — a program that pays for the \
+                 uniforms and bands anyway"
+            );
+            assert!(
+                !code.contains("fract(sin("),
+                "{name} has a sine hash of its own; the shared tile is the one answer"
+            );
+            assert!(
+                code.matches("u_dither > 0.0").count() <= 2,
+                "{name} must reach the dither through the prelude's two helpers, not inline it"
+            );
+        }
+    }
+
+    /// **The policy, at the two edges that decide whether a fragment pays anything at all.**
+    ///
+    /// The cost of this whole mechanism is the number of draws that answer non-zero, so the two
+    /// refusals matter more than the acceptance: a flat fill has no ramp to quantise, and a chip
+    /// too small to show a plateau must never take the branch. The app draws far more chips, pills
+    /// and row highlights than it draws panels.
+    #[test]
+    fn the_dither_policy_refuses_flat_fills_and_small_surfaces() {
+        let dark = [0.10f32, 0.10, 0.12, 1.0];
+        let darker = [0.08f32, 0.08, 0.10, 1.0];
+        let broad = 700.0;
+        let rad = crate::ui::theme::ALERT_PANEL_RAD;
+        assert_eq!(
+            dither_for_ramp(broad, broad, rad, dark.as_ptr(), dark.as_ptr()),
+            0.0,
+            "a flat fill has no ramp in it to quantise"
         );
-        assert!(
-            !src.contains("sin("),
-            "no transcendental in a full-screen fragment shader"
+        assert_eq!(
+            dither_for_ramp(40.0, 40.0, rad, dark.as_ptr(), darker.as_ptr()),
+            0.0,
+            "a chip is too small for a plateau to be findable"
         );
+        assert_eq!(
+            dither_for_ramp(broad, broad, rad, dark.as_ptr(), darker.as_ptr()),
+            DITHER_LSB,
+            "a slow ramp over a panel is exactly the case this exists for"
+        );
+        // A ramp crossing 255 codes over 96 rows is 0.38 rows per code — a gradient, not a stair.
+        let white = [1.0f32, 1.0, 1.0, 1.0];
+        let black = [0.0f32, 0.0, 0.0, 1.0];
+        assert_eq!(
+            dither_for_ramp(broad, 96.0, rad, white.as_ptr(), black.as_ptr()),
+            0.0,
+            "a FAST ramp does not band and must not pay"
+        );
+        // THE MEASURED ONE. A square-cornered full-screen ramp is a PAGE-LEVEL field — the hero's
+        // two full-width quads — read through moving artwork, and dithering it failed
+        // `fps:home-fold` at robust_min=46 against a 50 floor. Same colours, same span, one
+        // property different. See `DITHER_MIN_RADIUS`.
+        assert_eq!(
+            dither_for_ramp(1920.0, 1080.0, 0.0, dark.as_ptr(), darker.as_ptr()),
+            0.0,
+            "a page-level field asks through draw_ambient's own flag, not through this"
+        );
+        assert_eq!(dither_for_field(40.0, 700.0), 0.0);
+        assert_eq!(dither_for_field(broad, broad), DITHER_LSB);
     }
 
     /// Thick diffuse material collects radiance across the WHOLE support. It must not inherit the

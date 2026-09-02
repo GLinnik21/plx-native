@@ -2056,7 +2056,12 @@ mod tests {
                         || false,
                     )
                 });
-                let published_by = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                // A FAILURE BOUND, NOT A RUNTIME: the loop returns the moment the worker publishes,
+                // so a passing run never spends this. One second was not one — with an ARM
+                // cross-build loading the machine beside a full `make check`, the worker had not
+                // been scheduled inside it and this read as a teardown regression (2026-09-02);
+                // alone, the same test publishes in ~10 ms. Same shape as route.rs's stop-probe.
+                let published_by = std::time::Instant::now() + std::time::Duration::from_secs(20);
                 while lock_active().is_none() {
                     assert!(
                         std::time::Instant::now() < published_by,

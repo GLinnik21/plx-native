@@ -110,7 +110,10 @@ const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
 /// blanking them.
 const SCRIM_A: f32 = 0.34;
 
-static mut POP: Popover = Popover::new(); // shared open/appear choreography
+/// Shared open/appear choreography, plus `caching_host`: the screen under this menu is frozen
+/// while it is up, and the tile the menu is ABOUT is lifted back out of the dim LIVE above that
+/// snapshot rather than baked into it — see [`draw_scrim`] and [`crate::ui::popover::host`].
+static mut POP: Popover = Popover::new().caching_host();
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The chosen action per global row index (`None` for the separator, which is unfocusable anyway).
 /// Parallel to the table's rows because the row SET varies by item kind — a movie has no
@@ -253,7 +256,7 @@ fn present((rows, a): (Section, Vec<Option<Action>>), opener: Opener) {
 }
 
 pub(crate) fn close() {
-    pop().close();
+    pop().dismiss();
 }
 
 /// The rows, and the action each one commits. Order is the pinned design's:
@@ -469,7 +472,11 @@ pub(crate) fn move_focus(sym: c_int) {
         table().move_sel(-1);
     } else if s == SDLK_DOWN {
         table().move_sel(1);
+    } else {
+        return;
     }
+    // The menu moved; the shelf behind it did not — see `popover::note_own_damage`.
+    crate::ui::popover::note_own_damage();
 }
 
 /// Commit the highlighted row and close.
@@ -530,9 +537,11 @@ fn panel_rect() -> Rect {
 }
 
 pub(crate) fn update(dt: f32) {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // This menu's own springs, kept out of the host page's motion — `popover::own_motion`.
+    let _own = crate::ui::popover::own_motion();
     pop().update(dt);
     let ph = panel_rect().h;
     table().update(dt, ph - crate::ui::table::PAD_V);
@@ -553,16 +562,30 @@ pub(crate) fn update(dt: f32) {
 /// stay where they are, visible behind it", which a scrim over the card itself quietly contradicts
 /// — and being inside the page closure is what puts the un-dimmed copy into the direct-blur
 /// snapshot too, so the panel's own glass never frosts a dimmed picture of its own card.
+///
+/// **The LIFT is live, not cached, and that is the decision the frozen host forces.** The snapshot
+/// is taken by the guard below, i.e. immediately BEFORE this dim goes down — so the tile is in the
+/// texture exactly once, undimmed, in its own place. The scrim then dims that whole quad, and the
+/// lift redraws the tile over it. Baking the lift into the snapshot instead would put it UNDER the
+/// live scrim, which dims it again: the card the menu is about would recede with the page, which is
+/// the precise bug the lift exists to undo. Live also keeps the lift correct while the scrim is
+/// still ramping, since `scrim_lifting` fades both together.
 pub(crate) fn draw_scrim() {
-    if is_open() {
+    if pop().visible() {
+        // First lift of the frame on this page — the snapshot is taken here, before the dim.
+        let _live = crate::ui::popover::host::live();
         pop().scrim_lifting(SCRIM_A, unsafe { &*addr_of!(OPENER) });
     }
 }
 
 pub(crate) fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // Live over the frozen host — see `popover::host::live`. (Drawn AFTER the page closure, so the
+    // freeze is already lifted by then; the guard is kept for the reason every panel keeps it: the
+    // rule is a property of the panel, not of where `app.rs` happens to call it from today.)
+    let _live = crate::ui::popover::host::live();
     // the shared appear fade, rising a short beat into place off the card it belongs to. The scrim
     // (light — the shelf must stay readable behind it) is the PAGE's now: `content_painter`, not
     // `painter`, or the dim is drawn twice.

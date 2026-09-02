@@ -163,7 +163,9 @@ static mut FOR_SID: ServerId = ServerId::UNSET;
 /// Every copy of that item, in the order the producer found them (this module orders them itself).
 static mut COPIES: Vec<AltCopy> = Vec::new();
 
-static mut POP: Popover = Popover::new(); // shared open/appear choreography
+/// Shared open/appear choreography — and `caching_host`, because the detail page under this
+/// anchored menu is standing still while it is up (see [`crate::ui::popover::host`]).
+static mut POP: Popover = Popover::new().caching_host();
 static mut TABLE: TableView = TableView::new(); // main-thread only
 /// The destination per global row index — parallel to the rows the panel was BUILT from, so a
 /// selection can never be resolved against a differently-ordered list (`more_menu`'s rule: the row
@@ -206,7 +208,7 @@ fn copies() -> &'static [AltCopy] {
 /// (the page closing, or a mount with no row yet) pairs with [`ServerId::UNSET`]: nothing can then
 /// land, which is the point.
 pub(crate) fn reset(item_sid: ServerId, item_rk: &str) {
-    close();
+    hide();
     // ASSIGNMENT, not `ptr::write`: these are owning heap values, and `write` overwrites without
     // running the old one's destructor — which here would leak a `String` and a `Vec<AltCopy>` on
     // every detail mount. (The `.write()` idiom this file's neighbours use is sound where they use
@@ -456,6 +458,14 @@ pub(crate) fn open(anchor: Rect) {
 }
 
 pub(crate) fn close() {
+    pop().dismiss();
+}
+/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
+/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
+/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
+/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
+/// spring ran out (Codex review, 2026-09-02).
+pub(crate) fn hide() {
     pop().close();
 }
 
@@ -465,17 +475,28 @@ pub(crate) fn move_focus(sym: c_int) {
         table().move_sel(-1);
     } else if s == SDLK_DOWN {
         table().move_sel(1);
+    } else {
+        return;
     }
+    // This menu moved; the page behind it did not — see `popover::note_own_damage`.
+    crate::ui::popover::note_own_damage();
 }
 
 /// Commit the highlighted row and close. The row you are ALREADY on reports nothing — there is
 /// nowhere to navigate to, and the tick has already answered the question the press was asking.
 pub(crate) fn on_ok() -> Action {
     let sel = table().sel;
-    close();
-    action_at(dests(), sel, here_sid(), unsafe {
+    let act = action_at(dests(), sel, here_sid(), unsafe {
         (*addr_of!(FOR_RK)).as_str()
-    })
+    });
+    // A navigation replaces the page this menu stands on, so the menu goes at once; a press on the
+    // row you are already on is a plain dismissal and fades like BACK would.
+    if matches!(act, Action::None) {
+        close();
+    } else {
+        hide();
+    }
+    act
 }
 
 /// The index→destination mapping, pure so the "the row you are on is not a destination" rule is
@@ -543,18 +564,23 @@ fn panel_rect() -> Rect {
 }
 
 pub(crate) fn update(dt: f32) {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // This menu's own springs, kept out of the host page's motion — `popover::own_motion`.
+    let _own = crate::ui::popover::own_motion();
     pop().update(dt);
     let ph = panel_rect().h;
     table().update(dt, ph - crate::ui::table::PAD_V);
 }
 
 pub(crate) fn draw() {
-    if !is_open() {
+    if !pop().visible() {
         return;
     }
+    // Live over the frozen host, and — since `painter` draws the scrim as its first act — the
+    // snapshot this guard takes is still of the UNDIMMED page. See `popover::host::live`.
+    let _live = crate::ui::popover::host::live();
     let p = pop().painter(SCRIM_A, RISE);
     let r = panel_rect();
     pop().panel(p, r, PANEL_RAD);
@@ -1149,5 +1175,26 @@ mod tests {
                 p.h
             );
         }
+    }
+
+    /// **A page teardown hides the menu at ONCE; only an interactive exit fades.** Codex review,
+    /// 2026-09-02: `reset` called the fading `close`, so a mount that followed a navigation from
+    /// this menu found `dismiss` a no-op (already not open), left `visible()` true, and drew the
+    /// previous server's rows over the incoming detail page until the spring ran out.
+    #[test]
+    fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
+        let _g = crate::testlock::serial();
+        pop().open();
+        assert!(pop().visible());
+        reset(ServerId::UNSET, "");
+        assert!(!pop().visible(), "teardown: gone on the frame it is called");
+        assert!(!is_open());
+
+        pop().open();
+        close();
+        assert!(!is_open(), "BACK: input ends on the press frame");
+        assert!(pop().visible(), "…but the sheet is still fading");
+        hide();
+        assert!(!pop().visible());
     }
 }

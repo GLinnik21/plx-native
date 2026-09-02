@@ -35,12 +35,6 @@ pub(crate) struct RowStyle {
     /// Circular tiles (cast headshots, who's-watching avatars) vs rounded-rect posters. A circle is
     /// just a tile drawn at `radius = width/2`; the shared springs/scroll/ring are identical.
     pub circular: bool,
-    /// How many lines the focused tile's under-TITLE may wrap to before it elides. `1` is the
-    /// original single elided run every shelf drew; `2` word-wraps instead, which is what a shelf of
-    /// real Plex titles needs — "Wallace & Gromit: The Curse of the Were-Rabbit" under a 250px card
-    /// loses two thirds of itself to a one-line elide. Raising it is safe because
-    /// [`TileLabel::height`] derives the band a screen must reserve from this very field.
-    pub title_lines: usize,
 }
 impl RowStyle {
     /// The home shelf's portrait-poster row: 1.09 focus pop (matches `Home Screen.dc.html`), the big
@@ -56,7 +50,6 @@ impl RowStyle {
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: false,
-        title_lines: 1,
     };
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
@@ -77,7 +70,6 @@ impl RowStyle {
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
-        title_lines: 1,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -97,7 +89,6 @@ impl RowStyle {
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
-        title_lines: 1,
     };
     /// ring focus scalar denominator — `(s-1)/ring_denom` maps scale∈[1, focus_scale] to [0, 1].
     #[inline]
@@ -287,8 +278,7 @@ pub(crate) fn draw_tile(
 /// It is a type rather than three parameters because the block's height is a fact the SCREEN needs:
 /// every shelf must reserve room for it in its own flow, and `reveal`/`scroll_into_view` only keep
 /// air under the block a screen *declares*. Before this, five call sites hand-authored that number
-/// from constants they could not see ([`RowStyle::title_lines`] even had to warn about it in a doc
-/// comment) — [`TileLabel::height`] is the answer they were restating.
+/// from constants they could not see — [`TileLabel::height`] is the answer they were restating.
 #[derive(Default)]
 pub(crate) struct TileLabel {
     pub title: Option<std::ffi::CString>,
@@ -321,13 +311,14 @@ impl TileLabel {
             ..Self::title(t)
         }
     }
-    /// THE height a screen must reserve under the poster row for this block, at `sty`. Derived from
-    /// the same three constants [`draw_focused`] lays it out with, so a screen's declared band and
-    /// the block on screen cannot drift — which is the whole reason raising
-    /// [`RowStyle::title_lines`] is now safe.
-    pub(crate) fn height(sty: &RowStyle, caption: bool) -> f32 {
+    /// THE height a screen must reserve under the poster row for this block. Derived from the same
+    /// constants [`draw_focused`] lays it out with, so a screen's declared band and the block on
+    /// screen cannot drift. The title is always exactly one line now — a title too wide for its
+    /// budget marquees in place rather than growing the block, so this no longer varies with the
+    /// row style at all.
+    pub(crate) fn height(caption: bool) -> f32 {
         UNDER_DROP
-            + sty.title_lines as f32 * UNDER_LINE_H
+            + UNDER_LINE_H
             + if caption {
                 UNDER_LINE_GAP + UNDER_CAPTION_H
             } else {
@@ -335,8 +326,8 @@ impl TileLabel {
             }
     }
     /// [`TileLabel::height`] for a block that has whatever THIS one has.
-    fn own_height(&self, sty: &RowStyle) -> f32 {
-        Self::height(sty, self.caption.is_some())
+    fn own_height(&self) -> f32 {
+        Self::height(self.caption.is_some())
     }
 }
 
@@ -365,23 +356,12 @@ pub(crate) fn draw_focused(
     // the label into the next shelf's title.
     let mut ty = rect.y + rect.h * 0.5 + (rect.h / s) * 0.5 + UNDER_DROP;
     if let Some(t) = &label.title {
-        // Continue-Watching's focused primary line leads with an amber play glyph (the tile has no
-        // play disc); every other shelf keeps the plain centred title, wrapped when the style asks.
-        let drawn = if label.glyph {
-            play_label(p, rect, sty, t.as_ptr(), ty);
-            UNDER_LINE_H
-        } else if sty.title_lines > 1 {
-            // A two-line wrap is its own overflow strategy (item 10 §d) — it already shows far
-            // more of a long title than one elided run could, so it gets the widened budget above
-            // and nothing more; a marquee under a WRAPPED block would have to loop two lines in
-            // lockstep for no legibility gain a wider single line doesn't already give a
-            // one-line-styled row.
-            wrapped_title(p, rect, sty, t.as_ptr(), ty)
-        } else {
-            title_marquee(p, rect, sty, t.as_ptr(), ty);
-            UNDER_LINE_H
-        };
-        ty += drawn + UNDER_LINE_GAP;
+        // ONE title path for every focused tile in the app: a single line, elided/centred when it
+        // fits and looping under a marquee when it does not — Continue-Watching's amber play glyph
+        // is a parameter of the same function, not a fourth path, so a glyph-led title marquees
+        // exactly like a plain one.
+        title_marquee(p, rect, sty, t.as_ptr(), ty, label.glyph);
+        ty += UNDER_LINE_H + UNDER_LINE_GAP;
     }
     if let Some(c) = &label.caption {
         under_label(
@@ -473,35 +453,6 @@ const UNDER_CAPTION_H: f32 = 28.0;
 /// `consts::UNDER_LABEL_AIR` is this constant's other half: the two together are what unifies
 /// Home's and Library's row spacing.
 pub(crate) const UNDER_LABEL_H: f32 = UNDER_DROP + UNDER_LINE_H + UNDER_LINE_GAP + UNDER_CAPTION_H;
-
-/// The focused tile's title WORD-WRAPPED to `sty.title_lines`, centred under the tile — for rows
-/// whose items have real titles rather than short ones ([`RowStyle::title_lines`]). Returns the
-/// lines actually drawn, so the caller advances the caption by the block's true height instead of
-/// leaving a hole under a one-line title.
-///
-/// Built on the shared [`TextView`](crate::ui::text_view::TextView) (pixel wrap + its own ellipsis
-/// + a wrap cache), NOT a second hand-rolled wrapper. Its frame is the tile-plus-gaps budget
-/// [`under_label`] uses, clamped to the screen so an edge tile's block cannot run off the panel.
-fn wrapped_title(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32) -> f32 {
-    let (sz, bold) = (theme::size::LABEL, 1);
-    let budget = under_budget(sty);
-    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    // Clamped in SCREEN space and drawn in the painter's — see [`edge_clamp`].
-    let x = edge_clamp(p, rect.cx() - budget * 0.5, budget);
-    // `y` is [`under_label`]'s raw glyph-texture top (it hands it straight to `Painter::text`),
-    // while `TextView` positions line 0 by its CAP BAND — so the one-line and wrapped blocks only
-    // start on the same row if the cap offset is added back here.
-    let (cap_top, _) = crate::text::text_cap_band(sz, bold);
-    // the DRAWN height, not a second measure: one wrap, so the caption's offset and the block on
-    // screen cannot disagree about how many lines there were
-    crate::ui::text_view::TextView::new(&s, sz, theme::TEXT_PRIMARY)
-        .bold()
-        .h(crate::ui::label::HAlign::Center)
-        .leading(UNDER_LINE_H)
-        .max_lines(sty.title_lines)
-        .draw(p, Rect::new(x, y + cap_top, budget, 0.0))
-        .max(UNDER_LINE_H)
-}
 
 // ---- The focused single-line title's marquee (item 10) ---------------------------------------
 //
@@ -624,19 +575,58 @@ fn marquee_clock(text: &str) -> f64 {
     }
 }
 
+/// Air between Continue-Watching's play glyph and the name that follows it.
+const PLAY_ICON_GAP: f32 = 10.0;
+
+/// The Continue-Watching glyph's pixel size at `sz` — 72% of the title's own size, rounded (Home
+/// Screen.dc's play-triangle proportion). Pure so [`title_marquee`] and [`play_label_fit`] read the
+/// same number rather than each rounding it themselves.
+#[inline]
+fn play_icon_size(sz: std::os::raw::c_int) -> f32 {
+    (sz as f32 * 0.72).round()
+}
+
+/// How much of the marquee's window a glyph-led title gives up to the icon + its gap — `0.0` for a
+/// plain title. Pulled out to its own pure function so a host test can pin the arithmetic
+/// [`title_marquee`]'s overflow branch and [`play_label_fit`]'s fitting branch both depend on,
+/// without a `Painter` to draw through.
+#[inline]
+fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
+    if glyph {
+        play_icon_size(sz) + PLAY_ICON_GAP
+    } else {
+        0.0
+    }
+}
+
 /// The focused tile's single-line title: the plain elided [`under_label`] whenever the run fits the
 /// widened [`under_budget`], else a looping [`marquee_x`] — see the section doc above for why.
 /// Reports to [`crate::ui::idle`] only on a frame the marquee is actually gliding, so a screen full
 /// of short (or resting) titles costs the present gate nothing.
-fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32) {
+///
+/// `glyph` leads the line with Continue-Watching's amber play triangle — the SAME clock and the
+/// SAME budget arithmetic as the plain title, just with the icon's width plus its gap subtracted
+/// from the window before anything is measured against it, so a played title that overflows
+/// marquees exactly like any other. This is ONE implementation with a glyph parameter rather than a
+/// fourth title path: before it, the glyph line was a dead end that never fell through to a
+/// marquee at all, so a long Continue-Watching title elided instead of animating like every other
+/// shelf's focused label.
+fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32, glyph: bool) {
     let (sz, bold) = (theme::size::LABEL, 1);
-    let budget = under_budget(sty);
+    let isz = play_icon_size(sz);
+    let lead = glyph_lead(sz, glyph);
+    let full = under_budget(sty);
+    let budget = full - lead;
     let w = crate::text::text_width(text, sz, bold);
     if w <= budget {
         // a fitting title RELEASES the clock, so an overflowing one focused again later starts
         // from its rest beat rather than resuming mid-glide
         MARQUEE_KEY.with(|k| k.borrow_mut().clear());
-        under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY);
+        if glyph {
+            play_label_fit(p, rect, text, y, isz, sz, bold);
+        } else {
+            under_label(p, rect, sty, text, y, sz, bold, theme::TEXT_PRIMARY);
+        }
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
@@ -657,13 +647,24 @@ fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
     }
     let off = marquee_x(t_ms, w, budget);
     let travel = w + MARQUEE_GAP;
-    // Left edge of the budget window — same screen-space clamp the other two blocks use, but
-    // left-aligned (align 0) rather than centred: the marquee owns its own horizontal motion, so
-    // centring it around a moving run would fight the offset instead of hosting it.
-    let x0 = edge_clamp(p, rect.cx() - budget * 0.5, budget);
-    p.clip(Rect::new(x0, y - 6.0, budget, UNDER_LINE_H + 12.0));
-    p.text(text, x0 - off, y, sz, theme::TEXT_PRIMARY, 0, bold);
-    p.text(text, x0 - off + travel, y, sz, theme::TEXT_PRIMARY, 0, bold);
+    // The [glyph? + text-window] group is centred as ONE block, the same screen-space clamp the
+    // other blocks use — see [`edge_clamp`]. The glyph, when present, sits fixed at the group's left
+    // edge; only the text window inside it scrolls.
+    let x0 = edge_clamp(p, rect.cx() - full * 0.5, full);
+    let text_x0 = x0 + lead;
+    if glyph {
+        let (ct, cb) = crate::text::text_cap_band(sz, bold);
+        let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
+        crate::ui::icons::draw(
+            p,
+            crate::ui::icons::Icon::Play,
+            Rect::new(x0, icy - isz * 0.5, isz, isz),
+            theme::RESUME_FILL,
+        );
+    }
+    p.clip(Rect::new(text_x0, y - 6.0, budget, UNDER_LINE_H + 12.0));
+    p.text(text, text_x0 - off, y, sz, theme::TEXT_PRIMARY, 0, bold);
+    p.text(text, text_x0 - off + travel, y, sz, theme::TEXT_PRIMARY, 0, bold);
     p.clip_clear();
 }
 
@@ -734,22 +735,24 @@ fn under_label(
     }
 }
 
-/// The focused Continue-Watching card's primary line: an amber play triangle followed by the
-/// episode/movie name, the [icon + gap + name] group centred under the tile (Home Screen.dc — the
-/// play affordance lives here, not as a disc on the poster). Left-aligns the name after the glyph
-/// and keeps the whole group inside the screen edges.
-fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f32) {
-    let (sz, bold) = (theme::size::LABEL, 1);
-    let isz = (sz as f32 * 0.72).round();
-    let gap = 10.0f32;
-    let budget = under_budget(sty) - (isz + gap);
-    let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let short = crate::text::elide(&s, budget, sz, bold, false);
-    let Ok(tc) = std::ffi::CString::new(short) else {
-        return;
-    };
-    let tw = crate::text::text_width(tc.as_ptr(), sz, bold);
-    let gw = isz + gap + tw;
+/// The focused Continue-Watching card's primary line when the name FITS without a marquee: an amber
+/// play triangle followed by the episode/movie name, the [icon + gap + name] group centred under the
+/// tile (Home Screen.dc — the play affordance lives here, not as a disc on the poster). `budget` is
+/// already the text-only window [`title_marquee`] measured against (the icon and its gap already
+/// subtracted), so this only re-elides defensively — the caller already knows the run fits.
+fn play_label_fit(
+    p: Painter,
+    rect: Rect,
+    text: *const c_char,
+    y: f32,
+    isz: f32,
+    sz: std::os::raw::c_int,
+    bold: std::os::raw::c_int,
+) {
+    // The run already fits its window (the caller checked), so it is drawn verbatim — no elide,
+    // no copy.
+    let tw = crate::text::text_width(text, sz, bold);
+    let gw = isz + PLAY_ICON_GAP + tw;
     // The [glyph + gap + name] group as ONE block, clamped in screen space like the other two —
     // see [`edge_clamp`].
     let gl = edge_clamp(p, rect.cx() - gw * 0.5, gw);
@@ -761,15 +764,7 @@ fn play_label(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y: f3
         Rect::new(gl, icy - isz * 0.5, isz, isz),
         theme::RESUME_FILL,
     );
-    p.text(
-        tc.as_ptr(),
-        gl + isz + gap,
-        y,
-        sz,
-        theme::TEXT_PRIMARY,
-        0,
-        bold,
-    );
+    p.text(text, gl + isz + PLAY_ICON_GAP, y, sz, theme::TEXT_PRIMARY, 0, bold);
 }
 
 /// Full-bleed resume bar: the bottom band of the card itself (Continue Watching). Delegates to
@@ -1002,5 +997,68 @@ mod tests {
             0.0,
             "a different focused title restarts the clock at 0"
         );
+    }
+
+    // ---- the glyph variant shares the marquee's clock and budget arithmetic -----------------
+
+    /// A plain title gives up nothing to a glyph it does not have.
+    #[test]
+    fn a_plain_title_has_no_glyph_lead() {
+        assert_eq!(glyph_lead(theme::size::LABEL, false), 0.0);
+    }
+
+    /// A glyph-led title's window is narrower by exactly the icon's size plus its gap — the same
+    /// number [`play_label_fit`]'s fitting branch and [`title_marquee`]'s overflow branch both
+    /// read, pinned once here instead of through a draw.
+    #[test]
+    fn a_glyph_led_title_gives_up_the_icon_plus_its_gap() {
+        let sz = theme::size::LABEL;
+        let lead = glyph_lead(sz, true);
+        assert!(lead > 0.0, "a glyph must cost the window something");
+        assert_eq!(lead, play_icon_size(sz) + PLAY_ICON_GAP);
+    }
+
+    /// The whole point of item 10 §b: a title that fits the PLAIN budget can still overflow the
+    /// GLYPH-reduced one, so a Continue-Watching name that is merely long enough to have needed
+    /// eliding before now marquees instead — the defect the owner reported ("the text does not
+    /// animate" on a long Continue Watching title).
+    #[test]
+    fn a_title_that_fits_the_plain_budget_can_overflow_the_glyph_budget() {
+        let sz = theme::size::LABEL;
+        let lead = glyph_lead(sz, true);
+        let full_budget = 300.0;
+        let glyph_budget = full_budget - lead;
+        let w = full_budget - lead * 0.5; // fits the plain window, not the glyph-reduced one
+        assert!(w <= full_budget, "sanity: fits the plain budget");
+        assert!(
+            w > glyph_budget,
+            "sanity: must overflow the glyph-reduced budget for this test to mean anything"
+        );
+        assert!(!marquee_moving(0.0, w, full_budget), "plain: still resting, not overflowing");
+        assert!(
+            marquee_moving(MARQUEE_HOLD_MS + 1.0, w, glyph_budget),
+            "glyph: the same run overflows the narrower window and must glide"
+        );
+    }
+
+    // ---- word-wrap is gone: the focused title is always exactly one line ---------------------
+
+    /// [`TileLabel::height`] no longer varies with the row style at all — a shelf of long titles
+    /// marquees in place rather than growing its label band, so every row in the app reserves the
+    /// same fixed height for the same `caption` choice.
+    #[test]
+    fn the_label_height_is_fixed_regardless_of_row_style() {
+        assert_eq!(TileLabel::height(true), UNDER_LABEL_H);
+        assert!(TileLabel::height(false) < TileLabel::height(true));
+    }
+
+    /// [`TileLabel::own_height`] agrees with the free function for a label that carries whatever
+    /// it carries.
+    #[test]
+    fn a_label_s_own_height_matches_its_caption() {
+        let with_caption = TileLabel::titled("Title", "Caption");
+        let without = TileLabel::title("Title");
+        assert_eq!(with_caption.own_height(), TileLabel::height(true));
+        assert_eq!(without.own_height(), TileLabel::height(false));
     }
 }

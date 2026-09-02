@@ -3814,6 +3814,13 @@ fn clear_play_verdict() {
         s.requested_resume_ns = 0;
     })
 }
+/// Test-only twin of [`clear_play_verdict`], for a test whose assertion presumes "no session":
+/// `player::state()` derives `Error` from these fields, and a route test that exercised a refusal
+/// may have left one standing. Callers must hold `crate::testlock::serial()`.
+#[cfg(test)]
+pub(crate) fn clear_play_verdict_for_test() {
+    clear_play_verdict()
+}
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
 pub(crate) fn set_subtitle(sid: i64) {

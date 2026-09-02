@@ -407,6 +407,52 @@ mod tests {
         clear();
     }
 
+    /// **The reported bug**: "the new screen is already in place while the old one animates; the
+    /// new one should animate as well." If `page_alpha()` snapped to 1.0 on the commit frame
+    /// instead of riding the same [`Xfade`] IN ramp `xfade.rs` pins at ≈9 frames for `IN_MS`, this
+    /// is exactly what a device capture would show — the destination's content fully opaque the
+    /// instant it mounts, with only the OUTGOING page having visibly dipped.
+    ///
+    /// `page_alpha()` is a thin proxy over the same `Xfade` every content reload rides, so nothing
+    /// here should be able to disagree with `xfade.rs`'s own ramp tests — this is the pin that
+    /// would catch it if a future edit gave `nav`'s accessor its own (wrong) shortcut.
+    #[test]
+    fn the_incoming_page_ramps_up_after_the_floor_instead_of_snapping_to_full() {
+        let _g = crate::testlock::serial();
+        clear();
+        begin(true, Some(1), None);
+        let mut post_floor = Vec::new();
+        for _ in 0..40 {
+            if tick(DT) {
+                spend_leave(true);
+                // sample every frame from the floor itself through the settle
+                post_floor.push(page_alpha());
+                for _ in 0..20 {
+                    tick(DT);
+                    post_floor.push(page_alpha());
+                }
+                break;
+            }
+        }
+        assert_eq!(post_floor[0], 0.0, "the floor is alpha 0, same as every other test here");
+        assert!(
+            post_floor.iter().filter(|a| **a < 0.999).count() >= 5,
+            "the IN ramp (≈9 frames for IN_MS=140ms) must span several frames strictly below \
+             full, not resolve in one or two: {post_floor:?}"
+        );
+        assert!(
+            post_floor.windows(2).all(|w| w[1] >= w[0] - f32::EPSILON),
+            "the incoming page rises monotonically off the floor, never overshoots then \
+             corrects: {post_floor:?}"
+        );
+        assert_eq!(
+            *post_floor.last().unwrap(),
+            1.0,
+            "and the ramp still reaches full — this pins completeness, not just slowness"
+        );
+        clear();
+    }
+
     // ---- the LEAVE payload -------------------------------------------------------------------
     // The whole point of the payload is WHEN it runs, so every test below grades the frame, not
     // just the count: a teardown one frame early is the bug it exists to prevent (the page blanks

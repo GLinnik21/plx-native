@@ -182,6 +182,47 @@ pub struct Session {
     /// instead of making the credentials file fail to parse.
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     pub(crate) playback_quality: Option<PlaybackQuality>,
+    /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
+    /// rendered on this television, so a route in the Settings/first-run family that opens
+    /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
+    /// profile picker is the case that motivated this — can still seed its frozen ground from
+    /// real light instead of falling all the way to the design system's authored atmosphere
+    /// (`theme::ROUTE_GROUND_FALLBACK`). See [`crate::ui::route_screen::RouteGround::draw_home`],
+    /// the only reader, and [`record_last_hero`], its one writer.
+    ///
+    /// Not keyed by profile: it says nothing about content history, only about what colour light
+    /// this SET last showed, which is why it lives beside `client_id` rather than in a per-profile
+    /// section like [`Session::home_pins`].
+    #[serde(default)]
+    pub(crate) last_hero_blur: Option<[[f32; 3]; 4]>,
+}
+
+/// Remember the hero envelope Home is showing right now, best-effort, for [`Session::last_hero_blur`].
+///
+/// Cheap to call on every route-ground latch: [`update`] is a single read-modify-write, and this
+/// skips the write entirely when the stored envelope already matches, so parking on the same hero
+/// for minutes costs nothing beyond the initial read. A session with no `client_id` yet (nothing
+/// signed in) is a deliberate no-op — see [`update`]'s doc — which is fine here: there is no
+/// pre-Home route to seed before an account exists.
+///
+/// Returns whether the file was actually rewritten — `false` both when nothing is signed in yet
+/// ([`update`]'s own no-op rule) and when the stored envelope already matches, which is how a test
+/// can grade the skip without inspecting file bytes.
+pub(crate) fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
+    update(|cur| {
+        if cur.last_hero_blur == Some(blur) {
+            return None;
+        }
+        let mut next = cur.clone();
+        next.last_hero_blur = Some(blur);
+        Some(next)
+    })
+}
+
+/// The last hero envelope recorded by [`record_last_hero`], or `None` on a fresh device that has
+/// never rendered one.
+pub(crate) fn last_hero() -> Option<[[f32; 3]; 4]> {
+    load().last_hero_blur
 }
 
 /// The persisted playback-quality modes. The spelling on disk is explicit rather than derived
@@ -2012,6 +2053,30 @@ mod tests {
         std::fs::write(t.tmp(), b"{}").unwrap();
         clear();
         assert!(!t.file().exists() && !t.tmp().exists());
+    }
+
+    /// **The route ground's one persisted seed.** A fresh device has recorded nothing, a real
+    /// hero is remembered across the read-modify-write cycle `update` uses everywhere else, and
+    /// recording the SAME envelope again is a no-op rather than a second disk write.
+    #[test]
+    fn last_hero_blur_round_trips_and_skips_a_redundant_write() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("last-hero");
+        save(&signed_in());
+        assert_eq!(last_hero(), None, "a fresh device has shown no hero yet");
+
+        let envelope = [[0.1, 0.2, 0.3]; 4];
+        assert!(record_last_hero(envelope), "a new envelope is a real write");
+        assert_eq!(last_hero(), Some(envelope));
+
+        assert!(
+            !record_last_hero(envelope),
+            "recording the same envelope again must not touch the file"
+        );
+
+        let second = [[0.9, 0.8, 0.7]; 4];
+        assert!(record_last_hero(second), "a genuinely different hero writes");
+        assert_eq!(last_hero(), Some(second), "…and replaces the stored one");
     }
 
     /// A temporary LS2/key-store failure must never turn ciphertext back into plaintext or make

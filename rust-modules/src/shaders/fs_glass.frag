@@ -23,7 +23,15 @@
 //      object at an angle" rather than "this is a rectangle with a glow". `dot(normal, u_light.xy)`
 //      — the normal is already in hand for the lens — lights the facing side and shades the other
 //      by `u_light.z`.
-//   3. **Dither.** A blurred field is nearly a gradient, and a gradient in 8 bits BANDS — the more
+//   3. **Dither** — `dither.glsl` since 2026-09-02, and BOTH of this shader's dither defects were
+//      the reason that file exists. It carried its own `fract(sin(dot(p,k))*43758.5)` hash, which is
+//      (a) structured — a sine hash on this part repeats and beats against the panel grid, which is
+//      the "strange patterns" this surface was reported for — and (b) UNCONDITIONAL, evaluated on
+//      every fragment of every glass surface whether or not the amplitude was non-zero. That is the
+//      exact mistake `fs_ambient.frag`'s COST note records having made and fixed, priced there at
+//      38% of a Home frame, and this program never got the fix. It is one `texture2D` behind a
+//      uniform branch now. The old note, still true of WHY a dither is wanted here:
+//      A blurred field is nearly a gradient, and a gradient in 8 bits BANDS — the more
 //      so where the lens stretches it. `GL_DITHER` is off on this part and `ui/widgets.rs` already
 //      abandoned one construction over the same staircase, so the noise is not optional polish. It
 //      is ±half a quantum, below the threshold of being seen as grain and above the one that turns
@@ -56,7 +64,6 @@ uniform highp float u_lens;  // peak displacement at the rim, px
 uniform vec4 u_edge;         // edge-light colour; alpha 0 disables
 uniform vec3 u_light;        // xy = direction TO the light, panel-local; z = counter-side shading
 uniform vec4 u_spec;         // xy = the specular AXIS; z = tightness; w = strength (0 disables)
-uniform float u_noise;       // dither amplitude
 // THE RIM'S SECOND SOURCE — the page, unblurred, sampled through the SAME displacement.
 //
 // The lens compresses `[edge, edge + lens]` into `[edge, edge + bevel]`, which is a real
@@ -167,8 +174,6 @@ highp vec2 sdBoxNormal(highp vec2 p, highp vec2 b, highp float r){
   if (m.x > 0.0 || m.y > 0.0) return s * normalize(m + vec2(1e-5));
   return s * (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
 }
-float hash(highp vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-
 void main(){
   highp float d = sdBox(v_p, u_ch, u_iradius);
   // INTERIOR EARLY-OUT, the same shape as fs_src.frag's and for the same reason: past the bevel
@@ -180,8 +185,7 @@ void main(){
     // the edge and `rimShape` below is zero this far in, which is what makes skipping it exact.
     vec4 fsc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
     flat_rgb = mix(flat_rgb, fsc.rgb, fsc.a);
-    flat_rgb += (hash(gl_FragCoord.xy) - 0.5) * u_noise;
-    gl_FragColor = vec4(flat_rgb, u_tint.a);
+    gl_FragColor = vec4(plx_dither(flat_rgb), u_tint.a);
     return;
   }
   highp float t = clamp(1.0 + d / u_bevel, 0.0, 1.0); // 0 at the bevel's inner edge, 1 at the rim
@@ -244,7 +248,6 @@ void main(){
   float litw = clamp(rimShape * u_rimlit.a * max(-nrm.y, 0.0), 0.0, 1.0);
   rgb = mix(rgb, u_rimlit.rgb, litw);
   rimw = max(rimw, litw);
-  rgb += (hash(gl_FragCoord.xy) - 0.5) * u_noise;
   // Coverage in the alpha only — see the note in fs_src.frag. The interior early-out above already
   // emits `flat_rgb` unpremultiplied, so this is also what makes the two exits of this shader agree:
   // they disagreed by a factor of `cov` for every fragment in the bevel band.
@@ -255,5 +258,5 @@ void main(){
   // Raising the alpha is what the old second surface did with `a = max(a, rim)`; this is the same
   // rule, now inside the one surface.
   float cov = 1.0 - smoothstep(-1.0, 1.0, d);
-  gl_FragColor = vec4(rgb, max(u_tint.a * cov, clamp(rimw, 0.0, 1.0)));
+  gl_FragColor = vec4(plx_dither(rgb), max(u_tint.a * cov, clamp(rimw, 0.0, 1.0)));
 }

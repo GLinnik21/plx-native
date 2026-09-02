@@ -48,6 +48,18 @@ const CRUMB_MARK: f32 = theme::size::MICRO as f32;
 /// every route's vertical flow ungradeable off-device — the boundary `ui/CLAUDE.md` records as
 /// stopping the whole suite linking rather than skipping one test.
 const CRUMB_BAND: f32 = CRUMB_MARK;
+
+/// Where the crumb's word starts so that its CAP BAND is centred on the mark's centre `cy`.
+///
+/// `TextView` pins line 0's cap band to the frame's top, and the mark is centred in the band, so
+/// handing the word the band's top put its cap centre a few px ABOVE the chevron's — the word read
+/// as riding high off the line on every route that wears a crumb. The mark's ink is symmetric
+/// about its box (`chevron-left.svg` spans y=6..18 of 24), so its centre is the box centre and
+/// the two meet on `cy`. Takes the cap height as a PARAMETER for the reason `CRUMB_BAND` is a
+/// constant: measuring it opens the font through SDL2_ttf, which the host suite cannot link.
+fn crumb_label_top(cy: f32, cap_h: f32) -> f32 {
+    cy - cap_h * 0.5
+}
 const PUSH_K: f32 = 200.0;
 const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
@@ -128,12 +140,25 @@ impl RouteGround {
 
     /// Seed a pre-Home route from the same hero metadata Home will use when it appears. Shared
     /// Sources has no rendered host to sample yet, so this is the semantic equivalent of freezing
-    /// Home after an infinitely broad blur. If artwork has not landed, the app surface is the
-    /// honest fallback and remains frozen for this visit.
+    /// Home after an infinitely broad blur.
+    ///
+    /// **Three tiers, in order, and each one only reachable when the one before it has nothing.**
+    /// (1) Home's OWN hero, when this boot has already fetched one — the ordinary case for Settings
+    /// and Legal, opened well after Home exists. (2) Failing that, the LAST hero envelope this
+    /// television ever showed (`plex::session::last_hero`) — the case that motivated this: since
+    /// the device consent question moved ahead of the profile picker, its usual host is the picker
+    /// with no hub fetched yet, so tier 1 is empty on almost every ordinary boot, not only a fresh
+    /// device's first one. (3) Only a genuinely fresh television — signed in for the first time,
+    /// never having rendered a hero at all — falls all the way to the design system's authored
+    /// atmosphere (`theme::ROUTE_GROUND_FALLBACK`). Recording the seed for tier 2 is this
+    /// function's other job whenever tier 1 succeeds — see `plex::session::record_last_hero`.
     pub(crate) fn draw_home(&mut self, p: Painter) {
         if !self.latched {
             if let Some(hero) = crate::ui::home::hero_item().filter(|m| m.has_blur) {
                 self.latch(hero.blur, mean_key(hero.blur));
+                crate::plex::session::record_last_hero(hero.blur);
+            } else if let Some(blur) = crate::plex::session::last_hero() {
+                self.latch(blur, mean_key(blur));
             } else {
                 self.latch_target(theme::ROUTE_GROUND_FALLBACK);
             }
@@ -214,6 +239,51 @@ impl RoutePush {
         let t = self.amount();
         p.alpha(t)
             .translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0)
+    }
+}
+
+/// **The shared PRESS SURFACE for a route's bottom action row** — every control
+/// [`RouteLayout::action_pair`] (or a single-control action band) lays out owns one of these,
+/// rather than a private [`widgets::CtlPop`] field of its own.
+///
+/// It exists because a control face is not a table row: focus arriving on it must grow a real
+/// [`widgets::CtlPop`] pop, and a click must dip and ring back exactly like every other control
+/// face in the app (`ui/press.rs`'s `begin_ctl`/`take_commit`, folded into [`Self::scale`] for
+/// free — `CtlPop::scale` already applies `press::scale()` to whichever index is focused). Before
+/// this existed, `consent.rs`'s two answers drew through `Button::focused()` alone — no pop, no
+/// dip — while `onboard.rs`'s single action pill built its own private `CtlPop<1>` to get both.
+/// One name for the thing every action row needs is what makes the second screen a two-line
+/// change instead of a second hand-rolled spring.
+///
+/// `N` is the row's own control count — `2` for consent's Share/Don't-share, `1` for a lone Done
+/// or Start-watching pill. Nothing here draws a button: a caller still builds its own
+/// [`widgets::Button`]/[`widgets::CircleButton`] at its own rect and label, and passes
+/// [`Self::scale`] to it — the geometry and the words stay the screen's, only the press machinery
+/// is shared.
+pub(crate) struct ActionRow<const N: usize> {
+    pop: crate::ui::widgets::CtlPop<N>,
+}
+
+impl<const N: usize> ActionRow<N> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            pop: crate::ui::widgets::CtlPop::new(),
+        }
+    }
+
+    /// Advance every control's pop toward its target for this frame. `focused` is the index of the
+    /// control CURRENTLY holding focus in this row, or `None` when nothing in it does — the row is
+    /// hidden, or the route's focus is elsewhere (the list, a different band).
+    pub(crate) fn step(&mut self, focused: Option<usize>, dt: f32) {
+        self.pop.step(focused, dt);
+    }
+
+    /// Control `i`'s drawn scale this frame — the focus pop, and, once focused and only once the
+    /// caller has armed [`crate::ui::press::begin_ctl`] on its OK-down, the tvOS press dip/ring on
+    /// top of it (`CtlPop::scale`'s own fold). Pass straight to `Button::scale`; never draw an
+    /// action-row control without it, or it arrives at focus with no pop and clicks with no dip.
+    pub(crate) fn scale(&self, i: usize) -> f32 {
+        self.pop.scale(i)
     }
 }
 
@@ -316,9 +386,10 @@ impl RouteLayout {
         );
         let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
         let x = self.narrative.x + CRUMB_MARK * ink_r + theme::space::XS;
+        let ty = crumb_label_top(cy, crate::text::cap_h(theme::size::CAPTION, 0));
         TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
             .max_lines(1)
-            .draw(p, Rect::new(x, top, self.narrative.x + self.narrative.w - x, h));
+            .draw(p, Rect::new(x, ty, self.narrative.x + self.narrative.w - x, h));
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
@@ -444,6 +515,21 @@ mod tests {
             < l.action.y - theme::space::XL);
     }
 
+    /// The crumb's word sits ON the mark's line: its cap band is centred where the chevron is,
+    /// not pinned to the band's top. The cap height is a stand-in (a CAPTION cap band measures
+    /// ~17 px on the shipped face; measuring it here would link SDL2_ttf into the host suite).
+    #[test]
+    fn the_crumbs_word_centres_its_cap_band_on_the_mark() {
+        let l = RouteLayout::screen();
+        let top = l.narrative.y;
+        let cy = top + CRUMB_BAND * 0.5;
+        let cap = 17.0;
+        let ty = crumb_label_top(cy, cap);
+        assert!((ty + cap * 0.5 - cy).abs() < 0.01, "cap centre {} vs mark centre {}", ty + cap * 0.5, cy);
+        assert!(ty > top, "a CAPTION cap band is shorter than the mark's box, so it starts inside the band");
+        assert!(ty + cap < top + CRUMB_BAND, "…and ends inside it");
+    }
+
     /// The crumb's mark and its word are ONE object, so the gap between them is measured to the
     /// chevron's ink rather than to its box — the asset is a third bearing, and a box-to-text gap
     /// on a spacing rung reads as two separate things.
@@ -458,6 +544,39 @@ mod tests {
             "measuring to ink puts the word CLOSER than a box-to-text gap would"
         );
         assert!(label_x > l.narrative.x + CRUMB_MARK * 0.5, "…but not over it");
+    }
+
+    /// **The whole reason `ActionRow` exists**: a control holding row focus pops, an unfocused
+    /// sibling in the same row does not, and both reach a settled rest — the same shape
+    /// `CtlPop`'s own doc promises, pinned again here because this is the type every action-row
+    /// caller is meant to reach for instead of a private field.
+    #[test]
+    fn action_row_pops_the_focused_control_and_leaves_its_sibling_at_rest() {
+        // `CtlPop::scale` reads the crate-global `press` machine for whichever index is focused —
+        // see `[[test-suite-global-pollution]]` — so this holds the same lock every `press.rs`
+        // test does for its own body.
+        let _g = crate::testlock::serial();
+        let mut row: ActionRow<2> = ActionRow::new();
+        for _ in 0..300 {
+            row.step(Some(0), 1.0 / 60.0);
+        }
+        assert!(
+            row.scale(0) > 1.0,
+            "the focused control must be visibly popped, got {}",
+            row.scale(0)
+        );
+        assert!(
+            (row.scale(1) - 1.0).abs() < 0.001,
+            "the unfocused sibling must not move, got {}",
+            row.scale(1)
+        );
+        for _ in 0..300 {
+            row.step(None, 1.0 / 60.0);
+        }
+        assert!(
+            (row.scale(0) - 1.0).abs() < 0.001,
+            "focus leaving the row must settle every control back to rest"
+        );
     }
 
     #[test]
@@ -507,6 +626,82 @@ mod tests {
         assert!(c.iter().any(|corner| {
             (corner[0] - corner[1]).abs() > 0.001 || (corner[1] - corner[2]).abs() > 0.001
         }));
+    }
+
+    /// WCAG relative luminance and contrast, duplicated in miniature from `widgets.rs`'s private
+    /// `rel_luma`/`contrast` — this module cannot see those (`widgets`' are not `pub(crate)`) and a
+    /// third home for the two formulas is worse than one small, obviously-correct copy that a host
+    /// test can run with no font or GL loaded.
+    fn linearize(c: f32) -> f32 {
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    fn rel_luma(c: [f32; 4]) -> f32 {
+        0.2126 * linearize(c[0]) + 0.7152 * linearize(c[1]) + 0.0722 * linearize(c[2])
+    }
+    fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
+        let (x, y) = (rel_luma(a), rel_luma(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// **The regression this fallback shipped with**: a device capture of first-run consent read as
+    /// "no ambient light" because three of the four authored stops sat within ~15 8-bit codes of
+    /// `theme::SURFACE_APP` in both hue and luminance — a wash with almost no wash in it. A real
+    /// keyed hero ground gets its contrast from an actual photograph; this one has to author its
+    /// own, so it is pinned directly: the brightest and darkest corners must differ by a real
+    /// multiple (not `AmbientWash`'s own ~1.8x floor, which a near-uniform fallback could still
+    /// clear), and every corner must still hold the same legibility floors
+    /// `a_ground_never_outshines_the_fine_print_that_sits_on_it` holds a real keyed hero to, since
+    /// the crumb caption and the copy paragraph both read in `TEXT_TERTIARY`/`TEXT_READING` over
+    /// this exact ground with no further dimming.
+    #[test]
+    fn the_pre_home_fallback_reads_as_a_directional_wash() {
+        let c = theme::ROUTE_GROUND_FALLBACK;
+        let luma: Vec<f32> = c.iter().map(|corner| rel_luma(*corner)).collect();
+        let (lo, hi) = (
+            luma.iter().cloned().fold(f32::INFINITY, f32::min),
+            luma.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+        );
+        assert!(
+            hi / lo.max(1e-6) >= 2.5,
+            "corners span only {lo:.4}..{hi:.4} — too close in luminance to read as directional \
+             light on a television"
+        );
+        for (i, corner) in c.iter().enumerate() {
+            let t = contrast(theme::TEXT_TERTIARY, *corner);
+            assert!(
+                t >= 3.0,
+                "corner {i}: TEXT_TERTIARY at {t:.2}:1, under the 3:1 floor the crumb caption reads at"
+            );
+            let p = contrast(theme::TEXT_PRIMARY, *corner);
+            assert!(p >= 7.0, "corner {i}: TEXT_PRIMARY at {p:.2}:1");
+        }
+    }
+
+    /// The fallback must not merely be brighter — it must stay materially distinct from a flat
+    /// `SURFACE_APP` fill, which is the specific failure mode the correction fixed (three of four
+    /// stops used to sit within ~15 8-bit codes of it in both hue AND luminance). Measured as raw
+    /// mean per-channel distance (display-encoded, not WCAG-linearized) rather than luminance
+    /// alone: WCAG luminance compresses the shadow end sharply, so a corner that is UNMISTAKABLY
+    /// darker at the near-black end (this fallback's own `ATMOS_CHARCOAL`) can read as luminance-
+    /// close to the surface while an 8-bit-code comparison — closer to how banding-free darks
+    /// actually read on a panel — shows it plainly is not.
+    #[test]
+    fn every_fallback_corner_is_visibly_apart_from_the_app_surface() {
+        for (i, corner) in theme::ROUTE_GROUND_FALLBACK.iter().enumerate() {
+            let d: f32 = (0..3)
+                .map(|ch| (corner[ch] - theme::SURFACE_APP[ch]).abs())
+                .sum::<f32>()
+                / 3.0;
+            assert!(
+                d > 0.06,
+                "corner {i} sits only {d:.4} from SURFACE_APP's own raw channel values — that \
+                 reads as the app's flat ground, not atmosphere"
+            );
+        }
     }
 
     #[test]
