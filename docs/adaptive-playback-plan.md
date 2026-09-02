@@ -692,6 +692,10 @@ Four sentences are false today and are corrected in **I1**:
 - `docs/adaptive-playback.md:145-148` — "the best actuator that fits **it**" omits the margin named
   in N7.
 
+> Superseded 2026-09-02: the visible-switch penalty is now charged to HLS rung upshifts through
+> `TransitionHistory::penalty` (`Controller::upshift_earns_its_visible_switch`), not through
+> `transition_cost`, so both prose sites below are correct as written and must not be edited.
+
 Two further prose corrections, because they misattribute what a device case grades:
 `tests/manifest.json:1591` and `tests/run.py:1243-1245` both claim `max_commits` grades "the
 decaying transition penalty". It cannot — `transition_cost(Hls, Hls)` is **0** (`abr.rs:1591-1593`,

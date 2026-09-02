@@ -135,7 +135,9 @@ pub(crate) struct ControllerTelemetry {
 pub(crate) struct GateCounters {
     /// Retained in the diagnostics wire format. Exploration has no wall-clock dwell, so this is
     /// always zero; the observable surplus above the larger of the replay runway and rollback
-    /// media horizon is the only release clock.
+    /// media horizon is the exploration frontier's only release. Since 2026-09-02 an upshift is
+    /// ALSO priced against the visible-switch history, and that price decays on wall time alone
+    /// (`TransitionHistory::penalty`); it shows on the line as `SwitchCost`, never as a dwell.
     pub(crate) dwell_ms: u64,
     /// The rung the reject/backoff guard is currently refusing, in kbps (N11). `0` is nothing.
     pub(crate) blocked_kbps: u32,

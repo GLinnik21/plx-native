@@ -776,9 +776,13 @@ harness's own close included.
 plays the same clip, lets it end, and restarts it. That needed an app change and got the smallest
 one that works: `/tmp/plxnative-replay[=N]` re-arms `app.rs`'s one-shot `auto_tried` latch N times
 when a `plxnative-playurl` playback reaches EOS, so the next frame goes back through the entry it
-booted through. Everything else was already in place — `teardown` clears the URL and the `ended`
-flag on a real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
-`route::url()` is empty.
+booted through. `teardown` clears the URL and the `ended` flag on a real stop, and
+`engine::start_bufferfeed` re-reads `dev::playurl()` whenever `route::url()` is empty. One more
+piece was NOT in place until 2026-09-02: the fixture entry asks the route reducer for a start
+owner directly (no `begin_playback_request` resolve in front of it), and a completed stop used to
+leave the reducer latched in `Stopping`, which refused it — one Load where the case needs two. The
+stop now publishes `Idle` (`route::finish_engine_teardown`, called from both `teardown` exits), and
+`begin_route_start` mints the replay its owner from there.
 
 A **counter**, not a lifted latch: `auto_tried` also guards the `autoplay`+`playidx` arm, which
 does a `request_play_movie` + `load_detail_now`, so an unconditionally re-armable latch would

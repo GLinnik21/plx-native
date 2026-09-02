@@ -1723,6 +1723,13 @@ pub(crate) fn begin_engine_teardown(for_reload: bool) {
     }
 }
 
+/// The reducer's phase, for a log line. A refused start owner names the phase it was refused
+/// from, because "refused" alone cannot be diagnosed from a device log.
+pub(crate) fn control_phase_label() -> String {
+    let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    format!("{:?}", control.phase)
+}
+
 /// The synchronous main-thread teardown announced by `begin_engine_teardown(false)` has RETURNED:
 /// every worker is joined, the native object is retired and the URL is cleared. `Stopping` is that
 /// teardown's fence and nothing more — it exists so a worker which was still running when the stop
@@ -1737,13 +1744,6 @@ pub(crate) fn begin_engine_teardown(for_reload: bool) {
 /// `Idle` rather than `Stable`: a completed stop owns no publishable route, so automatic
 /// publication and [`claim_route_action`] must stay closed. Only `Stopping` moves; a phase already
 /// replaced by a newer request is left exactly as that request left it.
-/// The reducer's phase, for a log line. A refused start owner names the phase it was refused
-/// from, because "refused" alone cannot be diagnosed from a device log.
-pub(crate) fn control_phase_label() -> String {
-    let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-    format!("{:?}", control.phase)
-}
-
 pub(crate) fn finish_engine_teardown() {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     if control.phase == ControlPhase::Stopping {
