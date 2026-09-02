@@ -194,6 +194,27 @@ fn maybe_begin_hls_rebuffer(mt: &MainThread, eng: &mut Engine) {
     let buffered_ms = hls_buffered_ms();
     let silence_ms = native_clock_silence_ms();
     let clock_stopped = native_clock_stopped(silence_ms, buffered_ms);
+    // A silent clock that does NOT become a hold is the case this gate was blind to for 82 s on
+    // the device; say why, once per silent second, so a device log can answer it.
+    if silence_ms.is_some_and(|ms| ms >= NATIVE_CLOCK_STOPPED_MS) && !clock_stopped {
+        static LAST_SILENT_LINE_MS: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(0);
+        let now = super::vclock_ms();
+        if now.wrapping_sub(LAST_SILENT_LINE_MS.load(Relaxed)) >= 1_000 {
+            LAST_SILENT_LINE_MS.store(now, Relaxed);
+            super::log(&format!(
+                "hls: clock silent={}ms buf={}ms vtail={} atail={} disp_base={} pos={} \
+                 requested={} stage_playing=1",
+                silence_ms.unwrap_or(0),
+                buffered_ms.map_or(-1, |ms| ms),
+                SHARED.hls_video_tail_ns.load(Acquire),
+                SHARED.hls_audio_tail_ns.load(Acquire),
+                SHARED.disp_base.load(Relaxed),
+                SHARED.playpos_ns.load(Relaxed),
+                requested,
+            ));
+        }
+    }
     if !should_begin_hls_rebuffer(
         requested,
         trial_reserve_ms,

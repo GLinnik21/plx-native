@@ -684,7 +684,10 @@ pub(crate) fn start_bufferfeed_tracked(mt: &MainThread) -> BufferfeedStartOutcom
         }
     }
     let Some(route_start) = crate::route::begin_route_start() else {
-        log("start_bufferfeed: route reducer refused a start owner");
+        log(&format!(
+            "start_bufferfeed: route reducer refused a start owner (phase={})",
+            crate::route::control_phase_label()
+        ));
         return BufferfeedStartOutcome::Failed;
     };
     start_bufferfeed_for(mt, route_start)
