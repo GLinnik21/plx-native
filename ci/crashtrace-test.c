@@ -162,12 +162,26 @@ static void one_case(const char *name, int sig, const char *signame, enum how ho
                "a null dereference should report addr=0x0 — si_addr did not reach the record");
     }
 
-    /* The `at:`/`bin:` lines need /proc/self/maps, which macOS does not have. Assert them where
-     * they are producible and say nothing where they are not, rather than skipping silently in
-     * both directions. */
+    /* The `at:`/`bin:` lines need TWO things, and the second one was missing from this condition
+     * until 2026-09-02: `/proc/self/maps`, which macOS does not have, AND a fault context the
+     * handler can actually read. `plx_crash` reads `pc`/`lr` only under `__arm__` — off the target
+     * it deliberately records `pc=0x0 lr=0x0` rather than pretending to have measured them — so a
+     * maps scan for address zero matches no mapping and emits neither line, by design.
+     *
+     * `/proc` alone therefore reads as "this host can produce them", which is true of the
+     * television and false of any other Linux. CI runs the host job on an aarch64 Ubuntu runner,
+     * where /proc exists and `__arm__` does not, and this assertion failed for all seven signals
+     * with the tracer behaving exactly as specified. It had never run: the deprecated
+     * `fetch_update` used to fail the build before `make check` reached the C tests.
+     *
+     * The scan's DECISION — which line becomes `at:`, which becomes `bin:`, and every chunking
+     * edge — is graded on every host by the fixture tests below, which is where that logic is
+     * actually pinned. This assertion only adds "and it works against the real kernel file". */
+#if defined(__arm__)
     if (access("/proc/self/maps", R_OK) == 0) {
         expect(name, count(log, "\nbin: ") >= 2, "no bin: line — the maps scan produced no load base");
     }
+#endif
 
     unlink(path);
 }
@@ -333,6 +347,18 @@ int main(void) {
         fprintf(stderr, "crashtrace: %d assertion(s) failed\n", failures);
         return 1;
     }
-    printf("crashtrace: ok (7 deliberate crashes re-raised; maps scan graded against fixtures)\n");
+    /* Name whether the LIVE scan ran, rather than letting its absence read as coverage. It needs a
+     * fault context the handler reads (`__arm__`) and a real `/proc/self/maps`; no host this suite
+     * runs on today has both, so the live half is normally skipped and the fixtures carry the
+     * logic. A silent skip here is exactly the shape that let the assertion sit un-run. */
+#if defined(__arm__)
+    const char *live = access("/proc/self/maps", R_OK) == 0
+                           ? "live maps scan ran"
+                           : "live maps scan SKIPPED (no /proc/self/maps)";
+#else
+    const char *live = "live maps scan SKIPPED (no fault context off __arm__)";
+#endif
+    printf("crashtrace: ok (7 deliberate crashes re-raised; maps scan graded against fixtures; %s)\n",
+           live);
     return 0;
 }
