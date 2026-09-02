@@ -53,11 +53,93 @@ fn hls_buffered_ms() -> Option<i64> {
     )
 }
 
+/// The measured period of LG's native position callback, in milliseconds.
+///
+/// **Measured, not chosen.** The pipeline emits `PF_EVENT_TYPE_FRAMEREADY` at 5 Hz and the
+/// device heartbeat reads `vtick=5 vgap=201ms` — unvarying across codec, raster and container,
+/// on clean and on visibly stuttering playback alike (`player::sf_on_event`, measured
+/// 2026-08-21). 201 is that measurement rather than the nominal 200.
+const NATIVE_POSITION_PERIOD_MS: u32 = 201;
+
+/// How many consecutive silent periods make the presentation clock physically STOPPED rather
+/// than merely late.
+///
+/// Five, so the shortest silence this reports is 1005 ms. That is far outside anything
+/// scheduling jitter can produce against a cadence measured to the millisecond, and it costs the
+/// viewer about a second before a stalled stream can be acted on — against the 82 s a completing
+/// fetch cost on the device (`pipe_abr_down_collapse`, 2026-09-02).
+const NATIVE_CLOCK_SILENT_PERIODS: u32 = 5;
+
+/// The silence that means the native clock has stopped: [`NATIVE_CLOCK_SILENT_PERIODS`] periods
+/// of [`NATIVE_POSITION_PERIOD_MS`].
+const NATIVE_CLOCK_STOPPED_MS: u32 = NATIVE_POSITION_PERIOD_MS * NATIVE_CLOCK_SILENT_PERIODS;
+
+/// When the silence observation was last restarted, in [`super::vclock_ms`] milliseconds.
+///
+/// Every state that legitimately stops the native clock — user Pause, an internal rebuffer hold,
+/// a stage below `Playing`, a route that is not segmented HLS — restarts it, because otherwise a
+/// viewer who paused for a minute would resume straight into an internal hold. Main-thread only;
+/// an atomic merely to avoid a `static mut`.
+static CLOCK_WATCH_SINCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Everything that stops the clock on purpose restarts the silence observation with it.
+fn restart_native_clock_watch() {
+    CLOCK_WATCH_SINCE_MS.store(super::vclock_ms(), Relaxed);
+}
+
+/// Milliseconds since the native position callback last fired, or `None` if this seek/session
+/// epoch has not seen one at all.
+///
+/// `dg_vpres_at` is zeroed wherever `frames` is — session reset and the post-seek re-count in
+/// this file — so a seek starts with no observation rather than with a gap the size of the seek.
+/// The [`CLOCK_WATCH_SINCE_MS`] floor does the same for the deliberate holds, which do not clear
+/// the stamp.
+fn native_clock_silence_ms() -> Option<u32> {
+    let last_tick = SHARED.dg_vpres_at.load(Relaxed);
+    if last_tick == 0 {
+        return None;
+    }
+    let since = last_tick.max(CLOCK_WATCH_SINCE_MS.load(Relaxed));
+    Some(super::vclock_ms().saturating_sub(since))
+}
+
+/// **The terminal reserve boundary as a PHYSICAL fact rather than an arithmetic one.**
+///
+/// `hls_buffered_ms` is content-time bookkeeping: the demuxed tail minus the playhead. It reaches
+/// exactly zero only if the playhead reaches the tail, and on this pipeline it does not. The last
+/// fed access units cannot be presented until the ones behind them arrive, so when acquisition
+/// stops the position callback stops with the playhead parked a few hundred milliseconds short,
+/// and that remnant then never moves again. Device-measured 2026-09-02
+/// (`pipe_abr_down_collapse`): the callback went silent at `pos=29s` with the demuxed tail at
+/// ~29.96 s and stayed silent for 77 s, so neither `buffered_ms == Some(0)` here nor the worker's
+/// `spent >= reserve_ms_at_start` in [`crate::ff`]'s `StallGuard` could ever be reached, and a
+/// 20000 kbps object ran to completion on a 500 kbps link before any rung could be decided.
+///
+/// The clock's own silence is the observation both of those were standing in for. If the clock
+/// had been running through it, it would have presented `silence_ms` of media and said so five
+/// times a second; a reserve no larger than the silence has therefore already been outlasted, and
+/// `B = 0` is true within the only resolution the arithmetic can offer.
+///
+/// **The inequality is one-sided on purpose.** A large surviving reserve is not a starvation
+/// boundary, so a stream holding 5.6 s whose callback is 1.2 s late keeps playing and only a
+/// reserve the stopped clock has already outlasted counts. An unknowable reserve (`None`, the
+/// audio lane silent after an open or a seek) holds nothing, exactly as it arms no `StallGuard`.
+/// User Pause never reaches here — [`maybe_begin_hls_rebuffer`] returns before this on
+/// `TX.paused` and restarts the observation — and an internal hold cannot re-arm, because the
+/// hold sets `prime_play`, which returns at the same place.
+fn native_clock_stopped(silence_ms: Option<u32>, buffered_ms: Option<i64>) -> bool {
+    let (Some(silence_ms), Some(buffered_ms)) = (silence_ms, buffered_ms) else {
+        return false;
+    };
+    silence_ms >= NATIVE_CLOCK_STOPPED_MS && buffered_ms <= i64::from(silence_ms)
+}
+
 fn should_begin_hls_rebuffer(
     requested: bool,
     _trial_reserve_ms: i64,
     _runtime_runway_ms: i64,
     buffered_ms: Option<i64>,
+    native_clock_stopped: bool,
 ) -> bool {
     // `runtime_runway_ms` is a boundary requirement: it says how much reserve must be present
     // when a clock starts, not how much of the same acquisition remains at every later pump tick.
@@ -72,7 +154,10 @@ fn should_begin_hls_rebuffer(
     // hold. Actual B=0 remains the coefficient-free terminal condition when no response byte has
     // arrived. Keep the boundary arguments in this pure function so the regression exercises the
     // exact values the pump samples and so the diagnostic line below can continue publishing them.
-    requested || buffered_ms == Some(0)
+    // `native_clock_stopped` is the same coefficient-free `B = 0` observation, taken from the
+    // pipeline's own cadence instead of from content-time arithmetic that cannot reach zero. See
+    // its doc comment for why the arithmetic form is not merely imprecise here but unreachable.
+    requested || buffered_ms == Some(0) || native_clock_stopped
 }
 
 fn rebuffer_request_is_current(
@@ -92,6 +177,10 @@ fn maybe_begin_hls_rebuffer(mt: &MainThread, eng: &mut Engine) {
         || eng.prime_play
         || TX.paused.load(Relaxed)
     {
+        // Each of these legitimately stops the native clock, so none of them may be read later as
+        // a stalled one: a viewer paused for a minute must resume into playback, not into an
+        // instant internal hold, and the tick after this hold releases must start counting again.
+        restart_native_clock_watch();
         return;
     }
     // Consume atomically: a worker request racing this tick must either be the value returned here
@@ -103,7 +192,15 @@ fn maybe_begin_hls_rebuffer(mt: &MainThread, eng: &mut Engine) {
     let trial_reserve_ms = SHARED.hls_trial_reserve_ms.load(Acquire);
     let runtime_runway_ms = SHARED.hls_prime_runway_ms.load(Acquire);
     let buffered_ms = hls_buffered_ms();
-    if !should_begin_hls_rebuffer(requested, trial_reserve_ms, runtime_runway_ms, buffered_ms) {
+    let silence_ms = native_clock_silence_ms();
+    let clock_stopped = native_clock_stopped(silence_ms, buffered_ms);
+    if !should_begin_hls_rebuffer(
+        requested,
+        trial_reserve_ms,
+        runtime_runway_ms,
+        buffered_ms,
+        clock_stopped,
+    ) {
         return;
     }
     let Some(pause_token) = SHARED.prepare_hls_rebuffer_pause() else {
@@ -134,11 +231,14 @@ fn maybe_begin_hls_rebuffer(mt: &MainThread, eng: &mut Engine) {
     arm_live_clock_prime(eng);
     // The pause-local proof was armed before sf_pause, so a completed segment in the native-call
     // window is already part of this hold instead of being silently discarded.
+    // `silent=` is the only field that separates the two ways this hold is reached: an exact
+    // arithmetic zero, or a presentation clock that stopped with a remnant it will never spend.
     super::log(&format!(
-        "hls: auto-rebuffer pause buf={}ms trial_reserve={}ms runway={}ms",
+        "hls: auto-rebuffer pause buf={}ms trial_reserve={}ms runway={}ms silent={}ms",
         buffered_ms.unwrap_or(-1),
         trial_reserve_ms,
         runtime_runway_ms,
+        silence_ms.map_or(-1, i64::from),
     ));
 }
 
@@ -1112,9 +1212,83 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        open_failure_action, prime_before_play, rebuffer_request_is_current,
-        should_begin_hls_rebuffer, OpenFailureAction,
+        hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,
+        prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
+        OpenFailureAction, CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
     };
+    use std::sync::atomic::Ordering::{Relaxed, Release};
+
+    /// The device's measured position-callback period, so the replay below advances in the same
+    /// steps the television reports in (`vtick=5 vgap=201ms`; `player::sf_on_event`).
+    const POSITION_PERIOD_MS: u32 = 201;
+
+    /// Put the three atomics `hls_buffered_ms` samples back where a fresh session leaves them, so
+    /// a replay cannot leak a frozen playhead into another test holding the same serial lock.
+    fn clear_hls_reserve_sample() {
+        SHARED.hls_video_tail_ns.store(-1, Release);
+        SHARED.hls_audio_tail_ns.store(-1, Release);
+        SHARED.disp_base.store(0, Relaxed);
+        SHARED.playpos_ns.store(0, Relaxed);
+    }
+
+    /// **Regression: `pipe_abr_down_collapse` on the television, 2026-09-02.** A 40000 kbps link
+    /// collapsed to 500 kbps at t=25 s while a 20000 kbps rung was active. The controller's
+    /// descent was correct once it could run, but it could not run for 82 s, and the case failed
+    /// its `pos_climb` gate with 38 s of progress in a 120 s run.
+    ///
+    /// What stopped it is the terminal boundary being defined arithmetically. Segment 9 was
+    /// demuxed to a video tail of ~29.96 s; the pipeline then stopped reporting a position
+    /// altogether (`play=0pm vtick=0 vgap=0ms`, log line 248, holding `pos=29s` for the next
+    /// 77 s) with the playhead parked SHORT of that tail, because the last fed access units
+    /// cannot be presented until the ones behind them arrive. So `hls_buffered_ms` stuck at a
+    /// small positive remnant forever, `should_begin_hls_rebuffer`'s `buffered_ms == Some(0)`
+    /// never became true, no `hls: auto-rebuffer pause` was ever written, and the worker's
+    /// `StallGuard` — which reads that same hold as `terminal_hold_started` — never abandoned the
+    /// fetch. The 5.17 MB object therefore ran to completion on a 500 kbps link
+    /// (`open_probe_ms=82431 total_ms=82682`, log line 323) before any rung decision existed.
+    ///
+    /// The physical fact the arithmetic cannot see is that the clock has STOPPED. This replays
+    /// the numbers the log carries and asserts the hold begins about a second after it stops,
+    /// not when the fetch completes.
+    #[test]
+    fn a_stopped_native_clock_reaches_the_terminal_boundary_the_arithmetic_never_will() {
+        let _serial = crate::testlock::serial();
+        // Segment 9 demuxed: 48 video AUs at 24 fps and 94 AAC frames, ending the tenth 2 s
+        // segment of the stream (`hls: segment=9 ... v=48 a=94`, log line 235).
+        SHARED.hls_video_tail_ns.store(29_958_000_000, Release);
+        SHARED.hls_audio_tail_ns.store(29_980_000_000, Release);
+        SHARED.disp_base.store(0, Relaxed);
+        // The playhead then froze. The log prints whole seconds, so the exact remnant is not
+        // recoverable from it; what the log does prove is that it never reached zero, because the
+        // auto-rebuffer line that an exact zero writes was never written in those 77 s.
+        SHARED.playpos_ns.store(29_700_000_000, Relaxed);
+        let buffered_ms = hls_buffered_ms();
+        assert_eq!(
+            buffered_ms,
+            Some(258),
+            "the arithmetic reserve the main thread samples is positive and stays there"
+        );
+
+        // Walk the silence forward one position-callback period at a time and find the first tick
+        // at which the main thread holds the clock. That tick is also what the worker's
+        // `StallGuard` reads as `terminal_hold_started`, so it is when the oversized fetch is
+        // abandoned and a cheaper rung becomes decidable.
+        let mut held_at_ms: Option<u32> = None;
+        let mut silence_ms = 0u32;
+        while silence_ms <= 82_682 {
+            let stopped = native_clock_stopped(Some(silence_ms), buffered_ms);
+            if should_begin_hls_rebuffer(false, -1, 5_668, buffered_ms, stopped) {
+                held_at_ms = Some(silence_ms);
+                break;
+            }
+            silence_ms += POSITION_PERIOD_MS;
+        }
+        clear_hls_reserve_sample();
+        assert!(
+            held_at_ms.is_some_and(|ms| ms <= 1_500),
+            "a presentation clock that has physically stopped is the terminal reserve boundary:              expected the hold within 1500 ms of the last position callback, got {held_at_ms:?}              (the device waited 82682 ms for the fetch to complete instead)"
+        );
+    }
 
     #[test]
     fn a_failed_original_open_prefers_rollback_then_cold_auto_before_error() {
@@ -1148,22 +1322,81 @@ mod tests {
     #[test]
     fn boundary_reserves_are_resume_gates_not_mid_acquisition_pause_triggers() {
         assert!(
-            !should_begin_hls_rebuffer(false, -1, 3_000, Some(2_999)),
+            !should_begin_hls_rebuffer(false, -1, 3_000, Some(2_999), false),
             "a full acquisition runway cannot be compared to a partially spent buffer mid-fetch",
         );
         assert!(
-            should_begin_hls_rebuffer(true, -1, 3_000, Some(2_999)),
+            should_begin_hls_rebuffer(true, -1, 3_000, Some(2_999), false),
             "the in-flight fetch may still request a controlled hold from its live progress",
         );
         assert!(
-            !should_begin_hls_rebuffer(false, 5_303, 5_303, Some(5_167)),
+            !should_begin_hls_rebuffer(false, 5_303, 5_303, Some(5_167), false),
             "a bounded candidate that reaches its deadline must finish instead of latching a \
              multi-second playback hold at the retrospective replay balance",
         );
         assert!(
-            should_begin_hls_rebuffer(false, -1, 3_000, Some(0)),
+            should_begin_hls_rebuffer(false, -1, 3_000, Some(0), false),
             "physical depletion must hold the clock even when a fetch has no measurable prefix",
         );
+        assert!(
+            should_begin_hls_rebuffer(false, -1, 3_000, Some(258), true),
+            "a presentation clock that has stopped is that same physical depletion, observed \
+             where the content-time arithmetic cannot reach zero",
+        );
+    }
+
+    /// The stopped-clock observation is one-sided: it must fire on the device's remnant and must
+    /// not fire on a healthy reserve whose callback is merely late.
+    #[test]
+    fn only_a_reserve_the_stopped_clock_has_outlasted_is_a_terminal_boundary() {
+        assert_eq!(NATIVE_CLOCK_STOPPED_MS, 1_005, "five 201 ms position periods");
+        assert!(
+            !native_clock_stopped(Some(NATIVE_CLOCK_STOPPED_MS - 1), Some(258)),
+            "four and a bit periods of silence is jitter, not a stopped clock",
+        );
+        assert!(
+            native_clock_stopped(Some(NATIVE_CLOCK_STOPPED_MS), Some(258)),
+            "the device's remnant is smaller than the silence that has already outlasted it",
+        );
+        assert!(
+            !native_clock_stopped(Some(1_200), Some(5_668)),
+            "a stream holding 5.6 s of reserve is not starving because one callback was late",
+        );
+        assert!(
+            native_clock_stopped(Some(5_668), Some(5_668)),
+            "silence long enough to have presented the whole reserve is the same boundary",
+        );
+        assert!(
+            !native_clock_stopped(None, Some(0)),
+            "an epoch with no position callback yet has nothing to call stopped",
+        );
+        assert!(
+            !native_clock_stopped(Some(82_682), None),
+            "an unknowable reserve holds nothing, exactly as it arms no StallGuard",
+        );
+    }
+
+    /// A seek and a session reset both zero `dg_vpres_at`, so the silence must read as absent
+    /// rather than as a gap the size of the seek.
+    #[test]
+    fn a_seek_leaves_no_silence_observation_behind() {
+        let _serial = crate::testlock::serial();
+        let restore = SHARED.dg_vpres_at.swap(0, Relaxed);
+        assert_eq!(
+            native_clock_silence_ms(),
+            None,
+            "a cleared presentation stamp is no observation, not an infinite one",
+        );
+        // And a deliberate hold floors the observation at the moment it was restarted, so a long
+        // user Pause cannot be read as a stall on the first tick after Resume.
+        SHARED.dg_vpres_at.store(1, Relaxed);
+        CLOCK_WATCH_SINCE_MS.store(super::super::vclock_ms(), Relaxed);
+        assert!(
+            native_clock_silence_ms().is_some_and(|ms| ms < NATIVE_CLOCK_STOPPED_MS),
+            "a just-restarted watch cannot already be a stopped clock",
+        );
+        CLOCK_WATCH_SINCE_MS.store(0, Relaxed);
+        SHARED.dg_vpres_at.store(restore, Relaxed);
     }
 
     #[test]
