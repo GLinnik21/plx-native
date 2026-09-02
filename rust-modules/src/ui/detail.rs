@@ -1648,20 +1648,14 @@ pub(crate) fn move_focus(sym: c_int) {
     let sec = v.section;
     let col = v.col;
     if sym == SDLK_LEFT || sym == SDLK_RIGHT {
-        // About (5) is a 2D block: the card (col 0) has no horizontal neighbours; the three columns
-        // (Information/Languages/Accessibility = cols 1..=3) move among themselves.
+        // About (5) has only ONE column that is ever a focus stop below the card — Languages
+        // (col 2), and only while `tracks_panel::is_available()`. Information (1) and
+        // Accessibility (3) open nothing on OK (`on_ok`'s `5 =>` arm), so they must never receive
+        // focus either — a highlight with no control behind it is exactly the reported bug
+        // ("some About elements look selectable but OK does nothing"). With at most one stop in
+        // the row there is nothing for LEFT/RIGHT to move between; column ids stay 0/1/2/3 so
+        // `on_ok`'s `col == 2` guard and this row's own DOWN/UP below keep meaning what they did.
         if sec == 5 {
-            if col >= 1 {
-                let nc = if sym == SDLK_LEFT {
-                    (col - 1).max(1)
-                } else {
-                    (col + 1).min(3)
-                };
-                if nc != col {
-                    v.col = nc;
-                    v.card_scale.jump(1.0);
-                }
-            }
             return;
         }
         let n = n_items(sec);
@@ -1684,13 +1678,16 @@ pub(crate) fn move_focus(sym: c_int) {
             }
         }
     } else if sym == SDLK_UP || sym == SDLK_DOWN {
-        // About (5) is a 2D block: DOWN descends from the card (col 0) into the columns row (col 1);
-        // UP climbs a column back to the card. Only UP *from the card* falls through to the generic
-        // section change (leaving About upward). This makes DOWN — not RIGHT — enter the columns.
+        // About (5) is a 2D block: DOWN descends from the card (col 0) to Languages (col 2), but
+        // only while it is actually activatable — otherwise there is nothing below the card to
+        // land on, and focus stays put (`on_ok`'s `5 =>` arm never opens anything for col 1/3, so
+        // they must never be reachable at all). UP climbs back to the card. Only UP *from the
+        // card* falls through to the generic section change (leaving About upward), which is what
+        // makes DOWN — not RIGHT — enter the row.
         if sec == 5 {
             if sym == SDLK_DOWN {
-                if col == 0 {
-                    v.col = 1;
+                if col == 0 && crate::ui::tracks_panel::is_available() {
+                    v.col = 2;
                     v.card_scale.jump(1.0);
                 }
                 return; // columns row is the bottom of the last section
@@ -5365,6 +5362,19 @@ fn pair_h(value: &str) -> f32 {
     34.0 + h.max(30.0) + 22.0
 }
 
+/// The cap-top (texture-top convention) of `value`'s own LAST wrapped line, as [`draw_pair`] would
+/// draw it at `y` — the Languages column's MORE needs this when the original-audio pair turns out
+/// to be its last line (no audio list beneath it). Same `TextView` construction as [`draw_pair`]/
+/// [`pair_h`], so it agrees with what is actually painted rather than re-deriving the geometry.
+fn pair_last_line_cap_y(y: f32, value: &str) -> f32 {
+    let tv = TextView::new(value, theme::size::LABEL, theme::TEXT_HEADING)
+        .bold()
+        .leading(30.0)
+        .max_lines(2);
+    let h = tv.measure_h(520.0);
+    tv.last_line_cap_y(y + 34.0, h)
+}
+
 /// The About block's derived strings, rebuilt only when the loaded item changes — the block used
 /// to re-format ~20 strings (info pairs, the audio list, the accessibility rows) every frame it
 /// was on screen.
@@ -5579,18 +5589,21 @@ fn draw_about(p: Painter) {
     // The cap-top comes from `syn` itself: written out here it was `sy + syn_hh - 30.0`, a SECOND
     // copy of the leading three lines above, which is exactly how a mark drifts half a line off its
     // prose when someone retunes the block. Same call the person page's bio makes.
-    if syn.truncates(syn_w) {
-        let (mt, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
-        p.text(
-            c"MORE".as_ptr(),
-            tx + cw - pad,
-            syn.last_line_cap_y(sy, syn_hh) - mt,
-            theme::size::CAPTION,
-            theme::TEXT_TERTIARY,
-            2,
-            1,
-        );
-    }
+    //
+    // Drawn UNCONDITIONALLY — `on_ok`'s col-0 arm opens `about_panel` whether or not the synopsis
+    // truncates, so a short blurb used to leave an OK target with no affordance saying so at all.
+    // `fade_last` above is still gated on truncation internally (a no-op on text that fits), so a
+    // short synopsis gets the mark with no fade collision to guard against.
+    let (mt, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
+    p.text(
+        c"MORE".as_ptr(),
+        tx + cw - pad,
+        syn.last_line_cap_y(sy, syn_hh) - mt,
+        theme::size::CAPTION,
+        theme::TEXT_TERTIARY,
+        2,
+        1,
+    );
 
     // ---- Information ----
     text_at(p, tx, col_y, theme::size::HEADLINE, hd, 1, "Information");
@@ -5602,15 +5615,41 @@ fn draw_about(p: Painter) {
     // ---- Languages ----
     text_at(p, lx, col_y, theme::size::HEADLINE, hd, 1, "Languages");
     let mut ly = col_y + 68.0;
+    // The cap-top (texture-top convention, matching `syn`/`sy` above) of whatever ends up the
+    // column's LAST drawn line — the anchor for its MORE, exactly like the card's. Starts at the
+    // heading itself so a column with neither an original-audio pair nor an audio list (no track
+    // metadata at all, which `tracks_panel::is_available` does not itself rule out — it gates on
+    // the item having a file, not on the file having reported streams) still has somewhere to pin.
+    let mut lang_last_top = col_y;
     if let Some(orig) = orig_audio {
+        lang_last_top = pair_last_line_cap_y(ly, orig);
         ly += draw_pair(p, lx, ly, "Original Audio", orig, lbl, val);
     }
     if !audio_list.is_empty() {
         text_at(p, lx, ly, theme::size::CAPTION, lbl, 0, "Audio");
-        TextView::new(audio_list, theme::size::LABEL, val)
+        // `fade_last`: a long track list dissolves into the MORE zone instead of colliding with it
+        // — the same reason the card's synopsis carries one.
+        let audio_view = TextView::new(audio_list, theme::size::LABEL, val)
             .leading(32.0)
             .max_lines(6)
-            .draw(p, Rect::new(lx, ly + 34.0, 500.0, 0.0));
+            .fade_last(mw + 36.0);
+        let audio_top = ly + 34.0;
+        let audio_h = audio_view.draw(p, Rect::new(lx, audio_top, 500.0, 0.0));
+        lang_last_top = audio_view.last_line_cap_y(audio_top, audio_h);
+    }
+    // The Languages column opens `tracks_panel` on OK exactly when it is `is_available()` — see
+    // `on_ok`'s `5 =>` arm's `col == 2` guard — so that is this MORE's gate too, same style as the
+    // card's (right-pinned on the column's own last line, same size/colour/cap-band correction).
+    if crate::ui::tracks_panel::is_available() {
+        p.text(
+            c"MORE".as_ptr(),
+            lx + 500.0,
+            lang_last_top - mt,
+            theme::size::CAPTION,
+            theme::TEXT_TERTIARY,
+            2,
+            1,
+        );
     }
 
     // ---- Accessibility ----
@@ -8633,6 +8672,68 @@ mod tests {
             }
             assert_eq!(at(), (2, 0, row), "…and LEFT stops at the first");
         }
+
+        mount(None, 0);
+    }
+
+    /// Reported: some About elements look selectable but OK does nothing — Languages in
+    /// particular. The rule: clickable → focusable (the card, always; Languages only while
+    /// `tracks_panel::is_available()`), not clickable → never receives focus at all. Information
+    /// (col 1) and Accessibility (col 3) open nothing on OK (`on_ok`'s `5 =>` arm), so they must
+    /// never be reachable by any of LEFT/RIGHT/DOWN/UP — column ids stay 0/1/2/3 so `on_ok`'s
+    /// `col == 2` guard keeps meaning what it did.
+    #[test]
+    fn about_focus_only_ever_lands_on_the_card_and_a_clickable_languages_column() {
+        let _serial = crate::testlock::serial();
+
+        // Languages IS clickable: `part` non-empty is `tracks_panel::is_available`'s whole gate.
+        mount(
+            Some(Detail {
+                rk: "m1".into(),
+                part: "movie.mkv".into(),
+                ..Default::default()
+            }),
+            0,
+        );
+        view().section = 5;
+        view().col = 0;
+        crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+        assert_eq!(
+            view().col,
+            2,
+            "DOWN must land on Languages once it is clickable"
+        );
+        crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
+        assert_eq!(
+            view().col,
+            2,
+            "there is nothing else in the row to reach for"
+        );
+        crate::ui::detail::move_focus(SDLK_LEFT as c_int);
+        assert_eq!(view().col, 2, "…from either direction");
+        crate::ui::detail::move_focus(SDLK_UP as c_int);
+        assert_eq!(view().col, 0, "UP always returns to the card");
+
+        // Languages is NOT clickable (no file behind the item — a show container, say): DOWN must
+        // not move at all, since col 1/3 open nothing and col 2 is the only other stop.
+        mount(
+            Some(Detail {
+                rk: "s1".into(),
+                ..Default::default()
+            }),
+            0,
+        );
+        view().section = 5;
+        view().col = 0;
+        crate::ui::detail::move_focus(SDLK_DOWN as c_int);
+        assert_eq!(
+            view().col, 0,
+            "DOWN must not move focus onto an inert column"
+        );
+        crate::ui::detail::move_focus(SDLK_RIGHT as c_int);
+        assert_eq!(view().col, 0);
+        crate::ui::detail::move_focus(SDLK_LEFT as c_int);
+        assert_eq!(view().col, 0);
 
         mount(None, 0);
     }
