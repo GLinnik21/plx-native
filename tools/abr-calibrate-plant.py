@@ -192,6 +192,23 @@ def captures_newest_first():
     So the order is derived, not stated, and the failure mode of the previous two versions -- a
     human placing a capture wrongly, or forgetting to place it at all -- cannot occur.
     """
+    # **A shallow clone cannot answer this question, and its wrong answer is silent.** With no
+    # history, `capture_added_at` returns None for EVERY capture, each one then sorts as `inf`
+    # below, and "newest" degenerates to whatever order `glob` happened to return — so a stale
+    # capture wins per rung and the medians come out wrong with nothing to read. That is the exact
+    # failure this function's docstring says it exists to prevent, arriving through a property of
+    # the CHECKOUT rather than of the code. `actions/checkout` clones with `fetch-depth: 1` by
+    # default, so CI hit it and the dev Mac never could; the workflow now asks for full history and
+    # this refuses rather than guessing if anything else ever does not.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=ROOT, capture_output=True, text=True)
+    if shallow.stdout.strip() == "true":
+        raise RuntimeError(
+            "capture chronology is derived from `git log --diff-filter=A`, which a SHALLOW clone "
+            "cannot answer: every capture would read as uncommitted and therefore newest, and the "
+            "census would silently pick the wrong log per rung. Fetch full history "
+            "(`git fetch --unshallow`, or `fetch-depth: 0` in the workflow).")
     out = []
     for d in glob.glob(str(ROOT / "docs/measurements/*-logs")):
         path = pathlib.Path(d)

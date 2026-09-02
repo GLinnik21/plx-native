@@ -35,6 +35,16 @@ jobs:
       RUST_NIGHTLY: nightly
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # FULL history, and it is a correctness requirement rather than a convenience.
+          # `tools/abr-calibrate-plant.py` derives each measurement capture's chronology from
+          # `git log --diff-filter=A`, because the directory names mix phase and increment
+          # numbering and do not sort chronologically. Under the default `fetch-depth: 1` that
+          # command answers nothing for every capture, they all tie as "uncommitted, therefore
+          # newest", and the census silently picks the wrong log per rung — 10 failures in
+          # `test_abr_calibrate_plant.py` claiming sim.rs disagrees with logs it does agree with.
+          # The tool now refuses a shallow clone outright; this is what stops it having to.
+          fetch-depth: 0
 
       - name: Install the desktop SDL/GL libraries the hostsim suite LINKS against
         # `make check` runs the unit suite TWICE, and the second pass is `--features hostsim`,
