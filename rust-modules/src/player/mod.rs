@@ -172,6 +172,11 @@ pub(crate) const ABR_WHY_DEADLINE_ROLLBACK: u8 = 12;
 /// can produce. It is a response state, not `AtBestRung`: a fresh session at the same actuator
 /// remains eligible after stronger completed-service evidence.
 pub(crate) const ABR_WHY_RESPONSE_LIMITED: u8 = 13;
+/// The link would carry the higher rung and the VIEWER is the constraint: this playback has
+/// already made enough recent visible rung changes that the picture this one would buy is worth
+/// less than the interruption. Decays on its own (`AbrPolicy::visible_switch_decay_ms`), so it is
+/// never a terminal state.
+pub(crate) const ABR_WHY_SWITCH_COST: u8 = 14;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path

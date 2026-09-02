@@ -30,7 +30,12 @@ impl TransitionHistory {
     /// The decaying half of the switch cost. Halves every [`AbrPolicy::visible_switch_decay_ms`],
     /// so hysteresis comes from history rather than from a fixed sample-count cooldown — one
     /// switch is a decision, a fourth one inside two minutes has to buy a lot to be worth it.
-    fn penalty(self, policy: &AbrPolicy) -> i64 {
+    ///
+    /// **Read by the RUNG controller as well as by the mode comparison** (see
+    /// `Controller::upshift_earns_its_visible_switch`). It was private while the only caller was
+    /// `transition_cost`, which returns 0 for `Hls -> Hls` — so an HLS rung change, which the
+    /// viewer sees exactly as much as a mode change does, was charged nothing at all.
+    pub(crate) fn penalty(self, policy: &AbrPolicy) -> i64 {
         if self.visible_switches == 0 {
             return 0;
         }
@@ -172,6 +177,54 @@ pub(crate) fn quality_score_at_kbps(wire_kbps: u32) -> i64 {
         13_001..=17_000 => 72,
         _ => 76,
     }
+}
+
+/// **The same curve, read at the resolution the RUNG ladder actually has** — per-mille of one
+/// quality point.
+///
+/// [`quality_score_at_kbps`] is banded, and its bands are coarser than the actuator set: six of the
+/// thirteen rungs live inside two of them, so 10 000 and 12 000 score identically and so do 14 000
+/// and 16 000. That is harmless where it was written — the Original/HLS argmax compares a source
+/// against a rendition and one band is the honest resolution of that comparison — and it is not
+/// harmless on the rung axis, where those six rungs exist precisely so a measured link can be spent
+/// rather than rounded down to the next band (see [`Rung`]'s own doc: "a 17.5 Mbit/s link that had
+/// to choose between 8 and 20 Mbps spent 12 Mbit/s of it on nothing"). A rung-to-rung difference
+/// taken on the banded curve is therefore exactly zero for a real step of the ladder, and anything
+/// that prices a move by that difference refuses such a step FOREVER, at any price, however long
+/// it decays — `0 > 0` and `0 >= 1` are both false.
+///
+/// **It is an interpolation of that function, not a second opinion about quality.** The anchors are
+/// the band boundaries and the values are the band values, so the two agree exactly at every
+/// boundary — pinned by `the_two_quality_curves_agree_at_every_band_boundary`, which is what stops
+/// a later edit moving one and leaving the other. Between boundaries it is linear, which makes it
+/// strictly increasing in rate wherever the banded form is flat, and that is the whole of the
+/// change. Inside a band it reads LOWER than the banded form, which is the conservative direction
+/// for a gate: a difference computed here is never larger than the band step it sits inside.
+pub(crate) fn quality_score_pm_at_kbps(wire_kbps: u32) -> i64 {
+    /// `(upper edge of the band, the band's score)`, transcribed from
+    /// [`quality_score_at_kbps`]'s own arms. The open top band is anchored at 21 000, above every
+    /// actuator the catalog offers, so the ladder's top two rungs still separate.
+    const ANCHORS: [(i64, i64); 9] = [
+        (500, 0),
+        (1_000, 10),
+        (2_500, 25),
+        (5_000, 40),
+        (7_000, 50),
+        (9_000, 58),
+        (13_000, 66),
+        (17_000, 72),
+        (21_000, 76),
+    ];
+    let kbps = i64::from(wire_kbps);
+    let mut below = (0_i64, 0_i64);
+    for (edge, score) in ANCHORS {
+        if kbps <= edge {
+            let span = edge - below.0;
+            return below.1 * 1_000 + (kbps - below.0) * (score - below.1) * 1_000 / span.max(1);
+        }
+        below = (edge, score);
+    }
+    below.1 * 1_000
 }
 
 /// **The rate an HLS candidate may be SCORED at: `transcode <= source`** (plan R5, §7.B).

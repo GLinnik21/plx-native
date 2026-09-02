@@ -19,6 +19,15 @@
 //! capacity ceiling or probability claim in that decision. Abandoned prefixes are censored and
 //! never become capacity samples.
 //!
+//! **One term in the upshift is NOT physics and is marked as such**
+//! (`Controller::upshift_earns_its_visible_switch`). Every committed rung change is a picture the
+//! viewer sees change, and the physics above is happy to make one a few seconds after every
+//! collapse — measured on a link alternating 20/3 Mbit/s: ten committed changes in ninety seconds.
+//! So an upshift must also buy more quality than [`AbrPolicy::visible_switch_penalty`] prices its
+//! interruption at, on the history of changes this playback has already made and halving every
+//! [`AbrPolicy::visible_switch_decay_ms`]. It is a product weight, not an inferred probability, it
+//! is charged to no downshift, and the first change of a playback is free.
+//!
 //! Original versus HLS is a product utility decision, not a network theorem. Original creates a
 //! new stream and visibly reloads the pipeline, but preserves direct-play/remux quality, DV/Atmos
 //! and removes recurring PMS video-encode work. Those recurring effects scale with remaining

@@ -352,6 +352,12 @@ proves the current point unsustainable.
 There is no dwell timer, stable-sample counter, bitrate headroom multiplier, fixed exploration
 spacing or passive “optimal capacity” above a demand-capped response.
 
+One non-physical term sits beside them and is stated separately because it is a product weight: an
+upshift must also buy more quality than the visible-switch penalty prices its interruption at, on
+the history of rung changes this playback has already made and decaying with wall time. It is
+charged to no downshift, the first change of a playback is free, and it is the only thing in the
+upshift decision that is not a measurement.
+
 ## 4. Failure frontier
 
 Completed response evidence is per rung only when the response supplies an ordinal endpoint for
@@ -534,7 +540,14 @@ two rapid Original↔HLS reloads are priced more heavily than one old transition
 
 Both mode directions currently pay the same base reload cost plus that history penalty. The extra
 uncertainty of returning to a source that previously failed is not hidden in another coefficient:
-HLS→Original additionally requires a completed source request. HLS rung changes pay no mode cost.
+HLS→Original additionally requires a completed source request.
+
+HLS rung changes pay no MODE cost — `transition_cost` returns 0 for `Hls → Hls`, and nothing here
+reloads the pipeline. They are not free to the viewer, though, and until 2026-09-02 they were
+priced as if they were: the rung controller now charges its own visible-switch history against the
+quality a proposed upshift would buy, sharing this section's penalty and decay but not its base
+reload cost. The two axes therefore use one price and two benefits, which is the asymmetry to keep
+in mind when reading either.
 
 ### What is measured and what is a product choice
 

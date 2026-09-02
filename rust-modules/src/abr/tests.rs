@@ -7376,10 +7376,22 @@ fn commit_trail(catalog: HlsActuatorCatalog, legs: &[(i64, u32)]) -> Vec<(u64, D
             continue;
         };
         // The candidate runs inline on the demux worker: the current stream is not read while it
-        // does, so its acquisition is wall time with no fill.
+        // does, so its acquisition is wall time with no fill. The control plane and the cold
+        // first object are charged from `abr::sim`'s measured transaction legs — medians over
+        // every committed device capture — because without them a transaction costs only its own
+        // transfer, which on a fast leg is under two seconds and lets the model staircase in a
+        // way the television demonstrably does not.
+        let leg = match proposal.direction {
+            Direction::Up => crate::abr::sim::TransactionModel::measured().up_commit,
+            Direction::Down => crate::abr::sim::TransactionModel::measured().down_commit,
+        }
+        .expect("both commit legs are measured");
         let capacity = capacity_at(now_ms);
         let candidate_wire = i64::from(catalog.candidate(proposal.rung).expected_wire_kbps);
-        let candidate_acquire_ms = (SEGMENT_MS * candidate_wire / capacity).max(1);
+        let candidate_acquire_ms = leg
+            .control_plane_ms
+            .saturating_add((SEGMENT_MS * candidate_wire / capacity).max(leg.warmup_acq_ms))
+            .max(1);
         buffered_ms = (buffered_ms - candidate_acquire_ms).max(0);
         now_ms += candidate_acquire_ms;
         let candidate_ratio_pm =
@@ -7446,4 +7458,145 @@ fn an_oscillating_link_does_not_commit_a_rung_change_per_oscillation() {
             .any(|&(_, direction, _)| direction == Direction::Down),
         "the link really does collapse to 3 Mbit/s and nothing descended: {story}",
     );
+}
+
+/// **The seam: a committed rung change is remembered, and the memory prices the next one.**
+///
+/// [`an_oscillating_link_does_not_commit_a_rung_change_per_oscillation`] grades the trajectory;
+/// this grades the mechanism under it, at the one place every committed rung change passes
+/// through — `Controller::commit`, which both `commit_candidate` (the runtime and simulator path)
+/// and the direct `commit` these fixtures use land in.
+///
+/// **Its red was SIMULATED rather than historical**, and that is a weaker claim than the trajectory
+/// test's: at the parent commit there was no rung-axis history to be absent, so this cannot be
+/// compiled against the broken code at all. It was watched fail with `Controller::commit`'s
+/// recording of the switch removed, which reproduces the defect exactly — the gate then reads an
+/// empty history, prices every move at zero and admits the marginal step below.
+#[test]
+fn a_committed_rung_change_prices_the_next_upshift_until_the_price_decays() {
+    let policy = AbrPolicy::measured();
+
+    // The rung axis and the mode axis are priced by ONE function, which is the reuse this fix
+    // rests on: `visible_switch_penalty` per switch already made, halved every
+    // `visible_switch_decay_ms`. Asserted here so a change to either side has to face both.
+    assert_eq!(TransitionHistory::default().penalty(&policy), 0);
+    assert_eq!(
+        TransitionHistory {
+            visible_switches: 3,
+            since_last_ms: Some(0),
+        }
+        .penalty(&policy),
+        3 * policy.visible_switch_penalty,
+    );
+    assert_eq!(
+        TransitionHistory {
+            visible_switches: 3,
+            since_last_ms: Some(policy.visible_switch_decay_ms),
+        }
+        .penalty(&policy),
+        3 * policy.visible_switch_penalty / 2,
+    );
+
+    let mut controller = controller_at(Rung::P1080M6);
+    assert_eq!(
+        controller.visible_switch_history(),
+        TransitionHistory::default(),
+        "a fresh controller has spent nothing",
+    );
+    assert!(
+        controller.upshift_earns_its_visible_switch(Rung::P1080M10),
+        "the FIRST rung change of a playback is free whatever it buys — a controller that \
+         will not leave its bootstrap rung is the opposite failure",
+    );
+
+    // Establish a service endpoint so the next target is a mid-ladder point rather than the top,
+    // which is the state the oscillating device run kept re-entering.
+    let top = prime_up(&mut controller);
+    assert_eq!(top.rung, Rung::P1080High);
+    assert!(controller.reject(top, RejectCause::Candidate, controller.clock_ms()));
+    let Decision::Prime(step) = controller.observe_next(sample(20_000, 200, 10_000)) else {
+        panic!("a blocked top must not mask a cheaper unknown rung");
+    };
+    assert_eq!(step.rung, Rung::P1080M12);
+    assert!(controller.commit(step, controller.clock_ms()));
+    controller.commit_candidate_evidence(sample(20_000, 200, 10_000));
+
+    assert_eq!(
+        controller.visible_switch_history(),
+        TransitionHistory {
+            visible_switches: 1,
+            since_last_ms: Some(0),
+        },
+        "the commit seam did not record the rung change the viewer just saw",
+    );
+
+    // 12 000 -> 14 000 and 12 000 -> 20 000 are both 1920x1080 either side, so the raster
+    // exemption does not apply and the concave quality curve decides: +6 and +10 against a price
+    // of 15. Neither buys the interruption.
+    assert!(
+        !controller.upshift_earns_its_visible_switch(Rung::P1080M14),
+        "a +6 step on the quality curve is not worth a visible change the viewer just paid for",
+    );
+    assert!(
+        !controller.upshift_earns_its_visible_switch(Rung::P1080High),
+        "nor is +10, at the price one recent switch sets",
+    );
+
+    // **The constraint dissolves on its own.** One half-life later the price is 7, the same +10
+    // step clears, and nothing was reset: no cooldown counter, no change in the link, no new
+    // evidence. The PREDICATE is graded rather than the whole decision, because the decision also
+    // answers to the failure frontier armed above and this assertion is about the viewer's half.
+    let decayed = controller
+        .clock_ms()
+        .saturating_add(policy.visible_switch_decay_ms);
+    let _ = controller.observe(sample(20_000, 200, 10_000), decayed);
+    assert_eq!(
+        controller.visible_switch_history().penalty(&policy),
+        policy.visible_switch_penalty / 2,
+    );
+    assert!(
+        controller.upshift_earns_its_visible_switch(Rung::P1080High),
+        "the price halves every `visible_switch_decay_ms`, so a switch two minutes old stops \
+         blocking the step it was blocking",
+    );
+    assert!(
+        !controller.upshift_earns_its_visible_switch(Rung::P1080M14),
+        "+6 still does not clear 7 — the price decayed, it was not deleted",
+    );
+}
+
+
+
+/// **The two readings of the quality curve are one curve.**
+///
+/// `quality_score_pm_at_kbps` interpolates `quality_score_at_kbps`'s own bands, and the claim its
+/// doc makes is that they agree at every boundary — which is the only thing that stops a later
+/// edit moving one and silently leaving the other behind, with the rung gate then pricing moves
+/// against a curve the mode comparison no longer uses. It also pins the property the gate depends
+/// on: strictly increasing wherever the banded form is flat.
+#[test]
+fn the_two_quality_curves_agree_at_every_band_boundary() {
+    for edge in [500u32, 1_000, 2_500, 5_000, 7_000, 9_000, 13_000, 17_000] {
+        assert_eq!(
+            quality_score_pm_at_kbps(edge),
+            i64::from(quality_score_at_kbps(edge)) * 1_000,
+            "the interpolated curve left the banded one at its {edge}kbps boundary",
+        );
+    }
+    // Above the last named boundary the banded form saturates, and so does this one.
+    assert_eq!(quality_score_pm_at_kbps(21_000), 76_000);
+    assert_eq!(quality_score_pm_at_kbps(60_000), 76_000);
+
+    // The property the rung gate needs and the banded form cannot give: every ladder step is a
+    // strict increase. `LADDER` is walked rather than a chosen pair, so a rung added inside a band
+    // is covered the day it lands.
+    let catalog = HlsActuatorCatalog::measured();
+    for pair in LADDER.windows(2) {
+        let (lower, upper) = (pair[0], pair[1]);
+        assert!(
+            quality_score_pm_at_kbps(catalog.candidate(upper).expected_wire_kbps)
+                > quality_score_pm_at_kbps(catalog.candidate(lower).expected_wire_kbps),
+            "{lower:?} -> {upper:?} is a real step of the ladder and scores as no step at all",
+        );
+    }
 }
