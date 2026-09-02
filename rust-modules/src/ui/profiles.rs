@@ -15,6 +15,11 @@ use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
 use std::ptr::addr_of_mut;
 
+/// The screen's own heading, and — since the consent route names where BACK goes — the word
+/// another screen has to be able to say about this one. One constant, so the crumb and the
+/// heading cannot drift apart.
+pub(crate) const TITLE: &str = "Who's watching?";
+
 const ROW_Y: f32 = 384.0;
 /// Name band offset below `ROW_Y`. Anchored to the UNSCALED row like every `CardRow` label (a pop
 /// must never shove the label), but spaced off the FOCUSED tile: at `focus_scale` the circle's
@@ -201,7 +206,7 @@ pub fn draw() {
         return;
     }
 
-    if let Ok(t) = CString::new("Who's watching?") {
+    if let Ok(t) = CString::new(TITLE) {
         p.text(
             t.as_ptr(),
             SCR_W as f32 * 0.5,

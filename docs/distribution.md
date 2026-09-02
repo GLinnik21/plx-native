@@ -626,7 +626,9 @@ world-readable `/tmp` on the TV across many runs.
 those two only after an explicit first-run Share choice or a later Done in Account → Settings →
 Privacy & data. First run asks about the two purposes separately and offers the exact payload
 preview before either answer: the first choice remains a draft, the second records both, and BACK
-navigates without recording a refusal.
+records nothing either way — it steps back from the product question to the crash one, and on the
+crash question (which is asked once per television, immediately after sign-in and before the
+profile picker) there is nothing behind it, so it is swallowed rather than closing the ceremony.
 `PRIVACY.md` carries the schemas: usage is generated from
 `diag::schema::EVENT_SPECS`, native crashes are checked against their sanitizer allowlist, and
 handled playback errors use the same typed serializer/key-contract as the consent preview and

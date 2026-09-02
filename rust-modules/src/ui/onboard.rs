@@ -40,32 +40,34 @@ use std::ptr::{addr_of, addr_of_mut};
 
 /// The heading, and the one action. Both are the design's words: *Start watching* rather than
 /// *Continue*, "a verb that says what happens next rather than one that says nothing".
-const TITLE: &str = "What goes on your Home?";
+pub(crate) const TITLE: &str = "What goes on your Home?";
 const SETTINGS_TITLE: &str = "What appears on Home?";
 const ACTION: &std::ffi::CStr = c"Start watching";
 const DONE: &std::ffi::CStr = c"Done";
 const RETRY: &std::ffi::CStr = c"Try again";
+/// Where BACK goes, named on the crumb above the title rather than as a hint in the action band.
+const CRUMB_SETTINGS: &str = "Settings";
+const CRUMB_PROFILES: &str = crate::ui::profiles::TITLE;
 
-/// Which affordances occupy the shared bottom action row.
+/// Whether the shared bottom action row holds a control.
 ///
-/// The row is navigation state, not screen-local decoration: first run can go both forward and
-/// backward, a clean Settings editor only dismisses, and a dirty editor replaces that dismissal
-/// hint with its explicit commit.  A failed/empty Settings load is the one dual-action Settings
-/// state because Retry does not make BACK cease to exist.
+/// **This used to be a THREE-way choice, and the third arm was the BACK hint.** First run drew
+/// `Start watching` beside `Press [BACK] to return`, and a clean Settings editor drew that hint
+/// alone. Both are gone: where BACK goes is the crumb above the title now, so the band carries a
+/// real action or nothing — see `ui::route_screen`'s module doc. What survives is the distinction
+/// the enum was actually for: a pristine Settings editor has nothing to commit, while a dirty
+/// one, first run, and a failed/empty load all do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BottomActions {
-    BackOnly,
-    PrimaryOnly,
-    PrimaryAndBack,
+    None,
+    Primary,
 }
 
 fn bottom_actions(settings: bool, changed: bool, no_sections: bool) -> BottomActions {
-    if !settings || no_sections {
-        BottomActions::PrimaryAndBack
-    } else if changed {
-        BottomActions::PrimaryOnly
+    if !settings || no_sections || changed {
+        BottomActions::Primary
     } else {
-        BottomActions::BackOnly
+        BottomActions::None
     }
 }
 
@@ -230,6 +232,11 @@ pub fn draw() {
     let body = body_copy();
     layout.draw_narrative(
         p,
+        Some(if settings_mode() {
+            CRUMB_SETTINGS
+        } else {
+            CRUMB_PROFILES
+        }),
         if settings_mode() {
             SETTINGS_TITLE
         } else {
@@ -246,25 +253,14 @@ pub fn draw() {
     } else {
         ACTION
     };
-    let back_hint = crate::ui::widgets::KeyHint::new(c"Press", c"BACK", c"to return");
     let actions = bottom_actions(
         settings_mode(),
         dirty(),
         crate::browse::section_count() == 0,
     );
-    if actions != BottomActions::BackOnly {
+    if actions != BottomActions::None {
         let w = Button::pill_w(action.as_ptr(), theme::size::BODY, false).min(layout.action.w);
-        let (r, inline_back) = match actions {
-            BottomActions::PrimaryAndBack => {
-                let (primary, back) = layout.action_pair(w, back_hint.width());
-                (primary, Some(back))
-            }
-            BottomActions::PrimaryOnly => (
-                Rect::new(layout.action.x, layout.action.y, w, layout.action.h),
-                None,
-            ),
-            BottomActions::BackOnly => unreachable!(),
-        };
+        let r = Rect::new(layout.action.x, layout.action.y, w, layout.action.h);
         unsafe { ACTION_RECT = r };
         Button::new(action.as_ptr(), theme::size::BODY, r)
             .focused(unsafe { addr_of!(FOCUS).read() } == Focus::Action)
@@ -275,12 +271,10 @@ pub fn draw() {
                 unsafe { (*addr_of!(GROUND)).palette() }
             })
             .draw(&env, p);
-        if let Some(back) = inline_back {
-            back_hint.draw(p, back.x, back.cy());
-        }
     } else {
+        // Nothing to commit, so the band is EMPTY — the crumb above the title already says where
+        // BACK goes, and a control that is not drawn must not be hit-testable either.
         unsafe { ACTION_RECT = Rect::new(-1.0, -1.0, 0.0, 0.0) };
-        back_hint.draw(p, layout.action.x, layout.action.cy());
     }
 
     // ---- right column: the list, on the ground ----
@@ -568,23 +562,24 @@ mod tests {
     fn the_bottom_row_expresses_forward_back_and_commit_as_distinct_states() {
         assert_eq!(
             bottom_actions(false, true, false),
-            BottomActions::PrimaryAndBack,
-            "first run can move forward or return to identity"
+            BottomActions::Primary,
+            "first run always offers its commit"
         );
         assert_eq!(
             bottom_actions(true, false, false),
-            BottomActions::BackOnly,
-            "a clean Settings editor only dismisses"
+            BottomActions::None,
+            "a clean Settings editor has nothing to commit, and no longer spends the band saying \
+             how to leave"
         );
         assert_eq!(
             bottom_actions(true, true, false),
-            BottomActions::PrimaryOnly,
-            "Done replaces BACK after an edit"
+            BottomActions::Primary,
+            "Done appears after an edit"
         );
         assert_eq!(
             bottom_actions(true, false, true),
-            BottomActions::PrimaryAndBack,
-            "Retry and BACK remain available together when loading failed"
+            BottomActions::Primary,
+            "Retry is a real action even on a pristine editor"
         );
     }
 }

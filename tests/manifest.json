@@ -238,7 +238,7 @@
         "plxnative-consent": "crash",
         "plxnative-consentosc": true
       },
-      "comment": "The first independent first-run reporting decision. consentosc alternates the real Share / Don’t Share rows and keeps the present gate continuously awake; the trigger changes display state only and records no consent."
+      "comment": "The first independent first-run reporting decision. consentosc walks focus between the answer band and the two readable rows beside it, which keeps the present gate awake across both focus grounds; the trigger changes display state only and records no consent."
     },
     {
       "name": "consent-product",

@@ -871,6 +871,20 @@ pub(crate) const CARD_FOCUS_SCALE: f32 = 1.07;
 /// separate design decisions that happen to have landed on one number; either may move alone.
 pub(crate) const CTRL_FOCUS_SCALE: f32 = 1.07;
 
+/// The gap between two controls that form ONE GROUP — the design system's `--control-gap`, which
+/// sits in `tokens/layout.css` under *Controls* rather than on the `theme::space` ladder, because
+/// it is a property of the control family and not a rung of the vertical rhythm (20 is not on that
+/// ladder at all: `SM` is 16 and `MD` is 24).
+///
+/// **It is deliberately smaller than a `space` rung, and that is the whole distinction.** A
+/// spacing rung separates two things you read as SEPARATE — a primary action and a hint beside it,
+/// a heading and its body. Two peer answers are one object with two faces, so they sit closer than
+/// any block gap would put them; at `space::LG` 40 the pair reads as two unrelated controls that
+/// happen to share a row. The decision alert's `Cancel`/`Delete` pair has always used this
+/// distance (`decision_alert::BUTTON_GAP`, the design's `--alert-btn-gap`); the two are separate
+/// tokens in the design system that happen to have landed on one number, so either may move alone.
+pub(crate) const CONTROL_GAP: f32 = 20.0;
+
 /// One control ROW's focus pop — a spring per control, so the arriving face grows while the one
 /// being left behind shrinks.
 ///

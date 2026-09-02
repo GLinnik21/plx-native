@@ -3,7 +3,7 @@
 use crate::ui::popover::Popover;
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::widgets::{ControlPalette, KeyHint};
+use crate::ui::widgets::ControlPalette;
 use crate::ui::{theme, Painter, Rect, Spring};
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -215,16 +215,17 @@ pub(crate) fn draw() {
         .content_painter(0.0)
         .alpha(1.0 - child)
         .translate(-0.35 * Rect::FULL.w * child, 0.0);
-    let layout = RouteLayout::screen();
-    layout.draw_narrative(
+    // No crumb: this is the ROOT of the route family. Every child names the place BACK returns to
+    // on a caption line above its title, but the root's BACK leaves the family altogether — it
+    // dismisses the modal back onto Home, the way every other overlay in the app does.
+    RouteLayout::screen().draw_narrative(
         p,
+        None,
         "Settings",
         "Settings apply to this Plex profile on this television. You can return here from the profile menu at any time.",
         theme::size::LABEL,
     );
     table().draw(p, list_frame());
-    let hint = KeyHint::new(c"Press", c"BACK", c"to return");
-    hint.draw(p, layout.action.x, layout.action.cy());
 }
 
 #[cfg(test)]

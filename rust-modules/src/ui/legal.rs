@@ -6,8 +6,13 @@ use crate::ui::popover::Popover;
 use crate::ui::route_screen::{RouteLayout, RoutePush};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::KeyHint;
 use std::ptr::{addr_of, addr_of_mut};
+
+/// The index's own title, and — one push deeper — the crumb a document names.  One constant, so
+/// the two can never disagree about what the screen behind you is called.
+const INDEX_TITLE: &str = "Legal notices";
+/// Where BACK goes from this family's two entrances. Both are opened from the Settings root.
+const CRUMB_SETTINGS: &str = "Settings";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Page {
@@ -207,14 +212,16 @@ pub(crate) fn draw() {
         .translate(SCR_W as f32 * (1.0 - a), 0.0);
     let layout = RouteLayout::screen();
     if unsafe { ABOUT_MODE } {
+        // About is this same document route entered directly from the Settings index, so its
+        // crumb names Settings rather than the Legal index it never passed through.
         layout.draw_narrative(
             p,
+            Some(CRUMB_SETTINGS),
             "About PlxNative",
             "Version, copyright, project source and independent-client information.",
             theme::size::LABEL,
         );
         reader().draw(p, layout.content, None, ABOUT);
-        KeyHint::new(c"Press", c"BACK", c"to return").draw(p, layout.action.x, layout.action.cy());
         return;
     }
     let t = unsafe { (*addr_of!(ROUTE_PUSH)).amount() };
@@ -222,27 +229,26 @@ pub(crate) fn draw() {
         let index = unsafe { (*addr_of!(ROUTE_PUSH)).parent(p) };
         layout.draw_narrative(
             index,
-            "Legal notices",
+            Some(CRUMB_SETTINGS),
+            INDEX_TITLE,
             "Read the notices that apply to this build, its open-source components and its relationship with Plex and LG.",
             theme::size::LABEL,
         );
         table().draw(index, layout.sectioned_table());
-        KeyHint::new(c"Press", c"BACK", c"to return").draw(
-            index,
-            layout.action.x,
-            layout.action.cy(),
-        );
     }
     if t > 0.01 {
         let page = unsafe { PAGE };
         let document = unsafe { (*addr_of!(ROUTE_PUSH)).child(p) };
-        layout.draw_narrative(document, page.title(), page.subtitle(), theme::size::LABEL);
-        reader().draw(document, layout.content, None, page.body());
-        KeyHint::new(c"Press", c"BACK", c"to return").draw(
+        // The pushed document's crumb names the index it came from, which is the whole reason
+        // this family can be three deep without anyone having to remember how they got here.
+        layout.draw_narrative(
             document,
-            layout.action.x,
-            layout.action.cy(),
+            Some(INDEX_TITLE),
+            page.title(),
+            page.subtitle(),
+            theme::size::LABEL,
         );
+        reader().draw(document, layout.content, None, page.body());
     }
 }
 

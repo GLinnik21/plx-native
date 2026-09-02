@@ -8,7 +8,7 @@ use crate::ui::consts::*;
 use crate::ui::label::HAlign;
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::text_view::TextView;
-use crate::ui::widgets::Spinner;
+use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -18,7 +18,39 @@ struct Scene {
     spin_ms: f32,
     qr_tex: u32, // GL texture of Plex's QR PNG (0 until decoded+uploaded)
     ground: RouteGround,
+    /// How long the CURRENT auth phase has been on screen. Distinct from `spin_ms`, which is a
+    /// free-running rotation clock: this one is reset by [`update`] whenever the phase changes,
+    /// because the only question it answers is "has this particular wait gone on too long".
+    phase_ms: f32,
+    phase: Phase,
+    /// How many files the last **Delete all local data** could not unlink. Drives the wording of
+    /// the `Deleted` read-out, which must not claim a wipe it did not achieve.
+    delete_leftovers: usize,
 }
+
+/// How long a working phase runs before the read-out grows a way out.
+///
+/// **Not zero**: a healthy LAN discovery finishes in well under a second, and a control that
+/// flashes past on every sign-in is noise that teaches people to ignore it. **Not longer**: from
+/// the sofa a spinner that will never stop looks exactly like one that is about to, and until this
+/// existed there was no way at all out of a wedged sign-in — BACK is swallowed on a first-ever
+/// boot (`auth::cancel` has no stored session to resume), so the only exit was killing the app.
+const ESCAPE_AFTER_MS: f32 = 12_000.0;
+
+/// Whether a wait has run long enough to be worth offering an escape from.
+///
+/// Pure and separate from the draw so the threshold is gradeable on the host; the state it reads
+/// lives in the SDL loop's own scene.
+fn escape_offered(phase_ms: f32) -> bool {
+    phase_ms >= ESCAPE_AFTER_MS
+}
+
+/// The verb on both the failed and the stuck read-out, because it is the same call underneath.
+///
+/// `auth::retry` bumps the auth epoch, so a worker still blocked in the wedged request has its
+/// result discarded when it finally returns, and it re-runs only the leg that failed — discovery
+/// when the pin already yielded an account credential, a whole fresh pin when it did not.
+const ESCAPE: &std::ffi::CStr = c"Try again";
 
 static mut SCENE: Option<Scene> = None;
 
@@ -36,6 +68,9 @@ pub fn init() {
             spin_ms: 0.0,
             qr_tex: 0,
             ground: RouteGround::new(),
+            phase_ms: 0.0,
+            phase: Phase::default(),
+            delete_leftovers: 0,
         });
     }
 }
@@ -43,13 +78,26 @@ pub fn init() {
 /// Mount the auth route without replacing the cached QR texture. A fresh auth flow invalidates the
 /// texture from [`update`] when it reaches `Creating`; this only resets the visit's visual ground.
 pub fn enter() {
-    scene().ground.reset();
+    let s = scene();
+    s.ground.reset();
+    // A fresh visit is a fresh wait, whatever phase the last one died in.
+    s.phase_ms = 0.0;
+    s.phase = auth::phase();
     crate::ui::idle::invalidate();
 }
 
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
+    // Each phase gets its own clock. A flow that walks Creating → Waiting → Discovering is making
+    // progress, and restarting the timer at every step is what stops a slow-but-healthy sign-in
+    // from being offered a way out of itself.
+    if s.phase != auth::phase() {
+        s.phase = auth::phase();
+        s.phase_ms = 0.0;
+    } else {
+        s.phase_ms += dt * 1000.0;
+    }
     // A retry that needs a new account sign-in enters Creating (hence a new QR); a discovery-only
     // retry stays in Discovering and deliberately keeps the already-authorized account credential.
     // Release the cached texture only for the former so its replacement can upload.
@@ -92,35 +140,110 @@ pub fn draw() {
 
     match auth::phase() {
         Phase::Waiting => draw_waiting(p, &env, s),
-        Phase::Error => draw_status(p, &env, s, &auth::error(), true),
-        Phase::Deleted => draw_deleted(p),
-        Phase::Discovering => draw_status(p, &env, s, "Finding your server\u{2026}", false),
-        _ => draw_status(p, &env, s, "Connecting to Plex\u{2026}", false),
+        Phase::Error => draw_failed(p, &env, s),
+        Phase::Deleted => draw_deleted(p, &env, s),
+        Phase::Discovering => draw_working(p, &env, s, "Finding your server\u{2026}"),
+        _ => draw_working(p, &env, s, "Connecting to Plex\u{2026}"),
     }
 }
 
-fn draw_deleted(p: Painter) {
-    let layout = RouteLayout::screen();
-    layout.draw_narrative(
+/// The three non-QR states are ONE centred read-out, not the two-column route.
+///
+/// **They used to be that route**, with the title and a sentence in the narrative column and a
+/// lone spinner floating in the content column — which is the composition for a screen that has a
+/// LIST or a document on the right, and reads as a broken one when the right-hand side holds a
+/// single 26px ring. `StatusOverlay` is the app's existing answer for "the whole surface is
+/// waiting": spinner over verdict over an optional reason over the one action, centred on the area
+/// the wait is ABOUT — `Rect::FULL` here, since none of this screen exists yet.
+fn draw_readout(
+    p: Painter,
+    env: &Env,
+    s: &Scene,
+    caption: &std::ffi::CStr,
+    kind: StatusKind,
+    reason: Option<&std::ffi::CStr>,
+    action: Option<&'static std::ffi::CStr>,
+) {
+    let mut o = StatusOverlay::new(Rect::FULL, caption, kind).phase(s.spin_ms as u32);
+    if let Some(r) = reason {
+        o = o.reason(r);
+    }
+    if let Some(a) = action {
+        // The only control on the screen, so it holds focus by construction — there is nowhere
+        // else for the ring to be, and OK must reach it without a press to move focus first.
+        o = o.action(a).focused(true);
+    }
+    o.draw(env, p);
+}
+
+fn draw_working(p: Painter, env: &Env, s: &Scene, msg: &str) {
+    let caption = CString::new(msg).unwrap_or_default();
+    let stuck = escape_ready(s);
+    draw_readout(
         p,
-        "Local data deleted",
-        "Credentials, preferences, telemetry, and local diagnostics have been removed.",
-        theme::size::LABEL,
+        env,
+        s,
+        &caption,
+        StatusKind::Working,
+        // The reason arrives WITH the control, and only then: it exists to explain why a button
+        // just appeared under a spinner that was doing fine a moment ago.
+        stuck.then_some(c"This is taking longer than usual."),
+        stuck.then_some(ESCAPE),
     );
-    TextView::new(
-        "Press OK to sign in",
-        theme::size::BODY,
-        theme::TEXT_TERTIARY,
-    )
-    .h(HAlign::Center)
-    .draw(
+}
+
+fn draw_failed(p: Painter, env: &Env, s: &Scene) {
+    let reason = CString::new(auth::error()).unwrap_or_default();
+    draw_readout(
         p,
-        Rect::new(
-            layout.content.x,
-            layout.content.cy(),
-            layout.content.w,
-            50.0,
-        ),
+        env,
+        s,
+        c"Couldn\u{2019}t sign in",
+        StatusKind::Failed,
+        (!reason.is_empty()).then_some(reason.as_c_str()),
+        Some(ESCAPE),
+    );
+}
+
+/// What the delete actually achieved, as the two lines it is honest to draw.
+///
+/// **A partial wipe may not be reported as a whole one**, and that is not pedantry: the files this
+/// sweep can fail on include the TELEMETRY decision, so a survivor is re-read on the next launch
+/// and a consent the user believed they had deleted comes back. The session is gone either way —
+/// `auth::erase_local_state` is unconditional — so the verdict stays true and the reason carries
+/// the qualification.
+fn deleted_readout(leftovers: usize) -> (&'static std::ffi::CStr, &'static std::ffi::CStr) {
+    if leftovers == 0 {
+        (
+            c"Local data deleted",
+            c"Credentials, preferences, telemetry and local diagnostics have been removed.",
+        )
+    } else {
+        (
+            c"Signed out, and most local data deleted",
+            c"Some files could not be removed and may still be on this television.",
+        )
+    }
+}
+
+/// Record what the delete left behind, before the app routes here.
+pub fn note_delete_leftovers(n: usize) {
+    scene().delete_leftovers = n;
+}
+
+/// **Empty, not Failed.** Deleting everything is a completed action the user asked for, so it must
+/// not wear the danger tint — the same distinction `StatusKind::Empty` carries for a library with
+/// nothing in it. A partial one is still not a FAILURE either: what it did do, it did.
+fn draw_deleted(p: Painter, env: &Env, s: &Scene) {
+    let (verdict, reason) = deleted_readout(s.delete_leftovers);
+    draw_readout(
+        p,
+        env,
+        s,
+        verdict,
+        StatusKind::Empty,
+        Some(reason),
+        Some(c"Sign in"),
     );
 }
 
@@ -128,6 +251,7 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     let layout = RouteLayout::screen();
     layout.draw_narrative(
         p,
+        None,
         "Sign in to Plex",
         "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
         theme::size::LABEL,
@@ -202,36 +326,6 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     }
 }
 
-fn draw_status(p: Painter, env: &Env, s: &Scene, msg: &str, error: bool) {
-    let layout = RouteLayout::screen();
-    layout.draw_narrative(
-        p,
-        if error {
-            "Couldn’t sign in"
-        } else {
-            "Sign in to Plex"
-        },
-        msg,
-        theme::size::LABEL,
-    );
-    let cx = layout.content.cx();
-    let cy = layout.content.cy();
-    if error {
-        TextView::new(
-            "Press OK to try again",
-            theme::size::BODY,
-            theme::TEXT_TERTIARY,
-        )
-        .h(HAlign::Center)
-        .draw(p, Rect::new(layout.content.x, cy, layout.content.w, 50.0));
-    } else {
-        Spinner::new(cx, cy - theme::space::LG, 26.0)
-            .phase(s.spin_ms as u32)
-            .tint(theme::TEXT_PRIMARY)
-            .draw(env, p);
-    }
-}
-
 /// The complete manual-link stack in the content column.
 ///
 /// The QR itself is centred on the television's Y axis as requested, while the URL, manual code
@@ -288,6 +382,18 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         auth::retry();
         return;
     }
+    // The escape from a WEDGED sign-in, offered only once the wait has stopped looking normal.
+    // Without it this screen had no exit at all on a first-ever boot: `auth::cancel` resumes a
+    // stored session and there is none, so BACK is swallowed and the spinner is forever.
+    if is_ok(sym) && escape_ready(scene()) {
+        crate::log("login: user restarted a stalled sign-in");
+        auth::retry();
+        // The retry usually re-enters the phase it just left (a stalled `Creating` starts another
+        // `Creating`), and `update` only zeroes the clock when the ENUM changes — so without this
+        // the fresh attempt inherits the dead one's age and shows its way out immediately.
+        scene().phase_ms = 0.0;
+        return;
+    }
     // BACK backs out of the sign-in — but only when there is somewhere to back out TO. This screen
     // is reached two ways: a first-ever boot with no session (nothing behind it — the QR screen is
     // the whole app) and the Home account menu's "Sign in" (a working session is still on disk).
@@ -300,10 +406,91 @@ pub fn key(sym: c_uint, wcode: c_uint) {
     // otherwise the login screen just waits — the pin poll drives the phase from a worker thread.
 }
 
+/// The phases that are genuinely WAITING ON A NETWORK CALL and can therefore stall.
+///
+/// **An allowlist, not "everything that is not terminal".** It was the latter for an hour, which
+/// swept in `Ready`, `Profiles` and `Switching` — phases the main loop routes away from on its
+/// next pass. Key input is dispatched before that pass, so an OK aimed at the escape control the
+/// user could still see would have called `auth::retry` on a flow that had already SUCCEEDED,
+/// replacing a completed handoff with a fresh sign-in. `Idle` is excluded for the same reason
+/// from the other side: nothing is owed, so there is nothing to retry.
+fn working_phase(phase: Phase) -> bool {
+    matches!(phase, Phase::Creating | Phase::Discovering)
+}
+
+/// Whether the read-out is showing its way out right now.
+///
+/// One predicate for the draw AND the key handler, so a control that is not drawn can never be
+/// activated — the rule `player_hud::transport_hidden` states for the same hazard.
+fn escape_ready(s: &Scene) -> bool {
+    working_phase(auth::phase()) && escape_offered(s.phase_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::consts::inside_safe;
+
+    /// **A partial wipe may not be reported as a whole one.** The sweep's candidate lists span
+    /// both webOS install prefixes and the jail profiles disagree about which are writable, so a
+    /// survivor is ordinary — and the survivor can be the TELEMETRY decision, which is then
+    /// re-read on the next launch. Saying "telemetry has been removed" over that is the one
+    /// sentence on this screen that could be actively false.
+    #[test]
+    fn a_partial_wipe_does_not_claim_a_whole_one() {
+        let (whole, whole_why) = deleted_readout(0);
+        let (partial, partial_why) = deleted_readout(2);
+        assert_ne!(whole, partial);
+        assert!(whole_why.to_bytes().windows(9).any(|w| w == b"telemetry"));
+        assert!(
+            !partial_why.to_bytes().windows(9).any(|w| w == b"telemetry"),
+            "a partial wipe must not name what it may have failed to delete"
+        );
+        assert!(
+            partial.to_bytes().windows(10).any(|w| w == b"Signed out"),
+            "…but it still states what it DID do: the session is gone either way"
+        );
+    }
+
+    /// **A stalled sign-in has to be escapable, and until 2026-09-02 it was not.** BACK on this
+    /// screen goes through `auth::cancel`, which resumes a STORED session — on a first-ever boot
+    /// there is none, so the key is swallowed by design and the only way out of a hung discovery
+    /// was killing the app. The control appears on a clock, so the whole rule is a pure predicate.
+    #[test]
+    fn a_wait_that_stops_looking_normal_grows_a_way_out() {
+        assert!(!escape_offered(0.0), "a fresh wait offers nothing");
+        assert!(
+            !escape_offered(ESCAPE_AFTER_MS - 1.0),
+            "nor does a healthy one — a button that flashes past teaches people to ignore it"
+        );
+        assert!(escape_offered(ESCAPE_AFTER_MS));
+    }
+
+    /// **The escape belongs ONLY to the two phases that wait on a network call.** A terminal
+    /// state carries its own control, and — the reason this is an allowlist rather than "not
+    /// terminal" — `Ready`, `Profiles` and `Switching` are phases the main loop routes away from
+    /// on its NEXT pass. Keys are dispatched before that pass, so an escape offered there could
+    /// call `auth::retry` on a flow that had already succeeded and replace the handoff with a
+    /// fresh sign-in.
+    #[test]
+    fn only_a_phase_waiting_on_the_network_can_be_stalled() {
+        assert!(working_phase(Phase::Creating));
+        assert!(working_phase(Phase::Discovering));
+        for settled in [
+            Phase::Idle,
+            Phase::Waiting,
+            Phase::Profiles,
+            Phase::Switching,
+            Phase::Ready,
+            Phase::Error,
+            Phase::Deleted,
+        ] {
+            assert!(
+                !working_phase(settled),
+                "{settled:?} is not a wait this screen may offer to restart"
+            );
+        }
+    }
 
     #[test]
     fn qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_column() {

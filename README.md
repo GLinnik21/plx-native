@@ -65,8 +65,11 @@ interface drawn on top of it. That's the thing a browser-based client can't do.
 
 **Error reports and usage stay off until you answer two separate first-run questions.** Each offers
 **Share** and **Don’t Share** for one purpose. The crash-report answer remains a draft until the
-product-analytics question is answered; only then are both choices recorded. `BACK` navigates
-without recording a refusal. The choices remain reversible under Account → Settings → Privacy &
+product-analytics question is answered; only then are both choices recorded. The questions are
+asked once for the television, right after sign-in and before the profile picker — the answer
+applies to the whole set, so it is not put to whoever happens to be watching. `BACK` steps back
+from the product question to the crash one and records nothing either way; on the first question
+there is nothing behind it, so the way through is one of the two answers, both a single press. The choices remain reversible under Account → Settings → Privacy &
 data, where **Done** saves changed switches and `BACK` discards them. The same route shows every
 exact schema with placeholders for random/build-specific values and representative fixed classes.
 Turning product analytics off deletes the random identifier that television used. No title, search

@@ -50,7 +50,14 @@ enum RetryKind {
 }
 
 fn retry_kind(phase: Phase, authorized_in_flow: bool) -> RetryKind {
-    if phase == Phase::Error && authorized_in_flow {
+    // **`Discovering` is here because a retry no longer only follows an error.** The sign-in
+    // screen offers a `Try again` once a working phase has stalled (`ui::login`'s escape), and the
+    // phase most likely to stall is discovery itself — reached only after the pin has already
+    // yielded an account credential. Keying solely on `Error` sent that press down the `Login`
+    // arm and minted a fresh QR, throwing away a sign-in the user had already completed on their
+    // phone. `authorized_in_flow` is the fact that actually matters; the phase list only keeps a
+    // retry from a state where no worker is owed anything.
+    if authorized_in_flow && matches!(phase, Phase::Error | Phase::Discovering) {
         RetryKind::Discovery
     } else {
         RetryKind::Login
@@ -2774,6 +2781,26 @@ mod tests {
             RetryKind::Discovery
         );
         assert_eq!(retry_kind(Phase::Waiting, true), RetryKind::Login);
+    }
+
+    /// **A stalled DISCOVERY retries discovery, not the whole sign-in.** `ui::login` grows a
+    /// `Try again` once a working phase has run long enough to look wedged, and discovery is the
+    /// phase that reaches — it only runs after the pin has already yielded an account credential.
+    /// Routing that press through `RetryKind::Login` minted a fresh QR and made the user
+    /// authorize on their phone a second time for what is usually one unreachable server.
+    #[test]
+    fn a_stalled_discovery_retries_discovery_rather_than_minting_a_new_qr() {
+        assert_eq!(retry_kind(Phase::Discovering, true), RetryKind::Discovery);
+        assert_eq!(
+            retry_kind(Phase::Discovering, false),
+            RetryKind::Login,
+            "…but discovery reached without an authorization in THIS flow has no token to reuse"
+        );
+        assert_eq!(
+            retry_kind(Phase::Creating, true),
+            RetryKind::Login,
+            "and a stall before the pin exists can only start over"
+        );
     }
 
     /// Completion order is responsiveness, never preference. A lower-scoring remote candidate

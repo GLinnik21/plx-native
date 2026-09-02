@@ -42,6 +42,11 @@ pub enum Icon {
     // rasterizer draws untransformed, so direction is per-asset, not a rotation)
     ChevronDown,
     ChevronUp,
+    /// Points LEFT — the route crumb's mark, and the mirror of [`Icon::Chevron`] rather than a
+    /// second drawing: same viewBox, same stroke, the path reflected about x=12, so the two share
+    /// one [`ink_x`] entry and a row's drill-in chevron and a crumb's return chevron are visibly
+    /// the same object pointing two ways.
+    ChevronLeft,
     /// The watch-state ACTIONS, as **filled** discs: a check knocked out of one for "Mark as
     /// Watched", a minus knocked out of one for "Mark as Unwatched" (`item_menu::state_rows`).
     /// Filled is the rule, not a preference: it is what stops an ACTION being read as a STATE. The
@@ -192,7 +197,8 @@ pub(crate) const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Pause => (7.0 / 24.0, 17.0 / 24.0),
         Icon::Play => (6.0 / 24.0, 20.0 / 24.0),
         Icon::Rewind | Icon::FastForward => (2.6 / 24.0, 21.4 / 24.0),
-        Icon::Chevron => (7.5 / 24.0, 16.5 / 24.0),
+        // One entry for the mirrored pair: the reflected path has the same ink bounds.
+        Icon::Chevron | Icon::ChevronLeft => (7.5 / 24.0, 16.5 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -218,6 +224,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Audio => include_str!("../../../assets/icons/audio.svg"),
         Icon::Check => include_str!("../../../assets/icons/check.svg"),
         Icon::Chevron => include_str!("../../../assets/icons/chevron.svg"),
+        Icon::ChevronLeft => include_str!("../../../assets/icons/chevron-left.svg"),
         Icon::ChevronDown => include_str!("../../../assets/icons/chevron-down.svg"),
         Icon::ChevronUp => include_str!("../../../assets/icons/chevron-up.svg"),
         Icon::CheckCircleFill => include_str!("../../../assets/icons/check-circle-fill.svg"),
@@ -356,6 +363,7 @@ mod ink_tests {
             Icon::Rewind,
             Icon::FastForward,
             Icon::Chevron,
+            Icon::ChevronLeft,
             Icon::Check,
         ] {
             let (l, r) = ink_x(id);
@@ -364,6 +372,17 @@ mod ink_tests {
                 "ink_x {l}..{r} out of shape"
             );
         }
+    }
+
+    /// **The crumb's chevron is the row chevron reflected, not a second drawing.** They share an
+    /// [`ink_x`] entry, so the day somebody re-draws either asset to different bounds the shared
+    /// entry becomes a lie for one of them with nothing to notice — the exact failure `ink_x`'s
+    /// own doc was written about. Reflection about x=12 is checkable from the sources themselves.
+    #[test]
+    fn the_crumb_chevron_is_the_row_chevron_mirrored() {
+        assert_eq!(ink_x(Icon::ChevronLeft), ink_x(Icon::Chevron));
+        assert!(src(Icon::Chevron).contains(r#"d="M9 6l6 6-6 6""#));
+        assert!(src(Icon::ChevronLeft).contains(r#"d="M15 6l-6 6 6 6""#));
     }
 
     #[test]

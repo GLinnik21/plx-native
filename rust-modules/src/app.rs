@@ -2612,15 +2612,6 @@ enum Route {
 /// Host page parked while the shared Home-source route is being used as a Settings editor.
 static mut SETTINGS_HOME_RETURN: Option<Route> = None;
 
-/// The route immediately before the first-run consent pair.  Consent is a reversible wizard, so
-/// BACK from its first question has to restore the step that actually preceded it rather than
-/// guessing from persisted pins after that step may already have committed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ConsentReturn {
-    Profiles,
-    Sources,
-}
-static mut FIRST_RUN_CONSENT_RETURN: ConsentReturn = ConsentReturn::Profiles;
 
 /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
 /// continuous-chrome rule. Exhaustive for the same reason `Nav::wears_tab_bar` is: a new
@@ -4823,40 +4814,39 @@ fn apply_onboarding_action(action: crate::ui::onboard::Action, trail: &mut Trail
 /// not two.
 /// Put the telemetry question on screen, if this boot is one that should see it.
 ///
-/// **Called on arrival at Home, not at boot**, and that is the whole of the placement decision: a
-/// first-run install boots to the QR screen, so a boot-time check would miss exactly the case the
-/// screen exists for — and asking somebody about crash reports before they have managed to sign in
-/// is asking while they still have nothing to lose by leaving.
+/// **Asked as soon as there is an AUTHORIZED ACCOUNT, and before the profile picker.**
+///
+/// The decision is device-wide — `telemetry_candidates()` is one file with no profile key — so the
+/// person who signed the television in is the person who should answer it. Asking after the picker
+/// (which is what shipped until 2026-09-02) put a data-protection question to whichever household
+/// member happened to be selected, up to and including a managed child profile, and dressed a
+/// device-wide answer as a personal setting.
+///
+/// It is still not asked at BOOT: a fresh install boots to the QR screen with nothing to consent
+/// about yet, and asking before somebody has managed to sign in is asking while they have nothing
+/// to lose by walking away.
 ///
 /// Cheap and idempotent: `should_show` is false once a decision has been recorded, and false on any
-/// automated boot, so both call sites can simply ask. Nothing is stored by asking.
-fn maybe_ask_consent(from: ConsentReturn) {
+/// automated boot, so every call site can simply ask. Nothing is stored by asking.
+fn maybe_ask_consent() {
     let c = crate::telemetry::consent::current().unwrap_or_default();
     // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
     // automated boot. This screen is suppressed BY the presence of any trigger, so without an
     // override it cannot be reached headlessly at all. Selecting Product changes display state
     // only; no answer is stored by a harness boot.
     if let Some(target) = crate::dev::read("consent") {
-        unsafe { FIRST_RUN_CONSENT_RETURN = from };
+        // `fresh` for the same reason `open` is idempotent: this is now asked from a per-frame
+        // routing site, and re-selecting the second purpose every frame would PIN the stage there
+        // and make the seam undriveable.
+        let fresh = !crate::ui::consent::is_open();
         crate::ui::consent::open(&c);
-        if target.trim() == "product" {
+        if fresh && target.trim() == "product" {
             crate::ui::consent::show_product_for_dev();
         }
         return;
     }
     if crate::ui::consent::should_show(&c, crate::dev::any_trigger_present()) {
-        unsafe { FIRST_RUN_CONSENT_RETURN = from };
         crate::ui::consent::open(&c);
-    }
-}
-
-fn return_from_first_run_consent() -> Route {
-    match unsafe { FIRST_RUN_CONSENT_RETURN } {
-        ConsentReturn::Sources => {
-            crate::ui::onboard::enter();
-            Route::Onboard
-        }
-        ConsentReturn::Profiles => enter_profiles_from_onboard(),
     }
 }
 
@@ -4873,23 +4863,11 @@ fn enter_home_from_onboard(trail: &mut Trail) -> Route {
         return saved;
     }
     trail.reset();
-    // First arrival at Home after signing in — the moment the plan names for this question.
-    maybe_ask_consent(ConsentReturn::Sources);
+    // The consent pair is NOT asked here any more: it is a device decision and is put before the
+    // profile picker, which is upstream of this whole step. See `maybe_ask_consent`.
     // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
     // re-runs off `browse`'s section generation — which `record_pins`/`toggle_pin` have already
     // bumped. Nothing to kick here; Home builds from the answer on its first frame.
-    Route::Home
-}
-
-/// Finish the other first arrival at Home: the credentials handoff after a profile was picked.
-///
-/// This used to assign [`Route::Home`] inline and skipped [`maybe_ask_consent`]. That was invisible
-/// to an already-answered policy, but a policy bump left the picker path at Home with
-/// `answered=false` and no question on screen. `on_arrival` is an argument so the SDL-loop wiring
-/// itself is host-testable without opening a global popover; production always passes
-/// [`maybe_ask_consent`].
-fn enter_home_from_profile(on_arrival: impl FnOnce()) -> Route {
-    on_arrival();
     Route::Home
 }
 
@@ -4958,8 +4936,40 @@ fn perform_settings_action(action: crate::ui::settings::Action, route: &mut Rout
     }
 }
 
+/// What a confirmed **Delete all local data** does next, given how many files could not be
+/// unlinked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct DeleteOutcome {
+    /// Leave for the sign-in screen.
+    to_sign_in: bool,
+    /// Write the leftovers to the event log.
+    report_leftovers: bool,
+}
+
+/// **Two independent facts, and conflating them was the bug.**
+///
+/// [`delete_all_local_data`] calls `auth::erase_local_state()` UNCONDITIONALLY and only then
+/// returns whatever it failed to unlink, so by the time this is asked the session is already gone.
+/// Routing on the cleanup result therefore answered the wrong question: one unremovable file — and
+/// the candidate lists span BOTH install prefixes, whose jail profiles disagree about which are
+/// writable, so a leftover is an ordinary outcome on a healthy set — left the user sitting in
+/// Settings on top of an app that had just signed itself out. The next BACK dropped them onto an
+/// empty Home with no session, no servers and no route to sign-in short of relaunching.
+///
+/// It is a function rather than a branch because the branch lives inside the SDL key loop, where
+/// no host test can reach it.
+fn delete_outcome(leftovers: usize) -> DeleteOutcome {
+    DeleteOutcome {
+        to_sign_in: true,
+        report_leftovers: leftovers > 0,
+    }
+}
+
 /// The one destructive Settings operation. Individual UI rows never remove their own files.
-fn delete_all_local_data() -> Result<(), String> {
+///
+/// Returns the paths it could NOT unlink — a report, never a verdict. The irreversible half
+/// (`auth::erase_local_state`) runs whatever the file sweep managed; see [`delete_outcome`].
+fn delete_all_local_data() -> Vec<String> {
     let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -4993,11 +5003,7 @@ fn delete_all_local_data() -> Result<(), String> {
     crate::metadata::clear();
     crate::telemetry::forget_local();
     crate::auth::erase_local_state();
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(failures.join("; "))
-    }
+    failures
 }
 
 /// The press-and-hold item menu is modal too — rows nav, OK commits, BACK closes back to the shelf
@@ -6829,19 +6835,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let ask_first_run =
             || crate::dev::flag("firstrun") || (!automated_boot() && crate::ui::onboard::asks());
         let mut route = match boot_to {
-            BootTo::Home if ask_first_run() => {
-                log("boot: asking which sources feed Home");
-                crate::ui::onboard::enter();
-                Route::Onboard
-            }
+            // **Both Home arms ask, and the shared call is the point.** This is the one boot that
+            // has no earlier hook — an install already signed in, either never asked or asked
+            // against an older policy — and the device question has to come before every
+            // per-profile step, the Home-sources wizard included. Asking only in the second arm
+            // (which is what shipped for an hour) meant a stored session that still owed the
+            // sources answer walked Onboard → Home and was never asked at all.
             BootTo::Home => {
-                // The already-signed-in case: an existing install that has never been asked, or
-                // one whose policy version was bumped. The first-run case comes through
-                // `enter_home_from_onboard` instead, because a fresh install boots to the QR
-                // screen and is not at Home yet.
-                maybe_ask_consent(ConsentReturn::Profiles);
-                Route::Home
+                maybe_ask_consent();
+                if ask_first_run() {
+                    log("boot: asking which sources feed Home");
+                    crate::ui::onboard::enter();
+                    Route::Onboard
+                } else {
+                    Route::Home
+                }
             }
+            // Both of these enter the `Route::Login | Route::Profiles` block below, which asks as
+            // soon as the account is authorized — earlier than here, and before the picker.
             BootTo::Login => Route::Login,
             BootTo::Profiles => Route::Profiles,
         };
@@ -7167,23 +7178,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if is_ok(sym) {
                             crate::ui::consent::on_ok();
                             if crate::ui::consent::take_delete_request() {
-                                match delete_all_local_data() {
-                                    Ok(()) => {
-                                        crate::ui::settings::close();
-                                        crate::ui::login::enter();
-                                        trail.reset();
-                                        route = Route::Login;
-                                    }
-                                    Err(e) => crate::log(&format!(
-                                        "privacy: local-data deletion failed: {e}"
-                                    )),
+                                let leftovers = delete_all_local_data();
+                                let outcome = delete_outcome(leftovers.len());
+                                if outcome.report_leftovers {
+                                    crate::log(&format!(
+                                        "privacy: local data erased; {} file(s) could not be \
+                                         removed: {}",
+                                        leftovers.len(),
+                                        leftovers.join("; ")
+                                    ));
+                                }
+                                if outcome.to_sign_in {
+                                    crate::ui::settings::close();
+                                    // Tell the read-out what the sweep actually achieved BEFORE
+                                    // it is mounted: a survivor can be the telemetry decision,
+                                    // which comes back on the next launch, so the screen must not
+                                    // claim to have removed it.
+                                    crate::ui::login::note_delete_leftovers(leftovers.len());
+                                    crate::ui::login::enter();
+                                    trail.reset();
+                                    route = Route::Login;
                                 }
                             }
                         } else if is_back(sym, wcode) {
+                            // BACK reverses Product → Crash and is swallowed at Crash: the step
+                            // behind the device question is sign-in, which cannot be undone.
                             crate::ui::consent::on_back();
-                            if crate::ui::consent::take_first_run_back_request() {
-                                route = return_from_first_run_consent();
-                            }
                         } else if sym == SDLK_UP {
                             crate::ui::consent::on_updown(-1);
                         } else if sym == SDLK_DOWN {
@@ -9215,18 +9235,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the granted roster, which is the stable input to this decision even before
                     // asynchronous section discovery lands. It is asked per PROFILE, which is why
                     // it sits after the switch rather than after the sign-in.
+                    // The device question first, before any per-profile step. On a Plex Home
+                    // account it was already asked at the picker below and this is a no-op; on a
+                    // single-user account this is the earliest authorized moment there is.
+                    maybe_ask_consent();
                     if crate::ui::onboard::asks() {
                         log("login: server installed — asking which sources feed Home");
                         crate::ui::onboard::enter();
                         route = Route::Onboard;
                     } else {
                         log("login: server installed — entering Home");
-                        route =
-                            enter_home_from_profile(|| maybe_ask_consent(ConsentReturn::Profiles));
+                        route = Route::Home;
                     }
                 } else {
                     match crate::auth::phase() {
                         crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
+                            // BEFORE the picker: the account is authorized, so the device
+                            // question is answerable, and the person holding the remote at this
+                            // moment is the one who signed the television in. It draws over the
+                            // picker's route on its own opaque ground.
+                            maybe_ask_consent();
                             if route != Route::Profiles {
                                 crate::ui::profiles::enter();
                             }
@@ -10494,20 +10522,6 @@ mod route_tests {
         );
     }
 
-    /// A credentials handoff can arrive at Home through the profile picker, bypassing both the
-    /// ordinary Home boot arm and the onboarding exit. A policy bump must still run the consent
-    /// arrival gate on that path before Home is exposed.
-    #[test]
-    fn profile_handoff_runs_the_home_consent_arrival_gate() {
-        let mut arrived = false;
-        let route = enter_home_from_profile(|| arrived = true);
-        assert!(
-            arrived,
-            "profile handoff skipped the Home consent arrival gate"
-        );
-        assert!(matches!(route, Route::Home));
-    }
-
     /// The generalisation a reviewer already caught, as an assertion. Making a forward navigation
     /// blanket-carry `leave_of(cur)` is the obvious move and it is WRONG: Detail and Person stay on
     /// the BACK trail, so `detail::close` (and its `metadata::clear`) would empty the page the user
@@ -11040,6 +11054,41 @@ mod exit_alert_tests {
             );
         }
         exit_alert::close();
+    }
+}
+
+#[cfg(test)]
+mod delete_local_data_tests {
+    //! **Where the app lands after Delete all local data.** The branch itself is inside the SDL
+    //! key loop, so the decision is lifted into [`delete_outcome`] and graded here.
+    use super::*;
+
+    /// **Reported 2026-09-02: deleting everything left the user in Settings, and BACK out of it
+    /// landed on an empty Home.** Both halves are this one branch. `delete_all_local_data` erases
+    /// the session unconditionally and only then reports what it could not unlink, so gating the
+    /// navigation on that report meant a single leftover file stranded a signed-out app on a
+    /// browsing screen — with no route back to sign-in short of relaunching.
+    ///
+    /// A leftover is not exotic: the candidate lists span BOTH webOS install prefixes, and the two
+    /// jail profiles disagree about which of those are writable, so `EACCES`/`EROFS` on a path
+    /// this profile was never going to own is an ordinary outcome on a healthy television.
+    #[test]
+    fn a_file_that_could_not_be_removed_still_returns_the_user_to_sign_in() {
+        assert!(
+            delete_outcome(0).to_sign_in,
+            "a clean delete goes to sign-in"
+        );
+        assert!(
+            delete_outcome(3).to_sign_in,
+            "and so does one that left files behind — the session is gone either way"
+        );
+    }
+
+    /// The leftovers are still worth saying out loud; they are just not a reason to stay put.
+    #[test]
+    fn leftovers_are_reported_but_a_clean_sweep_says_nothing() {
+        assert!(delete_outcome(1).report_leftovers);
+        assert!(!delete_outcome(0).report_leftovers);
     }
 }
 

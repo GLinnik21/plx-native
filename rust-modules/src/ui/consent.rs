@@ -31,13 +31,24 @@
 //! their closed fixed domains. Tests compare object keys with the sanitizer/schema allowlists, so
 //! an added field cannot bypass this screen.
 //!
-//! # First-run BACK navigates; it never answers
+//! # It is asked ONCE PER TELEVISION, before the profile picker
 //!
-//! The two first-run choices are consecutive route states. BACK from Product returns to Crash;
-//! BACK from Crash asks `app.rs` to restore the previous onboarding step. Neither path records a
-//! refusal. From Settings, BACK discards the draft, and the shared bottom action slot changes from
-//! the BACK hint to Done only after a stored value changes. Dismissal and a decision are therefore
-//! distinct in every mode.
+//! **Consent here is a DEVICE decision, not a per-viewer preference**, and the storage always said
+//! so: `telemetry_candidates()` is one file with no profile key, so whoever answers binds every
+//! profile on the set. Until 2026-09-02 it was nevertheless asked on first arrival at Home — i.e.
+//! *after* who's-watching — which put a data-protection question to whichever household member
+//! happened to be picked, up to and including a managed child profile, and made a device-wide
+//! answer look like a personal setting. It is now asked as soon as there is an authorized account
+//! and before the picker, so the person who signed the television in is the person who answers.
+//!
+//! # BACK navigates; it never answers
+//!
+//! The two choices are consecutive route states. BACK from Product returns to Crash. **BACK from
+//! Crash does nothing**, and that is the placement's one real cost: the step behind it is sign-in,
+//! which cannot be undone, so there is no route to restore and the crumb above the title is
+//! absent. It is not a trap — both answers are one press and refusing costs nothing — but it is
+//! the reason this route is the root of its own ceremony rather than a step in the boot wizard.
+//! From Settings, BACK discards the draft and Done appears only after a stored value changes.
 //!
 //! # It never appears on an automated boot
 //!
@@ -53,7 +64,7 @@ use crate::ui::popover::Popover;
 use crate::ui::route_screen::{RouteGround, RouteLayout, RoutePush};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::{Button, KeyHint};
+use crate::ui::widgets::Button;
 use crate::ui::{Env, Rect, View};
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -87,8 +98,28 @@ const ROW_ERRORS_SUB: &str = "Optional technical crash reports.";
 const ROW_USAGE: &str = "Product analytics";
 const ROW_USAGE_SUB: &str = "Optional feature and playback outcomes.";
 const ROW_PREVIEW: &str = "See exactly what's shared";
+/// First run asks about ONE purpose at a time, so its preview row says which one it will show.
+const ROW_EXAMPLE: &str = "See an example report";
 const ROW_POLICY: &str = "Privacy policy";
 const ROW_DELETE: &str = "Delete all local data";
+/// Where BACK goes from the Settings-hosted route.
+const CRUMB_SETTINGS: &str = "Settings";
+/// The Settings-hosted route's own title.
+const SETTINGS_TITLE: &str = "Privacy & data";
+
+/// The two answers, as the words that go on the CONTROLS.
+///
+/// The title directly above states which purpose is being asked about, so a button carries the
+/// verb and the shortest noun that keeps the pair parallel. They read `Share Crash Reports` /
+/// `Don’t Share` while they were table ROWS, because a row has no question above it to inherit
+/// from and had to name the purpose itself.
+fn answer_labels() -> (&'static std::ffi::CStr, &'static std::ffi::CStr) {
+    if stage() == Stage::Crash {
+        (c"Share reports", c"Don’t share")
+    } else {
+        (c"Share analytics", c"Don’t share")
+    }
+}
 
 /// Row order, and the single source of it. An arm without a row, or a row without an arm, cannot
 /// happen — the same shape `legal::Page::ALL` uses, and for the same reason `account_menu`'s comment
@@ -101,8 +132,6 @@ enum RowId {
     Preview,
     Policy,
     Delete,
-    Share,
-    Decline,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,7 +140,7 @@ enum Mode {
     Settings,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Stage {
     Crash,
     Product,
@@ -124,7 +153,9 @@ enum PreviewKind {
 
 fn row_ids() -> Vec<RowId> {
     if mode() == Mode::FirstRun {
-        return vec![RowId::Share, RowId::Decline, RowId::Preview, RowId::Policy];
+        // The two ANSWERS are not rows — they are the route's action band. What is left here is
+        // only what you may READ before answering.
+        return vec![RowId::Preview, RowId::Policy];
     }
     vec![
         RowId::Errors,
@@ -148,11 +179,15 @@ static mut MODE: Mode = Mode::FirstRun;
 static mut STAGE: Stage = Stage::Crash;
 static mut PREVIEW_KIND: PreviewKind = PreviewKind::Payload;
 static mut DELETE_REQUESTED: bool = false;
-static mut FIRST_RUN_BACK_REQUESTED: bool = false;
 static mut DOCUMENT_OPEN: bool = false;
 static mut DOCUMENT_MORPH: RoutePush = RoutePush::new();
 static mut READER: DocumentReader = DocumentReader::new();
+/// Whether the route's bottom action band holds focus — Settings' Done, or first run's two
+/// answers.
 static mut ACTION_FOCUSED: bool = false;
+/// Which first-run answer the ring is on. A CURSOR, not a pre-selected value: the two are equals,
+/// nothing times out onto either, and `draft()` is untouched until OK is actually pressed.
+static mut ANSWER_SHARE: bool = true;
 static mut DELETE_ALERT: DecisionAlert = DecisionAlert::new();
 static mut GROUND: RouteGround = RouteGround::new();
 static mut GROUND_DRAWN: bool = false;
@@ -189,8 +224,15 @@ fn draft() -> (bool, bool) {
 fn base() -> (bool, bool) {
     unsafe { *addr_of!(BASE) }
 }
+/// Whether the route's bottom band holds a control at all.
+///
+/// First run ALWAYS does — its two answers live there, which is the whole point of the band on
+/// that route. Settings grows a Done only once a value differs from the stored one.
 fn action_visible() -> bool {
-    mode() == Mode::Settings && draft() != base()
+    match mode() {
+        Mode::FirstRun => true,
+        Mode::Settings => draft() != base(),
+    }
 }
 
 fn mode() -> Mode {
@@ -222,7 +264,18 @@ pub(crate) fn should_show(c: &Consent, automated: bool) -> bool {
     consent::should_ask(c, automated)
 }
 
+/// Put the device question on screen.
+///
+/// **Idempotent while it is already up, and that is load-bearing rather than defensive.** Since
+/// the ask moved ahead of the profile picker it is made from a routing site that runs every frame,
+/// and `should_show` stays true until BOTH answers are recorded — so without this the frame after
+/// the first answer re-seated the stage to Crash and the second question could never be reached.
+/// The guard lives here rather than at that one call site because it is a property of the
+/// ceremony: nothing may restart it half-answered.
 pub(crate) fn open(prev: &Consent) {
+    if menu_open() && mode() == Mode::FirstRun {
+        return;
+    }
     unsafe {
         addr_of_mut!(MODE).write(Mode::FirstRun);
         addr_of_mut!(STAGE).write(Stage::Crash);
@@ -231,7 +284,6 @@ pub(crate) fn open(prev: &Consent) {
         DOCUMENT_OPEN = false;
         (*addr_of_mut!(DOCUMENT_MORPH)).jump(false);
         ACTION_FOCUSED = false;
-        FIRST_RUN_BACK_REQUESTED = false;
         (*addr_of_mut!(GROUND)).reset();
         GROUND_DRAWN = false;
     }
@@ -272,15 +324,22 @@ pub(crate) fn open_settings(prev: &Consent) {
     crate::ui::idle::invalidate();
 }
 
-/// First-run consent owns an opaque frozen Home ground after its first draw. The app can then stop
-/// repainting the live hero underneath it until the question closes.
+/// First-run consent owns an opaque frozen ground after its first draw, so the app can stop
+/// repainting whatever is underneath it until the question closes.
+///
+/// **Only Home's update gates consult this** (`app.rs`'s Home/Library/Search arms), so it saves
+/// the repaint on the already-signed-in boot that opens over Home and saves nothing on the fresh
+/// sign-in, where the host is the profile picker and `profiles.rs` keeps updating under an opaque
+/// question. That is a known cost rather than an oversight: the picker's own springs are cheap and
+/// its roster load must not be paused by a screen in front of it.
 pub(crate) fn host_ground_ready() -> bool {
     menu_open() && mode() == Mode::FirstRun && unsafe { *addr_of!(GROUND_DRAWN) }
 }
 
-/// A first-run question is a full-screen route, not a live popover over Home.  The first draw may
-/// still need Home's metadata as an ambient source, but none of Home's springs or async presentation
-/// state should advance while the question owns the remote.
+/// A first-run question is a full-screen route, not a live popover over its host.  The first draw
+/// may still take Home's metadata as an ambient source on the one path that opens over Home, but
+/// none of Home's springs or async presentation state should advance while the question owns the
+/// remote.
 pub(crate) fn freezes_host() -> bool {
     menu_open() && mode() == Mode::FirstRun
 }
@@ -299,18 +358,14 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
     let (errors, usage) = draft();
     table().header_ink = theme::TEXT_READING;
     if mode() == Mode::FirstRun {
-        let (share, decline) = if stage() == Stage::Crash {
-            ("Share Crash Reports", "Don’t Share")
-        } else {
-            ("Share Product Analytics", "Don’t Share")
-        };
+        // One headerless section holding only the two things you may READ before answering, and
+        // no sub-lines: each row says all it needs in its label, and the question this screen is
+        // actually asking is in the narrative column, not in this list.
         table().set_sections(
             vec![Section::new("")
-                .row(Row::new(share))
-                .row(Row::new(decline))
                 .row(
                     Row::new(if stage() == Stage::Crash {
-                        "See an example report"
+                        ROW_EXAMPLE
                     } else {
                         ROW_PREVIEW
                     })
@@ -320,6 +375,14 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
             sel,
             preserve_motion,
         );
+        // Focus opens on the ANSWERS, not on the reading list — this route exists to be answered,
+        // and a stage change is an arrival at a fresh question, so it re-seats focus the same way
+        // the first one did. `list_focused` is what keeps a row from being plated meanwhile.
+        unsafe {
+            ACTION_FOCUSED = true;
+            ANSWER_SHARE = true;
+        }
+        table().list_focused = false;
     } else {
         let reporting = Section::new("Reporting")
             .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
@@ -341,6 +404,12 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
                 .chevron(true),
         );
         table().set_sections(vec![reporting, info, local], sel, preserve_motion);
+        // Settings opens on the LIST, and this has to be said rather than assumed: `TABLE` is a
+        // crate global shared with first run, which parks it `list_focused = false` because its
+        // focus lives in the answer band. Without restoring it here, opening Privacy from
+        // Settings after a first run in the same process draws no focus anywhere — while UP/DOWN
+        // and OK still act on the invisible selection.
+        table().list_focused = true;
     }
     debug_assert_eq!(row_ids().len() as i32, table().n_rows());
 }
@@ -420,25 +489,13 @@ pub(crate) fn on_back() -> bool {
             unsafe { addr_of_mut!(STAGE).write(Stage::Crash) };
             rebuild(0);
             crate::ui::idle::invalidate();
-        } else {
-            unsafe { FIRST_RUN_BACK_REQUESTED = true };
-            close();
         }
+        // …and at Crash, BACK is SWALLOWED. There is no previous step to restore — this question
+        // is the first thing after sign-in — and letting it fall through would drop an
+        // unanswered television onto whatever route happens to be underneath.
         return true;
     }
     false
-}
-
-/// Consume the first-run request to restore the previous onboarding route.  Kept as a request
-/// rather than routing from this module because `app.rs` owns both the profile auth flow and the
-/// Shared Sources route.
-pub(crate) fn take_first_run_back_request() -> bool {
-    unsafe {
-        let p = addr_of_mut!(FIRST_RUN_BACK_REQUESTED);
-        let requested = p.read();
-        p.write(false);
-        requested
-    }
 }
 
 fn choose(share: bool) {
@@ -476,7 +533,10 @@ pub(crate) fn on_ok() -> bool {
         return false;
     }
     if action_visible() && unsafe { *addr_of!(ACTION_FOCUSED) } {
-        commit();
+        match mode() {
+            Mode::FirstRun => choose(unsafe { *addr_of!(ANSWER_SHARE) }),
+            Mode::Settings => commit(),
+        }
         return true;
     }
     let rows = row_ids();
@@ -517,8 +577,6 @@ pub(crate) fn on_ok() -> bool {
         RowId::Delete => {
             delete_alert().open();
         }
-        RowId::Share => choose(true),
-        RowId::Decline => choose(false),
     }
     true
 }
@@ -541,7 +599,10 @@ pub(crate) fn on_updown(delta: i32) -> bool {
         return true;
     }
     if menu_open() {
-        if mode() == Mode::Settings && unsafe { *addr_of!(ACTION_FOCUSED) } {
+        // The action band is BELOW the list on both modes, so UP leaves it and DOWN off the last
+        // row enters it. First run opens focused there rather than on the list, which is the only
+        // asymmetry — its band is the answer, not a commit for edits made above it.
+        if unsafe { *addr_of!(ACTION_FOCUSED) } {
             if delta < 0 {
                 unsafe { ACTION_FOCUSED = false };
                 table().list_focused = true;
@@ -565,6 +626,22 @@ pub(crate) fn on_updown(delta: i32) -> bool {
 pub(crate) fn on_left_right(delta: i32) -> bool {
     if delete_alert().is_open() {
         delete_alert().move_focus(delta);
+        return true;
+    }
+    // First run's two answers are a ROW, so LEFT/RIGHT is their whole navigation — the same
+    // grammar the delete alert above uses, and the reason the answers had to leave the list: a
+    // column of rows can only be walked with UP/DOWN, which put them in the same gesture as the
+    // two documents beneath them.
+    if menu_open()
+        && !preview_open()
+        && mode() == Mode::FirstRun
+        && unsafe { *addr_of!(ACTION_FOCUSED) }
+    {
+        let share = delta < 0;
+        if unsafe { *addr_of!(ANSWER_SHARE) } != share {
+            unsafe { ANSWER_SHARE = share };
+            crate::ui::idle::invalidate();
+        }
         return true;
     }
     false
@@ -740,16 +817,78 @@ pub(crate) fn draw() {
     delete_alert().draw(c"Delete all local data?", c"Cancel", c"Delete");
 }
 
+/// Where BACK goes from this route, named on the crumb above the title — `None` where BACK goes
+/// nowhere.
+///
+/// Derived rather than passed in because every entrance to this screen is known here: the Settings
+/// root, and — for the second question — the first one.
+fn crumb() -> Option<&'static str> {
+    match (mode(), stage()) {
+        (Mode::Settings, _) => Some(CRUMB_SETTINGS),
+        // The ROOT of the ceremony: sign-in is behind it and cannot be undone, so there is
+        // nothing honest to name. See the module doc.
+        (Mode::FirstRun, Stage::Crash) => None,
+        (Mode::FirstRun, Stage::Product) => Some(CRASH_TITLE),
+    }
+}
+
+/// The route's bottom action band.
+///
+/// **First run holds its two ANSWERS here, and that is a move OUT of the list.** They were rows
+/// once, which cost three things at once: a one-press decision read as a menu of four items; the
+/// two answers sat in the same column, the same type and the same gesture as two documents you
+/// may read first, so the difference between *deciding* and *reading* was carried by row order
+/// alone; and the band underneath them spent its whole 60px saying `Press [BACK] to return` while
+/// the actual choices scrolled in a list. The crumb above the title says where BACK goes now, so
+/// the band is free for the thing this screen exists to collect.
+///
+/// Settings keeps Done, and still only once a value differs from the stored one.
+fn draw_action_row(p: crate::ui::Painter, layout: RouteLayout) {
+    if !action_visible() {
+        return;
+    }
+    if mode() == Mode::Settings {
+        let w = Button::pill_w(c"Done".as_ptr(), theme::size::BODY, false).min(layout.action.w);
+        Button::new(
+            c"Done".as_ptr(),
+            theme::size::BODY,
+            Rect::new(layout.action.x, layout.action.y, w, layout.action.h),
+        )
+        .focused(unsafe { *addr_of!(ACTION_FOCUSED) })
+        .palette(crate::ui::settings::control_palette())
+        .draw(&Env::inert(), p);
+        return;
+    }
+    // Two EQUALS, so neither is measured to the other's width and neither wears a danger face:
+    // declining is an ordinary answer here, not a destructive one.
+    let (share, decline) = answer_labels();
+    let (share_r, decline_r) = layout.action_pair(
+        Button::pill_w(share.as_ptr(), theme::size::BODY, false),
+        Button::pill_w(decline.as_ptr(), theme::size::BODY, false),
+    );
+    let focused = unsafe { *addr_of!(ACTION_FOCUSED) };
+    let on_share = unsafe { *addr_of!(ANSWER_SHARE) };
+    let palette = unsafe { (*addr_of!(GROUND)).palette() };
+    for (label, rect, is_share) in [(share, share_r, true), (decline, decline_r, false)] {
+        Button::new(label.as_ptr(), theme::size::BODY, rect)
+            .focused(focused && on_share == is_share)
+            .palette(palette)
+            .draw(&Env::inert(), p);
+    }
+}
+
 /// Draw the current route state and, when pushed, its shared document reader.
 fn draw_question() {
     let p0 = pop();
     let a = p0.appear();
     if mode() == Mode::FirstRun {
         unsafe {
-            // The question is opened as Home is ENTERED, before Home has necessarily painted one
-            // hero frame. Sampling that framebuffer would freeze the app's grey clear. Use the
-            // pre-Home source contract instead: real hero UltraBlur metadata when available, the
-            // design-system ambient fallback otherwise.
+            // Since the ask moved ahead of the profile picker, the usual first-run host is the
+            // PICKER and no hub has been fetched — so `draw_home` finds no hero metadata and the
+            // authored `ROUTE_GROUND_FALLBACK` is the ground rather than a fallback. The keyed
+            // hero arm is still reachable, but only on the one path that opens over a painted
+            // Home: an already-signed-in boot whose policy version was bumped. Either way, never
+            // sample the framebuffer — on the picker path it would freeze the app's grey clear.
             (*addr_of_mut!(GROUND)).draw_home(crate::ui::Painter::root());
             GROUND_DRAWN = true;
         }
@@ -770,8 +909,9 @@ fn draw_question() {
     };
     layout.draw_narrative(
         p,
+        crumb(),
         if mode() == Mode::Settings {
-            "Privacy & data"
+            SETTINGS_TITLE
         } else {
             title()
         },
@@ -788,33 +928,22 @@ fn draw_question() {
         layout.content
     };
     table().draw(p, table_frame);
-    if mode() == Mode::Settings {
-        if action_visible() {
-            let w = Button::pill_w(c"Done".as_ptr(), theme::size::BODY, false).min(layout.action.w);
-            Button::new(
-                c"Done".as_ptr(),
-                theme::size::BODY,
-                Rect::new(layout.action.x, layout.action.y, w, layout.action.h),
-            )
-            .focused(unsafe { *addr_of!(ACTION_FOCUSED) })
-            .palette(crate::ui::settings::control_palette())
-            .draw(&Env::inert(), p);
-        } else {
-            KeyHint::new(c"Press", c"BACK", c"to return").draw(
-                p,
-                layout.action.x,
-                layout.action.cy(),
-            );
-        }
-    } else if !preview_open() {
-        KeyHint::new(c"Press", c"BACK", c"to return").draw(p, layout.action.x, layout.action.cy());
+    if !preview_open() {
+        draw_action_row(p, layout);
     }
 
     if t > 0.01 {
         let policy = unsafe { *addr_of!(PREVIEW_KIND) == PreviewKind::Policy };
         let dp = unsafe { (*addr_of!(DOCUMENT_MORPH)).child(entrance) };
+        // A pushed document's crumb names the question it was opened from, so the way back out of
+        // a policy read is stated even on the route that has no BACK hint anywhere.
         layout.draw_narrative(
             dp,
+            Some(if mode() == Mode::Settings {
+                SETTINGS_TITLE
+            } else {
+                title()
+            }),
             if policy { ROW_POLICY } else { ROW_PREVIEW },
             if policy {
                 "How PlxNative handles local data, Plex services and optional reporting."
@@ -829,7 +958,6 @@ fn draw_question() {
             preview()
         };
         reader().draw(dp, layout.content, None, &text);
-        KeyHint::new(c"Press", c"BACK", c"to return").draw(dp, layout.action.x, layout.action.cy());
     }
 }
 
@@ -1080,6 +1208,146 @@ mod tests {
         close();
     }
 
+    /// **The two answers are the ACTION ROW, and the list is only what you may read first.**
+    /// Pinned because the failure is silent and cosmetic-looking: put an answer back among the
+    /// rows and the screen still works, it just stops distinguishing deciding from reading.
+    #[test]
+    fn first_run_answers_are_the_action_row_and_not_table_rows() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert_eq!(
+            row_ids(),
+            vec![RowId::Preview, RowId::Policy],
+            "only the two readable documents remain in the list"
+        );
+        assert_eq!(table().n_rows(), 2);
+        assert!(
+            action_visible(),
+            "first run always carries its answers in the band"
+        );
+        assert!(
+            unsafe { *addr_of!(ACTION_FOCUSED) },
+            "focus opens on the answers, not on the reading list"
+        );
+        assert!(!table().list_focused, "so no row is plated meanwhile");
+        close();
+    }
+
+    /// LEFT/RIGHT is the answer row's whole navigation, and neither direction ANSWERS: the draft
+    /// is untouched until OK. That is the same separation BACK has, one gesture over.
+    #[test]
+    fn moving_between_the_two_answers_decides_nothing() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert!(unsafe { *addr_of!(ANSWER_SHARE) }, "opens on Share");
+        assert!(on_left_right(1));
+        assert!(!unsafe { *addr_of!(ANSWER_SHARE) });
+        assert!(on_left_right(-1));
+        assert!(unsafe { *addr_of!(ANSWER_SHARE) });
+        assert_eq!(draft(), (false, false), "walking the row records nothing");
+        assert_eq!(stage(), Stage::Crash, "and advances nothing");
+        close();
+    }
+
+    /// OK on the focused answer is what actually answers — and a stage change re-seats focus on
+    /// the new question's own answers rather than leaving it wherever the last one ended.
+    #[test]
+    fn ok_on_an_answer_records_it_and_the_next_question_reopens_on_its_own_row() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        on_left_right(1); // Don't share
+        on_ok();
+        assert_eq!(stage(), Stage::Product);
+        assert_eq!(draft(), (false, false), "crash reports declined");
+        assert!(unsafe { *addr_of!(ACTION_FOCUSED) });
+        assert!(
+            unsafe { *addr_of!(ANSWER_SHARE) },
+            "the second question opens on Share like the first, not on the last answer given"
+        );
+        close();
+    }
+
+    /// UP leaves the band for the list and DOWN off the last row comes back — one vertical
+    /// relationship, shared by both modes, so the band is never a dead end.
+    #[test]
+    fn the_answer_row_and_the_reading_list_are_one_vertical_walk() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert!(on_updown(-1));
+        assert!(!unsafe { *addr_of!(ACTION_FOCUSED) });
+        assert!(table().list_focused);
+        table().sel = table().n_rows() - 1;
+        assert!(on_updown(1));
+        assert!(
+            unsafe { *addr_of!(ACTION_FOCUSED) },
+            "DOWN off the last row returns to the answers"
+        );
+        close();
+    }
+
+    /// **Settings opens on its list, whatever first run left behind.** `TABLE` is a crate global
+    /// and first run parks `list_focused` false (its focus is the answer band), so a Settings open
+    /// later in the same process inherited that and drew focus on nothing at all — while the keys
+    /// still moved and committed an invisible selection.
+    #[test]
+    fn settings_opens_on_the_list_after_a_first_run_left_focus_in_the_answer_band() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert!(!table().list_focused, "first run parks it here");
+        close();
+        open_settings(&Consent::default());
+        assert!(
+            table().list_focused,
+            "…and Settings has to put it back, or its focus is invisible"
+        );
+        assert!(!unsafe { *addr_of!(ACTION_FOCUSED) }, "and not on a Done that is not there yet");
+        close();
+    }
+
+    /// **Opening an already-open question must not restart it.** The device question is asked
+    /// from a routing site that runs EVERY FRAME while the profile picker is up — `should_show`
+    /// stays true until BOTH answers are recorded, so an unguarded `open` re-seated the stage to
+    /// Crash on the frame after the first answer and the second question was unreachable. The
+    /// three call sites this replaced were all one-shot arrivals at Home, which is why the
+    /// re-entrancy never mattered before.
+    #[test]
+    fn reopening_a_live_question_does_not_restart_the_ceremony() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        choose(true);
+        assert_eq!(stage(), Stage::Product);
+        open(&Consent::default());
+        assert_eq!(
+            stage(),
+            Stage::Product,
+            "the next frame's ask is a no-op, not a reset to the first question"
+        );
+        assert_eq!(draft(), (true, false), "and it does not discard the answer");
+        close();
+        open(&Consent::default());
+        assert_eq!(stage(), Stage::Crash, "a genuinely fresh open still starts over");
+        close();
+    }
+
+    /// Every consent route names where BACK goes — except the one where BACK goes nowhere, and
+    /// that exception is the whole placement argument rather than an oversight. The device
+    /// question sits immediately after sign-in, so there is no earlier step to name.
+    #[test]
+    fn each_route_names_where_back_goes_and_the_device_question_names_nothing() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert_eq!(crumb(), None, "the first question is the root of the ceremony");
+        choose(true);
+        assert_eq!(
+            crumb(),
+            Some(CRASH_TITLE),
+            "the second question returns to the first"
+        );
+        open_settings(&Consent::default());
+        assert_eq!(crumb(), Some(CRUMB_SETTINGS));
+        close();
+    }
+
     /// The two labels say which switch is which without either sounding like the safe one. Pinned
     /// because the wording IS the compliance surface: granularity means a person can tell the two
     /// purposes apart.
@@ -1103,23 +1371,24 @@ mod tests {
         assert_ne!(CRASH_TITLE, PRODUCT_TITLE);
     }
 
+    /// BACK walks Product → Crash and then stops. **Stopping is the point**: the step behind the
+    /// first question is sign-in, which cannot be undone, so a BACK that fell through would drop
+    /// an unanswered television onto whatever route sat underneath — the profile picker it was
+    /// deliberately drawn in front of. Neither press records a refusal.
     #[test]
-    fn first_run_back_reverses_stages_without_recording_a_refusal() {
+    fn back_reverses_the_stages_and_then_holds_without_recording_a_refusal() {
         let _g = crate::testlock::serial();
         open(&Consent::default());
         choose(true);
-        assert!(stage() == Stage::Product);
+        assert_eq!(stage(), Stage::Product);
         assert_eq!(draft(), (true, false));
-        on_back();
-        assert!(stage() == Stage::Crash);
+        assert!(on_back());
+        assert_eq!(stage(), Stage::Crash);
         assert_eq!(draft(), (true, false), "BACK does not edit either choice");
-        assert!(!take_first_run_back_request());
-        on_back();
-        assert!(take_first_run_back_request());
-        assert_eq!(
-            draft(),
-            (true, false),
-            "leaving the wizard still records nothing"
-        );
+        assert!(on_back(), "and at the root it is swallowed, not passed on");
+        assert!(menu_open(), "so the question is still the thing on screen");
+        assert_eq!(stage(), Stage::Crash);
+        assert_eq!(draft(), (true, false), "still recording nothing");
+        close();
     }
 }
