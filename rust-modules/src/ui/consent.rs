@@ -112,6 +112,10 @@ const ROW_USAGE_SUB: &str = "Optional feature and playback outcomes.";
 /// preview exists at all.
 const ROW_PREVIEW_CRASH: &str = "Crashes / Errors — what is actually sent";
 const ROW_PREVIEW_USAGE: &str = "Analytics / Usage — what is actually sent";
+/// The two channel documents' own titles — the channel alone, because the row labels above elide
+/// at the route title's rung; "what is actually sent" is each document's subtitle instead.
+const DOC_TITLE_CRASH: &str = "Crashes / Errors";
+const DOC_TITLE_USAGE: &str = "Analytics / Usage";
 /// First run asks about ONE purpose at a time, so its preview row says which one it will show —
 /// the click still opens the CHANNEL-scoped document that matches the current [`Stage`].
 const ROW_EXAMPLE: &str = "See an example report";
@@ -1012,13 +1016,17 @@ fn draw_question() {
                 ROW_POLICY,
                 "How PlxNative handles local data, Plex services and optional reporting.",
             ),
+            // The document's TITLE is the channel alone: the row's long form ("… — what is
+            // actually sent") elides to "…what is actuall…" at the route title's rung inside the
+            // narrative column (sim, 2026-09-02), so the "what is actually sent" half moves into
+            // the subtitle, where it has the room to be a sentence.
             PreviewKind::Crash => (
-                ROW_PREVIEW_CRASH,
-                "The exact fields a crash or error report can send — only when error reporting is on.",
+                DOC_TITLE_CRASH,
+                "What is actually sent: the exact fields a crash or error report can carry — only when error reporting is on.",
             ),
             PreviewKind::Usage => (
-                ROW_PREVIEW_USAGE,
-                "The exact fields a product analytics event can send — only when usage reporting is on.",
+                DOC_TITLE_USAGE,
+                "What is actually sent: the exact fields a product analytics event can carry — only when usage reporting is on.",
             ),
         };
         // A pushed document's crumb names the question it was opened from, so the way back out of
