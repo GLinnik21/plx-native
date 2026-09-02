@@ -1198,8 +1198,16 @@ pub(crate) enum ReloadOutcome {
     StartFailed,
 }
 
+/// Settle the route-start transaction a reload effect promised but can no longer perform.
+///
+/// **Observe rather than reserve.** `begin_route_start` MINTS a transaction from a reducer which
+/// owns none — from `Stable`, and, since a completed stop now publishes `Idle`
+/// ([`crate::route::finish_engine_teardown`]), from `Idle` too — and aborting a transaction no
+/// caller ever used would publish `Failed` for a route that never had a `Load` to lose. Every
+/// phase that really does own one (`Preparing`/`Prepared`/`Starting`, ordinary or Original) is
+/// exactly the set `pending_route_start` returns without minting, so nothing leaks.
 fn settle_missing_route_start() {
-    if let Some(ticket) = crate::route::begin_route_start() {
+    if let Some(ticket) = crate::route::pending_route_start() {
         let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::NoRoute);
     }
 }
@@ -1351,6 +1359,10 @@ fn teardown(mt: &MainThread, for_reload: bool) {
             crate::route::clear_url();
             SHARED.reset_session();
             TX.reset();
+            // Nothing here is asynchronous, so the fence `begin_engine_teardown` just raised is
+            // already spent. Publish the completed stop rather than latching `Stopping` — see
+            // `route::finish_engine_teardown`.
+            crate::route::finish_engine_teardown();
         }
         return;
     }
@@ -1554,6 +1566,12 @@ fn teardown(mt: &MainThread, for_reload: bool) {
         // ReportStop is already set, so it exits after its current POST and cannot be revived by
         // the next session — which is exactly what the shared flag could not guarantee.
         drop(t);
+    }
+    // Every worker `begin_engine_teardown` fenced is joined, the native object is retired and the
+    // URL is gone: the stop is COMPLETE, so retire the fence too. A reload keeps its own phase
+    // (`Prepared`/`OriginalTrial`), which is the transaction the caller is about to start.
+    if !for_reload {
+        crate::route::finish_engine_teardown();
     }
     log("stop_bufferfeed: torn down");
     // Engine (hs/aq boxes, payload) drops here — after all joins

@@ -1005,8 +1005,9 @@ fn begin_playback_request() -> bool {
         ControlPhase::Resolving => None,
         ControlPhase::Stable => Some(ResolveFallback::Stable),
         ControlPhase::Failed(serial) => Some(ResolveFallback::Failed(serial)),
-        // Stopping is observable only while the synchronous main-thread teardown owns the loop;
-        // by the time another UI request can run there is no live Engine left to preserve.
+        // Stopping is observable only while the synchronous main-thread teardown owns the loop —
+        // [`finish_engine_teardown`] publishes `Idle` the moment that teardown returns. Either
+        // way there is no live Engine left to preserve, which is why they share one fallback.
         ControlPhase::Idle | ControlPhase::Stopping => Some(ResolveFallback::Idle),
         // Do not hide a native/PMS transaction under Resolving. Its matching completion would
         // otherwise have nowhere truthful to land, and cancelling the resolve would fabricate an
@@ -1335,7 +1336,14 @@ pub(crate) fn begin_route_start() -> Option<RouteStartTransaction> {
             control.phase = ControlPhase::Preparing(serial);
             Some(RouteStartTransaction { serial })
         }
-        ControlPhase::Failed(_) => {
+        // `Failed` and `Idle` are the two phases which own no live Engine, so both go straight to
+        // `Prepared`: there is nothing left for `Preparing`'s "old route is still recoverable"
+        // window to protect, and entering it would let an ordinary `NoRoute` abort publish
+        // `Stable` around a decoder that no longer exists. `Idle` is the phase a COMPLETED stop
+        // publishes ([`finish_engine_teardown`]), and it is how a dev fixture replays a stream
+        // that ran to EOS — that entry asks for a start owner directly rather than through
+        // [`begin_playback_request`].
+        ControlPhase::Failed(_) | ControlPhase::Idle => {
             control.next_action = next_generation(control.next_action);
             let serial = control.next_action;
             control.phase = ControlPhase::Prepared(serial);
@@ -1712,6 +1720,27 @@ pub(crate) fn begin_engine_teardown(for_reload: bool) {
             }
             phase => phase,
         };
+    }
+}
+
+/// The synchronous main-thread teardown announced by `begin_engine_teardown(false)` has RETURNED:
+/// every worker is joined, the native object is retired and the URL is cleared. `Stopping` is that
+/// teardown's fence and nothing more — it exists so a worker which was still running when the stop
+/// began cannot publish into the route it is destroying — so leaving it latched afterwards
+/// describes a teardown which never finishes.
+///
+/// It cost LG App Self Checklist #46: a replayed `plxnative-playurl` stream asks
+/// [`begin_route_start`] for an owner directly (no [`begin_playback_request`] resolve in front of
+/// it, because there is no library item behind the fixture), and a latched `Stopping` refused it —
+/// `start_bufferfeed: route reducer refused a start owner`, one Load where the case needs two.
+///
+/// `Idle` rather than `Stable`: a completed stop owns no publishable route, so automatic
+/// publication and [`claim_route_action`] must stay closed. Only `Stopping` moves; a phase already
+/// replaced by a newer request is left exactly as that request left it.
+pub(crate) fn finish_engine_teardown() {
+    let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    if control.phase == ControlPhase::Stopping {
+        control.phase = ControlPhase::Idle;
     }
 }
 
@@ -8458,6 +8487,61 @@ mod tests {
             claim_route_action().is_none(),
             "Stopping owns the transition boundary"
         );
+        reset_player_control_for_test();
+    }
+
+    /// The other half of the test above: `Stopping` fences the workers for the DURATION of the
+    /// synchronous teardown, and `finish_engine_teardown` retires that fence when the teardown
+    /// returns. A latched `Stopping` refused LG App Self Checklist #46's replay outright
+    /// (`start_bufferfeed: route reducer refused a start owner`), because the dev fixture asks
+    /// `begin_route_start` for an owner directly rather than through `begin_playback_request`.
+    ///
+    /// The RED here is structural rather than historical — `finish_engine_teardown` did not exist
+    /// against the broken build. The failure as reported is reproduced by
+    /// `player::engine::replay_after_stop_tests::a_completed_stop_grants_the_next_start_a_route_owner`,
+    /// which drives the real `stop_bufferfeed` and was watched red.
+    #[test]
+    fn a_completed_teardown_releases_the_fence_it_raised() {
+        let _g = fresh_registry();
+        reset_player_control_for_test();
+        install_active_hls(
+            "replay-owner",
+            "http://fixture.invalid/live.m3u8",
+            crate::abr::Rung::P480,
+        );
+
+        begin_engine_teardown(false);
+        assert!(
+            begin_route_start().is_none(),
+            "a start may not be minted while the teardown still owns the loop",
+        );
+
+        finish_engine_teardown();
+
+        assert!(
+            claim_route_action().is_none(),
+            "a completed stop is still not a publishable route",
+        );
+        assert!(
+            pending_route_start().is_none(),
+            "a completed stop owns no transaction of its own",
+        );
+        let start =
+            begin_route_start().expect("a completed stop must grant the next start an owner");
+        assert!(
+            prepare_route_start(start),
+            "the replay owns the transaction it was granted",
+        );
+        let attempt = claim_route_start_attempt(start)
+            .expect("a granted transaction mints one physical Load attempt");
+        assert!(settle_route_start(attempt, RouteStartResult::Started));
+        assert_eq!(
+            PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).phase,
+            ControlPhase::Stable,
+            "the replayed Load settles into an ordinary publishable route",
+        );
+
+        reset_player_control_for_test();
     }
 
     #[test]
