@@ -354,7 +354,8 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # reported that exact number as its own — in X-Plex-Version, in the Sentry release, on the
 # diagnostics panel — and nothing downstream could tell a working tree from the shipped artifact.
 # `rust-modules/build.rs` reads this ONE variable: set, the binary says `0.5.0`; unset or empty, it
-# says `0.5.1-dev`, the patch it is working towards. Exported (rather than passed per recipe) so
+# says `0.6.0-dev`, the next MINOR — trunk is where features land, so that is what is cut from it
+# next; a patch release comes off an existing minor's own line. Exported (rather than per recipe) so
 # the cross-build, `make check`, `make sim` and `make macapp` cannot answer differently — they run
 # cargo from four places, and the failure of missing one is a mislabelled artifact, not an error.
 #

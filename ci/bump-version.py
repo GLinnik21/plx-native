@@ -12,7 +12,7 @@ submission rather than a warning:
     rust-modules/Cargo.toml     what every version the app REPORTS is derived from —
                                 X-Plex-Version, the telemetry release, the diagnostics panel.
                                 `rust-modules/build.rs` publishes it as `PLX_VERSION`, exactly
-                                for a RELEASE build and as the next patch plus `-dev` for
+                                for a RELEASE build and as the next MINOR plus `-dev` for
                                 everything else, so a working tree stops claiming to be the
                                 last release. That suffix exists only in the binary.
     rust-modules/Cargo.lock     cargo would fix this itself on the next build, but leaving it

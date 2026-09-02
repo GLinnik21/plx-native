@@ -950,7 +950,7 @@ Listed because each could change a decision above.
    - **`X-Plex-Version` was two literals** (`1.0` to plex.tv, `0.1.0` to the PMS), already stale in
      opposite directions before release. Now one derived constant — `plex::identity::VERSION`,
      which `rust-modules/build.rs` publishes from `Cargo.toml` (exactly for a `RELEASE=1` build,
-     as the next patch plus `-dev` for anything else) — with `ci/check-package.py` asserting that
+     as the next minor plus `-dev` for anything else) — with `ci/check-package.py` asserting that
      `Cargo.toml` and `appinfo.json` agree, and that the packaged binary's reported version matches
      the configuration that produced it: exact for the stable id and for any `RELEASE=1` build,
      `-dev` for a developer one. Graded in both directions, because a witness that cannot fail is

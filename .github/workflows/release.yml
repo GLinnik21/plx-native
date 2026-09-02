@@ -29,10 +29,16 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Version bump (ignored if "version" is set)'
+        # MINOR is the default because development here is trunk-based: features land on main, so
+        # what is cut from main is a minor (or a major, when that is the deliberate call). A patch
+        # belongs to an existing minor's own line. The default used to be `patch`, which quietly
+        # disagreed with that — and with `rust-modules/build.rs`, which names the next MINOR as the
+        # version a working tree is heading for. A dropdown default is the version most releases
+        # get, so it should be the one the policy names.
+        description: 'Version bump (ignored if "version" is set) — trunk cuts minors'
         type: choice
-        options: [patch, minor, major]
-        default: patch
+        options: [minor, major, patch]
+        default: minor
       version:
         description: 'Explicit X.Y.Z instead of a bump level'
         required: false

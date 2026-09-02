@@ -75,7 +75,7 @@ const CONTACT: &str = "Privacy questions may be sent to glinnik21@gmail.com.\n\n
 /// It was a literal — `PlxNative 0.5.0`, hand-typed, and not on `ci/bump-version.py`'s list of
 /// files to bump, so it was already the only surface in the app that could disagree with every
 /// other. It is composed from the same `PLX_VERSION` the diagnostics panel and `X-Plex-Version`
-/// report, so a release build says `0.5.0` here and a developer build says `0.5.1-dev`: this is
+/// report, so a release build says `0.5.0` here and a developer build says `0.6.0-dev`: this is
 /// a screen a user is asked to read out in a bug report, and it must name the binary they are
 /// running rather than the last thing that was published.
 ///

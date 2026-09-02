@@ -67,7 +67,7 @@ def version() -> str:
 
     The number comes from the file that owns it — `rust-modules/Cargo.toml`, which
     `ci/check-package.py` keeps in step with `pkg/appinfo.json` and the control file — but the
-    string is `rust-modules/build.rs`'s: exactly `X.Y.Z` for a release build, and the next patch
+    string is `rust-modules/build.rs`'s: exactly `X.Y.Z` for a release build, and the next MINOR
     plus `-dev` for every other one.
 
     **The same rule, spelled twice, because this script cannot ask cargo what it emitted.** It has
@@ -75,7 +75,7 @@ def version() -> str:
     this process's environment, so it reads the same `PLX_RELEASE` — a Makefile-exported empty
     value under `make macapp`, `1` under `make RELEASE=1 macapp`. Reading `Cargo.toml` alone (which
     this did) put `0.5.0` in the Finder metadata and the zip filename of a bundle whose diagnostics
-    panel says `0.5.1-dev`: the very ambiguity the suffix exists to remove, recreated on the one
+    panel says `0.6.0-dev`: the very ambiguity the suffix exists to remove, recreated on the one
     artifact that is handed to somebody who has none of this checkout.
 
     This is the string for the ZIP NAME and the display metadata. The two numeric plist keys take
@@ -84,8 +84,8 @@ def version() -> str:
     pkg = package_version()
     if os.environ.get("PLX_RELEASE"):
         return pkg
-    major, minor, patch = (int(p) for p in pkg.split("."))
-    return f"{major}.{minor}.{patch + 1}-dev"
+    major, minor, _patch = (int(p) for p in pkg.split("."))
+    return f"{major}.{minor + 1}.0-dev"
 
 
 def package_version() -> str:
@@ -95,10 +95,10 @@ def package_version() -> str:
     specifies `CFBundleShortVersionString` and `CFBundleVersion` as period-separated integers, and
     that does not relax for an ad-hoc-signed bundle — LaunchServices and anything else that
     compares or displays a bundle version is entitled to assume the shape and to do what it likes
-    with `0.5.1-dev`.
+    with `0.6.0-dev`.
 
     **Not `version()` with the suffix stripped**, which is the obvious spelling and is wrong: that
-    yields `0.5.1`, a version no release has ever carried, so the numeric field would claim a
+    yields `0.6.0`, a version no release has yet carried, so the numeric field would claim a
     release that does not exist — strictly worse than naming the one it was built from. The dev
     distinction goes where it costs nothing instead: the archive filename, `CFBundleGetInfoString`
     (free-form by definition), and the app's own About page and diagnostics panel, which is where
@@ -160,7 +160,7 @@ def write_plist(contents: Path, ver: str):
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundlePackageType": "APPL",
         # Numeric by contract (see `package_version`), so these two can read 0.5.0 while the
-        # binary beside them reports 0.5.1-dev. That gap is why the free-form key below exists.
+        # binary beside them reports 0.6.0-dev. That gap is why the free-form key below exists.
         "CFBundleShortVersionString": package_version(),
         "CFBundleVersion": package_version(),
         # Free-form by definition, and the one plist field that may carry the suffix. It is what

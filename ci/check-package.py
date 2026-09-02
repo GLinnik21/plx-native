@@ -520,7 +520,7 @@ check(appinfo["version"] == control["Version"],
 # designed to be photographed into a bug report. A bump that missed Cargo.toml would ship a package
 # labelled 0.2.1 whose own on-screen version says 0.2.0 — precisely the disagreement `identity`
 # exists to make impossible, and nothing checked it until a release nearly went out that way.
-# (Derived, not copied: `rust-modules/build.rs` reports the next patch with a `-dev` suffix for
+# (Derived, not copied: `rust-modules/build.rs` reports the next minor with a `-dev` suffix for
 # anything but a RELEASE build, which the binary check further down grades on the bytes.)
 cargo = (ROOT / "rust-modules/Cargo.toml").read_text()
 m = re.search(r'^version = "([^"]+)"', cargo, re.M)
@@ -717,8 +717,8 @@ if binary.exists():
     # WHICH VERSION THE BINARY SAYS IT IS, which the four tracked files above cannot answer.
     #
     # They are the version this package was CUT from; `rust-modules/build.rs` decides what the
-    # binary REPORTS, and for anything but `RELEASE=1` that is the next patch with a `-dev` suffix
-    # (`0.5.0` published, `0.5.1-dev` in the tree). That exists so a developer build stops
+    # binary REPORTS, and for anything but `RELEASE=1` that is the next minor with a `-dev` suffix
+    # (`0.5.0` published, `0.6.0-dev` in the tree). That exists so a developer build stops
     # impersonating the last release in X-Plex-Version, in the Sentry release and on the
     # diagnostics panel — and it means a version string now has a way to be wrong that no file
     # comparison can see: a package for the stable id whose binary reports a version no release
@@ -735,8 +735,11 @@ if binary.exists():
     # by a page the version mechanism never touched. `telemetry::{crashreport,native,playback}`
     # compose `concat!("plxnative@", env!("PLX_VERSION"))` in every configuration — telemetry is
     # ungated on purpose — so this witnesses the emitted value itself.
-    _major, _minor, _patch = (int(x) for x in appinfo["version"].split("."))
-    DEV_VERSION = f"plxnative@{_major}.{_minor}.{_patch + 1}-dev".encode()
+    # The next MINOR with the patch reset, which is what `build.rs` emits and why: trunk is where
+    # features land, so the next release cut from it is a minor (or a major, which nothing here can
+    # predict); a patch comes off an existing minor's own line.
+    _major, _minor, _ = (int(x) for x in appinfo["version"].split("."))
+    DEV_VERSION = f"plxnative@{_major}.{_minor + 1}.0-dev".encode()
     #
     # The id is a rule of its own here too, so it sits BESIDE the stamp branch rather than inside
     # it: whatever configuration produced it, the package users install may not claim a version no

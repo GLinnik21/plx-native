@@ -70,11 +70,27 @@ fn main() {
 /// meant to be photographed into a bug report. A crash from somebody's working tree landed on the
 /// shipped release's tally and nothing downstream could separate the two.
 ///
-/// So a build that is not a release names the patch it is working TOWARDS and says what it is:
-/// `0.5.0` published, `0.5.1-dev` in the tree. It is the next PATCH rather than a guess at the
-/// next real release — the version after `0.5.1-dev` may well be `0.6.0`, and inventing a minor
-/// here would be a claim about a plan this file cannot see. What it must never be is a number a
-/// release has already used.
+/// So a build that is not a release names the version it is working TOWARDS and says what it is:
+/// `0.5.0` published, `0.6.0-dev` in the tree.
+///
+/// **It is the next MINOR, because this project is trunk-based.** Trunk is where features land, so
+/// the next thing cut from it is a minor (or a major, when the maintainer decides that); a PATCH is
+/// only ever cut from an existing minor's own line, where trunk's number is not the question being
+/// asked. Naming the next patch would therefore be wrong in the common case and right in none —
+/// `0.5.1-dev` on trunk claims to be heading for a release that, by policy, is not cut from trunk
+/// at all. It also makes the semver ordering mean something: `0.6.0-dev` precedes `0.6.0`, so the
+/// tree really is a pre-release of what it is heading for, rather than of a version nobody plans.
+///
+/// A MAJOR is not guessed at, and cannot be: nothing in this file can see that decision, and
+/// `1.0.0-dev` claimed on every ordinary build would be a false promise rather than a cautious one.
+/// The invariant that actually matters is weaker and is preserved either way — the reported version
+/// must never be a number a release has already used.
+///
+/// If a maintenance line is ever cut (a `0.5.x` branch for a patch release), the rule here needs an
+/// input it does not have today, because on that branch the next version IS a patch. Nothing in the
+/// repo cuts one yet; the fix at that point is an env override beside `PLX_RELEASE`, not a git
+/// branch lookup — a build script that reads git state is wrong in a tarball, in CI and in a
+/// worktree.
 ///
 /// **The suffix reaches the reported string ONLY.** It never enters `pkg/appinfo.json` or the
 /// control file: `1.0.0-rc1` is not installable on a webOS television, which is also why
@@ -92,7 +108,8 @@ fn emit_version() {
     // the shape rule conditional on the build that is least likely to be looked at: cargo accepts
     // `0.5.0-rc.1` in a manifest, LG accepts it in no package at all, and a release build is
     // exactly where that must not compile quietly.
-    let (major, minor, patch) = triplet(&pkg);
+    // The patch component is validated and then DISCARDED — see below.
+    let (major, minor, _patch) = triplet(&pkg);
     // Set-but-empty is not "release": the Makefile exports the variable unconditionally and
     // leaves it blank for a dev build, the same shape `telemetry::sender` reads its credentials
     // with.
@@ -100,7 +117,9 @@ fn emit_version() {
     let version = if release {
         pkg
     } else {
-        format!("{major}.{minor}.{}-dev", patch + 1)
+        // Discarded rather than incremented: the next thing cut from trunk is a minor, and
+        // `0.5.3` + a minor is `0.6.0`, not `0.6.3`.
+        format!("{major}.{}.0-dev", minor + 1)
     };
     println!("cargo:rustc-env=PLX_VERSION={version}");
 }

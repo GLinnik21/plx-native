@@ -203,11 +203,13 @@ mod tests {
     /// developer build after it reported that exact number: to `X-Plex-Version` on the account's
     /// authorized-devices list, to Sentry as `plxnative@X.Y.Z`, and on the diagnostics panel that
     /// is designed to be photographed into a bug report. Nothing downstream could tell the shipped
-    /// binary from a working tree. So a non-release build names the patch it is working TOWARDS,
-    /// suffixed — `0.5.0` published, `0.5.1-dev` in the tree — and that string is produced by
-    /// `rust-modules/build.rs`, which is the only place the rule is written.
+    /// binary from a working tree. So a non-release build names the version it is working TOWARDS,
+    /// suffixed — `0.5.0` published, `0.6.0-dev` in the tree, the next MINOR because trunk is where
+    /// features land and a patch release is cut from an existing minor's own line rather than from
+    /// here — and that string is produced by `rust-modules/build.rs`, the only place the rule is
+    /// written.
     #[test]
-    fn version_is_the_package_or_the_next_patch_dev() {
+    fn version_is_the_package_or_the_next_minor_dev() {
         let pkg = env!("CARGO_PKG_VERSION");
         let v = super::VERSION;
         assert!(super::user_agent().contains(v));
@@ -228,8 +230,9 @@ mod tests {
                 assert_eq!(n.len(), 3, "the package version is three integers");
                 assert_eq!(
                     base,
-                    format!("{}.{}.{}", n[0], n[1], n[2] + 1),
-                    "a developer build names the next PATCH, not an arbitrary version"
+                    format!("{}.{}.0", n[0], n[1] + 1),
+                    "a developer build names the next MINOR with the patch reset — trunk is where \
+                     features land, and a patch release is cut from a minor's own line, not here"
                 );
             }
         }
