@@ -504,7 +504,14 @@ const REL_UNDER_H: f32 = 54.0; // poster row → tile title → block bottom
 const CAST_D: f32 = 190.0; // headshot diameter
 const CAST_SLOT: f32 = 230.0; // per-member horizontal pitch (room for the name)
 const CAST_LABEL_H: f32 = 60.0; // "Cast & Crew" heading → headshot row
-const CAST_UNDER_H: f32 = 92.0; // headshot → name/role → block bottom (name LABEL + role CAPTION)
+/// The worst-case [`cast_pop_drop`] — the focused circle at rest at `RowStyle::CAST.focus_scale`,
+/// no press dip. Derived rather than a second literal, so raising the pop can never silently
+/// under-reserve the band it drops into.
+const CAST_POP_DROP_MAX: f32 = CAST_D * (RowStyle::CAST.focus_scale - 1.0) * 0.5;
+// headshot → name/role → block bottom (name LABEL + role CAPTION), plus the room the popped
+// circle's label drop (`cast_pop_drop`) needs so a focused member's role line can never spill into
+// the next section.
+const CAST_UNDER_H: f32 = 92.0 + CAST_POP_DROP_MAX;
 
 // ---- one geometry source per focusable region -------------------------------------------------
 // Each of these is called by the DRAW and by the pointer hit-test (`hit_at`), so a control can never
@@ -4102,16 +4109,34 @@ fn draw_cast(p: Painter) {
         |_| card_row::TileLabel::default(),
         |pc, i, x, focused| {
             if let Some(c) = d.credit(i) {
-                cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, focused);
+                // The same scale `strip` just rendered this tile at (focused folds in the press
+                // dip, unfocused does not — see `card_row::strip`), so the label drops with the
+                // circle's ACTUAL drawn pop rather than a boolean guess at it: a card mid-transition
+                // (settling back from a previous focus, or ramping into a new one) still keeps its
+                // gap to the name exactly matched to what is on screen that frame.
+                let s = view().cast.scale(i) * if focused { crate::ui::press::scale() } else { 1.0 };
+                let drop = cast_pop_drop(s);
+                cast_label(pc, &c.tag, &c.role, x + CAST_D * 0.5, row_y, focused, drop);
             }
         },
     );
 }
 
+/// How far a popped cast circle's focus ring reaches past `CAST_D`'s original bottom edge, at
+/// live scale `s` — a pop grows from the tile's CENTRE, so only HALF its extra diameter lands
+/// below. [`cast_label`] drops the name/role block by exactly this so the gap between the circle
+/// and its name is preserved at every pop phase, the way the Home shelf keeps its label clear of a
+/// popped card. Clamped at 0: `s` can dip fractionally under 1.0 mid press (`ui::press::scale`'s
+/// dip), and a label must never rise ABOVE its rest position.
+fn cast_pop_drop(s: f32) -> f32 {
+    (CAST_D * (s - 1.0) * 0.5).max(0.0)
+}
+
 /// A credit's name + sub-caption (an actor's character, or a crew member's job), centred under the
 /// headshot and elided to the per-member slot (long names like "Benedict Cumberbatch" would
-/// otherwise run into the neighbour at couch-legible sizes).
-fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool) {
+/// otherwise run into the neighbour at couch-legible sizes). `drop` — see [`cast_pop_drop`] — pushes
+/// both lines down by the focused circle's current extra radius, so the gap survives the pop.
+fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: bool, drop: f32) {
     let name_c = if focused {
         theme::TEXT_PRIMARY
     } else {
@@ -4128,7 +4153,7 @@ fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: 
         p.text(
             nc.as_ptr(),
             cx,
-            row_y + CAST_D + 26.0,
+            row_y + CAST_D + 26.0 + drop,
             theme::size::LABEL,
             name_c,
             1,
@@ -4148,7 +4173,7 @@ fn cast_label(p: Painter, name: &str, role: &str, cx: f32, row_y: f32, focused: 
             p.text(
                 rc.as_ptr(),
                 cx,
-                row_y + CAST_D + 58.0,
+                row_y + CAST_D + 58.0 + drop,
                 theme::size::CAPTION,
                 theme::TEXT_TERTIARY,
                 1,
@@ -6219,6 +6244,68 @@ mod tests {
         let s = [0, 0, 0, 0, 0, 0];
         assert_eq!(super::compact_title_hide_pos(&s, 1, false), None);
         assert_eq!(super::compact_title_hide_pos(&s, 1, true), None);
+    }
+
+    /// Reported: the Cast & Crew focus pop is too weak to read as a selection change at all. It was
+    /// raised from 1.06 to `RowStyle::CAST.focus_scale` (1.13 as of this test); this pins the two
+    /// invariants that number must never violate rather than the exact figure, so a future retune
+    /// stays honest without this test having to be rewritten for it.
+    #[test]
+    fn the_cast_pop_is_clearly_visible_and_never_touches_a_neighbour() {
+        let focus_scale = super::RowStyle::CAST.focus_scale;
+        assert!(
+            focus_scale > 1.10,
+            "raised specifically because 1.06 read as no change at all"
+        );
+        // a popped circle's diameter must stay short of the neighbouring slot's pitch, with room
+        // to spare — the geometry `RowStyle::CAST`'s own doc comment prescribes.
+        let popped_d = super::CAST_D * focus_scale;
+        assert!(
+            popped_d < super::CAST_SLOT,
+            "a fully popped headshot ({popped_d}) must not reach the next slot ({})",
+            super::CAST_SLOT
+        );
+        assert!(
+            super::CAST_SLOT - popped_d > 10.0,
+            "…and it must clear it with real air, not by a pixel"
+        );
+    }
+
+    /// [`cast_pop_drop`]'s three defining properties: rest state drops nothing, it grows with the
+    /// live scale (so a mid-transition circle's label tracks what is actually on screen), and it
+    /// never goes negative (a label must never rise above its rest position, even during the
+    /// press-dip's brief undershoot).
+    #[test]
+    fn cast_pop_drop_tracks_the_live_scale_and_never_goes_negative() {
+        assert_eq!(super::cast_pop_drop(1.0), 0.0, "at rest, nothing drops");
+        let full = super::cast_pop_drop(super::RowStyle::CAST.focus_scale);
+        assert!(full > 0.0, "a real pop must drop the label some amount");
+        let half_scale = 1.0 + (super::RowStyle::CAST.focus_scale - 1.0) * 0.5;
+        let half = super::cast_pop_drop(half_scale);
+        assert!(
+            half > 0.0 && half < full,
+            "a partially popped circle drops its label partway, not all or nothing"
+        );
+        assert_eq!(
+            super::cast_pop_drop(0.9),
+            0.0,
+            "a sub-1.0 scale (the press dip's brief undershoot) must never lift the label"
+        );
+    }
+
+    /// `CAST_UNDER_H` is what `block_h(4)` reserves below the headshot row — it must always cover
+    /// the WORST-CASE drop (the focused circle at rest at full `focus_scale`), or a focused
+    /// member's role line spills into whatever section comes after Cast & Crew.
+    #[test]
+    fn cast_under_h_covers_the_worst_case_label_drop() {
+        let max_drop = super::cast_pop_drop(super::RowStyle::CAST.focus_scale);
+        // the original budget (92px) was tuned for a zero-drop label; anything the pop adds must
+        // be ADDITIONAL room, not eaten out of that existing margin.
+        assert!(
+            super::CAST_UNDER_H >= 92.0 + max_drop - 0.01,
+            "CAST_UNDER_H ({}) must reserve at least the original budget plus the max drop ({max_drop})",
+            super::CAST_UNDER_H
+        );
     }
 
     use super::*;

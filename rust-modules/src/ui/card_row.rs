@@ -58,15 +58,22 @@ impl RowStyle {
         circular: false,
         title_lines: 1,
     };
-    /// Detail "Cast & Crew": circular headshots, a gentle pop, the tight strip ring. Same motion as
-    /// HOME (spring magnification + scroll), so cast animates like the poster shelves.
+    /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
+    /// magnification + scroll), so cast animates like the poster shelves.
+    ///
+    /// **1.13, not the original 1.06** — reported as too weak to read as a focus change at all
+    /// (owner punch list). At `w`/`gap` = 190/40 (slot 230) a popped circle's diameter is
+    /// `190 × 1.13` = 214.7px, still 15.3px short of the neighbouring slot's centre-to-centre pitch
+    /// with air on both sides — raise this further only after re-checking that headroom (`slot −
+    /// w × focus_scale` must stay positive). `detail::cast_label` derives its focused-label drop
+    /// from this same field, so the two can never drift apart.
     pub(crate) const CAST: RowStyle = RowStyle {
         w: 190.0, // = detail CAST_D
         h: 190.0,
         gap: 40.0, // w+gap = 230 = detail CAST_SLOT (per-member pitch)
         margin_x: MARGIN_X,
         radius: 95.0, // = w/2 (circle); draw_* recomputes per-rect anyway when `circular`
-        focus_scale: 1.06,
+        focus_scale: 1.13,
         k_scale: K_SCALE,
         k_scroll: K_SCROLL,
         circular: true,
