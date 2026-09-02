@@ -290,6 +290,13 @@ pub const CONTROL_SPENT_FOCUS_W: f32 = 0.76;
 /// mid-word.
 pub const CONTROL_SPENT_FILL: [f32; 4] = mix(COOL_0, NEUTRAL_500, 1.0 - CONTROL_SPENT_FOCUS_W);
 
+/// The Search query field's focused ink — the bright endpoint of the `hot` cross-fade in
+/// `search::field::draw` (idle end: `TEXT_SECONDARY`). Its own role because it names the JOB: the
+/// field has no plate, rim or rule by the design system's `SearchField` contract, so this ONE step
+/// is the entire focus signal, and one stop (`TEXT_HEADING`) was too little from the couch (owner
+/// feedback, 2026-09-02). Lands on `TEXT_PRIMARY`, the brightest ink stop.
+pub const FIELD_FOCUS_INK: [f32; 4] = TEXT_PRIMARY;
+
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
 pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_600, 0.92);
 /// White glyph/label over an idle control. Both grounds ink it the same: the design system states

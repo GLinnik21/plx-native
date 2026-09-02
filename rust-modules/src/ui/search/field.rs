@@ -7,7 +7,11 @@
 //! - **There is no capsule.** The query IS the type, at `size::HERO` on the flat ground. It wore a
 //!   control face until 2026-08-30 — `ACCENT` focused, `CONTROL_IDLE_FILL` holding a query while
 //!   focus was elsewhere — and the design took the plate away: with nothing to fill, FOCUS is
-//!   carried by INK WEIGHT alone (`TEXT_HEADING` with it, `TEXT_SECONDARY` without), plus the
+//!   carried by INK alone — no rule, no rim, no pop, the design system's `SearchField` contract.
+//!   Until 2026-09-02 that ink step was `TEXT_SECONDARY`→`TEXT_HEADING`, one stop, and from the
+//!   couch it read as "this field has content" rather than "the remote is on it" (owner
+//!   feedback). The step is now to [`theme::FIELD_FOCUS_INK`], the brightest ink stop, and the
+//!   placeholder rides the same spring one step behind (`TEXT_TERTIARY`→`TEXT_SECONDARY`). Plus the
 //!   caret, which exists only while the television's own keyboard is up.
 //! - The placeholder is **unconditional**: an empty field is "Search your library" at the same
 //!   rung in `TEXT_TERTIARY` — a step back from either query ink — never a bare caret on an empty
@@ -85,16 +89,20 @@ const UNNAMED_OWN: &str = "your server";
 const UNNAMED_SHARE: &str = "a shared server";
 
 pub(crate) fn draw(p: Painter, v: &View) {
-    // **No plate.** There is nothing to fill, so focus is the INK: heading weight while the field
-    // holds it, one step back when it does not. Still CROSS-FADED on `super`'s focus spring rather
-    // than swapped — see `super::HOT` for why this control owes the rest of the app that motion,
-    // and `theme::cross` for why it is not `theme::mix` (the pair differs in ALPHA as well as hue,
-    // and `mix` would land the destination colour at the source's opacity).
+    // **No plate, no rule.** There is nothing to fill, so focus is the INK: the brightest stop
+    // (`theme::FIELD_FOCUS_INK`) while the field holds it, `TEXT_SECONDARY` when it does not. One
+    // stop (`TEXT_HEADING`) was too little to read from the couch (owner feedback, 2026-09-02);
+    // the design system's `SearchField` still says ink ONLY, so the step got wider rather than
+    // gaining a second signal. Still CROSS-FADED on `super`'s focus spring rather than swapped —
+    // see `super::HOT` for why this control owes the rest of the app that motion, and
+    // `theme::cross` for why it is not `theme::mix` (the pair differs in ALPHA as well as hue, and
+    // `mix` would land the destination colour at the source's opacity).
     let hot = v.hot;
-    let ink = theme::cross(theme::TEXT_SECONDARY, theme::TEXT_HEADING, hot);
-    // The placeholder does NOT ride that fade: it is a step back from either query ink and says the
-    // same thing focused or not, which is what makes it a placeholder rather than a dim query.
-    let hint_ink = theme::TEXT_TERTIARY;
+    let ink = theme::cross(theme::TEXT_SECONDARY, theme::FIELD_FOCUS_INK, hot);
+    // The placeholder rides the same spring one step BEHIND the query ink at every `hot`, so it
+    // never reads as bright as a real query — that is what makes it a placeholder rather than a dim
+    // query — but it brightens with focus too, so an EMPTY focused field also says so.
+    let hint_ink = theme::cross(theme::TEXT_TERTIARY, theme::TEXT_SECONDARY, hot);
 
     let inner = FIELD;
     // Verbatim — `search::query` keeps the trailing space precisely because this is what draws it.
@@ -684,6 +692,22 @@ mod tests {
         assert!(ghost_shown("a"));
         assert!(!ghost_shown(""));
         assert!(!ghost_shown("ab"));
+    }
+
+    /// Focus must be a couch-visible COLOUR step, and it is ink alone (no rule): the focused ink
+    /// is the brightest stop and the idle ink stays where it was, so the two differ by well over
+    /// one 8-bit quantum on every channel.
+    #[test]
+    fn focus_is_carried_by_a_wide_ink_step_and_nothing_else() {
+        let idle = theme::cross(theme::TEXT_SECONDARY, theme::FIELD_FOCUS_INK, 0.0);
+        let hot = theme::cross(theme::TEXT_SECONDARY, theme::FIELD_FOCUS_INK, 1.0);
+        assert_eq!(idle, theme::TEXT_SECONDARY);
+        assert_eq!(hot, theme::TEXT_PRIMARY, "focused ink is the brightest stop");
+        let luma = |c: [f32; 4]| (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * c[3];
+        assert!(
+            luma(hot) - luma(idle) > 0.15,
+            "the focus step must be far wider than the old one-stop fade: {idle:?} -> {hot:?}"
+        );
     }
 
     #[test]
