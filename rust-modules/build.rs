@@ -119,7 +119,16 @@ fn emit_version() {
     } else {
         // Discarded rather than incremented: the next thing cut from trunk is a minor, and
         // `0.5.3` + a minor is `0.6.0`, not `0.6.3`.
-        format!("{major}.{}.0-dev", minor + 1)
+        //
+        // `u64` and `checked_add` so the three implementations of this arithmetic agree on every
+        // input rather than on realistic ones: cargo's own semver allows components up to
+        // `u64::MAX`, and python's integers are unbounded, so a narrower type here would be the
+        // one of the three that answers differently. Unreachable for any version anyone writes,
+        // which is exactly why it should not be a silent wrap.
+        let next = minor
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("Cargo.toml version {pkg:?} has no next minor"));
+        format!("{major}.{next}.0-dev")
     };
     println!("cargo:rustc-env=PLX_VERSION={version}");
 }
@@ -129,7 +138,7 @@ fn emit_version() {
 /// A version that is not three integers is a hard error rather than a passthrough: every gate in
 /// `ci/` asserts that shape, so reaching here with anything else means the manifest was edited by
 /// hand into a state that cannot be packaged, and failing at the build is where that costs least.
-fn triplet(pkg: &str) -> (u32, u32, u32) {
+fn triplet(pkg: &str) -> (u64, u64, u64) {
     let parts: Vec<&str> = pkg.split('.').collect();
     // Split first, parse second, and drop NOTHING in between: a `filter_map(parse)` reads as the
     // same thing and is not — `0.5.0-rc.1` splits into four parts, one of which does not parse,

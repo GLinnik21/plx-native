@@ -78,6 +78,32 @@ jobs:
           new=$(python3 ci/bump-version.py --current)
           tag="v$new"
 
+          # A RELEASE CUT FROM TRUNK ENDS IN `.0`, and this job only ever cuts from trunk — the
+          # checkout above is pinned to `ref: main` and the push below writes `main`. Development
+          # here is trunk-based: main cuts minors and majors, and a PATCH belongs to an existing
+          # minor's own maintenance line, which this workflow has no way to check out, bump, tag or
+          # push. So a patch selected here does not do the thing its name promises; it publishes
+          # trunk under a number that says "a fix on top of what you already have".
+          #
+          # Graded on the RESULTING VERSION rather than on the `bump` input, because the input is
+          # not the only route: an explicit `version: 0.5.1` reaches exactly the same code. One
+          # rule covers both, and it is the rule the policy actually states.
+          #
+          # `rust-modules/build.rs` derives the reported developer version from the same policy
+          # (`0.5.0` published -> `0.6.0-dev`), so letting a patch through here would also make
+          # every working tree's self-report wrong until the next minor.
+          case "$new" in
+            *.0) ;;
+            *)
+              echo "::error::refusing to cut $new from main — trunk releases end in .0."
+              echo "::error::development here is trunk-based: main cuts minor and major releases."
+              echo "::error::a patch belongs to an existing minor's own line, and this workflow"
+              echo "::error::only ever checks out, tags and pushes main. Cutting one needs"
+              echo "::error::maintenance-line support added here first."
+              exit 1
+              ;;
+          esac
+
           # THE question that decides whether this version may ship, asked where the answer lives.
           # An explicit `version:` equal to what appinfo.json already says is legitimate — it is
           # exactly the first release, "ship what is already written" — so the script no longer

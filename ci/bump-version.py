@@ -22,6 +22,12 @@ submission rather than a warning:
 Usage:
     ci/bump-version.py --current          print the current version and exit
     ci/bump-version.py patch|minor|major  compute the next version and write it
+
+`patch` stays supported here and is NOT what trunk cuts. Development is trunk-based: `main` cuts
+minors and majors, and a patch belongs to an existing minor's own maintenance line — no such line
+exists yet, and `.github/workflows/release.yml` refuses to publish a version that does not end in
+`.0`, since it only ever checks out, tags and pushes `main`. The level lives here because that is
+where the arithmetic lives; the policy is enforced where the release is actually cut.
     ci/bump-version.py 1.2.3              write an explicit version
     ci/bump-version.py patch --dry-run    print what would change, write nothing
 

@@ -40,8 +40,9 @@ pub(crate) const PRODUCT: &str = "PlxNative";
 /// the two literals this replaces were already stale in opposite directions before the first
 /// release.
 ///
-/// **A release reports the package version exactly; anything else reports the next patch with a
-/// `-dev` suffix** — `0.5.0` published, `0.5.1-dev` in the tree. `rust-modules/build.rs` is where
+/// **A release reports the package version exactly; anything else reports the next MINOR with a
+/// `-dev` suffix** — `0.5.0` published, `0.6.0-dev` in the tree, because trunk is where features
+/// land and a patch is cut from an existing minor's own line. `rust-modules/build.rs` is where
 /// that rule is written and why. Every other surface that reports a version — the telemetry
 /// release, the lab snapshot, the usage context — reads the same `PLX_VERSION`, so they cannot
 /// drift apart.

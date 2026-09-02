@@ -156,11 +156,16 @@ If you find yourself wanting to add one of those to a note, add it to the audit 
 
 ## Versions
 
-`ci/bump-version.py` refuses anything but three integers. What the level means here:
+`ci/bump-version.py` refuses anything but three integers. **Which level is decided by the line you
+are cutting from before it is decided by what changed** — development here is trunk-based:
 
-- **patch** — fixes, diagnostics and internals. The same app, working better or explaining itself.
-- **minor** — something a user can see is new, or a change in which televisions are supported.
+- **minor** — what `main` cuts, and the answer for nearly every release: fixes, diagnostics and
+  internals as much as something a user can see is new or a change in which televisions are
+  supported. The same app working better is a minor here, because it came off trunk.
 - **major** — reserved. `1.0.0` means playback is device-verified on more than one platform generation.
+- **patch** — a maintenance release on an existing minor's own line, for a fix that must reach
+  people already on that version without shipping trunk. The release workflow refuses one from
+  `main`, and no maintenance line exists yet, so no release so far has been one.
 
 A release that changes only documentation or CI does not need a version.
 

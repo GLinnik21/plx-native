@@ -146,8 +146,17 @@ but the bare `X.Y.Z` means `RELEASE=1` did not take. Both the
 `ALLOW_DEV_ON_STABLE=1` reproduction build below and any `make deploy` of the debug flavour print
 the suffixed form.
 
-Semver as this project means it: **patch** for fixes and diagnostics, **minor** when a user gains a
-capability, **major** is unused. A release that changes only docs or CI does not need a version.
+Semver as this project means it, and **the first question is which LINE you are on, not what
+changed**. Development is trunk-based: `main` cuts **minor** releases — for fixes, diagnostics and
+new capability alike — and **major** when that is the deliberate call. A **patch** belongs to an
+existing minor's own maintenance line and is not cut from trunk, which is why the workflow refuses
+one on `main` rather than quietly publishing it (there is no maintenance-line support yet; adding it
+is the prerequisite for ever cutting a patch). A release that changes only docs or CI does not need
+a version at all.
+
+The level also decides what a working tree calls itself, since `rust-modules/build.rs` reports the
+next minor: with `0.5.0` published, every developer build says `0.6.0-dev`, which is a true
+pre-release of the version trunk is actually heading for.
 
 ### 2. Write BOTH documents before building
 
@@ -216,7 +225,7 @@ local build embeds the local NDK path.
 ### 4. Publish through the workflow
 
 ```sh
-gh workflow run release.yml -f version=X.Y.Z     # or -f bump=patch
+gh workflow run release.yml -f version=X.Y.Z     # or -f bump=minor (trunk cuts minors)
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
 ```
 
