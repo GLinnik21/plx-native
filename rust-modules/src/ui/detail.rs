@@ -5387,6 +5387,19 @@ fn pair_h(value: &str) -> f32 {
     34.0 + h.max(30.0) + 22.0
 }
 
+/// How far an out-of-flow MORE pinned to `tv`'s last line has to DROP (0 or one leading) so it never
+/// paints over prose: a truncated last line dissolves into the mark's `zone` (`fade_last`), but a
+/// last line that FITS and still reaches into that zone keeps every glyph, so the mark takes the
+/// next line. Pure — the same answer feeds the block's measured height and its draw, which is what
+/// keeps the highlight and the flow honest about the extra line.
+fn more_drops(tv: &TextView, width: f32, zone: f32) -> f32 {
+    if !tv.truncates(width) && tv.last_line_w(width) > width - zone {
+        tv.line_h()
+    } else {
+        0.0
+    }
+}
+
 /// The cap-top (texture-top convention) of `value`'s own LAST wrapped line, as [`draw_pair`] would
 /// draw it at `y` — the Languages column's MORE needs this when the original-audio pair turns out
 /// to be its last line (no audio list beneath it). Same `TextView` construction as [`draw_pair`]/
@@ -5505,11 +5518,16 @@ fn draw_about(p: Painter) {
     // inside the focus highlight for a short blurb.
     let (cw, cy, pad) = (640.0f32, about_y + 50.0, 30.0f32);
     let syn_w0 = cw - 2.0 * pad;
-    let syn_h = TextView::new(&d.summary, theme::size::CAPTION, theme::TEXT_HEADING)
+    let mw = crate::text::text_width(c"MORE".as_ptr(), theme::size::CAPTION, 1);
+    let more_zone = mw + 36.0;
+    let syn_tv = TextView::new(&d.summary, theme::size::CAPTION, theme::TEXT_HEADING)
         .leading(30.0)
-        .max_lines(5)
-        .measure_h(syn_w0);
-    let ch = pad + 100.0 + syn_h + pad;
+        .max_lines(5);
+    let syn_h = syn_tv.measure_h(syn_w0);
+    // A MORE that cannot share the last line (`more_drops`) takes a line of its own, and the
+    // block's measured height — the card frame, the highlight — has to know before anything draws.
+    let syn_more_drop = more_drops(&syn_tv, syn_w0, more_zone);
+    let ch = pad + 100.0 + syn_h + syn_more_drop + pad;
     let col_y = about_y + 430.0;
     let lx = 760.0f32; // Languages column x
     let ax = 1360.0f32; // Accessibility column x
@@ -5526,11 +5544,19 @@ fn draw_about(p: Painter) {
     let lang_off = if orig_audio.is_none() {
         30.0
     } else {
-        let list_h = TextView::new(audio_list, theme::size::LABEL, val)
+        let list_tv = TextView::new(audio_list, theme::size::LABEL, val)
             .leading(32.0)
-            .max_lines(6)
-            .measure_h(500.0);
+            .max_lines(6);
+        let list_h = list_tv.measure_h(500.0);
+        // Same rule as the card: a Languages MORE that cannot share the list's last line adds one.
+        let list_more_drop = if crate::ui::tracks_panel::is_available() && !audio_list.is_empty()
+        {
+            more_drops(&list_tv, 500.0, more_zone)
+        } else {
+            0.0
+        };
         68.0 + orig_audio.as_ref().map(|o| pair_h(o)).unwrap_or(0.0) + 34.0 + list_h
+            + list_more_drop
     };
     let access_off = if access.is_empty() {
         102.0
@@ -5599,7 +5625,6 @@ fn draw_about(p: Painter) {
     }
     let sy = cy + pad + 100.0;
     let syn_w = cw - 2.0 * pad;
-    let mw = crate::text::text_width(c"MORE".as_ptr(), theme::size::CAPTION, 1);
     // CAPTION (not BODY): in the dense About card the body-size synopsis read oversized next to the
     // compact columns — match it to the Accessibility descriptions below (same CAPTION rung). When
     // the blurb is cut off, the last line dissolves (fade_last) into the MORE zone instead of
@@ -5607,7 +5632,7 @@ fn draw_about(p: Painter) {
     let syn = TextView::new(&d.summary, theme::size::CAPTION, val)
         .leading(30.0)
         .max_lines(5)
-        .fade_last(mw + 36.0);
+        .fade_last(more_zone);
     let syn_hh = syn.draw(p, Rect::new(ix, sy, syn_w, 0.0));
     // "MORE" — quiet grey, pinned to the card's right padding edge ON the last synopsis line's cap
     // band (it used to sit bright in the bottom padding, visually detached from the text block).
@@ -5619,11 +5644,16 @@ fn draw_about(p: Painter) {
     // truncates, so a short blurb used to leave an OK target with no affordance saying so at all.
     // `fade_last` above is still gated on truncation internally (a no-op on text that fits), so a
     // short synopsis gets the mark with no fade collision to guard against.
+    //
+    // ON the last line only while that line leaves the zone free — a truncated line dissolves into
+    // it (`fade_last`), but a line that simply FITS keeps every glyph, and a mark laid over
+    // "…English (AAC)" is the collision this rule exists for (sim, 2026-09-02). Then the mark takes
+    // the next line, and `ch` above already counted it.
     let (mt, _) = crate::text::text_cap_band(theme::size::CAPTION, 1);
     p.text(
         c"MORE".as_ptr(),
         tx + cw - pad,
-        syn.last_line_cap_y(sy, syn_hh) - mt,
+        syn.last_line_cap_y(sy, syn_hh) + syn_more_drop - mt,
         theme::size::CAPTION,
         theme::TEXT_TERTIARY,
         2,
@@ -5657,10 +5687,12 @@ fn draw_about(p: Painter) {
         let audio_view = TextView::new(audio_list, theme::size::LABEL, val)
             .leading(32.0)
             .max_lines(6)
-            .fade_last(mw + 36.0);
+            .fade_last(more_zone);
         let audio_top = ly + 34.0;
         let audio_h = audio_view.draw(p, Rect::new(lx, audio_top, 500.0, 0.0));
-        lang_last_top = audio_view.last_line_cap_y(audio_top, audio_h);
+        // the card's rule: a fitting last line that reaches the zone hands the mark the next line
+        lang_last_top = audio_view.last_line_cap_y(audio_top, audio_h)
+            + more_drops(&audio_view, 500.0, more_zone);
     }
     // The Languages column opens `tracks_panel` on OK exactly when it is `is_available()` — see
     // `on_ok`'s `5 =>` arm's `col == 2` guard — so that is this MORE's gate too, same style as the

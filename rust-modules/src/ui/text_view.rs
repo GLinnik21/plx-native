@@ -223,7 +223,7 @@ impl<'a> TextView<'a> {
         self.sz as f32 * FADE_BAND_EM
     }
 
-    fn line_h(&self) -> f32 {
+    pub(crate) fn line_h(&self) -> f32 {
         if self.leading > 0.0 {
             self.leading
         } else {
@@ -363,6 +363,19 @@ impl<'a> TextView<'a> {
     /// view that drew the text.
     pub fn last_line_cap_y(&self, top: f32, drawn_h: f32) -> f32 {
         top + drawn_h - self.line_h()
+    }
+
+    /// The drawn width of the block's LAST wrapped line at `width` — what a caller pinning an
+    /// out-of-flow mark (a right-aligned MORE) on that line has to check before doing so. A line
+    /// that reaches into the mark's zone and is NOT truncated has no fade to dissolve into, so the
+    /// mark must go somewhere else; `fade_last` only ever acts on a truncated last line. Shares the
+    /// memoised wrap. Zero for an empty block.
+    pub fn last_line_w(&self, width: f32) -> f32 {
+        self.wrap(width)
+            .lines
+            .last()
+            .map(|l| self.measure_c(l))
+            .unwrap_or(0.0)
     }
 
     /// Draw into `frame`: `frame.w` is the wrap width, `frame.x/y` the top-left. Line 0's cap band
