@@ -1669,9 +1669,15 @@ impl StallGuard {
     }
 
     /// Has the fetch crossed an OBSERVED terminal boundary while bytes are known to remain?
-    /// `terminal_hold_started` is the main thread's exact `B=0` observation.  The playhead form is
-    /// the same fact sampled by this worker and lets the worker act even before the next main-loop
-    /// tick.  Neither branch predicts an unseen byte.
+    /// `terminal_hold_started` is the main thread's terminal observation — an exact arithmetic
+    /// `B=0`, or a presentation clock that has physically stopped (`pump::native_clock_stopped`).
+    /// The playhead form is the same arithmetic sampled by this worker, and on this pipeline it is
+    /// a bound rather than a trigger: `reserve_ms_at_start` is measured to the demuxed tail, and
+    /// the television parks the clock a few hundred ms short of that tail (the last fed access
+    /// units cannot present until the ones behind them arrive), so `spent_ms` stops accruing just
+    /// below the reserve and the hold has to come from the main thread. Device-measured
+    /// 2026-09-02 (`pipe_abr_down_collapse`): reserve 5668 ms, playhead spent 5410 ms, then 77 s
+    /// of `vtick=0` with neither branch firing. Neither branch predicts an unseen byte.
     fn should_abort(&self, bytes_remaining: i64, terminal_hold_started: bool) -> bool {
         if bytes_remaining <= 0 {
             return false;

@@ -1621,6 +1621,41 @@ class AbrTraceMetrics(unittest.TestCase):
             "the pipeline evaluator must grade every authored Pause/Resume edge",
         )
 
+    def test_min_rejected_upshifts_counts_refused_up_transactions_only(self):
+        """`min_rejected_upshifts` grades E_tx(up, reject): an upshift PROPOSED and then REFUSED.
+
+        Written for `pipe_abr_reject_up_4000` on 2026-09-02, when its `settle_max_kbps: 4000`
+        was shown to contradict the admission law in docs/adaptive-playback.md ("accepted exactly
+        when A <= D and B_post >= A"): the device committed rung 6000 at A/D 0.975 and held it
+        sustainably for 33 objects. What that run DID produce, twice, is the refusal the case
+        exists to price -- `outcome=repeatable_deadline` and `outcome=not_ready_discarded` -- so
+        the bound counts those. A committed Up, or any Down, is not a rejected upshift.
+        """
+        steady = lambda kbps: f"abr: steady current={kbps}kbps safe=9000kbps pending=0kbps"
+
+        def tx(direction, frm, to, outcome):
+            return (f"abr: tx {direction} {frm}->{to}kbps outcome={outcome} decided=100ms "
+                    "total=100ms control=6ms prime=0ms master=2ms media=4ms warmup=nonems "
+                    "graded=nonems warmup_dl=3751ms buf_start=5751ms buf_decided=1917ms "
+                    "feed=nonems buf_fed=nonems buf_end=1917ms cur_acq_before=1110ms "
+                    "net=7702kbps fast=7091kbps slow=6306kbps unc=221pm declared=8000kbps "
+                    "graded_bytes=-1 candidate_acq=nonems candidate_bytes=-1 candidate_dur=-1ms")
+        base = [steady(4000)]
+        refused = base + [tx("Up", 4000, 8000, "repeatable_deadline"),
+                          tx("Up", 4000, 12000, "not_ready_discarded")]
+        ok, why = run.a_abr_shape(refused, {"min_rejected_upshifts": 2})
+        self.assertTrue(ok, why)
+        self.assertIn("rejected_upshifts=2", why)
+        self.assertFalse(run.a_abr_shape(refused, {"min_rejected_upshifts": 3})[0],
+                         "two refusals cannot satisfy a floor of three")
+        committed = base + [tx("Up", 4000, 6000, "committed"),
+                            "abr: committed Up to 6000kbps 1920x1080 out=1920x1080",
+                            tx("Down", 6000, 320, "committed")]
+        self.assertFalse(run.a_abr_shape(committed, {"min_rejected_upshifts": 1})[0],
+                         "a committed Up and a Down are not rejected upshifts")
+        self.assertFalse(run.a_abr_shape(base, {"min_rejected_upshifts": 1})[0],
+                         "no transaction at all is not a refusal")
+
     def test_raster_changes_count_transitions_not_commits(self):
         """MATHEMATICAL INVARIANT: eight rungs share 1920x1080 and are eventless to a viewer."""
         lines = [

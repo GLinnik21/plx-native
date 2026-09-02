@@ -2158,7 +2158,7 @@ def a_abr_shape(lines, spec, dip_windows=()):
     on the controller being TOO EAGER: a link that carries 4 Mbit/s and a client that spends the
     whole film reaching for 20 both "play", and only a ceiling can tell them apart.
 
-    Five independent bounds, each optional, each answering one question a profile poses:
+    Six independent bounds, each optional, each answering one question a profile poses:
 
     * ``ceiling_kbps`` -- no rung above this was ever active. The overreach guard.
     * ``floor_kbps`` -- some rung at or above this WAS active. The under-reach guard: a controller
@@ -2172,6 +2172,10 @@ def a_abr_shape(lines, spec, dip_windows=()):
     * ``settle_min_kbps`` / ``settle_max_kbps`` -- where it ENDED. Bounds rather than a value,
       because the ladder has 13 points and a link between two of them may legitimately settle on
       either; a profile that wants an exact rung sets both to it.
+    * ``min_rejected_upshifts`` -- at least this many upshifts were PROPOSED and then REFUSED
+      (an ``abr: tx Up`` whose outcome is not ``committed``). The E_tx(up, reject) guard: it grades
+      that the refusal path runs, without asserting a rung the admission law may legitimately
+      admit on the same link.
 
     Read from ``abr: steady`` AND from the commits, in log order. Steady alone is not enough and
     steady alone is what this did, which made both bounds under-report.
@@ -2228,6 +2232,11 @@ def a_abr_shape(lines, spec, dip_windows=()):
         if m and int(m.group(1)) > 0 and int(m.group(2)) > 0
     ]
     decoded_max = max(decoded_rasters, default=None)
+    # An upshift PROPOSED and then REFUSED -- E_tx(up, reject). Read from the `abr: tx` lines,
+    # which exist once per proposal whatever its outcome; a committed Up or any Down is not one.
+    rejected_upshifts = sum(
+        1 for t in abr_transactions(lines)
+        if t["direction"] == "Up" and t["outcome"] != "committed")
     story += (f" | min_buf_ms={min_buf if min_buf is not None else 'n/a'}"
               f" dip_max_kbps={dip_kbps if dip_kbps is not None else 'n/a'} ({dip_note})"
               f" max_stall_s={stall_max if stall_max is not None else 'n/a'}"
@@ -2236,7 +2245,7 @@ def a_abr_shape(lines, spec, dip_windows=()):
               f"/worst{rate_worst if rate_worst is not None else 'n/a'} over {rate_legs} leg(s)"
               f" raster_changes={rasters} ({raster_src}) lane[{abr_binding_lane(samples)}]"
               f" decoded_max={f'{decoded_max[0]}x{decoded_max[1]}' if decoded_max else 'n/a'}"
-              f" segments={len(samples)}")
+              f" segments={len(samples)} rejected_upshifts={rejected_upshifts}")
     if not samples:
         story += " | WARNING: no `abr: sample` line — every metric above is blind"
 
@@ -2274,6 +2283,14 @@ def a_abr_shape(lines, spec, dip_windows=()):
     cap = spec.get("max_commits")
     if cap is not None and len(commits) > cap:
         return False, f"{len(commits)} rung changes, want <= {cap} :: {story}"
+    # The refusal path itself. `pipe_abr_reject_up_4000` used to grade this through
+    # `settle_max_kbps`, which asserted a rung the shipped admission law (A <= D and B_post >= A,
+    # docs/adaptive-playback.md) correctly admits on that link; what the case measures is that
+    # upshifts ARE proposed and refused, and this is that count, monotone like `max_commits` is.
+    rejects_floor = spec.get("min_rejected_upshifts")
+    if rejects_floor is not None and rejected_upshifts < rejects_floor:
+        return False, (f"{rejected_upshifts} rejected upshift(s), want >= {rejects_floor} "
+                       f":: {story}")
     lo, hi = spec.get("settle_min_kbps"), spec.get("settle_max_kbps")
     if lo is not None and visited[-1] < lo:
         return False, f"settled at {visited[-1]}kbps, want >= {lo}kbps :: {story}"

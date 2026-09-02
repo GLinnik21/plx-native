@@ -1263,6 +1263,10 @@ mod tests {
         // auto-rebuffer line that an exact zero writes was never written in those 77 s.
         SHARED.playpos_ns.store(29_700_000_000, Relaxed);
         let buffered_ms = hls_buffered_ms();
+        // Clear the shared sample BEFORE the first assertion: `testlock::serial()` recovers a
+        // poisoned lock, so a panic past this point would otherwise leak a frozen playhead into
+        // every later serial test (see the test-suite pollution note in `lib.rs`).
+        clear_hls_reserve_sample();
         assert_eq!(
             buffered_ms,
             Some(258),
@@ -1283,7 +1287,6 @@ mod tests {
             }
             silence_ms += POSITION_PERIOD_MS;
         }
-        clear_hls_reserve_sample();
         assert!(
             held_at_ms.is_some_and(|ms| ms <= 1_500),
             "a presentation clock that has physically stopped is the terminal reserve boundary:              expected the hold within 1500 ms of the last position callback, got {held_at_ms:?}              (the device waited 82682 ms for the fetch to complete instead)"
