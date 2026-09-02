@@ -53,8 +53,14 @@
 //! flag alone — it ALSO asks this panel's own [`Popover::appear_settled`], and refreshes only while
 //! the appear choreography is still ramping (where a stale backdrop under a mid-fade scrim is the
 //! contrast bug point 1 exists to prevent) or the caller's flag is true for some OTHER reason (a
-//! landing on the person page itself, which does redraw the header/shelves this panel sits over).
-//! Once settled, the panel's own scroll no longer forces a refresh — see [`glass_refresh`].
+//! shelf landing or a poster texture arriving on the person page itself, which does redraw the
+//! header/shelves this panel sits over — `person::update` keeps pumping under an open panel, and
+//! the media fetch is independent of the profile fetch that made the panel openable, so this is
+//! the ordinary case on a cold page, not a corner). The panel therefore keeps its OWN ledger of
+//! the damage it caused this frame ([`OWN_DAMAGE`]: a page turn, or its scroll spring still
+//! gliding) and subtracts that from the caller's flag — see [`glass_refresh`]. A settled panel
+//! over a page that nothing but the panel touched never refreshes; one over a page that just
+//! grew a shelf refreshes once.
 use crate::person::Person;
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::label::{Label, VAlign};
@@ -151,6 +157,12 @@ static mut POP: Popover = Popover::with_glass(crate::ui::widgets::Glass::DYNAMIC
 /// must not be read back as a different page half way there.
 static mut PAGE: usize = 1;
 static mut SCROLL: Spring = Spring::at(0.0);
+/// Set on every frame THIS panel is the reason the process-wide dirty/motion flags are up — a page
+/// turn ([`move_focus`]) or its scroll spring still travelling ([`update`]) — and taken by
+/// [`prepare_present`] on the same frame, so the backdrop gate can tell the panel's own activity
+/// from the host page's (module doc, point 4). `update` runs before `prepare_present` in
+/// `app.rs`'s frame, which is what makes a same-frame flag sufficient.
+static OWN_DAMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn pop() -> &'static mut Popover {
     unsafe { &mut *addr_of_mut!(POP) }
@@ -204,6 +216,11 @@ pub(crate) fn update(dt: f32) {
     let sc = unsafe { &mut *addr_of_mut!(SCROLL) };
     sc.step(want, crate::ui::consts::K_SCROLL, dt);
     crate::ui::anim::probe("personbio.scroll", sc.pos, sc.vel, want, dt);
+    // A generous rest test on purpose: while this spring is anywhere near moving, the route's
+    // scoped motion reports it as the PAGE moving, and that must not re-source the backdrop.
+    if (sc.pos - want).abs() > 0.01 || sc.vel.abs() > 0.01 {
+        OWN_DAMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// UP/DOWN page the viewport; LEFT/RIGHT are inert (there is one column of prose, and nothing
@@ -235,6 +252,7 @@ pub(crate) fn move_focus(sym: c_uint) {
     };
     if next != pg {
         unsafe { addr_of_mut!(PAGE).write(next) };
+        OWN_DAMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
         crate::ui::idle::invalidate();
     }
 }
@@ -462,18 +480,23 @@ pub(crate) fn scrim() {
 /// **Whether the dynamic backdrop should re-source this present** — the pure half of
 /// [`prepare_present`], folded out so the decision can be asserted without a `Popover`. See the
 /// module doc's point 4 for what bug this exists to fix: `underlay_changed` alone cannot tell the
-/// host page moving from this panel's OWN page-turn setting the same process-wide flag.
-fn glass_refresh(_underlay_changed: bool, appear_settled: bool) -> bool {
+/// host page moving from this panel's OWN page-turn setting the same process-wide flag, so the
+/// panel's own ledger (`own_damage`) is subtracted from it.
+fn glass_refresh(underlay_changed: bool, appear_settled: bool, own_damage: bool) -> bool {
     // Still ramping open: refresh every frame, because the contrast argument (module doc, point 1)
-    // needs the ramp to sample the page as it actually dims. Settled: NEVER — and the caller's flag
-    // is deliberately ignored. It cannot be trusted here: `app.rs` folds `present_dirty()` into it,
-    // which every key press sets, and the person route's scoped motion includes THIS panel's own
-    // scroll spring (`person::update` steps `person_bio::update`), so "the page changed" was true on
-    // every page-turn key and every frame of the glide — exactly the per-frame re-blur this gate
-    // exists to end (Codex review, 2026-09-02). The page under an open panel is standing still by
-    // construction (the panel opens from the header, which freezes every shelf), so the settled
-    // snapshot is the CACHED contract every other alert already lives on.
-    !appear_settled
+    // needs the ramp to sample the page as it actually dims. Settled: only for damage this panel
+    // did NOT cause. The caller's flag alone cannot be trusted here — `app.rs` folds
+    // `present_dirty()` into it, which every key press sets, and the person route's scoped motion
+    // includes THIS panel's own scroll spring (`person::update` steps `person_bio::update`), so
+    // "the page changed" was true on every page-turn key and every frame of the glide — the
+    // per-frame re-blur the first Codex review (2026-09-02) caught. Ignoring the flag outright was
+    // the first fix and the second review caught its other half: the page under an open panel is
+    // NOT standing still — `person::update` keeps pumping, the media shelves land independently of
+    // the profile that opened the panel, and poster textures keep arriving — so a settled frost
+    // kept showing the spinner/skeleton the page had at open while the margins showed the posters.
+    // A swallowed key the panel does nothing with (LEFT/RIGHT/OK) still costs one refresh, which
+    // is bounded by the press and not by the frame.
+    !appear_settled || (underlay_changed && !own_damage)
 }
 
 /// Resolve the glass cadence before the host page draws — every popover's route arm calls this
@@ -484,7 +507,8 @@ fn glass_refresh(_underlay_changed: bool, appear_settled: bool) -> bool {
 /// `app.rs`'s route arm to know that this one panel's internal paging must not count as page
 /// motion; the caller only ever reports the PAGE's state, which is right for every other route.
 pub(crate) fn prepare_present(underlay_changed: bool) {
-    let refresh = glass_refresh(underlay_changed, pop().appear_settled());
+    let own = OWN_DAMAGE.swap(false, std::sync::atomic::Ordering::Relaxed);
+    let refresh = glass_refresh(underlay_changed, pop().appear_settled(), own);
     pop().prepare_present(refresh);
 }
 
@@ -666,24 +690,30 @@ mod tests {
     /// `Popover::prepare_present`, so a settled panel with `underlay_changed == true` (this
     /// panel's OWN page-turn, misread as page motion by `app.rs`'s shared `present_dirty` flag —
     /// see the module doc's point 4) forced a refresh every such keypress. `glass_refresh` is what
-    /// stops trusting the caller once the appear ramp has finished.
+    /// subtracts the panel's own activity from the caller's flag once the appear ramp has finished
+    /// — and, since the second review the same day, still refreshes for damage the panel did NOT
+    /// cause (a shelf landing, a poster texture) rather than freezing the frost at its open frame.
     #[test]
-    fn the_backdrop_refreshes_while_ramping_or_the_page_moved_never_for_the_panels_own_scroll() {
+    fn the_backdrop_refreshes_while_ramping_or_for_host_damage_never_for_the_panels_own_scroll() {
         assert!(
-            glass_refresh(false, false),
+            glass_refresh(false, false, false),
             "still ramping open — must refresh even with nothing reported changed"
         );
         assert!(
-            glass_refresh(true, false),
-            "ramping AND the page changed — still a refresh"
+            glass_refresh(true, false, true),
+            "ramping AND the page changed — still a refresh, whoever caused it"
         );
         assert!(
-            !glass_refresh(true, true),
-            "settled — the caller's flag carries this panel's own scroll and key presses, so it must not refresh"
+            !glass_refresh(true, true, true),
+            "settled — the caller's flag carries this panel's own scroll or page turn, so it must not refresh"
         );
         assert!(
-            !glass_refresh(false, true),
-            "settled and nothing reported — the panel's own paging must not force a refresh"
+            !glass_refresh(false, true, false),
+            "settled and nothing reported — no refresh"
+        );
+        assert!(
+            glass_refresh(true, true, false),
+            "settled and the HOST changed (a shelf landed, a poster arrived) — the frost must follow it"
         );
     }
 

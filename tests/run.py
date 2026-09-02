@@ -4205,15 +4205,19 @@ def fps_scene_needs_token(scene, has_shared_server=False):
     return has_shared_server or scene.get("route") != "login"
 
 
-def fps_run_needs_token(scenes, include_player, has_shared_server):
+def fps_run_needs_token(scenes, has_shared_server):
     """Whether an FPS run must resolve the test identity BEFORE its first scene.
 
     Until 2026-09-02 the run resolved one only for the player tier or a shared-server config, so a
     plain `./tests/run.py --fps` booted every route scene to QR sign-in and graded "never entered
     this screen" on 19 of 23 (device-reproduced on an untouched base). The per-scene predicate
-    already said those scenes need one; this is the run-level fold of it.
+    already said those scenes need one; this is the run-level fold of it, over the scenes that
+    were actually SELECTED -- the player tier is not a separate input, because every player scene
+    is a non-login route and so already answers through the per-scene predicate, while
+    `--fps-player --filter login-spinner` selects nothing that needs one and must not demand a
+    `src/config.local.h` it will never use.
     """
-    return bool(include_player or has_shared_server
+    return bool(has_shared_server
                 or any(fps_scene_needs_token(s, has_shared_server) for s in scenes))
 
 
@@ -4685,7 +4689,7 @@ def main():
         token = None
         # A second-server scene needs the FIRST server's token too, whatever its tier: without it
         # the app boots to QR sign-in and the scene grades a screen it never reached.
-        if fps_run_needs_token(scenes, include_player, bool(cfg.get("shared_server"))):
+        if fps_run_needs_token(scenes, bool(cfg.get("shared_server"))):
             admin_token = read_token()
             test_user = manifest.get("test_user")
             if args.owner or not test_user:

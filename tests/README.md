@@ -382,7 +382,8 @@ cast+about / info-panel regressions.
 ```bash
 # UI tier only — every scene whose `tier` is "ui". No video; it implies --server and (since
 # 2026-09-02) resolves the test identity first, so it needs src/config.local.h and the overlay —
-# without a token every route scene boots to QR sign-in and grades a screen it never reached.
+# without a token every route scene but the login spinner (which WANTS the sign-in screen) boots
+# to QR sign-in and grades a screen it never reached.
 ./tests/run.py --fps
 
 # add the player tier (info panel, track menu) — these decode video as the test_user, slower.

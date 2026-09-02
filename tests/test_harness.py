@@ -3305,14 +3305,18 @@ class FpsRunToken(unittest.TestCase):
     the plain `./tests/run.py --fps` used to skip it and boot every route scene to QR sign-in."""
 
     def test_a_route_scene_alone_needs_the_token(self):
-        self.assertTrue(run.fps_run_needs_token([{"route": "home"}], False, False))
+        self.assertTrue(run.fps_run_needs_token([{"route": "home"}], False))
 
     def test_the_login_spinner_alone_does_not(self):
-        self.assertFalse(run.fps_run_needs_token([{"route": "login"}], False, False))
+        # ... whichever tier flag selected it: `--fps-player --filter login-spinner` must not
+        # demand a config.local.h for a scene that boots to QR sign-in on purpose
+        self.assertFalse(run.fps_run_needs_token([{"route": "login"}], False))
 
-    def test_the_player_tier_and_a_shared_server_still_force_it(self):
-        self.assertTrue(run.fps_run_needs_token([{"route": "login"}], True, False))
-        self.assertTrue(run.fps_run_needs_token([{"route": "login"}], False, True))
+    def test_a_player_scene_answers_through_its_route(self):
+        self.assertTrue(run.fps_run_needs_token([{"route": "login"}, {"route": "player"}], False))
+
+    def test_a_shared_server_still_forces_it(self):
+        self.assertTrue(run.fps_run_needs_token([{"route": "login"}], True))
 
 
 if __name__ == "__main__":

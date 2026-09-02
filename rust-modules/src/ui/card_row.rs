@@ -540,9 +540,7 @@ fn marquee_x(t_ms: f32, text_w: f32, budget: f32) -> f32 {
     if text_w <= budget {
         return 0.0;
     }
-    let travel = text_w + MARQUEE_GAP; // one full cycle's glide distance
-    let glide_ms = travel / MARQUEE_SPEED * 1000.0;
-    let period = MARQUEE_HOLD_MS + glide_ms;
+    let period = marquee_period(text_w, budget);
     let t = t_ms.max(0.0) % period;
     if t < MARQUEE_HOLD_MS {
         0.0
@@ -562,10 +560,27 @@ fn marquee_moving(t_ms: f32, text_w: f32, budget: f32) -> bool {
     if text_w <= budget {
         return false;
     }
-    let travel = text_w + MARQUEE_GAP;
-    let glide_ms = travel / MARQUEE_SPEED * 1000.0;
-    let period = MARQUEE_HOLD_MS + glide_ms;
-    t_ms.max(0.0) % period >= MARQUEE_HOLD_MS
+    t_ms.max(0.0) % marquee_period(text_w, budget) >= MARQUEE_HOLD_MS
+}
+
+/// One full marquee cycle in ms — the rest beat plus the glide that carries the run and its
+/// [`MARQUEE_GAP`] of air fully past. The ONE place the period is spelled; [`marquee_x`],
+/// [`marquee_moving`] and [`marquee_phase`] all fold on it.
+fn marquee_period(text_w: f32, budget: f32) -> f32 {
+    let _ = budget; // a fitting run never reaches here; the period is a property of the run alone
+    let travel = text_w + MARQUEE_GAP; // one full cycle's glide distance
+    MARQUEE_HOLD_MS + travel / MARQUEE_SPEED * 1000.0
+}
+
+/// Fold the `f64` clock onto one period BEFORE it becomes an `f32`. The accumulator is `f64` so
+/// it never stops advancing, but an `f32` of a six-day-old clock (~2^29 ms) still only moves in
+/// 64 ms steps — which at [`MARQUEE_SPEED`] is a 2.5 px judder at 15 Hz rather than a glide
+/// (Codex review, 2026-09-02). A phase is never larger than one period, so it is exact in `f32`.
+fn marquee_phase(t_ms: f64, text_w: f32, budget: f32) -> f32 {
+    if text_w <= budget {
+        return 0.0;
+    }
+    (t_ms.max(0.0) % marquee_period(text_w, budget) as f64) as f32
 }
 
 thread_local! {
@@ -587,7 +602,7 @@ thread_local! {
 /// frame from [`title_marquee`], which is called at most once per frame (the focused tile is drawn
 /// exactly once) — so this cannot double-advance within a frame the way a naively-shared clock read
 /// from two draws in the same pass would.
-fn marquee_clock(text: &str) -> f32 {
+fn marquee_clock(text: &str) -> f64 {
     let changed = MARQUEE_KEY.with(|k| {
         let mut k = k.borrow_mut();
         if k.as_str() == text {
@@ -604,7 +619,7 @@ fn marquee_clock(text: &str) -> f32 {
         MARQUEE_MS.with(|m| {
             let v = m.get() + crate::ui::idle::dt() as f64 * 1000.0;
             m.set(v);
-            v as f32
+            v
         })
     }
 }
@@ -625,7 +640,7 @@ fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let t_ms = marquee_clock(&s);
+    let t_ms = marquee_phase(marquee_clock(&s), w, budget);
     // The clock above advances by `idle::dt` ON DRAWN FRAMES ONLY, and a drawn frame is one the
     // present gate let through. So the rest beat has to buy its own frames, or it never ends: a
     // focused overflowing title was reproduced sitting clipped and motionless at 4 s and again at

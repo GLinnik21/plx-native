@@ -1178,7 +1178,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
   one left**; this line said "three" long after the other two (`home-grid`, `library-scroll`) were
-  given oscillators and real `fps_floor`s, which is the fix that note asks for. The two other
+  given oscillators and real `fps_floor`s, which is the fix that note asks for. The other three
   `loop_floor`-only scenes are the player-tier overlays (`info-panel`, `track-menu`, `chapters-panel` — take the list from `./tests/run.py --list --server`, not from here) and need no note, because
   the present gate excludes the player route. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
