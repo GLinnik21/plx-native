@@ -24,12 +24,19 @@
 //! plain one, and not only tonally: a solo MIT project writing like a legal department is what reads
 //! as pretending to be a company, which is the thing this audience reacts to.
 //!
-//! **"See exactly what's sent" renders every literal schema** — Syncthing's preview, and the reason
+//! **"What is actually sent" renders every literal schema** — Syncthing's preview, and the reason
 //! the claim below it is checkable rather than reassuring. Usage examples go through the real
 //! serializer. Native and fallback examples replace random/build-specific runtime values with
 //! explicit placeholders; handled playback and usage examples show representative members of
 //! their closed fixed domains. Tests compare object keys with the sanitizer/schema allowlists, so
 //! an added field cannot bypass this screen.
+//!
+//! **Item 14: it is TWO documents, one per telemetry channel, not one.** `preview_crash` and
+//! `preview_usage` each build and render only their own channel's schemas — Sentry's crash/error
+//! envelopes, or PostHog's usage events — so a person reading "what crash reports send" is never
+//! shown a usage identifier or event, and the reverse. Settings shows both rows; first run shows
+//! only the one the current question is actually asking about. The two functions never run
+//! together except inside a test's own `preview()` union, which nothing on screen ever shows.
 //!
 //! # It is asked ONCE PER TELEVISION, before the profile picker
 //!
@@ -97,8 +104,16 @@ const ROW_ERRORS: &str = "Crash reports";
 const ROW_ERRORS_SUB: &str = "Optional technical crash reports.";
 const ROW_USAGE: &str = "Product analytics";
 const ROW_USAGE_SUB: &str = "Optional feature and playback outcomes.";
-const ROW_PREVIEW: &str = "See exactly what's shared";
-/// First run asks about ONE purpose at a time, so its preview row says which one it will show.
+/// **Item 14: one row per CHANNEL, not one row for both.** A single combined preview left it
+/// unclear which report actually carried which field, so Settings now opens two independent
+/// documents — one that shows only what a crash/error report can send, one that shows only what a
+/// usage/analytics event can send — each built by its own function (`preview_crash`/
+/// `preview_usage`) so the split is real rather than cosmetic. See this module's doc for why the
+/// preview exists at all.
+const ROW_PREVIEW_CRASH: &str = "Crashes / Errors — what is actually sent";
+const ROW_PREVIEW_USAGE: &str = "Analytics / Usage — what is actually sent";
+/// First run asks about ONE purpose at a time, so its preview row says which one it will show —
+/// the click still opens the CHANNEL-scoped document that matches the current [`Stage`].
 const ROW_EXAMPLE: &str = "See an example report";
 const ROW_POLICY: &str = "Privacy policy";
 const ROW_DELETE: &str = "Delete all local data";
@@ -129,7 +144,10 @@ fn answer_labels() -> (&'static std::ffi::CStr, &'static std::ffi::CStr) {
 enum RowId {
     Errors,
     Usage,
-    Preview,
+    /// Item 14: the crash/error channel's own preview — see `ROW_PREVIEW_CRASH`.
+    PreviewCrash,
+    /// Item 14: the usage/analytics channel's own preview — see `ROW_PREVIEW_USAGE`.
+    PreviewUsage,
     Policy,
     Delete,
 }
@@ -145,22 +163,34 @@ enum Stage {
     Crash,
     Product,
 }
+/// Which document the pushed reader is showing. Item 14 split the old single `Payload` kind into
+/// one per telemetry channel so the two can never bleed into each other's document.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PreviewKind {
-    Payload,
+    Crash,
+    Usage,
     Policy,
 }
 
 fn row_ids() -> Vec<RowId> {
     if mode() == Mode::FirstRun {
         // The two ANSWERS are not rows — they are the route's action band. What is left here is
-        // only what you may READ before answering.
-        return vec![RowId::Preview, RowId::Policy];
+        // only what you may READ before answering. Only ONE preview row shows, and it is the
+        // channel this stage is actually asking about — `on_ok`'s `RowId::PreviewCrash`/
+        // `PreviewUsage` arms both open a document, so which variant appears here is what decides
+        // which channel's payload the person sees while deciding.
+        let preview = if stage() == Stage::Crash {
+            RowId::PreviewCrash
+        } else {
+            RowId::PreviewUsage
+        };
+        return vec![preview, RowId::Policy];
     }
     vec![
         RowId::Errors,
         RowId::Usage,
-        RowId::Preview,
+        RowId::PreviewCrash,
+        RowId::PreviewUsage,
         RowId::Policy,
         RowId::Delete,
     ]
@@ -177,7 +207,7 @@ static mut DRAFT: (bool, bool) = (false, false);
 static mut BASE: (bool, bool) = (false, false);
 static mut MODE: Mode = Mode::FirstRun;
 static mut STAGE: Stage = Stage::Crash;
-static mut PREVIEW_KIND: PreviewKind = PreviewKind::Payload;
+static mut PREVIEW_KIND: PreviewKind = PreviewKind::Crash;
 static mut DELETE_REQUESTED: bool = false;
 static mut DOCUMENT_OPEN: bool = false;
 static mut DOCUMENT_MORPH: RoutePush = RoutePush::new();
@@ -361,16 +391,11 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
         // One headerless section holding only the two things you may READ before answering, and
         // no sub-lines: each row says all it needs in its label, and the question this screen is
         // actually asking is in the narrative column, not in this list.
+        // One row either way — which CHANNEL it previews is `row_ids()`'s call, scoped to the
+        // question this stage is actually asking (item 14).
         table().set_sections(
             vec![Section::new("")
-                .row(
-                    Row::new(if stage() == Stage::Crash {
-                        ROW_EXAMPLE
-                    } else {
-                        ROW_PREVIEW
-                    })
-                    .chevron(true),
-                )
+                .row(Row::new(ROW_EXAMPLE).chevron(true))
                 .row(Row::new(ROW_POLICY).chevron(true))],
             sel,
             preserve_motion,
@@ -387,10 +412,17 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
         let reporting = Section::new("Reporting")
             .row(Row::new(ROW_ERRORS).detail(ROW_ERRORS_SUB).toggle(errors))
             .row(Row::new(ROW_USAGE).detail(ROW_USAGE_SUB).toggle(usage));
+        // Item 14: two rows, one per telemetry channel, each opening ITS OWN document — a
+        // combined preview left it unclear which report actually carried which field.
         let info = Section::new("Information")
             .row(
-                Row::new(ROW_PREVIEW)
-                    .detail("Field-by-field previews for both report types.")
+                Row::new(ROW_PREVIEW_CRASH)
+                    .detail("Field-by-field preview of the crash/error report.")
+                    .chevron(true),
+            )
+            .row(
+                Row::new(ROW_PREVIEW_USAGE)
+                    .detail("Field-by-field preview of product analytics events.")
                     .chevron(true),
             )
             .row(
@@ -558,9 +590,17 @@ pub(crate) fn on_ok() -> bool {
             table().list_focused = false;
             crate::ui::idle::invalidate();
         }
-        RowId::Preview => {
+        RowId::PreviewCrash => {
             unsafe {
-                PREVIEW_KIND = PreviewKind::Payload;
+                PREVIEW_KIND = PreviewKind::Crash;
+                DOCUMENT_OPEN = true;
+            }
+            reader().reset();
+            crate::ui::idle::invalidate();
+        }
+        RowId::PreviewUsage => {
+            unsafe {
+                PREVIEW_KIND = PreviewKind::Usage;
                 DOCUMENT_OPEN = true;
             }
             reader().reset();
@@ -666,26 +706,26 @@ pub(crate) fn update(dt: f32) {
     table().update(dt, table_frame.h);
 }
 
-// ---- the payload preview ---------------------------------------------------------------------
+// ---- the payload previews ----------------------------------------------------------------------
+//
+// Item 14: this used to be ONE function (`preview`) concatenating both channels into a single
+// document, so it was unclear which report actually carried which field. It is now two functions,
+// one per channel, each opening its own reader — `preview_crash` for Sentry, `preview_usage` for
+// PostHog. `preview()` still exists, `#[cfg(test)]` only, as the UNION the invariant tests grade
+// (every event/field this build can emit must appear in ONE of the two channel documents); no
+// screen ever shows that concatenation to a person.
 
-/// **The exact schemas that may be sent**, built through their real body serialisers and sanitizer.
-///
-/// Not a mock-up, and that is the entire value: a hand-written sample drifts from the code the
-/// moment anybody adds a field, and then the screen that exists to make the claim checkable is
-/// itself a claim nobody checks. This runs `posthog::preview` over every
-/// [`DiagEvent`](crate::diag::schema::DiagEvent) the build can emit, and the native preview is
-/// tested against the native sanitizer's field allowlist. A schema change therefore appears here,
-/// in front of the person being asked to consent to it.
-///
-/// The identifier shown is always a placeholder, never the stored value. A new identifier is
-/// minted only when product analytics is enabled; error-only consent creates none.
-pub(crate) fn preview() -> String {
-    use crate::diag::schema::DiagEvent;
+/// **Item 14: the Crashes/Errors channel's own preview** — the native crash envelope, its two
+/// fallback shapes and the handled-playback-error report, everything Sentry (Germany) can receive
+/// when error reporting is on. Built through the real body serialisers and sanitizer, not a
+/// mock-up: a field added to any of these schemas appears here, in front of the person being asked
+/// to consent to it, the same argument the old combined `preview` made.
+pub(crate) fn preview_crash() -> String {
     let mut out = String::from(
-        "Every schema this app can send. Random and build-specific values are placeholders; \
-         fixed classes below are representative values from the closed domains in the Privacy \
-         notice. Nothing else is sent. The usage identifier is random and is created only when \
-         product analytics is enabled.\n\n",
+        "Crashes / Errors — what is actually sent to Sentry in Germany, and only when error \
+         reporting is on. Random and build-specific values are placeholders; fixed classes below \
+         are representative values from the closed domains in the Privacy notice. Nothing else is \
+         sent.\n\n",
     );
     out.push_str("Native crash report (only when error reporting is on):\n");
     let crash = crate::telemetry::native::preview_event();
@@ -713,7 +753,26 @@ pub(crate) fn preview() -> String {
     out.push_str(&handled_text);
     out.push_str("\n\n");
     out.push_str(&crate::telemetry::playback::preview_domains());
-    out.push_str("\n\nUsage events (only when usage reporting is on):\n");
+    out
+}
+
+/// **Item 14: the Analytics/Usage channel's own preview** — every
+/// [`DiagEvent`](crate::diag::schema::DiagEvent) the build can emit, everything PostHog (Germany)
+/// can receive when product analytics is on. Runs the real `posthog::preview` serialiser, so an
+/// event added without being declared shows up here rather than only in a dashboard.
+///
+/// The identifier shown is always a placeholder, never the stored value. A new identifier is
+/// minted only when product analytics is enabled; error-only consent creates none.
+pub(crate) fn preview_usage() -> String {
+    use crate::diag::schema::DiagEvent;
+    let mut out = String::from(
+        "Analytics / Usage — what is actually sent to PostHog in Germany, and only when usage \
+         reporting is on, with a random installation identifier. Random and build-specific values \
+         are placeholders; fixed classes below are representative values from the closed domains \
+         in the Privacy notice. Nothing else is sent. The usage identifier is random and is \
+         created only when product analytics is enabled.\n\n",
+    );
+    out.push_str("Usage events (only when usage reporting is on):\n");
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
@@ -790,6 +849,16 @@ pub(crate) fn preview() -> String {
         out.push_str("\n\n");
     }
     out
+}
+
+/// The union of both channels — test-only. Nothing on screen shows this concatenation to a person;
+/// Settings and first run always open exactly one channel's own document (`preview_crash` or
+/// `preview_usage`). It exists purely so `the_preview_shows_every_event_this_build_can_emit` can
+/// keep asserting over "everything this build can send" without caring which of the two channels a
+/// given event belongs to.
+#[cfg(test)]
+fn preview() -> String {
+    preview_crash() + &preview_usage()
 }
 
 fn privacy_policy() -> &'static str {
@@ -933,10 +1002,27 @@ fn draw_question() {
     }
 
     if t > 0.01 {
-        let policy = unsafe { *addr_of!(PREVIEW_KIND) == PreviewKind::Policy };
+        let kind = unsafe { *addr_of!(PREVIEW_KIND) };
         let dp = unsafe { (*addr_of!(DOCUMENT_MORPH)).child(entrance) };
+        // Item 14: three documents now, not two — the crash channel's own preview, the usage
+        // channel's own preview, and the policy — each with its own title and subtitle so the
+        // reader can never mistake which document (or which channel) it is looking at.
+        let (doc_title, subtitle): (&str, &str) = match kind {
+            PreviewKind::Policy => (
+                ROW_POLICY,
+                "How PlxNative handles local data, Plex services and optional reporting.",
+            ),
+            PreviewKind::Crash => (
+                ROW_PREVIEW_CRASH,
+                "The exact fields a crash or error report can send — only when error reporting is on.",
+            ),
+            PreviewKind::Usage => (
+                ROW_PREVIEW_USAGE,
+                "The exact fields a product analytics event can send — only when usage reporting is on.",
+            ),
+        };
         // A pushed document's crumb names the question it was opened from, so the way back out of
-        // a policy read is stated even on the route that has no BACK hint anywhere.
+        // a read is stated even on the route that has no BACK hint anywhere.
         layout.draw_narrative(
             dp,
             Some(if mode() == Mode::Settings {
@@ -944,18 +1030,14 @@ fn draw_question() {
             } else {
                 title()
             }),
-            if policy { ROW_POLICY } else { ROW_PREVIEW },
-            if policy {
-                "How PlxNative handles local data, Plex services and optional reporting."
-            } else {
-                "The exact fields this build can send when each optional category is enabled."
-            },
+            doc_title,
+            subtitle,
             theme::size::LABEL,
         );
-        let text = if policy {
-            privacy_policy().to_string()
-        } else {
-            preview()
+        let text = match kind {
+            PreviewKind::Policy => privacy_policy().to_string(),
+            PreviewKind::Crash => preview_crash(),
+            PreviewKind::Usage => preview_usage(),
         };
         reader().draw(dp, layout.content, None, &text);
     }
@@ -1141,6 +1223,60 @@ mod tests {
         }
     }
 
+    /// **Item 14's whole point: the crash document carries nothing from the usage channel.** A
+    /// person reading "what crash reports send" must never see a PostHog identifier or event
+    /// field — that would make the split cosmetic rather than a real separation of what goes
+    /// where.
+    #[test]
+    fn the_crash_preview_carries_nothing_from_the_usage_channel() {
+        let text = preview_crash();
+        assert!(
+            !text.contains("distinct_id"),
+            "no PostHog envelope field belongs in the crash-only document"
+        );
+        assert!(
+            !text.contains("<project key>"),
+            "no PostHog project key belongs in the crash-only document"
+        );
+        for s in crate::diag::schema::EVENT_SPECS {
+            // The `"event": "<name>"` PAIR (`posthog.rs`'s own shape), not a bare substring or
+            // even a bare quoted name: the handled-playback-error (Sentry) schema independently
+            // uses several of the SAME strings as ordinary field keys — `"playback.started":
+            // "yes"` is a real, correct line in the crash preview, and `playback.requested` is a
+            // prefix of the crash-only field `playback.requested_quality`. Only the full
+            // event-envelope pair is unique to a usage document.
+            let quoted = format!("\"event\": \"{}\"", s.name);
+            assert!(
+                !text.contains(&quoted),
+                "usage event `{}` leaked into the crash preview",
+                s.name
+            );
+        }
+    }
+
+    /// **The mirror image: the usage document carries nothing from the crash channel.** No Sentry
+    /// envelope shape, no exception/thread/register data — a person reading "what analytics send"
+    /// must not be shown fields that only a crash report can carry.
+    #[test]
+    fn the_usage_preview_carries_nothing_from_the_crash_channel() {
+        let text = preview_usage();
+        for sentry_only in [
+            "exception",
+            "stacktrace",
+            "registers",
+            "threads",
+            "debug_meta",
+            "Handled playback error",
+            "C fault fallback",
+            "Rust panic fallback",
+        ] {
+            assert!(
+                !text.contains(sentry_only),
+                "crash-only field `{sentry_only}` leaked into the usage preview"
+            );
+        }
+    }
+
     /// …and it shows the anonymity flag, which is the one property in the payload a reader could not
     /// otherwise verify and the one that costs a person a profile if it is ever dropped.
     #[test]
@@ -1204,7 +1340,11 @@ mod tests {
         unsafe { addr_of_mut!(DRAFT).write((true, false)) };
         rebuild(0);
         assert!(action_visible());
-        assert_eq!(row_ids().len(), 5, "Done never changes table geometry");
+        assert_eq!(
+            row_ids().len(),
+            6,
+            "Done never changes table geometry (item 14 split one preview row into two)"
+        );
         close();
     }
 
@@ -1217,8 +1357,9 @@ mod tests {
         open(&Consent::default());
         assert_eq!(
             row_ids(),
-            vec![RowId::Preview, RowId::Policy],
-            "only the two readable documents remain in the list"
+            vec![RowId::PreviewCrash, RowId::Policy],
+            "only the two readable documents remain in the list, and the preview is the \
+             crash channel's own — Stage::Crash is where a fresh question always starts"
         );
         assert_eq!(table().n_rows(), 2);
         assert!(
