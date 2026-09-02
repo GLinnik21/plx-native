@@ -380,7 +380,9 @@ cast+about / info-panel regressions.
 > instead of grading a loop rate as a frame rate.
 
 ```bash
-# UI tier only — every scene whose `tier` is "ui". No video, no PMS token needed.
+# UI tier only — every scene whose `tier` is "ui". No video; it implies --server and (since
+# 2026-09-02) resolves the test identity first, so it needs src/config.local.h and the overlay —
+# without a token every route scene boots to QR sign-in and grades a screen it never reached.
 ./tests/run.py --fps
 
 # add the player tier (info panel, track menu) — these decode video as the test_user, slower.
@@ -398,7 +400,7 @@ cast+about / info-panel regressions.
     and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
     saying so. It is the only one left: this line said "three scenes" long after the other two
     (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
-    the fix that note asks for. The two remaining `loop_floor`-only scenes are `info-panel` and
+    the fix that note asks for. The remaining `loop_floor`-only scenes are `info-panel`, `chapters-panel` and
     `track-menu`, and they need no such note — the present gate **excludes the player route**
     (`ui/idle.rs:57`), so their `loop_floor` still grades a fill rate the way it always did.
   - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".

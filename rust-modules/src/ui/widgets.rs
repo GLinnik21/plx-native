@@ -1993,9 +1993,10 @@ const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
 /// The design system asks for the grid to pass BEHIND the glass track — cutting the content at the
 /// chrome line and then reporting that the material shows nothing is circular, and the argument is
 /// right. It does not survive this screen's arithmetic. The grid's rest positions are fixed modulo
-/// [`library::PITCH`], and at every one of them the track lands in the 96px band BETWEEN two rows:
-/// measured in the simulator at 1920x1080, the row above ends at y=26 and the track occupies 36 to
-/// 112, so the material has flat app grey behind it at rest no matter how far you scroll. What the
+/// [`library::PITCH`], and at every one of them the track lands in the `UNDER_LABEL_H + UNDER_LABEL_AIR` band BETWEEN two rows (114px since
+/// the Home/Library pitch was unified, 2026-09-02; the figures below were measured at the old 96,
+/// re-measure before quoting a y): in the simulator at 1920x1080 the row above ended at y=26 and
+/// the track occupied 36 to 112, so the material has flat app grey behind it at rest no matter how far you scroll. What the
 /// change actually bought was a permanent ~26px strip of cut-off poster bottoms along the top of
 /// the frame. The emptiness behind the bar is not a choice anybody made — it is the row pitch, and
 /// moving the scrim cannot reach it. Reinstated, with the measurement, so the next reader gets the

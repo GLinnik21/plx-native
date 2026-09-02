@@ -336,7 +336,7 @@ conditional on an account. *(The figure above predates this row.)* Settings open
 modal: signed-in users also get **Home screen**, while everyone gets **Privacy & data**, **Legal
 notices** and **About PlxNative**.
 
-- **Privacy & data** holds the two saved reporting choices, the scrollable exact-schema preview,
+- **Privacy & data** holds the two saved reporting choices, one scrollable what-is-actually-sent document PER CHANNEL (Crashes / Errors, Analytics / Usage),
   the privacy policy, and Delete all local data. Changed switches commit through Done; BACK
   discards the draft. Playback diagnostics remain a playback action rather than a global setting.
 - **Legal notices** contains six readable documents: **Privacy policy**, **Open-source licences**,

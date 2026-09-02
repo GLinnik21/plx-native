@@ -43,7 +43,7 @@
 // fold to 38. Two rules fall out of it, and both are load-bearing rather than tidy:
 //   * the noise is behind a UNIFORM branch — Midgard resolves that per draw, not per fragment —
 //     so a scrim pays nothing for a ground's dither;
-//   * the ground's noise is a TEXTURE FETCH (a 64x64 white-noise tile, `gfx::noise_tex`), not a
+//   * the ground's noise is a TEXTURE FETCH (`gfx::noise_tex`, the 256-square TPDF tile above), not a
 //     hash: an interleaved-gradient hash was tried in between and, in highp because
 //     `gl_FragCoord` is, still cost the fold's full-screen wash ~2 cycles a pixel — 4M of a 14.4M
 //     frame. The arithmetic pipe is what binds here; the texture pipe beside it is idle.

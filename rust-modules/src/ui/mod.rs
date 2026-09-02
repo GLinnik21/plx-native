@@ -768,7 +768,7 @@ impl Painter {
     /// still a spring per corner channel; see `AmbientWash`.
     ///
     /// `dither` says whether this ground is what the eye RESTS on — a still, opaque, slow gradient
-    /// wants the ±½-LSB noise or it bands; a wash under a moving translucent picture does not, and
+    /// wants the ±1-LSB TPDF noise or it bands; a wash under a moving translucent picture does not, and
     /// on the set the noise is ~2.5M GPU cycles a frame at full screen (`gfx::draw_ambient`).
     pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4], dither: bool) {
         let a = self.a.clamp(0.0, 1.0);

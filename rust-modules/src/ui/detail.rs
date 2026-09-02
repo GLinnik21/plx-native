@@ -2418,7 +2418,7 @@ pub(crate) fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
 
 /// Whether the page's ground is something the eye can REST on this frame, from the vertical
 /// scroll spring's velocity. Home's wash learned this rule on 2026-09-02 (`home.rs`: dithered
-/// only while still): the ±½-LSB dither is a full-screen fragment cost of ~2.5M GPU cycles on the
+/// only while still): the ±1-LSB TPDF dither is a full-screen fragment cost of ~2.5M GPU cycles on the
 /// set, and under a moving, fading hero nobody reads the ground as a gradient. The detail page
 /// kept dithering through its whole scroll, and `fps:detail-transition` measured 42-44 fps
 /// against a 45 floor on the merged tree (53 before `dec32f2e`; 34 at that commit). The
