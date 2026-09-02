@@ -286,7 +286,7 @@ impl UsageContext {
                     (connection, ip)
                 });
         Self {
-            app_version: dimension(env!("CARGO_PKG_VERSION")),
+            app_version: dimension(env!("PLX_VERSION")),
             webos_release: dimension(&os.release),
             webos_api: dimension(&os.api),
             webos_codename: dimension(&os.codename),

@@ -948,8 +948,13 @@ Listed because each could change a decision above.
    - **`X-Plex-Model` was `49SM9000PLA`**, the author's television, reported as fact by every
      install. Now a generic `LG webOS TV`.
    - **`X-Plex-Version` was two literals** (`1.0` to plex.tv, `0.1.0` to the PMS), already stale in
-     opposite directions before release. Now `env!("CARGO_PKG_VERSION")`, with
-     `ci/check-package.py` asserting `Cargo.toml` and `appinfo.json` agree.
+     opposite directions before release. Now one derived constant — `plex::identity::VERSION`,
+     which `rust-modules/build.rs` publishes from `Cargo.toml` (exactly for a `RELEASE=1` build,
+     as the next patch plus `-dev` for anything else) — with `ci/check-package.py` asserting that
+     `Cargo.toml` and `appinfo.json` agree, and that the packaged binary's reported version matches
+     the configuration that produced it: exact for the stable id and for any `RELEASE=1` build,
+     `-dev` for a developer one. Graded in both directions, because a witness that cannot fail is
+     not a gate.
 
    **Still open from this item:** the PMS-side `X-Plex-Client-Identifier` is a hardcoded UUID, so
    every install on earth is one device to a server — sessions merge, and the transcode-stop call

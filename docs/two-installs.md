@@ -390,6 +390,19 @@ graded from *both* sides for the same reason — the dev leg asserts `plxnative-
 emitted — because the previous witness (`plxnative-autoplay`) matched nothing in *either*
 configuration, and so printed `ok` over every build for as long as it existed.
 
+**That dev leg did not actually run until 2026-09-02, and the way it failed is the same shape a
+third time.** Everything gated on `BUILD` — the dev-witness leg, the release leg, the dev-only
+FFmpeg library check — decoded `pkg/.build-config` by comparing the WHOLE stamp against two
+literals, and the stamp grew fields after that was written: `+tel:<hash>` always, `+symbols` on the
+release cut. So the real stamp for an ordinary dev build, `features:+tel:98c4b7d3`, matched
+neither, `BUILD` was `None` for every build this project makes, and all three gates printed
+`SKIP — neither shipped configuration` on every CI run instead of grading anything. Nothing went
+red, which is the whole difficulty: a gate that skips looks exactly like a gate that passes if you
+are reading for failures. The stamp is parsed by field now, and `ci/check-package.py --selftest`
+(in `make check`) pins the decoder against every stamp the Makefile can write — including the
+`SYMBOLS=1` one the release cut produces, which even a hand-repair of the two literals would have
+left ungraded.
+
 **Which install produced a log** is the first line of the event log, written before anything can
 fail:
 

@@ -24,8 +24,9 @@ The interesting cases are the NEGATIVES. A missed edit costs one unchecked relea
 and the next edit re-runs it; a false fire costs 0.55 s on every `.rs` write in the session and
 teaches the reader to reach for `PLX_RELEASE_CHECK_SKIP`. The three that are easy to get wrong are
 `src/bin/sim.rs` (a real Rust file under the tree, which `--lib` does not compile and the release
-set could not build anyway — `required-features = ["hostsim"]`), `build.rs` (compiled in EVERY
-configuration, so already covered by `make check`), and a file in a sibling `.claude/worktrees/`
+set could not build anyway — `required-features = ["hostsim"]`), `build.rs` (cargo compiles the script in
+EVERY configuration, so a break in it is already covered by `make check` — true even though it now
+emits `PLX_VERSION` for every build rather than early-returning outside `hostsim`), and a file in a sibling `.claude/worktrees/`
 checkout (another lane's crate, another lane's target dir).
 
 `/repo` below is a fabricated root: `rust_src_target` is pure path arithmetic, so nothing needs to
@@ -74,7 +75,7 @@ CASES = [
     # --- does not fire: right extension, wrong target -------------------------
     (SKIP, "src/bin/sim.rs (not a --lib target, needs hostsim)",
      edit("/repo/rust-modules/src/bin/sim.rs"), ROOT),
-    (SKIP, "build.rs (compiled in every configuration)",
+    (SKIP, "build.rs (cargo compiles the script in every configuration)",
      edit("/repo/rust-modules/build.rs"), ROOT),
     (SKIP, "tools/ script", edit("/repo/tools/some_helper.rs"), ROOT),
     (SKIP, "ci/ file", edit("/repo/ci/scratch.rs"), ROOT),

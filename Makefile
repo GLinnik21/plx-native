@@ -348,6 +348,29 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # one step removed — and it burned two builds while shooting the README screenshots (which want
 # devtriggers ON and devtools OFF, a combination neither RELEASE nor the default gives). Correct:
 #   make RUST_FEATFLAGS="--no-default-features --features devtriggers" RUST_TDIR=target-shots deploy
+
+# WHICH VERSION THE BINARY REPORTS, which is not always the version it was cut from. A release
+# commit leaves the whole tree at the version it just published, so every developer build after it
+# reported that exact number as its own — in X-Plex-Version, in the Sentry release, on the
+# diagnostics panel — and nothing downstream could tell a working tree from the shipped artifact.
+# `rust-modules/build.rs` reads this ONE variable: set, the binary says `0.5.0`; unset or empty, it
+# says `0.5.1-dev`, the patch it is working towards. Exported (rather than passed per recipe) so
+# the cross-build, `make check`, `make sim` and `make macapp` cannot answer differently — they run
+# cargo from four places, and the failure of missing one is a mislabelled artifact, not an error.
+#
+# It is deliberately NOT in $(RUST_CFG), and `override` is what makes that safe. RELEASE is
+# already in the stamp and gives each configuration its own --target-dir, so a flip through the
+# supported door rebuilds a DIFFERENT .a and cargo re-runs the script for it. What the stamp could
+# not have caught is somebody decoupling this from RELEASE by hand — `make PLX_RELEASE=1 deploy`
+# (a command-line variable outranks an ordinary assignment) or `make -e` with it exported — which
+# would write a binary reporting 0.5.0 into the DEV target dir, leave RUST_CFG unmoved, and let
+# every later plain `make` link that stale library without a word. `override` makes the value a
+# function of RELEASE and nothing else, which is the property the stamp is relying on.
+#
+# The suffix never reaches pkg/appinfo.json or ipkroot/ctl/control — LG takes three integers and
+# nothing else, and `ci/check-package.py` asserts both that and, for the stable id, that the
+# packaged binary is not a `-dev` one.
+override export PLX_RELEASE := $(if $(RELEASE),1,)
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
 # write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
 # than the release binary sitting at pkg/plxnative, so make would call the link up to date and
@@ -543,8 +566,13 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 	$(CC) $(CFLAGS) -I $(FFMPEG_INC) -std=c11 -c ci/ffabi-assert.c -o /dev/null
 	@touch $@
 
+# `build.rs` is a prerequisite for a reason that is not obvious: it decides the version string the
+# binary REPORTS, and it is not under rust-modules/src, so without naming it here an edit to that
+# rule would leave every later `make` linking a library built by the OLD one. Cargo's own
+# `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
+# all, and this target is an ordinary timestamp comparison.
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
-$(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
+$(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
@@ -917,6 +945,12 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
+	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
+	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
+	@# "neither shipped configuration", which is a SKIP, so three gates printed nothing and nobody
+	@# saw it. Free, and the one place the make-side and python-side spellings of the stamp meet.
+	python3 ci/check-package.py --selftest
 	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
 	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
 	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong

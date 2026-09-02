@@ -9,8 +9,12 @@ submission rather than a warning:
                                 filename) from it, and release.yml refuses to publish a tag that
                                 disagrees with it.
     ipkroot/ctl/control         Version: — read by opkg and by webosbrew's repogen.
-    rust-modules/Cargo.toml     reported to both Plex services as X-Plex-Version, via
-                                env!("CARGO_PKG_VERSION") in plex/identity.rs.
+    rust-modules/Cargo.toml     what every version the app REPORTS is derived from —
+                                X-Plex-Version, the telemetry release, the diagnostics panel.
+                                `rust-modules/build.rs` publishes it as `PLX_VERSION`, exactly
+                                for a RELEASE build and as the next patch plus `-dev` for
+                                everything else, so a working tree stops claiming to be the
+                                last release. That suffix exists only in the binary.
     rust-modules/Cargo.lock     cargo would fix this itself on the next build, but leaving it
                                 stale means the very next `make` produces a dirty tree — which on
                                 a release commit is exactly when you least want one.
@@ -23,7 +27,9 @@ Usage:
 
 Exactly three integers, always: LG rejects anything else, and `ci/check-package.py` asserts it.
 There is deliberately no pre-release or build-metadata support — `1.0.0-rc1` is not installable
-on a webOS TV, so accepting it here would only let it fail later.
+on a webOS TV, so accepting it here would only let it fail later. The `-dev` suffix a developer
+build reports is not an exception to that: it is added by `rust-modules/build.rs` to the string
+the RUNNING app reports and never written to any of the four files below.
 """
 import argparse
 import json

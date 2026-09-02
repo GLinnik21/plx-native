@@ -40,7 +40,8 @@ Five pieces of this feature already exist, and the design is mostly wiring them 
   public issue threads. A snapshot built from `Diag` is redacted by construction.
 * **Device identity.** `webos::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
   `devcaps::caps()` (the SoC's own codec table), `paths::app_id()`/`flavour()`,
-  `env!("CARGO_PKG_VERSION")`.
+  `env!("PLX_VERSION")` (the reported app version — `X.Y.Z` for a release build, `X.Y.Z+1-dev`
+  for every other one; see `rust-modules/build.rs`).
 * **A TLS client with runtime-bound libcurl.** `net::request` — verification on, `NOSIGNAL`, curl
   bound by SONAME candidate list so it works from webOS 4.4 to 11.2. Adding one pinning option is a
   parameter, not a new transport.

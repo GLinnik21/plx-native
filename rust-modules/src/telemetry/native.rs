@@ -460,7 +460,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
         "timestamp": "<crash time>",
         "platform": "native",
         "level": "fatal",
-        "release": concat!("plxnative@", env!("CARGO_PKG_VERSION")),
+        "release": concat!("plxnative@", env!("PLX_VERSION")),
         "environment": super::sender::ENVIRONMENT,
         "dist": "<ELF build id>",
         "sdk": {"name": "plxnative", "version": "0.13.9"},
@@ -699,7 +699,7 @@ mod sdk {
         let Some(executable) = cstring(executable_path.as_os_str().as_encoded_bytes()) else {
             return;
         };
-        let Some(release) = cstring(format!("plxnative@{}", env!("CARGO_PKG_VERSION"))) else {
+        let Some(release) = cstring(format!("plxnative@{}", env!("PLX_VERSION"))) else {
             return;
         };
         let Some(environment) = cstring(super::super::sender::ENVIRONMENT) else {

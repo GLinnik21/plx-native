@@ -378,10 +378,10 @@ pub(crate) fn sentry_body(
         "event_id": event_id,
         "platform": "native",
         "level": "fatal",
-        "release": concat!("plxnative@", env!("CARGO_PKG_VERSION")),
+        "release": concat!("plxnative@", env!("PLX_VERSION")),
         "environment": super::sender::ENVIRONMENT,
         "dist": effective_build_id,
-        "sdk": {"name": "plxnative-fallback", "version": env!("CARGO_PKG_VERSION")},
+        "sdk": {"name": "plxnative-fallback", "version": env!("PLX_VERSION")},
         // **The value is built from the NAME and the ADDRESS, both of which this crate owns.** Not
         // the record's own line, which would be one line of code and would make the no-text
         // guarantee depend on what the C tracer happens to write.
@@ -440,9 +440,9 @@ pub(crate) fn panic_sentry_body(p: &PanicReport, event_id: &str) -> Vec<u8> {
         "event_id": event_id,
         "platform": "native",
         "level": "fatal",
-        "release": concat!("plxnative@", env!("CARGO_PKG_VERSION")),
+        "release": concat!("plxnative@", env!("PLX_VERSION")),
         "environment": super::sender::ENVIRONMENT,
-        "sdk": {"name": "plxnative-fallback", "version": env!("CARGO_PKG_VERSION")},
+        "sdk": {"name": "plxnative-fallback", "version": env!("PLX_VERSION")},
         "exception": {"values": [{
             "type": "panic",
             // The hash, NOT the message. See the module doc: this is the field a Rust panic would
@@ -931,7 +931,7 @@ mod tests {
         assert_eq!(v["environment"], super::super::sender::ENVIRONMENT);
         assert_eq!(
             v["release"],
-            concat!("plxnative@", env!("CARGO_PKG_VERSION"))
+            concat!("plxnative@", env!("PLX_VERSION"))
         );
         assert_eq!(v["debug_meta"]["images"][0]["image_size"], 0x5f0000);
         assert_eq!(

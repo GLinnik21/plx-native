@@ -25,6 +25,71 @@ def check(cond: bool, msg: str) -> None:
         FAILURES.append(msg)
         print(f"  FAIL — {msg}")
 
+
+def build_configuration(stamp: str) -> "str | None":
+    """Decode `pkg/.build-config` into "dev", "release", or None for anything else.
+
+    THE FEATURE FLAGS ARE ONE FIELD OF SEVERAL, and reading the stamp as a whole string is what
+    silently switched every gate that depends on this off. `RUST_CFG` is `features:$(RUST_FEATFLAGS)`,
+    then `+symbols` when SYMBOLS=1, then always `+tel:<hash>` — so the real stamp for an ordinary
+    dev build is `features:+tel:98c4b7d3`, which equals neither of the two literals this was once
+    written against. It matched when it was written; the telemetry field was added later, and from
+    that day the answer was None for EVERY build this project makes. Nothing failed — the callers
+    print "SKIP — neither shipped configuration" and move on — so the dev-trigger gate, the
+    dev-only-library gate and the reported-version gate all graded nothing on every CI run. Exactly
+    the defect class DEV_WITNESS is commented against, a witness that cannot fail, reached by
+    another route. The release cut carries `SYMBOLS=1`, which adds a THIRD field, so repairing the
+    two literals by hand would have left the release job ungraded anyway.
+
+    Only the FEATURE half is decoded, and matched WHOLE rather than by substring: the "shots"
+    recipe in the Makefile's header is `--no-default-features --features devtriggers`, which a
+    substring test would grade as a release build and then fail for carrying exactly the surface it
+    asked for. `+tel:` and `+symbols` are optional so a stamp written by an older Makefile still
+    decodes, and the feature flags are lazy so they cannot swallow a trailing field.
+    """
+    fields = re.fullmatch(r"features:(?P<flags>.*?)(?:\+symbols)?(?:\+tel:[0-9a-f]+)?", stamp.strip())
+    if not fields:
+        return None
+    return {"": "dev", "--no-default-features": "release"}.get(fields.group("flags").strip())
+
+
+def _selftest() -> int:
+    """Prove the decoder against every stamp the Makefile can actually write.
+
+    It is here rather than in a comment because this function has already been wrong for months
+    without anything going red, and because the stamps it must decode are produced by make
+    variables that no Python test can otherwise see. `make check` runs it, beside `flavor.py`'s.
+    """
+    cases = {
+        # what the Makefile writes today, per documented configuration
+        "features:+tel:98c4b7d37a4c": "dev",
+        "features:--no-default-features+tel:98c4b7d37a4c": "release",
+        "features:--no-default-features+symbols+tel:98c4b7d37a4c": "release",   # the release cut
+        "features:+symbols+tel:98c4b7d37a4c": "dev",
+        # older stamps, from before the telemetry and symbols fields existed
+        "features:": "dev",
+        "features:--no-default-features": "release",
+        # configurations that are neither shipped one, and must SAY so rather than be graded
+        "features: --features lab-diagnostics+tel:abc123def456": None,          # LAB=1
+        "features:--no-default-features --features lab-diagnostics+tel:abc123def456": None,
+        "features:--no-default-features --features devtriggers+tel:abc123def456": None,  # shots
+        # nothing to read
+        "": None,
+        "garbage": None,
+    }
+    bad = 0
+    for stamp, want in cases.items():
+        got = build_configuration(stamp)
+        if got != want:
+            bad += 1
+            print(f"  FAIL — {stamp!r} decoded {got!r}, want {want!r}")
+    print(f"check-package: build_configuration {len(cases) - bad}/{len(cases)} stamps correct")
+    return 1 if bad else 0
+
+
+if "--selftest" in sys.argv:
+    sys.exit(_selftest())
+
 # ---- the two release documents -----------------------------------------------------------------
 #
 # `docs/release-notes/vX.Y.Z.md` is the body CI publishes, written for a television owner.
@@ -451,10 +516,12 @@ if IS_STABLE:
 check(appinfo["version"] == control["Version"],
       f'appinfo version == control Version ({appinfo["version"]})')
 # Cargo.toml is the FOURTH witness, and the one with a user-visible consequence: the diagnostics
-# read-out prints `plex::identity::VERSION`, which is `env!("CARGO_PKG_VERSION")`, and that panel is
+# read-out prints `plex::identity::VERSION`, which is derived from this number, and that panel is
 # designed to be photographed into a bug report. A bump that missed Cargo.toml would ship a package
 # labelled 0.2.1 whose own on-screen version says 0.2.0 — precisely the disagreement `identity`
 # exists to make impossible, and nothing checked it until a release nearly went out that way.
+# (Derived, not copied: `rust-modules/build.rs` reports the next patch with a `-dev` suffix for
+# anything but a RELEASE build, which the binary check further down grades on the bytes.)
 cargo = (ROOT / "rust-modules/Cargo.toml").read_text()
 m = re.search(r'^version = "([^"]+)"', cargo, re.M)
 check(m is not None and m.group(1) == appinfo["version"],
@@ -536,19 +603,21 @@ if IS_STABLE and note.exists():
 if IS_STABLE and audit.exists():
     lint_audit(audit)
 
-# WHICH CONFIGURATION produced what is in pkg/, which the two gates below both need. The Makefile
-# writes `features:$(RUST_FEATFLAGS)` into this stamp at PARSE time, and it is the same witness
-# `release.yml` greps to prove RELEASE=1 took. Matched WHOLE, not by substring: the "shots" recipe
-# in the Makefile's header is `--no-default-features --features devtriggers`, which a substring
-# test would grade as a release build and then fail for carrying exactly the surface it asked for.
-# Only the two configurations this project actually ships are graded; anything else says so.
+# WHICH CONFIGURATION produced what is in pkg/, which every gate below that says "RELEASE build"
+# needs. The Makefile writes this stamp at PARSE time, and it is the same witness `release.yml`
+# greps to prove RELEASE=1 took.
+#
+# `build_configuration` above decodes it, and its docstring carries the trap: the feature flags are
+# one FIELD of the stamp, not the whole of it, and reading it whole left every gate below graded on
+# nothing for months. Only the two configurations this project actually ships decode; anything else
+# (LAB, the shots recipe, an unreadable stamp) says so out loud instead of being graded.
+#
 # NB the stamp moves at make PARSE time, so any bare `make <target>` after a RELEASE=1 build flips
 # it to dev while ipkroot still holds the release binary. Both workflows build, package and check
 # in one shot so they never see that; a by-hand run on a stale tree can, and the disagreement it
 # then reports is true — repackage before believing anything else about that tree.
 _stamp = ROOT / "pkg/.build-config"
-BUILD = {"features:": "dev", "features:--no-default-features": "release"}.get(
-    _stamp.read_text().strip() if _stamp.exists() else "")
+BUILD = build_configuration(_stamp.read_text() if _stamp.exists() else "")
 
 # THIRD-PARTY-NOTICES must name exactly the libraries that ship. RELEASE=1 drops swscale, and the
 # notices claimed it for two releases — an LGPL document describing a file that is not in the box.
@@ -645,6 +714,51 @@ if binary.exists():
     else:
         print("  SKIP — pkg/.build-config is neither shipped configuration; not grading the binary")
 
+    # WHICH VERSION THE BINARY SAYS IT IS, which the four tracked files above cannot answer.
+    #
+    # They are the version this package was CUT from; `rust-modules/build.rs` decides what the
+    # binary REPORTS, and for anything but `RELEASE=1` that is the next patch with a `-dev` suffix
+    # (`0.5.0` published, `0.5.1-dev` in the tree). That exists so a developer build stops
+    # impersonating the last release in X-Plex-Version, in the Sentry release and on the
+    # diagnostics panel — and it means a version string now has a way to be wrong that no file
+    # comparison can see: a package for the stable id whose binary reports a version no release
+    # will ever carry, or, once this rule exists, a developer build that silently stopped saying so.
+    #
+    # Graded from BOTH sides for the reason DEV_WITNESS is: a witness that cannot fail is not a
+    # gate, and the string is compiled in from an env var, i.e. from something a build can lose.
+    # The suffix cannot be read off appinfo.json (LG takes three integers, so it never gets there),
+    # so it is recomputed here from the same arithmetic build.rs uses.
+    #
+    # MATCHED WITH THE `plxnative@` PREFIX, not as a bare number, and that is the difference
+    # between grading `PLX_VERSION` and grading whatever digits happen to be in .rodata: the About
+    # page and any release note text carry the version too, so a bare-number search was satisfiable
+    # by a page the version mechanism never touched. `telemetry::{crashreport,native,playback}`
+    # compose `concat!("plxnative@", env!("PLX_VERSION"))` in every configuration — telemetry is
+    # ungated on purpose — so this witnesses the emitted value itself.
+    _major, _minor, _patch = (int(x) for x in appinfo["version"].split("."))
+    DEV_VERSION = f"plxnative@{_major}.{_minor}.{_patch + 1}-dev".encode()
+    #
+    # The id is a rule of its own here too, so it sits BESIDE the stamp branch rather than inside
+    # it: whatever configuration produced it, the package users install may not claim a version no
+    # release will ever carry.
+    says_dev = DEV_VERSION in blob
+    if IS_STABLE:
+        check(not says_dev,
+              f"the {PACKAGED_ID} binary reports a released version, not {DEV_VERSION.decode()}"
+              " (build.rs adds the suffix unless PLX_RELEASE is set — RELEASE=1 exports it)")
+        check(f'plxnative@{appinfo["version"]}'.encode() in blob,
+              f'the {PACKAGED_ID} binary reports the packaged version ({appinfo["version"]})')
+    # ...and the configuration is the other half. A `RELEASE=1` build of ANY flavour reports the
+    # exact version — `make FLAVOR=debug RELEASE=1 ipk` is a real combination, the submission
+    # candidate is built that way — so the suffix is graded against the stamp, not against the id.
+    if BUILD == "release":
+        check(not says_dev,
+              f"the RELEASE binary reports {appinfo['version']} exactly, not {DEV_VERSION.decode()}")
+    elif BUILD == "dev":
+        check(says_dev,
+              f"the dev binary says it is one ({DEV_VERSION.decode()}) — which is also what proves"
+              " the suffix still reaches the bytes")
+
 # The checksum file has to verify where a USER stands: they download it beside the .ipk, so a
 # `pkg/` prefix in the line makes `shasum -a 256 -c` fail for everyone. It did, through v0.2.1.
 sha_file = ROOT / "pkg/ipk.sha256"
@@ -672,8 +786,8 @@ check(appinfo["type"] == "native", 'appinfo type == "native"')
 check(not appinfo["id"].startswith(("com.palm", "com.webos", "com.lge", "com.palmdts")),
       "app id avoids LG's reserved prefixes")
 # The crate version is a THIRD copy of the same number: plex/identity.rs sends it to both Plex
-# services as X-Plex-Version via env!("CARGO_PKG_VERSION"), so a build whose Cargo.toml disagreed
-# with appinfo.json would report a version no release ever had.
+# services as X-Plex-Version (through `PLX_VERSION`, which `build.rs` derives from it), so a build
+# whose Cargo.toml disagreed with appinfo.json would report a version no release ever had.
 cargo_ver = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "rust-modules/Cargo.toml").read_text(), re.M)
 check(cargo_ver is not None and cargo_ver.group(1) == appinfo["version"],
       f'rust-modules/Cargo.toml version == appinfo version ({appinfo["version"]})')

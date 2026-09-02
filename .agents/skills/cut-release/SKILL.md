@@ -133,9 +133,18 @@ because the id it left behind is the one the household watches with.
 ### 1. Decide the version and bump it
 
 The version lives in **four** places and `ci/check-package.py` asserts all four agree:
-`pkg/appinfo.json` (the source), `ipkroot/ctl/control`, `rust-modules/Cargo.toml` (the diagnostics
-panel prints this one on screen), and the built `.ipk` filename. Bump the first three; the fourth
-follows from the build.
+`pkg/appinfo.json` (the source), `ipkroot/ctl/control`, `rust-modules/Cargo.toml`, and the built
+`.ipk` filename. Bump the first three; the fourth follows from the build.
+
+**What the app REPORTS is derived from `Cargo.toml`, not equal to it, and the difference shows up
+on the surface you are most likely to read it from.** `rust-modules/build.rs` publishes that number
+exactly for a `RELEASE=1` build and as the **next patch plus `-dev`** for every other one, so the
+diagnostics panel, `X-Plex-Version` and the Sentry release all say `0.5.1-dev` on a developer build
+of a tree that last published `0.5.0`. A `-dev` on a photographed panel therefore means *this is
+not a release build* — it does not mean the binary is stale, and a release build showing anything
+but the bare `X.Y.Z` means `RELEASE=1` did not take. Both the
+`ALLOW_DEV_ON_STABLE=1` reproduction build below and any `make deploy` of the debug flavour print
+the suffixed form.
 
 Semver as this project means it: **patch** for fixes and diagnostics, **minor** when a user gains a
 capability, **major** is unused. A release that changes only docs or CI does not need a version.

@@ -1,9 +1,11 @@
-//! Link configuration for the host UI simulator — and nothing else.
+//! Two jobs: the version string every build reports, and link configuration for the host UI
+//! simulator.
 //!
-//! This script is a **no-op for every build that matters**. The television binary is linked by the
-//! Makefile, not by cargo (the crate is a staticlib; a staticlib has no link step), so the ARM
-//! build reaches the early return below and emits nothing. Only `--features hostsim`, which builds
-//! an actual executable, gets here.
+//! The first runs for EVERY build (see [`emit_version`]). The second is a **no-op for every build
+//! that matters**: the television binary is linked by the Makefile, not by cargo (the crate is a
+//! staticlib; a staticlib has no link step), so the ARM build reaches the early return below and
+//! emits nothing further. Only `--features hostsim`, which builds an actual executable, gets past
+//! it.
 //!
 //! Why a build script rather than `.cargo/config.toml`, which is where this crate's other
 //! target-bound flags live: the library search path is not a constant. Homebrew is at
@@ -16,6 +18,8 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+
+    emit_version();
 
     // The simulator is the only configuration that links anything here. Checked via the feature's
     // env var rather than `cfg!`, because a build script is compiled for the HOST and its own
@@ -52,6 +56,73 @@ fn main() {
     }
 
     compile_svg();
+}
+
+/// Publish `PLX_VERSION` — the version this build REPORTS, which is not always the version it was
+/// cut from.
+///
+/// `Cargo.toml`, `pkg/appinfo.json` and `ipkroot/ctl/control` all carry the same three integers,
+/// and `ci/check-package.py` fails the build if they ever disagree: LG accepts nothing else in a
+/// package, so the published number has to stay exactly `X.Y.Z`. But a release commit leaves the
+/// tree AT the version it just published, so every developer build after it reported that number
+/// as its own — to `X-Plex-Version` on the account's authorized-devices list, to Sentry as the
+/// release `plxnative@X.Y.Z`, to PostHog as `app_version`, and on the diagnostics panel that is
+/// meant to be photographed into a bug report. A crash from somebody's working tree landed on the
+/// shipped release's tally and nothing downstream could separate the two.
+///
+/// So a build that is not a release names the patch it is working TOWARDS and says what it is:
+/// `0.5.0` published, `0.5.1-dev` in the tree. It is the next PATCH rather than a guess at the
+/// next real release — the version after `0.5.1-dev` may well be `0.6.0`, and inventing a minor
+/// here would be a claim about a plan this file cannot see. What it must never be is a number a
+/// release has already used.
+///
+/// **The suffix reaches the reported string ONLY.** It never enters `pkg/appinfo.json` or the
+/// control file: `1.0.0-rc1` is not installable on a webOS television, which is also why
+/// `ci/bump-version.py` refuses to write anything but three integers. `ci/check-package.py`
+/// gates the other direction — a package built for the stable id may not carry a `-dev` binary.
+///
+/// The input is `PLX_RELEASE`, exported by the Makefile for `RELEASE=1` and by nothing else, so
+/// the developer answer is what an ordinary `make`, `make check`, `make sim` or a bare `cargo
+/// build` produces. `rerun-if-env-changed` makes cargo re-run this when that flips; the emitted
+/// value is itself tracked, so the crate rebuilds with it.
+fn emit_version() {
+    println!("cargo:rerun-if-env-changed=PLX_RELEASE");
+    let pkg = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
+    // PARSED BEFORE THE BRANCH, deliberately. Validating only inside the developer arm would make
+    // the shape rule conditional on the build that is least likely to be looked at: cargo accepts
+    // `0.5.0-rc.1` in a manifest, LG accepts it in no package at all, and a release build is
+    // exactly where that must not compile quietly.
+    let (major, minor, patch) = triplet(&pkg);
+    // Set-but-empty is not "release": the Makefile exports the variable unconditionally and
+    // leaves it blank for a dev build, the same shape `telemetry::sender` reads its credentials
+    // with.
+    let release = std::env::var("PLX_RELEASE").is_ok_and(|v| !v.is_empty());
+    let version = if release {
+        pkg
+    } else {
+        format!("{major}.{minor}.{}-dev", patch + 1)
+    };
+    println!("cargo:rustc-env=PLX_VERSION={version}");
+}
+
+/// The manifest version as three integers, or a build failure.
+///
+/// A version that is not three integers is a hard error rather than a passthrough: every gate in
+/// `ci/` asserts that shape, so reaching here with anything else means the manifest was edited by
+/// hand into a state that cannot be packaged, and failing at the build is where that costs least.
+fn triplet(pkg: &str) -> (u32, u32, u32) {
+    let parts: Vec<&str> = pkg.split('.').collect();
+    // Split first, parse second, and drop NOTHING in between: a `filter_map(parse)` reads as the
+    // same thing and is not — `0.5.0-rc.1` splits into four parts, one of which does not parse,
+    // and silently becomes (0, 5, 1). The shape has to fail, not degrade.
+    let [major, minor, patch] = parts[..] else {
+        panic!("Cargo.toml version {pkg:?} is not three dot-separated integers");
+    };
+    let int = |part: &str| {
+        part.parse()
+            .unwrap_or_else(|_| panic!("Cargo.toml version {pkg:?} is not three integers"))
+    };
+    (int(major), int(minor), int(patch))
 }
 
 /// Build `src/svg.c` (the nanosvg rasterizer) for the host.

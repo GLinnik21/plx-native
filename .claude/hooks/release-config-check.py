@@ -99,9 +99,14 @@ WHAT IT DELIBERATELY DOES NOT CHECK.
   * **`rust-modules/src/bin/sim.rs`** and anything else under `src/bin/`: `--lib` does not compile
     them, and `required-features = ["hostsim"]` means the release configuration never does either.
     Firing there would spend the 0.55 s and grade nothing.
-  * **`rust-modules/build.rs`.** It early-returns on `CARGO_FEATURE_HOSTSIM` being unset and emits
-    nothing, and cargo compiles it in every configuration regardless — so a break in it is a break
-    `make check` already sees.
+  * **`rust-modules/build.rs`.** Cargo compiles the script in every configuration, so a break in
+    it is a break `make check` already sees. Note what that does and does not cover now: since it
+    started publishing `PLX_VERSION` it no longer emits nothing outside `hostsim` — `emit_version`
+    runs first, in every configuration, and BRANCHES on `PLX_RELEASE`. Both arms compile whatever
+    is being checked (it is a runtime branch in a host binary, not a `cfg`), which is why this
+    still skips; what nothing here executes is the release arm's VALUE, and nothing should try to
+    — `ci/check-package.py` grades the version the packaged bytes actually carry, at package time,
+    from both sides.
   * **`rust-modules/Cargo.toml`**, where the feature list itself lives. Firing there would cost the
     same 0.6 s (measured — a manifest touch invalidates no more than a source touch does), so cost
     is not the reason; scope is. This hook grades a Rust edit's SIDE EFFECT on a configuration the

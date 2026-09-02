@@ -63,12 +63,36 @@ def deps(macho: Path) -> list[str]:
 
 
 def version() -> str:
-    """THE version, from the file that owns it (ci/check-package.py keeps the others in step)."""
+    """THE version this bundle REPORTS, which is the one its binary reports.
+
+    The number comes from the file that owns it — `rust-modules/Cargo.toml`, which
+    `ci/check-package.py` keeps in step with `pkg/appinfo.json` and the control file — but the
+    string is `rust-modules/build.rs`'s: exactly `X.Y.Z` for a release build, and the next patch
+    plus `-dev` for every other one.
+
+    **The same rule, spelled twice, because this script cannot ask cargo what it emitted.** It has
+    to match, and the way it can go wrong is worth stating: the cargo subprocess below inherits
+    this process's environment, so it reads the same `PLX_RELEASE` — a Makefile-exported empty
+    value under `make macapp`, `1` under `make RELEASE=1 macapp`. Reading `Cargo.toml` alone (which
+    this did) put `0.5.0` in the Finder metadata and the zip filename of a bundle whose diagnostics
+    panel says `0.5.1-dev`: the very ambiguity the suffix exists to remove, recreated on the one
+    artifact that is handed to somebody who has none of this checkout.
+
+    A non-numeric `CFBundleShortVersionString` is fine here and is the point: this bundle is
+    ad-hoc signed, sent directly, and submitted nowhere that parses it.
+    """
     m = re.search(r'^version\s*=\s*"([^"]+)"',
                   (REPO / "rust-modules/Cargo.toml").read_text(), re.M)
     if not m:
         sys.exit("mkmacapp: no version in rust-modules/Cargo.toml")
-    return m.group(1)
+    pkg = m.group(1)
+    parts = pkg.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        sys.exit(f"mkmacapp: Cargo.toml version {pkg!r} is not three integers")
+    if os.environ.get("PLX_RELEASE"):
+        return pkg
+    major, minor, patch = (int(p) for p in parts)
+    return f"{major}.{minor}.{patch + 1}-dev"
 
 
 def build_binary(tdir: Path) -> Path:

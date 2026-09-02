@@ -70,7 +70,18 @@ const FFMPEG: &str = "This software uses libraries from the FFmpeg project under
 const SOURCE: &str = "PlxNative source code, release materials and build scripts are published at:\n\ngithub.com/GLinnik21/plx-native\n\nRelease source packages include the corresponding FFmpeg source and the script used to build it.";
 const TRADEMARKS: &str = "Plex, the Plex logo and Plex Media Server are trademarks of Plex, Inc.\n\nLG and webOS are trademarks of LG Electronics Inc.\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.";
 const CONTACT: &str = "Privacy questions may be sent to glinnik21@gmail.com.\n\nSecurity vulnerabilities may be reported privately through GitHub Security Advisories for GLinnik21/plx-native. Please do not include Plex tokens, server addresses or personal media information in a report.";
-const ABOUT: &str = "VERSION\n\nPlxNative 0.5.0\n\nDEVELOPER\n\nGleb Linnik\n\nLICENCE\n\nMIT Licence\n\nPROJECT\n\ngithub.com/GLinnik21/plx-native\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.";
+/// The one page here that carries a NUMBER, and so the one that can go stale on its own.
+///
+/// It was a literal — `PlxNative 0.5.0`, hand-typed, and not on `ci/bump-version.py`'s list of
+/// files to bump, so it was already the only surface in the app that could disagree with every
+/// other. It is composed from the same `PLX_VERSION` the diagnostics panel and `X-Plex-Version`
+/// report, so a release build says `0.5.0` here and a developer build says `0.5.1-dev`: this is
+/// a screen a user is asked to read out in a bug report, and it must name the binary they are
+/// running rather than the last thing that was published.
+///
+/// `concat!` rather than a `format!` at draw time: the whole page is a `&'static str` the reader
+/// borrows, and `env!` is a literal at expansion.
+const ABOUT: &str = concat!("VERSION\n\nPlxNative ", env!("PLX_VERSION"), "\n\nDEVELOPER\n\nGleb Linnik\n\nLICENCE\n\nMIT Licence\n\nPROJECT\n\ngithub.com/GLinnik21/plx-native\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.");
 
 static mut POP: Popover = Popover::new();
 static mut TABLE: TableView = TableView::new();
@@ -259,6 +270,20 @@ mod tests {
     fn legal_has_six_current_documents() {
         assert_eq!(Page::ALL.len(), 6);
     }
+    /// The About page names the binary the user is RUNNING.
+    ///
+    /// It was a hand-typed `PlxNative 0.5.0` that no bump script touched, so it could only ever
+    /// have been right by accident. Written against `identity::VERSION` rather than against
+    /// `env!` again so that re-typing a literal here fails: on any developer build the two differ.
+    #[test]
+    fn about_names_the_running_version() {
+        let v = crate::plex::identity::VERSION;
+        assert!(
+            ABOUT.contains(&format!("PlxNative {v}")),
+            "About should name {v}, says: {ABOUT:?}"
+        );
+    }
+
     #[test]
     fn plex_boundary_is_explicit() {
         assert!(PRIVACY.contains(

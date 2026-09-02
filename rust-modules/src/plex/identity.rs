@@ -35,10 +35,17 @@
 /// The product name. Unique, and not `Plex …` anything.
 pub(crate) const PRODUCT: &str = "PlxNative";
 
-/// The app version, from `Cargo.toml` rather than a literal — `pkg/appinfo.json` (which is the
-/// single source for the ipk's version) and this must not be able to disagree, and the two
-/// literals this replaces were already stale in opposite directions before the first release.
-pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The app version, derived from `Cargo.toml` rather than written as a literal — `pkg/appinfo.json`
+/// (which is the single source for the ipk's version) and this must not be able to disagree, and
+/// the two literals this replaces were already stale in opposite directions before the first
+/// release.
+///
+/// **A release reports the package version exactly; anything else reports the next patch with a
+/// `-dev` suffix** — `0.5.0` published, `0.5.1-dev` in the tree. `rust-modules/build.rs` is where
+/// that rule is written and why. Every other surface that reports a version — the telemetry
+/// release, the lab snapshot, the usage context — reads the same `PLX_VERSION`, so they cannot
+/// drift apart.
+pub(crate) const VERSION: &str = env!("PLX_VERSION");
 
 pub(crate) const PLATFORM: &str = "webOS";
 
@@ -189,11 +196,43 @@ mod tests {
         }
     }
 
-    /// The version must track the package, not a literal that goes stale the day it is written.
+    /// The version must track the package, not a literal that goes stale the day it is written —
+    /// and a build that is NOT a release must not report the published version.
+    ///
+    /// A release commit leaves every tracked file at the version it just published, so every
+    /// developer build after it reported that exact number: to `X-Plex-Version` on the account's
+    /// authorized-devices list, to Sentry as `plxnative@X.Y.Z`, and on the diagnostics panel that
+    /// is designed to be photographed into a bug report. Nothing downstream could tell the shipped
+    /// binary from a working tree. So a non-release build names the patch it is working TOWARDS,
+    /// suffixed — `0.5.0` published, `0.5.1-dev` in the tree — and that string is produced by
+    /// `rust-modules/build.rs`, which is the only place the rule is written.
     #[test]
-    fn version_comes_from_cargo() {
-        assert_eq!(super::VERSION, env!("CARGO_PKG_VERSION"));
-        assert!(super::user_agent().contains(super::VERSION));
+    fn version_is_the_package_or_the_next_patch_dev() {
+        let pkg = env!("CARGO_PKG_VERSION");
+        let v = super::VERSION;
+        assert!(super::user_agent().contains(v));
+        // The same input `build.rs` decides on: set by the Makefile for `RELEASE=1` and by
+        // nothing else, so an ordinary `make check` compiles the developer answer.
+        let release = matches!(option_env!("PLX_RELEASE"), Some(s) if !s.is_empty());
+        match v.strip_suffix("-dev") {
+            None => {
+                assert!(release, "a non-release build reports the published version {v:?}");
+                assert_eq!(v, pkg, "a release build reports the package version exactly");
+            }
+            Some(base) => {
+                assert!(!release, "a RELEASE build must report {pkg:?} exactly, not {v:?}");
+                let n: Vec<u32> = pkg
+                    .split('.')
+                    .map(|p| p.parse().expect("the package version is three integers"))
+                    .collect();
+                assert_eq!(n.len(), 3, "the package version is three integers");
+                assert_eq!(
+                    base,
+                    format!("{}.{}.{}", n[0], n[1], n[2] + 1),
+                    "a developer build names the next PATCH, not an arbitrary version"
+                );
+            }
+        }
     }
 
     /// The developer's own panel must not be reported as every user's hardware.
