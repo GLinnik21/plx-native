@@ -46,10 +46,18 @@ mkdir -p "$SOURCE" "$BUILD" "$PREFIX/bin" "$PREFIX/include" "$PREFIX/lib"
 tar xzf "$ARCHIVE" --strip-components=1 -C "$SOURCE"
 patch -d "$SOURCE" -p1 < "$PATCH"
 
+# CMAKE_ASM_COMPILER is set explicitly, and it is load-bearing rather than tidy. libunwind's ARM32
+# sources are `.S`, so CMake enables the ASM language for them; with no compiler named for that
+# language it falls back to a host default. On the aarch64 Linux runner CI builds on, that default
+# is the HOST assembler, and `vendor/libunwind/src/arm/getcontext.S` fails with "unknown pseudo-op
+# `.arm'" and "unknown mnemonic `stmfd'" — 22 errors, then exit 2. It happened to resolve to the
+# cross compiler on this Mac, so the entire cross-build was resting on an implicit default that
+# differs by host and CMake version, and CI was red for it while every local build was green.
 "$CMAKE" -S "$SOURCE" -B "$BUILD" \
     -DCMAKE_SYSTEM_NAME=Linux \
     -DCMAKE_SYSTEM_PROCESSOR=arm \
     -DCMAKE_C_COMPILER="$CC" \
+    -DCMAKE_ASM_COMPILER="$CC" \
     -DCMAKE_AR="$AR" \
     -DCMAKE_RANLIB="$RANLIB" \
     -DCMAKE_SYSROOT="$SYSROOT" \

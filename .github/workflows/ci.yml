@@ -36,6 +36,18 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Install the desktop SDL/GL libraries the hostsim suite LINKS against
+        # `make check` runs the unit suite TWICE, and the second pass is `--features hostsim`,
+        # which is the configuration `player/ffi_host.rs` exists in — the prime-livelock
+        # regression lives there and cannot fail the default pass. That pass builds a test binary
+        # that LINKS, so it needs the real desktop libraries; the two `cargo check` steps further
+        # down only type-check hostsim and never discovered this. Until now the deprecated
+        # `fetch_update` killed the compile first, so the link was never reached and the gap was
+        # invisible: CI has never actually run the hostsim half of `make check`.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev
+
       - name: Install nightly Rust
         # Both components are load-bearing and neither is in rustup's `minimal` profile:
         #   clippy   -> `make lint`, the shadowed-branch gate
