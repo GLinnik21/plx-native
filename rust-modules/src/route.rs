@@ -8741,7 +8741,12 @@ mod tests {
         let port = listener.local_addr().unwrap().port() as i32;
         let (tx, rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            // A FAILURE BOUND, NOT A RUNTIME: the loop returns the moment the request arrives,
+            // so a passing run never spends this. One second was not one — under a loaded
+            // 1900-test parallel run the client had not been scheduled yet, the loop gave up, and
+            // the count assertion below failed with an empty vec. Observed twice in ordinary runs
+            // on 2026-09-02, never when the module ran alone.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             let mut requests = Vec::new();
             while std::time::Instant::now() < deadline && requests.len() < 2 {
                 match listener.accept() {
@@ -12293,7 +12298,12 @@ mod tests {
         let port = listener.local_addr().unwrap().port() as i32;
         let (tx, rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            // A FAILURE BOUND, NOT A RUNTIME: the loop returns the moment the request arrives,
+            // so a passing run never spends this. One second was not one — under a loaded
+            // 1900-test parallel run the client had not been scheduled yet, the loop gave up, and
+            // the count assertion below failed with an empty vec. Observed twice in ordinary runs
+            // on 2026-09-02, never when the module ran alone.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             let mut requests = Vec::new();
             while std::time::Instant::now() < deadline {
                 match listener.accept() {
@@ -12559,7 +12569,24 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for _ in 0..250 {
+            // TWO CLOCKS, because this loop is doing two different jobs and one bound cannot
+            // serve both. The assertion below is that exactly ONE `/stop?` arrives, so the loop
+            // may not stop at the first — it has to keep listening long enough to catch a second.
+            // That was spelled as `for _ in 0..250` with a 4 ms sleep: a fixed ~1 s of listening,
+            // which is a RUNTIME the test always paid, and simultaneously the only tolerance it
+            // had for the client being slow to arrive. Under a loaded 1900-test parallel run the
+            // client had not been scheduled inside that second, the loop gave up empty, and the
+            // count assertion failed. Naively widening it to 20 s fixed the flake by making every
+            // green run twenty seconds long — measured, and the reason this shape exists.
+            //
+            // So: wait up to 20 s for the FIRST request (a failure bound, spent only when
+            // something is broken), then observe for one further second (the real window, the
+            // same one this test always had, and the thing a duplicate close would land in).
+            let hard_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let mut observe_until: Option<std::time::Instant> = None;
+            while std::time::Instant::now() < hard_deadline
+                && observe_until.is_none_or(|until| std::time::Instant::now() < until)
+            {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
                         let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
@@ -12573,6 +12600,11 @@ mod tests {
                             }
                         }
                         requests.push(first);
+                        // The observation window opens at the first request, not at thread start,
+                        // so how long the client took to get scheduled cannot eat into it.
+                        observe_until.get_or_insert_with(|| {
+                            std::time::Instant::now() + std::time::Duration::from_secs(1)
+                        });
                         socket
                             .write_all(
                                 b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
