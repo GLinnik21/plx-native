@@ -159,6 +159,13 @@ struct Scene {
     /// position, what UP from the first shelf returns to, and the state the band's condense keys
     /// off — see [`move_focus`].
     on_header: bool,
+    /// **Whether an explicit D-pad navigation has landed on the header.** A fresh mount starts
+    /// `false` — the page opens on the header as a SCROLL POSITION, not a selection, so nothing
+    /// should read as focused before the user has pressed a key toward it. Set the moment UP walks
+    /// back onto the header from the first shelf, or a D-pad press while already on the header
+    /// keeps it there (UP/LEFT/RIGHT, or OK opening the bio panel) — never by a data landing that
+    /// happens to leave the header as the only row. See [`bio_mark_visible`].
+    header_marked: bool,
     /// which shelf holds focus (a KIND, not a position — a shelf that empties must not silently
     /// hand its focus to the other one's contents). Meaningless while [`Scene::on_header`].
     focus_kind: usize,
@@ -198,6 +205,7 @@ impl Scene {
     fn new() -> Self {
         Scene {
             on_header: true,
+            header_marked: false,
             focus_kind: 0,
             col: [0; NSHELF],
             shelves: [CardRow::new(); NSHELF],
@@ -640,6 +648,14 @@ pub(crate) fn bio_is_truncated() -> bool {
         .unwrap_or(false)
 }
 
+/// **Whether [`draw_header`] should draw the block's focus mark.** Pure so the fresh-mount /
+/// after-navigation split can be asserted without a draw — see [`Scene::header_marked`] for what
+/// sets the flag. `truncated` is threaded in rather than re-asked of the store, because
+/// `draw_header` already holds the one memoised wrap this frame's `MORE` and lift agree on.
+fn bio_mark_visible(sc: &Scene, truncated: bool) -> bool {
+    sc.on_header && sc.header_marked && truncated
+}
+
 /// OK while the HEADER holds focus. Returns whether the press was spent.
 ///
 /// **This is the bio panel's entry point, and it is why the header's OK is no longer inert.** The
@@ -658,12 +674,20 @@ pub(crate) fn bio_is_truncated() -> bool {
 /// a focus mark on the prose would turn `MORE` into a control — but the band was then the only
 /// focusable thing in the app that drew nothing at all for holding focus, so the block OK acts on
 /// was indistinguishable from prose that ends in a word. [`draw_header`] now draws the shared
-/// `widgets::text_block_highlight` under the bio on exactly this function's predicate. `MORE` is
-/// unchanged and is still a mark; the lift is the page saying which block the press will reach.
+/// `widgets::text_block_highlight` under the bio on this function's predicate NARROWED by
+/// [`bio_mark_visible`] — the two agree on focus-is-here and there-is-more-to-read, but the mark
+/// also needs [`Scene::header_marked`], so a fresh mount (or a landing that leaves the header as
+/// the only row) does not draw it before the user has pressed a key toward the header at all.
+/// `MORE` is unchanged and is still a mark; the lift is the page saying which block the press will
+/// reach.
 pub(crate) fn header_ok() -> bool {
     if !scene().on_header || !bio_is_truncated() {
         return false;
     }
+    // A press that opens the panel is exactly as much "landing on the header by the D-pad" as an
+    // UP that keeps it there — see [`Scene::header_marked`]. Whether or not the mark was showing
+    // a frame ago, this press proves the user found the block.
+    scene().header_marked = true;
     crate::ui::person_bio::open();
     true
 }
@@ -833,9 +857,14 @@ pub(crate) fn move_focus(sym: c_uint) {
     };
     let (kinds, n) = present(p);
     if sc.on_header {
-        // LEFT/RIGHT do nothing on a row with one item, and UP is already at the top
+        // LEFT/RIGHT do nothing on a row with one item, and UP is already at the top — but any of
+        // those presses (and a DOWN with no shelf to reach) is still an explicit press that LANDS
+        // here, which is what [`Scene::header_marked`] gates on. Only a DOWN that actually leaves
+        // the header takes no mark, since the header is no longer what is drawn.
         if sym == SDLK_DOWN && n > 0 {
             sc.on_header = false;
+        } else {
+            sc.header_marked = true;
         }
         clamp_focus();
         return;
@@ -852,7 +881,12 @@ pub(crate) fn move_focus(sym: c_uint) {
             sc.col[k] = (sc.col[k] + 1).min(last.max(0));
         }
         SDLK_UP if pos > 0 => sc.focus_kind = kinds[pos - 1],
-        SDLK_UP => sc.on_header = true, // ...and from the FIRST shelf, back to the portrait
+        SDLK_UP => {
+            // ...and from the FIRST shelf, back to the portrait — an explicit arrival, so the
+            // focus mark is what [`Scene::header_marked`] exists to show for the first time.
+            sc.on_header = true;
+            sc.header_marked = true;
+        }
         SDLK_DOWN if pos + 1 < n => sc.focus_kind = kinds[pos + 1],
         _ => {}
     }
@@ -1056,21 +1090,26 @@ fn draw_header(p: Painter, person: &Person, sc: &Scene) {
         // nothing for holding focus, so the one block OK acts on looked like prose that happened to
         // end in a word. `MORE` stays a mark; the lift is what says the mark can be pressed.
         //
-        // Gated on `header_ok`'s condition, in its two halves: focus is here, and there is more to
-        // read. A lift under a two-line bio would promise a panel `person_bio::open` is never going
-        // to be asked for. The truncation half is asked of THIS view rather than through
-        // `bio_is_truncated`, so the lift, the `MORE` below it and the panel behind them are one
-        // expression on one memoised wrap and cannot disagree by a frame. On `sc.on_header` rather
-        // than on the condense spring, because focus leaves on a keypress and the spring is still
-        // at ~0 for several frames after it — a mark that faded out with the band would be
-        // describing focus that had already gone.
+        // Gated on `header_ok`'s condition, in its two halves — focus is here, and there is more to
+        // read — PLUS `header_marked`: a fresh mount lands on the header with nothing to show for
+        // it, and the first DOWN into the shelves used to read as the mark simply collapsing,
+        // which looked like a focus loss nobody asked for. `header_marked` only ever flips true on
+        // an explicit D-pad arrival ([`move_focus`]'s UP-back-to-header arm, a press that keeps the
+        // header, or `header_ok` itself opening the panel), never on a landing that happens to
+        // leave the header as the only row. A lift under a two-line bio would promise a panel
+        // `person_bio::open` is never going to be asked for. The truncation half is asked of THIS
+        // view rather than through `bio_is_truncated`, so the lift, the `MORE` below it and the
+        // panel behind them are one expression on one memoised wrap and cannot disagree by a frame.
+        // On `sc.on_header` rather than on the condense spring, because focus leaves on a keypress
+        // and the spring is still at ~0 for several frames after it — a mark that faded out with
+        // the band would be describing focus that had already gone.
         //
         // The box hugs the prose's own INK: `last_line_cap_y` is where the view put the last line's
         // cap band, so the height is measured to the text rather than to the flow, which ends in a
         // line of leading nothing is drawn in.
         let bh = bio.measure_h(BIO_W);
         let truncated = bio.truncates(BIO_W);
-        if sc.on_header && truncated {
+        if bio_mark_visible(sc, truncated) {
             let ink = bio.last_line_cap_y(by, bh) - by + crate::text::cap_h(theme::size::BODY, 0);
             crate::ui::widgets::text_block_highlight(
                 p,
@@ -1375,6 +1414,35 @@ mod tests {
         move_focus(SDLK_DOWN);
         assert!(!scene().on_header, "DOWN must go back into the shelves");
         assert_eq!(scene().focus_kind, 0);
+        crate::person::close();
+    }
+
+    /// **The bio block's focus mark must not show on a fresh mount** (item 5): the page opens on
+    /// the header as a scroll position, and DOWN off that mount used to read as the mark simply
+    /// collapsing on the first key press — which looked like a focus loss nobody asked for. The
+    /// mark must appear only after an explicit D-pad arrival, e.g. UP back from the first shelf.
+    #[test]
+    fn the_bio_mark_only_shows_after_an_explicit_arrival_at_the_header() {
+        let _serial = crate::testlock::serial();
+        seed_at_header(2, 2);
+        assert!(
+            !bio_mark_visible(scene(), true),
+            "a fresh mount must not show the mark even on a truncated bio"
+        );
+
+        move_focus(SDLK_DOWN); // → the first shelf; the header is no longer even the focus row
+        assert!(!scene().on_header);
+
+        move_focus(SDLK_UP); // → back to the header, explicitly
+        assert!(scene().on_header);
+        assert!(
+            bio_mark_visible(scene(), true),
+            "UP back onto the header is an explicit arrival — the mark must show"
+        );
+        assert!(
+            !bio_mark_visible(scene(), false),
+            "the mark still needs a truncated bio; landing alone is not enough"
+        );
         crate::person::close();
     }
 
