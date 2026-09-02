@@ -196,18 +196,35 @@ class TheShippedTableMatchesTheEvidence(unittest.TestCase):
         self.assertGreaterEqual(len(self.points), 7, "the committed census should cover 7 rungs")
 
     def test_every_shipped_operating_point_is_the_derived_one(self):
+        """Five of the six fields come from the COMMITTED logs and are checked everywhere. The
+        sixth, `audio_es_kbps`, does not: `cp.audio_es_kbps` ffprobes the generated fixture clip,
+        so it needs the ~0.9 GB pack under `DEFAULT_FIXTURES` and an ffprobe binary. Neither is in
+        the repo and neither belongs on a runner, where the probe returns `None` and the tuple
+        comparison failed for all seven rungs with sim.rs perfectly correct — the first time CI
+        ever got far enough to run this file. The audio field is asserted where it can be measured
+        and SKIPPED, visibly, where it cannot."""
         shipped = rust_arms(self.source, "point")
         for rung, arm in sorted(shipped.items()):
             with self.subTest(rung=rung):
                 self.assertIn(rung, self.points, f"rung {rung} is in sim.rs but not in the census")
                 p = self.points[rung]
+                log_derived = (0, 2, 3, 4, 5)
                 self.assertEqual(
-                    arm,
+                    tuple(arm[i] for i in log_derived),
                     (
-                        p["ts_kbps"], p["audio_es_kbps"], p["overhead_ms"],
+                        p["ts_kbps"], p["overhead_ms"],
                         p["declared_kbps"], p["decoded_width"], p["decoded_height"],
                     ),
                     f"rung {rung}: sim.rs disagrees with the committed logs. Regenerate with "
+                    "`tools/abr-calibrate-plant.py --rust`.")
+                if p["audio_es_kbps"] is None:
+                    self.skipTest(
+                        f"rung {rung}: the audio ES rate is probed from the generated fixture "
+                        f"clip, and {cp.DEFAULT_FIXTURES} or ffprobe is unavailable here — the "
+                        "five log-derived fields above were still checked")
+                self.assertEqual(
+                    arm[1], p["audio_es_kbps"],
+                    f"rung {rung}: sim.rs's audio ES rate is not the fixture's. Regenerate with "
                     "`tools/abr-calibrate-plant.py --rust`.")
 
     def test_every_censused_rung_is_shipped(self):
