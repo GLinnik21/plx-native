@@ -770,11 +770,21 @@ pub(crate) fn requested(server: crate::plex::ServerId) -> u32 {
     resolve_replaced_attempt();
     let id = new_attempt_id();
     let at = now_ms();
-    let previous = NEXT_TRACE_GENERATION
-        .fetch_update(Relaxed, Relaxed, |n| {
-            Some(if n == u32::MAX { 1 } else { n + 1 })
-        })
-        .unwrap_or(0);
+    // **`fetch_update`'s own read-modify-write loop, written out.** That method was deprecated on
+    // nightly in favour of `try_update`, and `make lint` denies warnings, so CI goes red on a
+    // toolchain this repo deliberately does not pin — while renaming would stop every checkout on
+    // an older nightly compiling at all. This is exactly the loop the method runs internally, it
+    // predates both spellings, and the closure here never declined an update anyway.
+    let previous = {
+        let mut current = NEXT_TRACE_GENERATION.load(Relaxed);
+        loop {
+            let next = if current == u32::MAX { 1 } else { current + 1 };
+            match NEXT_TRACE_GENERATION.compare_exchange_weak(current, next, Relaxed, Relaxed) {
+                Ok(previous) => break previous,
+                Err(actual) => current = actual,
+            }
+        }
+    };
     let generation = if previous == u32::MAX {
         1
     } else {
@@ -984,7 +994,13 @@ fn note_rebuffer(
 ) {
     use super::shared::PlaybackState as S;
     if starts_rebuffer(prev, now, saw_start) {
-        let _ = REBUFFER_COUNT.fetch_update(Relaxed, Relaxed, |n| Some(n.saturating_add(1)));
+        // A saturating increment, as a loop; see `requested` for why not `fetch_update`.
+        let mut current = REBUFFER_COUNT.load(Relaxed);
+        while let Err(actual) =
+            REBUFFER_COUNT.compare_exchange_weak(current, current.saturating_add(1), Relaxed, Relaxed)
+        {
+            current = actual;
+        }
         REBUFFER_AT_MS.store(now_ms().max(1), Relaxed);
     } else if now != S::Buffering {
         finish_rebuffer_window();
@@ -1567,5 +1583,58 @@ mod tests {
         assert_eq!(startup_class(9_999), "3-10s");
         assert_eq!(startup_class(10_000), "10s+");
         assert_eq!(startup_class(-1), "unknown");
+    }
+
+    /// **No `fetch_update` may come back, and only a source grep can say so here.**
+    ///
+    /// Nightly deprecated that method in favour of `try_update`; `make lint` denies warnings, so
+    /// three call sites turned into `error: use of deprecated method` and CI went red on
+    /// `67b61515`, `446f64c7` and `69489be7` alike. The repo pins no nightly, so whether a given
+    /// checkout SEES the deprecation is a property of when its toolchain was installed — this Mac
+    /// was on a June nightly and compiled all three cleanly, which is exactly why the breakage
+    /// first appeared on a runner. A reintroduction is therefore invisible to `make check` on the
+    /// machine that writes it, and visible only after a push. This grep is that missing signal.
+    ///
+    /// The needle is assembled at run time so this test does not match its own source.
+    #[test]
+    fn no_atomic_read_modify_write_uses_the_deprecated_fetch_update() {
+        let needle = concat!(".", "fetch_update", "(");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offences: Vec<String> = Vec::new();
+        let mut files = 0usize;
+        walk(&src, &mut |path: &std::path::Path, text: &str| {
+            files += 1;
+            for (n, line) in text.lines().enumerate() {
+                if line.contains(needle) {
+                    offences.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        });
+        assert!(
+            files > 50,
+            "the walk found only {files} source files — it is not reading the tree"
+        );
+        assert!(
+            offences.is_empty(),
+            "`fetch_update` is deprecated on current nightlies and `make lint` denies warnings; \
+             write the compare-exchange loop instead (see `requested`):\n{}",
+            offences.join("\n")
+        );
+    }
+
+    fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, f);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                if let Ok(t) = std::fs::read_to_string(&p) {
+                    f(&p, &t);
+                }
+            }
+        }
     }
 }

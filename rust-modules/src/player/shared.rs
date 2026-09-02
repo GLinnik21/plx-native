@@ -1928,17 +1928,25 @@ impl Shared {
         self.hls_trial_reserve_ms.store(-1, Ordering::Relaxed);
         // Session reset itself invalidates every prime snapshot. Preserve monotonicity rather than
         // writing zero: a reader spanning teardown must observe a different even generation.
-        let _ = self.hls_candidate_generation.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |generation| {
-                Some(if generation & 1 == 0 {
-                    generation.checked_add(2).unwrap_or(u64::MAX)
-                } else {
-                    generation.checked_add(1).unwrap_or(u64::MAX)
-                })
-            },
-        );
+        // The same read-modify-write loop `fetch_update` runs internally; see
+        // `player::report::requested` for why it is spelled out rather than called.
+        let mut current = self.hls_candidate_generation.load(Ordering::Acquire);
+        loop {
+            let next = if current & 1 == 0 {
+                current.checked_add(2).unwrap_or(u64::MAX)
+            } else {
+                current.checked_add(1).unwrap_or(u64::MAX)
+            };
+            match self.hls_candidate_generation.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         self.hls_clock_changed.notify_all();
     }
 }
