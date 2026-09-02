@@ -456,7 +456,20 @@ and resume the same HTTP response when the encoder produces more bytes. Prefix t
 mixes server production, pacing and network service; neither it nor the advertised remainder
 identifies completion time. For an ordinary active response, the worker still acts only at the
 coefficient-free physical boundary `B = 0`, observed either by the main thread's internal clock
-hold or by actual playhead consumption of the fetch-start reserve. The earlier `B < R_o` exception
+hold or by actual playhead consumption of the fetch-start reserve.
+
+The main thread reaches that hold by two observations of one physical fact, because the
+content-time arithmetic cannot reach zero on this pipeline. The first is an exact `B = 0`: the
+demuxed tail has been presented. The second is the presentation clock going silent. The native
+position callback runs at a measured 5 Hz (`vtick=5 vgap=201ms`); when acquisition stops, the
+last fed access units cannot be presented until the ones behind them arrive, so the callback
+stops with the playhead parked a few hundred milliseconds short of the demuxed tail and that
+remnant never moves again. Five silent periods, with a remaining reserve no larger than the
+silence that has already outlasted it, is therefore the same `B = 0` measured where it is
+observable. The inequality is one-sided: a stream still holding seconds of reserve keeps playing
+through a late callback. Deliberate stoppages — user Pause, the internal hold itself, a stage
+below `Playing`, a seek — restart the observation instead of accumulating into it, so neither a
+long Pause nor an existing hold can be read as a stall. The earlier `B < R_o` exception
 applies only to the floor candidate selected by that completed-bag proof; it is not a prefix-rate
 projection. At the ladder floor the only useful response continues; above it the still-incomplete
 larger object may be abandoned so recovery can fetch a smaller one. An already held recovery clock
@@ -668,7 +681,7 @@ abr: exploration target=... buf=... runway=... budget=...
 abr: committed Up|Down to ...
 abr: tx Up|Down ... outcome=... decided=... control=... media=... \
     candidate_acq=... candidate_bytes=... candidate_dur=...
-hls: auto-rebuffer pause buf=... trial_reserve=... runway=...
+hls: auto-rebuffer pause buf=... trial_reserve=... runway=... silent=...
 primed: v=... a=... runway=... -> Play
 primed: v=... a=... recovery_n=... debt=... runway=... -> Play
 abr: mode chose=... why=... scale=... win[...] lose[...]
