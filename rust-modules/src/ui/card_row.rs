@@ -614,8 +614,19 @@ fn title_marquee(p: Painter, rect: Rect, sty: &RowStyle, text: *const c_char, y:
     }
     let s = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
     let t_ms = marquee_clock(&s);
+    // The clock above advances by `idle::dt` ON DRAWN FRAMES ONLY, and a drawn frame is one the
+    // present gate let through. So the rest beat has to buy its own frames, or it never ends: a
+    // focused overflowing title was reproduced sitting clipped and motionless at 4 s and again at
+    // 7 s of focus (sim, 2026-09-02) — the screen settled inside the hold, presents stopped, the
+    // clock froze at a few hundred ms and only the 2 s keepalive ever nudged it, one 1/60 s tick
+    // at a time. `wake` is the right half of the pair for the hold (a frame, with no claim that
+    // pixels changed); `invalidate` is for the glide, where they do. An overflowing focused title
+    // therefore never lets the screen rest — which is what "marquee while focused" means, and why
+    // a fitting title must never reach this branch.
     if marquee_moving(t_ms, w, budget) {
         crate::ui::idle::invalidate();
+    } else {
+        crate::ui::idle::wake();
     }
     let off = marquee_x(t_ms, w, budget);
     let travel = w + MARQUEE_GAP;
