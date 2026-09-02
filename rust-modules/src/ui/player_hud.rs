@@ -760,6 +760,18 @@ const FR_SLOT_LINE2: f32 = FR_REASON_TOP + 42.0;
 /// margin to margin and reads as a paragraph, so it is wrapped to a column instead.
 const FR_DETAIL_W: f32 = 1240.0;
 const FR_HINT_TOP: f32 = FR_REASON_TOP + FR_REASON_SLOT + 56.0;
+const FR_HINT_GAP: f32 = 56.0;
+
+/// Pointer target for the only forward action on a failed playback.
+///
+/// The visible line is a key-cap hint rather than a large button, but Magic Remote users still
+/// need the same escape as D-pad users.  The broad centred band includes the whole “choose quality
+/// or retry” sentence and deliberately excludes the BACK line beneath it.
+const FR_QUALITY_HIT: Rect = Rect::new(570.0, FR_HINT_TOP - 12.0, 780.0, 54.0);
+
+pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
+    FR_QUALITY_HIT.contains(x, y)
+}
 
 /// One line of centred text with its cap TOP at `top`; returns nothing — the layout is fixed.
 fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col: [f32; 4]) {
@@ -854,8 +866,22 @@ fn draw_failed_readout(p: Painter) {
         let cy = line_top + (baseline - cap_top) * 0.5;
         crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true);
     }
-    // the hint, with BACK as a key cap — the cap is what survives a phone photo
-    draw_hint_with_keycap(p, c"Press", c"BACK", c"to return", FR_HINT_TOP);
+    // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
+    // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
+    draw_hint_with_keycap(
+        p,
+        c"Press",
+        c"OK",
+        c"to choose quality or retry",
+        FR_HINT_TOP,
+    );
+    draw_hint_with_keycap(
+        p,
+        c"Press",
+        c"BACK",
+        c"to return",
+        FR_HINT_TOP + FR_HINT_GAP,
+    );
 }
 
 /// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around a keyline cap
@@ -1835,6 +1861,19 @@ mod tests {
                 Busy::Readout(StatusKind::Failed, c"Playback failed")
             );
         }
+    }
+
+    #[test]
+    fn the_failed_readout_exposes_only_its_quality_recovery_line_to_pointer() {
+        assert!(failure_quality_hit(
+            FR_QUALITY_HIT.cx(),
+            FR_QUALITY_HIT.cy()
+        ));
+        assert!(!failure_quality_hit(
+            FR_QUALITY_HIT.cx(),
+            FR_HINT_TOP + FR_HINT_GAP + 18.0,
+        ));
+        assert!(!failure_quality_hit(0.0, 0.0));
     }
 
     /// …and when it does, it owns the WHOLE frame: `draw_hud` draws nothing — no scrim, no

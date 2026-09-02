@@ -283,7 +283,10 @@ mod private_log_tests {
         std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut file = open_private_log_append(&sink).unwrap();
         file.write_all(b"safe").unwrap();
-        assert_eq!(std::fs::metadata(&sink).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&sink).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         let _ = std::fs::remove_file(sink);
         let _ = std::fs::remove_file(victim);

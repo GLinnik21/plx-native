@@ -9,10 +9,10 @@
 //!
 //! # Where it sits, and why not where the other read-out sits
 //!
-//! Top RIGHT. `ui::stats` owns the top left, and the two are shown together on purpose during a
-//! lab session: the panel is the state, the toast is whether the state got out. It is inside the
-//! overscan frame (`consts::MARGIN_X`) for the same reason `stats` is — a lab set is one nobody
-//! here can measure, so nothing may rely on the panel showing every pixel.
+//! Top RIGHT normally; immediately BELOW `ui::stats` when both are shown. The diagnostics panel is
+//! the state, the toast is whether the state got out, and neither may cover the other. Both stay
+//! inside the overscan frame (`consts::MARGIN_X`) because a lab set is one nobody here can measure,
+//! so nothing may rely on the panel showing every pixel.
 //!
 //! It takes NO KEYS: it is not a route, not a modal and has no dismiss. Every key keeps doing what
 //! it did, which matters when the upload is triggered from the playback failure read-out — the
@@ -30,7 +30,17 @@ const PAD: f32 = 24.0;
 const TOP: f32 = 60.0;
 
 fn frame() -> Rect {
-    Rect::new(SCR_W - MARGIN_X - W, TOP, W, H)
+    frame_for(crate::ui::stats::enabled())
+}
+
+fn frame_for(stats_on: bool) -> Rect {
+    let y = if stats_on {
+        let stats = crate::ui::stats::panel_rect();
+        stats.y + stats.h + theme::space::SM
+    } else {
+        TOP
+    };
+    Rect::new(SCR_W - MARGIN_X - W, y, W, H)
 }
 
 /// Retire an expired toast. One call per frame from the update block; a no-op when nothing is up.
@@ -79,10 +89,16 @@ mod tests {
     /// look at, so nothing about this may depend on the panel showing its outermost pixels.
     #[test]
     fn the_toast_stays_inside_the_safe_area() {
-        let r = frame();
-        assert!(r.x >= SAFE.x, "left edge");
-        assert!(r.x + r.w <= SAFE.x + SAFE.w, "right edge");
-        assert!(r.y >= SAFE.y, "top edge");
+        for stats_on in [false, true] {
+            let r = frame_for(stats_on);
+            assert!(r.x >= SAFE.x, "left edge, stats={stats_on}");
+            assert!(r.x + r.w <= SAFE.x + SAFE.w, "right edge, stats={stats_on}");
+            assert!(r.y >= SAFE.y, "top edge, stats={stats_on}");
+            assert!(
+                r.y + r.h <= SAFE.y + SAFE.h,
+                "bottom edge, stats={stats_on}"
+            );
+        }
     }
 
     /// …and clear of the top-left panel it is deliberately shown beside.
@@ -90,9 +106,12 @@ mod tests {
     fn it_does_not_overlap_the_stats_read_out() {
         let mut rects = Vec::new();
         crate::ui::stats::overscan_rects(&mut rects);
-        let r = frame();
+        let r = frame_for(true);
         for (name, s) in rects {
-            assert!(r.x >= s.x + s.w || s.x >= r.x + r.w, "overlaps {name}");
+            assert!(
+                r.x >= s.x + s.w || s.x >= r.x + r.w || r.y >= s.y + s.h || s.y >= r.y + r.h,
+                "overlaps {name}"
+            );
         }
     }
 }

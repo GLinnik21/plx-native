@@ -73,6 +73,7 @@ ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000|220
 RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
 RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
 RE_SEQUENCE = re.compile(r"(?:^|&)sequence=(\d+)")
+RE_ABR_GENERATION = re.compile(r"(?:^|&)fixtureGeneration=(\d+)")
 # What a rung asks PMS for is a BITRATE CEILING and the raster is the consequence; the controller's
 # acceptance test is `hls_raster_within` — the decoded picture must FIT the rung's raster, not equal
 # it — so several rungs legitimately share a raster.
@@ -138,6 +139,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
         target = self.path.split("?", 1)[0].split("#", 1)[0]
         seg = RE_ABR_SEGMENT.match(target)
         rel = self._abr_segment_file(seg) if seg else target.lstrip("/")
+        if rel is None:
+            return None
         if seg and not os.path.isfile(os.path.join(self.server.root, rel)):
             # A pack built before the per-rung ladder existed has only `pipe_abr_1080p.ts`. Serve
             # it rather than 404: a 404 on a rung reads to the controller as a REJECTED CANDIDATE,
@@ -181,7 +184,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
         unsuffixed name, which is what lets an OLD pack keep working: if no `_01` exists the list
         is one long and the behaviour is exactly what it was.
         """
-        base = ABR_FIXTURE[seg.group(1)]
+        requested = seg.group(1)
+        effective = self.server.abr_response_rung(requested, self._abr_generation())
+        if effective is None:
+            return None
+        base = ABR_FIXTURE[effective]
         parts = self.server.abr_parts(base)
         # The sequence lives in the QUERY, which `_resolve` has already stripped off the path it
         # matched — so it is read from `self.path` here rather than from a capture group.
@@ -189,6 +196,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
         found = RE_SEQUENCE.search(query)
         sequence = int(found.group(1)) if found else 0
         return parts[sequence % len(parts)]
+
+    def _abr_generation(self):
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        found = RE_ABR_GENERATION.search(query)
+        return int(found.group(1)) if found else None
 
     def _fail(self, code, why):
         self.server.note(f"-> {code} {why} ({self.path})")
@@ -212,18 +224,28 @@ class FixtureHandler(BaseHTTPRequestHandler):
         match = RE_ABR_PLAYLIST.match(target)
         if not match:
             return None
-        kbps, kind = match.groups()
+        requested, kind = match.groups()
         if kind == "master":
+            generation, effective = self.server.begin_abr_response(requested)
+            child = "media.m3u8"
+            if generation is not None:
+                child += f"?fixtureGeneration={generation}"
             text = ("#EXTM3U\n#EXT-X-VERSION:3\n"
-                    f"#EXT-X-STREAM-INF:BANDWIDTH={int(kbps) * 1000},RESOLUTION={ABR_RASTER[kbps]}\n"
-                    "media.m3u8\n")
+                    f"#EXT-X-STREAM-INF:BANDWIDTH={int(effective) * 1000},"
+                    f"RESOLUTION={ABR_RASTER[effective]}\n"
+                    f"{child}\n")
         else:
+            generation = self._abr_generation()
+            effective = self.server.abr_response_rung(requested, generation)
+            if effective is None:
+                return None
+            suffix = "" if generation is None else f"&fixtureGeneration={generation}"
             rows = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2",
                     "#EXT-X-MEDIA-SEQUENCE:0"]
             for sequence in range(90):
                 # Each backing file is an independent MPEG-TS program with an IDR and in-band
                 # SPS/PPS at its head, matching the measured PMS segment contract.
-                rows.extend(("#EXTINF:2.0,", f"segment.ts?sequence={sequence}"))
+                rows.extend(("#EXTINF:2.0,", f"segment.ts?sequence={sequence}{suffix}"))
             rows.append("#EXT-X-ENDLIST")
             text = "\n".join(rows) + "\n"
         return text.encode("utf-8")
@@ -314,6 +336,13 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # The REQUEST-indexed schedule, and the count it is indexed by. See `set_segment_profile`.
         self.segment_profile = []
         self.n_segments = 0
+        # Per-case PMS response mapping. The request path remains the actuator the app sent;
+        # each fresh master gets a generation whose media/segments remain pinned to the rendition
+        # that master declared. This is what lets an old underfilled session keep playing while a
+        # same-actuator refresh independently returns a better picture.
+        self.abr_response_profile = {}
+        self.abr_response_counts = {}
+        self.abr_response_generations = {}
         # The instant the shared link next falls idle. See `write_body`.
         self.link_free_at = None
         self._abr_parts = {}
@@ -403,6 +432,53 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             self.segment_profile = cleaned
             self.n_segments = 0
             self.link_free_at = None
+
+    def set_abr_response_profile(self, profile):
+        """Map fresh master requests to completed renditions for one case.
+
+        Shape: ``{"22000": ["2000", "22000"]}`` means the first fresh 22 Mbps
+        session declares and serves the 2 Mbps/720p fixture, while the second and every later
+        session declares and serves the real 22 Mbps/4K fixture. Request and response values are
+        ladder actuators, not inferred rates. An empty profile leaves every existing case byte-for-
+        byte unchanged.
+        """
+        if profile is None:
+            profile = {}
+        if not isinstance(profile, dict):
+            raise ValueError(f"invalid ABR response profile: {profile!r}")
+        cleaned = {}
+        for requested, responses in profile.items():
+            requested = str(requested)
+            if requested not in ABR_FIXTURE or not isinstance(responses, list) or not responses:
+                raise ValueError(f"invalid ABR response profile entry: {requested!r}: {responses!r}")
+            converted = [str(response) for response in responses]
+            if any(response not in ABR_FIXTURE for response in converted):
+                raise ValueError(f"invalid ABR response profile entry: {requested!r}: {responses!r}")
+            cleaned[requested] = tuple(converted)
+        with self.lock:
+            self.abr_response_profile = cleaned
+            self.abr_response_counts = {}
+            self.abr_response_generations = {}
+
+    def begin_abr_response(self, requested):
+        """Allocate one fresh response generation, or preserve the ordinary identity mapping."""
+        with self.lock:
+            responses = self.abr_response_profile.get(requested)
+            if responses is None:
+                return None, requested
+            count = self.abr_response_counts.get(requested, 0)
+            generation = count + 1
+            effective = responses[min(count, len(responses) - 1)]
+            self.abr_response_counts[requested] = generation
+            self.abr_response_generations[(requested, generation)] = effective
+            return generation, effective
+
+    def abr_response_rung(self, requested, generation):
+        """Rendition attached to one master's child resources; unknown generations fail closed."""
+        if generation is None:
+            return requested
+        with self.lock:
+            return self.abr_response_generations.get((requested, generation))
 
     def count_segment(self):
         """One media-segment response has begun. Returns its 0-based index."""

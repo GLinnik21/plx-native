@@ -66,9 +66,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
 - `make run` — close any running instance, wipe this install's event log (`make -s print-eventlog`),
   launch, keep alive `RUN_SECS` (default 18s), then `cat` the on-device event log back to your
   terminal.
-- `make check` — the **host** unit suite (`cargo test --lib`, ~0.3s, no TV), preceded by `make
-  lint`. Not a prerequisite of `all` — the cross-build must never depend on a host toolchain run.
-  See the testing section for what it does and does not cover.
+- `make check` — the **host** unit suite, no TV, preceded by `make lint`. Not a prerequisite of
+  `all` — the cross-build must never depend on a host toolchain run. It runs `cargo test --lib`
+  **twice: once on the default feature set and once with `--features hostsim`**, which is not a
+  duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
+  configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
+  default pass and cannot fail it — which is how the prime-livelock regression
+  (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature
+  tests passed. Cargo keys fingerprints by feature set, so the two coexist in one `target/` and the
+  second pass costs seconds warm. See the testing section for what it does and does not cover.
 - `make lint` — three **named** clippy lints (`ifs_same_cond`, `same_functions_in_if_condition`,
   `if_same_then_else`) over the whole crate, `-A clippy::all` first so nothing else can *fail* the
   gate (rustc's own warnings still print). It exists for one bug class the unit suite cannot reach:
@@ -643,9 +649,11 @@ which the linking section explains is load-bearing rather than tidy.
 - **App-switch lifecycle (was a black-screen bug), handled in `app.rs`:** the TV sends SDL app
   events — `0x103`/`0x104` (will/did enter **background**) and `0x105`/`0x106` (will/did enter
   **foreground**). On background during playback the loop **suspends the buffer-feed** (preserving the
-  session) and drops to Home; on foreground `0x106` it **reloads** and resumes at the saved position
-  with a single `Load`. In-app Home/Settings are *overlays* and do **not** fire these — only a real OS
-  app-switch does. Preserve the suspend/reload pairing if you touch playback or routing.
+  session) and drops to Home. On foreground `0x106` it tracks one exact Load attempt at a time,
+  follows reducer-approved superseding or rollback attempts, retries an exact failure without
+  repeating route preparation, and applies the saved clock only after `Started`. In-app
+  Home/Settings are *overlays* and do **not** fire these — only a real OS app-switch does. Preserve
+  the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics has two layers.** With error-report consent and a compiled Sentry endpoint,
   Sentry Native's patched ARM32 backend replaces the signal disposition and wakes the shipped
   `sentry-crash` daemon. The dying process stays stopped while the daemon copies its `ucontext`,
@@ -826,8 +834,10 @@ you its own numbers are wrong.
 There **is** a host unit suite, and it is not the real gate — both halves matter, and conflating
 them is how this section used to be wrong in three files at once.
 
-**Tier 1 — `make check` (host, sub-second).** `cd rust-modules && cargo test --lib` runs the whole
-host suite in **~0.3s** on the dev Mac, no TV involved. **Treat every test COUNT in this section as
+**Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib` runs the whole
+host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
+`--features hostsim`, because the host feed seam only exists there and the tests that need it are
+compiled out of the first pass (see the build section). **Treat every test COUNT in this section as
 already wrong, including the one in this sentence.** 386 measured 2026-08-13; 284 on 2026-08-02; a
 documented 59 before that, which was five times stale before anyone noticed — and the first version
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
@@ -963,13 +973,13 @@ writes `rk` back for the resolvable ones, so everything downstream still reads `
 skipped case has NO `rk` at all and is partitioned out in `main()` before anything subscripts it.
 `tests/test_harness.py` (in `make check`) pins that partition, because the maintainer's own overlay
 resolves every key and so never enters the path. The full on-device suite is `./tests/run.py`
-(21 cases; `--fps` for the perf gates), and `make test` = `deploy` + `run`.
+(count it with `--list --server`, never from here; `--fps` for the perf gates), and `make test` = `deploy` + `run`.
 
 **Tier 2 is TWO SUITES on one television, and since 2026-08-22 the DEFAULT IS THE SYNTHETIC ONE.**
 A bare **`./tests/run.py`** now runs the SYNTHETIC tier (generated clips, no Plex — take the count
 yourself with `./tests/run.py --list`, which is the only census that cannot rot; the number written
 here went stale inside the branch that wrote it, in one commit); the
-21 library-backed cases everything above describes are **`./tests/run.py --server`**, and `--fps` /
+library-backed cases everything above describes are **`./tests/run.py --server`**, and `--fps` /
 `--fps-player` imply `--server` because those scenes navigate a real signed-in Home. `--pipeline`
 still parses (it names the default); pairing it with `--server`/`--fps` is refused rather than
 silently resolved. The inversion is about what the obvious command should mean: the default has to
@@ -1223,12 +1233,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   bisect knob), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
   server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
-  minutes of episode first), `/tmp/plxnative-failtest[=verdict|audio|novideo|none]` (force one
+  minutes of episode first),
+  `/tmp/plxnative-failtest[=verdict|audio|novideo|stream|connection|tv|none]` (force one
   variant of the full-screen **failure read-out** — the one screen that cannot be reached on
   purpose, since it needs a server that refuses, and the one most meant to be LOOKED at: it is
   shaped to survive a phone photograph in an issue thread. Live-read, so arming it mid-playback
-  swaps the frame at once; pair `audio` with `/tmp/plxnative-nopass` for the PLEX PASS capsule
-  line. It feeds the real `player::error_shape`, and forces the STATE only at
+  swaps the frame at once; `stream`, `connection`, and `tv` exercise the runtime media-source,
+  interrupted-transfer, and native-pipeline reasons; pair `audio` with
+  `/tmp/plxnative-nopass` for the PLEX PASS capsule line. It feeds the real
+  `player::error_shape`, and forces the STATE only at
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
   `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
   (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,

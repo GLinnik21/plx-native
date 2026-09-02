@@ -638,7 +638,1402 @@ fn paused() -> bool {
 }
 #[inline]
 fn set_paused(v: bool) {
-    crate::player::TX.paused.store(v, Relaxed)
+    crate::player::TX.commit_paused(v)
+}
+/// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
+/// gate at the same accepted native boundary; keeping a second commit here used to leave a window
+/// in which deadline accounting still treated an already-accepted Pause as active playback.
+/// Resume during an internal HLS hold is accepted as a deferred transition: feeding reopens, while
+/// measured re-prime owns both the eventual Starfish Play and the matching ACB Resume.
+fn set_transport_paused(mt: &crate::task::MainThread, value: bool) -> bool {
+    if paused() == value {
+        return true;
+    }
+    if value {
+        crate::player::pause(mt)
+    } else {
+        crate::player::resume(mt)
+    }
+}
+
+/// The only two inputs which may claim an OS-suspended playback session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundInput {
+    DidForeground,
+    PlayKey,
+}
+
+/// Viewer clock intent carried independently of the native Engine's current clock state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundClock {
+    Paused,
+    Playing,
+}
+
+impl ForegroundClock {
+    fn from_paused(paused: bool) -> Self {
+        if paused {
+            Self::Paused
+        } else {
+            Self::Playing
+        }
+    }
+}
+
+/// Work which has been claimed but whose synchronous external effect has not settled yet.
+/// Publishing this state BEFORE each call is what makes a nested/duplicate DID or Play harmless.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundClaim {
+    Prepare {
+        saved_ns: i64,
+        saved_clock: ForegroundClock,
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    Load {
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    PlayClock,
+}
+
+/// Complete app-switch resume state. In particular, `Prepared` means `resume_at` and route
+/// preparation have completed, including a transcode URL rebuild when required: retrying its
+/// failed native Load must not rebuild that route again.
+/// The attempt type is opaque to the reducer. Production uses `RouteStartAttempt`, while pure
+/// tests can prove exact-attempt handling with an ordinary integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundState<Attempt = crate::route::RouteStartAttempt> {
+    Idle,
+    Suspended {
+        id: u64,
+        saved_ns: i64,
+        clock: ForegroundClock,
+    },
+    Claimed {
+        id: u64,
+        claim: ForegroundClaim,
+    },
+    Prepared {
+        id: u64,
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    LoadPending {
+        id: u64,
+        attempt: Attempt,
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    ClockPending {
+        id: u64,
+    },
+}
+
+#[derive(Debug)]
+struct ForegroundLifecycle<Attempt = crate::route::RouteStartAttempt> {
+    state: ForegroundState<Attempt>,
+    next_id: u64,
+}
+
+impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
+    const IDLE: Self = Self {
+        state: ForegroundState::Idle,
+        next_id: 0,
+    };
+
+    fn suspend(&mut self, saved_ns: i64, clock: ForegroundClock) {
+        self.next_id = self.next_id.wrapping_add(1);
+        if self.next_id == 0 {
+            self.next_id = 1;
+        }
+        self.state = ForegroundState::Suspended {
+            id: self.next_id,
+            saved_ns,
+            clock,
+        };
+    }
+
+    /// The physical clock can remain Paused after a refused foreground Play. Preserve the
+    /// viewer's newer Playing intent if the OS backgrounds that live session again.
+    fn clock_for_suspend(&self, transport_paused: bool) -> ForegroundClock {
+        match self.state {
+            ForegroundState::ClockPending { .. }
+            | ForegroundState::Claimed {
+                claim: ForegroundClaim::PlayClock,
+                ..
+            } => ForegroundClock::Playing,
+            // A Play-key resume can still have a physically Paused clock until its exact Load
+            // settles. If the OS backgrounds again in that window, preserve the viewer's intent
+            // from the reducer rather than resnapshotting the deliberately stale native clock.
+            ForegroundState::LoadPending { clock, .. } => clock,
+            _ => ForegroundClock::from_paused(transport_paused),
+        }
+    }
+
+    /// True while the preserved session is parked and awaiting a new native Load launch. The
+    /// launched attempt is deliberately excluded: its Player route is live and a second OS
+    /// background edge must suspend that Engine rather than ignore it.
+    fn awaiting_load(&self) -> bool {
+        matches!(
+            self.state,
+            ForegroundState::Suspended { .. }
+                | ForegroundState::Prepared { .. }
+                | ForegroundState::Claimed {
+                    claim: ForegroundClaim::Prepare { .. } | ForegroundClaim::Load { .. },
+                    ..
+                }
+        )
+    }
+
+    /// `ClockPending` belongs to an already-loaded player. If a later real exit has removed that
+    /// route, its retry must not intercept Play for the next item.
+    fn discard_started_state(&mut self) {
+        if matches!(
+            self.state,
+            ForegroundState::ClockPending { .. }
+                | ForegroundState::Claimed {
+                    claim: ForegroundClaim::PlayClock,
+                    ..
+                }
+        ) {
+            self.state = ForegroundState::Idle;
+        }
+    }
+
+    fn claim(&mut self, input: ForegroundInput) -> ForegroundClaimResult {
+        let state = self.state;
+        match state {
+            ForegroundState::Idle => ForegroundClaimResult::Ordinary,
+            ForegroundState::Suspended {
+                id,
+                saved_ns,
+                clock: saved_clock,
+            } => {
+                let clock = if matches!(input, ForegroundInput::PlayKey) {
+                    ForegroundClock::Playing
+                } else {
+                    saved_clock
+                };
+                let resume_ns = if matches!(saved_clock, ForegroundClock::Paused) {
+                    saved_ns
+                } else {
+                    saved_ns.saturating_sub(RESUME_REWIND_NS).max(0)
+                };
+                self.state = ForegroundState::Claimed {
+                    id,
+                    claim: ForegroundClaim::Prepare {
+                        saved_ns,
+                        saved_clock,
+                        resume_ns,
+                        clock,
+                    },
+                };
+                ForegroundClaimResult::Effect(ForegroundEffect::Prepare { id, resume_ns })
+            }
+            ForegroundState::Prepared {
+                id,
+                resume_ns,
+                clock,
+            } => {
+                let clock = if matches!(input, ForegroundInput::PlayKey) {
+                    ForegroundClock::Playing
+                } else {
+                    clock
+                };
+                self.state = ForegroundState::Claimed {
+                    id,
+                    claim: ForegroundClaim::Load { resume_ns, clock },
+                };
+                ForegroundClaimResult::Effect(ForegroundEffect::Load {
+                    id,
+                    resume_ns,
+                    clock,
+                })
+            }
+            ForegroundState::ClockPending { id } if matches!(input, ForegroundInput::PlayKey) => {
+                self.state = ForegroundState::Claimed {
+                    id,
+                    claim: ForegroundClaim::PlayClock,
+                };
+                ForegroundClaimResult::Effect(ForegroundEffect::PlayClock { id })
+            }
+            // A lifecycle edge or key which arrives while another claimant owns the effect is
+            // consumed, not allowed to fall through to the ordinary start path.
+            ForegroundState::Claimed { .. } | ForegroundState::ClockPending { .. } => {
+                ForegroundClaimResult::Suppressed
+            }
+            ForegroundState::LoadPending { .. } => ForegroundClaimResult::Suppressed,
+        }
+    }
+
+    fn finish_prepare(&mut self, id: u64, prepared: bool) -> Option<ForegroundEffect> {
+        let ForegroundState::Claimed {
+            id: owner,
+            claim:
+                ForegroundClaim::Prepare {
+                    saved_ns,
+                    saved_clock,
+                    resume_ns,
+                    clock,
+                },
+        } = self.state
+        else {
+            return None;
+        };
+        if owner != id {
+            return None;
+        }
+        if !prepared {
+            self.state = ForegroundState::Suspended {
+                id,
+                saved_ns,
+                clock: saved_clock,
+            };
+            return None;
+        }
+        self.state = ForegroundState::Claimed {
+            id,
+            claim: ForegroundClaim::Load { resume_ns, clock },
+        };
+        Some(ForegroundEffect::Load {
+            id,
+            resume_ns,
+            clock,
+        })
+    }
+
+    fn finish_load_launch(&mut self, id: u64, attempt: Attempt) -> bool {
+        let ForegroundState::Claimed {
+            id: owner,
+            claim: ForegroundClaim::Load { resume_ns, clock },
+        } = self.state
+        else {
+            return false;
+        };
+        if owner != id {
+            return false;
+        }
+        self.state = ForegroundState::LoadPending {
+            id,
+            attempt,
+            resume_ns,
+            clock,
+        };
+        true
+    }
+
+    fn finish_load_refusal(&mut self, id: u64) -> bool {
+        let ForegroundState::Claimed {
+            id: owner,
+            claim: ForegroundClaim::Load { resume_ns, clock },
+        } = self.state
+        else {
+            return false;
+        };
+        if owner != id {
+            return false;
+        }
+        self.state = ForegroundState::Prepared {
+            id,
+            resume_ns,
+            clock,
+        };
+        true
+    }
+
+    fn finish_load_terminal(&mut self, id: u64) -> bool {
+        let ForegroundState::Claimed {
+            id: owner,
+            claim: ForegroundClaim::Load { .. },
+        } = self.state
+        else {
+            return false;
+        };
+        if owner != id {
+            return false;
+        }
+        self.state = ForegroundState::Idle;
+        true
+    }
+
+    fn pending_load_attempt(&self) -> Option<Attempt> {
+        match self.state {
+            ForegroundState::LoadPending { attempt, .. } => Some(attempt),
+            _ => None,
+        }
+    }
+
+    fn settle_load(
+        &mut self,
+        attempt: Attempt,
+        status: ForegroundLoadStatus<Attempt>,
+    ) -> ForegroundLoadSettlement {
+        let ForegroundState::LoadPending {
+            id,
+            attempt: owner,
+            resume_ns,
+            clock,
+        } = self.state
+        else {
+            return ForegroundLoadSettlement::Inactive;
+        };
+        if owner != attempt {
+            return ForegroundLoadSettlement::Inactive;
+        }
+        match status {
+            ForegroundLoadStatus::Pending => ForegroundLoadSettlement::Pending,
+            ForegroundLoadStatus::Superseded(replacement) => {
+                self.state = ForegroundState::LoadPending {
+                    id,
+                    attempt: replacement,
+                    resume_ns,
+                    clock,
+                };
+                ForegroundLoadSettlement::Pending
+            }
+            ForegroundLoadStatus::Failed => {
+                self.state = ForegroundState::Prepared {
+                    id,
+                    resume_ns,
+                    clock,
+                };
+                ForegroundLoadSettlement::Finished {
+                    clock,
+                    started: false,
+                    effect: None,
+                }
+            }
+            ForegroundLoadStatus::Stale => {
+                // Neither the observed Load nor a tokened replacement owns the route any more.
+                // Release foreground ownership instead of retrying an unknown candidate or
+                // destroying whichever Engine the main reducer may now own.
+                self.state = ForegroundState::Idle;
+                ForegroundLoadSettlement::Finished {
+                    clock,
+                    started: false,
+                    effect: None,
+                }
+            }
+            ForegroundLoadStatus::Started => {
+                let effect = if matches!(clock, ForegroundClock::Paused) {
+                    self.state = ForegroundState::Idle;
+                    None
+                } else {
+                    self.state = ForegroundState::Claimed {
+                        id,
+                        claim: ForegroundClaim::PlayClock,
+                    };
+                    Some(ForegroundEffect::PlayClock { id })
+                };
+                ForegroundLoadSettlement::Finished {
+                    clock,
+                    started: true,
+                    effect,
+                }
+            }
+        }
+    }
+
+    fn finish_clock(&mut self, id: u64, accepted: bool) {
+        if !matches!(
+            self.state,
+            ForegroundState::Claimed {
+                id: owner,
+                claim: ForegroundClaim::PlayClock,
+            } if owner == id
+        ) {
+            return;
+        }
+        self.state = if accepted {
+            ForegroundState::Idle
+        } else {
+            ForegroundState::ClockPending { id }
+        };
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundClaimResult {
+    Ordinary,
+    Suppressed,
+    Effect(ForegroundEffect),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundEffect {
+    Prepare {
+        id: u64,
+        resume_ns: i64,
+    },
+    Load {
+        id: u64,
+        resume_ns: i64,
+        clock: ForegroundClock,
+    },
+    PlayClock {
+        id: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundActivation {
+    Ordinary,
+    Handled,
+    Launched,
+}
+
+trait ForegroundActuator {
+    type Attempt: Copy + PartialEq;
+
+    fn prepare_resume(&mut self, resume_ns: i64) -> crate::player::ResumeOutcome;
+    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
+    fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt>;
+    fn load_status(&mut self, attempt: Self::Attempt) -> ForegroundLoadStatus<Self::Attempt>;
+    fn after_load(&mut self, attempt: Option<Self::Attempt>, clock: ForegroundClock, started: bool);
+    fn play_clock(&mut self) -> bool;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundLoadStart<Attempt> {
+    AlreadyRunning,
+    Launched(Attempt),
+    Failed,
+    Terminal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundLoadStatus<Attempt> {
+    Pending,
+    Started,
+    Failed,
+    Superseded(Attempt),
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundLoadSettlement {
+    Inactive,
+    Pending,
+    Finished {
+        clock: ForegroundClock,
+        started: bool,
+        effect: Option<ForegroundEffect>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundPollOutcome {
+    Inactive,
+    Pending,
+    Started,
+    Failed,
+}
+
+/// Claim first, then execute the claimed synchronous effects in order. Launching the native Load
+/// tells the caller to mount Player but deliberately does not issue Play: only the later exact
+/// attempt result observed by `poll_foreground_load` may advance the clock.
+fn drive_foreground<A: ForegroundActuator>(
+    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    input: ForegroundInput,
+    actuator: &mut A,
+) -> ForegroundActivation {
+    let mut effect = match lifecycle.claim(input) {
+        ForegroundClaimResult::Ordinary => return ForegroundActivation::Ordinary,
+        ForegroundClaimResult::Suppressed => return ForegroundActivation::Handled,
+        ForegroundClaimResult::Effect(effect) => Some(effect),
+    };
+    let mut launched = false;
+    while let Some(next) = effect.take() {
+        effect = match next {
+            ForegroundEffect::Prepare { id, resume_ns } => {
+                let prepared = matches!(
+                    actuator.prepare_resume(resume_ns),
+                    crate::player::ResumeOutcome::Prepared
+                );
+                lifecycle.finish_prepare(id, prepared)
+            }
+            ForegroundEffect::Load {
+                id,
+                resume_ns,
+                clock,
+            } => {
+                actuator.before_load(resume_ns, clock);
+                match actuator.start_load() {
+                    ForegroundLoadStart::Launched(attempt) => {
+                        launched |= lifecycle.finish_load_launch(id, attempt);
+                    }
+                    ForegroundLoadStart::Failed => {
+                        actuator.after_load(None, clock, false);
+                        let _ = lifecycle.finish_load_refusal(id);
+                    }
+                    // No exact candidate can be followed. `AlreadyRunning` is a stable Engine
+                    // outside this suspended lifecycle; `Terminal` means Original rollback could
+                    // not construct a truthful route. Neither is a retryable Prepared edge.
+                    ForegroundLoadStart::AlreadyRunning | ForegroundLoadStart::Terminal => {
+                        actuator.after_load(None, clock, false);
+                        let _ = lifecycle.finish_load_terminal(id);
+                    }
+                }
+                None
+            }
+            ForegroundEffect::PlayClock { id } => {
+                lifecycle.finish_clock(id, actuator.play_clock());
+                None
+            }
+        };
+    }
+    if launched {
+        ForegroundActivation::Launched
+    } else {
+        ForegroundActivation::Handled
+    }
+}
+
+/// Poll the exact native Load attempt after `player::pump` has drained its media-thread result.
+/// Only a confirmed `Started` result may advance the viewer clock; failure retains the already
+/// prepared route so a Play retry never repeats PMS preparation or `resume_at`.
+fn poll_foreground_load<A: ForegroundActuator>(
+    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
+    actuator: &mut A,
+) -> ForegroundPollOutcome {
+    let Some(attempt) = lifecycle.pending_load_attempt() else {
+        return ForegroundPollOutcome::Inactive;
+    };
+    let status = actuator.load_status(attempt);
+    let cleanup_attempt = matches!(status, ForegroundLoadStatus::Failed).then_some(attempt);
+    match lifecycle.settle_load(attempt, status) {
+        ForegroundLoadSettlement::Inactive => ForegroundPollOutcome::Inactive,
+        ForegroundLoadSettlement::Pending => ForegroundPollOutcome::Pending,
+        ForegroundLoadSettlement::Finished {
+            clock,
+            started,
+            effect,
+        } => {
+            actuator.after_load(
+                if started {
+                    Some(attempt)
+                } else {
+                    cleanup_attempt
+                },
+                clock,
+                started,
+            );
+            if let Some(ForegroundEffect::PlayClock { id }) = effect {
+                lifecycle.finish_clock(id, actuator.play_clock());
+            }
+            if started {
+                ForegroundPollOutcome::Started
+            } else {
+                ForegroundPollOutcome::Failed
+            }
+        }
+    }
+}
+
+struct PlayerForegroundActuator<'a> {
+    mt: &'a crate::task::MainThread,
+    repause_at: &'a mut i64,
+}
+
+impl ForegroundActuator for PlayerForegroundActuator<'_> {
+    type Attempt = crate::route::RouteStartAttempt;
+
+    fn prepare_resume(&mut self, resume_ns: i64) -> crate::player::ResumeOutcome {
+        crate::player::resume_at(resume_ns)
+    }
+
+    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
+        if matches!(clock, ForegroundClock::Paused) {
+            *self.repause_at = resume_ns;
+            set_resume_pend(true);
+            crate::player::TX.begin_paused_seek();
+        }
+    }
+
+    fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+        let first = crate::player::start_bufferfeed_tracked(self.mt);
+        if matches!(first, crate::player::BufferfeedStartOutcome::Failed) {
+            // A synchronous failure inside an Original trial has no Engine for player::pump to
+            // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
+            return match crate::player::recover_failed_foreground_original(self.mt) {
+                crate::player::ForegroundOriginalRecovery::NotOriginal
+                | crate::player::ForegroundOriginalRecovery::RetryPrepared => {
+                    ForegroundLoadStart::Failed
+                }
+                crate::player::ForegroundOriginalRecovery::Tracking(attempt) => {
+                    ForegroundLoadStart::Launched(attempt)
+                }
+                crate::player::ForegroundOriginalRecovery::Terminal => {
+                    ForegroundLoadStart::Terminal
+                }
+            };
+        }
+        match first {
+            crate::player::BufferfeedStartOutcome::AlreadyRunning => {
+                ForegroundLoadStart::AlreadyRunning
+            }
+            crate::player::BufferfeedStartOutcome::Launched(attempt) => {
+                ForegroundLoadStart::Launched(attempt)
+            }
+            crate::player::BufferfeedStartOutcome::Failed => unreachable!("handled above"),
+        }
+    }
+
+    fn load_status(&mut self, attempt: Self::Attempt) -> ForegroundLoadStatus<Self::Attempt> {
+        match crate::route::route_start_status(attempt) {
+            crate::route::RouteStartStatus::Pending => ForegroundLoadStatus::Pending,
+            crate::route::RouteStartStatus::Started => ForegroundLoadStatus::Started,
+            crate::route::RouteStartStatus::Failed => ForegroundLoadStatus::Failed,
+            crate::route::RouteStartStatus::Superseded(replacement) => {
+                ForegroundLoadStatus::Superseded(replacement)
+            }
+            crate::route::RouteStartStatus::Stale => ForegroundLoadStatus::Stale,
+        }
+    }
+
+    fn after_load(
+        &mut self,
+        attempt: Option<Self::Attempt>,
+        clock: ForegroundClock,
+        started: bool,
+    ) {
+        if matches!(clock, ForegroundClock::Paused) {
+            if started {
+                set_resume_pend(true);
+            } else {
+                crate::player::TX.finish_seek_preroll();
+            }
+        }
+        if !started && attempt.is_some() {
+            // `sf_load == 0` publishes Error but intentionally leaves the Engine available for
+            // diagnostics. Retire it only if it still owns the observed token: player::pump may
+            // already have launched a healthy replacement before foreground polls this result.
+            let _ = crate::player::suspend_bufferfeed_if_attempt(self.mt, attempt.unwrap());
+        }
+    }
+
+    fn play_clock(&mut self) -> bool {
+        // start_bufferfeed has installed the Initial native-clock hold from TX.paused. Publish
+        // Play through the synchronized reducer so that hold and the feed gate reopen together.
+        !paused() || set_transport_paused(self.mt, false)
+    }
+}
+
+#[cfg(test)]
+mod foreground_resume_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeActuator {
+        prepare: Vec<crate::player::ResumeOutcome>,
+        loads: Vec<ForegroundLoadStart<u64>>,
+        statuses: Vec<ForegroundLoadStatus<u64>>,
+        clocks: Vec<bool>,
+        prepare_calls: Vec<i64>,
+        before_loads: Vec<(i64, ForegroundClock)>,
+        status_calls: Vec<u64>,
+        after_loads: Vec<(Option<u64>, ForegroundClock, bool)>,
+        teardowns: usize,
+        load_calls: usize,
+        clock_calls: usize,
+    }
+
+    impl FakeActuator {
+        fn answer<T>(answers: &mut Vec<T>) -> T {
+            answers.remove(0)
+        }
+    }
+
+    impl ForegroundActuator for FakeActuator {
+        type Attempt = u64;
+
+        fn prepare_resume(&mut self, resume_ns: i64) -> crate::player::ResumeOutcome {
+            self.prepare_calls.push(resume_ns);
+            Self::answer(&mut self.prepare)
+        }
+
+        fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
+            self.before_loads.push((resume_ns, clock));
+        }
+
+        fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+            self.load_calls += 1;
+            Self::answer(&mut self.loads)
+        }
+
+        fn load_status(&mut self, attempt: Self::Attempt) -> ForegroundLoadStatus<Self::Attempt> {
+            self.status_calls.push(attempt);
+            Self::answer(&mut self.statuses)
+        }
+
+        fn after_load(
+            &mut self,
+            attempt: Option<Self::Attempt>,
+            clock: ForegroundClock,
+            started: bool,
+        ) {
+            self.after_loads.push((attempt, clock, started));
+            if !started && attempt.is_some() {
+                self.teardowns += 1;
+            }
+        }
+
+        fn play_clock(&mut self) -> bool {
+            self.clock_calls += 1;
+            Self::answer(&mut self.clocks)
+        }
+    }
+
+    #[test]
+    fn a_claim_suppresses_did_and_play_until_its_effect_settles() {
+        let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
+        lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
+        let first = lifecycle.claim(ForegroundInput::PlayKey);
+        assert_eq!(
+            first,
+            ForegroundClaimResult::Effect(ForegroundEffect::Prepare {
+                id: 1,
+                resume_ns: 73_000_000_000,
+            })
+        );
+        assert_eq!(
+            lifecycle.claim(ForegroundInput::DidForeground),
+            ForegroundClaimResult::Suppressed
+        );
+        assert_eq!(
+            lifecycle.claim(ForegroundInput::PlayKey),
+            ForegroundClaimResult::Suppressed
+        );
+    }
+
+    #[test]
+    fn refused_resume_preparation_rearms_the_exact_suspended_snapshot() {
+        for refused in [
+            crate::player::ResumeOutcome::NoRoute,
+            crate::player::ResumeOutcome::RebuildRejected,
+        ] {
+            let mut lifecycle = ForegroundLifecycle::IDLE;
+            lifecycle.suspend(91_000_000_000, ForegroundClock::Paused);
+            let saved = lifecycle.state;
+            let mut actuator = FakeActuator {
+                prepare: vec![refused],
+                ..FakeActuator::default()
+            };
+
+            assert_eq!(
+                drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+                ForegroundActivation::Handled
+            );
+            assert_eq!(lifecycle.state, saved, "refusal {refused:?}");
+            assert_eq!(actuator.load_calls, 0, "a rejected rebuild cannot Load");
+        }
+    }
+
+    #[test]
+    fn did_foreground_preserves_a_paused_snapshot_without_issuing_play() {
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Launched(11)],
+            statuses: vec![ForegroundLoadStatus::Started],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator
+            ),
+            ForegroundActivation::Launched
+        );
+        assert_eq!(
+            lifecycle.state,
+            ForegroundState::LoadPending {
+                id: 1,
+                attempt: 11,
+                resume_ns: 73_000_000_000,
+                clock: ForegroundClock::Paused,
+            }
+        );
+        assert_eq!(
+            lifecycle.claim(ForegroundInput::PlayKey),
+            ForegroundClaimResult::Suppressed,
+            "Play cannot claim a second Load while the first is pending"
+        );
+        assert_eq!(
+            lifecycle.claim(ForegroundInput::DidForeground),
+            ForegroundClaimResult::Suppressed,
+            "duplicate DID cannot claim a second Load while the first is pending"
+        );
+        assert_eq!(
+            actuator.before_loads,
+            vec![(73_000_000_000, ForegroundClock::Paused)]
+        );
+        assert_eq!(actuator.clock_calls, 0);
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Started
+        );
+        assert_eq!(actuator.status_calls, vec![11]);
+        assert_eq!(
+            actuator.after_loads,
+            vec![(Some(11), ForegroundClock::Paused, true)]
+        );
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+    }
+
+    #[test]
+    fn pending_load_failure_retains_prepared_route_and_retry_skips_resume_preparation() {
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(63_000_000_000, ForegroundClock::Playing);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![
+                ForegroundLoadStart::Launched(17),
+                ForegroundLoadStart::Launched(18),
+            ],
+            statuses: vec![
+                ForegroundLoadStatus::Pending,
+                ForegroundLoadStatus::Failed,
+                ForegroundLoadStatus::Started,
+            ],
+            clocks: vec![true],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator
+            ),
+            ForegroundActivation::Launched
+        );
+        assert_eq!(
+            lifecycle.state,
+            ForegroundState::LoadPending {
+                id: 1,
+                attempt: 17,
+                resume_ns: 58_000_000_000,
+                clock: ForegroundClock::Playing,
+            }
+        );
+        assert_eq!(actuator.clock_calls, 0, "thread launch is not native Start");
+        assert_eq!(
+            lifecycle.clock_for_suspend(true),
+            ForegroundClock::Playing,
+            "a second background edge lost the Play-key intent to the held native clock"
+        );
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Pending
+        );
+        assert_eq!(actuator.clock_calls, 0, "pending Load issued Play");
+        assert_eq!(
+            lifecycle.settle_load(99, ForegroundLoadStatus::Failed),
+            ForegroundLoadSettlement::Inactive,
+            "another attempt cannot settle the foreground owner"
+        );
+        assert!(matches!(
+            lifecycle.state,
+            ForegroundState::LoadPending { attempt: 17, .. }
+        ));
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Failed
+        );
+        assert_eq!(
+            lifecycle.state,
+            ForegroundState::Prepared {
+                id: 1,
+                resume_ns: 58_000_000_000,
+                clock: ForegroundClock::Playing,
+            }
+        );
+        assert_eq!(actuator.prepare_calls, vec![58_000_000_000]);
+        assert_eq!(actuator.load_calls, 1);
+        assert_eq!(actuator.clock_calls, 0, "failed Load issued Play");
+        assert_eq!(
+            actuator.after_loads,
+            vec![(Some(17), ForegroundClock::Playing, false)]
+        );
+        assert_eq!(actuator.teardowns, 1, "failed Engine was not retired once");
+
+        assert_eq!(
+            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            ForegroundActivation::Launched
+        );
+        assert_eq!(actuator.prepare_calls.len(), 1, "prepared URL was rebuilt");
+        assert_eq!(actuator.load_calls, 2);
+        assert_eq!(
+            actuator.clock_calls, 0,
+            "retry launch was mistaken for Start"
+        );
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Started
+        );
+        assert_eq!(actuator.status_calls, vec![17, 17, 18]);
+        assert_eq!(
+            actuator.teardowns, 1,
+            "retry repeated failed-Engine teardown"
+        );
+        assert_eq!(actuator.clock_calls, 1);
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator
+            ),
+            ForegroundActivation::Ordinary,
+            "DID after the successful Load must have no foreground effect"
+        );
+        assert_eq!(actuator.load_calls, 2, "DID issued a second Load");
+    }
+
+    #[test]
+    fn async_failure_tears_down_once_so_retry_does_not_loop_on_already_running() {
+        #[derive(Default)]
+        struct EngineSpy {
+            engine_live: bool,
+            prepares: usize,
+            loads: usize,
+            teardowns: usize,
+        }
+
+        impl ForegroundActuator for EngineSpy {
+            type Attempt = u64;
+
+            fn prepare_resume(&mut self, _resume_ns: i64) -> crate::player::ResumeOutcome {
+                self.prepares += 1;
+                crate::player::ResumeOutcome::Prepared
+            }
+
+            fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+
+            fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+                if self.engine_live {
+                    return ForegroundLoadStart::AlreadyRunning;
+                }
+                self.loads += 1;
+                self.engine_live = true;
+                ForegroundLoadStart::Launched(self.loads as u64)
+            }
+
+            fn load_status(
+                &mut self,
+                attempt: Self::Attempt,
+            ) -> ForegroundLoadStatus<Self::Attempt> {
+                if attempt == 1 {
+                    ForegroundLoadStatus::Failed
+                } else {
+                    ForegroundLoadStatus::Started
+                }
+            }
+
+            fn after_load(
+                &mut self,
+                attempt: Option<Self::Attempt>,
+                _clock: ForegroundClock,
+                started: bool,
+            ) {
+                if !started && attempt.is_some() {
+                    self.teardowns += 1;
+                    self.engine_live = false;
+                }
+            }
+
+            fn play_clock(&mut self) -> bool {
+                true
+            }
+        }
+
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(29_000_000_000, ForegroundClock::Playing);
+        let mut actuator = EngineSpy::default();
+
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator
+            ),
+            ForegroundActivation::Launched
+        );
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Failed
+        );
+        assert_eq!(actuator.teardowns, 1);
+
+        assert_eq!(
+            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            ForegroundActivation::Launched,
+            "failed Engine survived and turned the retry into AlreadyRunning"
+        );
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Started
+        );
+        assert_eq!(
+            (actuator.prepares, actuator.loads, actuator.teardowns),
+            (1, 2, 1)
+        );
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+    }
+
+    #[test]
+    fn synchronous_load_refusal_retains_the_prepared_route() {
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(41_000_000_000, ForegroundClock::Playing);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Failed],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator
+            ),
+            ForegroundActivation::Handled
+        );
+        assert_eq!(
+            lifecycle.state,
+            ForegroundState::Prepared {
+                id: 1,
+                resume_ns: 36_000_000_000,
+                clock: ForegroundClock::Playing,
+            }
+        );
+        assert_eq!(actuator.prepare_calls, vec![36_000_000_000]);
+        assert_eq!(
+            actuator.after_loads,
+            vec![(None, ForegroundClock::Playing, false)]
+        );
+        assert_eq!(actuator.teardowns, 0);
+        assert_eq!(actuator.clock_calls, 0);
+    }
+
+    #[test]
+    fn unowned_or_terminal_load_releases_foreground_instead_of_retrying_forever() {
+        for refused in [
+            ForegroundLoadStart::AlreadyRunning,
+            ForegroundLoadStart::Terminal,
+        ] {
+            let mut lifecycle = ForegroundLifecycle::IDLE;
+            lifecycle.suspend(41_000_000_000, ForegroundClock::Playing);
+            let mut actuator = FakeActuator {
+                prepare: vec![crate::player::ResumeOutcome::Prepared],
+                loads: vec![refused],
+                ..FakeActuator::default()
+            };
+
+            assert_eq!(
+                drive_foreground(
+                    &mut lifecycle,
+                    ForegroundInput::DidForeground,
+                    &mut actuator,
+                ),
+                ForegroundActivation::Handled,
+            );
+            assert_eq!(lifecycle.state, ForegroundState::Idle);
+            assert_eq!(actuator.teardowns, 0);
+            assert_eq!(actuator.clock_calls, 0);
+        }
+    }
+
+    #[test]
+    fn stale_load_attempt_releases_foreground_without_touching_an_unknown_engine() {
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(22_000_000_000, ForegroundClock::Paused);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Launched(7)],
+            statuses: vec![ForegroundLoadStatus::Stale],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator
+            ),
+            ForegroundActivation::Launched
+        );
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Failed
+        );
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+        assert_eq!(actuator.prepare_calls.len(), 1);
+        assert_eq!(
+            actuator.after_loads,
+            vec![(None, ForegroundClock::Paused, false)]
+        );
+        assert_eq!(actuator.teardowns, 0);
+        assert_eq!(actuator.clock_calls, 0);
+    }
+
+    #[test]
+    fn foreground_follows_every_tokened_replacement_without_failure_cleanup() {
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(31_000_000_000, ForegroundClock::Playing);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Launched(7)],
+            statuses: vec![
+                ForegroundLoadStatus::Superseded(8),
+                ForegroundLoadStatus::Superseded(9),
+                ForegroundLoadStatus::Started,
+            ],
+            clocks: vec![true],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(
+                &mut lifecycle,
+                ForegroundInput::DidForeground,
+                &mut actuator,
+            ),
+            ForegroundActivation::Launched,
+        );
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Pending,
+        );
+        assert!(matches!(
+            lifecycle.state,
+            ForegroundState::LoadPending { attempt: 8, .. }
+        ));
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Pending,
+        );
+        assert!(matches!(
+            lifecycle.state,
+            ForegroundState::LoadPending { attempt: 9, .. }
+        ));
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Started,
+        );
+        assert_eq!(actuator.status_calls, vec![7, 8, 9]);
+        assert!(actuator.after_loads.iter().all(|(_, _, started)| *started));
+        assert_eq!(actuator.teardowns, 0);
+        assert_eq!(actuator.clock_calls, 1);
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+    }
+
+    #[test]
+    fn refused_play_after_load_retries_only_the_clock() {
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Launched(23)],
+            statuses: vec![ForegroundLoadStatus::Started],
+            clocks: vec![false, true],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            ForegroundActivation::Launched,
+            "spawning the Load only mounts the player while its result remains pending"
+        );
+        assert_eq!(actuator.clock_calls, 0);
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Started,
+            "the exact Load succeeded even though its following Play did not"
+        );
+        assert_eq!(lifecycle.state, ForegroundState::ClockPending { id: 1 });
+        assert_eq!(
+            lifecycle.claim(ForegroundInput::DidForeground),
+            ForegroundClaimResult::Suppressed,
+            "DID after the Load must not claim another Load"
+        );
+        assert_eq!(
+            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator),
+            ForegroundActivation::Handled
+        );
+        assert_eq!(actuator.prepare_calls.len(), 1);
+        assert_eq!(actuator.load_calls, 1, "clock retry issued a second Load");
+        assert_eq!(actuator.clock_calls, 2);
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+    }
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+mod transport_pause_contract_tests {
+    use super::{
+        drive_foreground, paused, poll_foreground_load, set_transport_paused, ForegroundActivation,
+        ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle,
+        ForegroundLoadStart, ForegroundLoadStatus, ForegroundPollOutcome, ForegroundState,
+    };
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn a_refused_native_pause_or_play_cannot_diverge_the_feed_gate() {
+        let _guard = crate::testlock::serial();
+        let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
+        crate::player::TX.commit_paused(false);
+        let old_rebuffering = crate::player::SHARED
+            .hls_rebuffering
+            .swap(false, Ordering::AcqRel);
+        struct Restore {
+            paused: bool,
+            rebuffering: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::player::force_pause_result_for_test(None);
+                crate::player::force_play_result_for_test(None);
+                crate::player::TX.commit_paused(self.paused);
+                crate::player::SHARED
+                    .hls_rebuffering
+                    .store(self.rebuffering, Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            paused: old_paused,
+            rebuffering: old_rebuffering,
+        };
+        let mt = unsafe { crate::task::MainThread::assume() };
+
+        crate::player::force_pause_result_for_test(Some(0));
+        assert!(!set_transport_paused(&mt, true));
+        assert!(
+            !paused(),
+            "feed must continue when the native clock refused Pause"
+        );
+
+        crate::player::force_pause_result_for_test(Some(1));
+        assert!(set_transport_paused(&mt, true));
+        assert!(paused());
+
+        crate::player::force_play_result_for_test(Some(0));
+        assert!(!set_transport_paused(&mt, false));
+        assert!(
+            paused(),
+            "feed must remain stopped when the native clock refused Play"
+        );
+
+        crate::player::force_play_result_for_test(Some(1));
+        assert!(set_transport_paused(&mt, false));
+        assert!(!paused());
+    }
+
+    #[test]
+    fn refused_foreground_play_retries_the_native_clock_without_a_second_load() {
+        let _guard = crate::testlock::serial();
+        let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::player::force_pause_result_for_test(None);
+                crate::player::force_play_result_for_test(None);
+                crate::player::SHARED.reset_hls_clock_for_test();
+                crate::player::TX.commit_paused(self.0);
+            }
+        }
+        let _restore = Restore(old_paused);
+        crate::player::SHARED.reset_hls_clock_for_test();
+        crate::player::TX.commit_paused(false);
+        let mt = unsafe { crate::task::MainThread::assume() };
+        crate::player::force_pause_result_for_test(Some(1));
+        assert!(set_transport_paused(&mt, true));
+
+        struct Actuator<'a> {
+            mt: &'a crate::task::MainThread,
+            prepares: usize,
+            loads: usize,
+        }
+        impl ForegroundActuator for Actuator<'_> {
+            type Attempt = u64;
+
+            fn prepare_resume(&mut self, _resume_ns: i64) -> crate::player::ResumeOutcome {
+                self.prepares += 1;
+                crate::player::ResumeOutcome::Prepared
+            }
+
+            fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+
+            fn start_load(&mut self) -> ForegroundLoadStart<Self::Attempt> {
+                self.loads += 1;
+                ForegroundLoadStart::Launched(1)
+            }
+
+            fn load_status(
+                &mut self,
+                attempt: Self::Attempt,
+            ) -> ForegroundLoadStatus<Self::Attempt> {
+                assert_eq!(attempt, 1);
+                ForegroundLoadStatus::Started
+            }
+
+            fn after_load(
+                &mut self,
+                _attempt: Option<Self::Attempt>,
+                _clock: ForegroundClock,
+                _started: bool,
+            ) {
+            }
+
+            fn play_clock(&mut self) -> bool {
+                set_transport_paused(self.mt, false)
+            }
+        }
+
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(42_000_000_000, ForegroundClock::Paused);
+        let mut actuator = Actuator {
+            mt: &mt,
+            prepares: 0,
+            loads: 0,
+        };
+        crate::player::force_play_result_for_test(Some(0));
+        assert_eq!(
+            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator,),
+            ForegroundActivation::Launched,
+        );
+        assert!(matches!(
+            lifecycle.state,
+            ForegroundState::LoadPending { .. }
+        ));
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut actuator),
+            ForegroundPollOutcome::Started,
+        );
+        assert!(matches!(
+            lifecycle.state,
+            ForegroundState::ClockPending { .. }
+        ));
+        assert_eq!((actuator.prepares, actuator.loads), (1, 1));
+        assert!(paused(), "a refused native Play keeps the feed held");
+
+        crate::player::force_play_result_for_test(Some(1));
+        assert_eq!(
+            drive_foreground(&mut lifecycle, ForegroundInput::PlayKey, &mut actuator,),
+            ForegroundActivation::Handled,
+        );
+        assert_eq!(
+            (actuator.prepares, actuator.loads),
+            (1, 1),
+            "the retry reached preparation or Load instead of the native clock",
+        );
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+        assert!(!paused());
+    }
 }
 #[inline]
 fn hud_until() -> u32 {
@@ -996,11 +2391,10 @@ fn seek_pending() -> i64 {
 fn request_seek(x: i64) {
     crate::player::request_seek(x)
 }
-/// Commit a scrub to `target` and clear the preview. If we were PAUSED, STAY paused: the feed gate
-/// (pump) needs `!paused` to prime the new position, so drop paused just long enough for the seek
-/// to present its landed frame, then arm `resume_pend` so the per-frame loop re-freezes on it (same
-/// mechanism as background-restore). `repause_at` is that re-freeze wait target. A scrub while
-/// playing takes the else branch and simply resumes at the new position.
+/// Commit a scrub to `target` and clear the preview. If we were PAUSED, STAY logically paused: a
+/// dedicated seek-preroll feed override lets the synchronized native clock decode one landed frame
+/// without publishing a false viewer Resume. `resume_pend` asks the per-frame loop to close that
+/// bounded override. `repause_at` is the landed-frame wait target.
 fn commit_seek(target: i64, repause_at: &mut i64) {
     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
         feature: crate::diag::schema::Feature::Seek,
@@ -1010,7 +2404,7 @@ fn commit_seek(target: i64, repause_at: &mut i64) {
     if paused() {
         *repause_at = target;
         set_resume_pend(true);
-        set_paused(false);
+        crate::player::TX.begin_paused_seek();
     }
 }
 #[inline]
@@ -1378,6 +2772,34 @@ mod replay_budget_tests {
             assert_eq!(super::replay_budget(Some(bad)), 1, "{bad}");
         }
     }
+}
+
+/// Resolve the server half of a direct dev-screen request.
+///
+/// An absent trigger preserves the historical `plxnative-play=<rk>` contract and uses the current
+/// server. Once an explicit slot was written, however, failure is terminal: rating keys are local
+/// to one PMS, so falling back could open a different item on another server.
+fn resolve_direct_server(
+    requested: Option<Result<u16, String>>,
+    current: crate::plex::ServerId,
+    registered: impl Fn(crate::plex::ServerId) -> bool,
+) -> Result<crate::plex::ServerId, String> {
+    let Some(slot) = requested else {
+        return Ok(current);
+    };
+    let raw = slot?;
+    let sid = crate::plex::ServerId::from_raw(raw);
+    registered(sid)
+        .then_some(sid)
+        .ok_or_else(|| format!("server slot {raw} is not registered"))
+}
+
+fn direct_trigger_server() -> Result<crate::plex::ServerId, String> {
+    resolve_direct_server(
+        crate::dev::server_slot(),
+        crate::plex::current_server(),
+        |sid| crate::plex::client_for(sid).is_some(),
+    )
 }
 
 /// The page's TEARDOWN — what leaving it FOR GOOD has to run, handed to `ui::nav` so it
@@ -1803,17 +3225,60 @@ fn modal_of(r: Route) -> Modal {
 }
 /// Perform what the `…` popover reported. Shared by the OK key and the pointer click, so
 /// the two paths can never come to disagree about what a row does.
-fn apply_more_action(a: crate::ui::more_menu::Action) {
+fn apply_more_action(mt: &crate::task::MainThread, a: crate::ui::more_menu::Action) {
     match a {
         crate::ui::more_menu::Action::ToggleStats => crate::ui::stats::toggle(),
         // A rung of the playback-quality ladder — a routing POLICY, not a number handed to a
         // running stream. Not deferred either: `route::set_quality` re-asks the routing question
         // for the playback on screen and reloads only when the answer changed.
-        crate::ui::more_menu::Action::SetQuality(q) => crate::route::set_quality(q),
+        crate::ui::more_menu::Action::SetQuality(q) => {
+            // A terminal Engine never reaches pump's pending-retranscode arm, and a `/decision`
+            // refusal has no Engine at all.  Persist the pick first, then make a fresh playback
+            // request at the same user-visible position.  Selecting the already-active rung is
+            // therefore the promised plain Retry.
+            let failed = matches!(crate::player::state(), crate::player::PlaybackState::Error);
+            if failed {
+                crate::route::set_quality_for_retry(q);
+                retry_failed_playback(mt);
+            } else {
+                crate::route::set_quality(q);
+            }
+        }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
         crate::ui::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu"),
         crate::ui::more_menu::Action::None => {}
+    }
+}
+
+/// Replace a terminal attempt with a new resolve of the same Plex item.
+///
+/// This is a REAL stop followed by a new request, not an Engine reload: it covers the pre-flight
+/// refusal which never created an Engine, retires a failed server transcode when there was one,
+/// and gives telemetry two honest attempts.  The descriptor lives in `route`; the app owns only
+/// the current playhead and the Engine lifecycle.
+fn retry_failed_playback(mt: &crate::task::MainThread) -> bool {
+    // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
+    // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
+    // read-out with an idle black frame.
+    if !crate::route::can_retry_current_play() {
+        log("playback retry: current source has no reusable Plex request");
+        return false;
+    }
+    // A terminal error can race a seek whose requested target has not landed.  Resume what the
+    // viewer asked for, not the last frame the dying Engine happened to publish.  If an earlier
+    // retry was refused before presenting anything, retain its target too: the stopped Engine now
+    // reports zero and must not send a second quality attempt back to the beginning.
+    let resume_ns = intended_pos()
+        .max(crate::route::unpresented_resume_ns())
+        .max(0);
+    crate::player::stop_bufferfeed(mt);
+    if crate::route::retry_current_play(resume_ns) {
+        crate::ui::idle::invalidate();
+        true
+    } else {
+        log("playback retry: current source cannot be resolved again");
+        false
     }
 }
 
@@ -2229,9 +3694,6 @@ fn enter_node(n: &Node, route: &mut Route) {
     *route = node_route(n);
 }
 
-/// Resume captured at the keypress, applied when the async resolve lands.
-static PENDING_RESUME_NS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-
 /// The ONE start-playback ritual (detail OK, home episode OK, and the plxnative-autoplay/
 /// -detailplay/-play dev triggers all share it): arm the resume point BEFORE the first
 /// Load (direct-play av_seek / transcode &offset restart), start the engine, record the
@@ -2254,17 +3716,27 @@ fn start_playback(
     // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
     // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
     let pending = crate::route::play_pending();
-    if resume_ns > 0 && !pending {
-        crate::player::resume_at(resume_ns);
+    let resume_prepared = pending
+        || resume_ns <= 0
+        || matches!(
+            crate::player::resume_at(resume_ns),
+            crate::player::ResumeOutcome::Prepared
+        );
+    if !resume_prepared {
+        if let Some(transaction) = crate::route::pending_route_start() {
+            let _ = crate::route::reject_route_start_preparation(transaction);
+        }
     }
     // Flip to the player NOW so the HUD draws its Resolving state this frame; `pump_play`
     // below starts the engine when the plan lands. With nothing pending this is the old
     // synchronous behaviour, byte for byte.
     let entering = if pending {
-        PENDING_RESUME_NS.store(resume_ns, Relaxed);
+        crate::route::arm_play_resume(resume_ns);
         true
-    } else {
+    } else if resume_prepared {
         crate::player::start_bufferfeed(mt)
+    } else {
+        false
     };
     if entering {
         set_origin(play_from, from);
@@ -2297,8 +3769,7 @@ fn start_playback(
 /// stay-paused variant. Written out four separate times in this file before it had a name.
 fn resume_if_paused(mt: &crate::task::MainThread) {
     if paused() {
-        set_paused(false);
-        crate::player::resume(mt);
+        set_transport_paused(mt, false);
     }
 }
 
@@ -2367,6 +3838,10 @@ fn exit_player(
     crate::route::cancel_play(); // BACK during a load: supersede, drop the landing
     close_player_overlays();
     crate::player::stop_bufferfeed(mt);
+    // `stop_bufferfeed` reports/clears a real engine through `report::ended`, but a refusal or a
+    // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
+    // attempt, so retire its in-memory trace here as the common backstop.
+    crate::player::report::clear_error_trace();
     if reveal_played_episode(play_from) {
         // …the reveal IS the mount, so `enter_node`'s would be a second, competing one.
         *route = Route::Detail;
@@ -2492,7 +3967,9 @@ fn play_up_next(
     );
     close_player_overlays();
     crate::player::stop_bufferfeed(mt);
-    crate::route::request_play_up_next(u);
+    if !crate::route::request_play_up_next(u) {
+        return false;
+    }
     // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD
     // caption and Info card don't label the new playback with the old one's title for the
     // whole pre-roll, and fetch the new leaf off the loop.
@@ -2534,17 +4011,20 @@ unsafe fn play_item_now(
     if mm.rk.is_empty() {
         return;
     }
-    crate::route::request_play_movie(mm); // resolve OFF the SDL loop — pump_play starts it
-                                          // Fetch OFF the loop too — pump_detail lands it. Nothing here reads current(): every
-                                          // start_playback argument comes from `mm` (the catalog row), and the in-player track
-                                          // menu reads metadata::playing(), which the resolve worker installs. The one consumer
-                                          // is sync_now_playing()'s descriptor for the HUD caption and Info card, so a landing a
-                                          // beat later costs a few frames of missing caption, never a wrong play.
-                                          // Retire the old descriptor first: it describes the PREVIOUSLY played item, and the
-                                          // HUD caption + Info card read it every frame — leaving it up would label this
-                                          // playback with the last one's title for the whole pre-roll. None is honest (the
-                                          // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
-                                          // this item), and the landing refills it via sync_now_playing.
+    if !crate::route::request_play_movie(mm) {
+        return;
+    }
+    // resolve OFF the SDL loop — pump_play starts it
+    // Fetch OFF the loop too — pump_detail lands it. Nothing here reads current(): every
+    // start_playback argument comes from `mm` (the catalog row), and the in-player track
+    // menu reads metadata::playing(), which the resolve worker installs. The one consumer
+    // is sync_now_playing()'s descriptor for the HUD caption and Info card, so a landing a
+    // beat later costs a few frames of missing caption, never a wrong play.
+    // Retire the old descriptor first: it describes the PREVIOUSLY played item, and the
+    // HUD caption + Info card read it every frame — leaving it up would label this
+    // playback with the last one's title for the whole pre-roll. None is honest (the
+    // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
+    // this item), and the landing refills it via sync_now_playing.
     crate::metadata::set_now_playing(None);
     crate::metadata::request_detail(mm.sid, &mm.rk);
     start_playback(
@@ -3559,15 +5039,31 @@ unsafe fn key_item_menu(
 /// picture. Nothing that is not drawn may be driven — the rule `ControlSlot::UpNext` states and
 /// `up_next::card_active` already keeps for the post-play card.
 ///
-/// BACK is the exception, and it is not optional: the read-out's own hint says "Press BACK to
-/// return", and a single screen with every other key swallowed has nowhere else to go. It closes a
-/// panel the failure landed on top of (so the route agrees with the frame again) and otherwise
-/// leaves the player.
+/// Two exceptions are painted on the read-out: BACK returns, while OK opens the shared quality
+/// ladder on its current rung.  Selecting that rung is a plain retry; selecting another starts the
+/// same item under the new policy.  A failure is therefore terminal for the Engine, not a trap for
+/// the viewer.
 ///
-/// This arm's GUARD is why the four overlay arms after it (Menu / More / Info / Chapters) do not
-/// run while the transport is hidden: it `continue`s whatever the key was. That is the ladder's
-/// order doing its job, and it is what `tools/keytable.py` exists for — no host test executes any of
-/// the ladder, so a reorder compiles and keeps the suite green.
+/// This arm's guard still swallows Menu / Info / Chapters while the transport is absent.  It
+/// explicitly exempts the More route it opened, so only that visible recovery panel reaches the
+/// ordinary modal key arm beneath it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailedKeyAction {
+    ChooseQuality,
+    Return,
+    Ignore,
+}
+
+fn failed_key_action(ok: bool, back: bool) -> FailedKeyAction {
+    if ok {
+        FailedKeyAction::ChooseQuality
+    } else if back {
+        FailedKeyAction::Return
+    } else {
+        FailedKeyAction::Ignore
+    }
+}
+
 fn key_player_failed(
     mt: &crate::task::MainThread,
     sym: c_uint,
@@ -3577,15 +5073,39 @@ fn key_player_failed(
     refresh_hubs_at: &mut u32,
     trail: &mut Trail,
 ) {
-    if is_back(sym, wcode) {
-        if matches!(modal_of(*route), Modal::None) {
-            exit_player(mt, route, play_from, refresh_hubs_at, trail);
-        } else {
-            close_player_overlays();
+    match failed_key_action(is_ok(sym), is_back(sym, wcode)) {
+        FailedKeyAction::ChooseQuality => {
+            crate::ui::more_menu::open_quality();
             *route = Route::Player {
-                overlay: Overlay::None,
+                overlay: Overlay::More,
             };
         }
+        FailedKeyAction::Return => {
+            if matches!(modal_of(*route), Modal::None) {
+                exit_player(mt, route, play_from, refresh_hubs_at, trail);
+            } else {
+                close_player_overlays();
+                *route = Route::Player {
+                    overlay: Overlay::None,
+                };
+            }
+        }
+        FailedKeyAction::Ignore => {}
+    }
+}
+
+#[cfg(test)]
+mod failed_player_input_tests {
+    use super::{failed_key_action, FailedKeyAction};
+
+    #[test]
+    fn a_terminal_failure_has_a_forward_escape_and_a_back_escape() {
+        assert_eq!(
+            failed_key_action(true, false),
+            FailedKeyAction::ChooseQuality
+        );
+        assert_eq!(failed_key_action(false, true), FailedKeyAction::Return);
+        assert_eq!(failed_key_action(false, false), FailedKeyAction::Ignore);
     }
 }
 
@@ -3612,13 +5132,20 @@ fn key_track_menu(sym: c_uint, wcode: c_uint, now: u32, route: &mut Route, held:
 
 /// The `…` overflow popover is modal too, and has ONE column — so LEFT/RIGHT are swallowed without
 /// moving anything, rather than falling through to the scrubber.
-fn key_more_menu(sym: c_uint, wcode: c_uint, now: u32, route: &mut Route, held: &mut HeldKey) {
+fn key_more_menu(
+    mt: &crate::task::MainThread,
+    sym: c_uint,
+    wcode: c_uint,
+    now: u32,
+    route: &mut Route,
+    held: &mut HeldKey,
+) {
     if sym == SDLK_UP || sym == SDLK_DOWN {
         crate::ui::more_menu::move_focus(sym as c_int);
         held.arm(sym, now);
         extend_hud(now, HUD_MENU_MS);
     } else if is_ok(sym) {
-        apply_more_action(crate::ui::more_menu::on_ok());
+        apply_more_action(mt, crate::ui::more_menu::on_ok());
         *route = Route::Player {
             overlay: Overlay::None,
         };
@@ -3689,8 +5216,7 @@ fn commit_info_panel(
         crate::ui::info_panel::InfoAction::FromBeginning => {
             request_seek(0);
             if paused() {
-                set_paused(false);
-                crate::player::resume(mt);
+                set_transport_paused(mt, false);
             }
         }
         crate::ui::info_panel::InfoAction::GoToDetail(rk) => {
@@ -3768,8 +5294,7 @@ fn key_chapters(
         if ns >= 0 {
             request_seek(ns);
             if paused() {
-                set_paused(false);
-                crate::player::resume(mt);
+                set_transport_paused(mt, false);
             }
         }
         *route = Route::Player {
@@ -4032,14 +5557,14 @@ unsafe fn key_ok(
             }
         } else {
             let np = !paused();
-            set_paused(np);
             if np {
-                crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-                    feature: crate::diag::schema::Feature::Pause,
-                });
-                crate::player::pause(mt);
+                if set_transport_paused(mt, true) {
+                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                        feature: crate::diag::schema::Feature::Pause,
+                    });
+                }
             } else {
-                crate::player::resume(mt);
+                set_transport_paused(mt, false);
             }
         }
         extend_hud(now, HUD_LINGER_MS);
@@ -4178,11 +5703,11 @@ unsafe fn key_ok(
 /// PAUSE — the dedicated transport key, which only ever pauses (PLAY is its other half).
 fn key_pause(mt: &crate::task::MainThread, route: Route, now: u32) {
     if matches!(route, Route::Player { .. }) && !paused() {
-        set_paused(true);
-        crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
-            feature: crate::diag::schema::Feature::Pause,
-        });
-        crate::player::pause(mt);
+        if set_transport_paused(mt, true) {
+            crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                feature: crate::diag::schema::Feature::Pause,
+            });
+        }
     }
     extend_hud(now, HUD_LINGER_MS);
 }
@@ -4191,35 +5716,50 @@ fn key_pause(mt: &crate::task::MainThread, route: Route, now: u32) {
 unsafe fn key_play(
     mt: &crate::task::MainThread,
     now: u32,
-    bg_was_playing: bool,
+    foreground: &mut ForegroundLifecycle,
+    repause_at: &mut i64,
     route: &mut Route,
     play_from: &mut Node,
     ptr: &mut Pointer,
 ) {
-    if !matches!(*route, Route::Player { .. }) {
-        if crate::player::start_bufferfeed(mt) {
-            // Resuming a suspended session (bg_was_playing) KEEPS its origin; a fresh play
-            // derives it from the page on screen. Guards the tiny bg→fg window in which the
-            // lifecycle arm has already forced the route to Home while the session it suspended
-            // came from somewhere else entirely.
-            if !bg_was_playing {
+    let was_off_player = !matches!(*route, Route::Player { .. });
+    if was_off_player {
+        foreground.discard_started_state();
+    }
+    let activation = drive_foreground(
+        foreground,
+        ForegroundInput::PlayKey,
+        &mut PlayerForegroundActuator { mt, repause_at },
+    );
+    if matches!(activation, ForegroundActivation::Launched) {
+        // A suspended session KEEPS its origin. The lifecycle arm forced its route to Home, but
+        // that temporary screen is not where Stop/BACK should return.
+        *route = Route::Player {
+            overlay: Overlay::None,
+        };
+    } else if matches!(activation, ForegroundActivation::Ordinary) {
+        if !matches!(*route, Route::Player { .. }) {
+            if crate::player::start_bufferfeed(mt) {
                 if let Origin::From(n) = origin_here(*route) {
                     *play_from = n;
                 }
+                *route = Route::Player {
+                    overlay: Overlay::None,
+                };
+                // Keep the ordinary off-route start's existing stale-Pause defense. A foreground
+                // transition applies its explicit clock intent through the lifecycle actuator.
+                if paused() {
+                    set_transport_paused(mt, false);
+                }
             }
-            *route = Route::Player {
-                overlay: Overlay::None,
-            };
+        } else if paused() {
+            set_transport_paused(mt, false);
         }
-        set_paused(false);
-        if !ptr.dpad_mode {
-            hide_cursor();
-            ptr.dpad_mode = true;
-            ptr.cur_hidden = true;
-        }
-    } else if paused() {
-        set_paused(false);
-        crate::player::resume(mt);
+    }
+    if was_off_player && !ptr.dpad_mode {
+        hide_cursor();
+        ptr.dpad_mode = true;
+        ptr.cur_hidden = true;
     }
     extend_hud(now, HUD_LINGER_MS);
 }
@@ -4522,6 +6062,30 @@ fn key_exit_alert(sym: c_uint, wcode: c_uint, now: u32, ok_armed: &mut bool) {
 fn commit_exit_alert(running: &mut bool) {
     if crate::ui::exit_alert::on_ok() == crate::ui::exit_alert::Choice::Exit {
         *running = false;
+    }
+}
+
+/// Run a play-plan landing and then observe the derived player state in the same frame. This tiny
+/// seam is explicit because a refused `/decision` publishes `Error` inside the landing, after the
+/// loop's ordinary report tick; BACK on the next frame can otherwise erase the only observation.
+fn land_play_then_observe(land: impl FnOnce(), observe: impl FnOnce()) {
+    land();
+    observe();
+}
+
+#[cfg(test)]
+mod play_landing_order_tests {
+    use super::land_play_then_observe;
+    use std::cell::RefCell;
+
+    #[test]
+    fn the_landing_seam_runs_publication_before_observation() {
+        let order = RefCell::new(Vec::new());
+        land_play_then_observe(
+            || order.borrow_mut().push("landing"),
+            || order.borrow_mut().push("observation"),
+        );
+        assert_eq!(*order.borrow(), ["landing", "observation"]);
     }
 }
 
@@ -4895,6 +6459,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // allowed to cost more than itself.
                 let Some(origin) = s.origin() else { continue };
                 let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token);
+                if let Some(tier) = s.tier {
+                    // The endpoint may be a LAN conditioner in front of a Remote PMS.  Preserve
+                    // the discovery fact the harness supplied; the private proxy address itself
+                    // cannot prove Local, and an omitted tier deliberately proves nothing.
+                    if let Some(client) = crate::plex::client_for(id) {
+                        client.set_link(tier);
+                    }
+                }
                 // the roster's own answer about this server: a handle means someone else's.
                 crate::plex::describe_server(id, &s.name, &s.handle, s.handle.is_empty());
             }
@@ -5223,9 +6795,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut scrubber = Scrub::IDLE;
         let mut hud = HudState::IDLE;
         let mut marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
-        let mut bg_was_playing = false;
-        let mut bg_was_paused = false;
-        let mut bg_pos = 0i64;
+        let mut foreground = ForegroundLifecycle::IDLE;
+        let mut repause_at = 0i64;
         // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
         // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
         // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
@@ -5286,7 +6857,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // intentionally unconditional so automated and ordinary upgrades retire the same state.
         crate::coldstart::retire();
         // The page the live playback session was LAUNCHED FROM — where Stop/BACK/EOS returns to.
-        // Kept OUTSIDE Route (like bg_was_playing keeps the suspended session): it is navigation
+        // Kept OUTSIDE Route (like `foreground` keeps the suspended session): it is navigation
         // history, not the current node, and Route makes every page and Player exclusive so it
         // could not be encoded there. Captured per `start_playback` through `Origin` — see that
         // type for why this is a `Node` and not the `from_detail: bool` it replaced.
@@ -5351,6 +6922,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut menu_tried = false;
         let mut menupick_tried = false;
         let mut pause_tried = false;
+        // `/tmp/plxnative-autopause`: an authored Pause edge, plus the optional Resume edge which
+        // owns the same script. External effects retry until the synchronized player state machine
+        // accepts them; a busy native transition cannot silently consume the test operation.
+        let mut pause_script: Option<(u32, Option<u32>)> = None;
+        let mut pause_resume_at: Option<u32> = None;
         let mut prev = 0u32;
         // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a
         // beat later so the final timeline PUT lands first — Continue Watching then shows the new
@@ -5446,15 +7022,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // this screen's alone and both calls under it are guarded, so it costs a
                     // predictable nothing on every other route.
                     crate::ui::search::leave();
-                    if matches!(route, Route::Player { .. }) && !bg_was_playing {
+                    if matches!(route, Route::Player { .. }) && !foreground.awaiting_load() {
                         // INTENDED, not published: this snapshot is the only thing the foreground
                         // restore has, and `suspend_bufferfeed` below drops the pending seek target
                         // with the session — so a background that lands while a seek is still
                         // resolving would otherwise save (and restore to) the spot the user just
                         // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
-                        bg_pos = intended_pos();
-                        bg_was_playing = true;
-                        bg_was_paused = paused();
+                        let saved_ns = intended_pos();
+                        let clock = foreground.clock_for_suspend(paused());
+                        foreground.suspend(saved_ns, clock);
                         scrubber.disengage();
                         ptr.drag = false;
                         held_key.sym = 0; // this async route flip must not leave a held key repeating into Home
@@ -5480,34 +7056,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // WILL/DID ENTER FOREGROUND
                     log(&format!(
                         "LIFECYCLE: foreground (wasPlaying={})",
-                        bg_was_playing as i32
+                        foreground.awaiting_load() as i32
                     ));
-                    if bg_was_playing && et == 0x106 {
-                        bg_was_playing = false; // clear regardless so a later 0x106 can't re-fire
-                                                // only resume if a PLAY key didn't already restart playback in the
-                                                // WILL->DID window (a second start would drop the live Engine -> UAF)
-                        if !matches!(route, Route::Player { .. }) {
-                            // Restore at the saved position with a SINGLE Load: arm the position via
-                            // resume_at() BEFORE start_bufferfeed (same as the Continue-Watching
-                            // resume). The old start+request_seek order did an in-place seek right
-                            // after the fresh Load, whose reopen stalled the video decoder (BufferFull
-                            // — black plane) while audio kept playing.
-                            let mut rt = bg_pos;
-                            if !bg_was_paused {
-                                rt -= RESUME_REWIND_NS;
-                                if rt < 0 {
-                                    rt = 0;
-                                }
-                            }
-                            crate::player::resume_at(rt);
-                            let started = crate::player::start_bufferfeed(mt);
-                            if started {
-                                route = Route::Player {
-                                    overlay: Overlay::None,
-                                };
-                                set_hud(SDL_GetTicks() + HUD_LINGER_MS);
-                                set_resume_pend(bg_was_paused);
-                            }
+                    if et == 0x106 {
+                        let activation = drive_foreground(
+                            &mut foreground,
+                            ForegroundInput::DidForeground,
+                            &mut PlayerForegroundActuator {
+                                mt,
+                                repause_at: &mut repause_at,
+                            },
+                        );
+                        if matches!(activation, ForegroundActivation::Launched) {
+                            route = Route::Player {
+                                overlay: Overlay::None,
+                            };
+                            set_hud(SDL_GetTicks() + HUD_LINGER_MS);
                         }
                     }
                 } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
@@ -5527,7 +7091,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             ok_armed,
                             &mut held_key,
                             &mut scrubber,
-                            &mut bg_pos,
+                            &mut repause_at,
                         );
                         continue;
                     }
@@ -5695,11 +7259,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         );
                         continue;
                     }
-                    // …and THIS is the guard the next four sit under: while a playback failure owns
-                    // the frame it `continue`s on every key, so the Menu / More / Info / Chapters
-                    // arms below do not run at all. Deliberate — see `key_player_failed`.
+                    // A failure owns the frame, except for the recovery-quality popover it opened
+                    // itself.  Stale Menu / Info / Chapters panels remain unreachable; More is the
+                    // one drawn and drivable escape promised by the failure read-out.
                     if matches!(route, Route::Player { .. })
                         && crate::ui::player_hud::transport_hidden()
+                        && !matches!(
+                            route,
+                            Route::Player {
+                                overlay: Overlay::More
+                            }
+                        )
                     {
                         key_player_failed(
                             mt,
@@ -5727,7 +7297,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             overlay: Overlay::More
                         }
                     ) {
-                        key_more_menu(sym, wcode, last_input, &mut route, &mut held_key);
+                        key_more_menu(mt, sym, wcode, last_input, &mut route, &mut held_key);
                         continue;
                     }
                     if matches!(
@@ -5841,7 +7411,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         key_play(
                             mt,
                             last_input,
-                            bg_was_playing,
+                            &mut foreground,
+                            &mut repause_at,
                             &mut route,
                             &mut play_from,
                             &mut ptr,
@@ -5854,7 +7425,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             key_play(
                                 mt,
                                 last_input,
-                                bg_was_playing,
+                                &mut foreground,
+                                &mut repause_at,
                                 &mut route,
                                 &mut play_from,
                                 &mut ptr,
@@ -5901,6 +7473,19 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     ptr.prev_mx = mx;
                     ptr.prev_my = my;
                     if matches!(route, Route::Player { .. }) {
+                        // Player owns this arm before the generic per-route hover ladder below, so
+                        // the overflow popover must be dispatched here.  Otherwise its later
+                        // `Overlay::More` arm is unreachable for every playback, including the
+                        // terminal recovery picker.
+                        if matches!(
+                            route,
+                            Route::Player {
+                                overlay: Overlay::More
+                            }
+                        ) {
+                            crate::ui::more_menu::pointer_focus(mx, my);
+                            continue;
+                        }
                         hud.dismissed = false;
                         extend_hud(last_input, HUD_LINGER_MS);
                         if ptr.drag && dur() > 0 {
@@ -5921,13 +7506,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::onboard::pointer_focus(mx, my);
                     } else if matches!(route, Route::Account { .. }) {
                         crate::ui::account_menu::pointer_focus(mx, my);
-                    } else if matches!(
-                        route,
-                        Route::Player {
-                            overlay: Overlay::More
-                        }
-                    ) {
-                        crate::ui::more_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::ItemMenu { .. }) {
                         crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {
@@ -6013,13 +7591,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         continue;
                     }
-                    // …and the pointer's half of the same rule: the hit-tests below consult
-                    // geometry (`icon_hit`, `scrub_hit`, the tab row) that a failure has erased from
-                    // the frame. The key path's BACK exception has no pointer twin — there is no
-                    // BACK to click — so a click on a failed read-out is simply nothing.
+                    // …and the pointer's half of the same rule.  The erased transport geometry is
+                    // still inert, but the read-out now exposes one real target: choose quality.
+                    // Once that opens More, the popover owns clicks through the ordinary modal arm
+                    // below; every other click on the failed frame remains nothing.
                     if matches!(route, Route::Player { .. })
                         && crate::ui::player_hud::transport_hidden()
+                        && !matches!(
+                            route,
+                            Route::Player {
+                                overlay: Overlay::More
+                            }
+                        )
                     {
+                        let (cx, cy) = ptr_xy(&ev);
+                        if crate::ui::player_hud::failure_quality_hit(cx, cy) {
+                            crate::ui::more_menu::open_quality();
+                            route = Route::Player {
+                                overlay: Overlay::More,
+                            };
+                        }
                         continue;
                     }
                     if matches!(route, Route::Player { .. }) {
@@ -6061,7 +7652,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // that lands on one commits it (and a click outside reports None and
                             // just dismisses) — `account_menu`'s contract, same as its key path.
                             Modal::More => {
-                                apply_more_action(crate::ui::more_menu::click(cx, cy));
+                                apply_more_action(mt, crate::ui::more_menu::click(cx, cy));
                                 route = Route::Player {
                                     overlay: Overlay::None,
                                 };
@@ -6114,16 +7705,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     ptr.drag = true;
                                 } else {
                                     let np = !paused();
-                                    set_paused(np);
                                     if np {
-                                        crate::diag::event(
-                                            crate::diag::schema::DiagEvent::FeatureUsed {
-                                                feature: crate::diag::schema::Feature::Pause,
-                                            },
-                                        );
-                                        crate::player::pause(mt);
+                                        if set_transport_paused(mt, true) {
+                                            crate::diag::event(
+                                                crate::diag::schema::DiagEvent::FeatureUsed {
+                                                    feature: crate::diag::schema::Feature::Pause,
+                                                },
+                                            );
+                                        }
                                     } else {
-                                        crate::player::resume(mt);
+                                        set_transport_paused(mt, false);
                                     }
                                 }
                             }
@@ -6376,7 +7967,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if ptr.drag {
                         ptr.drag = false;
                         if scrub() >= 0 {
-                            commit_seek(scrub(), &mut bg_pos);
+                            commit_seek(scrub(), &mut repause_at);
                         }
                         extend_hud(last_input, HUD_LINGER_MS);
                     }
@@ -6443,30 +8034,38 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // The `||` is load-bearing rather than stylistic: two `else if` arms with
                     // identical bodies is `clippy::if_same_then_else`, one of the three named
                     // lints `make lint` runs, and warnings are denied.
-                    if playurl || crate::dev::flag("h265") {
+                    let requested = if playurl || crate::dev::flag("h265") {
                         // Leave the URL empty so start_bufferfeed reads the trigger — the H265
                         // probe feeds the local /tmp/sample.h265 through the H265 Load payload,
                         // and playurl feeds the URL its own spec names. Nothing is mounted and
                         // nothing is fetched on either path.
                         crate::route::clear_url();
+                        true
                     } else {
                         let pidx = crate::dev::read("playidx")
                             .and_then(|s| s.parse::<c_int>().ok())
                             .unwrap_or(0);
                         if let Some(pmm) = crate::ui::home::movie_at(pidx / COLS, pidx % COLS) {
-                            crate::route::request_play_movie(pmm);
-                            crate::metadata::load_detail_now(pmm.sid, &pmm.rk);
+                            let requested = crate::route::request_play_movie(pmm);
+                            if requested {
+                                crate::metadata::load_detail_now(pmm.sid, &pmm.rk);
+                            }
+                            requested
+                        } else {
+                            false
                         }
+                    };
+                    if requested {
+                        start_playback(
+                            mt,
+                            0,
+                            origin_here(route),
+                            HUD_HEADLESS_MS,
+                            &mut route,
+                            &mut play_from,
+                            &mut hud.nav,
+                        );
                     }
-                    start_playback(
-                        mt,
-                        0,
-                        origin_here(route),
-                        HUD_HEADLESS_MS,
-                        &mut route,
-                        &mut play_from,
-                        &mut hud.nav,
-                    );
                 }
             }
             if !grid_tried && now.wrapping_sub(t0) > 400 {
@@ -6583,9 +8182,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     if !rk.is_empty() {
                         // in-catalog rk keeps the catalog backdrop; an off-catalog rk still opens the
                         // page (open_rk falls back to the item's own art) so tests can target ANY rk.
-                        // a dev trigger names a bare rk, so it means the server this headless
-                        // boot signed in to — the only one it has
-                        let sid = crate::plex::current_server();
+                        // A bare trigger keeps its original current-server meaning.  `tv-session
+                        // --server N` supplies the other half of the item identity explicitly for
+                        // a multi-server boot; an invalid/missing slot fails closed here rather
+                        // than opening the same numeric rk on another PMS.
+                        let sid = match direct_trigger_server() {
+                            Ok(sid) => sid,
+                            Err(e) => {
+                                log(&format!("plxnative-detail: refused: {e}"));
+                                continue;
+                            }
+                        };
                         let idx = crate::pms::index_of_rk(sid, rk);
                         // BLOCKING both ways: the sub-triggers below replay move_focus/on_ok in
                         // THIS frame, and they walk sections() — which is hero-only until the
@@ -6595,6 +8202,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         } else {
                             crate::ui::detail::open_rk_now(sid, rk);
                         }
+                        log(&format!(
+                            "plxnative-detail: rk={rk} server={} start",
+                            sid.raw()
+                        ));
                         push_detail(&mut trail, &mut route, sid, rk);
                         // dev: /tmp/plxnative-detailsec=N presses DOWN N times (headless episode/row
                         // capture). One press is one section EXCEPT inside a 2D block, where the first
@@ -6664,9 +8275,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         // next statement, and this block sits behind a one-shot `play_tried`
                         // latch, so a deferred landing would have nothing left to consume it —
                         // every case in tests/manifest.json drives through here.
-                        crate::metadata::load_detail_now(crate::plex::current_server(), rk); // fetch ANY rk (movie/show/episode)
-                                                                                             // a movie/episode leaf carries its own part+codecs; a show has an
-                                                                                             // empty part, so fall back to its first episode.
+                        let sid = match direct_trigger_server() {
+                            Ok(sid) => sid,
+                            Err(e) => {
+                                log(&format!("plxnative-play: refused: {e}"));
+                                continue;
+                            }
+                        };
+                        crate::metadata::load_detail_now(sid, rk); // fetch ANY rk (movie/show/episode)
+                                                                   // a movie/episode leaf carries its own part+codecs; a show has an
+                                                                   // empty part, so fall back to its first episode.
                         let leaf = crate::metadata::current().map(|d| {
                             if !d.part.is_empty() {
                                 (
@@ -6699,31 +8317,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         });
                         if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
                             if !part.is_empty() {
-                                log(&format!("plxnative-play: rk={rk} start"));
-                                // the dev `play` trigger names a rk on whatever server is current,
-                                // which is what `item_sid`'s fallback resolves to — stated through
-                                // it rather than by calling `surface_sid` directly, so this reads as
-                                // the one deliberate surface-relative play rather than another site
-                                // that forgot the item's own server.
-                                crate::route::request_play(
-                                    crate::route::item_sid(crate::plex::ServerId::UNSET),
-                                    rk,
-                                    &part,
-                                    &vc,
-                                    &ac,
-                                    &title,
-                                    "",
-                                );
-                                let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
-                                start_playback(
-                                    mt,
-                                    resume,
-                                    origin_here(route),
-                                    HUD_HEADLESS_MS,
-                                    &mut route,
-                                    &mut play_from,
-                                    &mut hud.nav,
-                                );
+                                log(&format!(
+                                    "plxnative-play: rk={rk} server={} start",
+                                    sid.raw()
+                                ));
+                                if crate::route::request_play(sid, rk, &part, &vc, &ac, &title, "")
+                                {
+                                    let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
+                                    start_playback(
+                                        mt,
+                                        resume,
+                                        origin_here(route),
+                                        HUD_HEADLESS_MS,
+                                        &mut route,
+                                        &mut play_from,
+                                        &mut hud.nav,
+                                    );
+                                }
                             }
                         }
                     }
@@ -6784,7 +8394,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             if !seek_script.is_empty()
                 && matches!(route, Route::Player { .. })
-                && now.wrapping_sub(seek_script_at) >= seek_gap_ms
+                && script_step_due(now, seek_script_at, seek_gap_ms)
             {
                 let step = seek_script.remove(0);
                 seek_script_at = now;
@@ -6835,7 +8445,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
             if !quality_script.is_empty()
                 && matches!(route, Route::Player { .. })
-                && now.wrapping_sub(quality_script_at) >= quality_gap_ms
+                && script_step_due(now, quality_script_at, quality_gap_ms)
             {
                 let q = quality_script.remove(0);
                 quality_script_at = now;
@@ -6849,13 +8459,34 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 ));
                 crate::route::set_quality(q);
             }
-            // dev: /tmp/plxnative-autopause pauses once (headless paused-HUD capture)
+            // dev: /tmp/plxnative-autopause pauses once (headless paused-HUD capture), or carries
+            // `delay=<ms>,hold=<ms>` for a deterministic Pause -> Resume playback transaction.
             if !pause_tried && matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 6000
             {
                 pause_tried = true;
-                if crate::dev::flag("autopause") {
-                    set_paused(true);
-                    set_hud(now + HUD_HEADLESS_MS);
+                if let Some(script) = crate::dev::pause_script() {
+                    pause_script = Some((now.wrapping_add(script.delay_ms), script.hold_ms));
+                }
+            }
+            if let Some((pause_at, hold_ms)) = pause_script {
+                if matches!(route, Route::Player { .. }) && script_step_due(now, pause_at, 0) {
+                    if set_transport_paused(mt, true) {
+                        log(&format!(
+                            "autopause: Pause accepted hold={}ms",
+                            hold_ms.map_or_else(|| "forever".to_string(), |ms| ms.to_string()),
+                        ));
+                        pause_script = None;
+                        pause_resume_at = hold_ms.map(|hold| now.wrapping_add(hold));
+                        set_hud(now + HUD_HEADLESS_MS);
+                    }
+                }
+            }
+            if let Some(resume_at) = pause_resume_at {
+                if matches!(route, Route::Player { .. }) && script_step_due(now, resume_at, 0) {
+                    if set_transport_paused(mt, false) {
+                        log("autopause: Resume accepted");
+                        pause_resume_at = None;
+                    }
                 }
             }
             // dev: /tmp/plxnative-menu=<tab> opens the in-player track menu once (headless capture)
@@ -6952,6 +8583,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if is_started() {
                 crate::player::pump(mt, now);
             }
+            let _ = poll_foreground_load(
+                &mut foreground,
+                &mut PlayerForegroundActuator {
+                    mt,
+                    repause_at: &mut repause_at,
+                },
+            );
             // **Unconditional, and NOT inside the `is_started` block above.** `player::state()`
             // derives two of its answers outside the pump entirely — `Resolving` while a plan is in
             // flight, and `Error` for a `/decision` refusal, which happens before an engine exists —
@@ -7102,7 +8740,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 scrubber.t = now;
                 // lost-keyup safety: commit if the 0x101 repeats stop without a keyup
                 if now.wrapping_sub(scrubber.alive) > SCRUB_LOST_MS {
-                    commit_seek(scrub(), &mut bg_pos);
+                    commit_seek(scrub(), &mut repause_at);
                     scrubber.disengage();
                 }
             }
@@ -7110,7 +8748,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             if scrubber.commit_at != 0 && now.wrapping_sub(scrubber.commit_at) < 0x8000_0000 {
                 if scrub() >= 0 {
                     log(&format!("scrub: tap commit {}s", scrub() / 1_000_000_000));
-                    commit_seek(scrub(), &mut bg_pos);
+                    commit_seek(scrub(), &mut repause_at);
                 } else {
                     set_scrub(-1);
                 }
@@ -7222,14 +8860,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // (a paused scrub must briefly Play to decode the frame; buffer-feed has no preroll).
             if resume_pend()
                 && matches!(route, Route::Player { .. })
-                && !paused()
+                && crate::player::seek_preroll_active()
                 && seek_pending() < 0
                 && frames() >= 1
-                && playpos() + 15 * 1_000_000_000 >= bg_pos
+                && playpos() + 15 * 1_000_000_000 >= repause_at
             {
-                set_paused(true);
-                crate::player::pause(mt);
-                set_resume_pend(false);
+                crate::player::finish_paused_seek(mt);
             }
 
             let dt = {
@@ -8042,33 +9678,50 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             };
             // Async play resolve: install the worker's plan and start the engine. Route-
             // unconditional — a landing must never depend on which screen is mounted.
-            if crate::route::pump_play() {
-                crate::ui::idle::invalidate();
-                let r = PENDING_RESUME_NS.swap(0, Relaxed);
-                if r > 0 {
-                    crate::player::resume_at(r);
-                }
-                // A live engine with the route anywhere but Player is unrecoverable BY THE USER —
-                // every transport key and the EOS teardown are route-gated — so repair the
-                // invariant here rather than trust that no path can violate it. The one that
-                // could is cancelled above; this is the backstop, and it is the cheaper half.
-                if crate::player::start_bufferfeed(mt) && !matches!(route, Route::Player { .. }) {
-                    log("pump_play: engine started off-route → restoring Route::Player");
-                    // The page is being taken off screen by a LANDING, not by a navigation, so no
-                    // transition runs and nothing else would spend its teardown. `forward_leave`
-                    // and not `leave_of`: the page stays on the trail if it is a trail page, and
-                    // this repair must not blank the detail page the player will exit back to.
-                    // What it does cover is Search, where the television's keyboard would
-                    // otherwise be left up over playback (`textinput`'s trap 3: once the user
-                    // closes it themselves, the field can never be typed into again this session).
-                    if let Some(f) = forward_leave(route) {
-                        f();
+            land_play_then_observe(
+                || {
+                    if let Some(r) = crate::route::pump_play() {
+                        crate::ui::idle::invalidate();
+                        let resume_prepared = r <= 0
+                            || matches!(
+                                crate::player::resume_at(r),
+                                crate::player::ResumeOutcome::Prepared
+                            );
+                        if !resume_prepared {
+                            if let Some(transaction) = crate::route::pending_route_start() {
+                                let _ = crate::route::reject_route_start_preparation(transaction);
+                            }
+                        }
+                        // A live engine with the route anywhere but Player is unrecoverable BY THE USER —
+                        // every transport key and the EOS teardown are route-gated — so repair the
+                        // invariant here rather than trust that no path can violate it. The one that
+                        // could is cancelled above; this is the backstop, and it is the cheaper half.
+                        if resume_prepared
+                            && crate::player::start_bufferfeed(mt)
+                            && !matches!(route, Route::Player { .. })
+                        {
+                            log("pump_play: engine started off-route → restoring Route::Player");
+                            // The page is being taken off screen by a LANDING, not by a navigation, so no
+                            // transition runs and nothing else would spend its teardown. `forward_leave`
+                            // and not `leave_of`: the page stays on the trail if it is a trail page, and
+                            // this repair must not blank the detail page the player will exit back to.
+                            // What it does cover is Search, where the television's keyboard would
+                            // otherwise be left up over playback (`textinput`'s trap 3: once the user
+                            // closes it themselves, the field can never be typed into again this session).
+                            if let Some(f) = forward_leave(route) {
+                                f();
+                            }
+                            route = Route::Player {
+                                overlay: Overlay::None,
+                            };
+                        }
                     }
-                    route = Route::Player {
-                        overlay: Overlay::None,
-                    };
-                }
-            }
+                },
+                // `pump_play` can install a refused `/decision` after the earlier report
+                // observation but before this frame draws the Error screen. Observe again at that
+                // exact publication boundary; latches make a healthy/no-change frame idempotent.
+                crate::player::report::tick,
+            );
             // Async detail load: install the worker's item into CURRENT. Route-unconditional for
             // the same reason as pump_play — play_item_now requests a detail from Home and flips
             // straight to the player, so a Detail-gated pump would never land it.
@@ -8214,13 +9867,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // transport, so it is never dimmed by the scrim; BEFORE the overlay panels
                             // below, so an open Info card / Chapters strip still covers it.
                             crate::ui::player_hud::draw_readout(busy, now);
-                            // …and the panels are gated on the SAME failure the transport is, from the
-                            // one resolved `busy`: `Player Screen.dc.html` sets `infoDisplay` and
-                            // `panelDisplay` to none on the failed variant. A panel open when the
-                            // failure landed (`busy_surface` resolves Error to Failed over a held frame
-                            // too) would otherwise draw over the read-out — a card of stale facts about
-                            // a stream that never started. The key/pointer arms refuse the same state,
-                            // so this can never hide something the user can still drive.
+                            // Stale content panels are gated on the SAME failure as the transport.
+                            // More is the deliberate exception: the failed read-out opens that shared
+                            // quality picker as its recovery path, so it must remain visible and
+                            // drivable over the black failure ground.
                             let panels = !crate::ui::player_hud::transport_hidden();
                             if panels
                                 && matches!(
@@ -8252,14 +9902,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             {
                                 crate::ui::chapters_panel::draw();
                             }
-                            if panels
-                                && matches!(
-                                    route,
-                                    Route::Player {
-                                        overlay: Overlay::More
-                                    }
-                                )
-                            {
+                            if matches!(
+                                route,
+                                Route::Player {
+                                    overlay: Overlay::More
+                                }
+                            ) {
                                 crate::ui::more_menu::draw();
                             }
                             // LAST, over everything including the centred "Buffering…" read-out whose
@@ -8824,6 +10472,28 @@ mod route_tests {
     //! television — that is a device check (`tv-session`, the keyboard up over Home).
     use super::*;
 
+    #[test]
+    fn an_explicit_direct_screen_server_never_falls_back_to_current() {
+        let current = crate::plex::ServerId::from_raw(0);
+        let secondary = crate::plex::ServerId::from_raw(1);
+        assert_eq!(
+            resolve_direct_server(None, current, |_| false),
+            Ok(current),
+            "an absent selector preserves the historical current-server contract"
+        );
+        assert_eq!(
+            resolve_direct_server(Some(Ok(1)), current, |sid| sid == secondary),
+            Ok(secondary)
+        );
+        let missing = resolve_direct_server(Some(Ok(2)), current, |sid| sid == secondary)
+            .expect_err("an explicit missing slot must not become current");
+        assert!(missing.contains("slot 2"), "{missing}");
+        assert_eq!(
+            resolve_direct_server(Some(Err("bad selector".into())), current, |_| true),
+            Err("bad selector".into())
+        );
+    }
+
     /// A credentials handoff can arrive at Home through the profile picker, bypassing both the
     /// ordinary Home boot arm and the onboarding exit. A policy bump must still run the consent
     /// arrival gate on that path before Home is exposed.
@@ -9045,6 +10715,85 @@ mod route_tests {
                 "a page the trail holds must survive a forward navigation off it"
             );
         }
+    }
+}
+
+/// Is the next step of a dev script (`plxnative-autoseek`, `plxnative-qualityswitch`) due?
+///
+/// `at` is the origin the gap is measured from. Both scripts fire their first step by backing the
+/// origin off by one gap; the seek script additionally pushes it out by `delay=<ms>`.
+///
+/// **The difference is read as SIGNED, and that is the whole function.** `at` is deliberately set
+/// into the FUTURE when a delay is armed (`now - gap + delay`), so `now - at` is negative until
+/// the delay elapses. Compared as `u32` that negative value wraps to about 4.29 billion, clears
+/// any gap, and fires the step immediately — the exact inverse of what `delay=` asks for. Casting
+/// the difference to `i32` reads it as the small negative number it is. Safe for any tick spacing
+/// under ~24 days, and it keeps working across the 2^32 ms tick wrap because the SUBTRACTION still
+/// wraps; only its interpretation changes.
+fn script_step_due(now: u32, at: u32, gap_ms: u32) -> bool {
+    (now.wrapping_sub(at) as i32) >= gap_ms as i32
+}
+
+#[cfg(test)]
+mod script_schedule_tests {
+    use super::script_step_due;
+
+    /// **`delay=<ms>` must actually delay.** `plxnative-autoseek` arms the first step with
+    /// `at = now - gap + delay`, so at the moment of arming `now - at` is `gap - delay`. That is
+    /// NEGATIVE whenever the delay exceeds the gap, and in `u32` it wraps to about 4.29 billion —
+    /// which clears any gap, so the step fires AT ONCE instead of after the delay.
+    ///
+    /// It shipped that way, and it silently invalidated every case built on it: a manifest seek
+    /// declaring `delay_ms: 95000` (gap 300) ran before the quality switch it was written to
+    /// follow, while `op_seek_transcode` still passed because a quality switch emits the same
+    /// `reload_transcode: fresh Load at offset` line a seek does. `auto_seek_after_switch` has
+    /// carried it since it was written and never showed it, because that case skips without a
+    /// conditioned link.
+    #[test]
+    fn a_delay_longer_than_the_gap_does_not_fire_at_once() {
+        let (now, gap, delay) = (1_000_000u32, 300u32, 95_000u32);
+        let at = now.wrapping_sub(gap).wrapping_add(delay);
+        assert!(
+            !script_step_due(now, at, gap),
+            "the delayed step fired immediately"
+        );
+        assert!(
+            !script_step_due(now.wrapping_add(delay - 1), at, gap),
+            "fired one ms early"
+        );
+        assert!(
+            script_step_due(now.wrapping_add(delay), at, gap),
+            "never fired at the delay"
+        );
+    }
+
+    /// The ordinary arming — no delay — still fires the first step immediately, and the next one
+    /// exactly one gap later. This is what every existing script depends on.
+    #[test]
+    fn an_undelayed_script_still_fires_at_once_then_one_gap_apart() {
+        let (now, gap) = (1_000_000u32, 300u32);
+        let at = now.wrapping_sub(gap);
+        assert!(
+            script_step_due(now, at, gap),
+            "the first step must fire on arming"
+        );
+        assert!(
+            !script_step_due(now.wrapping_add(gap - 1), now, gap),
+            "second step fired early"
+        );
+        assert!(
+            script_step_due(now.wrapping_add(gap), now, gap),
+            "second step never fired"
+        );
+    }
+
+    /// SDL ticks wrap at 2^32 ms (~49 days). The predicate must survive the origin sitting just
+    /// below the wrap and `now` just above it.
+    #[test]
+    fn the_predicate_survives_the_tick_wrap() {
+        let (gap, at) = (300u32, u32::MAX - 100);
+        assert!(!script_step_due(at.wrapping_add(299), at, gap));
+        assert!(script_step_due(at.wrapping_add(300), at, gap));
     }
 }
 

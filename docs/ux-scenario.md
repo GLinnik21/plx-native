@@ -330,19 +330,18 @@ The **profile chip** at the top left. Focusing it expands the chip to show the c
 OK opens a popover headed *ACCOUNT*. Signed in, it offers switching profile and **signing out**
 (checklist #21); signed out, it offers **Sign in**, which is the figure above.
 
-Two more rows are offered in **every** state, signed in or out, and that is the point of them — a
-person who cannot get past the sign-in screen has still received a copy of this software, and both
-of these are about the software rather than about an account. *(The figure above predates them.)*
+One more row, **Settings**, is offered in **every** state, signed in or out. A person who cannot get
+past sign-in has still received a copy of this software, so privacy and legal information cannot be
+conditional on an account. *(The figure above predates this row.)* Settings opens a full-screen
+modal: signed-in users also get **Home screen**, while everyone gets **Privacy & data**, **Legal
+notices** and **About PlxNative**.
 
-- **Diagnostics** — an On/Off switch for the read-out described at §5.11; the same switch the
-  player's *More* popover labels *Stats for nerds*. Off the player it lists what the **set** is
-  rather than what the pipeline is doing, which is the report for the failure that never reaches a
-  player at all: "it installs, it opens, it finds nothing."
-- **Legal** — a submenu of four notices readable on the television: **Privacy**, **Open source
-  licences**, **Source code** and **Trademarks**. LG's Privacy Guideline requires the privacy policy
-  to be readable *in the app* rather than only on the store listing, the LGPL's §6 binds once the
-  program shows its own copyright at runtime, and Plex's trademark attribution binds because "Plex"
-  appears in this interface. UP/DOWN scrolls a notice; BACK leaves it.
+- **Privacy & data** holds the two saved reporting choices, the scrollable exact-schema preview,
+  the privacy policy, and Delete all local data. Changed switches commit through Done; BACK
+  discards the draft. Playback diagnostics remain a playback action rather than a global setting.
+- **Legal notices** contains six readable documents: **Privacy policy**, **Open-source licences**,
+  **FFmpeg & source offer**, **PlxNative source code**, **Trademarks & non-affiliation**, and
+  **Privacy & security contact**. UP/DOWN scrolls a notice; BACK leaves it.
 
 ### 5.8 Detail
 
@@ -395,11 +394,10 @@ a bug report, which is the state it is usually seen in.
 because there is no nyx and no codec table to read, so a picture of that state would present the
 panel's failure mode as its normal one. This figure is owed from a television.)*
 
-A panel the viewer turns on, photographs and turns off — the app's answer to "it does not work on my
-set" from hardware nobody here owns. Two ways in, one switch:
-
-- during playback, **More → Stats for nerds** (§6.3);
-- anywhere else, the **profile chip → Diagnostics** (§5.7).
+A panel the viewer turns on, photographs and turns off — the app's answer to "playback does not work
+on my set" from hardware nobody here owns. Its user-facing entry point is during playback,
+**More → Stats for nerds** (§6.3). Automated development captures may arm it directly on another
+route, but the profile menu does not expose a playback instrument as a global setting.
 
 It takes **no buttons at all**: every key keeps working underneath it, which is what lets you watch
 the numbers move as you press play, and it turns off by picking the same row again.
@@ -408,8 +406,8 @@ What it shows depends on whether anything has been asked to play. **During or af
 is the pipeline: the source and the server, the codec chain from your file through your server to
 what was declared to the decoder, the video plane, how far Load got, whether the demuxer produced
 anything, what was fed and whether it was accepted, HTTP status, and the adaptive controller's own
-inputs — with a strip chart of the two feed lanes, because a lane that stops is a shape rather than
-a number. **Before anything has played** it is the set instead: model and board, the firmware
+inputs — with three sweep plots for budget versus demand, network activity, and buffer health.
+**Before anything has played** it is the set instead: model and board, the firmware
 codename, what the decoder claims *and whether that table was actually readable*, and whether the
 server ever answered. Those are the facts a report needs when the app opens and finds nothing, which
 is the failure that never reaches a player at all.

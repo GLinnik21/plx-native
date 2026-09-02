@@ -131,6 +131,7 @@ fn run(url: String, secret: String, session: String, pin: String) {
         connect_s: 8,
         // The receiver holds an idle poll for 15 seconds. Leave handshake and response headroom.
         total_s: 25,
+        total_ms: 0,
         low_speed_bps: 0,
         low_speed_s: 0,
     };

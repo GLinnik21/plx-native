@@ -1,8 +1,10 @@
 //! player — the buffer-feed video engine (was src/playback.c). THREADING: everything
 //! here except sf_on_event/acb_on_event runs on the SDL main thread. Those two are
 //! #[no_mangle] and run on the StarfishMediaAPIs library thread; they touch ONLY
-//! `SHARED`. All other cross-thread state is in shared.rs (atomics + Mutex); the
-//! Engine (engine.rs) is main-thread-confined. Design: docs/engine-port-design.md.
+//! `SHARED`. Player-engine callback/transport state is synchronized in `shared.rs`; route
+//! ownership and route-changing intents have their separate synchronized authority in
+//! `route::PLAYER_CONTROL`. The Engine (engine.rs) is main-thread-confined. Design:
+//! docs/engine-port-design.md.
 //!
 //! "Runs on the SDL main thread" is a **compile error to violate** for the two things where it
 //! matters — the ACB/Starfish seam and the `ENGINE` slot. Both take a [`MainThread`] token,
@@ -19,10 +21,16 @@ mod shared;
 pub(crate) mod threads;
 
 use crate::task::MainThread;
+pub(crate) use shared::HlsAutomaticTransition;
+pub(crate) use shared::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub(crate) use shared::SubRect;
 pub(crate) use shared::TrackNames;
-use shared::{Shared, SubBitmap, SubCue, Transport};
+pub(crate) use shared::UserPauseCursor;
+use shared::{
+    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Shared, SubBitmap, SubCue,
+    Transport,
+};
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
@@ -81,7 +89,7 @@ pub(crate) fn seed_dev_track_names() {
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_long};
+use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
 
@@ -102,6 +110,27 @@ pub(crate) const ABR_ACTION_REJECT_DOWN: u8 = 6;
 pub(crate) const ABR_ACTION_REJECT_UP: u8 = 7;
 pub(crate) const ABR_ACTION_PROBE_ORIGINAL: u8 = 8;
 pub(crate) const ABR_ACTION_RECOVER_ORIGINAL: u8 = 9;
+pub(crate) const ABR_ACTION_ORIGINAL_PROBE_FAILED: u8 = 10;
+pub(crate) const ABR_ACTION_PRIME_REFRESH: u8 = 11;
+pub(crate) const ABR_ACTION_COMMIT_REFRESH: u8 = 12;
+pub(crate) const ABR_ACTION_REJECT_REFRESH: u8 = 13;
+/// Typed, playback-scoped reason the last Original source experiment/open failed. It deliberately
+/// survives the engine reload that restores HLS, otherwise the successful rollback erases the
+/// only fact explaining why Original is no longer being attempted.
+pub(crate) const ABR_FAILURE_ORIGINAL_HTTP: u8 = 1;
+pub(crate) const ABR_FAILURE_ORIGINAL_DEADLINE: u8 = 2;
+pub(crate) const ABR_FAILURE_ORIGINAL_TRANSPORT: u8 = 3;
+pub(crate) const ABR_FAILURE_ORIGINAL_NO_BODY: u8 = 4;
+pub(crate) const ABR_FAILURE_ORIGINAL_OPEN: u8 = 5;
+
+pub(crate) fn note_original_failure(kind: u8, http_status: i32) {
+    SHARED.abr_failure_status.store(http_status.max(0), Relaxed);
+    SHARED.abr_failure_kind.store(kind, Relaxed);
+}
+
+pub(crate) fn clear_original_failure() {
+    SHARED.clear_abr_failure();
+}
 /// Why the controller last moved (or declined to) — `crate::abr::HlsReason` as a code, so the
 /// read-out can name the CONSTRAINT that bound rather than only the action it produced. `0` is
 /// "nothing has decided yet", which is a real state at the top of a playback and not a fault.
@@ -111,13 +140,14 @@ pub(crate) const ABR_WHY_UNSAFE_STATE: u8 = 2;
 pub(crate) const ABR_WHY_PRODUCTION: u8 = 3;
 pub(crate) const ABR_WHY_BUFFER: u8 = 4;
 /// The downshift trigger fired and there is no rung below — the ladder floor. Distinct from the
-/// three constraint codes above because it names the ABSENCE of an action rather than the
-/// constraint that chose one: nothing the controller can do will improve this playback.
+/// constraint/telemetry codes above because it names the ABSENCE of an action rather than the
+/// observation that chose one: nothing the controller can do will improve this playback.
 pub(crate) const ABR_WHY_LADDER_FLOOR: u8 = 5;
-/// The starvation horizon fired: at the measured capacity the reserve empties inside the fallback
-/// window. Distinct from [`ABR_WHY_UNSAFE_STATE`] because that one is a rate comparison with no
-/// reserve in it — it is true of a rung that is 1% too dear against a full buffer — while this one
-/// is a DEADLINE and is the code a reader sees on the way to a stall.
+/// The starvation horizon fired: at the measured delivery law the reserve empties inside the
+/// fallback window. Distinct from [`ABR_WHY_UNSAFE_STATE`] because that one is completed-bag
+/// conservation (`sum A > sum D`) with no reserve in the predicate — and `A` includes every
+/// measured delivery cost, not only link transfer — while this one is a DEADLINE and is the code a
+/// reader sees on the way to a stall.
 pub(crate) const ABR_WHY_STARVATION: u8 = 6;
 /// The climb was selected and N11's reject/backoff guard refused it — the evidence supported the
 /// rung and a failed attempt on that same rung had not yet been paid for. Distinct from every code
@@ -135,6 +165,13 @@ pub(crate) const ABR_WHY_AT_BEST: u8 = 10;
 /// The reserve was not knowable on this sample (the audio lane has produced no timestamp since
 /// the open or the seek), so there was nothing to decide against.
 pub(crate) const ABR_WHY_RESERVE_UNKNOWN: u8 = 11;
+/// A fetch hit its runway deadline and the controller rolled back without treating its censored
+/// prefix as a capacity measurement.
+pub(crate) const ABR_WHY_DEADLINE_ROLLBACK: u8 = 12;
+/// The largest request is active but its observed PMS master/raster is smaller than the request
+/// can produce. It is a response state, not `AtBestRung`: a fresh session at the same actuator
+/// remains eligible after stronger completed-service evidence.
+pub(crate) const ABR_WHY_RESPONSE_LIMITED: u8 = 13;
 // Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
 // reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
 // setTimeToDecode returns 0, so feed_stream falls back to the content-info path
@@ -145,10 +182,11 @@ pub(crate) const ABR_WHY_RESERVE_UNKNOWN: u8 = 11;
 // SCOPE: this is a **per-session probe, not a device-capability latch**, and
 // `engine::start_bufferfeed` re-arms it to true for every new session. What `sf_send_segment`
 // reports is whether `sf_pipeline()` could reach the CustomPipeline behind the CURRENT
-// StarfishMediaAPIs object: `SMP_READY()` (constructed by `sf_load`, cleared by `sf_destroy`)
-// plus two non-null shared_ptr hops, `g_smp+0x4c` -> `player+0x04` (src/starfish.c). Every one
-// of those is a property of the live object this session builds and teardown destructs; none of
-// them says anything about what this panel's pipeline can do. `sendSegmentEvent` itself returns
+// StarfishMediaAPIs object: `SMP_READY()` (dispatch admission set after construction, and cleared
+// by destruction or quarantine) plus two non-null shared_ptr hops, `object+0x4c` -> `player+0x04`
+// (src/starfish.c). A cleared ready bit does not prove that object storage is unconstructed: the
+// safety path retains a quarantined object forever. Every one of these tests is a property of the
+// current dispatchable object, not a device capability. `sendSegmentEvent` itself returns
 // void, so a 0 here NEVER means "the segment event was rejected", only "there was nothing to
 // call it on" — a liveness/timing condition by construction.
 // Latching it for the process was therefore a bug with a very long tail: one teardown-window
@@ -165,31 +203,146 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
 pub(crate) use engine::{
-    acb_init, resume_at, start_bufferfeed, stop_bufferfeed, suspend_bufferfeed,
+    acb_init, resume_at, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
+    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome,
 };
-pub(crate) use pump::pump;
+pub(crate) use pump::{pump, recover_failed_foreground_original, ForegroundOriginalRecovery};
 pub(crate) use shared::PlaybackState;
-pub(crate) fn pause(mt: &MainThread) {
-    unsafe {
-        ffi::sf_pause(mt);
+pub(crate) fn pause(mt: &MainThread) -> bool {
+    match SHARED.prepare_hls_user_pause() {
+        Some(HlsUserPause::AlreadyHeld) => {
+            TX.commit_paused(true);
+            acb_mirror_playstate(mt, false);
+            return true;
+        }
+        Some(HlsUserPause::Issue(token)) => {
+            let accepted = unsafe { ffi::sf_pause(mt) } != 0;
+            match SHARED.complete_hls_user_pause(token, accepted) {
+                HlsPauseCompletion::Accepted => {}
+                HlsPauseCompletion::Refused => {
+                    log("player: Starfish refused Pause");
+                    return false;
+                }
+                HlsPauseCompletion::Stale => {
+                    log("player: Pause result lost its clock token");
+                    return false;
+                }
+            }
+        }
+        None => {
+            log("player: Pause deferred by an in-flight clock transition");
+            return false;
+        }
     }
+    // Publish the feed gate at the same accepted actuator boundary. Leaving this to app.rs after
+    // the ACB call let a deadline transaction charge accepted Pause time as active playback.
+    TX.commit_paused(true);
     acb_mirror_playstate(mt, false);
+    true
 } // playback_pause
-pub(crate) fn resume(mt: &MainThread) {
-    unsafe {
-        ffi::sf_play(mt);
+pub(crate) fn resume(mt: &MainThread) -> bool {
+    let queued_stream = engine::engine(mt).is_some_and(|eng| eng.uses_stream_queues());
+    match SHARED.prepare_hls_user_resume(queued_stream) {
+        Some(HlsUserResume::Deferred) => {
+            // Feeding may resume, but an initial/seek/recovery certificate still owns the physical
+            // clock. Its eventual Play also carries the pending ACB Resume.
+            if TX.seek_preroll_active() {
+                TX.finish_seek_preroll();
+            }
+            TX.commit_paused(false);
+            log("player: user Resume accepted; physical Play remains fenced");
+            true
+        }
+        Some(HlsUserResume::Prime) => {
+            // Keep Starfish and ACB physically Paused. Opening TX first lets the two AU lanes fill
+            // together; their ordinary exact prime certificate owns the eventual Play + ACB
+            // Resume. Starting the clock here recreates the pause-to-fill A/V drift race.
+            let Some(eng) = engine::engine(mt) else {
+                log("player: queued Resume lost its Engine before prime could arm");
+                return false;
+            };
+            engine::arm_live_clock_prime(eng);
+            if TX.seek_preroll_active() {
+                TX.finish_seek_preroll();
+            }
+            TX.commit_paused(false);
+            log("player: queued Resume feeding; physical Play awaits balanced prime");
+            true
+        }
+        Some(HlsUserResume::Issue(token)) => {
+            let accepted = unsafe { ffi::sf_play(mt) } != 0;
+            match SHARED.complete_hls_prime_play(token, accepted) {
+                HlsPlayCompletion::Accepted { resume_acb } => {
+                    if TX.seek_preroll_active() {
+                        TX.finish_seek_preroll();
+                    }
+                    TX.commit_paused(false);
+                    if resume_acb {
+                        acb_mirror_playstate(mt, true);
+                    }
+                    true
+                }
+                HlsPlayCompletion::Refused => {
+                    log("player: Starfish refused Play");
+                    false
+                }
+                HlsPlayCompletion::Stale => {
+                    log("player: Resume result lost its clock token");
+                    false
+                }
+            }
+        }
+        None if TX.seek_preroll_active() => {
+            // The viewer cancelled "stay paused" after the seek had already transferred the
+            // physical hold to Initial/Seek (or after its one-frame Play). No native command is
+            // needed here; the prime owns Play if it has not happened yet.
+            TX.finish_seek_preroll();
+            TX.commit_paused(false);
+            true
+        }
+        None => {
+            log("player: Resume has no accepted user hold");
+            false
+        }
     }
-    acb_mirror_playstate(mt, true);
 } // playback_resume
 
+pub(crate) fn seek_preroll_active() -> bool {
+    TX.seek_preroll_active()
+}
+
+/// Re-establish the viewer's Pause after the seek prime has decoded its first landed frame. The
+/// transport intent stayed Paused throughout; only this method closes the temporary feed override.
+pub(crate) fn finish_paused_seek(mt: &MainThread) -> bool {
+    if !TX.seek_preroll_active() {
+        return true;
+    }
+    if !pause(mt) {
+        return false;
+    }
+    TX.finish_seek_preroll();
+    true
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_pause_result_for_test(result: Option<c_int>) {
+    ffi::force_pause_result_for_test(result);
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_play_result_for_test(result: Option<c_int>) {
+    ffi::force_play_result_for_test(result);
+}
+
 /// Kodi parity: mirror the ACB PLAYSTATE on transport pause/resume (the pipeline Pause/Play alone
-/// leaves the app-owned sink's ACB state stale). Only once the plane is bound — firing
-/// setState(PAUSED/PLAYING) before setMediaId/LOADED would corrupt the bind ordering.
-fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
+/// leaves the app-owned sink's ACB state stale). Only once the plane is streaming — `Bound` means
+/// setMediaId/LOADED has happened but setMediaVideoData/window/PLAYING has not, so mirroring a user
+/// Resume there would overtake the rest of the ordered bind transaction.
+pub(super) fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
     if !ACB_OK.load(Relaxed) {
         return;
     }
-    if !engine::engine(mt).is_some_and(|e| e.stage >= shared::Stage::Bound) {
+    if !engine::engine(mt).is_some_and(|e| acb_playstate_ready(e.stage)) {
         return;
     }
     unsafe {
@@ -199,6 +352,10 @@ fn acb_mirror_playstate(mt: &MainThread, playing: bool) {
             ffi::acb_pause(mt);
         }
     }
+}
+
+fn acb_playstate_ready(stage: shared::Stage) -> bool {
+    stage >= shared::Stage::Streaming
 }
 
 // ---- transport accessors app.rs / player_hud.rs call ----
@@ -230,6 +387,8 @@ pub(crate) fn ended() -> bool {
     SHARED.ended.load(Relaxed)
 }
 pub(crate) fn request_seek(ns: i64) {
+    report::note_seek_for(crate::route::playback_trace_generation());
+    crate::route::note_user_seek_intent(ns);
     SHARED.ended.store(false, Relaxed); // seeking back from the end un-ends the stream
     SHARED.seeking.store(true, Relaxed); // HUD: spinner + freeze the playhead until it lands
     SHARED.seek_display_ns.store(ns, Relaxed);
@@ -241,7 +400,7 @@ pub(crate) fn request_seek(ns: i64) {
 /// **The seek was ABANDONED — put the playhead back on reality.**
 ///
 /// [`request_seek`] sets `SHARED.seeking`, and until 2026-08-27 exactly ONE place ever cleared it:
-/// the successful prime→Play in `engine::feed_stream`. Every path that gives UP on a seek
+/// the successful prime→Play in `engine::try_prime`. Every path that gives UP on a seek
 /// therefore leaked the flag — and that flag is what `pump::set_state` reads to publish
 /// `PlaybackState::Seeking`, which means a spinner over the picture, the playhead frozen at
 /// `seek_display_ns`, and `is_playing()` false, **for the rest of the playback**, while the
@@ -258,8 +417,14 @@ pub(crate) fn request_seek(ns: i64) {
 /// HUD reads that as "no seek target" and a stale one would keep the frozen playhead after the
 /// spinner cleared.
 pub(crate) fn abandon_seek() {
+    crate::route::reject_user_seek();
     SHARED.seeking.store(false, Relaxed);
     SHARED.seek_display_ns.store(-1, Relaxed);
+    // A failed seek never got the one-frame preroll it was promised. Preserve the viewer's Paused
+    // intent and close only the feed override; the existing user clock hold remains authoritative.
+    if TX.seek_preroll_active() {
+        TX.finish_seek_preroll();
+    }
 }
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
@@ -288,7 +453,7 @@ pub(crate) fn state() -> shared::PlaybackState {
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    if crate::route::play_refused() {
+    if crate::route::play_refused() || crate::route::play_resolution_failed() {
         return shared::PlaybackState::Error;
     }
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
@@ -325,13 +490,12 @@ pub(crate) fn state() -> shared::PlaybackState {
 /// **Why a playback failed, as a closed set.** Drives the wording below AND the telemetry code, so
 /// the two are one decision.
 ///
-/// The variants are exactly the outcomes `error_shape` can tell apart TODAY. That is deliberate and
-/// it is the whole discipline of this type: a variant nothing can produce is a category that will
-/// read as "never happens" on a dashboard when it really means "the app cannot see it". The list
-/// the plan sketched had five more — a failed `Load`, a video-plane bind that did not take, a
-/// stalled feed, no decoded frames, a dead link — and every one of them arrives here today as
-/// [`Unspecified`](FailureKind::Unspecified), because nothing upstream distinguishes them yet. They
-/// become variants when the code that could name them exists, not before.
+/// Current variants are outcomes `error_shape` can tell apart. One historical wire code,
+/// [`OriginalRollback`](FailureKind::OriginalRollback), remains so old telemetry fixtures and
+/// dashboards retain their meaning after the destructive probe transaction was removed; no live
+/// path emits it now. Runtime source, interrupted-playback and `Load` failures became distinct only
+/// when their worker signals existed. A video-plane bind or stalled feed still reaches
+/// [`Unspecified`](FailureKind::Unspecified) until an equally concrete signal exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailureKind {
     /// `/decision` refused the item outright — the server can neither direct play nor convert it.
@@ -342,6 +506,16 @@ pub(crate) enum FailureKind {
     /// Direct playing, and the stream carries no video track, so the file disagrees with the PMS
     /// metadata that made us choose direct play.
     NoVideoTrack,
+    /// The producer never opened a usable media stream or produced a video access unit.
+    MediaSource,
+    /// The media producer stopped after playback had already begun. The signal does not identify
+    /// whether that happened in the network, parser, allocator or ABR controller, so neither the
+    /// stable code nor the viewer-facing sentence blames a server or connection.
+    PlaybackInterrupted,
+    /// Starfish refused the Load declaration, so no decoder session could start.
+    TvPipeline,
+    /// Historical telemetry only: the retired exclusive Original experiment lost its HLS rollback.
+    OriginalRollback,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -354,6 +528,10 @@ impl FailureKind {
             FailureKind::DecisionRefused => "decision_refused",
             FailureKind::NoVideoTranscodeTarget => "no_video_transcode_target",
             FailureKind::NoVideoTrack => "no_video_track",
+            FailureKind::MediaSource => "media_source",
+            FailureKind::PlaybackInterrupted => "playback_interrupted",
+            FailureKind::TvPipeline => "tv_pipeline",
+            FailureKind::OriginalRollback => "original_rollback",
             FailureKind::Unspecified => "unspecified",
         }
     }
@@ -371,8 +549,8 @@ pub(crate) struct ErrorShape {
     /// through an inner `if`.)
     pub kind: FailureKind,
     pub caption: &'static std::ffi::CStr,
-    /// the diagnostics panel's verdict suffix ("" = no reason known) — includes the
-    /// subscription fact in words, because the panel is plain text
+    /// the diagnostics panel's verdict suffix — always present in `Error`, and includes the
+    /// subscription fact in words because the panel is plain text
     pub panel: &'static str,
     /// the read-out's reason line — sentence case, subscription fact NOT baked in (the
     /// read-out states it as its own line, with the capsule)
@@ -397,11 +575,45 @@ pub(crate) struct ErrorShape {
     /// no Plex Pass — the one case the capsule appears
     pub no_pass: bool,
 }
+
+/// Which runtime boundary ended playback after route resolution succeeded.
+///
+/// This is a small product vocabulary, not a copy of FFmpeg or Starfish return codes. Every
+/// variant is backed by a distinct signal the worker already publishes, so the HUD never parses
+/// log strings or guesses from elapsed time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RuntimeFailure {
+    /// No worker supplied a cause. Say that honestly rather than leaving the reason slot blank.
+    Unknown,
+    /// The producer never opened a usable media stream or produced a video access unit.
+    MediaSource,
+    /// The media producer stopped after it had supplied at least one access unit. The worker's
+    /// flag deliberately says nothing narrower about why it stopped.
+    PlaybackInterrupted,
+    /// Starfish refused the Load declaration, so no decoder session could start.
+    TvPipeline,
+}
+
+/// PURE: turn the three terminal worker signals into one cause. More specific downstream evidence
+/// wins over the generic producer flag when concurrent teardown makes more than one bit visible.
+fn runtime_failure(demux_failed: bool, io_failed: bool, load_failed: bool) -> RuntimeFailure {
+    if load_failed {
+        RuntimeFailure::TvPipeline
+    } else if io_failed {
+        RuntimeFailure::PlaybackInterrupted
+    } else if demux_failed {
+        RuntimeFailure::MediaSource
+    } else {
+        RuntimeFailure::Unknown
+    }
+}
+
 fn error_shape(
     no_video: bool,
     transcoding: bool,
     sub: crate::plex::serverinfo::Subscription,
     verdict: Option<&'static str>,
+    runtime: RuntimeFailure,
 ) -> ErrorShape {
     let no_pass = sub == crate::plex::serverinfo::Subscription::No;
     // FIRST, because it is the earliest thing that can fail and the most certain thing we can say:
@@ -427,8 +639,8 @@ fn error_shape(
             no_pass: false,
         };
     }
-    match (no_video, transcoding) {
-        (true, true) => ErrorShape {
+    if no_video && transcoding {
+        return ErrorShape {
             kind: FailureKind::NoVideoTranscodeTarget,
             caption: c"Playback failed — server sent audio only",
             panel: if no_pass {
@@ -439,20 +651,48 @@ fn error_shape(
             readout: "The server sent audio only — it found no usable video transcode target",
             detail: std::borrow::Cow::Borrowed(""),
             no_pass,
-        },
-        (true, false) => ErrorShape {
+        };
+    }
+    if no_video {
+        return ErrorShape {
             kind: FailureKind::NoVideoTrack,
             caption: c"Playback failed — no video in the file",
             panel: "the stream carries no video track",
             readout: "This file has no video track",
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
+        };
+    }
+    match runtime {
+        RuntimeFailure::MediaSource => ErrorShape {
+            kind: FailureKind::MediaSource,
+            caption: c"Playback failed — the media stream could not be opened",
+            panel: "the media stream could not be opened or read",
+            readout: "The media stream could not be opened",
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
         },
-        _ => ErrorShape {
+        RuntimeFailure::PlaybackInterrupted => ErrorShape {
+            kind: FailureKind::PlaybackInterrupted,
+            caption: c"Playback failed — playback stopped after starting",
+            panel: "the media producer stopped before playback completed",
+            readout: "Playback stopped after it had started",
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
+        RuntimeFailure::TvPipeline => ErrorShape {
+            kind: FailureKind::TvPipeline,
+            caption: c"Playback failed — the TV rejected the stream",
+            panel: "the television media pipeline rejected the stream",
+            readout: "This TV could not start the video stream",
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
+        RuntimeFailure::Unknown => ErrorShape {
             kind: FailureKind::Unspecified,
             caption: c"Playback failed",
-            panel: "",
-            readout: "",
+            panel: "the player stopped without a reported cause",
+            readout: "The player stopped before it could identify the problem",
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -483,11 +723,22 @@ pub(crate) fn error_now() -> ErrorShape {
     if let Some(arm) = failtest_arm() {
         return arm;
     }
+    let demux_failed = SHARED
+        .demux_failed
+        .load(std::sync::atomic::Ordering::Acquire);
+    let demux_io_failed = SHARED
+        .demux_io_failed
+        .load(std::sync::atomic::Ordering::Acquire);
     error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(),
         playing_subscription(),
         crate::route::play_verdict(),
+        runtime_failure(
+            demux_failed,
+            demux_io_failed,
+            SHARED.load_failed.load(Relaxed),
+        ),
     )
 }
 
@@ -507,7 +758,8 @@ const FAILTEST_VERDICT: &str =
 ///
 /// Arms: `verdict` (the pre-flight refusal, with the server's own sentence quoted), `audio` (the
 /// audio-only transcode — pair with `/tmp/plxnative-nopass` for the PLEX PASS capsule), `novideo`
-/// (an audio-only file that direct-played), `none` (a failure with no reason known). It feeds
+/// (an audio-only file that direct-played), `stream` (no usable media), `connection` (an interrupted
+/// transfer), `tv` (the native pipeline refused Load), and `none` (no cause was reported). It feeds
 /// [`error_shape`] rather than short-circuiting it, so what is photographed is the real resolver.
 ///
 /// `player_hud::busy` has the other half — the state itself — for the same reason.
@@ -521,17 +773,26 @@ fn failtest_arm() -> Option<ErrorShape> {
     let arm = crate::dev::read("failtest")?;
     let sub = playing_subscription();
     Some(match arm.trim() {
-        "audio" => error_shape(true, true, sub, None),
-        "novideo" => error_shape(true, false, sub, None),
-        "none" => error_shape(false, false, sub, None),
-        _ => error_shape(false, true, sub, Some(FAILTEST_VERDICT)),
+        "audio" => error_shape(true, true, sub, None, RuntimeFailure::Unknown),
+        "novideo" => error_shape(true, false, sub, None, RuntimeFailure::Unknown),
+        "stream" => error_shape(false, false, sub, None, RuntimeFailure::MediaSource),
+        "connection" => error_shape(false, false, sub, None, RuntimeFailure::PlaybackInterrupted),
+        "tv" => error_shape(false, false, sub, None, RuntimeFailure::TvPipeline),
+        "none" => error_shape(false, false, sub, None, RuntimeFailure::Unknown),
+        _ => error_shape(
+            false,
+            true,
+            sub,
+            Some(FAILTEST_VERDICT),
+            RuntimeFailure::Unknown,
+        ),
     })
 }
 /// HUD caption for `PlaybackState::Error` (main thread).
 pub(crate) fn error_caption() -> &'static std::ffi::CStr {
     error_now().caption
 }
-/// The same answer for the diagnostics panel's verdict line ("" = no reason known).
+/// The same non-empty answer for the diagnostics panel's verdict line.
 pub(crate) fn error_reason() -> &'static str {
     error_now().panel
 }
@@ -608,19 +869,33 @@ pub(crate) struct Diag {
     pub cb_err_at: u32,
     pub http_status: i32,
     pub net_rx: i64,
+    /// Playable content-time reserve derived from the elementary-stream tails and the displayed
+    /// movie position. Unlike `abr_buffer_ms`, this is transport/controller independent and is
+    /// therefore present for Manual Original and fixed qualities too. `None` means one required
+    /// lane has not published a post-open/post-seek timestamp yet.
+    pub playable_buffer_ms: Option<i64>,
     pub load_at: u32,
     pub frame_at: u32,
     pub video_w: i32,
     pub video_h: i32,
+    pub video_fps_milli: i64,
     pub pos_ns: i64,
     pub dur_ns: i64,
+    /// Whole-file transport requirement from the route resolve. Unlike the ABR fields this also
+    /// exists for a manual Original session, so the diagnostics sweep can keep the same demand
+    /// lane in every delivery mode.
+    pub source_kbps: i64,
     pub abr_mode: u8,
     pub abr_kbps: i64,
+    pub abr_declared_kbps: i64,
+    pub abr_media_kbps: i64,
     pub abr_net_kbps: i64,
     pub abr_buffer_ms: i64,
     pub abr_ratio_pm: i64,
     pub abr_action: u8,
     pub abr_target_kbps: i64,
+    pub abr_failure_kind: u8,
+    pub abr_failure_status: i32,
     /// Wall milliseconds an unsafe Original deficit has held (N13). Was a COUNT of
     /// 750 ms active-read windows — a clock that stops under backpressure, so the read-out it
     /// fed said "3 windows" for durations an order of magnitude apart.
@@ -634,6 +909,37 @@ pub(crate) struct Diag {
     pub abr_pred_pm: i64,
     pub abr_risk: i64,
     pub abr_why: u8,
+}
+
+/// One physical reserve definition for every delivery mode. Direct-file tails already use movie
+/// time and have `display_base_ns == 0`; segmented HLS and offset progressive transcodes publish a
+/// zero-based tail and carry the movie offset in `display_base_ns`. Adding that base universally
+/// makes all three shapes land in the same timeline without a route-specific heuristic.
+fn playable_buffer_ms(
+    video_tail_ns: i64,
+    audio_tail_ns: i64,
+    audio_expected: bool,
+    display_base_ns: i64,
+    playpos_ns: i64,
+) -> Option<i64> {
+    if video_tail_ns < 0 {
+        return None;
+    }
+    let tail_ns = if audio_expected {
+        if audio_tail_ns < 0 {
+            return None;
+        }
+        video_tail_ns.min(audio_tail_ns)
+    } else {
+        video_tail_ns
+    };
+    Some(
+        tail_ns
+            .saturating_add(display_base_ns.max(0))
+            .saturating_sub(playpos_ns.max(0))
+            .max(0)
+            / 1_000_000,
+    )
 }
 
 impl Diag {
@@ -696,6 +1002,15 @@ pub(crate) fn diag() -> Diag {
     let window_id = unsafe { std::ffi::CStr::from_ptr(ffi::vp_window_id()) }
         .to_string_lossy()
         .into_owned();
+    let load_a = SHARED.dg_load_a.load(Relaxed);
+    let playable_buffer_ms = playable_buffer_ms(
+        SHARED.hls_video_tail_ns.load(Relaxed),
+        SHARED.hls_audio_tail_ns.load(Relaxed),
+        load_a != 0,
+        SHARED.disp_base.load(Relaxed),
+        SHARED.playpos_ns.load(Relaxed),
+    );
+    let (video_w, video_h) = SHARED.video_raster();
     Diag {
         vp_mode: ffi::vp_mode(),
         window_id,
@@ -717,25 +1032,32 @@ pub(crate) fn diag() -> Diag {
         fed_v_pts: SHARED.dg_fed_v_pts.load(Relaxed),
         fed_a_pts: SHARED.dg_fed_a_pts.load(Relaxed),
         load_v: SHARED.dg_load_v.load(Relaxed),
-        load_a: SHARED.dg_load_a.load(Relaxed),
+        load_a,
         feed_state: SHARED.dg_feed_state.load(Relaxed),
         cb_err: SHARED.dg_cb_err.load(Relaxed),
         cb_err_at: SHARED.dg_cb_err_at.load(Relaxed),
         http_status: SHARED.dg_http_status.load(Relaxed),
         net_rx: SHARED.dg_net_rx.load(Relaxed),
+        playable_buffer_ms,
         load_at: SHARED.dg_load_at.load(Relaxed),
         frame_at: SHARED.dg_frame_at.load(Relaxed),
-        video_w: SHARED.video_w.load(Relaxed),
-        video_h: SHARED.video_h.load(Relaxed),
+        video_w,
+        video_h,
+        video_fps_milli: SHARED.video_fps_milli.load(Relaxed),
         pos_ns: SHARED.playpos_ns.load(Relaxed),
         dur_ns: SHARED.duration_ns.load(Relaxed),
+        source_kbps: crate::route::transport_kbps(),
         abr_mode: SHARED.dg_abr_mode.load(Relaxed),
         abr_kbps: SHARED.dg_abr_kbps.load(Relaxed),
+        abr_declared_kbps: SHARED.dg_abr_declared_kbps.load(Relaxed),
+        abr_media_kbps: SHARED.dg_abr_media_kbps.load(Relaxed),
         abr_net_kbps: SHARED.dg_abr_net_kbps.load(Relaxed),
         abr_buffer_ms: SHARED.dg_abr_buffer_ms.load(Relaxed),
         abr_ratio_pm: SHARED.dg_abr_ratio_pm.load(Relaxed),
         abr_action: SHARED.dg_abr_action.load(Relaxed),
         abr_target_kbps: SHARED.dg_abr_target_kbps.load(Relaxed),
+        abr_failure_kind: SHARED.abr_failure_kind.load(Relaxed),
+        abr_failure_status: SHARED.abr_failure_status.load(Relaxed),
         abr_unsafe_deficit_ms: SHARED.dg_abr_unsafe_deficit_ms.load(Relaxed),
         abr_safe_kbps: SHARED.dg_abr_safe_kbps.load(Relaxed),
         abr_optimal_kbps: SHARED.dg_abr_optimal_kbps.load(Relaxed),
@@ -776,8 +1098,8 @@ pub(crate) fn intended_pos_ns() -> i64 {
 }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
 /// transcode with that source audio at the current position next tick.
-pub(crate) fn request_audio_switch(sid: i64) {
-    SHARED.pending_audio_sid.store(sid, Relaxed);
+pub(crate) fn request_audio_switch(_sid: i64) {
+    crate::route::request_user_route_intent(crate::route::UserRouteIntent::Retranscode);
     SHARED.sub_cues.lock().unwrap().clear(); // the fresh transcode carries no embedded subs
 }
 /// request a NATIVE audio-track switch (direct-play, NO transcode): feed the 0-based `audio_idx`
@@ -786,7 +1108,8 @@ pub(crate) fn request_audio_switch(sid: i64) {
 /// is a direct-playable codec (aac/ac3/eac3).
 pub(crate) fn request_audio_track(audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(codec); // the reload's Load payload uses this audio codec
-    SHARED.pending_audio_idx.store(audio_idx, Relaxed);
+    SHARED.desired_audio_idx.store(audio_idx, Relaxed);
+    crate::route::request_user_route_intent(crate::route::UserRouteIntent::NativeAudioReload);
     SHARED.sub_cues.lock().unwrap().clear();
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
@@ -811,24 +1134,45 @@ pub(crate) fn set_audio_track(idx: i32) {
 /// used when a subtitle is (de)selected while already transcoding, so the server
 /// re-burns (or drops) it. No-op-ish if not transcoding (the caller gates on that).
 pub(crate) fn request_transcode_refresh() {
-    SHARED.pending_retranscode.store(true, Relaxed);
+    crate::route::request_user_route_intent(crate::route::UserRouteIntent::Retranscode);
     SHARED.sub_cues.lock().unwrap().clear(); // burned/absent in the fresh transcode
+}
+
+/// Restart the current stream at the current movie position so a fresh demux worker captures a
+/// newly-enabled adaptive controller. This mailbox does not itself mutate the route or ask PMS for
+/// another encode; the main-thread pump owns the eventual same-position restart.
+pub(crate) fn request_adaptive_reload() {
+    crate::route::request_user_route_intent(crate::route::UserRouteIntent::AdaptiveReload);
+}
+
+pub(crate) fn cancel_adaptive_reload() {
+    crate::route::cancel_user_route_intent(crate::route::UserRouteIntent::AdaptiveReload);
 }
 
 /// Whether a route change has scheduled an encoder rebuild. Test-visible so route policy can be
 /// graded independently of the pump's frame timing.
 #[cfg(test)]
 pub(crate) fn pending_transcode_refresh() -> bool {
-    SHARED.pending_retranscode.load(Relaxed)
+    crate::route::pending_user_route_intent(crate::route::UserRouteIntent::Retranscode)
+}
+
+#[cfg(test)]
+pub(crate) fn pending_adaptive_reload() -> bool {
+    crate::route::pending_user_route_intent(crate::route::UserRouteIntent::AdaptiveReload)
+}
+
+/// Route-policy tests share the process-wide player mailbox even though no Engine pumps it.
+/// Empty it between cases so one test's requested handoff cannot become the next test's input.
+#[cfg(test)]
+pub(crate) fn reset_route_requests_for_test() {
+    crate::route::reset_player_control_for_test();
 }
 
 /// Request the main-thread HLS→Original pipeline replacement. Used by an explicit Original pick;
-/// the adaptive worker publishes through the same atomic after its source probes pass.
+/// the adaptive worker publishes through the same synchronized route-intent controller after its
+/// source probes pass.
 pub(crate) fn request_original_recovery() {
-    SHARED
-        .auto_recover_kbps
-        .store(1, std::sync::atomic::Ordering::Release);
-    SHARED.pending_retranscode.store(false, Relaxed);
+    crate::route::request_user_route_intent(crate::route::UserRouteIntent::RecoverOriginal);
     SHARED.sub_cues.lock().unwrap().clear();
 }
 
@@ -1062,6 +1406,27 @@ fn between(h: &[u8], prefix: &[u8], term: u8) -> Option<Vec<u8>> {
     Some(rest[..end].to_vec())
 }
 
+/// Parse one JSON number into thousandths without allocating a JSON tree on the pipeline callback
+/// thread. SourceInfo is firmware-owned and may contain integer (`24`) or fractional (`23.976`)
+/// frame rates; malformed, zero and non-finite values remain "not reported".
+fn source_fps_milli(h: &[u8]) -> Option<i64> {
+    let prefix = b"\"frameRate\":";
+    let start = h.windows(prefix.len()).position(|w| w == prefix)? + prefix.len();
+    let rest = &h[start..];
+    let first = rest.iter().position(|b| !b.is_ascii_whitespace())?;
+    let number = &rest[first..];
+    let end = number
+        .iter()
+        .position(|b| !b.is_ascii_digit() && !matches!(*b, b'.' | b'-' | b'+'))
+        .unwrap_or(number.len());
+    let value = std::str::from_utf8(&number[..end])
+        .ok()?
+        .parse::<f64>()
+        .ok()?;
+    let milli = value * 1_000.0;
+    (value.is_finite() && value > 0.0 && milli <= i64::MAX as f64).then(|| milli.round() as i64)
+}
+
 /// Monotonic milliseconds, from an origin fixed at the first call.
 ///
 /// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
@@ -1107,8 +1472,19 @@ pub(crate) fn vplane_take() -> (u32, u32) {
 /// (`kad-hdr`).
 /// Panic-guarded (unwinding into C is UB); touches only SHARED.
 #[no_mangle]
-pub extern "C" fn sf_on_event(ty: c_int, num: i64, s: *const c_char) {
-    let _ = catch_unwind(AssertUnwindSafe(|| sf_on_event_inner(ty, num, s)));
+pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_char) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // The mutex is deliberately held through the complete callback. A bare equality check
+        // would let teardown retire A, reset the process-long SHARED storage for B, and then let
+        // a callback which had already validated A publish into B. Firmware supplies `epoch`
+        // through the device-proven callback-context overload of StarfishMediaAPIs::Load.
+        let class = match ty {
+            0 => shared::NativeEventClass::Presentation,
+            23 => shared::NativeEventClass::UnloadCompleted,
+            _ => shared::NativeEventClass::Other,
+        };
+        SHARED.with_native_session(epoch, class, num, || sf_on_event_inner(ty, num, s));
+    }));
 }
 fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     if ty != 0 {
@@ -1162,9 +1538,8 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         let prev = SHARED.dg_vpres_at.swap(t, Relaxed);
         SHARED.dg_vpres_ct.fetch_add(1, Relaxed);
         if prev != 0 {
-            SHARED
-                .dg_vpres_gap
-                .fetch_max(t.saturating_sub(prev), Relaxed);
+            let gap = t.saturating_sub(prev);
+            SHARED.dg_vpres_gap.fetch_max(gap, Relaxed);
         }
         SHARED.frames.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
@@ -1178,6 +1553,10 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         return;
     }
     let b = unsafe { CStr::from_ptr(s) }.to_bytes();
+
+    if let Some(fps_milli) = source_fps_milli(b) {
+        SHARED.video_fps_milli.store(fps_milli, Relaxed);
+    }
 
     {
         let mut mid = SHARED.media_id.lock().unwrap();
@@ -1232,6 +1611,296 @@ pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acb_pause_resume_cannot_overtake_the_bind_transaction() {
+        assert!(!acb_playstate_ready(shared::Stage::Playing));
+        assert!(!acb_playstate_ready(shared::Stage::Bound));
+        assert!(acb_playstate_ready(shared::Stage::Streaming));
+    }
+
+    #[test]
+    fn playable_buffer_uses_one_movie_timeline_for_every_transport() {
+        assert_eq!(
+            playable_buffer_ms(70_000_000_000, 69_500_000_000, true, 0, 60_000_000_000,),
+            Some(9_500),
+            "a direct file publishes absolute movie timestamps",
+        );
+        assert_eq!(
+            playable_buffer_ms(
+                4_000_000_000,
+                3_500_000_000,
+                true,
+                120_000_000_000,
+                122_000_000_000,
+            ),
+            Some(1_500),
+            "an HLS or offset-transcode tail is translated by its display base",
+        );
+        assert_eq!(
+            playable_buffer_ms(4_000_000_000, -1, true, 0, 1_000_000_000),
+            None,
+            "an A/V stream cannot claim reserve before its audio lane arrives",
+        );
+        assert_eq!(
+            playable_buffer_ms(4_000_000_000, -1, false, 0, 1_000_000_000),
+            Some(3_000),
+            "a declared video-only stream uses its video tail",
+        );
+    }
+
+    #[test]
+    fn source_info_reports_the_stream_fps_not_the_position_tick_rate() {
+        assert_eq!(
+            source_fps_milli(br#"{"video":{"frameRate":24,"width":3840}}"#),
+            Some(24_000),
+        );
+        assert_eq!(
+            source_fps_milli(br#"{"video":{"frameRate": 23.976,"width":1920}}"#),
+            Some(23_976),
+        );
+        assert_eq!(source_fps_milli(br#"{"video":{"frameRate":0}}"#), None);
+        assert_eq!(source_fps_milli(br#"{"video":{"width":1920}}"#), None);
+    }
+
+    #[test]
+    fn callback_after_native_session_retirement_cannot_mutate_the_idle_session() {
+        let _guard = crate::testlock::serial();
+        SHARED.reset_session();
+
+        sf_on_event(1, 0, 7_000_000_000, std::ptr::null());
+        let mutated = SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire)
+            || SHARED.frames.load(std::sync::atomic::Ordering::Acquire) != 0
+            || SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire) != 0
+            || SHARED.playpos_ns.load(std::sync::atomic::Ordering::Acquire) != 0;
+
+        SHARED.reset_session();
+        assert!(
+            !mutated,
+            "a callback with no live native-session owner must be discarded"
+        );
+    }
+
+    #[test]
+    fn late_native_callback_cannot_cross_into_the_next_session() {
+        let _guard = crate::testlock::serial();
+        SHARED.reset_session();
+        let retired = SHARED.begin_native_session().expect("session A");
+        assert!(SHARED.retire_native_session(retired));
+        let current = SHARED.begin_native_session().expect("session B");
+
+        sf_on_event(retired, 0, 7_000_000_000, std::ptr::null());
+        let stale_mutated = SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire)
+            || SHARED.frames.load(std::sync::atomic::Ordering::Acquire) != 0
+            || SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire) != 0
+            || SHARED.playpos_ns.load(std::sync::atomic::Ordering::Acquire) != 0;
+        sf_on_event(current, 0, 8_000_000_000, std::ptr::null());
+        let current_landed = SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire)
+            && SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire) == 8_000_000_000;
+
+        SHARED.retire_native_session(current);
+        SHARED.reset_session();
+        assert!(!stale_mutated, "session A must not mutate session B");
+        assert!(current_landed, "session B's own callback must still land");
+    }
+
+    #[test]
+    fn native_epoch_retirement_drains_a_callback_already_inside_the_reducer() {
+        let _guard = crate::testlock::serial();
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("native session");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let callback = std::thread::spawn(move || {
+            SHARED.with_native_session(epoch, shared::NativeEventClass::Other, 0, || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("callback entered the native-session reducer");
+
+        let (retired_tx, retired_rx) = std::sync::mpsc::channel();
+        let retire = std::thread::spawn(move || {
+            retired_tx
+                .send(SHARED.retire_native_session(epoch))
+                .unwrap();
+        });
+        assert!(
+            retired_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "retirement crossed a callback which had already been admitted",
+        );
+        release_tx.send(()).unwrap();
+        assert!(retired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("retirement completes after the callback leaves"),);
+        callback.join().unwrap();
+        retire.join().unwrap();
+        SHARED.reset_session();
+    }
+
+    #[test]
+    fn unload_completed_is_an_explicit_terminal_native_session_transition() {
+        let _guard = crate::testlock::serial();
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("native session");
+
+        sf_on_event(epoch, 23, 0, std::ptr::null());
+        assert!(SHARED.native_unload_completed(epoch));
+        sf_on_event(epoch, 0, 8_000_000_000, std::ptr::null());
+        assert_eq!(
+            SHARED.frames.load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "an event after unload-completed entered the terminal Rust epoch",
+        );
+        assert!(SHARED.retire_native_session(epoch));
+        let next_epoch = SHARED
+            .begin_native_session()
+            .expect("the next Load can mint an epoch after native gate+Rust retirement");
+        assert_ne!(next_epoch, epoch);
+        assert!(
+            SHARED.begin_native_session().is_none(),
+            "overlapping native Load was admitted",
+        );
+        assert!(SHARED.retire_native_session(next_epoch));
+        SHARED.reset_session();
+    }
+
+    #[test]
+    fn pre_seek_presentation_cannot_certify_the_post_seek_timeline() {
+        let _guard = crate::testlock::serial();
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("native session");
+        assert!(SHARED.begin_native_media_discontinuity(epoch));
+
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert_eq!(
+            SHARED.playpos_ns.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        assert!(
+            !SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire),
+            "an old type-0 callback cannot prove the new seek presented"
+        );
+
+        assert!(SHARED.arm_native_presentations(epoch));
+        sf_on_event(epoch, 0, 8_000_000_000, std::ptr::null());
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert_eq!(
+            SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire),
+            8_000_000_000,
+        );
+
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+    }
+
+    #[test]
+    fn post_seek_feed_commits_or_discards_callbacks_that_race_its_reply() {
+        let _guard = crate::testlock::serial();
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("native session");
+        assert!(SHARED.begin_native_media_discontinuity(epoch));
+
+        // A BufferFull/error Feed may race a position callback, but the AU was not accepted. The
+        // callback is latched during the call and discarded with its failed transaction.
+        assert!(SHARED.begin_native_presentation_probe(epoch));
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert!(SHARED.reject_native_presentation_probe(epoch));
+        sf_on_event(epoch, 0, 7_500_000_000, std::ptr::null());
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 0);
+
+        // On the retained AU's accepted retry, a callback which arrives before Feed returns is
+        // replayed exactly once at commit and later callbacks flow normally.
+        assert!(SHARED.begin_native_presentation_probe(epoch));
+        sf_on_event(epoch, 0, 8_000_000_000, std::ptr::null());
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert!(SHARED.commit_native_presentation_probe(epoch, |num| {
+            sf_on_event_inner(0, num, std::ptr::null())
+        }));
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert_eq!(
+            SHARED.pres_fed.load(std::sync::atomic::Ordering::Acquire),
+            8_000_000_000
+        );
+        sf_on_event(epoch, 0, 8_200_000_000, std::ptr::null());
+        assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 2);
+
+        assert!(SHARED.retire_native_session(epoch));
+        SHARED.reset_session();
+    }
+
+    /// User Play releases the transport pause, but an internal runway hold owns the media clock.
+    /// Calling the ordinary seam here would bypass the only place that checks fresh A/V media and
+    /// recreate the short burst/freeze cycle after a manual Pause/Play during rebuffering.
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn user_resume_cannot_bypass_an_internal_hls_rebuffer_hold() {
+        let _guard = crate::testlock::serial();
+        let old_paused = TX.paused.load(std::sync::atomic::Ordering::Acquire);
+        SHARED.reset_hls_clock_for_test();
+        let pause = SHARED
+            .prepare_hls_rebuffer_pause()
+            .expect("reserve internal Pause");
+        assert_eq!(
+            SHARED.complete_hls_rebuffer_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        assert_eq!(
+            SHARED.prepare_hls_user_pause(),
+            Some(HlsUserPause::AlreadyHeld)
+        );
+        TX.commit_paused(true);
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.reset_hls_clock_for_test();
+                TX.commit_paused(self.0);
+            }
+        }
+        let _restore = Restore(old_paused);
+        let before = ffi::play_calls_for_test();
+        let mt = unsafe { crate::task::MainThread::assume() };
+
+        assert!(resume(&mt));
+
+        assert_eq!(
+            ffi::play_calls_for_test(),
+            before,
+            "ordinary Resume called Starfish while the measured-runway gate still owned the clock",
+        );
+        assert!(SHARED
+            .hls_rebuffering
+            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(!TX.paused.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn an_abandoned_paused_seek_keeps_user_pause_and_closes_only_its_feed_override() {
+        let _guard = crate::testlock::serial();
+        TX.reset();
+        TX.commit_paused(true);
+        TX.resume_pend
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(TX.begin_paused_seek());
+        // Test setup only: avoid looking like a second production arm site to the source-level
+        // invariant in tests/test_harness.py.
+        SHARED
+            .seeking
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+
+        abandon_seek();
+
+        assert!(TX.paused.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!TX.seek_preroll_active());
+        assert!(!TX.resume_pend.load(std::sync::atomic::Ordering::Acquire));
+        TX.reset();
+    }
 
     /// **A seek that is given up on must not leave the spinner armed forever.**
     ///
@@ -1291,7 +1960,7 @@ mod tests {
         use crate::plex::serverinfo::Subscription as Sub;
         // transcode on a known-free server: the Pass appears as a parenthetical fact on the
         // panel, as the capsule flag for the read-out…
-        let e = error_shape(true, true, Sub::No, None);
+        let e = error_shape(true, true, Sub::No, None, RuntimeFailure::Unknown);
         assert!(
             e.caption
                 .to_str()
@@ -1325,7 +1994,7 @@ mod tests {
         );
         // known-Pass'd or never-heard-from: today's wording, and no Pass blame anywhere in it
         for sub in [Sub::Yes, Sub::Unknown] {
-            let e = error_shape(true, true, sub, None);
+            let e = error_shape(true, true, sub, None, RuntimeFailure::Unknown);
             assert!(
                 e.caption
                     .to_str()
@@ -1349,7 +2018,7 @@ mod tests {
             );
         }
         for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
-            let e = error_shape(true, false, sub, None);
+            let e = error_shape(true, false, sub, None, RuntimeFailure::Unknown);
             assert!(
                 e.caption.to_str().unwrap().contains("no video in the file"),
                 "{:?}",
@@ -1361,18 +2030,85 @@ mod tests {
             );
             assert!(!e.no_pass, "an audio-only FILE is not a subscription story");
             for transcoding in [false, true] {
-                let e = error_shape(false, transcoding, sub, None);
+                let e = error_shape(false, transcoding, sub, None, RuntimeFailure::Unknown);
                 assert_eq!(
                     e.caption.to_str().unwrap(),
                     "Playback failed",
-                    "no reason may be invented"
+                    "no subsystem may be invented"
                 );
-                assert_eq!(e.panel, "");
-                assert_eq!(e.readout, "");
+                assert!(e.panel.contains("without a reported cause"));
+                assert!(e.readout.contains("identify the problem"));
                 assert!(e.detail.is_empty());
                 assert!(!e.no_pass);
             }
         }
+    }
+
+    /// A terminal runtime failure already knows which subsystem stopped: the media source,
+    /// the live transfer, or the television pipeline. The player read-out reserves a reason
+    /// slot for that answer, so falling through to an empty string turns a diagnosed failure
+    /// back into the unhelpful bare "Playback failed" screen.
+    #[test]
+    fn runtime_failures_fill_the_existing_readout_reason_slot() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        let cases = [
+            (
+                (true, false, false),
+                RuntimeFailure::MediaSource,
+                FailureKind::MediaSource,
+                "media_source",
+                "media stream",
+            ),
+            (
+                (false, true, false),
+                RuntimeFailure::PlaybackInterrupted,
+                FailureKind::PlaybackInterrupted,
+                "playback_interrupted",
+                "stopped after it had started",
+            ),
+            (
+                (false, false, true),
+                RuntimeFailure::TvPipeline,
+                FailureKind::TvPipeline,
+                "tv_pipeline",
+                "TV",
+            ),
+            (
+                (false, false, false),
+                RuntimeFailure::Unknown,
+                FailureKind::Unspecified,
+                "unspecified",
+                "identify the problem",
+            ),
+        ];
+        for ((demux, io, load), want, kind, code, words) in cases {
+            let cause = runtime_failure(demux, io, load);
+            assert_eq!(
+                cause, want,
+                "the flags must resolve to the subsystem that stopped"
+            );
+            let e = error_shape(false, false, Sub::Unknown, None, cause);
+            assert_eq!(e.kind, kind);
+            assert_eq!(e.kind.code(), code, "the Sentry/usage wire code is stable");
+            assert!(
+                !e.readout.is_empty(),
+                "a terminal runtime failure must explain what stopped"
+            );
+            assert!(
+                e.readout.contains(words),
+                "{} did not name {words:?}",
+                e.readout
+            );
+            assert!(
+                !e.panel.is_empty(),
+                "diagnostics and the viewer read-out share the answer"
+            );
+        }
+        assert_eq!(
+            runtime_failure(true, true, true),
+            RuntimeFailure::TvPipeline,
+            "the most specific downstream signal must win if teardown exposes all three",
+        );
     }
 
     /// The PRE-FLIGHT arm: `/decision` refused the item before a byte of video moved, so the reason
@@ -1391,7 +2127,13 @@ mod tests {
             "Cannot convert this item. Implementation for video encoder 'vp9' not found.";
         for sub in [Sub::Unknown, Sub::No, Sub::Yes] {
             // graded with `no_video`/`transcoding` BOTH set — the arm that would otherwise win
-            let e = error_shape(true, true, sub, Some(VP9));
+            let e = error_shape(
+                true,
+                true,
+                sub,
+                Some(VP9),
+                RuntimeFailure::PlaybackInterrupted,
+            );
             assert_eq!(
                 e.readout, "The server cannot play or convert this file",
                 "({sub:?})"
@@ -1420,10 +2162,17 @@ mod tests {
             true,
             Sub::No,
             Some("Implementation for video encoder 'hevc' not found."),
+            RuntimeFailure::PlaybackInterrupted,
         );
         assert!(!e.no_pass);
         // a server that refused without saying why: the reason still lands, the quote line does not
-        let e = error_shape(false, true, Sub::No, Some(""));
+        let e = error_shape(
+            false,
+            true,
+            Sub::No,
+            Some(""),
+            RuntimeFailure::PlaybackInterrupted,
+        );
         assert_eq!(e.readout, "The server cannot play or convert this file");
         assert!(
             e.detail.is_empty(),
@@ -1485,7 +2234,13 @@ mod tests {
             Sub::No,
             "the borrowed film's own server is the one that failed"
         );
-        let e = error_shape(true, true, playing_subscription(), None);
+        let e = error_shape(
+            true,
+            true,
+            playing_subscription(),
+            None,
+            RuntimeFailure::Unknown,
+        );
         assert!(e.no_pass, "so the read-out draws the capsule…");
         assert!(
             e.panel.contains("server has no Plex Pass"),
@@ -1502,7 +2257,14 @@ mod tests {
             "the current server's answer is not this item's"
         );
         assert!(
-            !error_shape(true, true, playing_subscription(), None).no_pass,
+            !error_shape(
+                true,
+                true,
+                playing_subscription(),
+                None,
+                RuntimeFailure::Unknown
+            )
+            .no_pass,
             "no capsule may be invented"
         );
 
@@ -1510,7 +2272,16 @@ mod tests {
         // answer — never slot 0's, and never a blamed subscription
         crate::route::swap_cur_sid_for_test(crate::plex::ServerId::UNSET);
         assert_eq!(playing_subscription(), Sub::Unknown);
-        assert!(!error_shape(true, true, playing_subscription(), None).no_pass);
+        assert!(
+            !error_shape(
+                true,
+                true,
+                playing_subscription(),
+                None,
+                RuntimeFailure::Unknown
+            )
+            .no_pass
+        );
     }
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> SubRect {

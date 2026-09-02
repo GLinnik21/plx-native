@@ -3087,7 +3087,12 @@ impl AmbientWash {
     /// only ever seen THROUGH something moving (Home's hero fold and slide), where the noise buys
     /// nothing and costs ~2.5M GPU cycles a frame at full screen. See `gfx::draw_ambient`.
     pub(crate) fn draw_with(&self, p: Painter, r: Rect, dither: bool) {
-        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]), dither);
+        p.ambient(
+            r,
+            1.0,
+            self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]),
+            dither,
+        );
     }
 }
 
@@ -3425,14 +3430,20 @@ pub struct Field {
     pub key: &'static str,
     pub val: Option<String>,
     pub tone: Tone,
+    // Laid out ONCE when the 2 Hz diagnostics snapshot is built.  Pixel wrapping in `draw` would
+    // turn ~20 values into hundreds of uncached TTF metric walks every second of playback.
+    lines: Vec<String>,
 }
 
 impl Field {
     pub fn new(key: &'static str, val: impl Into<String>) -> Self {
+        let val = val.into();
+        let lines = value_lines(&val, FIELD_COL_W);
         Self {
             key,
-            val: Some(val.into()),
+            val: Some(val),
             tone: Tone::Normal,
+            lines,
         }
     }
     /// mark the row as the fault — see [`Tone`]
@@ -3448,29 +3459,28 @@ impl Field {
             key,
             val: None,
             tone: Tone::Normal,
+            lines: Vec::new(),
         }
     }
 }
 
 /// Row pitch. Values are [`FIELD_VAL_SZ`]; this is that plus air, and it is what bounds how many
-/// fields the overlay may carry — see `stats::PANEL_ROWS`.
-pub const FIELD_ROW_H: f32 = 30.0;
-/// The value type size. `size::CAPTION` is the design system's couch legibility floor for anything
-/// that must be READ, which is exactly the promise this read-out has to keep; it was `size::BODY`
-/// while the panel carried two columns of fourteen 36px rows, and that arrangement had grown taller
-/// than the space it was given (the last rows drew outside the card, over the transport).
-/// One narrower column of shorter rows fits the same evidence in about half the area.
-pub const FIELD_VAL_SZ: i32 = theme::size::CAPTION;
+/// fields the overlay may carry — see `stats::{LEFT_ROWS, RIGHT_ROWS}`.
+pub const FIELD_ROW_H: f32 = 26.0;
+/// The diagnostics instrument's dense type.  It is intentionally smaller than product copy: a
+/// fixed two-column schema is more useful than one large sentence wrapping under another, and the
+/// owner explicitly prefers density as long as every run remains present and readable.
+pub const FIELD_VAL_SZ: i32 = theme::size::DIAGNOSTIC;
 /// Width of the key column inside a [`FieldList`] frame. Keys are right-aligned against it and
-/// values start one `space::MD` later, so every value in a column shares an x — which, with the
+/// values start one `space::SM` later, so every value in a column shares an x — which, with the
 /// font's tabular digits (all ten share one advance), is what makes the numbers line up.
-pub const FIELD_KEY_W: f32 = 236.0;
+pub const FIELD_KEY_W: f32 = 132.0;
 /// The value column used by [`FieldList`]. Exposed so an owner can measure wrapped rows against
-/// exactly the width the list draws. ONE column now, so it can be wide enough that a composed
-/// diagnostic line fits on one row — which is what makes the panel short.
-pub const FIELD_VAL_W: f32 = 688.0;
+/// exactly the width the list draws. Each diagnostics column is wide enough that every bounded
+/// composed value normally stays on one row; exact wrapping remains the no-clipping fallback.
+pub const FIELD_VAL_W: f32 = 676.0;
 /// Width a [`FieldList`] column needs: the key gutter plus room for the longest value.
-pub const FIELD_COL_W: f32 = FIELD_KEY_W + theme::space::MD + FIELD_VAL_W;
+pub const FIELD_COL_W: f32 = FIELD_KEY_W + theme::space::SM + FIELD_VAL_W;
 
 pub struct FieldList<'a> {
     pub fields: &'a [Field],
@@ -3489,21 +3499,21 @@ impl<'a> FieldList<'a> {
 
     /// How many wrapped lines each value needs — the SUM of what [`value_lines`] would produce,
     /// so a measured height and a drawn one can never disagree.
-    pub fn wrapped_line_count(fields: &[Field], width: f32) -> usize {
+    pub fn wrapped_line_count(fields: &[Field]) -> usize {
         fields
             .iter()
             .map(|field| match &field.val {
                 None => 1,
-                Some(value) => value_lines(value, width).len().max(1),
+                Some(_) => field.lines.len().max(1),
             })
             .sum()
     }
 }
 
-/// A value split into the lines this list will DRAW, by pure character geometry — independent of
-/// the live font, because this is a support read-out whose invariant is "nothing is hidden", not a
-/// typographic layout that must predict SDL's exact advance widths. A conservative average advance
-/// keeps the panel tall enough on every face while the device does the real pixel wrap.
+/// A value split into the exact lines this list will draw. Simulator/device builds use live glyph
+/// advances; host tests, which deliberately do not link SDL_ttf, use a conservative character
+/// budget. Both paths wrap rather than elide and split even an oversized opaque word, so no suffix
+/// can disappear outside the value frame.
 ///
 /// **It is shared by the measure and the paint, and that is the whole point.** The measure existed
 /// alone until 2026-08-26 while `draw` emitted ONE `Label` per field and then advanced y by the
@@ -3512,19 +3522,77 @@ impl<'a> FieldList<'a> {
 /// entirely, over the transport. Both halves of that were visible on screen and neither was visible
 /// to a test, because the two rules were never compared.
 pub fn value_lines(value: &str, width: f32) -> Vec<String> {
-    let budget = ((width - FIELD_KEY_W - theme::space::MD) / VAL_AVG_ADVANCE)
-        .max(1.0)
-        .floor() as usize;
+    let value_w = (width - FIELD_KEY_W - theme::space::SM).max(1.0);
+    // Once SDL_ttf is live, use the exact same glyph metrics the draw path advances by.  Host
+    // tests have no text runtime (`text_width` returns 0), so they fall back to a deliberately
+    // conservative character budget.  Both paths preserve every character; neither elides.
+    #[cfg(not(test))]
+    let measure = |s: &str| {
+        CString::new(s)
+            .ok()
+            .map(|c| crate::text::text_width(c.as_ptr(), FIELD_VAL_SZ, 0))
+            .filter(|w| *w > 0.0)
+    };
+    // The library unit-test target deliberately does not link SDL_ttf.  Its conservative fallback
+    // still proves that no byte is elided or dropped; simulator/device runs exercise exact glyph
+    // advances once the live text runtime is present.
+    #[cfg(test)]
+    let measure = |_s: &str| -> Option<f32> { None };
+    if measure(value).is_some() {
+        let mut out: Vec<String> = Vec::new();
+        for word in value.split_whitespace() {
+            let joined = out.last().map(|line| format!("{line} {word}"));
+            if joined
+                .as_deref()
+                .and_then(measure)
+                .is_some_and(|w| w <= value_w)
+            {
+                let line = out.last_mut().expect("joined implies a line");
+                line.push(' ');
+                line.push_str(word);
+                continue;
+            }
+            if measure(word).is_some_and(|w| w <= value_w) {
+                out.push(word.to_string());
+                continue;
+            }
+            // A long opaque token is still support evidence.  Split it on character boundaries
+            // instead of cutting or ellipsising its suffix.
+            let mut part = String::new();
+            for ch in word.chars() {
+                let mut candidate = part.clone();
+                candidate.push(ch);
+                if !part.is_empty() && measure(&candidate).is_some_and(|w| w > value_w) {
+                    out.push(std::mem::take(&mut part));
+                }
+                part.push(ch);
+            }
+            if !part.is_empty() {
+                out.push(part);
+            }
+        }
+        return out;
+    }
+
+    let budget = (value_w / VAL_AVG_ADVANCE).max(1.0).floor() as usize;
     let mut out: Vec<String> = Vec::new();
     for word in value.split_whitespace() {
+        let word_len = word.chars().count();
+        if word_len > budget {
+            // The normal formatter emits bounded words, but keeping this total makes FieldList safe
+            // for an unexpected codec/tag as well.  Do not let one opaque token bypass wrapping.
+            let chars: Vec<char> = word.chars().collect();
+            for chunk in chars.chunks(budget) {
+                out.push(chunk.iter().collect());
+            }
+            continue;
+        }
         match out.last_mut() {
             // `+ 1` for the space this word would be joined with.
             Some(line) if line.chars().count() + 1 + word.chars().count() <= budget => {
                 line.push(' ');
                 line.push_str(word);
             }
-            // A single word longer than the budget still gets its own line rather than being cut:
-            // an elided suffix can be the exact fact the photograph was taken to capture.
             _ => out.push(word.to_string()),
         }
     }
@@ -3532,31 +3600,30 @@ pub fn value_lines(value: &str, width: f32) -> Vec<String> {
 }
 
 /// Conservative mean glyph advance at [`FIELD_VAL_SZ`], for [`value_lines`]' character budget. It
-/// tracks the value size and nothing else: 15.0 was measured for `size::BODY` 28, so 24 gets the
-/// same ratio rather than a re-guessed number.
-const VAL_AVG_ADVANCE: f32 = 13.0;
+/// tracks the value size and nothing else: 15.0 was measured for `size::BODY` 28, and the dense
+/// 20px diagnostic face keeps the same conservative ratio.
+const VAL_AVG_ADVANCE: f32 = 11.0;
 
 impl View for FieldList<'_> {
     fn draw(&self, _e: &Env, p: Painter) {
-        let vx = self.frame.x + FIELD_KEY_W + theme::space::MD;
-        let vw = (self.frame.w - FIELD_KEY_W - theme::space::MD).max(0.0);
+        let vx = self.frame.x + FIELD_KEY_W + theme::space::SM;
+        let vw = (self.frame.w - FIELD_KEY_W - theme::space::SM).max(0.0);
         let mut y = self.frame.y;
         for f in self.fields.iter() {
             match &f.val {
                 // a section heading spans the whole width and carries no value
                 None => {
                     // A heading differs from a key by POSITION (full width, left-aligned, where a
-                    // key is right-aligned into its gutter) and by weight — not by size. Dropping
-                    // it to `MICRO` to save a few pixels is the one thing that token's doc forbids.
+                    // key is right-aligned into its gutter) and by weight — not by a separate size.
                     if let Ok(cs) = CString::new(f.key) {
-                        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
+                        Label::new(cs.as_ptr(), FIELD_VAL_SZ, theme::TEXT_SECONDARY)
                             .bold()
                             .draw(p, Rect::new(self.frame.x, y, self.frame.w, FIELD_ROW_H));
                     }
                 }
-                Some(v) => {
+                Some(_) => {
                     if let Ok(cs) = CString::new(f.key) {
-                        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+                        Label::new(cs.as_ptr(), FIELD_VAL_SZ, theme::TEXT_TERTIARY)
                             .h(HAlign::Right)
                             .draw(p, Rect::new(self.frame.x, y, FIELD_KEY_W, FIELD_ROW_H));
                     }
@@ -3568,7 +3635,7 @@ impl View for FieldList<'_> {
                     // WRAP, never elide: this read-out is support evidence, and a hidden suffix
                     // can be the exact fact the photograph was taken to capture. Every line the
                     // measure reserved is drawn — see `value_lines`.
-                    for (n, line) in value_lines(v, self.frame.w).iter().enumerate() {
+                    for (n, line) in f.lines.iter().enumerate() {
                         if let Ok(cs) = CString::new(line.as_str()) {
                             let mut l = Label::new(cs.as_ptr(), FIELD_VAL_SZ, ink);
                             if f.tone == Tone::Fault {
@@ -3584,7 +3651,7 @@ impl View for FieldList<'_> {
             }
             y += match &f.val {
                 None => FIELD_ROW_H,
-                Some(v) => value_lines(v, self.frame.w).len().max(1) as f32 * FIELD_ROW_H,
+                Some(_) => f.lines.len().max(1) as f32 * FIELD_ROW_H,
             };
         }
     }
@@ -6681,6 +6748,42 @@ mod tests {
         );
     }
 
+    /// Diagnostics are support evidence: the right edge may never turn an unfamiliar opaque token
+    /// into a plausible-looking prefix. Unit tests have no SDL_ttf, so this specifically grades
+    /// the conservative fallback used by the schema/height tests.
+    #[test]
+    fn diagnostic_wrapping_preserves_even_one_oversized_word() {
+        let value = "abcdefghijklmnopqrstuvwxyz";
+        let width = FIELD_KEY_W + theme::space::SM + 4.0 * VAL_AVG_ADVANCE;
+        let lines = value_lines(value, width);
+        assert!(lines.len() > 1, "the token did not wrap: {lines:?}");
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= 4),
+            "a line escaped its frame: {lines:?}"
+        );
+        assert_eq!(
+            lines.concat(),
+            value,
+            "wrapping dropped or changed evidence"
+        );
+    }
+
+    #[test]
+    fn diagnostic_wrapping_preserves_bounded_sentences() {
+        let value = "conservative horizon 116 s · risk 4%";
+        let width = FIELD_KEY_W + theme::space::SM + 12.0 * VAL_AVG_ADVANCE;
+        let lines = value_lines(value, width);
+        assert_eq!(
+            lines.join(" "),
+            value,
+            "wrapping dropped or changed evidence"
+        );
+        assert!(
+            lines.iter().all(|line| line.chars().count() <= 12),
+            "a line escaped its frame: {lines:?}"
+        );
+    }
+
     /// **A control row's pop animates BOTH ways**, which is the whole reason it is an array of
     /// springs and not one global scalar. Walking focus from control 0 to control 1 must leave 0
     /// still shrinking while 1 grows — a single spring could only snap the outgoing face to rest,
@@ -7417,7 +7520,11 @@ mod tests {
     fn the_unfurled_chip_never_reaches_the_glass_track() {
         let track_x = |w: f32| (crate::ui::consts::SCR_W - w) * 0.5;
         let cap = chip_cap(1.0, CHIP_NAME_MAX);
-        assert_eq!(cap.x + cap.w, CHIP_CAP_MAX_R, "priced and drawn are one expression");
+        assert_eq!(
+            cap.x + cap.w,
+            CHIP_CAP_MAX_R,
+            "priced and drawn are one expression"
+        );
         assert!(
             cap.x + cap.w + BAND_AIR <= track_x(GLASS_TRACK_MAX) + 0.01,
             "the widest capsule ends at {} and the widest glass track starts at {} — they must \
@@ -7459,12 +7566,19 @@ mod tests {
             "the cap is {GLASS_TRACK_MAX} where the binding constraint allows {want} \
              (touch {touch}, budget {budget})",
         );
-        assert!(budget < touch, "the BUDGET is what binds today — if that flips, so does the note above");
+        assert!(
+            budget < touch,
+            "the BUDGET is what binds today — if that flips, so does the note above"
+        );
         // the capsule only ever grows RIGHTWARD off a fixed edge, which is what lets one number
         // stand for the band at every point of the unfurl (see `band_region`).
         for e in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let c = chip_cap(e, CHIP_NAME_MAX);
-            assert_eq!((c.x, c.y, c.h), (cap.x, cap.y, cap.h), "only the width moves");
+            assert_eq!(
+                (c.x, c.y, c.h),
+                (cap.x, cap.y, cap.h),
+                "only the width moves"
+            );
             assert!(c.w <= cap.w + 0.01, "the rest capsule is the widest");
         }
     }
@@ -7499,9 +7613,19 @@ mod tests {
         let half = chip_face(face, 0.5);
         assert_eq!(half.scrim_top[3], 0.20, "the scrim fades with the unfurl");
         assert_eq!(half.rim[3], 0.07, "…and so does the perimeter");
-        assert_eq!(half.rim_lit[3], 0.14, "…and the lit edge, which the tint alone cannot reach");
-        assert_eq!(half.rim[..3], face.rim[..3], "the lamp's COLOUR does not move; its weight does");
-        assert_eq!(half.rim_w, face.rim_w, "one design-system pixel, at every point of the unfurl");
+        assert_eq!(
+            half.rim_lit[3], 0.14,
+            "…and the lit edge, which the tint alone cannot reach"
+        );
+        assert_eq!(
+            half.rim[..3],
+            face.rim[..3],
+            "the lamp's COLOUR does not move; its weight does"
+        );
+        assert_eq!(
+            half.rim_w, face.rim_w,
+            "one design-system pixel, at every point of the unfurl"
+        );
     }
 
     /// The chip is a contained control before it is focused: the resting surround is a circle in
@@ -7513,7 +7637,10 @@ mod tests {
         let open = chip_cap(1.0, CHIP_NAME_MAX);
         assert_eq!(closed.w, closed.h, "the resting surround is circular");
         assert_eq!((closed.x, closed.y, closed.h), (open.x, open.y, open.h));
-        assert!(open.w > closed.w, "focus reveals the name by widening rightward");
+        assert!(
+            open.w > closed.w,
+            "focus reveals the name by widening rightward"
+        );
     }
 
     /// The width rule is the only refusal a SECTION TABLE can trip on its own, so it has to hold

@@ -1,713 +1,695 @@
-# Adaptive playback: the risk-aware Auto controller
+# Adaptive playback: current contract
 
-**What Auto is:** a hybrid throughput/buffer controller with probabilistic risk estimation and
-utility-based Original/HLS mode selection. Shorter: a risk-aware stochastic ABR controller.
+Status: implemented, host-tested, television verification required for the 2026-08-30 network
+changes.
 
-Everything below lives in `rust-modules/src/abr/` (the policy, host-tested), with three call
-sites that own facts rather than decisions: `route.rs` (feasibility, the bootstrap probe, the
-main-thread halves of both visible transitions), `ff.rs` (the measurements and the transaction),
-and `ui/stats.rs` (the read-out). The protocol constraint this is all built on — one PMS encoder
-session has one fixed rendition — is `docs/pms-hls-protocol-probe.md`, and it is what makes a
-quality change a **transaction** rather than a request.
+Auto contains two different decisions and they must not be collapsed into one bitrate ladder:
 
-The module is split by **decision stage**, in the order the pipeline above runs them: `units.rs`
-and `ladder.rs` are the shared vocabulary (`MediaTimeMs`, `Rung`, `LADDER`, the actuator catalog);
-`plant.rs` is what the world does (buffer, production ratio, starvation horizon); `estimate.rs` is
-what we believe about it (capacity, observation quality, per-segment samples); `viability.rs` and
-`mode.rs` are the comparisons; `controller.rs` is the transaction that acts; `bootstrap.rs` is cold
-start; `original.rs` is the direct-play path and its watchdog. Everything is re-exported flat from
-`mod.rs`, so `abr::Rung` is still the name the rest of the crate uses. `plant.rs` is deliberately
-**separate** from `sim.rs`'s copy of the same queue geometry — the two disagreeing is a test, not a
-duplication to be folded away.
+1. HLS rung control is a conservation problem over measured acquisitions.
+2. Original versus HLS is a utility decision about a visible pipeline reload, source-only
+   features and recurring server work.
 
-This note is the design and its reasoning. It is not a status report; `docs/parity-gaps.md` tracks
-what is verified on a television.
+The first has no product-tuned network margin. The second necessarily contains explicit product
+values: network measurements cannot derive how objectionable a black frame is or how much a viewer
+values Dolby Vision.
 
-## 1. The pipeline
+## 1. Why the displayed download rate is not link capacity
 
-Every Auto decision — the first one at startup and every one during playback — runs the same
-ordered stages:
+An HLS rendition asks PMS for a finite amount of data. If the current rendition needs about
+4 Mbit/s, a healthy 25 Mbit/s path can still appear as 4–6 Mbit/s: the request did not offer enough
+work to saturate the path. Therefore
 
 ```text
-feasibility  -> which playback states are technically possible at all
-estimation   -> delivery capacity, PMS production, buffer, each with UNCERTAINTY
-risk         -> per-candidate starvation horizon + production + buffer stress
-utility      -> compare feasible states: quality + features - risk - server - transition
-selection    -> argmax utility
-validation   -> prime the winner off-screen and grade the actual media
-commit       -> or keep the current state, untouched
+bytes / active_read_time
 ```
 
-Three properties of that ordering are load-bearing, and each replaced an earlier rule that looked
-reasonable and was wrong.
+for the current response is a lower bound on service obtained by that response, not an upper bound
+on the path. It may establish that the current operating point works. It cannot veto a larger
+request or identify the best untried rendition.
 
-**Feasibility is not a utility term.** A rendition the decoder cannot decode is removed before
-anything is scored, so no weight is ever asked to outvote a hardware bound.
-`HlsActuatorCatalog::limited_to` takes two facts: the device's own codec table (`devcaps`, which
-exists because "4K yes" was once a constant describing one television) and the source raster —
-asking PMS to upscale 1080p to 4K buys nothing and costs the measured 2.1x of server work.
+No continuously parallel speed-test stream is used. It would consume the same path as playback and
+change the quantity it tries to measure. The de-obfuscated official Chromium/webOS client confirms
+there is no special PMS speed-test endpoint behind its “Checking connection speed” notice: before
+`player.open()` it performs an ordinary raw Part GET and measures source bytes. PlxNative uses the
+same physically uncapped object, but bounds it to one finite Range response. At cold start that
+request runs before playback; at runtime it is serialized between HLS acquisitions, never beside
+one.
 
-**Feasibility is re-asked when the request changes, not only at startup.** Picking a different audio
-track or turning on a subtitle can change whether Original is possible at all, and that lives at the
-selection commit rather than in this module: `route::commit_audio_selection` re-runs the
-direct-playable-audio test and routes the pick to a native stream switch or to a server transcode
-accordingly, and both track commits DROP the stored Original candidate while HLS is live — the
-recovery declaration captured one exact source/audio pairing, so once the viewer changes it, the old
-one must not be resurrected behind their back. A fresh playback establishes a new candidate.
+## 2. Exact finite-episode physics
 
-**Measurements reach the decision through ONE risk number per candidate.** Variance, VBR headroom,
-buffer level and slope, and PMS cadence all end in `CandidateRisk`. The alternative — one utility
-term per telemetry field — is how a utility function becomes untunable, because every new
-measurement silently reweights every old one.
+For every repeatable completed acquisition `i` admitted to the current HLS operating-point episode:
 
-**A deficit is not an emergency.** `C < R` says the buffer drains, not that playback stops.
+- `A_i` is end-to-end acquisition time, including open, server production, probe and body read;
+- `D_i` is playable media duration credited only after that acquisition completes;
+- `B` is the currently playable A/V reserve.
 
-## 2. The arithmetic that replaced the counters
-
-`starvation_horizon(buffer, requirement, capacity)` turns a rate deficit into seconds:
+The active operating point is sustainable on the observed finite episode exactly when
 
 ```text
-B buffered, requirement R, capacity C, and C < R
-    buffer drains at (1 - C/R) seconds per second
-    T_starve = B·R / (R - C)
+Σ A_i <= Σ D_i
 ```
 
-So a 60-second reserve against a 1.7% shortfall is an hour away, and ten seconds against a 12x
-shortfall is ten seconds away. Both used to be "the measured rate is below the file's average",
-which is the same sentence for both and the reason Auto abandoned Original on two slow windows.
-
-**The requirement is not the file's average.** A whole-file average is a lower bound on demand: the
-file contains scenes above it. `source_requirement_kbps` adds `AbrPolicy::vbr_allowance_pm` (1.35),
-so a link that merely matches the average is already at risk before the first busy scene.
-
-**The same formula is evaluated TWICE, on two different rates, and the split is admission versus
-eviction.** `CandidateRisk::starvation_seconds` — `starve=` on the log — scores every candidate on
-`conservative_kbps()`, because admitting a rung you are not yet playing is a bet and a bet is made
-against a lower bound. The HLS downshift trigger evaluates it on the MEASURED rate instead —
-`edge=` on the log — because evicting the rung already playing is a claim about the link in front
-of you, and that claim has to be observed rather than discounted into existence.
-
-They differ by up to a factor of two, and the difference is not incidental: `uncertainty_pm` sits
-at its 500 cap on the first sample of every rung (`reset_confidence` runs at each commit), so the
-conservative rate there is exactly half the measured one. Score the eviction on it and a link
-delivering *precisely* what the rung asks reads as a 2x deficit — an emergency on the healthiest
-possible playback.
-
-**A rate deficit is not a trigger at all.** `immediate_network < expected_wire_kbps` used to
-evict the current rung on its own — true of a rung 1% too dear against a completely full buffer.
-It survives under the name `collapse_target` for the two jobs it is good at: SELECTING the
-downshift target, so a measured collapse does not walk the ladder one oversized encoder at a time,
-and naming the reason. The deficit still narrows `safe_budget`, which is a reason not to climb.
-Keeping a state you are already buffered into and admitting a new one are different decisions.
-
-**N4 also lists `B < E_tx_down` as a hard guard, and it is not built, because it is redundant.**
-`E_tx_down` is measured at 1 424 ms and `starving()`'s first arm fires at `B <= 2 000`, so the
-unaffordable region is strictly inside the starving one with nothing reachable in between. Building
-it would be one condition under two names — the defect `candidate_prime_budget` was already caught
-committing. `the_affordability_guard_is_subsumed_by_the_starvation_arm` fails if either number
-moves.
-
-**The eviction horizon runs at cold start, and it is the only trigger that does.** `starvation_
-horizon` returns `None` whenever `C >= R`, so on a link that covers the rung it cannot fire however
-small the reserve is; the reserve appears only in the numerator. The cold-start artefact — the
-transaction just spent the reserve, so `B` is about one segment — therefore cannot manufacture a
-deficit here, which is exactly the protection the bare `buffered < segment` test does not have and
-the reason that one stays gated. What the exemption costs, priced rather than asserted: at a
-one-segment reserve the deadline is reached at a measured deficit of 10%, and at a full `B_max` at
-the top rung it takes 44%.
-
-**The horizon reaches utility as a CONTINUOUS number, not a four-step ladder.** `risk_score` was
-`1 / 4 / 12 / 40` on four bands of `T`, and a ladder is a set of cliffs: 60 s scored 1 and 59 s
-scored 4, for one second, while every horizon from 59 s down to 21 s scored the same 4. It is now
-linear between the two horizons that already exist and already mean something —
+For the chronology that actually occurred, let
 
 ```text
-r_net(T) = 0                                       T infinite, or T >= starvation_safe_secs (60 s)
-         = (T_safe - T) / (T_safe - T_fallback)    in between
-         = 1                                       T <= starvation_fallback_secs (20 s)
+R_o = max_i( Σ_(j<i) (A_j - D_j) + A_i )
 ```
 
-— scaled by the ladder's own worst case, 40, so `score_max` stays 90 and every ratio to
-`visible_switch_cost` holds where it was calibrated. **No new parameter enters**: both endpoints
-are policy horizons the emergency path already keys on, and `r_net = 1` below the fallback horizon
-is consistent by construction because that region is decided by a hard guard rather than by
-utility. The production term takes the same shape between `production_safe_pm` and
-`production_max_pm`; `buffer_risk` stays a labelled boolean and is deliberately not normalised.
-Rounding is toward MORE risk — the opposite of every other truncation in this module, because here
-safety is the larger number.
+`R_o` is the exact starting reserve needed to replay that ordered current-rung history once. It is
+the current-rung stay/down certificate: it follows the measured order and makes no claim that an
+unseen response will repeat it.
 
-Two endpoints move deliberately, and both are asserted: a comfortable horizon now scores **0**
-where the ladder charged 1, and the fallback horizon scores the full **40** where the ladder
-charged 4. **The second of those exposed a test that had never graded what it claimed.**
-`recovery_does_not_pay_for_a_reload_at_the_end_of_a_film` was passing by ONE point out of a
-comparison whose terms are tens, on a fixture — `CapacityEstimate::from_prior(30_000)` — that the
-helper called healthy and that was not: `from_prior` pins uncertainty at its cap, so its
-conservative reading was 15 000 kbps against the 20 011 kbps rung the comparison scores, a 47 s
-horizon. The ladder flattened that to 4 and hid it. The fixture is now derived from the rung it is
-compared against rather than written down.
-
-## 2b. The reachable ceiling, and the two gates derived from it
-
-**The reserve has a physical ceiling and nothing may ask for more than it.** Two lanes feed one
-playable reserve: the demux thread blocks on either AU queue's byte cap, and the pump throttles
-video to `MAX_FEED_AHEAD_NS` ahead of the playhead and audio to that plus `AUDIO_SLACK_NS`.
+For discretionary exploration, the rollback obligation must survive any ordering of the completed
+episode. Its exact worst-permutation starting reserve is
 
 ```text
-B_max(R_v, R_a) = min( video_lead + video_queue_bits / R_v ,
-                       audio_lead + audio_queue_bits / R_a )   [ms]
+R_s = Σ max(A_i - D_i, 0) + max_i min(A_i, D_i)
 ```
 
-`kbps` is bits per millisecond, so `bits / kbps` is already milliseconds — there is no scale
-factor, and a `* 1000` here is the defect that shipped in a draft and survived review because the
-reviewer's expected value came from the same expression. `plant::b_max_est_ms` reads every input
-from `player::engine` at run time (`aq_caps`, `feed_leads_ms`) rather than transcribing it. The
-device census says the model is good: seven pinned rungs, every prediction within 5% of the `buf=`
-the television settled at, sharing no term with it.
+The last term is load-bearing. Even when `A_i == D_i`, playback needs `A_i` of starting reserve
+because the next `D_i` is unavailable until the acquisition finishes. `R_s` is a retrospective
+stress boundary, not a forecast for an unseen response. On an alternating sequence of slow and fast
+segments it can grow with the number of historical slow segments even while `R_o` says the actual
+ordered stream is survivable. Keeping the two named prevents that adversarial exploration price
+from becoming the current-rung emergency trigger.
 
-**Why it matters more than it sounds.** `B_max` falls as `1/R` while a flat reserve gate does not,
-so they cross — and the upshift gate was a constant `3 * segment` = 6 000 ms against a ceiling of
-5 852 ms at the top of the ladder. That gate was unsatisfiable at exactly the rungs it guarded,
-whatever the link did. It is now `min(3 * segment, alpha * B_max_est(R_target))`: unchanged below
-about 14 Mbit/s of video ES, where the ceiling term is the larger, and reachable above it.
-
-**The refill filter, per candidate.** A candidate that would leave the reserve short of its own
-target must leave room to close that shortfall inside the horizon `H`:
+The live certificate covers every repeatable completed acquisition since the
+operating-point/service-episode reset. The structurally marked first object of a fresh HLS cursor
+is the one exception: its one-time setup cost still updates delivery, production and reserve, but
+does not enter the repeatable acquisition episode. Once that boundary object is past, the
+certificate does not become a last-64-sample rule when diagnostics storage wraps. Production folds
+an associative constant-space summary carrying `n`, `ΣA`, `ΣD`, `delta = Σ(A-D)`, `R_o`,
+`Σ max(A-D,0)`, `max min(A,D)` and the largest per-sample fixed overhead. For adjacent chunks `x`
+then `y`, the only order-sensitive composition is
 
 ```text
-B*(R)   = min(buffer_target_ms, alpha * B_max_est(R))     the reserve we ask for at rate R
-D_j     = max(0, B*(R_j) - B)                             this candidate's deficit
-R_max_j = C_safe * H / (H + D_j)                          what it may claim
+R_o(x ++ y) = max(R_o(x), delta(x) + R_o(y))
 ```
 
-With no deficit `R_max_j = C_safe` exactly, so the filter is the identity in the state every
-healthy playback is in. At an empty reserve it is `H/(H+B*)` = 0.8 of `C_safe` — derived from two
-named durations rather than chosen. **It is currently SHADOWED on the decision path**, because the
-reserve gate above demands more than `B*` at every rung on this ladder; its live effect is on
-selection at low reserves and on the read-out's `optimal`. That shadowing is written down and
-tested rather than left implicit, because one constraint hiding behind a stricter one is the shape
-this design keeps finding.
+all sums add, and sample maxima take `max`. Every addition and unit conversion is checked; an
+overflow is an absorbing refusal, never a saturated pair of totals that can accidentally compare
+equal and authorize exploration. The separate 64-entry ring remains only for retired/offline
+order-statistic diagnostics.
 
-`alpha` (`buffer_reserve_fraction_pm` = 500) is one number used by both gates — "how much of the
-reachable ceiling we are willing to ask for" — not two wearing different names. At
-`buffer_target_ms = 2 500` it binds only above ~19 700 kbps of video ES, so it is inert on eleven
-of thirteen rungs; that is the intended shape for landing the corrected formula without moving an
-expected value, and M4 decides whether either number rises.
-
-**One limitation, stated rather than fixed by mixing dimensions.** `C_safe` is measured over active
-body-read time, which excludes PMS production, while "close the deficit within `H`" is a wall-clock
-promise. The guarantee therefore over-promises by the factor that must not be folded in: production
-is an independent feasibility constraint and stays one.
-
-## 2c. Counters became guards, and the guards are wall clock
-
-Three sample counters used to sit between a model that had already passed every risk, budget,
-buffer and production condition and the proposal it justified. All three are gone (N8-N10).
-
-| was | counted | is |
-|---|---|---|
-| `stable_samples` | three consecutive good samples before any climb, reset at seven sites | **deleted.** The model had already agreed; the counter re-asked |
-| `samples_on_rung < 2` | no adaptation at all on a rung's first two samples | **deleted as a gate, kept as an estimator input** — it is still the production estimator's cold-start flag and I3's predicate, and it is the only sample count left on the UPSHIFT path |
-| `cooldown` | 3 segments after an up commit, 8 after a down | **`E_tx` of wall clock**, on the UP path only |
-
-One sample count survives elsewhere and is named here so the table above is not read as a clean
-sweep: `BufferEstimate::starving()`'s second arm is `buffered_ms <= 6_000 && draining_samples >= 2`,
-and it decides `buffer_bad` on the immediate-downshift arm. It is a hard guard on a reserve that is
-both thin and shrinking rather than an adaptation gate, which is why N8-N10 left it alone — but it
-is a count, and the sentence above would otherwise be false in its own paragraph.
-
-**A segment is not a bounded amount of wall time** — it is `bytes / C`, and `C` is the quantity a
-downshift exists to react to — so an eight-segment guard was an unbounded interval that got longer
-exactly as the link got worse. `E_tx` is the sum of the two deadlines the transaction is *already*
-held to (`candidate_warmup_budget` + `candidate_prime_budget`, R19's own form), so no number is
-introduced: 5.2 s at the 2 s segment this pipeline requests. It is labelled an **encoder-lifecycle
-operational guard** and may never be made to express a quality preference (N20). Both directions
-arm it, because both start a PMS encoder session; only the up path is blocked by it, because
-rate-limiting a recovery is how a stall becomes a policy.
-
-**And a failed UPSHIFT now records what it cost** (N11). Only a discretionary spend arms the
-block — a downshift is a recovery action, the same line the dwell draws one paragraph up, and with
-a sharper failure on this side: `refill_time_ms` returns `None` exactly when `safe_budget <=
-R_current`, which IS the state a collapse-driven downshift is in, so a Down reject armed a guard
-with no clock release at all and left every climb refused for the life of the demux. It used to record nothing and set `cooldown = 1`,
-whose decrement runs *before* the check — so `K = 1` has never blocked a single segment, and any
-stateless refusal bought another attempt on the very next sample at another `E_tx` of unrefilled
-reserve. The block releases on **either** of two independent sufficient conditions, and neither is
-a chosen number:
-
-* **the link has repaid the attempt** — `t = E_tx · R/(C − R)`, [`starvation_horizon`] run
-  backwards. `None` when `C ≤ R`: a link with no surplus never repays it, and saying so beats
-  returning a number that reads as an answer.
-* **the evidence has moved past what the failing estimate did not know** — the failing budget was
-  `slow·(1000 − unc)/1000` and the uncertainty band is `slow·unc/1000`, so "materially" is
-  `safe > slow` at reject time. The estimator states its own threshold.
-
-**It refuses every upshift, not only the rung that failed, and that is a correction to N11 as
-written.** N11 says "that rung" and justifies it by affordability. The two do not match, and the
-test written to pin the guard is what showed it: after a reject the controller does not re-propose
-the same rung at all — the budget has moved, so it proposes a *neighbouring* one, which a
-rung-keyed guard waves through while the reserve pays for it identically. `E_tx` is spent by the
-attempt. The rung is recorded because the log needs it and because the evidence test is about it.
-
-**The production arm lost its persistence requirement entirely** (N21): `production_risk &&
-draining_samples >= 8` — about sixteen seconds before a server falling behind could move the rung,
-while `starving()` beside it treats two as enough — is now `production_risk && draining()`, the
-magnitude test derived from the 2026-08-25 device finding. Stated as what it is: an 8x increase in
-sensitivity on an immediate-downshift arm, with `draining_samples >= 2` recorded as the fallback if
-it proves too eager.
-
-`abr: steady` reports the two guards where it used to report the two counters: `dwell=<ms>` is what
-is still owed before another encoder may be started, and `block=<kbps>` is the rung a live reject
-block is refusing (`0` for neither). **A pre-2026-08-28 log does not parse**, deliberately —
-`cool=` was a segment count and `dwell=` is wall clock, and a regex tolerant of both would invite
-comparing them field by field across the change that separates them.
-
-## 3. Estimation, with uncertainty as a first-class output
-
-`CapacityEstimate` keeps a fast and a slow rate, a dispersion in per-mille, and a sample count.
-What every ADMISSION consumes is `conservative_kbps()` — the slow estimate discounted by its own
-uncertainty — never the mean. (The emergency downshift is the one reader of the measured rate; §2
-says why.) Two histories averaging the same number are not the same evidence:
+A failed discretionary experiment is followed by the exact next ordinary current-rung acquisition
+before its media can be credited. Let `D_next` be that object's parsed `EXTINF`, and `L` the balance
+left after the experiment. Surviving every unseen rollback response that is still sustainable
+requires `L >= D_next`. Once it completes, `B' = L - A + D_next >= L`, so restoring the stress
+boundary requires `L >= R_s`. These obligations lie on opposite sides of the same media credit, so
+their exact joint requirement is the larger one:
 
 ```text
-59, 60, 61, 60, 60   ->  tight dispersion, small discount
-60, 10, 60, 12, 60   ->  wide dispersion, large discount
+E = max(B - max(R_s, D_next), 0)
 ```
 
-Three mechanisms keep that honest:
+`D_next` is read without consuming the current cursor. It is a physical media object, not a tuned
+network margin or the duration of the preceding sample. The parser retains exact nanoseconds; on
+the controller's whole-millisecond lattice credited media rounds down and reserve obligations
+round up. Reusing the preceding `D` is unsound for a variable-`EXTINF` playlist; adding
+`R_s + D_next` would charge the same rollback completion twice.
 
-* **Observation quality.** Throughput is a rate, so the size and duration of a transfer decide how
-  much it proves. A 40 KiB read that finished in 3 ms honestly reports 100 Mbit/s and proves
-  nothing about the next second. `ObservationQuality` is Weak / Normal / Strong and weights the
-  update accordingly; a truncated transfer is Weak whatever rate it reports, because it measured a
-  floor.
-* **Confidence grows with agreement.** A first sample carries the maximum discount and earns
-  confidence as later samples agree with it. This is what "two successful probes" became: a probe at
-  twice the requirement clears the bar alone, a marginal one has to be confirmed, and the number of
-  probes is an output of the rule rather than part of it.
-* **Staleness and weak priors.** `age_ms` widens uncertainty over an unmeasured wall-clock gap (each
-  half-life closes half the remaining distance to the maximum discount) and past four half-lives
-  demotes the estimate to a prior. `demote_to_prior` keeps the value and throws away the confidence;
-  it has exactly three callers, each a different reason the history stopped describing the present —
-  a bootstrap source probe seeding steady-state HLS (different request, different server work), a
-  path change, and a long pause.
+These expressions are deterministic statements about completed observations. They are not a
+prediction of an unseen segment and not a probability guarantee.
 
-**A pause is the only real staleness.** Backpressure with a full buffer stops the reader on purpose
-and must never be aged; both workers therefore watch `TX.paused` for the transition rather than
-inferring idleness from the clock.
+An incomplete or abandoned response is right-censored. Its prefix never enters the acquisition
+episode, the capacity estimator, or a commit decision.
 
-## 4. Two resources, never one budget
+## 3. HLS actuation
 
-Network delivery and PMS production move independently, and the measured 4K point is the proof: the
-wire cost rose 4% while the server's work roughly doubled.
+### Staying and moving down
 
-| operating point | request | measured output | production ratio |
-|---|---:|---|---:|
-| 1080p high | 20,000 kbps | 1920x1080, ~20,011 kbps | 0.21 |
-| 4K | 22,000 kbps | 3840x2160, ~20,895 kbps | 0.44 |
+At a segment boundary, the current rung stays while its finite episode is sustainable and
+`B >= R_o`. This is the exact replay certificate for the chronology actually observed, not a claim
+that the next response is drawn from that episode.
 
-Both halves of the 4K row are load-bearing. A request of up to 21,750 kbps with a 3840x2160 ceiling
-**stays 1080p**; 22,000 flips the output; and every request from 22 to 60 Mbps produced that same
-output. So asking for 20,895 does not get 4K, and asking for 22,000 does not get 22 Mbit/s of bits.
+If the completed episode is not sustainable but `B >= R_o`, the controller uses only measurements
+that episode actually supplied — conservative delivery and reserve refill — to prime the highest
+lower actuator their existing conjunction supports. That actuator remains an experiment: a complete
+intermediate response must be funded and sustainable before commit. If it is unsustainable, descent
+continues; if no lower point passes the model, the smallest feasible response is the bounded
+fallback. This does not invert the current demand-capped rate into an unseen link capacity.
 
-`ProductionEstimate` therefore keeps a per-unit-of-work speed beside the raw ratio, and
-`predicted_ratio_pm` answers "what would this candidate cost this server". **Only part of the
-measurement scales.** The ratio is total ACQUISITION time over content duration, so it contains a
-fixed per-segment cost — connection, request, time to first byte, playlist latency — that does not
-care how hard the encode was. Extrapolating the whole number by the load ratio reads a LAN's 300 ms
-of round trips on a 480p segment as a struggling server and vetoes every upshift out of the opening
-rung; measured on the host suite, 480p at 0.4 predicted 1080p at 1.0 and Auto never left 480p on a
-7 Mbit/s link. `AbrPolicy::production_floor_pm` is where the measurement is split.
+If `B < R_o`, the active response cannot replay even the measured chronology without starving. The
+controller therefore primes the smallest feasible response, which minimizes worst-case
+time-to-picture instead of spending the remaining reserve on a
+quality-preserving guess. An abandoned/censored acquisition has the same floor fallback because it
+supplied no completed media quantum with which to order lower responses; a displaced live actuator
+remains direct rollback evidence and is tried first. The controller carries
+`ReservePolicy::TerminalFloor` into that exact candidate transaction: although `B` may still be
+positive, the premise for protecting a guaranteed old-cursor replay is absent. The floor downshift
+therefore runs to an actual transport result instead of repeatedly spending that remnant on the
+measured abort/rollback/retry cycle.
 
-Consequence worth stating: a fast link in front of a loaded server does not get 4K. The network says
-yes, the server's own cadence says it would fall behind real time, and the two constraints are
-evaluated separately so neither can override the other.
+At the ladder floor there is no lower actuator. The runtime clock hold described below still
+protects the picture, but if even the floor is physically unsustainable, uninterrupted playback is
+impossible until the path or server recovers.
 
-## 5. The actuator catalog
+### Exploring upward
 
-PMS accepts a bitrate ceiling; what it does with it is empirical. `HlsActuatorCatalog` stores the
-request beside the measured output, and the ladder is 13 operating points: 320 / 720 kbps, 2 / 4 /
-6 / 8 / 10 / 12 / 14 / 16 / 18 / 20 Mbps, and the 4K point.
+If `E > 0` and there is no failed response-size endpoint at that budget, the controller may excite
+the highest feasible unclassified rung. The candidate is a separate PMS fixed-rendition encoder
+session. The old session remains the rollback actuator.
 
-**The "measured output" half of that sentence is now known to be wrong for 12 of the 13, and it is
-wrong for a structural reason rather than a stale one: it is a per-ITEM quantity kept as a
-per-server constant.** Swept across three library items
-(`docs/measurements/p2h-pms-ladder.md`, `tools/pms-rung-sweep.py`), the rate PMS declares is
-5%–32% below the request at every rung but the 4K one and moves with the title; rungs 18000 and
-20000 turn out to be the same encoder session on a 1080p item, byte-identical in 39 of 40
-segments. Every error is an over-estimate, so nothing mis-behaves today — but the replacement is
-free, because the transaction already fetches the true declared rate and logs it before it decides
-anything, and it is a real bound at rungs **4000 and above**: 0 of **1 440** segments exceeded
-0.85x their own declaration, max 0.8456. **Not "above 2000", which is what this sentence said
-until a second item was run through the full ladder and refuted it** — rung 2000 puts 9 of 120
-segments over, to 0.9175, and the shipped constant is now `sigma = 0.90`: the pooled max scaled by
-the largest measured cross-item spread, because 0.85 against a measured 0.8456 is a rounding
-artefact of that measurement and not a margin. `docs/measurements/p2h-pms-ladder.md` §2/§2a. Spending it is admission-rule work and has not landed. Six of them are byte-for-byte the
-`route::Quality` rungs a user can pick by hand, because Auto arriving at the same operating point
-must send the same request.
+After a high excitation establishes a scheduling endpoint, adjacent descent is the worst possible
+search schedule: it pays for every intervening encoder session. The controller instead splits the
+remaining ordinal actuator interval. A completed but unfunded response supplies that endpoint from
+its observed size. A deadline-censored attempt retains the requested actuator as an *operational*
+endpoint after its hard budget block is released: no response size is claimed, but one additional
+millisecond of reserve must not buy the identical maximum transaction again. This is minimax search
+over a finite ordered set, not a conversion of the current rung's download rate into an estimate of
+hidden link capacity.
 
-The six 1080p rungs between 6 and 18 Mbps exist for one reason: **spending a measured link instead
-of rounding it down to the next power of two.** A 17.5 Mbit/s link that has to choose between 8 and
-20 Mbps spends 12 Mbit/s of itself on nothing.
-
-Selection is a continuous **safe budget** (`hls_safe_budget`: the conservative capacity, discounted
-again for a server already behind and for a reserve that needs refilling) and then the best
-feasible, production-sustainable actuator that fits it. Never "one rung up" — a jump from 8 Mbps to
-a 15 Mbit/s budget primes the 14 Mbps encoder once instead of paying for three encoder creations to
-walk 10, 12, 14.
-
-That skipping is bounded by evidence rather than by nerve: extrapolating the server's cost five
-raster steps ahead is a guess, so when the production model cannot support the whole jump the
-controller takes the step it can justify and re-measures. On the device's 17.5 Mbit/s leg that is
-two moves instead of one.
-
-## 6. Original is a mode, not the top rung
-
-Original has benefits no bitrate expresses — no generation loss, source audio, Dolby Vision and
-Atmos preserved, and **zero server video encoding** — and costs a visible reload to enter or leave.
-So it is a separate `ModeKind`, compared by utility:
+A deadline-censored transaction produced no complete candidate media quantum. A completed response
+with no Pareto gain produced media, but PMS answered with a different demand-capped object; its
+bytes do not say that a lower request ceiling would fare better. In the former case the serial PMS
+decision/start/playlist/body path did not finish inside `E`; in the latter the no-gain response
+completed for that exact cost. Let `E_f` be the disposable reserve armed at its start. Changing the
+requested rung is not new budget evidence in either case and may leave several physical PMS
+encoders overlapping. The next quality excitation therefore requires
 
 ```text
-U = quality + features - λr·risk - λs·serverCost - λt·transitionCost
+E > E_f
 ```
 
-with two terms that make the comparison behave like a human decision:
+The transaction's own drawdown already lowered `E` while it ran. Returning from that endpoint to
+`E_f` replaces the media it consumed; requiring `E_f` plus the drawdown again would charge the
+same debt twice and can put the release point above a physically full queue. Strictly exceeding
+`E_f` therefore proves both refill and new disposable reserve. A no-gain response then retries the
+highest informative request because it ordered no actuator. A censored/unfunded endpoint instead
+selects the greater of (a) the ordinal midpoint below the lowest retained endpoint and (b) the
+highest eligible actuator admitted by the existing conservative delivery and refill
+equations. The midpoint preserves minimax search; the modeled term may move farther upward or cross
+an old endpoint when genuinely stronger service evidence supports it. Candidate commit still
+requires that candidate's own completed `A <= D` and `B_post >= A` observation. This introduces no
+poll interval, bitrate margin or probe-
+count constant.
 
-* **A term paid for every remaining segment is scaled; a term paid once is not.** Below
-  `AbrPolicy::benefit_horizon_ms` the recurring terms are scaled linearly, which is the whole of
-  "do not reload with twenty seconds left" — no threshold, no special case, and it degrades
-  smoothly. Quality, features, risk and the server's production load all accrue over what is left
-  of the film and are all inside `benefit_scale_pm`; only `transition`, a reload, sits outside it.
-  **The benefit-versus-cost split this used to draw is the one the code deliberately rejects.**
-  Under it `risk` and `server` kept full weight on the HLS side while Original's shrank with the
-  horizon, and at 8 s remaining against a loaded PMS that scored HLS −60 to Original −9 — tear the
-  encoder down and reload the pipeline with eight seconds of film left.
-* **Transition cost is asymmetric and decays.** An HLS rung change is a background prime the viewer
-  never sees and costs nothing here; a mode change costs `visible_switch_cost`; and each visible
-  switch already spent in this playback adds a penalty that halves every
-  `visible_switch_decay_ms`. One switch is a decision, a fourth inside two minutes has to buy a
-  lot. That is the anti-flapping mechanism, and it is history the model can see rather than a
-  sample-count cooldown.
+PMS encoder lifecycle is an independent physical condition. A successful universal-transcoder
+`/stop` only queues cleanup, and PMS owns the physical `session=` encoder separately from the
+logical `X-Plex-Session-Identifier` Streaming Resource charged by the bandwidth governor. Before
+another upward HLS or Original experiment, the client checks the stopped physical key with the
+matching `/ping`; `200` proves it remains and `404` proves only that physical entry is gone. It
+then synchronously closes the exact logical identity through `POST /status/sessions/close`; `2xx`
+means it was terminated and authenticated `404` means it was already absent. Only that two-part
+certificate releases the cleanup barrier. Checks are coalesced and driven by completed active HLS
+quanta, not sleep, retry-count or elapsed-time policy. Emergency descent remains available while
+cleanup is pending.
 
-The switch history outlives the workers deliberately: every Original↔HLS transition replaces the
-engine, so a counter held by a demux worker would reset to zero on exactly the event it exists to
-count. It lives on the route session, is captured into each worker at spawn, and both directions
-record it — the penalty prices the ALTERNATION.
+For the initial phase of an upward experiment, one playhead-funded reserve clock, bounded by `E`,
+covers:
 
-### 6b. The comparison scores real alternatives, and says so
+- PMS transcode decision and session creation;
+- master playlist;
+- media-playlist refresh and its wait;
+- the first complete candidate segment: open, headers, any production wait, probe and body.
 
-Three quantities in the Original/HLS argmax were **fabricated** rather than measured, and each
-biased it in one direction (N14).
+If that structurally unique boundary object has `A > D`, its `A` also contains one-time
+decision/session/JIT work and does not identify the running encoder's repeatable cadence. The
+complete object remains staged, and the same original `E` clock may fund one ordinary object from
+the now-running candidate encoder. Neither object enters the playback queues before the final
+verdict. Thus the optional second acquisition is conditional but cannot enlarge its own grant by
+crediting media from an actuator which has not committed.
 
-| site | was | is |
-|---|---|---|
-| `observe_probe` | both sides scored against `candidate(P1080High)` — a rung this playback may not be on, may not reach, and may not have in its catalog | the rung actually playing, against the best rung `best_sustainable` admits |
-| `worth_probing` | the real `current` passed as BOTH `current_hls` and `best_hls` | the same pair as the decision it gates |
-| both | `ProductionEstimate::default()` — an idle server | the live estimator |
-| `original_utility` | `original_quality_bonus + hls_quality_score(P1080High)`, a constant 116 | scored from the SOURCE |
+Before each blocking control or playlist leg, its remaining `E - Δplayhead` is projected to an
+absolute transport deadline; the media AVIO retains the clock itself and refreshes that projection
+on every open, wait and read. If Pause or a naturally stopped native clock moves an issued
+projection, idempotent GET legs retry with the unchanged reserve. A timed-out transcode decision is
+not replayed blindly because PMS may have registered it; exact cleanup is queued. If its projection
+moved while the playhead reserve remained unspent, the outcome is a circumstance rather than a
+censored-rung observation; `Δplayhead >= E` remains censored reserve. Synchronous firmware DNS may
+still exceed the projection on builds without an interruptible resolver; the main-thread reserve
+floor remains active during that call.
 
-The third is the one that reads as a bug once stated: a constant baseline made Original's
-"structural advantage" **+40 against P1080High, +76 against P720 and +116 against P240**, while the
-policy comment beside it reasons about 40 throughout. A bonus that grows as the alternative worsens
-is a thumb on the scale, and it points the opposite way from the first two — which is why all three
-had to land together.
+A downshift cannot arm that same end-to-end clock before registration: its exact media obligation
+depends on the candidate playlist's actual `EXTINF` and delivered rendition, facts which do not
+exist yet. Its control and playlist legs therefore retain their typed transport-liveness bounds.
+Once those facts exist, the media leg receives the exact recovery budget computed at that boundary.
+That clock spends elapsed time through involuntary starvation and an internal clock hold, but
+subtracts every native-accepted user Pause interval, including a complete Pause→Resume cycle hidden
+inside one blocked read. A terminal-floor recovery remains unarmed because abandoning the only
+remaining actuator cannot restore a stronger rollback guarantee.
 
-`source_quality_score` is deliberately conservative in both inputs: the rate is
-`min(source_kbps, top rung)` because the quality curve has saturated above the ladder anyway, and
-the raster **caps the rate** rather than filtering the ladder. The filter form was written first and
-was wrong: it took a `max` with the source's own rate as a floor, and the floor silently defeated
-the cap, so a 28 Mbps 720p master scored the same as a 28 Mbps 1080p one. An unstated raster
-`(0, 0)` applies no cap — "nobody said" is not a forbidden zero-pixel picture, and refusing to
-credit an unmeasured source would silently prefer transcoding.
+The HLS GET legs also retain an independent wall-clock transport-inactivity deadline. Plaintext PMS
+control has the same rolling inactivity shape: complete headers and actual body bytes begin a fresh
+epoch. HTTPS PMS control instead retains its existing 25-second whole-request API cap, intersected
+with the current reserve projection; progress does not renew that total cap. In every case an
+obsolete reserve wake renews neither form of transport liveness. Classification reads the owning
+clocks: spent reserve is censored evidence, expired transport liveness is a circumstance, and
+neither means the projection merely moved.
 
-**N14 asked for a `source_raster` field on `ModeInputs` "threaded through `HlsAbrControl` to the
-worker — that one does cross a thread". It does not.** `route::auto_catalog` bounds this playback's
-catalog by `session().cur_src` on the main thread, and `HlsAbrControl` already carries the whole
-catalog across; the raster has been on the worker's stack the entire time, one accessor away. A
-parallel field would have been a second copy of one fact, free to disagree with the bound it
-describes.
-
-**Original's risk is scaled with the playback it is a risk to** (N18). `quality` and `features`
-already were; `risk` was not, which made effective risk aversion inversely proportional to remaining
-playback — the same defect §7.C rejects for rung selection. `transition` stays outside the scale: a
-reload is paid once, now.
-
-**And the comparison is now printed.** `ModeUtility`'s doc has always said its terms are kept apart
-"because the event log prints them — *Original lost* is not a diagnosis, *Original lost 40 of
-quality to 60 of transition cost with 90 s left* is". Every call site discarded them, so that was
-aspirational. `abr: mode` carries both decompositions, the rung compared against, and the benefit
-scale:
+A completed upward candidate is accepted exactly when
 
 ```text
-abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20000kbps scale=166pm
-     win[q=12 f=0 r=0 s=0 t=0 tot=12] lose[q=19 f=1 r=0 s=0 t=15 tot=5]
+A <= D  and  B_post >= A
 ```
 
-**Both specimens above are GENERATED**, by
-`abr::tests::a_published_comparison_is_readable_as_the_decision_it_records`, and that test grades
-what a hand-written one cannot: the winner must out-total the loser. Every earlier specimen here
-failed it — each printed `chose=Hls` with the loser ahead, and one gave the HLS side a features
-term where `hls_utility` hardcodes `features: 0`. `vs_hls=` is the rung's NOMINAL rate
-(`rung.kbps()`), not its `expected_wire_kbps`; this file said 20011 where the code prints 20000.
+A downshift is a recovery transaction: it must leave one complete decodable segment funded
+(`B_post >= D`), and an unsustainable intermediate response (`A > D`) is rejected so descent can
+continue. The terminal floor is the derived no-rollback exception. No cheaper actuator exists
+there, so any complete demuxable floor response commits even when `A > D`, `B_post < D`, or PMS
+exceeds the requested rung box; otherwise the only possible result is retrying the same floor
+while retaining a known-losing higher route. That verdict means “best available”, not “stable”. A
+successful commit atomically changes the actuator and seeds a fresh
+operating-point bag with that candidate sample. Old-rung acquisitions never become new-rung
+evidence, in either direction. It also publishes the physical encoder id, URL and rung as one route
+state; a seek or mode rollback therefore rebuilds the stream that actually won, not the bootstrap
+request that created the worker.
 
-It is assembled in `abr/`, which never logs, for the reason `ControllerTelemetry` is: the numbers
-printed are then provably the numbers used. It appears only where a comparison was actually made —
-a truncated probe and a rate under the requirement both exit before one, and publishing a stale
-comparison beside a fresh verdict is the trap the line exists to avoid.
+The candidate-media ownership protocol has these externally meaningful phases:
 
-## 7. Leaving Original, and returning
+- `Primed`: the transaction owns a candidate encoder; route, controller and playback queues still
+  belong to the current actuator.
+- `Staged`: one boundary object, and only when structurally necessary one ordinary object, belong
+  solely to the candidate. The old cursor and playback queues remain untouched. A rejected
+  candidate discards all staged media and retires its encoder.
+- `MediaPending`: only after the complete candidate verdict is `Commit`, immediately before the
+  first candidate AU may cross into a playback queue, the worker makes a structural generation
+  gate unstable. Every staged object is then fed under that one ownership transition.
+- `Committed`: while serialized against queue abort and route replacement, the process route
+  publishes encoder/URL/rung/observation and its callback moves the controller plus the
+  worker-local encoder id. After those locks release, the worker promotes the matching cursor and
+  publishes its runway. If an internal hold is active, releasing the structural gate first starts
+  a fresh new-route recovery epoch.
+- `Discarded`: no candidate AU crossed into playback, so the old cursor, timeline, route and
+  recovery epoch do not move. There is nothing to realign.
+- `Terminal`: abort, a concurrent route replacement, or an impossible commit precondition after
+  media publication leaves the gate latched until teardown clears it with the queues.
 
-**Leaving** (`OriginalModeController::observe`, one 750 ms window of ACTIVE body-read time) has three
-exits, and the log names which one fired:
+Cleanup never runs inside the queue-abort/route publication locks. A losing transaction retains and
+retires its candidate after those locks release; a successful commit releases the structural gate
+and any trial-reserve gate before retiring the previous encoder. An I/O completion is likewise
+reduced to one typed event at the boundary where control returns: caller abort, deliberate
+active-stream stall, reserve expiry, transport expiry, HTTP response and parse failure are distinct
+causes. A later scheduler delay cannot relabel one as another.
 
-| exit | rule | consults utility |
-|---|---|---|
-| `ImminentStarvation` | horizon inside `starvation_fallback_secs`, **and the reserve measurably falling** | no — a stall beats any switch |
-| `SustainedDeficit` | horizon unsafe for `sustained_unsafe_deficit_ms` of WALL clock, and utility agrees (§7b) | yes |
-| `EmergencyLowBuffer` | reserve under the floor and falling, whatever the estimates say | no |
-
-**Both hard guards require an observed drain, and the first one did not until 2026-08-27.** The
-horizon is `T = B·R/(R−C)`, which is a prediction only under the premise that the reserve is being
-consumed at `(R−C)/R`; when the measurement beside it says the reserve is flat or growing, `T` is
-arithmetic on a discounted rate rather than a forecast. Without that conjunct the guard fired on
-measurement window ONE — where `conservative_kbps` is pinned to half the measurement by the
-uncertainty floor and `buffered_ms` is the prime remnant — and cost a real film its 4K Dolby Vision
-and Atmos for the whole playback (`docs/measurements/orig-first-window-fallback.md`). Both read the
-RAW delta rather than `draining()`: at the moment of a *correct* fallback the smoothed slope was
-measured at **+8446 ms/s**, still carrying the healthy leg before it.
-
-**Every Auto Original is watched, wherever the server is.** Until 2026-08-27 the watchdog was armed
-only for a `Remote` server, on the argument that a Local link needs no throughput proof — true of
-the pre-flight probe below, false at runtime, since `Location` is decided from the address shape and
-describes topology rather than throughput. A LAN held at 2 500 kbps under a 10 634 kbps source ran
-the film at 8–25 % of real time with no `abr:` line in the log at all
-(`docs/measurements/local-original-blind.md`).
-
-The third is a **labelled emergency guard**: it should be unreachable when the model works, and its
-appearance in a log is a finding about this module rather than about the network. It reads the raw
-buffer delta, not the smoothed slope, because a 3:1 EWMA still reads positive through the first
-sharp drop.
-
-Two consequences of the arithmetic, both of which used to need special cases:
-
-* A reserve that outlasts the remaining content can never starve, so the closing minutes need no
-  rule of their own.
-* The replacement state is the best candidate the CURRENT estimate sustains, never the bottom of the
-  ladder. The worker hands the main thread its conservative estimate rather than the last window's
-  raw rate — one sample of a noisy distribution is the wrong basis for choosing a rung.
-
-**Returning** (`OriginalRecovery`) drops both of the old gate's requirements. It no longer waits for
-the top rung: PMS producing 20 Mbit/s of H.264 says the SERVER can encode and says nothing about
-whether the link can carry a 60 Mbit/s remux — a set that struggles to transcode may be an ideal
-direct-play target, so gating recovery on transcode success measured the wrong resource. And it no
-longer counts successful probes; see §3.
-
-A probe reads real media bytes over the link the segments need, so it is not free. Four gates decide
-whether to spend one, none of them a rung: a reserve deep enough that the probe cannot cause the
-starvation it is looking for, a reserve that is not draining, measurable spare capacity in the HLS
-evidence (segments prove a lower bound on the link — the only thing they honestly can), and a
-minimum spacing. Then `worth_probing` asks the utility comparison under an assumed-good outcome, so
-"twenty seconds left" and "already switched three times" stop the measurement rather than being
-discovered after paying for it.
-
-### 7b. Three clocks wore one prefix, and none of them was wall time
-
-Original's two policy counters were named `ORIGINAL_DEFICIT_WINDOWS` and `ORIGINAL_PROBE_SPACING`,
-and they counted **different things on unrelated clocks** (N13).
-
-| was | counted | is |
-|---|---|---|
-| `ORIGINAL_DEFICIT_WINDOWS = 6` | 750 ms windows of **active body-read** time | `sustained_unsafe_deficit_ms = 4 500`, wall clock |
-| `ORIGINAL_PROBE_SPACING = 3` | **HLS segments** — not an Original window at all | `probe_spacing_ms = 6 000`, wall clock |
-
-The active-read clock **stops under backpressure**, which is the healthy full-buffer case, so a
-six-window rule spanned unbounded wall time and named no duration. The module said as much in two
-places and disagreed with itself: one doc read the counter as "about four and a half seconds of real
-transfer" (right, for that clock) and another as "about nine seconds" (a wall-clock reading of the
-same number). The segment count has the same disease one layer out — a segment duration is a client
-*request* the server may ignore.
-
-**Both numbers are carried across unchanged and the conversion is deliberately not claimed to be
-1:1.** 4 500 is 6 × 750 and 6 000 is 3 × 2 000, so nothing moves at the saturated operating point.
-In the world the wall interval is *longer* under backpressure, so the new rule is **at least as
-patient** as the old and never hastier — the safe direction — and the observed ratio is an M2
-measurement this project has not taken. The 750 ms window survives as the sampling rate; the policy
-is no longer expressed in it.
-
-The persistence term in Original's risk moved with them. It was `min(windows, 15) × 4`; it is now
-continuous in elapsed time, with **both endpoints taken from the old rule** — 24 at the threshold
-that ends the deficit (what six windows charged at six) and 60 at saturation (what the `.min(15)`
-cap charged, i.e. 2.5× the threshold expressed as a multiple rather than as a second count). The
-same technique N5 used for the network term: no number enters, the steps become a ramp.
-
-The diagnostics read-out followed: `shortfall · 3 windows` became `shortfall · 4.5 s`. The old
-string named durations an order of magnitude apart and a viewer could not tell which.
-
-### 7c. What Original preserves, priced in order
-
-`route::auto_original_features` returned `dovi.profile > 0 || immersive` — one boolean worth a flat
-`original_feature_bonus = 25` — so an **Atmos-only film bought two visible reloads for a benefit
-inaudible on television speakers**, priced identically to a Dolby Vision panel-mode change (N16).
-
-It is three terms now: **Dolby Vision** (a visible panel-mode change), **generation loss**
-(unconditional — no re-encode at all is true of *every* Original, and pricing it at zero for a plain
-file was the other half of the conflation), and **Atmos** (last, deliberately). The split is rank
-weights 3:2:1 over the same preserved total of 25, and **only the order is a claim** — §6.2 records
-all three as "ordering yes, magnitude no", so the host test asserts `dv > generation_loss > atmos`
-and the total, never the values. A test pinning 13/8/4 would pin a rank weighting as if it were a
-measurement.
-
-The feature term acts only where utility acts: `SustainedDeficit`, the one exit of the three a
-comparison may veto. `ImminentStarvation` and `EmergencyLowBuffer` are hard guards and return before
-any utility is computed.
-
-## 8. Bootstrap is a separate decision
-
-At startup every estimator is empty, there is no buffer, and the viewer is looking at a black
-screen. `bootstrap()` therefore branches on how much is knowable for free, and its worst case is
-"start conservative HLS and let the real controller recover", never "hold the screen black until the
-link is proven".
-
-| link | rule | reason code |
-|---|---|---|
-| Local | Original immediately, no probe — and then WATCHED, §7 | `LocalDirect` |
-| Relay | HLS; relay is bandwidth-limited by design | `RelayLimited` |
-| Remote | one bounded probe of the actual file | `ProbeSustainable` / `ProbeBelowRequirement` |
-| Remote, probe failed or source bitrate unknown | conservative HLS, playback still starts | `ProbeInconclusive` |
-| any, Original impossible for this item | HLS | `OriginalInfeasible` |
-
-The probe is only taken where it can change the answer. Admission uses
-`AbrPolicy::bootstrap_confidence_pm` (1.35) as a fixed margin rather than an uncertainty discount,
-and that is deliberate: with exactly one sample there is no dispersion to discount, so the margin
-has to stand in for the confidence a history would have given.
-
-Whatever the verdict, the measurement is not thrown away. A completed probe becomes an explicitly
-weak prior for the live estimator (§3), so the first HLS segment refines a number the app already
-paid for instead of starting from nothing — and it picks the opening rung from the same catalog
-steady-state selection uses, so a 17 Mbit/s probe on a 60 Mbit/s file opens at a 12 Mbps rendition
-rather than at a floor it would spend a minute climbing out of.
-
-### 8b. A seek carries the link, and nothing else
-
-An HLS seek routes `route::transcode_seek` -> `engine::reload_transcode` -> a **fresh
-`Controller`**. The only state that survived was `session().auto_prior_kbps`, and its writer on the
-Original->HLS fallback path is `measured_kbps` **at the moment the link failed**. So after one bad
-patch, every subsequent seek re-seeded from the worst rate the playback had ever measured, at
-`MAX_UNCERTAINTY_PM` with `samples = 1` — and the ladder re-ramped for five to ten segments: ten to
-twenty seconds of visibly softer picture after every skip (I8).
-
-The delivery estimate now crosses whole, as its own four fields. **`from_prior` and `from_snapshot`
-make two different claims and that is the point**: a prior pins uncertainty at its cap and asserts
-one observation, which is the honest reading of a bootstrap probe and a false one for an estimate
-that has watched a link for a minute. `auto_prior_kbps` is not deleted — it remains the BOOTSTRAP
-seed, correct when there is no live estimate to carry.
-
-**Only the link crosses.** The buffer describes a reserve at an offset that no longer exists, the
-risk history was computed from it, and any pending transaction was proposed for it; the new
-`Controller` gets all three right by construction, and a host test says so because that is the kind
-of correctness a later refactor loses quietly.
-
-The mechanism is the one asymmetry worth knowing: `engine::teardown` calls `SHARED.reset_session()`
-on **both** paths, a real stop and a reload — and a reload is the same item on the same link at a
-new position (a seek, a quality pick, an app-switch resume). So the seed is deliberately **not** in
-`reset_session`; `clear_abr_seed` is separate and is called only under `!for_reload`. The two
-methods are one keystroke apart, so a test asserts the split rather than trusting it.
-
-## 9. The transaction is unchanged, and it is the reality check
-
-Everything above is a prediction. A quality move is still: propose, register a separately named PMS
-encoder, fetch and fully demux its media off-screen, grade the actual segment (in-bounds decoded
-raster, decodable IDR, valid audio framing and timestamps, network and production headroom, a
-surviving reserve), and only then commit and retire the old encoder. A rejected candidate leaves the
-controller's current rung untouched.
-
-This is what makes the empirical table in §4 survivable if another PMS holds a different boundary:
-the model chooses what to try, and the media decides what ships.
-
-**And a transaction's deadline is not the same quantity in both directions**, which is the one
-place the reality check can refuse a move it exists to enable. Both candidate budgets are bounded
-by the reserve they are paid out of — the conservation identity, no coefficient — and for an
-upshift that is exactly right: an upshift buys quality on a picture that is still playing, so once
-the reserve is gone the benefit is gone with it. For a **downshift the same sentence is false**,
-because a downshift's benefit is the picture RESTARTING, which is available precisely when the
-reserve is exhausted. Enforced symmetrically it made the exhausted reserve **absorbing**: the
-first downshift spent the whole reserve on its warm-up and missed by 31 ms, and every one after
-that was issued a 168 ms deadline no transfer can meet, refused, so the reserve was never refilled.
-The controller decided correctly 321 consecutive times — every line reads `decision=prime_down` —
-and could act on none of them: 74 s of stall at a pinned rung, the film at `play=617`.
-
-So a downshift's warm-up deadline is floored at `R_target * D / C`, the time its transfer
-physically needs at the measured capacity (`predicted_transfer`). Both terms are measurements and
-there is no margin; refusing a transfer less time than it requires is not bounding it. It does not
-loosen the 36-second runaway the reserve bound was written for — that record computes to 1 667 ms,
-tighter than the reserve it ran against — so the floor binds only in the absorbing state.
-`docs/measurements/j3b-downshift-floor.md`, with both logs.
-
-## 10. What this deliberately does not model
-
-* **Decoder/render health.** This television publishes no trustworthy dropped-frame or
-  decoder-starvation counter — the heartbeat's `vtick=`/`vgap=` pair counts a 5 Hz position callback
-  and reads flat straight through a visible stutter. A proxy invented here would be an unfalsifiable
-  input to every decision above, so candidate feasibility asks the device's codec table (a fact) and
-  nothing asks the decoder how it feels.
-* **Thermal state.** A throttling SoC or server arrives as what it actually is: production ratio
-  drift, delivery drift, buffer slope.
-* **Anything learned.** No ML, no online reinforcement learning. Every number is a measurement or a
-  policy constant with a product meaning in `AbrPolicy`.
-* **PMS's own `autoAdjustQuality`.** The probe established that this server does not change a live
-  session's rendition; the client owns the decision.
-
-## 11. Diagnostics
-
-Two log surfaces, both free of names, addresses, titles and tokens — rates, milliseconds and
-per-mille only, so a line can be pasted into an issue thread.
+An upward commit additionally requires the candidate's observed output to strictly Pareto-dominate
+the output it would replace:
 
 ```text
-abr: steady current=8000kbps safe=17600kbps pending=0kbps fast=22000kbps slow=22000kbps unc=200pm
-     n=6 buf=12000ms slope=0ms/s prod=200pm/419pm risk=0 starve=none edge=none left=3512s
-     dwell=0ms block=0kbps onrung=7 draining=0 reason=None
-abr: mode chose=Hls why=OriginalNotWorthIt vs_hls=20000kbps scale=166pm
-     win[q=12 f=0 r=0 s=0 t=0 tot=12] lose[q=19 f=1 r=0 s=0 t=15 tot=5]
-auto: Original -> HLS ImminentStarvation measured=3998kbps safe=3198kbps need=10800kbps buf=2900ms
-     slope=-1200ms/s starve=4 held=1500ms target=2000kbps
-abr: Original probe #2 measured=60321kbps 2048KiB/400ms complete=1 left=2100s verdict=Recover
+w_candidate >= w_current
+h_candidate >= h_current
+declared_candidate >= declared_current
+and at least one inequality is strict
 ```
 
-**Three of those field sets moved in 2026-08 and a stale log does not parse**, deliberately:
-`stable=`/`cool=` became `dwell=`/`block=` when the counters they reported became guards (I6), and
-the fallback line's `windows=` became `held=…ms` when the persistence rule moved onto the wall
-clock (N13). Both are the `FPS=`/`loop=` shape — the same label for a different quantity is worse
-than no label, so the names moved with the units and `RE_ABR_GATES` matches the new ones only.
+The first two values are decoded raster; the third is the candidate master playlist's declared
+bandwidth. More bits at the same raster can improve an encode. More pixels at fewer declared bits
+is not objectively ordered without a product weight, so it is rejected rather than called an
+upgrade. A larger request ceiling by itself is never evidence of higher picture quality.
 
-**`reason=None` on a `decision=stay` used to be the common case, and it meant nothing.** The
-example above still shows one because it is a real line from before the fix. Every Stay names its
-reason now, in both directions: the down path had one code and the UP path had five silent exits,
-which is how `pipe_abr_seek_flat` came to sit at 2000 kbps with `safe=12585kbps` and a 45-second
-reserve while every field a reader would consult said healthy — `reason=None` on 100 of 102 lines.
-The codes are `NoSustainableTarget` (the two-constraint admission rule came back empty),
-`EvidenceWindow` (a target was selected and the acquisition window could not carry the climb — the
-one that reads most like a stuck controller), `AtBestRung` (already on the best rung the budget
-admits, which is not a refusal at all) and `ReserveUnknown` (`buffered_ms()` is `None`, the one
-Stay that is the absence of a policy rather than the application of one). Two exits stay silent on
-purpose because they report themselves on the same line: `dwell=<n>ms` and `pending=<n>kbps`. The
-invariant is a host test that sweeps 120 states and fails on any Stay that names nothing — it found
-a sixth silent exit on its first run.
+The active state therefore retains both the requested actuator and the observed master/raster.
+If the largest request returns geometry that is provably below both its bounding box and the
+known source, it is not terminal `AtBestRung`. A fresh encoder at the same actuator becomes
+eligible only when the live conservative service bound rises strictly above the completed-service
+observation attached to that response. That is the first proof that the environment differs from
+the one which produced the active underfill.
 
-Every field in the steady line was an INPUT to the decision published beside it, and the struct is
-assembled by the controller rather than re-read at the log site, so the numbers logged are the
-numbers used. **`starve=` and `edge=` are the same formula on two different rates and are both
-here for that reason** — §2 — because the downshift reads `edge=`, and a log carrying only the
-planning horizon would show a number that decided nothing next to a decision it did not explain. `ui/stats.rs` carries the same state as the on-screen read-out for a photograph.
+If a fresh encoder completes but returns no Pareto gain, its response is still demand-capped and
+cannot identify dormant path capacity or order other request ceilings. The completed transaction
+instead records the exact common refill frontier `E_f` defined above. Quality
+exploration may run again only after disposable reserve grows strictly past that frontier, and then
+retries the most informative highest request instead of walking every lower tier. Thus a filling
+real buffer can safely buy one later retry only after replacing the media the previous transaction
+spent; an unchanged reserve cannot poll PMS and a full reserve eventually makes the frontier
+terminal. There is no timer, bitrate margin or inferred capacity in either release. A seek/reload
+carries the requested/observed pair together, so rebuilding the worker cannot promote the request
+back into a delivered-quality claim.
 
-## 12. Where the tests are, and what they cannot see
+The first segment of a *candidate transaction* is never discarded merely because it contains
+setup. If it satisfies the conservation law, it decides the transaction immediately. If it is
+complete, raster-valid, Pareto-improving and funded but `A > D`, it is instead a setup-bearing
+boundary and may be followed by one ordinary observation. Both remain staged and spend the same
+initial exploration clock. They are queued together only after the ordinary observation validates
+the candidate; otherwise both are discarded. This keeps one media owner on the decoder timeline
+and prevents a rejected encoder from advancing the active cursor by proxy.
 
-`rust-modules/src/abr/tests.rs` grades the whole model on the host: the estimators
-(dispersion, weighting, staleness, priors), the starvation arithmetic, candidate selection including
-the 4K veto and the feasibility filter, all three Original exits, the recovery confidence ladder,
-transition hysteresis, the bootstrap table, and the lifecycle resets. It is pure integer arithmetic,
-so it runs in milliseconds and needs no television.
+A full player Load or seek is a different boundary: the carried rung and link estimate already
+exist, while exactly one active-cursor object also contains one-off encoder/session setup. That
+object is credited to the queues and exposed in telemetry, but it is not inserted into the
+repeatable acquisition bag and cannot immediately demote the carried rung. The next completed
+active object is the first steady observation. This is keyed to a structural session boundary,
+not to a dwell timer or sample-count confidence rule.
 
-What it structurally cannot see: whether the television's decoder accepts a raster change inside one
-Starfish Load, whether PMS honours a request the way the table says, and whether any of it looks
-right. The synthetic pipeline tier (`./tests/run.py`, `pipe_auto_original_slow_recover`) drives the
-whole Original→HLS→Original transaction against generated clips with no Plex anywhere, and the
-device is still the only place a frame is decoded.
+Handing an existing playback back to Auto is likewise not a cold start. Let `F` be the feasible
+source/device catalog, `W(r)` its calibrated wire demand, `r_c` the fixed rung currently being
+replaced (when it belongs to `F`), and `C_p` the carried HLS posterior's conservative capacity.
+Auto opens at
+
+```text
+r_p     = arg max { W(r) : r in F and W(r) <= C_p }       when a posterior exists
+r_start = arg max W(r) over { ordinary unknown fallback, r_c, r_p }
+```
+
+The `r_c` term is continuity of the control point, not a claim that a demand-capped progressive
+response measured spare link capacity. The posterior term is the controller's own completed HLS
+evidence. Its values and observation instant are one synchronized snapshot; a pause, app
+background or reload interval with no segment observations widens it before the new controller
+consumes it. With neither, the ordinary unknown-link fallback remains. Consequently `fixed 4 Mbps
+→ Auto` cannot first become `720 kbps`, and a previous settled Auto session may immediately
+reclaim more; either route may still move down after the first repeatable post-Load acquisition
+proves the current point unsustainable.
+
+There is no dwell timer, stable-sample counter, bitrate headroom multiplier, fixed exploration
+spacing or passive “optimal capacity” above a demand-capped response.
+
+## 4. Failure frontier
+
+Completed response evidence is per rung only when the response supplies an ordinal endpoint for
+that actuator. A failure at one rung cannot erase stronger evidence retained for another, and a
+completed blocked top rung cannot hide an eligible lower experiment. Deadline-censored and
+completed no-gain underfill results are additionally global because neither response orders the
+requested actuator set.
+
+The retained facts are different:
+
+- deadline-censored: store the largest exact common refill frontier `E_f`; run no quality
+  excitation at that budget or less, and retain the failed actuator as an operational scheduling
+  endpoint after a larger budget releases the hard block;
+- completed but unfunded: store the largest actually executed `E` for that actuator; its completed
+  response size keeps lower ordinal experiments meaningful;
+- completed response with no quality gain: store the same common refill frontier; disposable
+  reserve strictly beyond it may buy another fresh PMS session at the highest informative request,
+  while the demand-capped response rate is never promoted into an ordinal or capacity bound;
+- completed unsustainable (`A > D`): more reserve cannot make the operating point sustainable, so
+  buffer growth does not release it. The certificate also retains the live HLS distribution's
+  recent estimate at failure; a later live distribution whose conservative bound is strictly
+  above that old-regime estimate authorizes one new excitation;
+- PMS refusal: structurally excludes that exact actuator for this controller;
+- raster larger than a rung's bounding box: excludes that rung and smaller boxes, while a larger
+  box remains eligible;
+- origin/session/transport/parse failure: says nothing about the rung and creates no certificate.
+
+Pause duration and wall time release none of these facts. The completed-unsustainable release is
+new end-to-end service evidence, not time or reserve standing in for it. Until the two delivery
+distributions are confidence-separated, the certificate carries across segments as the
+piecewise-stationary fact it measured. A new playback/controller also discards the frontier.
+
+Recovery is separate from this quality search. If an upshift has just displaced a lower actuator,
+that actuator is direct rollback evidence and is tried first. Otherwise, once the active response
+cannot replay its observed chronology, the smallest feasible HLS response minimizes worst-case
+time-to-picture; walking down through adjacent quality rungs only multiplies transaction latency.
+After the floor produces media, the ordinary ordinal exploration above restores as much quality as
+the measured reserve can fund. If that recovery has held the native playback clock, its completed
+media is allowed to resume the clock before any private upshift transaction starts; otherwise an
+unrelated quality experiment adds its whole latency to the visible rebuffer. Downshifts remain
+eligible because they are the recovery edge itself. This ordering uses no duration threshold or
+bitrate margin.
+
+## 5. Smooth rebuffer instead of freeze and catch-up
+
+The demux worker can block in DNS, HTTP, FFmpeg probing or an AU queue. The main thread therefore
+owns the runtime safety actuator.
+
+The full stress boundary `R_s` is never compared with a partially spent buffer on every pump tick.
+Doing that is dimensionally wrong: after a safe start, both the buffer and the remaining cost of
+the in-flight acquisition fall with playhead time, whereas a static `R_s` does not. It caused the
+measured Play→Pause chatter at the ladder floor.
+
+An active candidate transaction still owns its explicitly reserved balance, but the two directions
+use different physical clocks. Upward exploration spends `Δplayhead`, so a user Pause or a
+naturally stopped native clock spends no playable reserve. Downshift media spends elapsed time
+minus native-accepted user Pause: involuntary starvation and an internal HLS hold remain recovery
+cost even while the playhead is stopped. Crossing a retrospective balance does not independently
+stop a running clock.
+
+The native clock, durable user hold, recovery epoch and automatic actuator owner are one
+mutex-protected authority. They are orthogonal fields rather than independently polled atomics: at
+most one of `QualityUp(token)`, `QualityDown(token)` or `Original(token)` owns an automatic
+boundary. Blocking PMS, HTTP and native work necessarily runs outside that mutex, but carries its
+monotone lease token and the accepted user-clock sequence through the result. Completion may only
+take the explicit commit edge if both still own the compatible boundary; a complete
+Pause→Resume is therefore not mistaken for the earlier identical-looking `Running` state.
+Otherwise the result is retained evidence or discarded work.
+Session reset never restarts the token sequence, so a late destructor from a retired worker cannot
+release the next session's lease. Hot-path atomics are diagnostics/projections of this machine, not
+a second transition authority.
+
+User Pause remains an orthogonal event and can therefore win while an automatic request is in
+flight. An active user hold prevents an Original result from committing; a safety downshift may
+continue to fill queues under an internal rebuffer hold without clearing the viewer's intent. A
+complete Pause→Resume interval is carried by a cumulative event sequence, so a worker blocked for
+both edges ages its evidence once instead of observing the same surrounding `false` boolean.
+
+No new private quality transaction starts while the user is paused. If Pause races an existing
+read, the socket retains both its ordinary liveness deadline and a scheduled re-check of the owning
+reserve clock. The re-check spends nothing while user Pause holds, but it is already armed if
+Resume makes that clock advance during the blocked read. A user Pause changes the feed gate only
+after Starfish accepts `Pause`, and an ordinary Resume does the same after `Play`. Resume during an
+internal HLS runway hold is the deliberate exception: the feed gate opens without `Play` or an ACB
+state change so recovery media can refill the queues while the native clock stays held; the
+measured re-prime later owns `Play` and its ACB mirror. The native playback clock is not restarted
+until that recovery transaction ends, so a candidate and the playhead cannot both spend the same
+discretionary balance.
+There is one terminal exception derived from the actuator set rather than from time. A downshift
+candidate at the ladder floor has no robust rollback guarantee left to protect and no cheaper
+response to buy when either the completed current bag has `B < R_o`, or the main thread has already
+observed `B = 0`. Its media read therefore keeps the ordinary transport liveness bounds but no
+longer inherits the reserve deadline; aborting it can only re-enter the same recovery transaction
+and would make the measured exhausted state absorbing. The first condition is carried by the
+controller's typed `ReservePolicy::TerminalFloor`, because waiting for the later exact-zero sample
+was the measured abort/retry loop at a positive 84 ms remnant.
+
+An incomplete ordinary response is right-censored and has no prefix-rate projection. This is not
+just a conservative interpretation: PMS 1.43.4 can publish `Content-Length` from the current file
+size while the requested HLS segment is still growing, return would-block at the apparent body EOF,
+and resume the same HTTP response when the encoder produces more bytes. Prefix time therefore
+mixes server production, pacing and network service; neither it nor the advertised remainder
+identifies completion time. For an ordinary active response, the worker still acts only at the
+coefficient-free physical boundary `B = 0`, observed either by the main thread's internal clock
+hold or by actual playhead consumption of the fetch-start reserve. The earlier `B < R_o` exception
+applies only to the floor candidate selected by that completed-bag proof; it is not a prefix-rate
+projection. At the ladder floor the only useful response continues; above it the still-incomplete
+larger object may be abandoned so recovery can fetch a smaller one. An already held recovery clock
+arms no second abort loop. In every case network, demux and feeding remain active.
+
+Runtime resume does not use the historical `R_s` at all. A hold starts a fresh ordered recovery
+epoch. For complete active-rung acquisitions after that pause,
+
+```text
+P_0 = 0
+H   = max_i(P_(i-1) + A_i)
+P_i = P_(i-1) + A_i - D_i
+```
+
+`P` is the acquisition debt in the order that actually occurred and `H` is that epoch's exact
+largest prefix cost. The epoch is one mutex-protected publication, so the main thread cannot see a
+new completed segment beside an old debt. Candidate media is not credited as recovery evidence;
+after a rung commit the epoch restarts and the next ordinary acquisition describes the encoder
+that will sustain playback.
+
+Resume requires all of:
+
+- Starfish accepted its ordinary decoder prime;
+- at least one complete segment landed in the current recovery epoch;
+- `P <= 0` — the epoch has repaid all acquisition time with at least as much media;
+- the whole already-playable pipeline (Starfish plus demuxed AU queues) covers `H` on every
+  expected A/V lane;
+- the user transport is not paused;
+- Starfish accepted `Play`.
+
+The epoch is discarded after successful `Play`; old slow acquisitions cannot raise a later
+runtime floor. `R_s` remains only a retrospective fresh-Load/seek certificate and ABR diagnostic. A
+user Pause/Play cannot bypass an active internal hold. Failed `Pause`/`Play` calls do not mutate
+state as though the clock moved.
+
+HTTP bodies with a declared `Content-Length` count as completed only after all declared bytes
+arrive. A short body cannot be credited with the segment's full `EXTINF`, which previously allowed
+the model to resume on media that did not exist.
+
+## 6. Original is a mode, not the top HLS rung
+
+An HLS rung swap can continue on the same normalized media timeline and is intended to be invisible.
+Moving between HLS and Original is different:
+
+- PMS creates or tears down a different stream;
+- the native pipeline is re-Loaded;
+- the video plane may be black while it rebinds;
+- codec and HDR declarations may change;
+- Original can restore Dolby Vision, Atmos/lossless audio and avoid generation loss;
+- Original has zero recurring PMS video-encode work; every HLS rendition has some.
+
+The mode comparison therefore scores the real Original candidate against the best currently
+supportable HLS alternative, not against a fabricated “top rung.”
+
+Let
+
+```text
+s = min(remaining_playback / benefit_horizon, 1)
+C(m) = 0, if m is the current mode; otherwise visible_transition_cost
+
+U_original = s * (quality_original + source_features - playback_risk_original)
+             - C(Original)
+
+U_hls      = s * (quality_hls - playback_risk_hls - recurring_server_cost)
+             - C(HLS)
+```
+
+Only the transition that would actually occur pays the last term. All recurring terms scale with
+remaining playback; the reload cost is paid once, now. Consequently a return to Original can be
+worthwhile near the start of a film and naturally lose near the credits without a hard
+“do not switch after N minutes” rule.
+
+The transition cost also grows with recent visible switches and decays with elapsed wall time, so
+two rapid Original↔HLS reloads are priced more heavily than one old transition.
+
+Both mode directions currently pay the same base reload cost plus that history penalty. The extra
+uncertainty of returning to a source that previously failed is not hidden in another coefficient:
+HLS→Original additionally requires a completed source request. HLS rung changes pay no mode cost.
+
+### What is measured and what is a product choice
+
+Measured/structural inputs include:
+
+- actual source bitrate and raster;
+- source DV and immersive/lossless-audio flags;
+- completed source-probe evidence;
+- current end-to-end HLS acquisition cadence;
+- current reserve and remaining playback;
+- whether Original is technically feasible;
+- the HLS candidate's calibrated PMS-work class.
+
+Explicit product choices include:
+
+- the subjective cost of a visible reload/black frame;
+- the relative value ordering of DV, no generation loss and Atmos;
+- the time horizon over which recurring benefits fully repay a reload;
+- the relative price assigned to ongoing PMS encode work.
+
+Those values cannot be derived from network probability and are intentionally named as policy.
+
+DV and Atmos/lossless audio are the source feature flags currently scored explicitly. A generic
+HDR declaration change is part of the reload/feasibility boundary, but it has no separate utility
+bonus today.
+
+The measured HLS acquisition ratio spans open, PMS wait, pacing and path transfer. It remains useful
+telemetry, but those components are not separately identifiable and the ratio is not charged as a
+second feasibility or mode gate. The rendition's calibrated PMS-work class prices recurring server
+work in the Original/HLS utility comparison. That class is a product calibration, not a live
+reading of the server's current load; the implementation must not describe either quantity as one.
+
+## 7. Leaving and returning to Original
+
+Runtime Original observes completed source windows and the playable-buffer derivative. A
+whole-file average cannot describe a VBR scene, so a rate deficit alone does not trigger a reload.
+
+There are three exits:
+
+- emergency low buffer: reserve is very low and measurably falling;
+- imminent starvation: the observed reserve runway cannot afford further confirmation;
+- sustained deficit: a measured drain persists and the mode utility agrees that HLS is worth the
+  visible switch.
+
+If the remaining film is already buffered, no exit is possible.
+
+Returning from HLS requires an actual bounded source request. HLS traffic cannot prove source
+capacity because its request sizes are capped. PMS 1.43.4 resolves a raw Part by exact Streaming
+Resource identity, then token alias, and only then enters AdHoc admission. The old implementation
+first stopped/closed HLS and used a fresh `source-N` id; that forced AdHoc admission, whose
+`99 341 > 92 000` bandwidth refusal fell through a PMS lexical-cast bug and surfaced as HTTP 500.
+The current experiment instead names the exact active HLS encoder and issues no client-side stop,
+close or replacement before the read. It runs between ordinary HLS acquisitions, and its result is
+discarded if the active identity changes while the request is in flight. That ordering keeps the
+client route explicit, but it is not evidence that PMS preserves the old HLS cursor: PMS may rebind
+the shared Streaming Resource while serving the raw Part. A successful `Recover` therefore starts
+an Original trial on that same completed media boundary and never waits for one more HLS segment.
+HLS remains the rollback owner until the exact Load succeeds and a decoded frame confirms the
+handoff. After an unsuccessful probe, continuity is established only by the next actual HLS
+response; it is not assumed from the absence of a client-side route change.
+
+The probe and the subsequent source publication hold one `Original(token)` automatic-actuator
+lease. The finite network request may finish after a user/native transition, but its result cannot
+cross the commit edge unless the synchronized clock authority still admits that token. Requesting
+the replacement also does not spend anti-flap history: an automatic visible-switch charge travels
+with `PendingOriginal` and is committed by the first decoded frame. A failed Load rolls both the
+route and that unspent charge back, because the viewer never saw the proposed mode.
+
+The experiment becomes informative when no higher HLS actuator remains unclassified at the current
+exploration budget. That does not require the live actuator to equal the largest request: if PMS
+maps larger requests to the same or a worse encode, their structural rejections exhaust the HLS
+frontier without ever becoming current.
+
+The source body itself still has two separately bounded phases. Connection setup
+(DNS/TLS/headers) gets `P_setup`; only after headers arrive does the finite body — one second of
+source media within the transport-size clamps — get its derived `P_body`. The body interval is the
+throughput evidence; setup is a one-off reload cost and cannot truncate it. The shared
+`SourceProbePlan` gives both phases the same derived bound `P`; the exact physical admission floor is
+
+```text
+B >= P_setup + P_body + max(R_s,D_next) = 2P + max(R_s,D_next)
+```
+
+There is no client-side stop, close, decision or HLS restart in that path. If HLS is retained, the
+balance funds a sustainable next HLS acquisition and restores the replay boundary when that
+acquisition credits its media. A successful `Recover` instead starts the Original trial immediately
+and consumes no later HLS request; the handoff commits only after the exact Load succeeds and a
+decoded frame confirms it. A completed source response at or above source consumption is a lower
+bound sufficient for the mode comparison; a truncated body probe is absence of evidence.
+
+Cold Remote preflight uses the durable logical playback id and does not close it, so the selected
+initial Original or HLS route can exact-reuse the same resource. Runtime direct recovery binds the
+actual Part URL to the active HLS id measured by the probe. Decoded source frames stop only the
+physical HLS encoder (`closeResourceSession=0`); its Streaming Resource remains the direct stream's
+owner so later Range/seek opens remain valid. Final playback teardown performs the full resource
+close. A remux recovery instead registers a distinct replacement encoder; decoded frames close the
+held old HLS resource, while a failed remux open restores the client-side HLS route and closes only
+the unproven remux. The first actual HLS response after that restoration decides whether PMS kept
+or can resume its cursor.
+If a cold resolve is cancelled, superseded or refused before it owns an Engine, there is no winning
+route to reuse its logical resource; that abandonment path therefore performs the exact full close.
+
+A source request which fails before any body arrives (for example PMS `5xx`, DNS or connect
+failure) is an inconclusive request failure, not a zero-rate link sample and not proof that the
+Part is unavailable to a later playback open. It does not enter the source capacity estimate and
+HLS retains its best observed/requested route.
+
+Neither a failed nor an insufficient experiment is polled alongside every HLS segment. At the
+experiment the gate records the greater of the source result and HLS's recent estimate. It rearms
+only after live HLS's conservative bound rises strictly above that record. Thus wall-clock time and
+an unchanged demand-capped stream cannot cause another request; a confidence-separated link-regime
+change can. The probe itself is a finite `Range: bytes=0-(N-1)` request and is accepted only with a
+matching `206 Content-Range`, so completing the measurement also completes the HTTP response.
+
+A completed terminal comparison follows the HLS actuator that supplied its counterfactual. An
+upward HLS commit retains the exact source lower bound but invalidates the comparison; the first
+ordinary object from the new live encoder re-scores it without another source request. A downward
+commit is evidence that the prior service regime failed to sustain its operating point, so the old
+source lower bound is retired and the fully funded source gate returns to `Fresh`. It may authorize
+a new bounded request after HLS restores continuity; the earlier fast result is never projected
+across that collapse.
+
+## 8. Instrumentation and verification
+
+Relevant log lines:
+
+```text
+abr: sample ... media=... net=... buf=... prod=... decision=... target=... complete=...
+abr: window ... have=.../... demand=... supply=... excess=... runway=... sus=... sur=... reset=...
+abr: exploration target=... buf=... runway=... budget=...
+abr: committed Up|Down to ...
+abr: tx Up|Down ... outcome=... decided=... control=... media=... \
+    candidate_acq=... candidate_bytes=... candidate_dur=...
+hls: auto-rebuffer pause buf=... trial_reserve=... runway=...
+primed: v=... a=... runway=... -> Play
+primed: v=... a=... recovery_n=... debt=... runway=... -> Play
+abr: mode chose=... why=... scale=... win[...] lose[...]
+abr: Original probe ... complete=... left=... verdict=...
+```
+
+`tools/abr-window-grade.py` independently reconstructs each attributable part of the finite episode
+from these lines. A commit is accepted only when the matching `abr: committed` marker and following
+transaction agree; rejected candidates never seed the episode. A delivery-collapse reset has no
+separate marker, so the reset counter makes the grader flag that discontinuity and leave subsequent
+rows ungraded until a marked seed or commit restores attribution; it never invents the missing
+episode boundary. Integer-millisecond telemetry is replayed as its exact quantisation interval, and
+threshold-straddling `sus`/`sur` checks are reported as ambiguous coverage rather than silently
+counted as proof.
+
+The on-screen diagnostics likewise keep request and output separate: `Quality` shows the requested
+ceiling, PMS master declaration and decoded raster; the measured media rate is the HLS demand used
+in the conservative-budget row. A requested `22 Mbps / 4K` box can therefore never masquerade as
+a decoded `720×404` picture.
+
+Host tests prove integer conservation, deadline propagation, failure-frontier ordering, short-body
+rejection and state-machine invariants. The host simulator can exercise transport, demux, AU queues
+and the synthetic clock sink. It cannot prove LG decoder behaviour, video-plane reload visibility,
+HDR transitions, real frame pacing or the native Starfish buffer cap. Those require the television.

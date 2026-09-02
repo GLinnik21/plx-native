@@ -40,8 +40,10 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
   mechanism (nothing interrupts it; see the seek gotcha below).
-- `shared.rs` — the **only** cross-thread state (each field replaces a C `volatile` global — `g_*`).
-  New cross-thread state goes here, behind the same discipline; don't smuggle it through a raw static.
+- `shared.rs` — the engine's cross-thread transport, callback and clock state (each field replaces a
+  C `volatile` global — `g_*`). Route ownership and route-changing intents are the separate
+  process-wide authority in `route::PLAYER_CONTROL`. Put new state under the owner whose invariant
+  it belongs to; never smuggle it through a raw static.
 
 **The main-thread rule is compiler-enforced.** `ffi.rs`'s `extern "C"` declarations are private to
 that module, and every wrapper but one takes a `task::MainThread` — a `!Send` ZST `plex_run` mints
@@ -54,11 +56,13 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
 
 ## Gotchas that bite (all verified in code)
 
-- **C-from-C++ Starfish calls** go through `extern … __asm__("<mangled>")`. The object is an
-  over-sized static buffer (`g_smp[65536]`) constructed in place by calling the ctor symbol —
-  **never** hand it to C++ `new`/`delete` (real object size is unknown). Methods returning a
-  `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO) for short replies
-  like `"Ok"`/`"BufferFull"`.
+- **C-from-C++ Starfish calls** go through `extern … __asm__("<mangled>")`. Each Load gets a fresh,
+  16-byte-aligned `SfSlot` whose `object[65536]` is constructed in place by the ctor symbol. Slot
+  addresses are never reused or freed: a late firmware callback carries only that address, so a
+  retired slot stays in the registry until process exit. Call the destructor only through the
+  gated teardown path and **never** hand the object to C++ `new`/`delete` (its real size is unknown).
+  Methods returning a `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO)
+  for short replies like `"Ok"`/`"BufferFull"`.
 - **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** The two
   payload nodes, the ACB audio forward, the Profile 5 one-tick fix and the instrument traps live
   there rather than here, because half of that record is about LG's binaries and the Dolby
@@ -72,7 +76,7 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   device-verified one-line fix was reverted as out of scope, and the naive lowering under-declares
   a real 4K H.264 file. Read that document before touching `build_av_payload`; in particular the
   raster is NOT the discriminator (the set's own devcaps claims 4096x2176 for H.264 too).
-- **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(g_smp, NULL)`), and in
+- **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(slot->object, NULL)`), and in
   buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
 - **ACB bind order matters** (mirrors Kodi/ss4s): `setSinkType(MAIN)` → `setMediaId` →
@@ -129,8 +133,10 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
 - **App-switch lifecycle** (handled in `app.rs`; details in the
   `docs/agent-reference.md` gotchas): OS
-  background suspends the buffer-feed preserving the session, foreground reloads and resumes with a
-  single `Load`. Preserve the suspend/reload pairing if you touch playback.
+  background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
+  attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
+  failure without repeating route preparation, and applies the saved clock only after `Started`.
+  Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes
 

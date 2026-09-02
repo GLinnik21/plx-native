@@ -35,6 +35,29 @@ grep -q 'Flags:.*soft-float' <<<"$H" || fail "not soft-float ABI (the NDK's soft
 "$READELF" -A "$BIN" | grep -q 'Tag_CPU_arch: v7' || fail "not ARMv7 (Tag_CPU_arch)"
 ok "ELF32 / ARM / soft-float / ARMv7"
 
+echo "== Starfish callback interposer =="
+# libplayerAPIs' fixed libpf thunk calls this exact C++ symbol through an R_ARM_JUMP_SLOT. A normal
+# executable-private definition is absent from .dynsym and therefore cannot preempt that slot; the
+# link must export exactly this one symbol. Conversely, Load-with-context is resolved and owner-
+# checked with dlsym so a firmware which lacks the overload refuses playback instead of killing the
+# app in the dynamic loader before main.
+SMP_HOOK='_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc'
+SMP_LOAD_CTX='_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_PvES2_'
+DYN_SYMS=$($READELF --dyn-syms -W "$BIN")
+HOOK_ROWS=$(awk -v symbol="$SMP_HOOK" '$NF == symbol { print }' <<<"$DYN_SYMS")
+[ "$(wc -l <<<"$HOOK_ROWS" | tr -d ' ')" -eq 1 ] \
+  || fail "callbackFunctionHook interposer is not present exactly once in .dynsym"
+awk '$4 == "FUNC" && $5 == "GLOBAL" && $6 == "DEFAULT" && $7 != "UND" { ok=1 } \
+     END { exit !ok }' <<<"$HOOK_ROWS" \
+  || fail "callbackFunctionHook interposer is not a GLOBAL/DEFAULT .dynsym function"
+if awk -v symbol="$SMP_LOAD_CTX" '$NF == symbol { found=1 } END { exit !found }' <<<"$DYN_SYMS"; then
+  fail "Load-with-context is a dynamic symbol dependency; it must be dlsym'd for firmware fallback"
+fi
+if "$READELF" -rW "$BIN" | grep -q "$SMP_LOAD_CTX"; then
+  fail "Load-with-context has a dynamic relocation; missing firmware would fail before main"
+fi
+ok "exact hook exported GLOBAL/DEFAULT; Load-with-context has no loader dependency"
+
 echo "== crash-report identity =="
 # Two facts a Sentry crash report is built out of, and BOTH fail silently when wrong: a frame comes
 # back `symbolicatorStatus: "missing_symbol"` with no error attached, which is indistinguishable

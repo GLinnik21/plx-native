@@ -567,7 +567,7 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
         fields: &[
             F { key: "playback_id", domain: PLAYBACK_ID },
             F { key: "mode", domain: MODE },
-            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `unspecified`" },
+            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `unspecified`" },
         ],
     },
     EventSpec {

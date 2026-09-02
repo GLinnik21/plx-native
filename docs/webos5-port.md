@@ -254,10 +254,10 @@ Ranked by how much damage a wrong assumption does. *(Item 1 settled — see abov
    upstream n4.0. Very strong, but a vendor *can* patch a public struct and bump nothing.
    *Settled by:* `/tmp/plxnative-ffprobe` with a known file on a webOS 5 set; if codec_id, width,
    height and time_base come back sane, the table is right.
-3. **The `g_smp+0x4c` / `MEDIA_CUSTOM_CONTENT_INFO+0x28` pokes.** Decompile-derived offsets into
-   LG-private C++ objects, used by the in-place seek. No symbol table can confirm them on another
-   firmware, and a field added to `StarfishMediaAPIs` by any 5.x build moves `+0x4c`. Failure is a
-   SIGSEGV, not a wrong answer. *Settled by:* seeking on a webOS 5 set.
+3. **The current slot's `object+0x4c` / `MEDIA_CUSTOM_CONTENT_INFO+0x28` pokes.**
+   Decompile-derived offsets into LG-private C++ objects, used by the in-place seek. No symbol table
+   can confirm them on another firmware, and a field added to `StarfishMediaAPIs` by any 5.x build
+   moves `+0x4c`. Failure is a SIGSEGV, not a wrong answer. *Settled by:* seeking on a webOS 5 set.
 4. **The keyboard event offsets.** `app.rs` reads state/wcode/sym at +16/+20/+24 because LG's SDL
    inserts `Uint32 inputSource` after `windowID`. That patch is applied by the openlgtv NDK to
    modern SDL2 as well, so the struct offsets very likely hold — but which value LG writes into
@@ -293,8 +293,9 @@ not to be enough, not a correction.
 **`mediapipeline::CustomPipeline` gained 78 exported methods on 6.4.0 and 92 on 10.2.0** —
 `createPipeline`, `requestResource`, `setAppSrcCaps`, `removeAudioBin` and the rest. A class that
 grew that much has almost certainly changed layout, which is the strongest evidence yet that
-`starfish.c`'s `g_smp+0x4c` → `+0x04` walk to reach it must not run on those firmwares. The
-in-place seek that depends on it is now disabled on `VP_EXPORTED` for exactly that reason.
+`starfish.c`'s current-slot `object+0x4c` → `player+0x04` walk to reach it must not run on those
+firmwares. The in-place seek that depends on it is now disabled on `VP_EXPORTED` for exactly that
+reason.
 
 **The whole of libplayerAPIs+libpf moved a long way**: 2144 exported symbols on 4.10.0, 2736 on
 6.4.0, 2628 on 10.2.0. `FeedStream` even gains a second overload with four more arguments on

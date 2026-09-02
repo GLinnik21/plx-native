@@ -337,8 +337,8 @@ refinements the table understated:
   elsewhere precisely because the true size is 136.)
 - 72 stubbed FFmpeg/curl symbols link unconditionally; a missing symbol on a different firmware is a
   runtime abort, not a link error.
-- The Starfish/ACB seam pokes decompile-derived offsets into private LG objects (`g_smp+0x4c`,
-  `MEDIA_CUSTOM_CONTENT_INFO+0x28`).
+- The Starfish/ACB seam pokes decompile-derived offsets into private LG objects (the current slot's
+  `object+0x4c`, and `MEDIA_CUSTOM_CONTENT_INFO+0x28`).
 - **Resolution is a compile-time constant everywhere.** The tree contains **zero** calls to
   `SDL_GetWindowSize`, `SDL_GL_GetDrawableSize` or `SDL_GetCurrentDisplayMode`.
   `glViewport(0,0,1920,1080)`, the scissor math, `u_screen` and `acb_start(0,0,1920,1080)` all assume
@@ -623,9 +623,14 @@ world-readable `/tmp` on the TV across many runs.
 
 **Verified clean, no action:** the only outbound hosts are the user's PMS, plex.tv and
 `discover.provider.plex.tv` — plus, since the telemetry work, Sentry and PostHog in the EU, and
-those two only after an explicit opt-in on a screen that shows the exact payloads first (both
-switches default off; `PRIVACY.md` carries the schemas: usage is generated from
-`diag::schema::EVENT_SPECS`, while native crashes are checked against their sanitizer allowlist).
+those two only after an explicit first-run Share choice or a later Done in Account → Settings →
+Privacy & data. First run asks about the two purposes separately and offers the exact payload
+preview before either answer: the first choice remains a draft, the second records both, and BACK
+navigates without recording a refusal.
+`PRIVACY.md` carries the schemas: usage is generated from
+`diag::schema::EVENT_SPECS`, native crashes are checked against their sanitizer allowlist, and
+handled playback errors use the same typed serializer/key-contract as the consent preview and
+durable Sentry queue).
 This line read "no analytics, no telemetry, no crash upload" and was a statement of fact about the
 audited build rather than a promise, so it is updated rather than qualified. TLS verification is on
 (`net.rs:96-97`); `auth.json` is created `0600` via `OpenOptionsExt::mode` — correctly, in `open(2)`'s

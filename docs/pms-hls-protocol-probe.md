@@ -62,7 +62,10 @@ the old encoder's next segment also remained 404. Sharing the X-Plex identity th
 or invalidates the old session before prime completes on this PMS. PlxNative keeps a stable
 playback generation internally, but couples `session=` and `X-Plex-Session-Identifier` to one new
 value for each physical encoder. Timeline, seek, and teardown follow the currently published
-encoder wire identity.
+encoder wire identity. A transcode seek is itself a new encoder registration: it first gets a
+fresh coupled value, atomically publishes the replacement URL/identity after `/decision` succeeds,
+then stops the previous exact opaque key. Re-registering the old key is not a seek primitive — the
+server archive showed the same key starting twice and retaining stale resource state.
 
 The tool now constructs that experiment without putting raw IDs into its report:
 
@@ -88,8 +91,8 @@ generation, but gives each physical encoder the same fresh value on the legacy `
 `X-Plex-Session-Identifier` wires. A move is proposed from the current segment measurements, a new
 encoder is registered at the current content offset, and its first segment is downloaded and fully
 demuxed off-screen. Only a candidate with an in-bounds decoded raster, a complete decodable H.264
-IDR, valid AAC framing/timestamps, enough network and PMS-production headroom, and a surviving A/V
-buffer reserve is committed. The old encoder is stopped only after that commit.
+IDR, valid AAC framing/timestamps, and a passing direction-specific acquisition/reserve transaction
+is committed. The old encoder is stopped only after that commit.
 
 The client parser intentionally implements the observed subset rather than generic HLS: one master
 variant; one MPEG-TS media playlist; media sequence, target duration, signed `EXT-X-START`, segment
@@ -104,13 +107,12 @@ by media duration (which catches a JIT transcoder running near or below real tim
 content duration `min(video_tail, audio_tail) - playback_position`. **What it does with them was
 rewritten on 2026-08-25** and this paragraph used to describe the earlier rule — "a downshift needs
 any critical signal to fail, an upshift requires sustained agreement from every signal" — which is
-no longer how either direction is decided. Today the three become a delivery estimate with
-uncertainty, a PMS production estimate, and a buffer level plus slope; those become a starvation
-horizon in seconds and a per-candidate risk; and the target is chosen from a continuous safe budget
-against an empirical actuator catalog. `docs/adaptive-playback.md` is the design. The transaction
-described in this section is unchanged, including the absolute prime deadline equal to 80% of one
-segment in both raw-socket and libcurl reads — after that point the same production gate could not
-accept the candidate, so it is abandoned before it can drain the active playback reserve.
+no longer how either direction is decided. Today they become a delivery estimate with uncertainty,
+an end-to-end acquisition diagnostic/projection, and a buffer level plus slope. The acquisition
+ratio spans PMS wait, pacing and transfer, so it is not an independent production gate.
+`docs/adaptive-playback.md` is the current design. An upshift transaction now spends the exact
+disposable exploration reserve `E = max(B - max(R_s,D), 0)` as one absolute end-to-end deadline through decision, playlists and
+candidate media; the old fixed 80%-of-segment prime deadline no longer exists.
 
 One measurement in this document is a property of the SERVER and one is a property of the CLIENT's
 ladder, and the second one moved. The bitrate/raster boundary below is the server's and stands. The
@@ -142,10 +144,11 @@ client that has to spend a budget:
 | 22,000 – 60,000 kbps | 3840×2160 | the same 3840×2160 output |
 
 So the raster changes at a request boundary the wire rate does not follow: asking for 20,895 kbps
-gets 1080p, and asking for 22,000 does not get 22 Mbit/s of bits. The production cost is the other
-half — the 1080p point produced segments at a 0.21 acquisition ratio and the 4K point at 0.44, i.e.
-**4% more bits for roughly double the server's work**, which is why the client models delivery and
-production as two independent constraints rather than one bitrate budget.
+gets 1080p, and asking for 22,000 does not get 22 Mbit/s of bits. The 1080p point produced segments
+at a 0.21 acquisition ratio and the 4K point at 0.44: **4% more bits for roughly double the
+calibrated server work**. That difference remains a recurring cost in Original/HLS utility. Live
+HLS admission does not turn the total acquisition ratio into an independent production constraint;
+the candidate's complete acquisition already includes the same service episode.
 
 As with everything else here, this is one PMS, one client profile and one media shape. It is not a
 claim about a universal Plex maximum, and the client's transaction grades the actual segment rather

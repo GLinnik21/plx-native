@@ -47,7 +47,9 @@
 //! skipped rather than faked.
 
 use std::os::raw::{c_char, c_int, c_long, c_uint};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
+#[cfg(test)]
+use std::sync::atomic::{AtomicI32, AtomicU64};
 
 /// `sf_feed`'s rejection code. `starfish.h` documents the three replies as `'O'` (ok), `'B'`
 /// (BufferFull) and `'e'` (error); the pump treats `'B'` as backpressure and retries forever, so
@@ -65,12 +67,35 @@ const FEED_OK: c_char = b'O' as c_char;
 /// would hide a throttle bug that a device would show.
 const TICK_MS: u64 = 200;
 
+/// **Test-only arming, deliberately NOT the trigger file.** `enabled()` latches in a `OnceLock`
+/// and the runtime root it consults latches in another, both process-wide — so a unit test that
+/// armed the sink by writing `plxnative-clocksink` would pass alone and fail in a full run,
+/// depending on which test touched a root first. It would also have to write into the same
+/// directory a real simulator reads. This overrides the answer directly instead, so the test is
+/// deterministic and leaves no file behind.
+#[cfg(test)]
+pub(super) static FORCE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Force the next host `Play` calls to report a seam result. `i32::MIN` means normal clocksink
+/// behaviour. This makes the state-machine invariant testable without teaching production code a
+/// failure-injection branch.
+#[cfg(test)]
+pub(super) static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+#[cfg(test)]
+pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+
 /// Is the clock sink armed? Read once, at the first seam call, and latched.
 ///
 /// A trigger rather than a build feature so one binary does both: `make sim` keeps landing on the
 /// failure read-out (which is what the UI work wants to see) unless a session explicitly asks for
 /// a pipeline run.
 fn enabled() -> bool {
+    #[cfg(test)]
+    if FORCE_ENABLED.load(Relaxed) {
+        return true;
+    }
     static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ONCE.get_or_init(|| {
         let on = crate::dev::flag("clocksink");
@@ -92,13 +117,25 @@ fn now_ms() -> i64 {
     i64::from(super::super::vclock_ms())
 }
 fn report_position(pts_ns: i64) {
-    super::super::sf_on_event(0, pts_ns, std::ptr::null());
+    let epoch = ACTIVE_EPOCH.load(Relaxed);
+    if epoch != 0 && !CALLBACK_GATE_RETIRED.load(Relaxed) {
+        CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
+        super::super::sf_on_event(epoch, 0, pts_ns, std::ptr::null());
+    }
 }
 
 /// Everything the sink remembers. One session's worth; `sf_unload` clears it.
 struct Clock;
 
 static LOADED: AtomicBool = AtomicBool::new(false);
+/// A constructed Starfish object survives `Unload` until the separately gated destructor.
+static OBJECT_READY: AtomicBool = AtomicBool::new(false);
+/// Callback context installed by the current host `Load`, mirroring firmware's `void *ctx`.
+static ACTIVE_EPOCH: AtomicU32 = AtomicU32::new(0);
+static CALLBACK_INTERCEPTS: AtomicU32 = AtomicU32::new(0);
+static CALLBACK_GATE_RETIRED: AtomicBool = AtomicBool::new(false);
+static NATIVE_UNLOAD_COMPLETED: AtomicBool = AtomicBool::new(false);
+static LIFECYCLE_BLOCKED: AtomicBool = AtomicBool::new(false);
 static PLAYING: AtomicBool = AtomicBool::new(false);
 static TICKING: AtomicBool = AtomicBool::new(false);
 /// Presentation position at the moment the clock last started running, in FED-PTS space.
@@ -107,6 +144,25 @@ static BASE_NS: AtomicI64 = AtomicI64::new(0);
 static RESUMED_AT_MS: AtomicI64 = AtomicI64::new(0);
 /// The highest video PTS ever handed to [`sf_feed`]. The clock may not run past it.
 static FED_MAX_NS: AtomicI64 = AtomicI64::new(i64::MIN);
+
+#[cfg(test)]
+pub(super) fn force_callback_intercepts_for_test(value: u32) {
+    CALLBACK_INTERCEPTS.store(value, Relaxed);
+}
+
+/// A fresh host test process without paying for a process per case. Production has deliberately no
+/// equivalent: once a real object is quarantined, clearing this latch would reintroduce reuse.
+#[cfg(test)]
+pub(super) fn reset_native_lifecycle_for_test() {
+    ACTIVE_EPOCH.store(0, Relaxed);
+    CALLBACK_INTERCEPTS.store(0, Relaxed);
+    CALLBACK_GATE_RETIRED.store(false, Relaxed);
+    NATIVE_UNLOAD_COMPLETED.store(false, Relaxed);
+    LIFECYCLE_BLOCKED.store(false, Relaxed);
+    OBJECT_READY.store(false, Relaxed);
+    LOADED.store(false, Relaxed);
+    Clock::rewind();
+}
 
 impl Clock {
     /// Where the sink claims to be presenting, in the fed-PTS timeline `sf_on_event` expects.
@@ -189,25 +245,39 @@ impl Clock {
     }
 }
 
-pub(super) unsafe fn sf_load(_payload: *const c_char) -> c_int {
-    if !enabled() {
+pub(super) unsafe fn sf_load(_payload: *const c_char, epoch: u32) -> c_int {
+    if !enabled() || epoch == 0 || OBJECT_READY.load(Relaxed) || LIFECYCLE_BLOCKED.load(Relaxed) {
         return 0; // "pipeline could not be constructed" — the engine's existing failure path
     }
     Clock::rewind();
+    ACTIVE_EPOCH.store(epoch, Relaxed);
+    CALLBACK_INTERCEPTS.store(0, Relaxed);
+    CALLBACK_GATE_RETIRED.store(false, Relaxed);
+    NATIVE_UNLOAD_COMPLETED.store(false, Relaxed);
+    OBJECT_READY.store(true, Relaxed);
     LOADED.store(true, Relaxed);
     // The engine waits on `SHARED.load_completed`, which is set by parsing a callback STRING. Go
     // through the real callback rather than setting the flag, so the parse is exercised. Type 2 is
     // benign: the harness greps `smp_cb type=18` for a playback error and this is not one.
-    super::super::sf_on_event(2, 0, c"{\"loadCompleted\":true}".as_ptr());
+    CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
+    super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
     1
 }
 pub(super) unsafe fn sf_ready() -> c_int {
-    c_int::from(enabled())
+    c_int::from(enabled() && OBJECT_READY.load(Relaxed))
 }
 pub(super) unsafe fn sf_is_load_completed() -> c_int {
     c_int::from(enabled() && LOADED.load(Relaxed))
 }
 pub(super) unsafe fn sf_play() -> c_int {
+    #[cfg(test)]
+    {
+        PLAY_CALLS.fetch_add(1, Relaxed);
+        let forced = FORCE_PLAY_RESULT.load(Relaxed);
+        if forced != i32::MIN {
+            return forced;
+        }
+    }
     if !enabled() {
         return 0;
     }
@@ -215,6 +285,13 @@ pub(super) unsafe fn sf_play() -> c_int {
     1
 }
 pub(super) unsafe fn sf_pause() -> c_int {
+    #[cfg(test)]
+    {
+        let forced = FORCE_PAUSE_RESULT.load(Relaxed);
+        if forced != i32::MIN {
+            return forced;
+        }
+    }
     if !enabled() {
         return 0;
     }
@@ -261,11 +338,49 @@ pub(super) unsafe fn sf_feed(_p: *const u8, _size: c_uint, pts: i64, es_data: c_
     FEED_OK
 }
 pub(super) unsafe fn sf_unload() {
+    let epoch = ACTIVE_EPOCH.load(Relaxed);
+    if epoch != 0 && OBJECT_READY.load(Relaxed) {
+        // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
+        // callbackFunctionHook interposer, so it does not contribute to CALLBACK_INTERCEPTS.
+        NATIVE_UNLOAD_COMPLETED.store(true, Relaxed);
+        super::super::sf_on_event(epoch, 23, 0, std::ptr::null());
+    }
     LOADED.store(false, Relaxed);
     Clock::rewind();
 }
-pub(super) unsafe fn sf_destroy() {
-    sf_unload();
+pub(super) unsafe fn sf_callback_gate_retire() -> c_int {
+    CALLBACK_GATE_RETIRED.store(true, Relaxed);
+    c_int::from(
+        OBJECT_READY.load(Relaxed)
+            && !LIFECYCLE_BLOCKED.load(Relaxed)
+            && CALLBACK_INTERCEPTS.load(Relaxed) != 0,
+    )
+}
+pub(super) unsafe fn sf_callback_intercepts() -> c_uint {
+    CALLBACK_INTERCEPTS.load(Relaxed)
+}
+pub(super) unsafe fn sf_destroy() -> c_int {
+    let safe = OBJECT_READY.load(Relaxed)
+        && CALLBACK_GATE_RETIRED.load(Relaxed)
+        && CALLBACK_INTERCEPTS.load(Relaxed) != 0
+        && NATIVE_UNLOAD_COMPLETED.load(Relaxed)
+        && !LIFECYCLE_BLOCKED.load(Relaxed);
+    if !safe {
+        sf_quarantine();
+        return 0;
+    }
+    ACTIVE_EPOCH.store(0, Relaxed);
+    OBJECT_READY.store(false, Relaxed);
+    LOADED.store(false, Relaxed);
+    Clock::rewind();
+    1
+}
+pub(super) unsafe fn sf_quarantine() {
+    CALLBACK_GATE_RETIRED.store(true, Relaxed);
+    LIFECYCLE_BLOCKED.store(true, Relaxed);
+    OBJECT_READY.store(false, Relaxed);
+    LOADED.store(false, Relaxed);
+    Clock::rewind();
 }
 
 /// `VP_NONE` — "video cannot be displayed, but the app still runs", which is precisely the
@@ -328,10 +443,11 @@ pub(super) unsafe fn acb_resume() {}
 mod tests {
     use super::*;
 
-    /// The state is process-global, so these run one at a time.
+    /// The seam state is process-global and the engine's hostsim tests drive the same atomics.
+    /// Use the crate-wide lock rather than a module-local mutex: two different locks made both
+    /// suites individually serial while still allowing them to overwrite `FED_MAX_NS` together.
     fn lock() -> std::sync::MutexGuard<'static, ()> {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        M.lock().unwrap_or_else(|e| e.into_inner())
+        crate::testlock::serial()
     }
 
     fn fresh() {

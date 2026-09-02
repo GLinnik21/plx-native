@@ -124,7 +124,7 @@ fn random_bytes() -> Option<[u8; 16]> {
 }
 
 /// Generic durable-record identity; no analytics code depends on a crash vendor for IDs.
-fn random_hex_id() -> Option<String> {
+pub(crate) fn random_hex_id() -> Option<String> {
     Some(random_bytes()?.iter().map(|b| format!("{b:02x}")).collect())
 }
 

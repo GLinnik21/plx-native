@@ -1,4 +1,64 @@
-# Adaptive playback: the Phase 3 specification
+# Adaptive playback: derivation archive
+
+> Superseded 2026-08-30. The shipped contract is
+> [`adaptive-playback.md`](adaptive-playback.md). The Phase 3 material below is retained as the
+> measurement/review trail, not as implementation guidance.
+
+The superseding result is:
+
+```text
+current sustainable  <=>  Σ A_i <= Σ D_i
+replay boundary R     =   Σ(A_i-D_i)+ + max_i min(A_i,D_i)
+smooth exploration E  =   (B-max(R,D))+
+up candidate accepts  <=> A <= D and B_post >= A
+up output improves     <=> candidate Pareto-dominates current (raster, declared bandwidth)
+runtime recovery       :   P_i=P_(i-1)+A_i-D_i, H=max(P_(i-1)+A_i)
+runtime resume         <=> n>0 and P_n<=0 and B>=H
+Auto HLS re-entry      :   r_start=argmax_W {unknown fallback, feasible current rung,
+                                             posterior-admitted rung}
+```
+
+Every `A_i` is a completed end-to-end acquisition and every `D_i` is media credited only after
+that acquisition completes. A finite response at the current request size is demand-capped: it
+cannot identify unused path capacity or the acquisition time of a larger response. Higher rungs
+are therefore learned only by an actual candidate transaction bounded end to end by `E`. `R` is
+the exact starting reserve for one worst-permutation replay of the completed bag, not a predictive
+runtime floor. Preserving `max(R,D)` both survives any next sustainable (`A<=D`) rollback before
+completion and restores `R` afterwards; adding the terms would count the same media credit twice.
+At a runtime clock hold, the historical bag is not replayed: a fresh ordered epoch accumulates
+`P/H` only until Play, then is discarded. This prevents old slow acquisitions from manufacturing
+an ever-growing resume floor on a sustainable alternating stream.
+
+Re-entry is not cold-start estimation. The current fixed rung is a no-visible-downgrade continuity
+constraint, while the posterior-admitted rung is the highest feasible calibrated demand below the
+carried estimate's conservative capacity. Neither exists on a genuinely empty start, where the
+ordinary fallback remains. The first fresh-session object is still excluded from the repeatable
+bag, so continuity does not suppress a later evidence-backed downshift.
+
+The earlier order-statistic probability claim is retired. Candidate size changes the queried
+distribution, invocation is selected by the same recent data, and the required exchangeability is
+not available. The old transferred-window code remains only for offline corpus comparison and
+telemetry; it is not a live ABR gate.
+
+Failure state is a per-rung frontier: deadline failures retain the maximum executed `E`, completed
+`A>D` failures are not released by reserve, structural masks are cause-specific, and circumstance
+failures retain no rung claim. An `A>D` certificate retains the live distribution's recent estimate
+at failure and carries across segments while that regime remains plausible. A later live
+distribution whose conservative bound is strictly above the retained estimate is physical
+counter-evidence and authorizes one new excitation; wall time and buffer growth do not.
+
+An internal HLS rebuffer is a playback-recovery edge, not spare time for quality search. Once the
+active stream has supplied its recovery certificate, the native clock resumes before any private
+upshift transaction starts. A downshift is still permitted while held because it is the recovery
+edge; an upshift is reconsidered from the next completed live observation after resume.
+
+Original/HLS selection is outside this network result. It explicitly prices a visible full reload,
+remaining playback, source quality/DV/Atmos/generation preservation, recurring PMS encode work and
+recent visible switches. Those utility weights are product choices, never inferred probabilities.
+
+---
+
+## Historical Phase 3 specification
 
 **Status: DERIVATION, REVIEWED, NOT READY FOR PHASE 4.** Nothing here has landed. This is the
 document the plan's §6 calls for. Where it and `docs/adaptive-playback-plan.md` disagree about a
@@ -152,6 +212,53 @@ the split R7 proved this corpus cannot identify (ten effective degrees of freedo
 collinear with rung). **The identification problem is dissolved rather than solved**, and the three
 irreconcilable `(O₀, τ)` fits tabulated above stop being a blocker: none of them is used.
 
+### The split IS identifiable, and it is measured rather than fitted (2026-08-30)
+
+**The paragraph above is the reason the bound was written as it was, and it stopped being true.**
+Its argument is that `(O₀, τ)` cannot be separated, so the bound takes the worst case over every
+split — tight, principled, and conservative exactly in proportion to how much of `A_i` might be
+fixed. R7 established the non-identifiability by FITTING, over a corpus where `bytes` is collinear
+with rung and there are ten effective degrees of freedom. That is a statement about what a
+regression can recover from aggregate logs. It is not a statement about what the pipeline knows.
+
+`SegmentSample` already carried both halves separately. `active_fetch_us` sums the elapsed time of
+body-read calls that returned bytes; `total_fetch_us` runs from before the request to after the
+demux. Their difference is a **direct observation of `O₀` on that segment** — connection, request,
+headers, the AVIO open, FFmpeg's probe, scheduling — not an estimate of it. Nothing has to be
+fitted and the collinearity never arises, because the two are timed rather than inferred.
+
+Device, 2026-08-30, cross-checked against an instrument that shares no code with it — the
+`hls: segment=` line, whose `open_ms` is measured by the segment fetcher while `active_fetch_us` is
+accumulated in the AVIO read loop:
+
+```text
+hls: segment=636 bytes=130284 not_ready=0 open_ms=370 ttfb_ms=66 open_probe_ms=207
+     first_au_ms=578 total_ms=582
+     -> total 582 ms, of which open+probe 370 ms and body ~205 ms (net=5313kbps over 130284 B)
+```
+
+So the bound becomes `A_j ≤ O_i + (A_i − O_i)·max(1, b_j/b_i)`: the fixed part is charged once,
+where it is incurred, and only the part that moves bytes is scaled. It remains an upper bound on
+the same physics — `τ ≤ (A_i − O_i)/b_i` by the same argument, now with a measured `O_i` instead of
+the worst admissible one.
+
+**Why it mattered enough to change.** The worst-case split is not merely conservative, it is
+conservative *in the wrong proportion* at the bottom of the ladder, where the fixed cost is most of
+the acquisition. On the device above it was 64% of it — so a candidate four times the size was
+priced as though its open and its probe were also four times slower. Measured consequence: a
+playback held on 720 kbps/480p for twenty minutes with 68 s of reserve, `risk=0`, and a safe budget
+six times the rung being played, reporting `reason=Some(Hls(EvidenceWindow))` on all 143 segments.
+`abr/tests.rs::a_fixed_per_segment_cost_must_not_be_extrapolated_by_byte_count` is that trace.
+
+**What this does NOT license.** `active_fetch_us` is time spent in reads that returned bytes; it is
+not certified pure serialization time, and a read can absorb first-byte delay or mid-body pacing.
+That error is in the safe direction — it inflates the body term and shrinks the measured `O_i`,
+moving the bound back toward the old all-proportional one — but a change that made
+`active_fetch_us` *smaller* than the true transfer time would move it the other way and must be
+read as touching this bound. The pinned boundary case is
+`abr/tests.rs::at_the_emergency_floor_a_slow_body_holds_the_rule_below_a_climb`, whose two legs
+differ in nothing but this split.
+
 **One asymmetry decides how much of the ladder needs a size prediction at all.** A downshift bound
 carries no `b_j`: acquisition cannot rise when the byte count falls, so `A_j ≤ A_i` holds whatever
 the candidate's segments turn out to weigh. Only **upshifts** need §3's `σ`, which is why the three
@@ -300,15 +407,24 @@ only if the plant parameters really are those implied by the next observation. T
 the one the refutation above breaks, and the `pairs` grade is kept in the tool precisely so its
 failure stays visible rather than being tidied away.
 
-**Integer form.** A multiply, a ceiling divide and a selection — no floats, no fit, no coefficient:
+**Integer form.** A multiply, a ceiling divide and a selection — no floats, no fit, no coefficient.
+**Updated 2026-08-30** for the measured split; the pre-split form is kept beside it because the
+grading tools and every measurement note above were taken against it:
 
 ```rust
-// A_i * max(1, b_j / b_i), rounded UP: this is a safety bound, so flooring is the wrong way.
+// overhead_i + (A_i - overhead_i) * max(1, b_j / b_i), rounded UP: a safety bound, so
+// flooring is the wrong way. `overhead_i` is `total_fetch_us - active_fetch_us`, MEASURED —
+// see "The split IS identifiable" above.
 let transferred = if query_bytes <= observed_bytes {
     acquisition_us
 } else {
-    (acquisition_us * query_bytes + observed_bytes - 1) / observed_bytes
+    let body = acquisition_us - overhead_us;
+    overhead_us + (body * query_bytes + observed_bytes - 1) / observed_bytes
 };
+
+// The form this replaced, and what `tools/abr-transfer-bound.py --grade pairs` still grades:
+//     A_i * max(1, b_j / b_i)
+// i.e. the same expression with `overhead_us = 0`, which is the worst admissible split.
 ```
 
 `acquisition_us` ≤ 6e7 (a 60 s fetch) and `query_bytes` ≤ 2e7 give a product ≤ 1.2e15, against
@@ -1000,7 +1116,7 @@ on `E_tx_max` as "the sum of enforced deadlines" is unsound until those are boun
 
 ### [SHIPPED 2026-08-27] The downshift deadline, and the retry that outlived it
 
-**A candidate transfer is now bounded in every direction, by the reserve it is spending.**
+**A candidate transfer is bounded in every direction while there is reserve left to protect.**
 
 During a candidate fetch the current stream is not being acquired (the transaction runs inline on
 the demux worker) and the candidate's own output is staged privately until commit, so the playable
@@ -1009,21 +1125,24 @@ That is the conservation identity `B_after = B_start − t` at `B_after = 0`; it
 coefficient and it is classification (1). `candidate_warmup_budget` takes the reserve and returns
 `min(acceptance budget, reserve)`; a downshift has no acceptance budget, so the reserve is its only
 bound and the `if direction == Down { return None }` that produced the 36-second transaction is
-gone.
+gone. The terminal floor is the exact exception: after `B = 0` has already been observed, no
+reserve remains and no cheaper response exists, so aborting the floor candidate can only re-request
+the same bytes. Its ordinary transport bounds remain, but the spent reserve no longer supplies a
+media deadline.
 
 **The bound is the WHOLE reserve, deliberately.** It is the last point at which the transaction can
 still be doing the thing it exists to do, so it is an upper bound on any correct deadline, and
-firing there is the weakest enforceable rule. A tighter one needs either R16's projection from an
-in-segment rate quantile (open; needs chunk-level instrumentation the transport does not have) or a
-bound on the reserve the new rung needs on arrival, `A_j` — which the acquisition window would
-supply and cannot supply here, because a delivery collapse resets the window and a collapse is the
-event that produced the downshift. The alternative to the physical bound is a fraction of it, which
-is the unexplained multiplier the design rule forbids.
+firing there is the weakest enforceable rule. A tighter one needs a bound on the reserve the new
+rung needs on arrival, `A_j` — which the acquisition window would supply and cannot supply here,
+because a delivery collapse resets the window and a collapse is the event that produced the
+downshift. The former R16 prefix-rate projection is not such a bound: a growing PMS HLS response
+right-censors encoder production together with network service. The alternative to the physical
+bound is therefore a fraction of it, which is the unexplained multiplier the design rule forbids.
 
 **The reserve is read at the FETCH, not at the transaction's start.** The control plane has already
 spent some of it, and the deadline is about what is left. An unreadable reserve REFUSES the
-transaction rather than running it unbounded — one segment of delay, since `reject` sets a one-sample
-cooldown and the controller cannot have proposed on an unknown reserve in the first place.
+transaction rather than running it unbounded. It is rejected as a circumstance, so it retains no
+false rung certificate and a later complete sample with a readable reserve may reconsider it.
 
 **The `NotReady` retry was outside every deadline and is now inside one.** `retry_budget` runs to
 15 s and was the only bound in that loop, while `deadline` reached no further than `hls_input`,

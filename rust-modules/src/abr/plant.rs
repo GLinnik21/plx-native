@@ -155,18 +155,18 @@ pub(crate) struct BufferEstimate {
 }
 
 impl BufferEstimate {
-    /// One segment's observation. **`None` is not an observation** — it is the audio lane having
+    /// One reserve observation. **`None` is not an observation** — it is the audio lane having
     /// said nothing yet ([`BufferSnapshot::buffered_ms`]) — so it advances no counter and moves no
     /// estimate. Folding it in as a zero would enter a full reserve into the EWMA as a cliff, and
     /// `last_delta_ms` (which the emergency guard reads precisely because it is unsmoothed) would
     /// carry the whole fabricated drop.
-    pub(crate) fn update(&mut self, buffered_ms: Option<i64>, media_duration_ms: i64) {
+    /// `wall_elapsed_ms` is elapsed monotonic wall time since the previous readable reserve.
+    /// Media duration must not be substituted here: it is the credit a completed acquisition adds,
+    /// while the playhead spends reserve in wall time.
+    pub(crate) fn update(&mut self, buffered_ms: Option<i64>, wall_elapsed_ms: i64) {
         let Some(buffered_ms) = buffered_ms else {
             return;
         };
-        if media_duration_ms <= 0 {
-            return;
-        }
         // **A slope needs TWO observations, and the first sample has one.** `self.buffered_ms`
         // starts at zero, so on the first update `delta` is the whole reserve rather than a
         // change in it — a playback opening with a 20 s reserve and 2 s segments manufactures
@@ -179,12 +179,25 @@ impl BufferEstimate {
         //
         // So the seed moves one sample later, to the first update that has a real delta. Sample
         // zero records the level and nothing else; `slope_ms_per_s` stays at its default, which
-        // says "no rate of change is known" — the honest answer, and a safe one, because no
-        // upshift can occur on the first sample anyway (the acquisition window needs nineteen).
+        // says "no rate of change is known" — the honest answer. The HLS actuator's live decision
+        // uses finite-bag conservation rather than this derivative; Original's eviction paths
+        // require a later observed drain before they may act.
         let delta = buffered_ms - self.buffered_ms;
         let first = self.samples == 0;
         self.last_delta_ms = if first { 0 } else { delta };
-        let sample_slope = (delta * 1_000) / media_duration_ms;
+        // The first reading has no predecessor and therefore needs no elapsed interval.  A second
+        // reading at the same clock tick updates the level but cannot manufacture a derivative;
+        // the next positive interval will difference from this newest level.
+        if !first && wall_elapsed_ms <= 0 {
+            self.last_delta_ms = 0;
+            self.buffered_ms = buffered_ms;
+            return;
+        }
+        let sample_slope = if first {
+            0
+        } else {
+            (delta * 1_000) / wall_elapsed_ms
+        };
         self.slope_ms_per_s = match self.samples {
             0 => self.slope_ms_per_s,
             1 => sample_slope,
@@ -219,10 +232,9 @@ impl BufferEstimate {
     ///
     /// The reserve was never draining — 13.4 s of it remained, against 2.6x the capacity the rung
     /// needed. But `slope_ms_per_s` is a 3:1 EWMA and the fabricated impulse outlives the case, so
-    /// `draining()` stayed true; `OriginalRecovery::probe_due` resets its spacing timer on every
-    /// `!refilling` reading, so the recovery probe could **never** accumulate `probe_spacing_ms`,
-    /// and Original was never re-requested. R10 predicted this impulse would risk a spurious mode
-    /// switch. What it does is permanently withhold the mode switch that should happen.
+    /// `draining()` stayed true and the recovery probe remained physically unaffordable. R10
+    /// predicted this impulse would risk a spurious mode switch. What it did was permanently
+    /// withhold the mode switch that should happen.
     ///
     /// So a commit records the level and nothing else, exactly as sample zero does: the rate of
     /// change in the NEW coordinates is unknown until two observations exist in them, and
@@ -247,6 +259,33 @@ impl BufferEstimate {
     /// the travel, not the sign of it.
     pub(crate) fn draining(&self) -> bool {
         self.slope_ms_per_s < -DRAIN_EPS_MS_PER_S
+    }
+
+    /// **The OBSERVED time to an empty reserve** — `buffered_ms / −slope`, in seconds, and `None`
+    /// unless the reserve is measurably draining.
+    ///
+    /// It answers the same question as [`StarvationHorizon`] and answers it from the other side.
+    /// That one is `T = B·R/(R−C)`: a forecast composed out of the file's average bitrate and a
+    /// measured link rate, neither of which is an observation of the reserve in front of the
+    /// decoder. This one differences the reserve against itself. Every
+    /// approximation the model makes — this section's real bitrate against the file's average, the
+    /// pump's feed-ahead lead, the delivery actually achieved — is already folded into the slope,
+    /// because the slope is what those things ADD UP TO.
+    ///
+    /// So where the two disagree, this is the measurement and that is the arithmetic. Device,
+    /// 2026-08-29: a 25 264 kbps source on a link measuring ~18 000 kbps, reserve at 5 083 ms
+    /// falling 146 ms/s. The model published `starve=11`; the reserve was 35 s from empty and the
+    /// link recovered well inside that. `abr/original.rs`'s imminent branch is the caller and
+    /// carries the rest of the argument.
+    ///
+    /// **Draining, not merely negative.** `draining()` is a magnitude test at
+    /// `DRAIN_EPS_MS_PER_S`, so this cannot divide by a slope of zero and cannot publish a
+    /// two-second horizon off the −16 ms/s a flat reserve reports through the EWMA's tail.
+    pub(crate) fn observed_starvation_secs(&self) -> Option<i64> {
+        if !self.draining() {
+            return None;
+        }
+        Some(self.buffered_ms.max(0) / -self.slope_ms_per_s)
     }
 
     /// **The mirror of [`Self::draining`], at the same epsilon and for the same reason** — the
@@ -304,38 +343,6 @@ pub(crate) fn starvation_horizon(
     StarvationHorizon {
         seconds: u32::try_from(time_to_empty_ms / 1_000).ok(),
     }
-}
-
-/// **[`starvation_horizon`] run backwards: how long a surplus takes to REFILL a spent reserve.**
-///
-/// Same algebra, opposite sign. Playback consumes one millisecond of media per millisecond of wall
-/// clock while the link delivers `C/R` of it, so the reserve grows at `(C - R)/R` per wall
-/// millisecond and closing a gap of `cost_ms` takes
-///
-/// ```text
-/// t_refill = cost_ms * R / (C - R)      [ms]
-/// ```
-///
-/// **`None` when `C <= R`, and that is the useful half.** A link with no surplus never repays the
-/// gap, so a guard built on this correctly refuses to release on the clock and must wait for the
-/// evidence to change instead. The same structural protection [`starvation_horizon`] has, for the
-/// same reason: the quantity is undefined rather than large, and saying so beats returning a
-/// number that reads as an answer.
-///
-/// **It introduces no constant.** `cost_ms` is [`crate::abr::viability::upshift_transaction_cost`]
-/// — itself the sum of two deadlines that already exist — and `R`/`C` are the rung's rate and the
-/// measured one. This is the whole derivation of `reject_backoff_ms`, which
-/// `docs/adaptive-playback-plan.md` §6.2 records as "TBD from `E_tx`".
-pub(crate) fn refill_time_ms(
-    cost_ms: i64,
-    requirement_kbps: u32,
-    capacity_kbps: u32,
-) -> Option<i64> {
-    if capacity_kbps <= requirement_kbps || cost_ms <= 0 {
-        return None;
-    }
-    let surplus = i64::from(capacity_kbps - requirement_kbps);
-    Some(cost_ms.saturating_mul(i64::from(requirement_kbps)) / surplus.max(1))
 }
 
 /// **The physically reachable reserve at a given pair of elementary rates** — N3, and the quantity
@@ -431,9 +438,10 @@ pub(crate) fn buffer_target_at_ms(
 /// is what protects it when `buffer_target_ms` moves after M4.
 ///
 /// **One limitation, stated rather than fixed by mixing dimensions.** `C_safe` is measured over
-/// `active_fetch_us`, which EXCLUDES PMS production time, while "close the deficit within `H`" is
-/// a wall-clock promise. So the guarantee over-promises by exactly the factor N6 forbids folding
-/// in — production is an independent feasibility constraint and stays one.
+/// `active_fetch_us`, so this refill filter is a prospective delivery/reserve planner rather than
+/// a wall-clock completion certificate. The candidate transaction supplies that certificate from
+/// its own complete end-to-end acquisition. Folding the total-acquisition ratio in here would
+/// charge the same server wait, pacing and path-service episode a second time.
 pub(crate) fn refill_admits(
     candidate_wire_kbps: u32,
     candidate_video_es_kbps: u32,

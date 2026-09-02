@@ -10,6 +10,19 @@ const NO_FLOOR: std::time::Duration = std::time::Duration::ZERO;
 fn sample_bytes(bytes: u64, active_us: u64, ratio_pm: u32, buffered_ms: i64) -> SegmentSample {
     let media_ms = 2_000;
     let total_us = u64::from((media_ms * ratio_pm / 1_000).max(1)) * 1_000;
+    sample_bytes_with_total(bytes, active_us, total_us, media_ms, buffered_ms)
+}
+
+/// [`sample_bytes`] with the exact acquisition wall time named. Device diagnostics round
+/// production to per-mille, so reconstructing a 2.039 s acquisition from the displayed `1019`
+/// would silently turn it into 2.038 s and stop being the trace the test claims to preserve.
+fn sample_bytes_with_total(
+    bytes: u64,
+    active_us: u64,
+    total_us: u64,
+    media_ms: u32,
+    buffered_ms: i64,
+) -> SegmentSample {
     SegmentSample::new(
         bytes,
         active_us,
@@ -32,6 +45,25 @@ fn declared_bps(rung: Rung) -> u64 {
     u64::from(rung.kbps()).saturating_mul(1_000)
 }
 
+#[test]
+fn refreshing_a_decision_snapshot_preserves_the_completed_acquisition() {
+    let completed = sample_bytes_with_total(777_000, 321_000, 654_000, 2_000, 4_000);
+    let decision_buffer = BufferSnapshot {
+        playback: MediaTimeMs(13_500),
+        video_tail: MediaTimeMs(14_000),
+        audio_tail: Some(MediaTimeMs(14_000)),
+        audio_expected: true,
+    };
+    let refreshed = completed.with_buffer(decision_buffer);
+
+    assert_eq!(refreshed.bytes(), completed.bytes());
+    assert_eq!(refreshed.active_fetch_us(), completed.active_fetch_us());
+    assert_eq!(refreshed.total_fetch_us(), completed.total_fetch_us());
+    assert_eq!(refreshed.media_duration_ms(), completed.media_duration_ms());
+    assert_eq!(refreshed.completed(), completed.completed());
+    assert_eq!(refreshed.buffer, decision_buffer);
+}
+
 /// A segment on a link of `network_kbps` whose acquisition is `ratio_pm` of its content duration.
 ///
 /// **The two arguments over-determine the sample** — `bytes`, `active_fetch_us` and
@@ -42,10 +74,10 @@ fn declared_bps(rung: Rung) -> u64 {
 ///
 /// Measured on the device (`docs/measurements/j3a-window-logs`, 127 segments over three cases), the
 /// real share is **6% median at rung 4000, 16% at rung 20000, and 37% at the 90th percentile of the
-/// worst case**. Nothing on that television resembles 75%, and the difference is not cosmetic:
-/// §4's admission rule reads total acquisition against bytes, so a fixture where three quarters of
-/// the cost does not scale with bytes describes a link four times faster than its own acquisitions
-/// admit — and grades the rule against a plant that cannot exist.
+/// worst case**. Nothing on that television resembles 75%. The live conservation rule reads total
+/// acquisition directly, while the active/fixed split still feeds delivery telemetry and the
+/// downshift warm-up floor; a fixture with a fabricated 75% fixed share would grade those paths
+/// against a plant that cannot exist.
 ///
 /// So the resolution is now `active = total × 6/7`, a **14% fixed-cost share**, inside the measured
 /// band. Both arguments keep their exact meaning: `network_kbps()` still returns the first and
@@ -99,6 +131,45 @@ fn bootstrap_controller() -> Controller {
     controller_at(Rung::P480)
 }
 
+/// A fresh encoder's first object contains the one-time PMS/session startup.  The device trace
+/// took 3.013 s to obtain 2 s of 4K media while its body transferred at 35 Mbit/s; deciding on that
+/// boundary object alone sent 22 Mbps straight to 320 kbps after every seek.  The next object is
+/// the first repeatable operating-point observation, while the boundary bytes still seed delivery,
+/// production and the prime reserve.
+#[test]
+fn a_reload_primes_before_it_rejudges_the_carried_rung() {
+    let cold = sample(35_194, 1_506, 2_000); // the photographed A=3.012s, D=2s, B=2s shape
+
+    let mut ordinary = Controller::starting_at(Rung::Uhd, None, uhd_catalog());
+    assert!(
+        matches!(
+            ordinary.observe(cold, 3_013),
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "control: without the boundary declaration the finite one-object bag is losing",
+    );
+
+    let mut reloaded = Controller::starting_at(Rung::Uhd, None, uhd_catalog());
+    assert_eq!(
+        reloaded.observe_session_boundary(cold, Some(cold.media_duration_ms()), 3_013),
+        Decision::Stay,
+        "setup cost is buffered, not misclassified as a link collapse",
+    );
+    assert_eq!(reloaded.current(), Rung::Uhd);
+    assert!(!reloaded.has_pending());
+
+    let steady = sample(20_000, 300, 4_000);
+    assert_eq!(reloaded.observe(steady, 3_613), Decision::Stay);
+    assert_eq!(
+        reloaded.current(),
+        Rung::Uhd,
+        "the carried rung survives a healthy post-seek object"
+    );
+}
+
 fn original(source_kbps: u32) -> OriginalModeController {
     OriginalModeController::new(
         source_kbps,
@@ -119,19 +190,30 @@ const HOUR_MS: i64 = 3_600_000;
 
 /// Drive the controller until it proposes an upshift.
 ///
-/// **The bound is `2n`, not a handful of samples, and that is the admission rule showing through.**
-/// An upshift now needs a full acquisition window on BOTH sides — `observe` will not propose one it
-/// cannot commit, and `candidate_ready` will not commit one without the evidence — so a helper that
-/// stopped at four samples was asserting a climb the controller is designed to refuse. Twice `n`
-/// leaves room for the transaction gates that sit in front of it.
+/// [`WINDOW_CAPACITY`] is only a generous finite test budget, not a live sample threshold. A
+/// sustainable one-point bag with spendable reserve may propose immediately; the separate
+/// candidate transaction is what identifies whether the higher operating point can commit.
 fn prime_up(controller: &mut Controller) -> Proposal {
-    let n = AbrPolicy::measured().admission.window_len();
-    for _ in 0..(n * 2) {
+    for _ in 0..WINDOW_CAPACITY {
         if let Decision::Prime(proposal) = controller.observe_next(sample(20_000, 200, 10_000)) {
             return proposal;
         }
     }
     panic!("no proposal")
+}
+
+/// Feed setup evidence for a test whose subject is the DOWN path without leaving an unrelated
+/// exploratory upshift in flight. A circumstantial refusal says only that this fixture is not
+/// exercising the transaction; it arms no candidate block and preserves every observation.
+fn observe_without_upshift(controller: &mut Controller, sample: SegmentSample) -> Decision {
+    let decision = controller.observe_next(sample);
+    if let Decision::Prime(proposal) = decision {
+        if proposal.direction == Direction::Up {
+            assert!(controller.reject(proposal, RejectCause::Circumstance, controller.clock_ms(),));
+            return Decision::Stay;
+        }
+    }
+    decision
 }
 
 /// Drive a controller to rest on a flat link, with a reserve that **integrates the deficit**.
@@ -159,16 +241,31 @@ fn settle_link(network_kbps: u32) -> Rung {
     // bottom of the ladder is tens of seconds and this is inside it at every rung these legs use.
     const CEILING_MS: i64 = 30_000;
     let mut buf_ms: i64 = 10_000;
-    for _ in 0..80 {
+    // The 17.5 -> 18 Mbit/s edge drains only 2.8% of real time; 80 two-second samples leave the
+    // initial reserve largely intact and therefore do not establish a long-run settling point.
+    // Run past that physical runway so an unsustainable rung cannot pass as steady merely because
+    // the fixture started buffered.
+    for _ in 0..400 {
         let rung_kbps = i64::from(controller.current().kbps());
         let fetch_ms = SEGMENT_MS * rung_kbps / i64::from(network_kbps.max(1));
         buf_ms = (buf_ms - fetch_ms + SEGMENT_MS).clamp(0, CEILING_MS);
+        let ratio_pm =
+            u32::try_from(rung_kbps.saturating_mul(1_000) / i64::from(network_kbps.max(1)))
+                .unwrap_or(u32::MAX)
+                .max(1);
         if let Decision::Prime(proposal) =
-            controller.observe_next(sample(network_kbps, 400, buf_ms))
+            controller.observe_next(sample(network_kbps, ratio_pm, buf_ms))
         {
-            let candidate = sample(network_kbps, 400, buf_ms.max(SEGMENT_MS));
+            let candidate_ratio_pm =
+                proposal.rung.kbps().saturating_mul(1_000) / network_kbps.max(1);
+            let candidate = sample(
+                network_kbps,
+                candidate_ratio_pm.max(1),
+                buf_ms.max(SEGMENT_MS),
+            );
             if controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
                 controller.commit(proposal, controller.clock_ms());
+                controller.commit_candidate_evidence(candidate);
             } else {
                 controller.reject(proposal, RejectCause::Candidate, controller.clock_ms());
             }
@@ -292,7 +389,7 @@ fn a_silent_audio_lane_does_not_fire_a_downshift_on_a_full_reserve() {
     // Two ordinary segments first, so the controller is past its cold start and the estimators
     // hold a healthy reserve — the state a mid-playback seek actually lands in.
     for _ in 0..2 {
-        c.observe_next(sample(20_000, 400, 12_000));
+        observe_without_upshift(&mut c, sample(20_000, 400, 12_000));
     }
     let decision = c.observe_next(quiet(12_000));
     assert_eq!(
@@ -312,7 +409,7 @@ fn a_silent_audio_lane_does_not_fire_a_downshift_on_a_full_reserve() {
 fn a_short_reserve_still_fires_a_downshift_when_the_lane_is_speaking() {
     let mut c = controller_at(Rung::P1080);
     for _ in 0..2 {
-        c.observe_next(sample(20_000, 400, 12_000));
+        observe_without_upshift(&mut c, sample(20_000, 400, 12_000));
     }
     let decision = c.observe_next(sample(20_000, 400, 500));
     assert!(
@@ -328,40 +425,47 @@ fn a_short_reserve_still_fires_a_downshift_when_the_lane_is_speaking() {
 #[test]
 fn the_first_bootstrap_segment_cannot_false_downshift() {
     let mut controller = bootstrap_controller();
-    assert_eq!(
-        controller.observe_next(sample(40_000, 200, 1_958)),
-        Decision::Stay,
-        "one cold-start segment of reserve on a fast link is not a failing steady state",
-    );
-    assert!(controller.pending().is_none());
-}
-
-/// Resume resets positional state and rung residency, so its first observation has the same
-/// cold-start contract as bootstrap. The control assertion on the second observation proves this
-/// is a one-sample guard rather than a disabled emergency path.
-#[test]
-fn the_first_segment_after_resume_cannot_false_downshift() {
-    let mut controller = bootstrap_controller();
-    assert_eq!(
-        controller.observe_next(sample(40_000, 200, 12_000)),
-        Decision::Stay
-    );
-    controller.on_resume(30_000);
-
-    assert_eq!(
-        controller.observe_next(sample(40_000, 200, 1_958)),
-        Decision::Stay
-    );
-    assert!(controller.pending().is_none());
+    let decision = controller.observe_next(sample(40_000, 200, 1_958));
     assert!(
-        matches!(
-            controller.observe_next(sample(40_000, 200, 1_958)),
+        !matches!(
+            decision,
             Decision::Prime(Proposal {
                 direction: Direction::Down,
                 ..
             })
         ),
-        "the same short reserve on the second sample must reach the emergency path",
+        "one cold-start segment of reserve on a fast link is not a failing steady state: \
+         {decision:?}",
+    );
+}
+
+/// Resume resets positional estimates, but elapsed wall time does not change the completed
+/// acquisition certificate. A 400 ms acquisition with 1 958 ms of reserve is safe on the first
+/// and every later sample; the old second-sample `B<D` trigger invented a failure here.
+#[test]
+fn the_first_segment_after_resume_cannot_false_downshift() {
+    let mut controller = bootstrap_controller();
+    observe_without_upshift(&mut controller, sample(40_000, 200, 12_000));
+    controller.on_resume(30_000);
+
+    let first = controller.observe_next(sample(40_000, 200, 1_958));
+    assert!(
+        !matches!(first, Decision::Prime(Proposal { direction: Direction::Down, .. })),
+        "the first post-resume sample may excite a candidate but may not false-downshift: {first:?}",
+    );
+    if let Decision::Prime(proposal) = first {
+        assert!(controller.reject(proposal, RejectCause::Circumstance, controller.clock_ms(),));
+    }
+    let second = controller.observe_next(sample(40_000, 200, 1_958));
+    assert!(
+        !matches!(
+            second,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "wall time and sample count cannot turn B=1958ms above R_o=400ms into failure: {second:?}",
     );
 }
 
@@ -418,8 +522,8 @@ fn original_windows_shorter_than_the_measurement_window_are_not_evidence() {
         .unwrap();
     assert_eq!(first.measured_kbps, 4_000);
     assert_eq!(
-        first.requirement_kbps, 37_800,
-        "28 Mbit/s average + VBR headroom"
+        first.requirement_kbps, 28_000,
+        "the reported average is the measured consumption rate"
     );
 }
 
@@ -669,9 +773,8 @@ fn the_eviction_horizon_is_measured_not_discounted() {
     );
     // What the DECISION is taken on is the measurement, and the measurement covers the file.
     assert!(
-        settled.measured_kbps < requirement,
-        "even the raw rate is under the VBR-inflated requirement, so this is not a case the \
-         allowance alone rescues",
+        settled.measured_kbps >= requirement,
+        "the achieved rate physically carries the average"
     );
     assert!(
         settled
@@ -809,6 +912,56 @@ fn the_reserve_slope_is_measured_on_the_wall_clock_not_on_read_time() {
     );
 }
 
+/// The first unsafe endpoint after a long queue-backpressure gap starts an interval; it cannot
+/// classify the preceding, unobserved wall time as unsafe retroactively.
+#[test]
+fn the_first_unsafe_endpoint_after_backpressure_starts_at_zero_duration() {
+    let mut mode = original(60_000);
+    let bytes = window_bytes(50_000);
+    mode.observe(bytes, ORIGINAL_WINDOW_US, Some(40_000), HOUR_MS, 750)
+        .unwrap();
+    mode.observe(
+        bytes * 2,
+        ORIGINAL_WINDOW_US * 2,
+        Some(40_000),
+        HOUR_MS,
+        1_500,
+    )
+    .unwrap();
+
+    let first = mode
+        .observe(
+            bytes * 3,
+            ORIGINAL_WINDOW_US * 3,
+            Some(5_000),
+            HOUR_MS,
+            61_500,
+        )
+        .unwrap();
+    assert!(first.slope_ms_per_s < -DRAIN_EPS_MS_PER_S);
+    assert!(first
+        .horizon_secs
+        .is_some_and(|s| s < AbrPolicy::measured().starvation_safe_secs));
+    assert_eq!(
+        first.unsafe_deficit_ms, 0,
+        "the 60s gap was not observed unsafe"
+    );
+
+    let second = mode
+        .observe(
+            bytes * 4,
+            ORIGINAL_WINDOW_US * 4,
+            Some(4_500),
+            HOUR_MS,
+            62_250,
+        )
+        .unwrap();
+    assert_eq!(
+        second.unsafe_deficit_ms, 750,
+        "only a known-unsafe interval accrues"
+    );
+}
+
 /// A moderate deficit that will not go away eventually loses the argument on its own — before
 /// starvation is imminent, and with no counter deciding anything by itself.
 ///
@@ -842,7 +995,7 @@ fn a_deficit_that_persists_costs_original_the_argument() {
             .observe_saturated(
                 window_bytes(50_000) * window,
                 ORIGINAL_WINDOW_US * window,
-                Some(20_000 - 200 * i64::try_from(window).unwrap()),
+                Some(9_000 - 200 * i64::try_from(window).unwrap()),
                 HOUR_MS,
             )
             .unwrap();
@@ -994,10 +1147,11 @@ fn a_long_pause_turns_the_estimate_into_a_weak_prior() {
 #[test]
 fn measured_runtime_fallback_avoids_an_unnecessarily_low_bootstrap() {
     let policy = AbrPolicy::measured();
+    let catalog = hd_catalog();
     let rung = |measured| original_fallback_rung(measured, &hd_catalog(), &policy);
     assert_eq!(rung(512), Rung::P240);
-    assert_eq!(rung(4_000), Rung::P720Low);
-    assert_eq!(rung(7_000), Rung::P720);
+    assert_eq!(rung(4_000), catalog.best_for_budget(4_000).unwrap().rung);
+    assert_eq!(rung(7_000), catalog.best_for_budget(7_000).unwrap().rung);
     assert_eq!(
         rung(30_000),
         Rung::P1080High,
@@ -1015,22 +1169,36 @@ fn measured_runtime_fallback_avoids_an_unnecessarily_low_bootstrap() {
 }
 
 #[test]
-fn realtime_jit_blocks_upshift_without_forcing_a_downshift() {
+fn realtime_current_acquisition_requires_a_candidate_measurement() {
     let mut controller = bootstrap_controller();
-    for _ in 0..10 {
-        assert_eq!(
-            controller.observe_next(sample(20_000, 1_000, 10_000)),
-            Decision::Stay
-        );
-    }
+    let Decision::Prime(proposal) = controller.observe_next(sample(20_000, 1_000, 10_000)) else {
+        panic!("real-time current acquisition says nothing about an untried encoder");
+    };
+    let too_slow = sample(20_000, 1_200, 10_000);
+    assert!(!controller.candidate_ready(proposal, too_slow, declared_bps(proposal.rung)));
+    assert!(controller.reject(proposal, RejectCause::Candidate, controller.clock_ms()));
     assert_eq!(controller.current(), Rung::P480);
+}
+
+/// Direct one-sample admission is exactly `A <= D && B_post >= A`. Requiring a whole media
+/// duration of reserve when the completed acquisition cost less than one adds an unrelated gate
+/// and contradicts the conservation boundary.
+#[test]
+fn a_fast_candidate_needs_its_acquisition_runway_not_a_whole_segment() {
+    let mut controller = bootstrap_controller();
+    let Decision::Prime(proposal) = controller.observe_next(sample(20_000, 500, 10_000)) else {
+        panic!("the current sample must fund a candidate")
+    };
+    let candidate = sample(20_000, 500, 1_000); // A=1s, D=2s, B_post=1s
+    assert!(controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung),));
 }
 
 #[test]
 fn a_proposal_does_not_mutate_current_until_candidate_commit() {
     let mut controller = bootstrap_controller();
     let proposal = prime_up(&mut controller);
-    assert_eq!(proposal.rung, Rung::P1080M12);
+    assert_eq!(proposal.direction, Direction::Up);
+    assert!(proposal.rung > Rung::P480);
     assert_eq!(controller.current(), Rung::P480);
     assert_eq!(controller.pending(), Some(proposal));
     assert!(controller.candidate_ready(
@@ -1039,18 +1207,18 @@ fn a_proposal_does_not_mutate_current_until_candidate_commit() {
         declared_bps(proposal.rung),
     ));
     assert!(controller.commit(proposal, controller.clock_ms()));
-    assert_eq!(controller.current(), Rung::P1080M12);
+    assert_eq!(controller.current(), proposal.rung);
 }
 
 #[test]
 fn rejected_candidate_preserves_current_and_clears_pending() {
     let mut controller = bootstrap_controller();
     let proposal = prime_up(&mut controller);
-    // **A candidate whose own encoder is at or past real time.** The old gate here was a bare
+    // **A candidate whose whole acquisition is slower than real time.** The old gate here was a bare
     // `800`, i.e. the single-observation form `A <= 0.8 D` the device corpus refutes at ~37%
-    // violation; the disqualifier is now `production_max_pm`, which is a named policy threshold
-    // meaning "this JIT encoder cannot keep up". 1200 pm is 2.4 s of production for a 2 s segment.
-    // The link is not the question — the window is full of fast samples and still cannot save it.
+    // violation; the disqualifier is now the dimensional identity `A<=D`. 1200 pm is a 2.4 s
+    // acquisition for a 2 s segment. The old current-point window cannot override the candidate's
+    // own completed operating-point result.
     assert!(!controller.candidate_ready(
         proposal,
         sample(2_100, 1_200, 12_000),
@@ -1074,28 +1242,27 @@ fn startup_does_not_issue_back_to_back_encoder_swaps() {
     }
 }
 
-/// Once the current rung has one non-cold observation, one slow sample is acted on immediately —
-/// a downshift is an invisible transaction and the alternative is a stall — but it is acted on
-/// CONSERVATIVELY: a single measurement carries the maximum discount, so 1 Mbit/s is treated as
-/// 0.5 Mbit/s of proven capacity and the target is the emergency floor rather than the rung just
-/// below. The next agreeing samples are what buy the way back up. The preceding sample separates
-/// this runtime-collapse policy test from I3's cold-start suppressor; the expected target is the
-/// original policy assertion and is unchanged.
+/// A low body rate on a small response is not a path-capacity measurement. If end-to-end
+/// acquisition is 800 ms for 2 s of media, the current operating point is sustainable and must
+/// not be evicted merely because `bytes/active` says 1 Mbit/s.
 #[test]
 fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
     let mut controller = bootstrap_controller();
     controller.current = Rung::P720;
     assert_eq!(
-        controller.observe_next(sample(20_000, 400, 8_000)),
-        Decision::Stay
+        observe_without_upshift(&mut controller, sample(20_000, 400, 8_000)),
+        Decision::Stay,
     );
     let decision = controller.observe_next(sample(1_000, 400, 8_000));
-    assert_eq!(
-        decision,
-        Decision::Prime(Proposal {
-            rung: Rung::P240,
-            direction: Direction::Down
-        })
+    assert!(
+        !matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "a demand-capped body rate cannot choose a lower actuator: {decision:?}",
     );
     assert_eq!(controller.current(), Rung::P720);
 }
@@ -1118,13 +1285,11 @@ fn a_single_slow_network_sample_jumps_to_the_measured_sustainable_rung() {
 /// nothing at all.
 #[test]
 fn a_failed_downshift_does_not_arm_the_guard_that_refuses_climbing() {
-    // A collapse from P720 — the shape `a_single_slow_network_sample_jumps_to_the_measured_
-    // sustainable_rung` pins, and the state in which `safe_budget <= R_current` holds.
+    // An exact current-point deficit from P720: A=2.4s for D=2s.
     let mut c = bootstrap_controller();
     c.current = Rung::P720;
-    assert_eq!(c.observe_next(sample(20_000, 400, 8_000)), Decision::Stay);
-    let Decision::Prime(down) = c.observe_next(sample(1_000, 400, 8_000)) else {
-        panic!("a collapsed link must propose a downshift");
+    let Decision::Prime(down) = c.observe_next(sample(20_000, 1_200, 8_000)) else {
+        panic!("an unsustainable acquisition bag must propose a downshift");
     };
     assert_eq!(down.direction, Direction::Down);
     assert!(c.reject(down, RejectCause::Candidate, c.clock_ms()));
@@ -1156,17 +1321,18 @@ fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs()
         Decision::Stay
     );
     assert_eq!(
-        controller.observe_next(sample(512, 1_000, 8_000)),
+        controller.observe_next(sample(512, 5_000, 8_000)),
         Decision::Prime(Proposal {
             rung: Rung::P240,
             direction: Direction::Down
-        })
+        }),
+        "without a still-valid lower operating point, adjacent descent maximizes recovery latency"
     );
 }
 
-/// A loaded server draining the reserve must move the rung; a loaded server holding it steady must
-/// not. The contrast is the whole test — `prod` is identical in both legs, so only the reserve's
-/// TRAJECTORY can be doing the work.
+/// Server production time is already part of end-to-end acquisition `A`; it needs no second EWMA
+/// threshold or reserve-slope heuristic. `A>D` is unsustainable even if a fixture hands it a
+/// contradictory flat buffer, while `A<=D` is sustainable when the exact runway is covered.
 ///
 /// **The draining leg now fires four samples earlier, and that is the point rather than a
 /// tolerance change.** It used to walk 8000 -> 6000 -> 4000 -> 3000 -> 2500 -> 2000 and react only
@@ -1182,40 +1348,31 @@ fn a_runtime_collapse_from_the_top_does_not_prime_oversized_intermediate_rungs()
 /// `[[reserve-cannot-see-a-slow-film]]`'s shape exactly.
 #[test]
 fn draining_jit_session_downshifts_but_stable_jit_does_not() {
-    // The drain, reacted to on the first sample that can see it. Sample one records the level and
-    // no slope — a slope needs two observations — so sample two carries the first real delta.
-    let mut draining = bootstrap_controller();
-    assert_eq!(
-        draining.observe_next(sample(20_000, 1_200, 8_000)),
-        Decision::Stay
-    );
-    assert_eq!(
-        draining.observe_next(sample(20_000, 1_200, 6_000)),
+    let mut behind = bootstrap_controller();
+    assert!(matches!(
+        behind.observe_next(sample(20_000, 1_200, 8_000)),
         Decision::Prime(Proposal {
-            rung: Rung::P240,
-            direction: Direction::Down
-        }),
-        "one real delta is enough here because TWO independent conditions agree on it",
-    );
+            direction: Direction::Down,
+            ..
+        })
+    ));
     assert_eq!(
-        draining.telemetry().reason,
-        Some(DecisionReason::Hls(HlsReason::ProductionConstraint)),
-        "and it must be the production arm: `production_bad` is the server being behind real time \
-         AND the reserve draining, which is what the fabricated seed used to hide — at this sample \
-         the old slope was +2750 ms/s, so `draining()` was false and a server 20% behind real time \
-         with a reserve falling at real time read as healthy",
+        behind.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::UnsafeCurrentState)),
     );
 
-    // The control, and the half the name promises: the same production load with a reserve that is
-    // NOT falling must move nothing, however long it runs.
-    let mut stable = bootstrap_controller();
-    for _ in 0..8 {
-        assert_eq!(
-            stable.observe_next(sample(20_000, 1_200, 8_000)),
-            Decision::Stay,
-            "a loaded server is not a reason to move while the reserve is holding",
-        );
-    }
+    let mut realtime = bootstrap_controller();
+    let decision = realtime.observe_next(sample(20_000, 1_000, 8_000));
+    assert!(
+        !matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "A=D replenishes exactly what it spends: {decision:?}",
+    );
 }
 
 fn recovery(source_kbps: u32) -> OriginalRecovery {
@@ -1284,171 +1441,187 @@ fn probe(kbps: u32, completed: bool) -> CapacityObservation {
     }
 }
 
-/// **A mid-ladder rung with spare capacity may probe, once the spacing has ELAPSED.**
-///
-/// Category 8.3. Two changes are folded here and both were the same defect at different layers.
-/// The old gate required the TOP rung, which measured the wrong resource: PMS producing 20 Mbit/s
-/// of H.264 says the SERVER can encode and says nothing about whether the link can carry a
-/// 28 Mbit/s remux. And the spacing counted three HLS SEGMENTS (N13) — a segment duration is a
-/// client REQUEST the server may ignore, and the constant sat behind an `ORIGINAL_` prefix shared
-/// with a counter of 750 ms active-read windows, two unrelated clocks under one name.
-///
-/// Derived rather than counted: the assertion is that nothing probes before `probe_spacing_ms` of
-/// healthy wall clock has accumulated, and that something does at it. `ORIGINAL_PROBE_SPACING`
-/// survives `#[cfg(test)]` so the carry-over can be stated — the new duration IS the old count at
-/// the segment length this pipeline requests, which is why no expectation moves.
+/// HLS first exercises every useful request size it can.  Only at the feasible ceiling does the
+/// source request add information, and no arbitrary wall-clock delay is part of that fact.
 #[test]
-fn original_recovery_probes_from_any_rung_once_the_spacing_has_elapsed() {
-    let policy = AbrPolicy::measured();
+fn original_recovery_waits_for_the_hls_ceiling_not_a_timer() {
+    let hls = CapacityEstimate::from_prior(30_000);
+    let arguments = |current, frontier_exhausted, now_ms| {
+        recovery(28_000).probe_due(
+            current,
+            frontier_exhausted,
+            &idle_server(),
+            sample(20_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &hls,
+            HOUR_MS,
+            now_ms,
+        )
+    };
     assert_eq!(
-        policy.probe_spacing_ms,
-        u64::from(ORIGINAL_PROBE_SPACING) * 2_000,
-        "the duration must be the retired count at the requested segment length, or this is a \
-         policy change wearing a unit conversion",
+        arguments(hd_catalog().candidate(Rung::P720), false, u64::MAX),
+        Err(ProbeBlock::BelowHlsCeiling),
+        "waiting cannot turn a demand-capped mid-ladder response into evidence about the link",
     );
+    assert!(
+        arguments(top_candidate(), true, 0).is_ok(),
+        "once useful HLS traffic has reached its ceiling, the source experiment is informative immediately",
+    );
+}
 
-    let mut gate = recovery(28_000);
-    let current = hd_catalog().candidate(Rung::P720);
-    let spare = CapacityEstimate::from_prior(30_000);
-    let mut now = 0u64;
-    let mut fired_at = None;
-    for _ in 0..8 {
-        now += 2_000;
-        if gate
-            .probe_due(
-                current,
-                &idle_server(),
-                sample(20_000, 500, 10_000),
-                healthy_buffer(),
-                &spare,
-                HOUR_MS,
-                now,
-            )
-            .is_ok()
-        {
-            fired_at = Some(now);
-            break;
+/// A PMS request ceiling is not the delivered rendition.  The remote server can map every larger
+/// request to the same smaller encode; those completed candidates are then structurally rejected
+/// because they improve neither raster nor declared bandwidth.  Requiring the rejected actuator
+/// to become `current` makes Original recovery unreachable even though HLS has no experiment left
+/// and the direct-file request is a different, uncapped service path.
+#[test]
+fn an_exhausted_hls_frontier_allows_the_source_probe_below_the_top_rung() {
+    let mut controller = Controller::starting_at(Rung::P720, None, hd_catalog());
+    let observation = sample(20_000, 200, 20_000);
+
+    // Exercise and structurally rule out every larger HLS actuator without ever committing one.
+    // This is the controller state from the device trace: 20 Mbps was requested, PMS returned the
+    // same ~1.1 Mbps picture, and the strict quality gate correctly kept the current stream.
+    loop {
+        match controller.observe_next(observation) {
+            Decision::Prime(proposal) => {
+                assert_eq!(proposal.direction, Direction::Up);
+                assert!(controller.reject(
+                    proposal,
+                    RejectCause::Structural,
+                    controller.clock_ms(),
+                ));
+            }
+            Decision::Stay => break,
         }
     }
+    assert_eq!(controller.current(), Rung::P720);
     assert_eq!(
-        fired_at,
-        Some(policy.probe_spacing_ms),
-        "a probe must be due at the spacing and not before it",
+        controller.last_reason(),
+        Some(DecisionReason::Hls(HlsReason::RejectBackoff)),
+        "the fixture must end with every higher HLS experiment classified",
     );
-}
 
-/// **N13: the probe spacing is WALL clock, so a slow link does not wait longer for it.**
-///
-/// Differential by construction. The old rule counted three samples, so three segments of ANY
-/// duration satisfied it; the new one counts milliseconds, so segments twice as long need half as
-/// many. A test that fed both and got the same count would be grading a counter.
-#[test]
-fn the_probe_spacing_is_a_duration_and_not_a_number_of_segments() {
-    let current = hd_catalog().candidate(Rung::P720);
-    let spare = CapacityEstimate::from_prior(30_000);
-    let samples_to_probe = |step_ms: u64| {
-        let mut gate = recovery(28_000);
-        let mut now = 0u64;
-        for n in 1..40 {
-            now += step_ms;
-            if gate
-                .probe_due(
-                    current,
-                    &idle_server(),
-                    sample(20_000, 500, 10_000),
-                    healthy_buffer(),
-                    &spare,
-                    HOUR_MS,
-                    now,
-                )
-                .is_ok()
-            {
-                return n;
-            }
-        }
-        panic!("a healthy link must eventually probe");
-    };
-    let short = samples_to_probe(1_000);
-    let long = samples_to_probe(4_000);
+    let current = controller.catalog().candidate(controller.current());
+    let hls = CapacityEstimate::from_prior(current.expected_wire_kbps);
     assert!(
-        long < short,
-        "the same interval took {short} short segments and {long} long ones — equal counts would \
-         mean the spacing is still a segment count",
+        recovery(28_000)
+            .probe_due(
+                current,
+                controller.hls_frontier_exhausted(),
+                &idle_server(),
+                observation,
+                controller.prime_runway_ms(),
+                controller.buffer(),
+                &hls,
+                HOUR_MS,
+                controller.clock_ms(),
+            )
+            .is_ok(),
+        "a rejected request must not have to become current before direct Original can be measured",
     );
 }
 
-/// No measurable headroom, a thin reserve, or a draining one: no probe, whatever the rung. A
-/// probe reads real bytes over the link the segments need, so the gates are about whether spending
-/// it is safe — none of them is a rung and none of them is a count.
-///
-/// The clock is held far past `probe_spacing_ms` throughout, so spacing can never be what refuses:
-/// each assertion is about its own gate.
+/// A response that completed at exactly the requested HLS rate is a lower bound on service, never
+/// proof that no unused service exists.  It therefore cannot veto the source experiment.
+#[test]
+fn a_demand_capped_hls_response_cannot_veto_the_source_experiment() {
+    let current = top_candidate();
+    let demand_capped = CapacityEstimate::from_prior(current.expected_wire_kbps);
+    assert!(
+        recovery(28_000)
+            .probe_due(
+                current,
+                true,
+                &idle_server(),
+                sample(current.expected_wire_kbps, 500, 10_000),
+                Some(1_000),
+                healthy_buffer(),
+                &demand_capped,
+                HOUR_MS,
+                0,
+            )
+            .is_ok(),
+        "the HLS response measured its finite object, not the connection's unused tail",
+    );
+}
+
+/// A thin or draining reserve cannot safely buy the source experiment, and a lower HLS rung still
+/// has a useful, non-competing experiment of its own.
 #[test]
 fn original_recovery_refuses_to_probe_without_room_to_do_it_safely() {
     let current = hd_catalog().candidate(Rung::P1080High);
     let spare = CapacityEstimate::from_prior(60_000);
-    let no_headroom = CapacityEstimate::from_prior(20_011);
-    let elapsed = AbrPolicy::measured().probe_spacing_ms * 4;
-    for _ in 0..6 {
-        assert!(
-            recovery(28_000)
-                .probe_due(
-                    current,
-                    &idle_server(),
-                    sample(60_000, 500, 10_000),
-                    healthy_buffer(),
-                    &no_headroom,
-                    HOUR_MS,
-                    elapsed,
-                )
-                .is_err(),
-            "segments prove a LOWER bound; at the wire rate there is no evidence of more",
-        );
-        assert!(
-            recovery(28_000)
-                .probe_due(
-                    current,
-                    &idle_server(),
-                    sample(60_000, 500, 2_000),
-                    healthy_buffer(),
-                    &spare,
-                    HOUR_MS,
-                    elapsed,
-                )
-                .is_err(),
-            "one segment of reserve is not room to spend on a measurement",
-        );
-        assert!(
-            recovery(28_000)
-                .probe_due(
-                    current,
-                    &idle_server(),
-                    sample(60_000, 500, 10_000),
-                    BufferEstimate {
-                        buffered_ms: 12_000,
-                        slope_ms_per_s: -400,
-                        ..Default::default()
-                    },
-                    &spare,
-                    HOUR_MS,
-                    elapsed,
-                )
-                .is_err(),
-            "a draining reserve is not the moment to add a second transfer",
-        );
-    }
+    assert_eq!(
+        recovery(28_000).probe_due(
+            current,
+            true,
+            &idle_server(),
+            sample(60_000, 500, 2_000),
+            Some(1_000),
+            healthy_buffer(),
+            &spare,
+            HOUR_MS,
+            0,
+        ),
+        Err(ProbeBlock::ShallowReserve),
+    );
+    assert_eq!(
+        recovery(28_000).probe_due(
+            current,
+            true,
+            &idle_server(),
+            sample(60_000, 500, 10_000),
+            Some(1_000),
+            BufferEstimate {
+                buffered_ms: 12_000,
+                slope_ms_per_s: -400,
+                ..Default::default()
+            },
+            &spare,
+            HOUR_MS,
+            0,
+        ),
+        Err(ProbeBlock::Draining),
+    );
+    assert_eq!(
+        recovery(28_000).probe_due(
+            hd_catalog().candidate(Rung::P720),
+            false,
+            &idle_server(),
+            sample(60_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &spare,
+            HOUR_MS,
+            0,
+        ),
+        Err(ProbeBlock::BelowHlsCeiling),
+    );
 }
 
-/// **Confidence, not a count.** The requirement here is 37.8 Mbit/s (28 Mbit/s average plus VBR
-/// headroom), and what has to clear it is the estimate DISCOUNTED BY ITS OWN UNCERTAINTY. So a
-/// decisive probe recovers alone, a marginal one has to be confirmed, and the number of probes
-/// is an output of the rule rather than part of it.
+/// A completed finite response is an exact lower bound on achieved service.  Repeating a lower
+/// bound below demand cannot vote it upward, while one bound above demand needs no confidence tax.
 #[test]
-fn original_recovery_is_decided_by_confidence_rather_than_probe_count() {
-    let mut decisive = recovery(28_000);
+fn original_recovery_uses_the_completed_lower_bound_without_a_probe_count() {
+    let mut short = recovery(28_000);
+    for _ in 0..3 {
+        assert_eq!(
+            short.observe_probe(
+                probe(27_999, true),
+                top_candidate(),
+                &idle_server(),
+                healthy_buffer(),
+                &healthy_hls(),
+                HOUR_MS
+            ),
+            RecoveryVerdict::Insufficient,
+        );
+    }
     assert_eq!(
-        decisive.observe_probe(
-            probe(80_000, true),
+        recovery(28_000).observe_probe(
+            probe(50_000, true),
             top_candidate(),
             &idle_server(),
             healthy_buffer(),
@@ -1456,30 +1629,181 @@ fn original_recovery_is_decided_by_confidence_rather_than_probe_count() {
             HOUR_MS
         ),
         RecoveryVerdict::Recover,
-        "80 Mbit/s leaves nothing for a second probe to add",
+        "one achieved lower bound above consumption is sufficient for the bounded trial",
+    );
+}
+
+/// A terminal source verdict names one HLS counterfactual, not the rest of the playback. If an
+/// upshift commits before the source reload can take a quiescent boundary, deleting the latch while
+/// leaving `SourceProbeState::Terminal` makes Original unreachable forever: the gate refuses
+/// another probe and the completed one is never consulted again.
+///
+/// The upward HLS commit therefore moves the gate to an explicit reconsideration state. One
+/// ordinary observation at the new operating point reuses the exact completed source lower bound,
+/// spends no request and increments no probe counter.
+#[test]
+fn a_terminal_original_verdict_is_reconsidered_after_an_hls_commit() {
+    let mut gate = recovery(28_000);
+    let measured = 80_000;
+    assert_eq!(
+        gate.observe_probe(
+            probe(measured, true),
+            hd_catalog().candidate(Rung::P480),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+        ),
+        RecoveryVerdict::Recover,
+    );
+    assert_eq!(gate.probes(), 1);
+    assert!(gate.comparison().is_some());
+
+    gate.on_hls_commit(Direction::Up);
+    assert!(
+        gate.comparison().is_none(),
+        "the comparison against the superseded HLS operating point is no longer a decision",
+    );
+    let reconsidered = gate
+        .reconsider_after_hls_commit(
+            hd_catalog().candidate(Rung::P720),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+        )
+        .expect("the first ordinary sample after commit consumes the explicit state");
+    assert_eq!(reconsidered.verdict, RecoveryVerdict::Recover);
+    assert_eq!(reconsidered.measured_kbps, measured);
+    assert_eq!(
+        gate.probes(),
+        1,
+        "re-scoring is not a second source request"
+    );
+    assert!(gate.comparison().is_some());
+    assert!(
+        gate.reconsider_after_hls_commit(
+            hd_catalog().candidate(Rung::P720),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+        )
+        .is_none(),
+        "one state transition is consumed exactly once",
+    );
+}
+
+/// A downshift is not merely a different HLS counterfactual: it is the committed consequence of
+/// evidence that the previous service regime did not sustain its operating point. An earlier fast
+/// source result must therefore not be replayed as though it had been measured after that collapse.
+/// Retiring it is not an absorbing failure: the exact source-probe funding gate becomes Fresh and
+/// may authorize a new bounded request once HLS has restored continuity.
+#[test]
+fn a_downshift_retires_a_terminal_source_rate_and_reopens_the_bounded_probe() {
+    let mut gate = recovery(28_000);
+    assert_eq!(
+        gate.observe_probe(
+            probe(80_000, true),
+            top_candidate(),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+        ),
+        RecoveryVerdict::Recover,
     );
 
-    let mut marginal = recovery(28_000);
-    let verdicts: Vec<RecoveryVerdict> = (0..3)
-        .map(|_| {
-            marginal.observe_probe(
-                probe(50_000, true),
-                top_candidate(),
-                &idle_server(),
-                healthy_buffer(),
-                &healthy_hls(),
-                HOUR_MS,
-            )
-        })
-        .collect();
+    gate.on_hls_commit(Direction::Down);
+    assert!(gate.comparison().is_none());
     assert_eq!(
-        verdicts,
-        vec![
-            RecoveryVerdict::Insufficient,
-            RecoveryVerdict::Insufficient,
-            RecoveryVerdict::Recover,
-        ],
-        "50 Mbit/s is only 1.3x the requirement, so it takes agreement to believe",
+        gate.basis().2,
+        0,
+        "the historical source lower bound cannot cross the failed service-regime boundary",
+    );
+    assert!(
+        gate.reconsider_after_hls_commit(
+            hd_catalog().candidate(Rung::P720),
+            &idle_server(),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+        )
+        .is_none(),
+        "Down requires a fresh source observation rather than reusing the historical rate",
+    );
+    assert!(
+        gate.probe_due(
+            hd_catalog().candidate(Rung::P720),
+            true,
+            &idle_server(),
+            sample(60_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+            0,
+        )
+        .is_ok(),
+        "the transition is Fresh, not a terminal no-new-evidence trap",
+    );
+    assert_eq!(
+        gate.probes(),
+        1,
+        "arming a new probe has not performed it yet"
+    );
+}
+
+/// Re-reading the same source prefix against the same HLS evidence asks the same question and can
+/// only consume playback reserve.  A later probe becomes informative when live HLS has established
+/// a strictly stronger lower bound than the evidence that existed at the previous experiment.  In
+/// particular this is the router-release sequence from the device: a source probe under the cap is
+/// insufficient, the cap is removed, then ordinary HLS traffic proves that the link regime changed.
+#[test]
+fn source_probe_rearms_only_after_stronger_live_link_evidence() {
+    let current = top_candidate();
+    let before = healthy_hls();
+    let mut gate = recovery(28_000);
+    let due = |gate: &mut OriginalRecovery, delivery: &CapacityEstimate| {
+        gate.probe_due(
+            current,
+            true,
+            &idle_server(),
+            sample(20_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            delivery,
+            HOUR_MS,
+            0,
+        )
+    };
+
+    assert!(due(&mut gate, &before).is_ok());
+    assert_eq!(
+        gate.observe_probe(
+            probe(10_000, true),
+            current,
+            &idle_server(),
+            healthy_buffer(),
+            &before,
+            HOUR_MS,
+        ),
+        RecoveryVerdict::Insufficient,
+    );
+    assert!(
+        due(&mut gate, &before).is_err(),
+        "unchanged demand-capped traffic cannot justify downloading the same source prefix again",
+    );
+
+    let recovered_link = CapacityEstimate {
+        fast_kbps: before.fast_kbps.saturating_add(1),
+        slow_kbps: before.fast_kbps.saturating_add(1),
+        uncertainty_pm: 0,
+        samples: before.samples.saturating_add(1),
+    };
+    assert!(
+        due(&mut gate, &recovered_link).is_ok(),
+        "a new conservative bound above the old central estimate is changed physical evidence",
     );
 }
 
@@ -1513,6 +1837,65 @@ fn a_truncated_probe_is_absence_of_evidence() {
     );
 }
 
+/// A 5xx/transport failure before the response body is not a low throughput observation.  The
+/// live HLS stream remains the best available route, but diagnostics must not report that the
+/// source failed a bandwidth comparison no source byte ever entered.
+#[test]
+fn a_source_request_refused_before_body_is_probe_failure_not_insufficient() {
+    let mut gate = recovery(28_000);
+    let before = healthy_hls();
+    assert_eq!(
+        gate.observe_probe_failed(&before),
+        RecoveryVerdict::ProbeFailed,
+    );
+    assert_eq!(
+        gate.probes(),
+        1,
+        "the bounded source experiment was still spent"
+    );
+    assert_eq!(
+        gate.basis().2,
+        0,
+        "an unavailable response contributes no delivery sample",
+    );
+    assert_eq!(
+        gate.probe_due(
+            top_candidate(),
+            true,
+            &idle_server(),
+            sample(20_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &before,
+            HOUR_MS,
+            0,
+        ),
+        Err(ProbeBlock::NoNewLinkEvidence),
+        "a transient failure is not polled against unchanged evidence",
+    );
+    let changed = CapacityEstimate {
+        fast_kbps: before.fast_kbps.saturating_add(1),
+        slow_kbps: before.fast_kbps.saturating_add(1),
+        uncertainty_pm: 0,
+        samples: before.samples.saturating_add(1),
+    };
+    assert!(
+        gate.probe_due(
+            top_candidate(),
+            true,
+            &idle_server(),
+            sample(20_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &changed,
+            HOUR_MS,
+            0,
+        )
+        .is_ok(),
+        "a failed request did not prove future unavailability after the link regime changed",
+    );
+}
+
 /// The benefit of Original accrues over the remaining playback; the reload is paid once, now.
 #[test]
 fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
@@ -1528,78 +1911,49 @@ fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {
         ),
         RecoveryVerdict::NotWorthIt,
     );
-    let current = hd_catalog().candidate(Rung::P720);
+    let current = top_candidate();
     let spare = CapacityEstimate::from_prior(80_000);
-    for _ in 0..ORIGINAL_PROBE_SPACING * 2 {
-        assert!(
-            recovery(28_000)
-                .probe_due(
-                    current,
-                    &idle_server(),
-                    sample(20_000, 500, 10_000),
-                    healthy_buffer(),
-                    &spare,
-                    8_000,
-                    AbrPolicy::measured().probe_spacing_ms * 4,
-                )
-                .is_err(),
-            "and it does not spend a probe finding that out",
-        );
-    }
+    assert_eq!(
+        recovery(28_000).probe_due(
+            current,
+            true,
+            &idle_server(),
+            sample(20_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &spare,
+            8_000,
+            0,
+        ),
+        Err(ProbeBlock::NotWorthIt),
+        "and it does not spend the source experiment finding that out",
+    );
 }
 
-/// After a forced downshift the recovery is not immediate — and **the horizon is the ACQUISITION
-/// WINDOW, which is now true rather than merely claimed**.
-///
-/// Category 8.3 (policy choice; N8). The old form asserted `n - 2` samples of `Stay` and then
-/// looked for the proposal, with a doc saying the counter had been "subsumed" by §4's rule. The
-/// expectation was invalid as a statement about the controller: the window admits the top rung on
-/// the sample that brings it to `n` observations, and `stable_samples` then held the proposal back
-/// for two more — so `n - 2` was exactly the fudge that hid a counter the doc said was not there.
-/// I6 deletes the counter, the proposal arrives on the sample the window admits it, and the old
-/// margin is revealed as having been the counter all along.
-///
-/// **Derived rather than counted, so it cannot rot** (§8.5(c)): the assertion is not a number of
-/// samples but the coincidence of two observable facts — `window_len() >= n` and a proposal. A
-/// `Stay` on a sample where the window could carry the rung fails, which is precisely what
-/// unmodified code does twice, so this is differential by construction.
+/// After a forced downshift, recovery is released by observable surplus above the current
+/// operating point's rollback runway. It must not wait for a full `n`-sample bag: `n` describes
+/// historical evidence, not unused path capacity, and using it as an upshift gate recreates the
+/// absorbing low-tier ceiling.
 #[test]
-fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
+fn a_downshift_recovers_from_finite_bag_surplus_before_the_old_window_fills() {
     let mut controller = controller_at(Rung::P1080High);
-    // Establish that the encoder is no longer on its cold sample. The collapse below remains the
-    // first SLOW sample, which is the decision this test grades.
-    assert_eq!(
-        controller.observe_next(sample(40_000, 400, 8_000)),
-        Decision::Stay
-    );
-    let Decision::Prime(down) = controller.observe_next(sample(12_000, 500, 8_000)) else {
-        panic!("the collapsed link must propose a downshift")
+    observe_without_upshift(&mut controller, sample(40_000, 400, 8_000));
+    let Decision::Prime(down) = controller.observe_next(sample(12_000, 1_500, 8_000).abandoned())
+    else {
+        panic!("the abandoned live request must propose a downshift")
     };
     assert!(controller.commit(down, controller.clock_ms()));
 
     let n = AbrPolicy::measured().admission.window_len();
-    let mut dwell_cleared_at = None;
     let mut recovered = None;
-    for i in 0..(n * 2) {
+    for i in 0..n {
         let decision = controller.observe_next(sample(60_000, 400, 10_000));
-        let carried = controller.window_len() >= n;
-        if dwell_cleared_at.is_none() && controller.telemetry().gates.dwell_ms == 0 {
-            dwell_cleared_at = Some(i);
-        }
-        match decision {
-            Decision::Prime(proposal) => {
-                recovered = Some((proposal, controller.window_len(), i));
-                break;
-            }
-            Decision::Stay => assert!(
-                !carried,
-                "sample {i}: the window holds {} observations and can carry the top rung, and \
-                 nothing proposed it — which is a counter, not a model",
-                controller.window_len(),
-            ),
+        if let Decision::Prime(proposal) = decision {
+            recovered = Some((proposal, controller.window_len(), i));
+            break;
         }
     }
-    let (proposal, window_at_proposal, at) = recovered.expect("the recovery must happen at all");
+    let (proposal, window_at_proposal, _) = recovered.expect("surplus must fund a recovery trial");
     assert_eq!(
         proposal,
         Proposal {
@@ -1608,120 +1962,40 @@ fn a_downshift_recovers_on_the_sample_the_window_admits_and_not_two_later() {
         },
         "and it must recover all the way, not one rung at a time",
     );
-    assert_eq!(
-        window_at_proposal, n,
-        "the proposal must arrive on the FIRST sample the window admits, not a later one",
-    );
-    // The OTHER guard must have got out of the way long before, or this test would be grading the
-    // dwell instead of the window and would stop meaning what it says.
-    let dwell_cleared_at = dwell_cleared_at.expect("the dwell must expire");
     assert!(
-        dwell_cleared_at < at,
-        "the dwell cleared at sample {dwell_cleared_at} and the window admitted at {at}: with the \
-         two that close together this test no longer grades the window",
+        window_at_proposal < n,
+        "the proposal waited for all {n} samples instead of the finite-bag surplus",
     );
+    assert_eq!(controller.telemetry().gates.dwell_ms, 0);
 }
 
-/// **N10: the guard between two climbs is WALL CLOCK, and the proof is that a slower link spends
-/// FEWER samples inside it.**
-///
-/// Category 8.3. `cooldown` counted delivered segments — `Up => 3`, `Down => 8` — and a segment
-/// ARRIVES in `bytes / C` of wall time, so the guard got longer exactly as the link got worse and
-/// had no bound at all. `E_tx` is the sum of the two deadlines this transaction is already held
-/// to, and it is the same duration however slowly segments happen to turn up.
-///
-/// **Differential by construction, and the axis is the one that matters.** Both legs feed the same
-/// segment MEDIA duration and differ only in how far apart in wall clock the samples arrive —
-/// which is precisely what a degraded link does. A segment counter is invariant to that (three
-/// segments is three segments), so unmodified code gives the same count for both; a wall-clock
-/// interval admits fewer of the slow ones. The assertion is the INEQUALITY, so no number goes
-/// stale.
-///
-/// **The axis is deliberately NOT the segment's media duration, and the first version of this test
-/// got that wrong.** `E_tx` is `3/2 * d + production_max_pm * d`, i.e. proportional to `d` by
-/// construction, so counting samples while varying `d` is scale-invariant — 2.6 either way — and
-/// an inequality between the two legs can only come from somewhere else. It did: `prime_up` drives
-/// the controller through `observe_next`, which advances the clock a segment per call, so by the
-/// commit the clock was already past 38 s; the loop then restarted a SECOND origin at zero, and
-/// `dwell_remaining_ms`' `saturating_sub` read no elapsed time at all until that origin caught up.
-/// The test was dividing 38 000 by two segment sizes and reporting the ratio as the dwell. It is
-/// why `Controller::clock_ms` exists: a test that continues the controller's own timeline cannot
-/// reintroduce that.
+/// A successful excitation carries its own measured evidence. It must not also arm a wall-clock
+/// dwell: the only fact that can finance another unknown request is newly observable reserve above
+/// the committed operating point's rollback runway.
 #[test]
-fn the_dwell_between_two_climbs_is_wall_clock_and_not_a_segment_count() {
-    // Media duration held FIXED across both legs, so the guard's own length is identical and the
-    // only thing that changes is how much wall clock passes between samples.
-    const SEGMENT_MS: u32 = 2_000;
-    fn samples_held(sample_gap_ms: u64) -> usize {
-        let mut c = controller_at(Rung::P720);
-        let up = prime_up(&mut c);
-        assert!(c.commit(up, c.clock_ms()));
-        assert!(
-            c.telemetry().gates.dwell_ms > 0,
-            "a commit must arm the dwell"
-        );
-        // CONTINUE the controller's clock. Starting a second origin here is the defect the doc
-        // above describes, and it is silent: the guard simply reads as never having aged.
-        let mut clock = c.clock_ms();
-        let mut held = 0usize;
-        while c.telemetry().gates.dwell_ms > 0 {
-            clock += sample_gap_ms;
-            let _ = c.observe(sample_of(SEGMENT_MS, 40_000, 200, 20_000), clock);
-            held += 1;
-            assert!(held < 100, "the dwell must expire");
-        }
-        held
-    }
-    // Segments arriving at real time, versus the same segments arriving four times as far apart —
-    // a link delivering 2 s of media every 8 s.
-    let at_speed = samples_held(u64::from(SEGMENT_MS));
-    let slow_link = samples_held(u64::from(SEGMENT_MS) * 4);
-    assert!(
-        slow_link < at_speed,
-        "the same interval admitted {at_speed} samples at speed and {slow_link} on a link four \
-         times slower — a guard that gives the same count for both is counting segments, not \
-         measuring time",
-    );
-}
-
-/// **A running dwell has a FIXED length: a longer segment afterwards must not extend it.**
-///
-/// `E_tx` is `3/2 * d + production_max_pm * d`, a function of the segment's media duration, and
-/// `dwell_remaining_ms` recomputed it every sample from whatever `last_segment_ms` happened to
-/// hold — so a guard armed against a 2 s segment silently became a guard against a 10 s one the
-/// moment such a segment arrived. That is not hypothetical input: HLS segment durations come off
-/// `#EXTINF`, which is a duration PMS chooses and may change, and `seconds_per_segment` is a
-/// REQUEST the server is free to answer differently.
-///
-/// Differential by construction: under the recomputing form the second reading is larger than the
-/// first despite time having passed, which is the one thing a countdown cannot do.
-#[test]
-fn a_longer_segment_cannot_retroactively_lengthen_a_running_dwell() {
-    const ARMED_ON_MS: u32 = 2_000;
-    const MUCH_LONGER_MS: u32 = 10_000;
+fn a_commit_arms_no_unmeasured_wall_clock_dwell() {
     let mut c = controller_at(Rung::P720);
     let up = prime_up(&mut c);
-    let committed_at = c.clock_ms();
-    assert!(c.commit(up, committed_at));
-    let armed = c.telemetry().gates.dwell_ms;
-    assert!(armed > 0, "a commit must arm the dwell");
+    let candidate = sample(40_000, 400, 20_000);
+    assert!(c.candidate_ready(up, candidate, declared_bps(up.rung)));
+    assert!(c.commit(up, c.clock_ms()));
+    c.commit_candidate_evidence(candidate);
+    assert_eq!(c.telemetry().gates.dwell_ms, 0);
+}
 
-    // One much longer segment arrives while the guard is still running.
-    let _ = c.observe(
-        sample_of(MUCH_LONGER_MS, 40_000, 200, 20_000),
-        committed_at + u64::from(ARMED_ON_MS),
-    );
-    let after = c.telemetry().gates.dwell_ms;
+/// Elapsed wall time by itself is not new network evidence. After a candidate failure, waiting may
+/// allow a different lower excitation, but it may not retry the identical failed request unless
+/// the spendable reserve has strictly grown.
+#[test]
+fn wall_clock_alone_does_not_retry_the_identical_failed_candidate() {
+    let mut c = controller_at(Rung::P720);
+    let failed = prime_up(&mut c);
+    let rejected_at = c.clock_ms();
+    assert!(c.reject(failed, RejectCause::Candidate, rejected_at));
+    let later = c.observe(sample(20_000, 200, 10_000), rejected_at + 60_000);
     assert!(
-        after < armed,
-        "the dwell owed {armed} ms when armed and {after} ms after {ARMED_ON_MS} ms had passed — a \
-         countdown that grows is one whose length is being re-derived from a segment that had no \
-         part in arming it",
-    );
-    assert_eq!(
-        after,
-        armed - u64::from(ARMED_ON_MS),
-        "and it must have counted down by exactly the wall time that elapsed",
+        !matches!(later, Decision::Prime(proposal) if proposal.rung == failed.rung),
+        "time alone retried the identical failed request",
     );
 }
 
@@ -1758,75 +2032,27 @@ fn a_reject_that_says_nothing_about_the_rung_arms_nothing() {
     );
 }
 
-/// **N10's dwell is anchored at the COMMIT, not at the proposal that opened the transaction.**
-///
-/// `Controller::now_ms` is written only by `observe`, so before `commit` took the caller's clock
-/// the anchor was whatever `observe` last recorded — the instant the proposal was made. On device
-/// a transaction runs `control.prime`, two playlist fetches, a warm-up fetch, a graded fetch and a
-/// feed in between, and `E_tx` is by construction the upper BOUND on that work; anchoring there
-/// set the guard expiring at about the moment the transaction was guaranteed to be over, so it
-/// blocked roughly one sample instead of the interval N10 specifies.
-///
-/// Differential by construction: the whole assertion is that a transaction taking real time does
-/// not consume the guard that is supposed to start when it ENDS. Under the old anchor the dwell
-/// owed at the commit is `E_tx - elapsed`, which for a transaction of half `E_tx` is half the
-/// guard — so the equality below cannot hold. No host test could have caught it before, because
-/// every fixture committed from the proposing `observe` with no clock advance, which reproduces
-/// exactly the anchor being corrected.
+/// The compatibility transaction-cost readout must not resurrect a second time debt. The absolute
+/// exploration deadline already bounds the transaction by the measured surplus; charging another
+/// duration after it completes would double-count the same reserve.
 #[test]
-fn a_transaction_that_takes_time_does_not_spend_the_dwell_it_arms() {
-    let mut c = controller_at(Rung::P720);
-    let up = prime_up(&mut c);
-    let proposed_at = c.clock_ms();
-    let full_dwell = crate::abr::viability::upshift_transaction_cost(
-        std::time::Duration::from_millis(2_000),
-        &AbrPolicy::measured(),
-    )
-    .as_millis() as u64;
-    assert!(
-        full_dwell > 0,
-        "E_tx must be a real interval or this test grades nothing"
-    );
-
-    // A transaction that really took most of its own budget: a control-plane round trip plus two
-    // fetches. Anything strictly inside `E_tx` and strictly positive makes the point.
-    let tx_ms = full_dwell / 2;
-    let committed_at = proposed_at + tx_ms;
-    assert!(c.commit(up, committed_at));
-
-    // The next segment arrives one media duration after the transaction closed. Read the guard
-    // THERE — reading it at the commit instant proves nothing, because under either anchor the
-    // clock has not moved past the value being compared against.
-    const SEGMENT_MS: u32 = 2_000;
-    let _ = c.observe(
-        sample_of(SEGMENT_MS, 40_000, 200, 20_000),
-        committed_at + u64::from(SEGMENT_MS),
-    );
-    assert_eq!(
-        c.telemetry().gates.dwell_ms,
-        full_dwell - u64::from(SEGMENT_MS),
-        "the dwell must have aged by the wall time since the COMMIT ({SEGMENT_MS} ms) and no more \
-         — anchored at the proposal it would additionally have spent {tx_ms} ms of itself on the \
-         transaction it exists to follow",
-    );
+fn an_upshift_transaction_has_no_second_time_debt() {
+    let policy = AbrPolicy::measured();
+    for media_ms in [1, 2_000, 10_000, u64::MAX] {
+        assert_eq!(
+            crate::abr::viability::upshift_transaction_cost(
+                std::time::Duration::from_millis(media_ms),
+                &policy,
+            ),
+            std::time::Duration::ZERO,
+        );
+    }
 }
 
-/// **N11: a failed attempt is paid for before another is made.**
-///
-/// Category 8.3. `reject` used to record nothing and set `cooldown = 1`, and the decrement runs
-/// BEFORE the check, so `K = 1` has never blocked a single segment — a refusal cost `E_tx` of
-/// unrefilled reserve and bought another attempt on the very next sample. That is the livelock N11
-/// exists to close.
-///
-/// **The guard is not keyed on the rejected rung, and writing this test is what showed why.** N11
-/// says "refuse to re-prime that rung"; the controller does not re-propose that rung at all — the
-/// budget has moved by the next sample, so it proposes a NEIGHBOURING one, which a rung-keyed
-/// guard waves straight through while the reserve pays for it identically. See [`RejectBlock`].
-///
-/// Differential in both directions: unmodified code proposes again immediately (first leg), and a
-/// guard that latched would never propose again (second leg).
+/// A censored candidate is retryable only when the physical exploration budget grows. Elapsed
+/// time is not repayment; additional playable reserve above the unchanged rollback runway is.
 #[test]
-fn a_failed_prime_is_paid_for_before_another_is_attempted() {
+fn a_failed_candidate_reopens_exploration_only_with_strictly_more_budget() {
     let mut c = controller_at(Rung::P720);
     let refused = prime_up(&mut c);
     let clock_at_reject = 1_000_000u64;
@@ -1838,34 +2064,195 @@ fn a_failed_prime_is_paid_for_before_another_is_attempted() {
         "the reject must record the rung it refused, and the guard must be live",
     );
 
-    // The same evidence at the same instant: no attempt of any kind, at any rung.
+    // The same evidence at the same instant cannot repeat THAT rung. A blocked top must not mask
+    // lower unknown rungs, so those may still be proposed.
     for _ in 0..4 {
-        assert_eq!(
-            c.observe(sample(20_000, 200, 10_000), clock_at_reject),
-            Decision::Stay,
-            "another attempt costs another E_tx and nothing has repaid the last one",
+        let decision = c.observe(sample(20_000, 200, 10_000), clock_at_reject);
+        assert!(
+            !matches!(decision, Decision::Prime(proposal) if proposal.rung == refused.rung),
+            "the identical physical budget bought the failed rung again: {decision:?}",
         );
         assert!(
             c.telemetry().gates.blocked_kbps > 0,
             "the guard must still be holding"
         );
-    }
-
-    // And it is not a latch. Wall clock alone releases it — this link has surplus, so the reserve
-    // really does earn the attempt back, which is what `refill_time_ms` computes.
-    let mut clock = clock_at_reject;
-    let mut released = None;
-    for _ in 0..(AbrPolicy::measured().admission.window_len() * 2) {
-        clock += 2_000;
-        let decision = c.observe(sample(20_000, 200, 10_000), clock);
-        if c.telemetry().gates.blocked_kbps == 0 {
-            released = Some(decision);
-            break;
+        if let Decision::Prime(proposal) = decision {
+            assert!(c.reject(proposal, RejectCause::Circumstance, c.clock_ms()));
         }
     }
+
+    // A strictly deeper reserve is new spendable evidence and reopens quality exploration. The
+    // failed actuator remains a scheduling endpoint: reopening affordability does not require
+    // spending the next epsilon of reserve on the same largest transaction again.
+    let decision = c.observe(sample(20_000, 200, 12_000), clock_at_reject + 1);
+    let Decision::Prime(reopened) = decision else {
+        panic!("new reserve above the same rollback runway must reopen one experiment");
+    };
+    assert_eq!(reopened.direction, Direction::Up);
+    assert!(reopened.rung > c.current());
+}
+
+/// A deadline-censored transaction has not produced a candidate media quantum, so it cannot be
+/// an ordinal response-size endpoint. The only fact it established is common to every quality
+/// excitation: the serial PMS decision/start/playlist/body path did not finish in the disposable
+/// reserve it was given.
+///
+/// Remote-PMS reproduction (2026-08-31): after a 22 Mbps candidate spent its deadline, the
+/// old per-rung frontier immediately tried 12, 6 and 22 Mbps candidates on smaller common
+/// budgets. Those overlapping encoder resources made PMS map later 22 Mbps requests to 720p and
+/// then 404p. A different actuator is not new evidence and must not bypass the censored budget.
+#[test]
+fn a_censored_candidate_blocks_all_quality_exploration_until_the_common_budget_grows() {
+    let mut controller = Controller::starting_at(Rung::P720Low, None, hd_catalog());
+
+    // A=1s, D=2s, R_s=1s, so B=5s exposes exactly E=3s of disposable reserve.
+    let first = match controller.observe_next(sample(20_000, 500, 5_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the initial common budget should fund one excitation"),
+    };
+    assert_eq!(first.rung, Rung::P1080High);
+    assert!(controller.reject(first, RejectCause::Censored, controller.clock_ms()));
+
+    // The next ordinary current-rung completion leaves E=2s after the exact rollback boundary.
+    // The old scheduler treated the untouched lower rungs as eligible and immediately opened a
+    // second encoder. But no candidate response completed, so actuator order supplies no fact
+    // that can make a different request finish inside a *smaller* common budget.
+    let next = controller.observe_next(sample(20_000, 500, 4_000));
+    assert_eq!(next, Decision::Stay);
+    assert_eq!(
+        controller.last_reason(),
+        Some(DecisionReason::Hls(HlsReason::RejectBackoff)),
+    );
+}
+
+/// Reject release must be evaluated against the bag that INCLUDES the sample making the next
+/// decision. Otherwise a deeper buffer can momentarily release the block, after which that same
+/// sample raises the physical runway and the identical candidate is retried with less spendable
+/// reserve than the failed attempt had.
+#[test]
+fn a_new_sample_cannot_release_a_candidate_before_its_runway_cost_is_counted() {
+    let mut c = controller_at(Rung::P720);
+    let Decision::Prime(failed) = c.observe(sample(20_000, 500, 10_000), 2_000) else {
+        panic!("the initial 7s smooth surplus must fund a candidate")
+    };
+    assert_eq!(c.exploration_budget_ms(10_000), Some(8_000));
+    assert!(c.reject(failed, RejectCause::Candidate, 2_000));
+
+    // Before this 3s acquisition is inserted, B=11s and the old 1s runway appears to offer 9s
+    // after preserving the larger 2s media horizon, enough to release an 8s failure. Once counted,
+    // the sustainable two-sample bag needs a 3s replay boundary (already larger than D) and offers
+    // only 8s. The failed top request must therefore remain excluded.
+    let next = c.observe(sample(20_000, 1_500, 11_000), 4_000);
+    assert_eq!(c.exploration_budget_ms(11_000), Some(8_000));
     assert!(
-        released.is_some(),
-        "a link with surplus must repay one attempt in bounded time"
+        !matches!(next, Decision::Prime(proposal) if proposal.rung == failed.rung),
+        "the identical candidate was retried on a smaller physical budget: {next:?}",
+    );
+}
+
+/// A discretionary experiment is followed by an ordinary current-rung acquisition when it
+/// fails. Let `L=B-E` remain for its ordinary rollback acquisition. Before completion, surviving
+/// every still-sustainable unseen response needs `L>=D`; afterwards `B'=L-A+D>=L`, so restoring
+/// the stress boundary needs `L>=R_s`. The exact joint obligation is therefore
+/// `L>=max(R_s,D)`, not `R_s+D`: the two conditions sit on opposite sides of the same media
+/// credit. Neither term is a tuned safety margin.
+#[test]
+fn exploration_preserves_a_media_horizon_for_smooth_rollback() {
+    let mut controller = controller_at(Rung::P720);
+    let observation = sample(20_000, 500, 2_000); // A=1s, D=2s, R_s=1s.
+    assert_eq!(controller.observe_next(observation), Decision::Stay);
+    assert_eq!(
+        controller.exploration_budget_ms(2_000),
+        None,
+        "B=max(R_s,D) has no discretionary millisecond after funding trial failure and rollback",
+    );
+
+    let decision = controller.observe_next(sample(20_000, 500, 2_001));
+    assert!(matches!(decision, Decision::Prime(_)));
+    assert_eq!(controller.exploration_budget_ms(2_001), Some(1));
+}
+
+/// The rollback obligation is the NEXT object on the still-live current cursor, not the object
+/// which happened to complete before the decision. HLS permits variable EXTINF durations. Using
+/// the previous one silently underfunds rollback after a short object followed by a longer one:
+/// the next acquisition may still be perfectly sustainable (`A <= D`) while the retained balance
+/// cannot survive until its media credit lands.
+#[test]
+fn exploration_preserves_the_known_next_variable_duration_object() {
+    let mut controller = controller_at(Rung::P720);
+    let short = sample_of(1_000, 20_000, 500, 2_000); // A=.5s, R_s=.5s.
+
+    assert_eq!(
+        controller.observe_with_rollback(short, Some(4_000), 1_000),
+        Decision::Stay,
+        "B=2s cannot fund an experiment while preserving the known next 4s rollback object",
+    );
+    assert_eq!(controller.exploration_budget_ms(2_000), None);
+
+    let funded = sample_of(1_000, 20_000, 500, 4_001);
+    assert!(matches!(
+        controller.observe_with_rollback(funded, Some(4_000), 2_000),
+        Decision::Prime(_),
+    ));
+    assert_eq!(controller.exploration_budget_ms(4_001), Some(1));
+}
+
+/// Proposal and execution read the reserve at different instants. Playback may consume enough in
+/// between that a failure frontier released by the sample-time snapshot is blocked again at the
+/// actual transaction budget. The worker's re-read is authoritative; otherwise a candidate can
+/// be retried with LESS reserve than the same candidate already exhausted.
+#[test]
+fn an_exploration_rechecks_its_failure_frontier_at_the_executed_budget() {
+    let mut controller = controller_at(Rung::P720);
+    let failed = prime_up(&mut controller);
+    assert!(controller.set_executed_exploration_budget(failed, 9_000));
+    assert!(controller.reject(failed, RejectCause::Candidate, controller.clock_ms()));
+
+    // Fresh completed service evidence is strong enough to support the old endpoint itself, so
+    // the scheduler legitimately crosses its ordinal memory and proposes that exact actuator.
+    let reproposed = match controller.observe_next(sample(100_000, 500, 12_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the sample-time 10s surplus should release the old 9s frontier"),
+    };
+    assert_eq!(reproposed, failed);
+    assert!(
+        !controller.set_executed_exploration_budget(reproposed, 8_000),
+        "the worker re-read bought a 9s failure again with only 8s",
+    );
+    assert!(
+        !controller.has_pending(),
+        "a refused time-of-use authorization left a phantom transaction pending",
+    );
+}
+
+/// The same proposal/execution race applies to the common censored frontier. A sample-time
+/// snapshot may expose more reserve than the failed transaction spent, but playback can consume
+/// that difference before the worker arms the next request. Untouched rungs must not launder the
+/// smaller execution-time budget merely because the proposal was selected at a larger one.
+#[test]
+fn an_exploration_rechecks_the_common_censored_frontier_at_execution_time() {
+    let mut controller = controller_at(Rung::P720);
+    let failed = prime_up(&mut controller);
+    assert!(controller.set_executed_exploration_budget(failed, 9_000));
+    assert!(controller.reject(failed, RejectCause::Censored, controller.clock_ms()));
+
+    let reproposed = match controller.observe_next(sample(20_000, 500, 12_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => {
+            panic!("the sample-time 10s surplus should release the common 9s frontier")
+        }
+    };
+    assert!(
+        !controller.set_executed_exploration_budget(reproposed, 8_000),
+        "the worker opened another encoder after its live budget fell below the common frontier",
+    );
+    assert!(
+        !controller.has_pending(),
+        "a refused common-budget authorization left a phantom transaction pending",
+    );
+    assert_eq!(
+        controller.last_reason(),
+        Some(DecisionReason::Hls(HlsReason::RejectBackoff)),
     );
 }
 
@@ -1884,65 +2271,15 @@ fn a_failed_prime_is_paid_for_before_another_is_attempted() {
 /// the reserve stays far above one segment and above `starving()`'s six seconds, and the link
 /// delivers the rung's full rate so `starvation_horizon` is `None`.
 #[test]
-fn a_server_falling_behind_moves_the_rung_without_eight_samples_of_agreement() {
-    let policy = AbrPolicy::measured();
+fn an_end_to_end_acquisition_deficit_moves_without_eight_samples_of_agreement() {
     let mut c = controller_at(Rung::P1080);
-    let rung_kbps = HlsActuatorCatalog::measured()
-        .candidate(Rung::P1080)
-        .expected_wire_kbps;
-    // Past `production_max_pm` from the first sample, so the ONLY thing this test waits for is the
-    // reserve, which is the predicate under change.
-    let over = policy.production_max_pm * 2;
-    let mut clock = 0u64;
-
-    // **The reserve FILLS before it drains, and that is not decoration.** `BufferEstimate::update`
-    // computes its first slope against a zero baseline, so a fixture that opens at a deep reserve
-    // hands the 3:1 EWMA a fabricated positive spike of half that depth and needs about twenty
-    // samples to forget it — which would make this test grade the estimator's warm-up instead of
-    // the predicate. A real session starts at about one segment and climbs, so the artefact is
-    // small; the fixture has to do the same or it is not modelling a playback. (Same lesson as
-    // `settle_link`'s frozen reserve.)
-    let mut buf = 2_000i64;
-    for _ in 0..14 {
-        clock += 2_000;
-        buf += 2_000;
-        assert_eq!(
-            c.observe(sample_of(2_000, rung_kbps * 4, over, buf), clock),
-            Decision::Stay,
-            "a filling reserve is not a reason to move, however loaded the server is",
-        );
-    }
-    assert!(
-        !c.buffer().draining(),
-        "the setup must reach a non-draining deep reserve"
-    );
-
-    let mut fired = None;
-    for i in 0..8 {
-        clock += 2_000;
-        buf -= 1_500;
-        let decision = c.observe(sample_of(2_000, rung_kbps * 4, over, buf), clock);
-        assert!(
-            c.buffer().buffered_ms > 6_000,
-            "sample {i}: the reserve must stay clear of `starving()` or this grades that arm",
-        );
-        if let Decision::Prime(p) = decision {
-            fired = Some((p, c.telemetry().gates.draining));
-            break;
-        }
-    }
-    let (proposal, draining) =
-        fired.expect("a server past its ceiling with a draining reserve must move the rung");
+    let Decision::Prime(proposal) = c.observe_next(sample(32_000, 1_001, 30_000)) else {
+        panic!("A>D must move even with a deep starting reserve")
+    };
     assert_eq!(proposal.direction, Direction::Down);
     assert_eq!(
         c.telemetry().reason,
-        Some(DecisionReason::Hls(HlsReason::ProductionConstraint)),
-        "and it must be the PRODUCTION arm that fired, not a buffer or deadline one",
-    );
-    assert!(
-        draining < 8,
-        "it fired after {draining} draining samples — at eight or more this test grades nothing, \
-         because that is exactly what the code it replaced already did",
+        Some(DecisionReason::Hls(HlsReason::UnsafeCurrentState)),
     );
 }
 
@@ -1980,7 +2317,8 @@ fn the_uhd_actuator_separates_its_request_from_its_measured_output() {
     assert_eq!(candidate.rung.raster(), (3840, 2160));
     let high = uhd_catalog().candidate(Rung::P1080High);
     assert_eq!(high.expected_wire_kbps, 20_011);
-    // 4% more wire, 110% more server. The whole reason production is a separate constraint.
+    // 4% more wire, 110% more calibrated server work: a distinct recurring mode-utility cost,
+    // not an independent HLS admission constraint.
     assert!(candidate.expected_wire_kbps < high.expected_wire_kbps * 11 / 10);
     assert_eq!(
         candidate.production_load_pm,
@@ -2090,7 +2428,7 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
     assert_eq!(real.clamped_to_evidence(floor.expected_wire_kbps), real);
 
     // End to end: the floor rung on a fast LAN climbs instead of parking. `250pm` is half a
-    // second of PMS production for a two-second segment — see the companion test below for why
+    // second of end-to-end acquisition for a two-second segment — see the companion test below for why
     // the number is load-bearing here and was not before §4's rule decided.
     let mut controller = controller_at(Rung::P240);
     let mut reached = Rung::P240;
@@ -2115,32 +2453,19 @@ fn a_transfer_too_short_to_time_cannot_claim_a_gigabit_link() {
     );
 }
 
-/// **[LIMITATION, pinned deliberately] At the emergency floor the transfer bound licenses a climb
-/// only while production is fast, and this test is where that boundary is written down.**
-///
-/// A 320 kbps segment is ~80 kB. §2a's bound is `A_i·max(1, q/b_i)`, so the largest byte count it
-/// will admit is `b_i · D/A` — and the candidate is charged its rung's WORST case, `σ·W_j·D/8000`,
-/// while the observation is whatever this content happened to weigh. At the floor those two
-/// asymmetries compound: `σ` is **1.418 at rung 720** (the quality-floor regime, where the encoder
-/// overshoots its target) against 0.893 above 4000, and 80 kB is only 0.63 of rung 320's own worst
-/// case on easy content. The climb therefore needs a **3.19×** byte ratio while `D/A` supplies
-/// `1000/ratio_pm × 2`.
-///
-/// The crossover is `ratio_pm ≈ 313`, and it is arithmetic rather than a tuning knob: above it the
-/// controller holds the floor.
-///
-/// **This is the same shape as the collapse finding** (`docs/measurements/j3a-window-shadow.md` §5)
-/// — the rule declining to speak where its evidence cannot carry a conclusion — and it has the same
-/// remedy: not a weaker bound, but better evidence. A probe that spends a bounded, affordable
-/// transaction to obtain one larger observation is the plan's J4, and until it exists this boundary
-/// is real. It is pinned rather than papered over so that a change moving it fails loudly.
+/// A demand-capped floor response cannot identify the unused path tail. The two legs hold bytes,
+/// total acquisition and reserve constant and vary only active body time. The retired transfer
+/// projection treated the slow-body leg as proof that every larger request was impossible. The
+/// live rule uses either leg only to price rollback runway, funds the same bounded experiment, and
+/// accepts the independently completed fast candidate.
 #[test]
-fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb() {
-    fn reached_from_floor(ratio_pm: u32) -> Rung {
+fn a_slow_demand_capped_floor_response_cannot_veto_a_fast_candidate() {
+    // `active_us` is the ONLY axis: both legs are 80 kB acquired over 800 ms at ratio_pm 400.
+    fn reached_from_floor(active_us: u64) -> Rung {
         let mut controller = controller_at(Rung::P240);
         for _ in 0..40 {
             if let Decision::Prime(proposal) =
-                controller.observe_next(sample_bytes(80_000, 700, ratio_pm, 12_000))
+                controller.observe_next(sample_bytes(80_000, active_us, 400, 12_000))
             {
                 if controller.candidate_ready(
                     proposal,
@@ -2156,21 +2481,23 @@ fn at_the_emergency_floor_a_slow_producing_server_holds_the_rule_below_a_climb()
         controller.current()
     }
     assert!(
-        reached_from_floor(300) > Rung::P240,
-        "below the crossover the floor is escapable"
+        reached_from_floor(700) > Rung::P240,
+        "0.7ms of body inside an 800ms acquisition: the link moved 80kB instantly and the rest was \
+         open, probe and wait — a larger rendition costs more BODY and the same overhead, so the \
+         floor is escapable, and refusing it asserts that a bigger file opens more slowly",
     );
-    assert_eq!(
-        reached_from_floor(400),
-        Rung::P240,
-        "above it the bound cannot license a climb, and pretending otherwise is the whole thing \
-         this specification exists to stop",
+    assert!(
+        reached_from_floor(700_000) > Rung::P240,
+        "a slow demand-capped floor response may price rollback runway, but it cannot veto the \
+         independently completed fast candidate segment",
     );
 }
 
-/// **Network yes, server no.** The two constraints are evaluated independently, so a fast link
-/// in front of a PMS already near real time cannot commit the 4K point.
+/// `ProductionEstimate` observes total acquisition, including the network/open/TTFB already priced
+/// elsewhere. Without an independent server clock it may remain telemetry, but cannot veto the same
+/// service episode a second time. The candidate's own exact `A<=D` result remains authoritative.
 #[test]
-fn a_fast_link_in_front_of_a_loaded_server_does_not_choose_4k() {
+fn total_acquisition_is_not_a_second_independent_production_gate() {
     let catalog = uhd_catalog();
     let current = catalog.candidate(Rung::P1080High);
     let fast = CapacityEstimate::from_prior(80_000);
@@ -2184,65 +2511,63 @@ fn a_fast_link_in_front_of_a_loaded_server_does_not_choose_4k() {
     for _ in 0..4 {
         quick_server.observe(200, current.production_load_pm, false);
     }
-    assert_eq!(
-        catalog
-            .best_sustainable(60_000, &quick_server, current, &policy, 30_000)
-            .map(|c| c.rung),
-        Some(Rung::Uhd),
-        "a server at a fifth of real time has room for the measured 2.1x",
-    );
+    let quick = catalog
+        .best_sustainable(60_000, &policy, 30_000)
+        .map(|c| c.rung);
+    assert_eq!(quick, Some(Rung::Uhd));
 
     let mut loaded_server = ProductionEstimate::default();
     for _ in 0..4 {
         loaded_server.observe(700, current.production_load_pm, false);
     }
+    let loaded = catalog
+        .best_sustainable(60_000, &policy, 30_000)
+        .map(|c| c.rung);
     assert_eq!(
-        catalog
-            .best_sustainable(60_000, &loaded_server, current, &policy, 30_000)
-            .map(|c| c.rung),
-        Some(Rung::P1080High),
-        "0.7 of real time on 1080p predicts 1.47 on 4K — behind, whatever the link does",
+        loaded, quick,
+        "total acquisition was charged as two independent constraints"
     );
-    assert!(
-        candidate_risk(
-            catalog.candidate(Rung::Uhd),
-            current,
-            &fast,
-            &loaded_server,
-            &buffer,
-            &policy,
-        )
-        .production_risk,
-        "and the risk model says so too, so the two agree rather than one overriding the other",
+    let quick_risk = candidate_risk(
+        catalog.candidate(Rung::Uhd),
+        current,
+        &fast,
+        &quick_server,
+        &buffer,
+        &policy,
     );
+    let loaded_risk = candidate_risk(
+        catalog.candidate(Rung::Uhd),
+        current,
+        &fast,
+        &loaded_server,
+        &buffer,
+        &policy,
+    );
+    assert_eq!(loaded_risk.score, quick_risk.score);
 }
 
 /// A budget jump primes the far candidate ONCE, instead of paying for three encoder creations
 /// to walk 10, 12, 14.
 ///
-/// **The loop reaches `2n` because §4's rule gates BOTH sides of the transaction now**, and this
-/// test is the clearest place to say that the jump itself is untouched by it: `largest_admissible`
-/// walks DOWN from the budget's choice and returns the highest rung the window supports, which is
-/// still one proposal and still skips 10 and 12. What the window changed is WHEN the controller may
-/// propose, not how far it may reach.
+/// The current bag says only how much reserve can be spent. Since every unknown candidate is
+/// bounded by that same surplus, the excitation is the highest feasible unclassified rung rather
+/// than a walk through intermediate encoders.
 #[test]
 fn a_budget_jump_skips_the_intermediate_encoders() {
     let mut controller = controller_at(Rung::P1080);
-    let n = AbrPolicy::measured().admission.window_len();
     let mut proposal = None;
-    for _ in 0..(n * 2) {
+    for _ in 0..WINDOW_CAPACITY {
         if let Decision::Prime(p) = controller.observe_next(sample(22_000, 200, 12_000)) {
             proposal = Some(p);
             break;
         }
     }
-    assert_eq!(
-        proposal,
-        Some(Proposal {
-            rung: Rung::P1080M14,
-            direction: Direction::Up
-        }),
-        "8 Mbps now, a ~14 Mbit/s safe budget: one prime, not three",
+    let proposal = proposal.expect("the conservation window carries a dearer rung");
+    assert_eq!(proposal.direction, Direction::Up);
+    assert!(
+        proposal.rung > Rung::P1080M14,
+        "the jump must skip the 10/12/14 encoder walk; got {:?}",
+        proposal.rung,
     );
 }
 
@@ -2258,19 +2583,21 @@ fn only_upshift_primes_receive_the_exact_acceptance_budget() {
         rung: Rung::P240,
         direction: Direction::Down,
     };
-    // A reserve far above either acceptance budget, so this test grades the ACCEPTANCE half alone.
+    // A reserve far above either helper's clamp, so this grades their unclamped arithmetic. The
+    // prime helper is historical; the warm-up helper remains the live initial-media calculation.
     let ample = reserve_as_budget(60_000);
+    assert_eq!(candidate_prime_budget(media, &policy, ample), media);
     assert_eq!(
-        candidate_prime_budget(media, &policy, ample),
-        std::time::Duration::from_micros(2_202_200)
+        candidate_warmup_budget(up, media, ample, NO_FLOOR, NO_FLOOR),
+        ample,
     );
+    // A downshift has no repeatable-observation acceptance phase. This helper returns its initial
+    // reserve budget; the live seam may floor that at the measured acquisition requirement or
+    // remove it for terminal floor recovery.
     assert_eq!(
-        candidate_warmup_budget(up, media, ample, NO_FLOOR),
-        std::time::Duration::from_micros(3_003_000)
+        candidate_warmup_budget(down, media, ample, NO_FLOOR, NO_FLOOR),
+        ample
     );
-    // A downshift has no acceptance test — it is the recovery path — so the reserve is its ONLY
-    // bound, and it is now a bound rather than nothing.
-    assert_eq!(candidate_warmup_budget(down, media, ample, NO_FLOOR), ample);
 }
 
 /// **A downshift transfer may not outlive the reserve it is paid out of.** J3b, and the
@@ -2292,18 +2619,16 @@ fn a_downshift_transfer_is_bounded_by_the_reserve_it_spends() {
     for reserve_ms in [0i64, 250, 5_000, 36_000] {
         let reserve = reserve_as_budget(reserve_ms);
         assert_eq!(
-            candidate_warmup_budget(down, media, reserve, NO_FLOOR),
+            candidate_warmup_budget(down, media, reserve, NO_FLOOR, NO_FLOOR),
             reserve,
             "a {reserve_ms}ms reserve buys exactly {reserve_ms}ms of transfer",
         );
     }
 }
 
-/// The bound is the CONSERVATION identity, so it applies in both directions — a transaction that
-/// outlives the reserve stalls whichever way it was going. On a healthy upshift it does not bind
-/// (the proposal gate requires three segments and the two budgets sum to ~2.6), which is the
-/// signature of a bound that is not doing hidden work; it binds when the reserve fell between the
-/// proposal and the fetch.
+/// Compatibility arithmetic for the initial reserve cap in both directions. The
+/// `candidate_prime_budget` assertions below preserve the archived unconditional-second-phase
+/// helper; live setup-bearing continuation instead stays inside the original transaction grant.
 #[test]
 fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
     let media = std::time::Duration::from_millis(2_000);
@@ -2315,17 +2640,17 @@ fn a_thin_reserve_bounds_an_upshift_too_and_an_ample_one_does_not() {
 
     let healthy = reserve_as_budget(3 * 2_000);
     assert_eq!(
-        candidate_warmup_budget(up, media, healthy, NO_FLOOR),
-        std::time::Duration::from_millis(3_000),
-        "at the proposal gate's own reserve the acceptance budget still decides",
+        candidate_warmup_budget(up, media, healthy, NO_FLOOR, NO_FLOOR),
+        healthy,
+        "the cold candidate may spend exactly the exploration reserve granted to the transaction",
     );
-    assert_eq!(
-        candidate_prime_budget(media, &policy, healthy),
-        std::time::Duration::from_millis(2_200),
-    );
+    assert_eq!(candidate_prime_budget(media, &policy, healthy), media,);
 
     let thin = reserve_as_budget(400);
-    assert_eq!(candidate_warmup_budget(up, media, thin, NO_FLOOR), thin);
+    assert_eq!(
+        candidate_warmup_budget(up, media, thin, NO_FLOOR, NO_FLOOR),
+        thin
+    );
     assert_eq!(candidate_prime_budget(media, &policy, thin), thin);
 }
 
@@ -2361,31 +2686,18 @@ fn the_safe_budget_is_the_final_conservative_network_estimate() {
     assert_eq!(hls_safe_budget(&capacity), capacity.conservative_kbps());
 }
 
-/// A pause breaks uninterrupted rung residency, and **which guards it clears is now an argument
-/// rather than a sweep** (N12, re-expressed by I6).
-///
-/// Category 8.3 (policy choice). The old assertion — "`on_resume` clears `stable`, `cooldown` and
-/// `on_rung`" — is invalid because two of those three no longer exist: I6 replaced the sample
-/// counters with a wall-clock dwell and a recorded reject block (N10, N11). Re-expressed rather
-/// than deleted, because the underlying question survives verbatim: after a pause, which state
-/// still describes the world?
-///
-/// The three answers are now different from each other, and that is the finding:
-///
-/// * `on_rung` is CLEARED. It counts uninterrupted samples on this rung and a pause ends that.
-/// * The reject block is CLEARED. Its evidence release compares against a rate `age_ms` has just
-///   widened the uncertainty on, so the recorded number no longer describes anything.
-/// * The dwell is NOT cleared, and needs no clearing — thirty seconds of pause really are thirty
-///   seconds in which no encoder session was started, so `E_tx` has genuinely elapsed. **This is
-///   the differential half**: a segment counter could not represent that at all, because no
-///   segments arrived, so under unmodified code the pause released exactly nothing.
+/// A pause ends uninterrupted rung residency, but it is not new network evidence and cannot erase
+/// a censored candidate result. Exploration has no wall-clock dwell: the identical request is
+/// financed again only by strictly more observed reserve above the current runway.
 #[test]
-fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
+fn resume_clears_rung_residency_but_preserves_candidate_evidence() {
     let mut c = bootstrap_controller();
     let mut now = 0u64;
     for _ in 0..3 {
         now += 2_000;
-        let _ = c.observe(sample(40_000, 200, 20_000), now);
+        if let Decision::Prime(proposal) = c.observe(sample(40_000, 200, 20_000), now) {
+            assert!(c.reject(proposal, RejectCause::Circumstance, now));
+        }
     }
     assert!(
         c.telemetry().gates.on_rung > 0,
@@ -2394,7 +2706,7 @@ fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
     c.on_resume(30_000);
     assert_eq!(c.telemetry().gates.on_rung, 0);
 
-    // A reject records the rung it refused; a resume retires that record.
+    // A reject records the rung it refused; merely pausing cannot retire that record.
     let mut blocked = controller_at(Rung::P720);
     let mut now = 0u64;
     let proposal = loop {
@@ -2411,30 +2723,12 @@ fn resume_clears_the_state_a_pause_invalidates_and_leaves_the_clock_alone() {
         "the setup must establish a live reject block",
     );
     blocked.on_resume(30_000);
-    assert_eq!(blocked.telemetry().gates.blocked_kbps, 0);
-
-    // And the dwell is released by the clock, whether or not anything was resumed.
-    let mut dwelling = controller_at(Rung::P720);
-    let mut now = 0u64;
-    let up = loop {
-        now += 2_000;
-        if let Decision::Prime(p) = dwelling.observe(sample(40_000, 200, 20_000), now) {
-            break p;
-        }
-        assert!(now < 60_000, "the setup must reach an upshift proposal");
-    };
-    assert!(dwelling.commit(up, dwelling.clock_ms()));
-    assert!(
-        dwelling.telemetry().gates.dwell_ms > 0,
-        "a commit arms the dwell"
-    );
-    now += 30_000;
-    let _ = dwelling.observe(sample(40_000, 200, 20_000), now);
     assert_eq!(
-        dwelling.telemetry().gates.dwell_ms,
-        0,
-        "thirty seconds of wall clock is thirty seconds, whether they were paused or played",
+        blocked.telemetry().gates.blocked_kbps,
+        proposal.rung.kbps(),
+        "unmeasured wall time is not a larger physical exploration budget",
     );
+    assert_eq!(blocked.telemetry().gates.dwell_ms, 0);
 }
 
 /// **A link too fast to be believed must not read as a COLLAPSE.**
@@ -2477,16 +2771,19 @@ fn a_reading_a_quarter_of_the_prior_still_collapses() {
     assert_eq!(estimate.uncertainty_pm, 400);
 }
 
-/// **The graded-segment deadline and the acceptance test are the SAME threshold.**
+/// **Archived regression: the former graded-segment deadline and acceptance test shared one
+/// threshold.**
 ///
-/// They were, when both were 0.8·D. The §4 admission work replaced `candidate_ready`'s bare 800
+/// When the live transaction had an unconditional graded segment, both were 0.8·D. The §4
+/// admission work replaced `candidate_ready`'s bare 800
 /// with `production_max_pm`, and the transport's literal `4/5` was left behind — so for a while a
 /// candidate whose graded segment took between 0.8·D and 1.1·D was aborted by the deadline and
 /// never reached the rule that would have admitted it. One threshold, enforced twice at two
 /// values, the stricter one invisible because it fired in `ff.rs`.
 ///
-/// This is the test that would have caught it, and it is differential: it fails against any
-/// literal that is not the policy's own number.
+/// This compatibility test would have caught it and retains the coefficient-free `A <= D`
+/// threshold for archived plant fixtures. The live conditional repeatable phase no longer calls
+/// this helper.
 #[test]
 fn the_prime_deadline_is_exactly_the_acceptance_threshold() {
     let policy = AbrPolicy::measured();
@@ -2494,10 +2791,9 @@ fn the_prime_deadline_is_exactly_the_acceptance_threshold() {
         let media = std::time::Duration::from_millis(media_ms);
         // An ample reserve, so the acceptance threshold is what this grades.
         let budget = candidate_prime_budget(media, &policy, reserve_as_budget(600_000));
-        // What `candidate_ready` admits: `production_ratio_pm < production_max_pm`, i.e. an
-        // acquisition strictly under `production_max_pm/1000` of the content duration.
-        let admits_up_to_us =
-            u128::from(media_ms) * 1_000 * u128::from(policy.production_max_pm) / 1_000;
+        // What `candidate_ready` admits: total acquisition no slower than real time. 1000 pm is
+        // the dimensional identity A <= D, not another policy coefficient.
+        let admits_up_to_us = u128::from(media_ms) * 1_000;
         assert_eq!(
             u128::from(budget.as_micros() as u64),
             admits_up_to_us,
@@ -2511,16 +2807,23 @@ fn the_prime_deadline_is_exactly_the_acceptance_threshold() {
 /// leg lands a rung higher than the 8 Mbps it committed on the six-rung ladder — that leg had
 /// to choose between 8 and 20 Mbps and spent 12 Mbit/s of a measured link on nothing.
 ///
-/// It also reaches it in TWO moves rather than one, and that is the production model being
-/// honest rather than a flaw: from 480p, extrapolating the server's cost five raster-steps
-/// ahead is a guess, so the controller takes the step its evidence supports and re-measures.
-/// Skipping intermediate encoders is bounded by what has actually been observed.
+/// It also reaches it in TWO moves rather than one: conservative delivery/refill evidence first
+/// authorizes the finite experiment it can fund, then the candidate's own complete acquisition
+/// decides whether it commits. Skipping intermediate encoders is bounded by what has actually
+/// been observed.
 #[test]
 fn lg_network_legs_settle_on_sustainable_rungs() {
-    assert_eq!(settle_link(512), Rung::P240);
-    assert_eq!(settle_link(1_200), Rung::P480);
-    assert_eq!(settle_link(7_000), Rung::P720);
-    assert_eq!(settle_link(17_500), Rung::P1080M10);
+    let catalog = hd_catalog();
+    for link in [512, 1_200, 7_000, 17_500] {
+        assert_eq!(
+            settle_link(link),
+            catalog
+                .best_for_budget(link)
+                .unwrap_or_else(|| catalog.candidate(Rung::P240))
+                .rung,
+            "the flat {link}kbps plant should settle on its highest physically affordable rung",
+        );
+    }
 }
 
 #[test]
@@ -2906,26 +3209,20 @@ fn bootstrap_decides_from_the_link_class_and_one_bounded_probe() {
     );
     assert_eq!(prior.uncertainty_pm, MAX_UNCERTAINTY_PM);
 
-    // Borderline: above the average but inside the cold-start margin. HLS, and the measurement
-    // still picks the opening rung.
-    let borderline = go(LinkKind::Remote, true, 28_000, complete(30_000));
+    // Below average: HLS, and the achieved lower bound still picks the opening rung.
+    let borderline = go(LinkKind::Remote, true, 28_000, complete(27_000));
     assert!(!borderline.original);
     assert_eq!(borderline.reason, BootstrapReason::ProbeBelowRequirement);
     assert_eq!(
         borderline.rung,
-        Rung::P1080High,
-        "24 Mbit/s of budget, spent"
+        catalog.best_for_budget(27_000).unwrap().rung
     );
 
     // A slow Remote opens where the measurement says, NOT at an emergency floor it would then
     // spend a minute climbing out of.
     let slow = go(LinkKind::Remote, true, 60_000, complete(17_000));
     assert!(!slow.original);
-    assert_eq!(
-        slow.rung,
-        Rung::P1080M12,
-        "13.6 Mbit/s of budget → the 12 Mbps point"
-    );
+    assert_eq!(slow.rung, catalog.best_for_budget(17_000).unwrap().rung);
 
     // Nothing to reason from: playback still starts, conservatively.
     for inconclusive in [
@@ -2949,6 +3246,71 @@ fn bootstrap_decides_from_the_link_class_and_one_bounded_probe() {
     assert_eq!(
         go(LinkKind::Remote, true, 0, complete(80_000)).reason,
         BootstrapReason::ProbeInconclusive,
+    );
+}
+
+#[test]
+fn an_incomplete_bootstrap_probe_cannot_seed_or_raise_the_opening_rung() {
+    let policy = AbrPolicy::measured();
+    let catalog = hd_catalog();
+    let fallback = catalog
+        .best_for_budget(policy_startup_floor_kbps(&policy))
+        .or_else(|| catalog.feasible().next())
+        .unwrap()
+        .rung;
+    let burst = CapacityObservation {
+        kbps: u32::MAX,
+        bytes: 512 * 1_024,
+        active_us: 1_000,
+        completed: false,
+    };
+    let decision = bootstrap(
+        LinkKind::Remote,
+        true,
+        60_000,
+        Some(burst),
+        &catalog,
+        &policy,
+    );
+    assert_eq!(decision.reason, BootstrapReason::ProbeInconclusive);
+    assert_eq!(
+        decision.rung, fallback,
+        "a censored burst is not a capacity floor"
+    );
+    assert!(decision.prior.is_none(), "a censored burst is not a prior");
+}
+
+/// Re-entering Auto is not a cold start.  The current operating point and the carried posterior
+/// are both real evidence; the 720 kbps unknown-link floor is only the third, empty-evidence case.
+#[test]
+fn auto_reentry_preserves_the_operating_point_and_spends_its_posterior() {
+    let policy = AbrPolicy::measured();
+    let catalog = hd_catalog();
+
+    assert_eq!(
+        hls_reentry_rung(Some(Rung::P720), None, &catalog, &policy),
+        Rung::P720,
+        "a playing 4 Mbps route must not be replaced by the unknown-link floor",
+    );
+
+    let settled = CapacityEstimate::from_snapshot(12_000, 12_000, 200, 16)
+        .expect("a settled controller has a posterior");
+    let posterior = catalog
+        .best_for_budget(settled.conservative_kbps())
+        .expect("the posterior admits an actuator")
+        .rung;
+    assert_eq!(
+        hls_reentry_rung(Some(Rung::P480), Some(settled), &catalog, &policy),
+        posterior,
+        "a known posterior may reclaim more than the temporary fixed rung",
+    );
+
+    let weak = CapacityEstimate::from_snapshot(2_000, 2_000, 500, 2)
+        .expect("even a weak posterior is still explicit evidence");
+    assert_eq!(
+        hls_reentry_rung(Some(Rung::P720), Some(weak), &catalog, &policy),
+        Rung::P720,
+        "a low posterior may not force a visible downgrade at the hand-off itself",
     );
 }
 
@@ -2976,11 +3338,11 @@ fn the_bootstrap_prior_seeds_the_steady_state_estimator() {
     );
 }
 
-/// **Transitions are asymmetric and their cost decays.** An HLS rung change is free here (the
-/// viewer never sees it); a mode change is not; and a mode change right after another one is
-/// worse than the first.
+/// **Mode transitions are distinct from HLS rung changes and their cost decays.** An HLS rung
+/// change is free here (the viewer never sees it); a mode change is not; and a mode change right
+/// after another one is worse than the first.
 #[test]
-fn transition_cost_is_asymmetric_and_decays_with_time() {
+fn mode_transition_cost_is_separate_from_hls_and_decays_with_time() {
     let policy = AbrPolicy::measured();
     let none = TransitionHistory::default();
     assert_eq!(
@@ -3229,7 +3591,7 @@ fn the_network_risk_term_is_continuous_between_the_two_horizons_that_already_exi
     let policy = AbrPolicy::measured();
     let safe = policy.starvation_safe_secs;
     let fallback = policy.starvation_fallback_secs;
-    let net = |secs: Option<u32>| risk_score(secs, None, false, &policy);
+    let net = |secs: Option<u32>| risk_score(secs, false, &policy);
 
     assert_eq!(net(None), 0, "no deficit at all is not a risk");
     assert_eq!(
@@ -3269,32 +3631,17 @@ fn the_network_risk_term_is_continuous_between_the_two_horizons_that_already_exi
         previous = score;
     }
 
-    // The other two terms are unchanged at their endpoints, so every ratio to
-    // `visible_switch_cost` that the mode comparison rests on still holds where it was calibrated.
-    assert_eq!(
-        risk_score(None, Some(policy.production_safe_pm), false, &policy),
-        0
-    );
-    assert_eq!(
-        risk_score(None, Some(policy.production_max_pm), false, &policy),
-        20
-    );
-    assert_eq!(risk_score(None, None, true, &policy), 30);
-    assert_eq!(
-        risk_score(Some(0), Some(policy.production_max_pm), true, &policy),
-        RISK_SCORE_MAX
-    );
+    assert_eq!(risk_score(None, true, &policy), 30);
+    assert_eq!(risk_score(Some(0), true, &policy), RISK_SCORE_MAX);
 }
 
-/// A whole-file average is a LOWER BOUND on demand. The requirement carries VBR headroom, so a
-/// link that merely matches the average is already at risk before any busy scene arrives.
+/// PMS gives only a whole-file average, not a peak envelope.  Inventing a multiplier does not turn
+/// it into one; VBR pressure becomes evidence only when the playable reserve actually drains.
 #[test]
-fn vbr_headroom_makes_the_whole_file_average_a_lower_bound() {
+fn source_average_is_the_consumption_rate_and_vbr_is_observed_in_the_buffer() {
     let policy = AbrPolicy::measured();
-    assert_eq!(source_requirement_kbps(40_000, &policy), 54_000);
+    assert_eq!(source_requirement_kbps(40_000, &policy), 40_000);
     assert_eq!(source_requirement_kbps(0, &policy), 0);
-    // 40 Mbit/s average, 41 Mbit/s of measured capacity, and the model still sees a deficit —
-    // which is the whole point: the file contains scenes above its own average.
     let mut mode = original(40_000);
     let observation = mode
         .observe_saturated(
@@ -3304,14 +3651,11 @@ fn vbr_headroom_makes_the_whole_file_average_a_lower_bound() {
             HOUR_MS,
         )
         .unwrap();
-    assert!(
-        observation.horizon_secs.is_some(),
-        "a bare average is not headroom"
+    assert_eq!(
+        observation.horizon_secs, None,
+        "service above average creates no synthetic deficit"
     );
-    assert!(
-        observation.fallback.is_none(),
-        "but 30 s of reserve is not an emergency either"
-    );
+    assert!(observation.fallback.is_none());
 }
 
 /// A healthy HLS session against a 28 Mbit/s 1080p source, an hour of film left and no switch
@@ -3483,35 +3827,19 @@ fn originals_risk_shrinks_with_the_playback_it_is_a_risk_to() {
     );
 }
 
-/// **N14 sites 1 and 2: the recovery gate scores the REAL server, not an idle one.**
-///
-/// Category 8.3. `OriginalRecovery::inputs` hardcoded `ProductionEstimate::default()`, so the HLS
-/// side of the argmax was always scored as if PMS could produce anything asked of it — a bias in
-/// one direction by exactly the amount the server is actually loaded, on every recovery decision.
-///
-/// **The fixture has to be CLOSE, and that is what makes it a real test.** On a link this fast
-/// Original wins outright the moment the requirement clears, so a loaded server would change
-/// nothing observable; three spent visible switches price the reload high enough that the decision
-/// is genuinely balanced, and then the server is what tips it. The switch count is a fixture
-/// choice, not a threshold — the assertion is that the two verdicts DIFFER, not what they are.
-///
-/// Differential by construction: unmodified code has no production argument at all, so both gates
-/// below are computed from identical inputs and cannot disagree.
+/// Changing only a non-identifiable decomposition of total acquisition must not flip a visible
+/// Original/HLS reload while link, reserve, candidate and catalog server cost are unchanged.
 #[test]
-fn the_recovery_comparison_can_see_a_loaded_server() {
+fn recovery_does_not_double_count_total_acquisition_as_server_load() {
     let policy = AbrPolicy::measured();
     let current = top_candidate();
     let mut loaded = ProductionEstimate::default();
     for _ in 0..6 {
-        loaded.observe(
-            policy.production_max_pm * 2,
-            current.production_load_pm,
-            false,
-        );
+        loaded.observe(2_000, current.production_load_pm, false);
     }
     assert!(
-        loaded.ratio_pm > policy.production_max_pm,
-        "the setup must load the server"
+        loaded.ratio_pm > 1_000,
+        "the setup must be slower than real time"
     );
 
     let spent = TransitionHistory {
@@ -3552,27 +3880,16 @@ fn the_recovery_comparison_can_see_a_loaded_server() {
         })
         .collect();
     assert!(
-        verdicts.iter().any(|(idle, busy)| idle != busy),
-        "the same probe against the same link gave the same answer on an idle server and on one \
-         past its ceiling — which is exactly what a defaulted `ProductionEstimate` guarantees: \
-         {verdicts:?}",
+        verdicts.iter().all(|(idle, busy)| idle == busy),
+        "a non-identifiable decomposition flipped a visible reload: {verdicts:?}",
     );
 }
 
-/// **N14 site 2: the value-of-information gate scores the decision it gates.**
-///
-/// Category 8.3. `worth_probing` passed the real `current` as BOTH `current_hls` and `best_hls`,
-/// so it asked "is Original better than staying exactly here" while the decision it guards asks
-/// "is Original better than the best rung this link supports". The app therefore spent real source
-/// probes — read over the link the segments need — on questions the decision had already settled
-/// the other way.
-///
-/// Differential: unmodified code cannot distinguish these two runs at all, because the alternative
-/// it scores is `current` in both.
+/// The source transfer is the experiment HLS cannot perform.  It is deliberately postponed while
+/// a larger HLS request remains available, irrespective of how attractive Original looks.
 #[test]
-fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
+fn the_source_experiment_starts_only_after_hls_exhausts_its_request_sizes() {
     let policy = AbrPolicy::measured();
-    // Spent switches, so the comparison is close enough that the ALTERNATIVE decides it.
     let spent = TransitionHistory {
         visible_switches: 3,
         since_last_ms: Some(0),
@@ -3588,36 +3905,35 @@ fn the_probe_gate_weighs_the_rung_the_link_supports_and_not_the_one_it_is_on() {
         .expect("feasible")
     };
     let floor = hd_catalog().candidate(Rung::P480);
-    // A link with room for the top rung. Sitting at the FLOOR, the honest alternative to Original
-    // is the top rung this link supports — not the 720 kbps that happens to be playing.
     let roomy = healthy_hls();
-    let due_at_floor = gate()
-        .probe_due(
-            floor,
-            &idle_server(),
-            sample(40_000, 200, 20_000),
-            healthy_buffer(),
-            &roomy,
-            HOUR_MS,
-            AbrPolicy::measured().probe_spacing_ms * 4,
-        )
-        .is_ok();
-    let due_at_top = gate()
-        .probe_due(
-            top_candidate(),
-            &idle_server(),
-            sample(40_000, 200, 20_000),
-            healthy_buffer(),
-            &roomy,
-            HOUR_MS,
-            AbrPolicy::measured().probe_spacing_ms * 4,
-        )
-        .is_ok();
-    assert_eq!(
-        due_at_floor, due_at_top,
-        "the alternative is the best rung the link supports either way, so which rung happens to \
-         be playing must not change whether a probe is worth spending",
+    let due_at_floor = gate().probe_due(
+        floor,
+        false,
+        &idle_server(),
+        sample(40_000, 200, 20_000),
+        Some(400),
+        healthy_buffer(),
+        &roomy,
+        HOUR_MS,
+        0,
     );
+    let due_at_top = gate().probe_due(
+        top_candidate(),
+        true,
+        &idle_server(),
+        sample(40_000, 200, 20_000),
+        Some(400),
+        healthy_buffer(),
+        &roomy,
+        HOUR_MS,
+        0,
+    );
+    assert_eq!(
+        due_at_floor,
+        Err(ProbeBlock::BelowHlsCeiling),
+        "useful HLS traffic is the cheaper experiment",
+    );
+    assert_ne!(due_at_top, Err(ProbeBlock::BelowHlsCeiling));
 }
 
 /// **N18 is a PARTITION and it must hold on both sides of the argmax** (found by adversarial
@@ -3830,16 +4146,17 @@ fn a_deficit_measured_in_active_read_time_is_not_a_duration() {
     let policy = AbrPolicy::measured();
     // **Unsafe but not IMMINENT**, which the fixture has to arrange deliberately: a link far under
     // the requirement puts the horizon inside `starvation_fallback_secs` within a few windows, and
-    // then `ImminentStarvation` — a hard guard that consults no utility and no persistence — fires
-    // first and this test grades that instead. A deep, almost-flat reserve keeps the horizon in the
-    // band between the two policy horizons, which is the only region `SustainedDeficit` owns.
+    // then `ImminentStarvation` — a hard guard that consults no utility and, before the post-seek
+    // confirmation fix, no persistence — fires first and this test grades that instead. A deep,
+    // almost-flat reserve keeps the horizon in the band between the two policy horizons, which is
+    // the only region `SustainedDeficit` owns.
     let starved = |n: u64| window_bytes(9_000) * n;
     let fell = |n: u64| -> i64 { 45_000 - 300 * n as i64 };
 
     // Wall == active: the saturated reader. This is the case the retired count described.
     let mut saturated = original(60_000);
     let mut fired_saturated = None;
-    for n in 1..=10u64 {
+    for n in 1..=12u64 {
         let obs = saturated.observe(
             starved(n),
             ORIGINAL_WINDOW_US * n,
@@ -3866,7 +4183,7 @@ fn a_deficit_measured_in_active_read_time_is_not_a_duration() {
     // proves the counter and the duration are different quantities.
     let mut throttled = original(60_000);
     let mut fired_throttled = false;
-    for n in 1..=10u64 {
+    for n in 1..=12u64 {
         let obs = throttled.observe(
             starved(n),
             ORIGINAL_WINDOW_US * n,
@@ -4099,16 +4416,42 @@ fn original_beats_the_top_rung_on_utility_at_equal_risk() {
     assert!(other.is_none());
 }
 
+#[test]
+fn equal_mode_utility_preserves_the_current_mode() {
+    let mut policy = AbrPolicy::measured();
+    policy.visible_switch_cost = 0;
+    policy.visible_switch_penalty = 0;
+    let inputs = ModeInputs {
+        current: ModeKind::Original,
+        remaining_ms: 0,
+        ..mode_inputs()
+    };
+    let current = hd_catalog().candidate(Rung::P1080High);
+    let original = original_utility(&inputs, &policy).unwrap();
+    let hls = hls_utility(current, current, &inputs, &policy);
+    assert_eq!(
+        original.total, hls.total,
+        "the fixture must be an exact tie"
+    );
+
+    let (chosen, reason, winner, loser) = choose_mode(&inputs, current, current, &policy);
+    assert_eq!(
+        (chosen, reason),
+        (ModeKind::Original, ModeReason::OriginalWorthIt)
+    );
+    assert_eq!(winner, original);
+    assert_eq!(loser, Some(hls));
+}
+
 /// **A downshift pin must land from the top of the ladder.** It could not, and the M4 census paid
 /// for it: four of its seven points never reached their pinned rung and silently recorded the top
 /// rung five times instead (`pin_320`, `pin_2000`, `pin_10000`, `pin_16000` all logged
 /// `rung=20000` with byte lists identical to `pin_20000`'s).
 ///
-/// The cause is a derivation applied in a direction it was never argued for.
-/// `PIN_MIN_RESERVE_SEGMENTS = 6` is built from `candidate_warmup_budget` +
-/// `candidate_prime_budget` + `candidate_ready`'s residual — none of which a downshift pays: it
-/// has no graded segment, and its warm-up is bounded by the reserve rather than by a multiple of
-/// the content duration. Six segments is 12 000 ms at `D = 2000`, while the reachable
+/// The cause was an upshift-only tool gate applied in a direction it was never argued for. A
+/// downshift has no repeatable candidate observation, and its live deadline is computed at the
+/// transaction rather than inherited from this six-segment pin precondition. Six segments is
+/// 12 000 ms at `D = 2000`, while the reachable
 /// reserve at rung 20000 is `B_max ≈ 5 421 ms`, so the gate was unsatisfiable by construction
 /// exactly where the census most needed it.
 ///
@@ -4161,27 +4504,45 @@ fn an_upshift_pin_still_waits_for_the_full_reserve() {
     }
 }
 
-/// A rejected candidate still MEASURED the link, so its graded segment is evidence and the window
-/// keeps it. Differential: it fails against a `candidate_ready` that leaves the window untouched.
+/// A rejected larger request must not contaminate the rollback certificate for the current
+/// operating point. Its prefix/result explains that candidate transaction, while the old bag is
+/// what the player must rely on after returning to the old cursor.
 #[test]
-fn a_candidates_graded_segment_enters_the_window_even_when_the_candidate_is_refused() {
+fn a_rejected_candidate_preserves_the_current_operating_points_bag() {
     let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
+    let Decision::Prime(proposal) =
+        controller.observe_next(sample_bytes(250_000, 300_000, 300, 20_000))
+    else {
+        panic!("the current bag must fund an excitation");
+    };
     let before = controller.window_len();
-    controller.observe_candidate(sample_bytes(2_000_000, 1_500_000, 900, 20_000));
-    assert_eq!(controller.window_len(), before + 1);
+    let candidate = sample_bytes(2_000_000, 1_500_000, 1_200, 20_000);
+    assert!(!controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)));
+    assert!(controller.reject(proposal, RejectCause::Candidate, controller.clock_ms()));
+    assert_eq!(controller.window_len(), before);
 }
 
-/// The window is about the LINK, so a sample taken at one rung bounds another by BYTES. This pins
-/// that `observe_candidate` really reaches the same store `observe` fills, rather than a second
-/// one that would silently give the rule half its evidence.
+/// A committed candidate starts a new operating-point bag from its own completed steady segment.
+/// Keeping the smaller responses beside it would let the demand-capped old tier dominate the
+/// exact evidence the excitation just bought.
 #[test]
-fn candidate_and_current_observations_share_one_window() {
+fn a_committed_candidate_replaces_the_smaller_operating_points_bag() {
     let mut controller = Controller::starting_at(Rung::P1080, None, HlsActuatorCatalog::measured());
-    controller.observe_next(sample(9_000, 400, 20_000));
-    let after_current = controller.window_len();
-    controller.observe_candidate(sample_bytes(2_000_000, 1_500_000, 900, 20_000));
-    assert_eq!(after_current, 1);
-    assert_eq!(controller.window_len(), 2);
+    let Decision::Prime(proposal) =
+        controller.observe_next(sample_bytes(250_000, 300_000, 300, 20_000))
+    else {
+        panic!("the current bag must fund an excitation");
+    };
+    let candidate = sample_bytes(2_000_000, 1_500_000, 750, 20_000);
+    assert!(controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)));
+    assert!(controller.commit(proposal, controller.clock_ms()));
+    controller.commit_candidate_evidence(candidate);
+    assert_eq!(
+        controller.window_len(),
+        1,
+        "only the candidate regime survives the commit"
+    );
+    assert_eq!(controller.prime_runway_ms(), Some(1_500));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4211,13 +4572,13 @@ fn a_collapse_on_the_first_sample_of_a_rung_is_not_hidden_by_the_cold_start_gate
     );
     assert_eq!(
         controller.telemetry().reason,
-        Some(DecisionReason::Hls(HlsReason::StarvationHorizon)),
-        "the deadline is what fired, and the log has to say so",
+        Some(DecisionReason::Hls(HlsReason::BufferConstraint)),
+        "B<R_o is the binding emergency arm when the same collapse also has A>D",
     );
     assert_eq!(
         controller.telemetry().emergency_horizon_secs,
-        Some(2),
-        "2210ms * 14000 / (14000 - 498) = 2291ms — the same 2 seconds the television published",
+        None,
+        "the retired rate horizon must not masquerade as an input to the conservation decision",
     );
 }
 
@@ -4236,11 +4597,16 @@ fn a_collapse_on_the_first_sample_of_a_rung_is_not_hidden_by_the_cold_start_gate
 fn a_link_delivering_exactly_the_rungs_rate_is_not_an_emergency_at_cold_start() {
     let mut controller = controller_at(Rung::P1080M14);
     let decision = controller.observe_next(sample(14_000, 250, 1_958));
-    assert_eq!(
-        decision,
-        Decision::Stay,
+    assert!(
+        !matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
         "capacity == requirement is an INFINITE horizon; a 500pm confidence discount is not a \
-         measured deficit",
+         measured deficit; got {decision:?}",
     );
     // The counterfactual, written out rather than described: the same reserve and the same
     // segment, scored on the rate the RISK term uses. `uncertainty_pm` is at its 500 cap here, so
@@ -4268,44 +4634,31 @@ fn a_link_delivering_exactly_the_rungs_rate_is_not_an_emergency_at_cold_start() 
     );
 }
 
-/// The exemption priced from the other end, so the cost of ungating is a tested number rather than
-/// a claim in a comment. At the cold-start floor of one 2 s segment the deadline reaches
-/// `starvation_fallback_secs = 20` at a measured deficit of 10% (`2 / 0.1 = 20`), and not before.
+/// The current-point boundary has no percentage or horizon: acquisition equal to media duration
+/// is sustainable; one micro-step beyond it is not, whatever the starting reserve.
 #[test]
 fn the_cold_start_floor_fires_at_a_tenth_of_the_rate_and_not_at_a_twentieth() {
-    let window = AbrPolicy::measured().starvation_fallback_secs;
-
-    // 10% short of the rung's 14 000 kbps, one segment of reserve: T = 2000 * 14000 / 1400 = 20 s,
-    // the window exactly. (`sample` quantizes the rate through a byte count, so the horizon lands
-    // a second under; the claim is the bracket, not the digit.)
-    let mut fires = controller_at(Rung::P1080M14);
-    assert!(
-        matches!(
-            fires.observe_next(sample(12_600, 250, 2_000)),
-            Decision::Prime(_)
-        ),
-        "a tenth short with one segment left is the 20 s deadline",
-    );
-    assert!(fires
-        .telemetry()
-        .emergency_horizon_secs
-        .is_some_and(|s| s <= window));
-
-    // 5% short: T = 2000 * 14000 / 700 = 40 s. Twice the window, so nothing fires — and the
-    // cold-start gate then covers the `buffered < segment` disjunct as it always did.
     let mut holds = controller_at(Rung::P1080M14);
-    assert_eq!(
-        holds.observe_next(sample(13_300, 250, 2_000)),
-        Decision::Stay
-    );
+    let decision = holds.observe_next(sample(14_000, 1_000, 2_000));
     assert!(
-        holds
-            .telemetry()
-            .emergency_horizon_secs
-            .is_some_and(|s| s > window),
-        "twice the window is not a deadline; got {:?}",
-        holds.telemetry().emergency_horizon_secs,
+        !matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "A=D replenishes exactly what it spends: {decision:?}",
     );
+
+    let mut fires = controller_at(Rung::P1080M14);
+    assert!(matches!(
+        fires.observe_next(sample(14_000, 1_001, 60_000)),
+        Decision::Prime(Proposal {
+            direction: Direction::Down,
+            ..
+        })
+    ));
 }
 
 /// **I5's stated host differential**: the emergency predicate must not fire at a full
@@ -4321,19 +4674,21 @@ fn the_cold_start_floor_fires_at_a_tenth_of_the_rate_and_not_at_a_twentieth() {
 fn a_five_percent_deficit_against_a_full_top_rung_reserve_is_not_a_deadline() {
     let mut controller = controller_at(Rung::P1080High);
     let full = super::sim::Calibration::census_buf_ms(20_000).expect("censused");
-    // 5% short of the top rung's 20 011 kbps expected wire rate.
+    // The body-rate label is 5% below a catalog value, but A=500ms for D=2000ms.
     for _ in 0..2 {
-        controller.observe_next(sample(19_010, 250, full));
+        let decision = controller.observe_next(sample(19_010, 250, full));
+        assert!(!matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ));
     }
     assert_eq!(
         controller.telemetry().emergency_horizon_secs,
-        Some(99),
-        "99 seconds of reserve is not an emergency, and the predicate has to say the number",
-    );
-    assert_ne!(
-        controller.telemetry().reason,
-        Some(DecisionReason::Hls(HlsReason::StarvationHorizon)),
-        "the deadline must not be what moved this rung",
+        None,
+        "a catalog-rate horizon is no longer part of the decision",
     );
 }
 
@@ -4349,38 +4704,42 @@ fn a_five_percent_deficit_against_a_full_top_rung_reserve_is_not_a_deadline() {
 /// nothing else. Against the trigger as shipped, the first half fails.
 #[test]
 fn a_rate_deficit_evicts_a_rung_only_when_the_deadline_says_so() {
-    let policy = AbrPolicy::measured();
-    // 5% short of P1080M14's 14 000 kbps expected wire rate.
     let short = 13_300;
 
-    // Deep: the device census of the top rung is 4 960 ms and this is deeper still, so the
-    // horizon is minutes. Two samples, because the first is the cold start.
+    // A=500ms. Both a deep reserve and a 1500ms reserve cover the exact runway, despite the
+    // response's body rate being below a remembered catalog value.
     let mut deep = controller_at(Rung::P1080M14);
     for _ in 0..3 {
         assert_eq!(
-            deep.observe_next(sample(short, 250, 20_000)),
+            observe_without_upshift(&mut deep, sample(short, 250, 20_000)),
             Decision::Stay,
             "a 5% deficit against 20 s of reserve is arithmetic, not an emergency",
         );
     }
+
+    let mut shallow = controller_at(Rung::P1080M14);
+    let decision = observe_without_upshift(&mut shallow, sample(short, 250, 1_500));
     assert!(
-        deep.telemetry()
-            .emergency_horizon_secs
-            .is_some_and(|s| s > policy.starvation_fallback_secs),
-        "and the deadline has to be the thing that says so: {:?}",
-        deep.telemetry().emergency_horizon_secs,
+        !matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "B=1500ms still covers R_o=500ms: {decision:?}",
     );
 
-    // Shallow: the same deficit, a reserve one segment deep. `2000 * 14000 / 700 = 40 s`, still
-    // outside the window — so this leg descends on `starving()`, not on the deadline, and the
-    // assertion is that SOMETHING still evicts. Without it the test above is satisfied by a
-    // controller that never downshifts at all.
-    let mut shallow = controller_at(Rung::P1080M14);
-    shallow.observe_next(sample(short, 250, 2_000));
+    let mut below_runway = controller_at(Rung::P1080M14);
     assert!(
-        matches!(shallow.observe_next(sample(short, 250, 1_500)), Decision::Prime(p)
-                 if p.direction == Direction::Down),
-        "a reserve under one segment is still an emergency on the second sample",
+        matches!(
+            below_runway.observe_next(sample(short, 250, 499)),
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "B<R_o is the exact shallow-buffer failure",
     );
 }
 
@@ -4483,15 +4842,12 @@ fn the_refill_filter_admits_a_prefix_of_the_ladder() {
 fn the_refill_filter_binds_at_a_low_reserve_and_is_shadowed_at_the_gate() {
     let policy = AbrPolicy::measured();
     let catalog = hd_catalog();
-    let production = ProductionEstimate::default();
-    let current = catalog.candidate(Rung::P480);
-
     // Empty reserve: `D = buffer_target_ms`, so the budget is cut to H/(H+B*) of C_safe.
     let empty = catalog
-        .best_sustainable(20_000, &production, current, &policy, 0)
+        .best_sustainable(20_000, &policy, 0)
         .expect("something is always affordable at 20 Mbit/s");
     let full = catalog
-        .best_sustainable(20_000, &production, current, &policy, 30_000)
+        .best_sustainable(20_000, &policy, 30_000)
         .expect("ditto");
     assert!(
         empty.expected_wire_kbps < full.expected_wire_kbps,
@@ -4669,19 +5025,236 @@ fn a_downshift_gets_at_least_the_time_its_transfer_physically_needs() {
     assert_eq!(need, std::time::Duration::from_millis(666));
 
     assert_eq!(
-        candidate_warmup_budget(down, media, collapsed, NO_FLOOR),
+        candidate_warmup_budget(down, media, collapsed, NO_FLOOR, NO_FLOOR),
         collapsed,
         "the pre-fix behaviour, and it is the deadline no transfer can meet",
     );
     assert_eq!(
-        candidate_warmup_budget(down, media, collapsed, need),
+        candidate_warmup_budget(down, media, collapsed, need, NO_FLOOR),
         need,
         "a downshift out of an exhausted reserve gets the time its own transfer requires",
     );
     assert_eq!(
-        candidate_warmup_budget(up, media, collapsed, need),
+        candidate_warmup_budget(up, media, collapsed, need, NO_FLOOR),
         collapsed,
         "and an upshift does NOT — once the reserve is gone an upshift has already lost",
+    );
+}
+
+/// A right-censored current response leaves the pre-collapse delivery estimate unchanged. The
+/// request-indexed plant measured the consequence: after the live reserve reached zero, a floor
+/// candidate that physically needed about a second inherited a 111 ms deadline from the old fast
+/// regime and was abandoned before it could restore a picture. At the floor there is no cheaper
+/// transaction to buy, so repeating that deadline makes `B=0` absorbing.
+#[test]
+fn a_terminal_floor_downshift_runs_to_an_actual_transport_result() {
+    let budget = std::time::Duration::from_millis(111);
+    let floor_down = Proposal {
+        rung: Rung::P240,
+        direction: Direction::Down,
+    };
+    let higher_down = Proposal {
+        rung: Rung::P480,
+        direction: Direction::Down,
+    };
+    let floor_up = Proposal {
+        rung: Rung::P240,
+        direction: Direction::Up,
+    };
+
+    assert_eq!(
+        candidate_media_reserve_deadline(floor_down, ReservePolicy::Preserve, true, budget,),
+        None,
+        "once B=0 is observed, aborting the only response can only re-request the same bytes",
+    );
+    assert_eq!(
+        candidate_media_reserve_deadline(floor_down, ReservePolicy::Preserve, false, budget,),
+        Some(budget),
+    );
+    assert_eq!(
+        candidate_media_reserve_deadline(higher_down, ReservePolicy::Preserve, true, budget,),
+        Some(budget),
+    );
+    assert_eq!(
+        candidate_media_reserve_deadline(floor_up, ReservePolicy::Preserve, true, budget),
+        Some(budget),
+    );
+}
+
+/// Live trace, 2026-09-01: the completed 12 Mbit operating point left 2.168 s of playable media,
+/// but its exact ordered replay runway was 2.409 s. The controller therefore could not replay the
+/// measured chronology and selected the 320 kbit minimax floor. Transport still treated
+/// the 84 ms that survived each control-plane round trip as a rollback reserve, killed the floor
+/// response at its reserve deadline, and immediately repeated the same transaction. The probe
+/// loop — not the 320 kbit response — kept the picture stalled.
+///
+/// `B<R_o` is already the no-rollback certificate. It must cross the controller/transport seam even
+/// while the main thread has not sampled the strictly later `B=0` state.
+#[test]
+fn a_runway_emergency_floor_is_terminal_before_the_buffer_reaches_zero() {
+    let mut controller = Controller::starting_at(Rung::P1080M12, None, hd_catalog());
+    // 2_873_000 bytes / 2 s = 11_492 kbps. A=2.409 s, D=2 s gives R_o=2.409 s;
+    // the live trace's B=2.168 s is positive but cannot guarantee the next current completion.
+    let current = sample_bytes_with_total(2_873_000, 1_819_000, 2_409_000, 2_000, 2_168);
+    let proposal = match controller.observe(current, 2_409) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("B<R_o must issue the minimax recovery response"),
+    };
+    let telemetry = controller.telemetry();
+    let admission = telemetry.window.admission.expect("completed current bag");
+    assert_eq!(admission.runway_us, 2_409_000);
+    assert!(!admission.survivable);
+    assert_eq!(proposal.rung, Rung::P240);
+    assert_eq!(
+        telemetry.reason,
+        Some(DecisionReason::Hls(HlsReason::BufferConstraint)),
+    );
+    assert_eq!(
+        controller.pending_reserve_policy(proposal),
+        Some(ReservePolicy::TerminalFloor),
+        "the transaction contract must not be reconstructed from the diagnostic reason",
+    );
+    let completed_floor = sample(320, 1_500, 0);
+    assert_eq!(
+        controller.candidate_verdict(proposal, completed_floor, declared_bps(proposal.rung),),
+        CandidateVerdict::Ready,
+        "a completed terminal-floor response has no rollback state to reject back into",
+    );
+
+    let warmup_budget = std::time::Duration::from_millis(700);
+    assert_eq!(
+        candidate_media_reserve_deadline(
+            proposal,
+            controller
+                .pending_reserve_policy(proposal)
+                .expect("pending proposal policy"),
+            false, // B is still 2.168 s, so the main-thread B=0 latch is not armed yet.
+            warmup_budget,
+        ),
+        None,
+        "the old cursor cannot replay its observed chronology once B<R_o; reserve-deadlining the only \
+         floor response recreates the measured abort/retry loop",
+    );
+
+    let higher_down = Proposal {
+        rung: Rung::P480,
+        direction: Direction::Down,
+    };
+    let floor_up = Proposal {
+        rung: Rung::P240,
+        direction: Direction::Up,
+    };
+    assert_eq!(
+        candidate_media_reserve_deadline(proposal, ReservePolicy::Preserve, false, warmup_budget,),
+        Some(warmup_budget),
+        "a sustainable-failure downshift still preserves the current cursor's proved runway",
+    );
+    assert_eq!(
+        candidate_media_reserve_deadline(
+            higher_down,
+            ReservePolicy::TerminalFloor,
+            false,
+            warmup_budget,
+        ),
+        Some(warmup_budget),
+        "the emergency certificate cannot make a more expensive recovery transaction unbounded",
+    );
+    assert_eq!(
+        candidate_media_reserve_deadline(
+            floor_up,
+            ReservePolicy::TerminalFloor,
+            false,
+            warmup_budget,
+        ),
+        Some(warmup_budget),
+        "an upshift never spends recovery reserve after its deadline",
+    );
+
+    controller.on_resume(30_000);
+    assert_eq!(
+        controller.pending_reserve_policy(proposal),
+        Some(ReservePolicy::TerminalFloor),
+        "a user pause/resume ages measurements but cannot demote an in-flight recovery contract",
+    );
+    assert!(controller.reject(proposal, RejectCause::Circumstance, 32_409));
+    assert_eq!(
+        controller.pending_reserve_policy(proposal),
+        None,
+        "rejecting the transaction clears its terminal capability with the proposal",
+    );
+}
+
+#[test]
+fn a_sustainable_ordered_current_history_does_not_false_downshift() {
+    let mut controller = Controller::starting_at(Rung::Uhd, None, uhd_catalog());
+    assert_eq!(
+        controller.observe_next(sample(40_000, 250, 2_000)),
+        Decision::Stay
+    );
+    assert_eq!(
+        controller.observe_next(sample(40_000, 1_250, 2_000)),
+        Decision::Stay,
+        "the ordered pair needs 1s of initial reserve, not the 2.5s worst permutation",
+    );
+    let diagnostic = controller.telemetry().window.admission.unwrap();
+    assert_eq!(
+        diagnostic.runway_us, 2_500_000,
+        "stress telemetry remains retrospective"
+    );
+    assert!(!diagnostic.survivable);
+}
+
+#[test]
+fn a_declared_capacity_regime_change_rebases_the_ordered_current_queue() {
+    let mut controller = controller_at(Rung::P720).pinned_to(Some(Rung::P720));
+    for _ in 0..20 {
+        assert_eq!(
+            controller.observe_next(sample(6_000, 700, 20_000)),
+            Decision::Stay
+        );
+    }
+
+    controller = controller.pinned_to(None);
+    let decision = controller.observe_next(sample(1_000, 4_000, 15_000));
+    assert!(
+        matches!(
+            decision,
+            Decision::Prime(Proposal {
+                direction: Direction::Down,
+                ..
+            })
+        ),
+        "pre-collapse surplus hid the completed A>D point in the new regime: {decision:?}",
+    );
+    assert_eq!(
+        controller.telemetry().window.admission.unwrap().samples,
+        1,
+        "the collapse response must be observation zero of the new current-point bag",
+    );
+}
+
+/// `B<R_o`, not `B<=R_o`: equality still carries the exact ordered-replay certificate. A losing
+/// but survivable bag may choose a modeled lower response, but that transaction must retain the
+/// old cursor's reserve deadline.
+#[test]
+fn equality_with_the_replay_runway_keeps_the_preserve_policy() {
+    let mut controller = Controller::starting_at(Rung::P1080M12, None, hd_catalog());
+    let current = sample_bytes_with_total(2_873_000, 1_819_000, 2_409_000, 2_000, 2_409);
+    let proposal = match controller.observe(current, 2_409) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the unsustainable completed point still needs a lower response"),
+    };
+    let admission = controller
+        .telemetry()
+        .window
+        .admission
+        .expect("completed current bag");
+    assert_eq!(admission.runway_us, 2_409_000);
+    assert!(admission.survivable);
+    assert_eq!(
+        controller.pending_reserve_policy(proposal),
+        Some(ReservePolicy::Preserve),
+        "equality is not terminal recovery",
     );
 }
 
@@ -4703,7 +5276,7 @@ fn the_floor_is_below_the_reserve_on_the_runaway_it_was_written_for() {
     for reserve_ms in [2_000i64, 5_000, 36_000] {
         let reserve = reserve_as_budget(reserve_ms);
         assert_eq!(
-            candidate_warmup_budget(down, media, reserve, need),
+            candidate_warmup_budget(down, media, reserve, need, NO_FLOOR),
             reserve,
             "at a {reserve_ms}ms reserve the floor must not be what decides",
         );
@@ -4731,7 +5304,8 @@ fn an_unmeasured_link_predicts_nothing_and_the_reserve_still_bounds() {
             down,
             media,
             reserve,
-            predicted_transfer(8_000, media, 0, 500)
+            predicted_transfer(8_000, media, 0, 500),
+            NO_FLOOR
         ),
         reserve,
     );
@@ -4808,7 +5382,7 @@ fn the_floors_widening_is_monotone_in_uncertainty_alone() {
 /// Differential: the two legs differ ONLY in `abandoned()`, and the pre-fix code had no way to
 /// express it — `observe` passed a hardcoded `completed: true`.
 #[test]
-fn an_abandoned_prefix_lowers_the_budget_instead_of_raising_it() {
+fn an_abandoned_prefix_does_not_change_the_capacity_budget() {
     let settle = |mark_abandoned: bool| {
         let mut c = Controller::starting_at(Rung::P1080M18, None, hd_catalog());
         for _ in 0..6 {
@@ -4841,6 +5415,10 @@ fn an_abandoned_prefix_lowers_the_budget_instead_of_raising_it() {
         before_complete, before_abandoned,
         "the two legs must start identical"
     );
+    assert_eq!(
+        after_abandoned, before_abandoned,
+        "a censored deadline event is handled by rollback, not by a point capacity estimate",
+    );
     assert!(
         after_abandoned < after_complete,
         "an abandoned prefix must not buy the budget a completed one would: \
@@ -4853,18 +5431,14 @@ fn an_abandoned_prefix_lowers_the_budget_instead_of_raising_it() {
 /// already wired to `MAX_UNCERTAINTY_PM` and `conservative_kbps` already treats uncertainty as a
 /// discount. Nothing new was modelled; a call site stopped overriding what was.
 #[test]
-fn an_abandoned_sample_reports_maximum_uncertainty() {
+fn an_abandoned_sample_leaves_the_completed_estimate_unchanged() {
     let mut c = Controller::starting_at(Rung::P720, None, hd_catalog());
     for _ in 0..6 {
         c.observe(sample(8_000, 400, 12_000), 0);
     }
-    let settled = c.delivery().uncertainty_pm;
+    let settled = c.delivery();
     c.observe(sample_bytes(1_448, 274, 400, 168).abandoned(), 1_000);
-    assert!(
-        c.delivery().uncertainty_pm > settled,
-        "abandoned {} must exceed settled {settled}",
-        c.delivery().uncertainty_pm,
-    );
+    assert_eq!(c.delivery(), settled);
 }
 
 /// **An abandoned prefix must not RESTART the estimate at its own value.** The device's exact
@@ -4886,10 +5460,10 @@ fn an_abandoned_prefix_cannot_restart_the_estimate_upward() {
             completed: true,
         });
     }
-    let settled = c.slow_kbps;
+    let settled = c;
     assert!(
-        (5_000..=6_200).contains(&settled),
-        "fixture must settle near the shaped rate: {settled}"
+        (5_000..=6_200).contains(&settled.slow_kbps),
+        "fixture must settle near the shaped rate: {settled:?}"
     );
 
     // Three aborts, each timing far above the history — the receive buffer, not the link.
@@ -4902,20 +5476,15 @@ fn an_abandoned_prefix_cannot_restart_the_estimate_upward() {
         });
     }
     assert_eq!(
-        c.slow_kbps, settled,
-        "an abandoned prefix may not move the estimate up at all"
-    );
-    assert_eq!(
-        c.uncertainty_pm, MAX_UNCERTAINTY_PM,
-        "but it must say the estimate is now unsure"
+        c, settled,
+        "an abandoned prefix may not move a capacity estimate at all"
     );
 }
 
-/// ...and it may still move it DOWN, because a slow prefix is the abort's actual message and the
-/// direction the evidence supports. Without this the rule would be a one-way ratchet that ignores
-/// a genuinely collapsing link.
+/// A slow prefix is censored too.  Its deadline failure is actionable, but its byte/time ratio does
+/// not identify whether path capacity, PMS production, pacing, or startup withheld the remainder.
 #[test]
-fn an_abandoned_prefix_may_still_lower_the_estimate() {
+fn a_slow_abandoned_prefix_also_leaves_capacity_unchanged() {
     let mut c = CapacityEstimate::default();
     for _ in 0..6 {
         c.update(CapacityObservation {
@@ -4925,16 +5494,16 @@ fn an_abandoned_prefix_may_still_lower_the_estimate() {
             completed: true,
         });
     }
-    let settled = c.slow_kbps;
+    let settled = c;
     c.update(CapacityObservation {
         kbps: 500,
         bytes: 125_000,
         active_us: 2_000_000,
         completed: false,
     });
-    assert!(
-        c.slow_kbps < settled,
-        "a slow abandoned prefix is real evidence of a slow link"
+    assert_eq!(
+        c, settled,
+        "deadline failure is not a point capacity measurement"
     );
 }
 
@@ -4956,22 +5525,20 @@ fn an_abandoned_prefix_may_still_lower_the_estimate() {
 #[test]
 fn a_stay_always_names_its_reason_unless_the_dwell_is_holding() {
     let mut checked = 0;
-    for link in [400u32, 2_000, 6_000, 20_000, 60_000, 200_000] {
-        for buffered in [500i64, 2_000, 8_000, 24_000, 45_000] {
-            for ratio in [80u32, 400, 900, 1_400] {
-                let mut c = Controller::starting_at(Rung::P720Low, None, hd_catalog());
+    for link in [2_000u32, 20_000, 200_000] {
+        for buffered in [2_000i64, 8_000, 24_000] {
+            for ratio in [80u32, 400, 900, 1_000] {
+                // The highest feasible rung has no candidate above it, and A<=D with B>=R_o keeps
+                // the exact current-point certificate healthy. Every observation is therefore a
+                // genuine, non-pending Stay rather than a transaction the fixture forgot to close.
+                let mut c = Controller::starting_at(Rung::P1080High, None, hd_catalog());
                 for i in 0u32..40 {
                     let s = sample(link, ratio, buffered);
                     let decision = c.observe(s, u64::from(i) * 2_000);
                     if decision != Decision::Stay {
                         continue;
                     }
-                    // The two exits that report themselves on the same line — `dwell=<n>ms` and
-                    // `pending=<n>kbps` — and so are excluded by the same argument
-                    // `HlsReason::RejectBackoff`'s doc makes for the dwell.
-                    if c.dwell_left_ms() > 0 || c.has_pending() {
-                        continue;
-                    }
+                    assert!(!c.has_pending());
                     checked += 1;
                     assert!(
                         c.last_reason().is_some(),
@@ -4987,61 +5554,6 @@ fn a_stay_always_names_its_reason_unless_the_dwell_is_holding() {
         checked > 200,
         "the sweep must actually reach Stay decisions, got {checked}"
     );
-}
-
-/// **Only a downshift warm-up carries the abort rule, and not at the ladder floor.**
-///
-/// Differential by construction: before `candidate_warmup_is_guarded` existed, every candidate
-/// warm-up passed `None` for its guard, so there was no arrangement of inputs under which the
-/// unmodified transport aborted one early. The device trace this replaces
-/// (`pipe_abr_down_outrun`, 2026-08-28) shows what that cost: `tx Down 18000->2000
-/// outcome=warmup_deadline decided=5948ms warmup_dl=5918ms buf_start=5918ms buf_decided=168ms
-/// net=5798kbps` — the whole reserve spent proving a rung unaffordable that a projection off the
-/// first measurable 250 ms already implied.
-#[test]
-fn only_a_downshift_off_the_floor_guards_its_warmup() {
-    // The reason the picture is unprotected on the way down and protected on the way up: an
-    // upshift's current rung is affordable by construction, a downshift's is the trigger.
-    assert!(candidate_warmup_is_guarded(Proposal {
-        rung: Rung::P720Low,
-        direction: Direction::Down,
-    }));
-    assert!(!candidate_warmup_is_guarded(Proposal {
-        rung: Rung::P720Low,
-        direction: Direction::Up,
-    }));
-
-    // R12's terminal case, and the one place the rule must NOT arm: `below()` of the floor is the
-    // floor, so an abort here re-fetches the same bytes forever.
-    assert_eq!(
-        Rung::P240.below(),
-        Rung::P240,
-        "P240 is expected to be the ladder floor"
-    );
-    assert!(!candidate_warmup_is_guarded(Proposal {
-        rung: Rung::P240,
-        direction: Direction::Down,
-    }));
-
-    // Every non-floor rung guards its downshift — stated over the whole ladder rather than at one
-    // sampled rung, so adding a rung cannot silently leave a hole.
-    for rung in LADDER {
-        assert_eq!(
-            candidate_warmup_is_guarded(Proposal {
-                rung,
-                direction: Direction::Down
-            }),
-            !rung.at_floor(),
-            "downshift guard at {rung:?} must follow the floor test alone",
-        );
-        assert!(
-            !candidate_warmup_is_guarded(Proposal {
-                rung,
-                direction: Direction::Up
-            }),
-            "an upshift warm-up never guards: {rung:?}",
-        );
-    }
 }
 
 /// **A commit is a coordinate change, not a drain** (R10), and the device trace it comes from.
@@ -5117,6 +5629,10 @@ fn the_controller_rebases_its_reserve_when_it_commits() {
         else {
             continue;
         };
+        if controller.buffer().slope_ms_per_s <= 0 {
+            assert!(controller.reject(proposal, RejectCause::Circumstance, controller.clock_ms(),));
+            continue;
+        }
         let candidate = sample(LINK_KBPS, 400, buf_ms);
         if !controller.candidate_ready(proposal, candidate, declared_bps(proposal.rung)) {
             controller.reject(proposal, RejectCause::Candidate, controller.clock_ms());
@@ -5241,42 +5757,1506 @@ fn a_rendition_cannot_score_above_the_master_it_encodes() {
     );
 }
 
-/// **The probe's reserve requirement is the probe's own budget, not a count of segments.**
+/// The source probe's useful deadline is the media represented by its exact finite object, and its
+/// reserve gate funds both transfer phases while preserving the next credited HLS acquisition.
 ///
-/// Differential: `deep_reserve` read `buffered_ms >= 3 * segment`, so the requirement moved with
-/// the segment duration while the cost it guards — `probe_budget_ms` of wall time — does not. The
-/// third assertion below is the one no arrangement of inputs could satisfy before: at a 1 s segment
-/// the old form demanded 3000 ms of reserve for a 4000 ms probe, i.e. it permitted exactly the
-/// starvation the gate exists to prevent.
+/// Waiting longer cannot turn an `A>D` source object into positive sustainability evidence. The
+/// operational 4 s policy remains a cap for the minimum-byte sample of a tiny source. Setup and
+/// body are two separately bounded phases of that same plan. The raw Part exact-reuses the live
+/// HLS Streaming Resource, so no stop, close or cursor restart belongs to this path. Smoothness
+/// therefore admits exactly with `P_setup + P_body + max(R_s,D)`. `R_s` and `D` are not added
+/// because the media credit that ends A also restores the post-acquisition balance.
 #[test]
-fn a_probe_needs_a_reserve_that_outlasts_the_probe() {
+fn a_probe_deadline_is_its_media_horizon_and_the_gate_preserves_hls_continuity() {
     let policy = AbrPolicy::measured();
     assert_eq!(
         policy.probe_budget_ms, PROBE_BUDGET_MS,
-        "the policy default and the shared constant are one number",
+        "the policy default and operational cap are one number",
     );
 
-    // The requirement no longer depends on how the server happens to cut segments...
-    for segment_ms in [1_000u32, 2_000, 4_000, 6_000] {
-        let old_form = i64::from(segment_ms) * 3;
-        let new_form = i64::try_from(policy.probe_budget_ms).unwrap();
-        assert_eq!(
-            new_form, 4_000,
-            "the requirement is the probe budget at every segment duration ({segment_ms} ms)",
-        );
-        // ...and the two forms genuinely disagree, in both directions, which is why this matters.
-        if segment_ms == 2_000 {
+    let ordinary = source_probe_plan(8_000, policy.probe_budget_ms).expect("known source");
+    assert_eq!(ordinary.target_bytes, 1_000_000);
+    assert_eq!(
+        ordinary.budget_ms, 1_000,
+        "one second of bytes gets one second"
+    );
+
+    let tiny = source_probe_plan(720, policy.probe_budget_ms).expect("known source");
+    assert_eq!(tiny.target_bytes, SOURCE_PROBE_MIN_BYTES);
+    assert_eq!(
+        tiny.budget_ms, policy.probe_budget_ms,
+        "the minimum sample represents over five seconds, so the operational cap binds",
+    );
+    let huge = source_probe_plan(200_000, policy.probe_budget_ms).expect("known source");
+    assert_eq!(huge.target_bytes, SOURCE_PROBE_MAX_BYTES);
+    assert_eq!(
+        huge.budget_ms, 336,
+        "the maximum sample's represented duration is recomputed after clamping",
+    );
+
+    let ask = |buffered_ms| {
+        recovery(28_000).probe_due(
+            top_candidate(),
+            true,
+            &idle_server(),
+            sample(40_000, 500, buffered_ms),
+            Some(1_737),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+            0,
+        )
+    };
+    // source 28 Mbps => a 3.5 MB one-second body; setup + body + D=2000 => 4000.
+    assert_eq!(ask(3_999), Err(ProbeBlock::ShallowReserve));
+    let permit = ask(4_000)
+        .expect("B=P_setup+P_body+max(R_s,D) is the exact inclusive affordability boundary");
+    assert_eq!(
+        permit.plan,
+        source_probe_plan(28_000, policy.probe_budget_ms).unwrap(),
+        "the gate and the HTTP transfer must share the exact same finite object and deadlines",
+    );
+}
+
+#[test]
+fn a_source_probe_preserves_the_known_next_variable_duration_object() {
+    let mut gate = recovery(28_000);
+    let ask = |gate: &mut OriginalRecovery, buffered_ms: i64| {
+        gate.probe_due_with_rollback(
+            top_candidate(),
+            true,
+            &idle_server(),
+            sample_of(1_000, 40_000, 500, buffered_ms),
+            Some(4_000),
+            Some(500),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+            0,
+        )
+    };
+
+    assert_eq!(ask(&mut gate, 5_999), Err(ProbeBlock::ShallowReserve));
+    assert!(
+        ask(&mut gate, 6_000).is_ok(),
+        "setup + body + the exact next 4s HLS object is the inclusive funding boundary",
+    );
+}
+
+/// **A starvation band is a TIME, so grade it against the observed time — not against a modelled
+/// one whose numerator is an allowance.** (Device, 2026-08-29, the `auto`-stuck film.)
+///
+/// `starvation_fallback_secs` says "the reserve runs out within twenty seconds". The imminent
+/// branch tested that against `T = B·R/(R−C)`, where `R` is the whole-file average inflated by
+/// `vbr_allowance_pm` (1 350) and `C` is this window's measured rate. Both terms are about the
+/// FILE and the LINK; neither is about the reserve in front of the decoder. The reserve itself
+/// publishes the same quantity directly and without either assumption — `buffered_ms / −slope` —
+/// and when the two disagree the model is the one making a claim it cannot see.
+///
+/// This is the disagreement the device produced, in its own numbers: a 25 264 kbps source on a
+/// link measuring ~18 000 kbps, reserve at ~5 100 ms falling 146 ms/s. The model reads
+/// `(34 106 − 18 000)/34 106` = a 47 % deficit and forecasts starvation in **11 s**. The reserve
+/// reads 146 ms of media lost per second of wall clock — a 15 % deficit — and forecasts **35 s**.
+/// The reserve is right by construction: it is the residue of everything the model approximates
+/// (this section's real bitrate rather than the file's average, the pump's feed-ahead, the actual
+/// delivery), measured rather than composed. Thirty-five seconds is also long enough for the
+/// recovery this link went on to make, which is what the abandon threw away.
+///
+/// It does not weaken the branch against a real collapse — `a_genuine_collapse_still_exits_at_once`
+/// below is the same shape with the drain that a collapse actually produces, and it fires on the
+/// second window. Nor does it touch `EmergencyLowBuffer`, which reads the RAW delta under
+/// `emergency_buffer_ms` precisely so that a cliff needs no trend.
+///
+/// Differential by construction: against unmodified code the assertion fails on window 2.
+#[test]
+fn a_slow_drain_with_a_long_observed_horizon_is_not_imminent_starvation() {
+    let mut mode = original(25_264);
+    // 146 ms/s of drain: -110 ms across each 750 ms window, which is the device's slope exactly.
+    let reserve = [5_643_i64, 5_533, 5_423, 5_313, 5_203, 5_093];
+    for (i, buffered) in reserve.iter().enumerate() {
+        let windows = (i + 1) as u64;
+        let observation = mode
+            .observe_saturated(
+                window_bytes(18_000) * windows,
+                ORIGINAL_WINDOW_US * windows,
+                Some(*buffered),
+                HOUR_MS,
+            )
+            .unwrap();
+        if windows >= 2 {
+            assert_eq!(
+                observation.slope_ms_per_s, -146,
+                "window {windows}: the drain the test is about",
+            );
             assert!(
-                old_form > new_form,
-                "at 2 s the old form was over-strict by 1.5x"
+                observation.horizon_secs.is_some_and(|s| s <= 20),
+                "window {windows}: the MODELLED horizon is inside the band — which is the whole \
+                 point, because it is what used to decide this alone (got {:?}s)",
+                observation.horizon_secs,
             );
         }
-        if segment_ms == 1_000 {
+        assert_ne!(
+            observation.fallback,
+            Some(OriginalExit::ImminentStarvation),
+            "window {windows}: {}ms of reserve draining at {}ms/s is {} seconds away from empty, \
+             not {:?}",
+            observation.buffered_ms,
+            observation.slope_ms_per_s,
+            observation.buffered_ms / -observation.slope_ms_per_s,
+            observation.horizon_secs,
+        );
+    }
+}
+
+/// The control for [`a_slow_drain_with_a_long_observed_horizon_is_not_imminent_starvation`]: the
+/// same link and the same source, with the drain a genuine collapse produces. 2 000 ms of reserve
+/// lost per 750 ms window is −2 666 ms/s — media leaving nearly three times faster than wall clock
+/// — and the observed horizon is 2 s, well inside the band. The branch must still fire, and on the
+/// first window that has a derivative at all.
+///
+/// It stays clear of `emergency_buffer_ms` (2 000 ms) throughout, so what fires here is the
+/// imminent branch and not the emergency guard beneath it.
+#[test]
+fn a_genuine_collapse_still_exits_at_once() {
+    let mut mode = original(25_264);
+    let reserve = [8_000_i64, 6_000];
+    let mut verdicts = Vec::new();
+    for (i, buffered) in reserve.iter().enumerate() {
+        let windows = (i + 1) as u64;
+        verdicts.push(
+            mode.observe_saturated(
+                window_bytes(18_000) * windows,
+                ORIGINAL_WINDOW_US * windows,
+                Some(*buffered),
+                HOUR_MS,
+            )
+            .unwrap(),
+        );
+    }
+    let collapse = verdicts.last().unwrap();
+    assert_eq!(
+        collapse.slope_ms_per_s, -2_666,
+        "the drain a collapse actually produces"
+    );
+    assert!(
+        collapse.buffered_ms > 2_000,
+        "above the emergency floor, so this is the imminent branch and not the guard below it",
+    );
+    assert_eq!(
+        collapse.fallback,
+        Some(OriginalExit::ImminentStarvation),
+        "6 000 ms draining at 2 666 ms/s empties in two seconds — the observed horizon agrees \
+         with the modelled one ({:?}s) and the branch must act",
+        collapse.horizon_secs,
+    );
+}
+
+/// **A post-seek reserve with time to confirm a modest drain is not an emergency merely because
+/// it entered the fallback band.** (Device, 2026-08-30.)
+///
+/// The film had already passed the Remote Original probe at 45 858 kbps. After an in-place seek it
+/// played for another fifty seconds at 0.98–1.00x with the video AU queue near its 10 MiB cap, then
+/// abandoned Original on this line:
+///
+/// ```text
+/// ImminentStarvation measured=23742kbps need=34106kbps buf=3077ms
+///                    slope=-198ms/s starve=10 held=2406ms
+/// ```
+///
+/// Both horizons were inside `starvation_fallback_secs`, but that constant says when a visible
+/// switch is WORTH paying for; it does not make 2.4 seconds of a modest post-seek trend conclusive.
+/// At the observed slope the reserve still had fifteen seconds, enough to finish the existing
+/// `sustained_unsafe_deficit_ms` confirmation while retaining the emergency reserve. A real cliff
+/// is the control immediately above and must remain immediate.
+///
+/// Differential by construction: the unmodified imminent branch fires before the first assertion.
+#[test]
+fn a_post_seek_modest_drain_is_confirmed_before_original_is_abandoned() {
+    let mut mode = original(25_264);
+    let mut bytes = 0_u64;
+    let mut active_us = 0_u64;
+    let mut now_ms = 0_u64;
+
+    // The pre-seek Original leg: enough agreeing evidence that the probe was not the only fast
+    // sample. The seek keeps this delivery estimate and discards only positional state.
+    for _ in 0..4 {
+        bytes += window_bytes(45_858);
+        active_us += ORIGINAL_WINDOW_US;
+        now_ms += ORIGINAL_WINDOW_US / 1_000;
+        mode.observe(bytes, active_us, Some(5_000), HOUR_MS, now_ms)
+            .unwrap();
+    }
+    mode.on_seek(bytes, active_us);
+
+    // Four post-seek windows, spaced as the device spaced them. A 159 ms loss per 802 ms is the
+    // exact -198 ms/s EWMA in the line above. The first window seeds the new position and the
+    // second is the first endpoint that can classify the interval as unsafe; only the following
+    // two intervals are known unsafe, for 2 * 802 = 1 604 ms at the verdict.
+    let mut observation = None;
+    for buffered_ms in [3_554_i64, 3_395, 3_236, 3_077] {
+        bytes += window_bytes(23_742);
+        active_us += ORIGINAL_WINDOW_US;
+        now_ms += 802;
+        observation = mode.observe(bytes, active_us, Some(buffered_ms), HOUR_MS, now_ms);
+    }
+    let tentative = observation.unwrap();
+    assert_eq!(tentative.buffered_ms, 3_077);
+    assert_eq!(tentative.slope_ms_per_s, -198);
+    assert_eq!(tentative.unsafe_deficit_ms, 1_604);
+    assert_eq!(
+        tentative.horizon_secs,
+        Some(51),
+        "the measured 6% deficit has a 51s runway"
+    );
+    assert_eq!(mode.buffer.observed_starvation_secs(), Some(15));
+    assert_eq!(
+        tentative.fallback, None,
+        "fifteen seconds of observed runway can afford the remaining confirmation without a blind reload",
+    );
+
+    // The protection is confirmation, not immunity. If the same drain continues past the
+    // persistence duration, Original has lost the argument and must hand off.
+    let mut confirmed = None;
+    for buffered_ms in [2_918_i64, 2_759, 2_600, 2_441] {
+        bytes += window_bytes(23_742);
+        active_us += ORIGINAL_WINDOW_US;
+        now_ms += 802;
+        confirmed = mode.observe(bytes, active_us, Some(buffered_ms), HOUR_MS, now_ms);
+    }
+    let confirmed = confirmed.unwrap();
+    assert!(
+        confirmed.unsafe_deficit_ms >= AbrPolicy::measured().sustained_unsafe_deficit_ms,
+        "the continuation must really pay the confirmation duration",
+    );
+    assert_eq!(
+        confirmed.fallback,
+        Some(OriginalExit::ImminentStarvation),
+        "the observed reserve is now inside the physical fallback horizon even though the file average is not",
+    );
+}
+
+/// **A cost that does not grow with the segment must not be extrapolated as if it did.** (Device,
+/// 2026-08-30 — the film that sat on 720 kbps/480p for twenty minutes.)
+///
+/// `transferred_us` answers "what would `q` bytes have cost" as `A_i * q / b_i` — the whole
+/// end-to-end acquisition, scaled by the byte ratio. That is right for the part of `A_i` that is
+/// bytes moving and wrong for the part that is not, and on this device the second part dominates.
+/// The per-segment line says so directly, and it is the line that settles it:
+///
+/// ```text
+/// hls: segment=636 bytes=130284 not_ready=0 open_ms=370 ttfb_ms=66 open_probe_ms=207
+///      first_au_ms=578 total_ms=582
+/// ```
+///
+/// `not_ready=0` on every segment of the run: the server was never making us wait. `ttfb_ms=66`:
+/// its think time is negligible. Of the 582 ms, about **370 ms is `open_ms` — our own AVIO open
+/// plus FFmpeg's probe** (`open_probe_ms=207`) — and only ~200 ms is body. Ask for a rendition
+/// four times the size and the body quadruples; the open and the probe do not move at all. The
+/// rule multiplied all 582.
+///
+/// **An earlier version of this test blamed PMS JIT production, and `not_ready=0` refutes it.**
+/// The apparent corroboration was circular: `prod=` is an EWMA of `total_fetch_us / duration`, the
+/// same quantity the window's demand is built from, so of course they agreed. Kept as a note
+/// because the arithmetic below is unchanged by the correction and the wrong cause would have led
+/// to a fix in the wrong module.
+///
+/// The refusal, in the log's own numbers — 19 samples of ~127 464 bytes, `demand=11111ms` against
+/// `supply=38000ms`, capping the admissible query near 436 000 bytes, while `P720Low` asks
+/// `sigma * W * D / 8000 = 1040 * 2e6 * 2000 / 8e6 = 520 000`:
+///
+/// ```text
+/// abr: steady current=720kbps safe=4251kbps buf=68210ms slope=0ms/s risk=0 onrung=143
+///      reason=Some(Hls(EvidenceWindow))
+/// ```
+///
+/// Sixty-eight seconds of reserve, zero risk, a safe budget six times the rung being played, and
+/// it will not climb. Decomposed — fixed 355 ms plus body scaled — the same window carries the
+/// same candidate at 22 s of demand against 38 s of supply.
+///
+/// A finite response is now used only to price the current rollback runway. It may therefore fund
+/// a bounded candidate transaction, but it may not price that candidate before it is requested.
+#[test]
+fn a_fixed_per_segment_cost_must_not_be_extrapolated_by_byte_count() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    // ONE segment off the device, repeated. Nothing here is chosen: bytes and body-read time are
+    // the logged `net=5080kbps` at the logged size, `278` is the logged `prod=`, and the reserve
+    // is the logged `buf=`.
+    let device_segment = || sample_bytes(127_464, 200_700, 278, 68_210);
+    // One full finite bag: the device had 143 samples and 64 in the ring, so this is not a fixture
+    // that stopped before the measured state was represented.
+    for _ in 0..WINDOW_CAPACITY {
+        if let Decision::Prime(proposal) = controller.observe_next(device_segment()) {
             assert!(
-                old_form < new_form,
-                "at 1 s the old form demanded {old_form} ms of reserve for a {new_form} ms probe — \
-                 SHORTER than the thing it guards, which is the direction that matters",
+                proposal.rung > Rung::P480,
+                "the only climb available here is upward; got {:?}",
+                proposal.rung,
             );
+            return;
         }
     }
+    panic!(
+        "never spent the measured rollback surplus on a climb off 720kbps: safe={}kbps, reserve \
+         68s, risk 0, link carries the 2 Mbit/s candidate {}x over",
+        controller.telemetry().safe_budget_kbps,
+        controller.telemetry().safe_budget_kbps / 2_000,
+    );
+}
+
+/// **A fetch StallGuard abandoned is not an observation of the link or finite bag.** This pins the
+/// device regression where the acquisition window still took it (2026-08-30, collapse off
+/// 22 Mbit/s).
+///
+/// The estimator side of this was already decided and is already fixed:
+/// [`an_abandoned_prefix_lowers_the_budget_instead_of_raising_it`] is that fix, and
+/// `SegmentSample::completed`'s doc names the failure it ended — *"an abandoned prefix set the
+/// budget its own abandonment disproved"*. The window side was never given the same guard.
+/// `Controller::observe` calls `acquisitions.observe(sample.bytes, sample.total_fetch_us())`
+/// unconditionally, above every early return and with no reference to `completed()`, so a prefix
+/// enters the transfer bound as though it were a segment that arrived.
+///
+/// It poisons in BOTH directions, which is the argument for excluding it rather than for trusting
+/// its sign. The estimator's case was optimistic — 1 448 bytes in 274 us times at 42 Mbit/s. The
+/// device case here is the pessimistic one:
+///
+/// ```text
+/// abr: sample current=22000kbps media=16983kbps net=56660kbps prod=1171pm n=2
+/// abr: stall abort seq=491 bytes=212992 of 1916ms reserve at 6197kbps
+/// abr: sample current=22000kbps media=851kbps  net=6197kbps  prod=341pm n=3 decision=prime_down
+/// ```
+///
+/// One honest sample said 56 Mbit/s. The next was a fetch the guard cut short while the freshly
+/// started 22 Mbit/s encoder was still producing slower than real time (`prod=1171pm`), and its
+/// truncated prefix entered as 6 197 kbps. The ladder then walked 22000 -> 4000 -> 2000 -> 720 and
+/// never came back. A ratio taken at the moment a transfer was ABANDONED is the rate that caused
+/// the abandonment, not the rate of the link — in either direction it is a measurement of the
+/// abort.
+///
+/// Differential by construction: against unmodified code `have` climbs by the abandoned samples.
+#[test]
+fn an_abandoned_prefix_must_not_enter_the_acquisition_window() {
+    let mut controller = Controller::starting_at(Rung::P1080High, None, hd_catalog());
+    for _ in 0..6 {
+        controller.observe_next(sample(20_000, 400, 12_000));
+    }
+    let settled = controller.telemetry().window.have;
+    assert_eq!(settled, 6, "six completed segments, six observations");
+
+    // The device's own prefix, four times: 212 992 bytes cut short by the stall guard.
+    for _ in 0..4 {
+        controller.observe_next(sample_bytes(212_992, 275_000, 958, 84).abandoned());
+    }
+    assert_eq!(
+        controller.telemetry().window.have,
+        settled,
+        "an abandoned prefix is a measurement of the abort, not of the link — it may no more \
+         enter the transfer bound than it may set the capacity estimate",
+    );
+}
+
+/// **The two ends of the pipeline disagree about what a segment costs, in OPPOSITE directions, and
+/// this is the other one.** (Device, 2026-08-30 — the 19 consecutive failed downshifts.)
+///
+/// [`a_fixed_per_segment_cost_must_not_be_extrapolated_by_byte_count`] records the retired window
+/// multiplying a fixed cost by the byte ratio, which made every climb look too expensive. This is
+/// the mirror: [`predicted_transfer`] is `bits / rate` and its own doc says so — *"and nothing
+/// else"* — computed on `conservative_kbps`, which comes from `active_fetch_us`. So the deadline
+/// granted to a candidate warm-up covers the BODY READ alone, while the acquisition it must fit
+/// inside also contains the open, the probe, and a brand-new encoder session's cold start.
+///
+/// The per-segment line prices the fixed half at roughly 370 ms in the STEADY state
+/// (`open_ms=370`, of which `open_probe_ms=207`), on a server that was never stalling us
+/// (`not_ready=0`). A freshly created candidate session is worse, not better. Against that, every
+/// one of nineteen transactions:
+///
+/// ```text
+/// abr: tx Down 2000->720kbps outcome=warmup_deadline decided=2800ms total=2807ms
+///      control=1537ms prime=397ms master=369ms media=771ms warmup=nonems warmup_dl=549ms
+///      buf_start=84ms buf_decided=84ms buf_end=84ms declared=425kbps
+/// ```
+///
+/// `warmup=nonems` — it never finished inside the budget, once. And the loop sustains itself: each
+/// failed transaction spends ~2.7 s, which is what holds the reserve at 84 ms, which is what keeps
+/// the budget at its floor.
+///
+/// **The floor is not the bug and the reserve is not the bug**, which is where an earlier version
+/// of this test had it wrong. `candidate_warmup_budget` already protects a downshift from its own
+/// empty reserve — `reserve.max(predicted_transfer)` — and 549 ms against an 84 ms reserve is that
+/// floor working. The bug is that the floor is made of the body read only.
+///
+/// Differential by construction: the first assertion reproduces the device's `warmup_dl` and
+/// passes; the second fails against unmodified code.
+#[test]
+fn a_downshift_warmup_budget_must_cover_the_whole_acquisition_not_only_the_body_read() {
+    use std::time::Duration;
+    let media = Duration::from_millis(2_000);
+    let proposal = Proposal {
+        rung: Rung::P480,
+        direction: Direction::Down,
+    };
+    // Every number is the device's. 425 kbps is the logged `declared=`; 84 ms the logged reserve on
+    // all nineteen attempts; 500 pm the logged `unc=`; 2 322 kbps is the `conservative_kbps` those
+    // imply, and the first assertion is what proves the inversion is right.
+    let predicted = predicted_transfer(425, media, 2_322, 500);
+    assert_eq!(
+        predicted.as_millis(),
+        549,
+        "the device's own warmup_dl=549ms, reproduced"
+    );
+    // What that playback's segments cost before a byte moved: total_ms=582 with ~200ms of body.
+    let fixed_overhead = Duration::from_millis(355);
+    let budget = candidate_warmup_budget(
+        proposal,
+        media,
+        reserve_as_budget(84),
+        predicted,
+        fixed_overhead,
+    );
+
+    // What a segment on this pipeline was measured to cost END TO END in the steady state, on a
+    // server that never stalled us: total_ms=582, of which ~370 is open+probe and ~200 is body. A
+    // cold candidate session is dearer than this, so it is a floor and not an estimate.
+    let whole_acquisition = Duration::from_millis(582);
+    assert!(
+        budget >= whole_acquisition,
+        "a warm-up deadline of {budget:?} cannot be met when one segment costs \
+         {whole_acquisition:?} end to end — the budget is bits/rate over the link and pays for \
+         the body read alone, which is why the log has nineteen `outcome=warmup_deadline` in a \
+         row with `warmup=nonems`",
+    );
+}
+
+/// The demand-capped 720 kbps response from the device trace cannot identify whether 2, 8, or 20
+/// Mbit/s is available. A remembered manifest declaration cannot repair that identifiability gap.
+/// Once the current bag and reserve finance an experiment, selection must issue the most useful
+/// feasible request and learn from that request's actual completed segment.
+#[test]
+fn a_demand_capped_rung_is_retested_by_an_actual_candidate_transaction() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let device_segment = || sample_bytes(127_464, 200_700, 278, 68_210);
+    for _ in 0..WINDOW_CAPACITY {
+        if let Decision::Prime(proposal) = controller.observe_next(device_segment()) {
+            assert_eq!(proposal.direction, Direction::Up);
+            assert_eq!(proposal.rung, Rung::P1080High);
+            return;
+        }
+    }
+    panic!(
+        "never spent the measured surplus on an actual candidate: safe={}kbps",
+        controller.telemetry().safe_budget_kbps,
+    );
+}
+
+/// A finite HLS response measures the service obtained by that response; it is not a ceiling on
+/// what a larger response may obtain.  This is the state from the 2026-08-30 trace in its smallest
+/// differential form: the current finite bag has disposable reserve for an excitation, while the
+/// legacy point-capacity path applies two independent 0.8 discounts and never issues the request
+/// that could reveal the path's unused tail.
+#[test]
+fn a_demand_capped_response_cannot_be_an_upshift_ceiling() {
+    let mut controller = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    let completed = || {
+        // 1.5 MB in 1.2 s of body time, 1.3 s end-to-end: sustainable at the current point and
+        // leaving a deep reserve to fund an independently measured candidate.
+        sample_bytes(1_500_000, 1_200_000, 650, 63_000)
+    };
+
+    for _ in 0..WINDOW_CAPACITY {
+        if let Decision::Prime(proposal) = controller.observe_next(completed()) {
+            assert!(
+                proposal.direction == Direction::Up && proposal.rung >= Rung::P1080,
+                "the demand-capped response must fund an actual higher request; got {proposal:?}",
+            );
+            return;
+        }
+    }
+
+    let telemetry = controller.telemetry();
+    panic!(
+        "the current bag has exploration surplus, but a point-capacity prefilter kept the \
+         controller at 6: safe={}kbps window={:?} reason={:?}",
+        telemetry.safe_budget_kbps, telemetry.window.admission, telemetry.reason,
+    );
+}
+
+/// The stronger identifiability case: the current finite object is paced at exactly real time.
+/// Projecting that same service rate onto a larger object necessarily gives `T(q) > D`, but this
+/// says nothing about the path's unused tail.  The only observation that can distinguish a 6 Mbps
+/// path from a 25 Mbps path behind this same response is an actual larger candidate request, so a
+/// full reserve must fund that experiment rather than let the projection veto it.
+#[test]
+fn a_realtime_demand_capped_response_still_excites_an_unknown_higher_tier() {
+    let mut controller = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    let paced = || sample_bytes(1_500_000, 2_000_000, 1_000, 63_000);
+    for _ in 0..WINDOW_CAPACITY {
+        if let Decision::Prime(proposal) = controller.observe_next(paced()) {
+            assert_eq!(proposal.direction, Direction::Up);
+            assert!(proposal.rung > Rung::P1080M6);
+            return;
+        }
+    }
+
+    panic!(
+        "the current response was demand-capped at real time and became an absorbing ceiling: {:?}",
+        controller.telemetry().reason,
+    );
+}
+
+/// A request ceiling and the response PMS actually attached to it are two different state
+/// variables.  Device trace, 2026-08-31: the top `22 Mbps / 4K` actuator returned a
+/// `979 kbps / 720x404` master, so recording the actuator as `current` made the ladder terminal
+/// even after later segment service proved a stronger regime.  The only honest next experiment
+/// is a fresh encoder at the SAME actuator; mapping 979 kbps back to a guessed lower rung would
+/// invent a non-existent inverse for PMS's item-dependent request mapping.
+#[test]
+fn an_underfilled_top_actuator_refreshes_after_stronger_service_evidence() {
+    let mut controller = Controller::starting_at(Rung::Uhd, None, uhd_catalog());
+    let underfilled = ObservedHlsVariant::new(979_000, 720, 404).expect("valid HLS response");
+    controller.observe_active_variant(underfilled, 5_000);
+
+    assert_eq!(
+        controller.current(),
+        Rung::Uhd,
+        "the actuator remains the request PMS received"
+    );
+    assert_eq!(
+        controller.observe_next(sample(5_000, 400, 40_000)),
+        Decision::Stay
+    );
+    assert_eq!(
+        controller.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::ResponseLimited)),
+        "the observed response is below the requested/source geometry, not `AtBestRung`",
+    );
+
+    let first_refresh = (0..WINDOW_CAPACITY)
+        .find_map(|_| match controller.observe_next(sample(10_000, 400, 40_000)) {
+            Decision::Prime(proposal) => Some(proposal),
+            Decision::Stay => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a stronger completed-service regime never reopened the underfilled top actuator: {:?}",
+                controller.telemetry().reason,
+            )
+        });
+    assert_eq!(
+        first_refresh.rung,
+        Rung::Uhd,
+        "refresh must keep the same wire request"
+    );
+    assert_eq!(
+        first_refresh.direction,
+        Direction::Up,
+        "refresh spends the exploration budget"
+    );
+
+    // The fresh encoder returned the same response. That is neither a permanent structural ban
+    // nor permission to allocate another encoder on every segment.
+    assert!(controller.reject(
+        first_refresh,
+        RejectCause::ResponseUnchanged,
+        controller.clock_ms(),
+    ));
+    for _ in 0..8 {
+        assert_eq!(
+            controller.observe_next(sample(10_000, 400, 40_000)),
+            Decision::Stay,
+            "unchanged service and disposable reserve polled the same request",
+        );
+    }
+
+    // Stronger service still cannot identify a hidden response, but the deeper reserve is a
+    // strictly larger exact transaction budget. Together they retain the original first-refresh
+    // premise and safely release the completed unchanged-response endpoint.
+    let second_refresh = (0..WINDOW_CAPACITY)
+        .find_map(
+            |_| match controller.observe_next(sample(20_000, 400, 80_000)) {
+                Decision::Prime(proposal) => Some(proposal),
+                Decision::Stay => None,
+            },
+        )
+        .expect("a stronger regime with more disposable reserve must rearm one fresh session");
+    assert_eq!(second_refresh.rung, Rung::Uhd);
+}
+
+/// A completed same-request refresh can itself be demand-capped. Its transfer rate then measures
+/// only the small response PMS chose, not the dormant capacity behind that response, so requiring
+/// the live low rendition to confidence-separate above its own fast estimate is an absorbing
+/// state. The completed transaction did establish its exact cost, however: a strictly larger
+/// disposable reserve can fund one more physical attempt without inventing link capacity.
+///
+/// Remote-PMS reproduction (2026-08-31): after the link reopened, an underfilled 22 Mbps
+/// refresh completed as 1.61 Mbps / 720x404 with E about 14.5 s. The current response then filled
+/// the real device queues to about 42 s while reporting 10--16 Mbps body service, but no refresh
+/// ever ran because a demand-capped response could not prove a larger hidden service rate.
+#[test]
+fn an_unchanged_underfilled_response_retries_on_a_strictly_larger_disposable_reserve() {
+    let mut controller = Controller::starting_at(Rung::Uhd, None, uhd_catalog());
+    controller.observe_active_variant(
+        ObservedHlsVariant::new(1_885_000, 720, 404).expect("valid underfilled response"),
+        5_000,
+    );
+
+    let first = (0..WINDOW_CAPACITY)
+        .find_map(
+            |_| match controller.observe_next(sample(10_000, 400, 18_000)) {
+                Decision::Prime(proposal) => Some(proposal),
+                Decision::Stay => None,
+            },
+        )
+        .expect("stronger completed service should authorize the first same-request refresh");
+    let first_budget = controller
+        .exploration_budget_ms(18_000)
+        .expect("the first refresh had a positive disposable reserve");
+    assert!(controller.reject(first, RejectCause::ResponseUnchanged, controller.clock_ms(),));
+
+    for _ in 0..8 {
+        assert_eq!(
+            controller.observe_next(sample(10_000, 400, 18_000)),
+            Decision::Stay,
+            "the same completed-service regime retried without a larger transaction budget",
+        );
+    }
+
+    let second = (0..WINDOW_CAPACITY)
+        .find_map(|_| match controller.observe_next(sample(10_000, 400, 42_000)) {
+            Decision::Prime(proposal) => Some(proposal),
+            Decision::Stay => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "a demand-capped response stayed absorbing after reserve grew above {first_budget}ms: {:?}",
+                controller.telemetry().reason,
+            )
+        });
+    assert_eq!(second.rung, Rung::Uhd);
+    assert_eq!(second.direction, Direction::Up);
+    assert!(
+        controller
+            .exploration_budget_ms(42_000)
+            .is_some_and(|budget| budget > first_budget),
+        "the retry did not buy genuinely more transaction budget",
+    );
+}
+
+/// A higher request whose completed PMS response does not improve on the live response is not an
+/// ordinal failure of that requested rung. The server answered with a different, demand-capped
+/// object, so immediately trying every lower request only allocates a train of physical encoders
+/// against the same resource governor. The exact transaction did measure one common disposable-
+/// reserve endpoint: hold every quality experiment at that E, then retry the most informative top
+/// request once a strictly larger reserve exists.
+///
+/// Remote-PMS regression (2026-08-31): a 22 Mbps request returned 433 kbps / 720x404 against
+/// a live 1.459 Mbps / 720x404 response. Treating that as `Structural` walked 20, 18, 16, 14, 12,
+/// 10, 8, 6 and 4 Mbps in one pass; the accumulated encoder churn eventually revoked the live
+/// session. Nothing in those response bytes ordered the requested actuators.
+#[test]
+fn an_underfilled_higher_response_blocks_the_common_budget_not_each_lower_request() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let same_budget = || sample(20_000, 500, 10_000); // A=1s, exact E=8s.
+
+    let top = match controller.observe_next(same_budget()) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the first top-response experiment should be funded"),
+    };
+    assert_eq!(top.rung, Rung::P1080High);
+    assert!(controller.reject(top, RejectCause::ResponseUnchanged, controller.clock_ms()));
+    assert_eq!(
+        controller.hls_exploration_state(),
+        HlsExplorationState::CommonBudgetBlocked,
+        "the common transaction frontier blocks every untouched HLS request at this exact budget; Original is the remaining informative excitation",
+    );
+
+    for _ in 0..8 {
+        assert_eq!(
+            controller.observe_next(same_budget()),
+            Decision::Stay,
+            "an untouched lower request laundered the same failed common budget",
+        );
+    }
+
+    // The failed transaction ended with 3 s less reserve, so merely returning from that endpoint
+    // to its original E=8 s has already replaced the drawdown. Adding the same 3 s once more
+    // double-counts the debt and can put the frontier above a physically full queue. E=10 s is
+    // strictly more disposable reserve than the failed transaction owned and must release it.
+    let restored_and_stronger = sample(20_000, 500, 12_000); // Same service, E grows to 10s.
+    let retry = match controller.observe_next(restored_and_stronger) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("strictly more physical reserve should reopen one experiment"),
+    };
+    assert_eq!(
+        retry.rung, top.rung,
+        "the response gave no ordinal evidence for descending the requested ladder",
+    );
+}
+
+#[test]
+fn a_successful_same_actuator_refresh_becomes_the_observed_top() {
+    let mut controller = Controller::starting_at(Rung::Uhd, None, uhd_catalog());
+    controller.observe_active_variant(ObservedHlsVariant::new(979_000, 720, 404).unwrap(), 5_000);
+    let proposal = (0..WINDOW_CAPACITY)
+        .find_map(
+            |_| match controller.observe_next(sample(10_000, 400, 80_000)) {
+                Decision::Prime(proposal) => Some(proposal),
+                Decision::Stay => None,
+            },
+        )
+        .expect("stronger service should refresh the underfilled response");
+    assert_eq!(
+        proposal.rung,
+        controller.current(),
+        "this is a refresh, not an upshift"
+    );
+
+    let completed = sample(20_000, 400, 78_000);
+    let full = ObservedHlsVariant::new(20_895_000, 3_840, 2_160).unwrap();
+    assert!(controller.commit_candidate(proposal, completed, full, controller.clock_ms()));
+    assert_eq!(
+        controller.current(),
+        Rung::Uhd,
+        "the request actuator never changed"
+    );
+
+    assert_eq!(
+        controller.observe_next(sample(20_000, 400, 80_000)),
+        Decision::Stay
+    );
+    assert_eq!(
+        controller.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::AtBestRung)),
+        "only the observed full response makes the top request terminal",
+    );
+}
+
+#[test]
+fn response_underfill_is_geometry_not_a_bitrate_tolerance() {
+    let scope = ObservedHlsVariant::new(4_200_000, 1_918, 802).unwrap();
+    assert!(
+        !scope.definitively_underfills(Rung::P1080High, (1_918, 802)),
+        "a source-sized scope encode satisfies a larger bounding box",
+    );
+
+    let fitted_4k = ObservedHlsVariant::new(16_150_000, 1_920, 1_080).unwrap();
+    assert!(
+        !fitted_4k.definitively_underfills(Rung::P1080High, (3_840, 2_160)),
+        "a source larger than the device box is satisfied by reaching the box",
+    );
+    let short = ObservedHlsVariant::new(979_000, 1_280, 720).unwrap();
+    assert!(short.definitively_underfills(Rung::P1080High, (3_840, 2_160)));
+
+    // The declared rate is intentionally absent from the predicate: a ceiling is not a target,
+    // and no coefficient-free rule can call two equal rasters at different content complexity
+    // underfilled merely because one compressed smaller.
+    let compact = ObservedHlsVariant::new(400_000, 1_918, 802).unwrap();
+    assert!(!compact.definitively_underfills(Rung::P1080High, (1_918, 802)));
+}
+
+/// Once excitation has produced a complete candidate segment which satisfies the real-time
+/// boundary law, admission is about that operating point. Old smaller responses are useful
+/// rollback evidence, but scaling them up again would discard the only direct answer the
+/// transaction just bought.
+#[test]
+fn one_realtime_candidate_segment_is_direct_admission_evidence() {
+    let mut controller = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    let proposal = (0..WINDOW_CAPACITY)
+        .find_map(|_| {
+            match controller.observe_next(sample_bytes(1_500_000, 2_000_000, 1_000, 63_000)) {
+                Decision::Prime(proposal) => Some(proposal),
+                Decision::Stay => None,
+            }
+        })
+        .expect("the reserve should fund an excitation");
+    let candidate = sample_bytes(3_500_000, 1_900_000, 950, 61_000);
+    assert!(
+        controller.candidate_ready(proposal, candidate, 14_000_000),
+        "a completed 1.9 s candidate contributes 2 s of media and its post-fetch reserve covers it",
+    );
+}
+
+/// The exact live failure from the trace: after a successful 16 Mbit/s candidate transaction, the
+/// first ordinary fetch was abandoned at 98,304 bytes and 2.759 Mbit/s.  That is a censored
+/// deadline failure, not a completed capacity observation.  It may trigger a transactional
+/// rollback, but it must not erase the completed acquisition history or turn 2.759 into the target
+/// of a 16 -> 2 Mbit/s plunge.
+#[test]
+fn an_abandoned_live_prefix_is_not_a_capacity_collapse() {
+    let mut controller = Controller::starting_at(Rung::P1080M16, None, hd_catalog());
+    for _ in 0..6 {
+        controller.observe_next(sample_bytes(4_000_000, 1_280_000, 700, 9_300));
+    }
+    let delivery_before = controller.delivery();
+    let window_before = controller.window_len();
+    let clock = controller.clock_ms().saturating_add(3_000);
+    let prefix = sample_bytes(98_304, 285_000, 1_500, 8_500).abandoned();
+
+    let decision = controller.observe(prefix, clock);
+
+    assert_eq!(
+        controller.delivery(),
+        delivery_before,
+        "censored progress is not capacity"
+    );
+    assert_eq!(
+        controller.window_len(),
+        window_before,
+        "censored progress is not an acquisition"
+    );
+    assert!(
+        !matches!(decision, Decision::Prime(Proposal { rung, direction: Direction::Down }) if rung <= Rung::P720Low),
+        "an abandoned 98 KiB prefix must not select a 2 Mbit/s target: {decision:?}",
+    );
+}
+
+/// Buffer slope is `delta playable media / delta wall clock`.  Segment duration is the amount of
+/// media credited on completion and is not a clock.  The two controllers see the same 1 s reserve
+/// loss and differ only in whether it took one or two wall seconds.
+#[test]
+fn hls_buffer_slope_uses_wall_time_not_media_duration() {
+    let mut one_second = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    one_second.observe(sample(30_000, 200, 10_000), 1_000);
+    one_second.observe(sample(30_000, 200, 9_000), 2_000);
+
+    let mut two_seconds = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    two_seconds.observe(sample(30_000, 200, 10_000), 1_000);
+    two_seconds.observe(sample(30_000, 200, 9_000), 3_000);
+
+    assert_eq!(one_second.buffer().slope_ms_per_s, -1_000);
+    assert_eq!(two_seconds.buffer().slope_ms_per_s, -500);
+}
+
+/// A completed current-point bag is the plant certificate.  If its acquisitions consume more
+/// wall time than the media they credit, no amount of starting reserve makes that operating point
+/// sustainable: reserve only postpones the loss.  The old eviction path never read this sum and
+/// stayed forever when its rate/production heuristics happened to look healthy.
+#[test]
+fn an_exact_current_point_deficit_requests_a_lower_actuator() {
+    let mut controller = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    let unsustainable = sample_bytes(5_000_000, 1_000_000, 1_050, 60_000);
+
+    assert!(matches!(
+        controller.observe_next(unsustainable),
+        Decision::Prime(Proposal {
+            direction: Direction::Down,
+            ..
+        })
+    ));
+}
+
+/// Device regression (remote PMS, 2026-08-31): Auto correctly left Original for an 8 Mbps HLS
+/// actuator after the link was shaped to 10 Mbps. The fresh-session object was treated as setup,
+/// then the first repeatable object supplied 2.000 s of media in 2.039 s. Its exact finite bag was
+/// survivable from the 4 s reserve but not self-replenishing by 39 ms. The controller ignored its
+/// already measured delivery/refill model and mapped that epsilon-sized completed deficit to
+/// the 320 kbps minimax floor — a rule intended for an ABANDONED fetch with no completed quantum.
+///
+/// A completed response has enough physical evidence to order a lower actuator: select the
+/// highest lower catalog point admitted by the existing conservative delivery and refill
+/// equations. The candidate still has to complete and pass the exact transaction law;
+/// this assertion adds no dwell, ratio, margin or threshold.
+#[test]
+fn a_completed_39ms_deficit_recovers_to_the_modeled_lower_actuator() {
+    let mut controller = Controller::starting_at(Rung::P1080, None, hd_catalog());
+    // 9.157 Mbps of media crossed at 11.532 Mbps active service, matching the device line.
+    let segment = || sample_bytes_with_total(2_289_250, 1_588_103, 2_039_000, 2_000, 4_000);
+
+    assert_eq!(
+        controller.observe_session_boundary(segment(), Some(2_000), 2_039),
+        Decision::Stay,
+    );
+    let recovery = match controller.observe(segment(), 4_078) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the completed losing operating point needs a lower experiment"),
+    };
+
+    let window = controller.telemetry().window.admission.unwrap();
+    assert_eq!(window.demand_us, 2_039_000);
+    assert_eq!(window.supply_us, 2_000_000);
+    assert!(window.survivable);
+    assert!(!window.sustainable);
+    assert_eq!(recovery.direction, Direction::Down);
+    assert_eq!(
+        recovery.rung,
+        Rung::P1080M6,
+        "a completed 39ms deficit was confused with an abandoned no-picture recovery",
+    );
+}
+
+/// The completed-sample model is an ordering aid, not permission to avoid the bounded recovery
+/// floor. If even the smallest catalog point is unsupported by the conservative service evidence,
+/// no invented intermediate exists and the original minimax answer remains intact.
+#[test]
+fn a_completed_collapse_with_no_modeled_lower_point_still_uses_the_floor() {
+    let mut controller = Controller::starting_at(Rung::P1080, None, hd_catalog());
+    // 16 Mbit delivered over 53.333 s is 300 kbps active service. The 60 s reserve can survive
+    // this completed acquisition, but the first-sample conservative budget admits no HLS rung.
+    let collapse = sample_bytes_with_total(2_000_000, 53_333_333, 53_333_333, 2_000, 60_000);
+    let recovery = match controller.observe(collapse, 53_333) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a completed collapse must leave the losing operating point"),
+    };
+
+    assert_eq!(recovery.direction, Direction::Down);
+    assert_eq!(recovery.rung, Rung::P240);
+}
+
+/// A completed bag that replenishes itself can still be unable to reach its next completion from
+/// the reserve on hand. That is the same time-to-picture emergency as an abandoned fetch: a high
+/// measured delivery rate must not turn `B < exact runway` into a quality-preserving experiment.
+#[test]
+fn an_unsurvivable_completed_bag_keeps_the_minimax_floor() {
+    let mut controller = Controller::starting_at(Rung::P1080, None, hd_catalog());
+    // A=1.5s <= D=2s, but the exact terminal runway is 1.5s and only B=1s remains. Active body
+    // service is 32 Mbps, deliberately high enough that the planning model supports lower rungs.
+    let no_runway = sample_bytes_with_total(2_000_000, 500_000, 1_500_000, 2_000, 1_000);
+    let recovery = match controller.observe(no_runway, 1_500) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the next credited completion is outside the live reserve"),
+    };
+
+    let window = controller.telemetry().window.admission.unwrap();
+    assert!(window.sustainable);
+    assert!(!window.survivable);
+    assert_eq!(recovery.direction, Direction::Down);
+    assert_eq!(
+        recovery.rung,
+        Rung::P240,
+        "a runway emergency was weakened into an ordinary modeled downshift",
+    );
+    assert_eq!(
+        controller.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::BufferConstraint)),
+        "the reason must name the runway constraint that selected the emergency branch",
+    );
+}
+
+/// When both conservation predicates fail, `B < R_o` is the binding constraint: it selects the
+/// emergency floor instead of the quality-preserving completed-sample model. Telemetry must name
+/// that branch rather than blaming the link-only interpretation of the simultaneous deficit.
+#[test]
+fn the_runway_constraint_owns_the_reason_when_both_predicates_fail() {
+    let mut controller = Controller::starting_at(Rung::P1080, None, hd_catalog());
+    // A=3s > D=2s and B=1s < R_o=3s: both predicates fail on the same completed acquisition.
+    let exhausted = sample_bytes_with_total(2_000_000, 500_000, 3_000_000, 2_000, 1_000);
+    let recovery = match controller.observe(exhausted, 3_000) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a completed runway emergency must leave the current rung"),
+    };
+
+    let window = controller.telemetry().window.admission.unwrap();
+    assert!(!window.sustainable);
+    assert!(!window.survivable);
+    assert_eq!(recovery.rung, Rung::P240);
+    assert_eq!(
+        controller.telemetry().reason,
+        Some(DecisionReason::Hls(HlsReason::BufferConstraint)),
+    );
+}
+
+/// A shallow buffer is not itself a failure.  If the completed bag costs 200 ms, then 300 ms is
+/// enough to reach the next completion even though it is less than the segment's two seconds.
+/// `B < D` used to downshift this state despite the exact runway saying it is safe.
+#[test]
+fn a_shallow_buffer_above_the_exact_runway_does_not_downshift() {
+    let mut controller = Controller::starting_at(Rung::P1080M6, None, hd_catalog());
+    for _ in 0..2 {
+        let decision =
+            observe_without_upshift(&mut controller, sample_bytes(500_000, 180_000, 100, 300));
+        assert!(
+            !matches!(
+                decision,
+                Decision::Prime(Proposal {
+                    direction: Direction::Down,
+                    ..
+                })
+            ),
+            "the observed runway is only 200ms; got {decision:?}",
+        );
+    }
+}
+
+/// Acquisitions are denominated in the current operating point.  Keeping a high-rung bag after a
+/// downshift makes its old costs look like costs of the cheap recovery stream and can hold the
+/// main-thread clock behind an impossible multi-second runway.  Commit must retire it before any
+/// next observation; the completed candidate then becomes the sole seed.
+#[test]
+fn a_downshift_commit_replaces_the_old_operating_point_bag() {
+    let mut controller = Controller::starting_at(Rung::P1080M16, None, hd_catalog());
+    for _ in 0..3 {
+        observe_without_upshift(
+            &mut controller,
+            sample_bytes(4_000_000, 1_000_000, 700, 9_000),
+        );
+    }
+    assert_eq!(controller.window_len(), 3);
+
+    let down =
+        match controller.observe_next(sample_bytes(98_304, 285_000, 1_500, 8_500).abandoned()) {
+            Decision::Prime(proposal) => proposal,
+            Decision::Stay => panic!("an abandoned live fetch must request rollback"),
+        };
+    assert_eq!(down.direction, Direction::Down);
+    assert!(controller.commit(down, controller.clock_ms()));
+    assert_eq!(
+        controller.window_len(),
+        0,
+        "the old rung's acquisitions survived the operating-point change",
+    );
+
+    let candidate = sample_bytes(400_000, 180_000, 100, 8_500);
+    controller.commit_candidate_evidence(candidate);
+    assert_eq!(controller.window_len(), 1);
+}
+
+/// With no still-valid lower operating point, recovery must minimize time-to-picture rather than
+/// linearly preserve quality.
+///
+/// Device regression (`pipe_abr_down_staircase`, 2026-08-30): after the link fell from 9.6 Mbps
+/// to 500 kbps, the controller paid for 16, 14, 12, 10, 8, 6, 4, 2 and 0.72 Mbps candidates before
+/// reaching 0.32 Mbps. Each response was smaller, but every failed control-plane/encoder lifecycle
+/// still cost wall time while the playhead was stopped. With response size ordered and the goal
+/// defined as the first moving picture, the smallest response is the minimax action; quality is a
+/// separate upward search after recovery.
+#[test]
+fn an_abandoned_active_fetch_recovers_at_the_smallest_actuator() {
+    let mut controller = Controller::starting_at(Rung::P1080M18, None, hd_catalog());
+    let abandoned = sample(500, 1_000, 4_200).abandoned();
+
+    let recovery = match controller.observe_next(abandoned) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("an abandoned active fetch must start recovery"),
+    };
+    assert_eq!(recovery.direction, Direction::Down);
+    assert_eq!(
+        recovery.rung,
+        Rung::P240,
+        "linear descent makes recovery latency proportional to ladder length",
+    );
+}
+
+/// The actuator displaced by a just-committed upshift is direct rollback evidence and is tried
+/// first. If that transaction fails too, it no longer describes the current service episode and
+/// the next recovery action must go to the floor instead of replaying it.
+#[test]
+fn a_failed_known_good_rollback_continues_at_the_floor() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let up = prime_up(&mut controller);
+    assert!(controller.commit(up, controller.clock_ms()));
+    assert!(up.rung > Rung::P480);
+
+    let abandoned = sample(500, 1_000, 4_200).abandoned();
+    let rollback = match controller.observe_next(abandoned) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the displaced working actuator should be the first rollback"),
+    };
+    assert_eq!(rollback.rung, Rung::P480);
+    assert!(controller.reject(rollback, RejectCause::Candidate, controller.clock_ms(),));
+
+    let floor = match controller.observe_next(abandoned) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a failed rollback still leaves the floor recovery"),
+    };
+    assert_eq!(floor.rung, Rung::P240);
+}
+
+/// A completed-but-unfunded high excitation supplies a response-size endpoint for experiment
+/// scheduling, not a reason to pay for every adjacent encoder below it. Bisecting the finite
+/// actuator interval minimizes the worst-case number of further transactions and introduces no
+/// bitrate or time coefficient. A deadline-censored transaction is covered separately: with no
+/// completed response size it blocks the common budget instead of bisecting.
+#[test]
+fn failed_explorations_narrow_the_remaining_ordinal_interval() {
+    let mut controller = Controller::starting_at(Rung::P240, None, hd_catalog());
+    let observation = sample(20_000, 500, 10_000); // A=1s, exact E=9s.
+
+    let top = match controller.observe_next(observation) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the initial interval has no upper failure"),
+    };
+    assert_eq!(top.rung, Rung::P1080High);
+    assert!(controller.reject(top, RejectCause::Candidate, controller.clock_ms()));
+
+    let middle = match controller.observe_next(observation) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the lower half of the interval remains unclassified"),
+    };
+    assert!(
+        middle.rung > controller.current() && middle.rung < top.rung,
+        "the first endpoint must narrow the interval, got {middle:?} below {top:?}",
+    );
+    assert!(controller.reject(middle, RejectCause::Candidate, controller.clock_ms(),));
+
+    let lower_middle = match controller.observe_next(observation) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the lower quarter remains unclassified"),
+    };
+    assert!(
+        lower_middle.rung > controller.current() && lower_middle.rung < top.rung,
+        "the remaining experiment must stay inside the first endpoint: {lower_middle:?}",
+    );
+    assert_ne!(lower_middle.rung, middle.rung,
+        "the completed current response may strengthen the modeled scheduler, but it may not replay the same failed actuator",
+    );
+}
+
+/// A demand-capped live response does not prove the link's upper bound, but the controller's
+/// conservative delivery/refill model still orders which finite experiment spends the
+/// viewer's reserve first.  The remote-device regression (2026-08-31) played a real 8 Mbps HLS
+/// response over a settled ~20 Mbps service regime, then repeatedly paid for a 22 Mbps encoder
+/// which exhausted its warm-up deadline.  After that real endpoint, `safe_budget` already priced
+/// a 14 Mbps intermediate; the live selector erased the endpoint as soon as the reserve grew and
+/// unconditionally chose the ladder maximum again.
+///
+/// This model is only an experiment scheduler.  The selected candidate must still complete its
+/// own acquisition and pass the unchanged exact `A <= D && B_post >= A` commit law.
+#[test]
+fn a_modeled_intermediate_is_explored_before_the_unknown_top() {
+    let mut controller =
+        Controller::starting_at(Rung::P1080, None, uhd_catalog()).pinned_to(Some(Rung::P1080));
+    controller.observe_active_variant(
+        ObservedHlsVariant::new(declared_bps(Rung::P1080), 1_920, 1_080).unwrap(),
+        20_000,
+    );
+
+    // Keep the actuator fixed while the completed current-response samples establish delivery and
+    // acquisition evidence. The pin is a measurement tool only; clearing it below enters the
+    // ordinary candidate selector without resetting any evidence.
+    for _ in 0..4 {
+        assert_eq!(
+            controller.observe_next(sample(20_000, 300, 5_000)),
+            Decision::Stay,
+        );
+    }
+    controller.clear_pin();
+
+    let top = match controller.observe_next(sample(20_000, 300, 5_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the measured reserve should fund one quality experiment"),
+    };
+    assert_eq!(
+        top.rung,
+        Rung::Uhd,
+        "the first excitation still learns the unknown top"
+    );
+    assert!(controller.reject(top, RejectCause::Censored, controller.clock_ms()));
+
+    // A deeper reserve releases the exact affordability block. It does not erase the failed top
+    // as an ordinal scheduling endpoint; the modeled intermediate is the next useful experiment.
+    let proposal = match controller.observe_next(sample(20_000, 300, 7_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("strictly more reserve should fund an intermediate experiment"),
+    };
+    assert_eq!(proposal.direction, Direction::Up);
+    assert_eq!(
+        proposal.rung,
+        Rung::P1080M14,
+        "the live selector ignored its conservative modeled operating point",
+    );
+
+    let candidate = sample(20_000, 800, 5_000);
+    assert_eq!(
+        controller.candidate_verdict(proposal, candidate, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+    );
+    assert!(controller.commit_candidate(
+        proposal,
+        candidate,
+        ObservedHlsVariant::new(14_000_000, 1_920, 1_080).unwrap(),
+        controller.clock_ms(),
+    ));
+    assert_eq!(controller.current(), Rung::P1080M14);
+}
+
+/// `candidate_ready` is a controller invariant, not merely a promise made by today's ff caller.
+/// A censored prefix can have A<=D and a large post-buffer, but it contains no completed media
+/// quantum and cannot seed a newly committed operating point.
+#[test]
+fn an_abandoned_candidate_can_never_commit() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let proposal = prime_up(&mut controller);
+    let abandoned = sample(20_000, 400, 12_000).abandoned();
+    assert!(!controller.candidate_ready(proposal, abandoned, declared_bps(proposal.rung),));
+}
+
+#[test]
+fn the_atomic_commit_door_refuses_a_non_dominating_upward_response() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let active = ObservedHlsVariant::new(720_000, 854, 480).unwrap();
+    controller.observe_active_variant(active, 10_000);
+    let proposal = prime_up(&mut controller);
+    let completed = sample(20_000, 400, 20_000);
+
+    assert!(!controller.commit_candidate(proposal, completed, active, controller.clock_ms(),));
+    assert_eq!(controller.current(), Rung::P480);
+    assert_eq!(controller.pending(), Some(proposal));
+}
+
+/// A larger reserve can fund a longer experiment; it cannot turn a completed acquisition with
+/// `A > D` into a sustainable operating point. Keep that fact distinct from deadline censoring or
+/// the controller will retry the same known-losing rung as soon as B grows.
+#[test]
+fn a_completed_unsustainable_candidate_is_not_released_by_more_buffer() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let first = match controller.observe_next(sample(20_000, 500, 6_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the exact current bag funds an excitation"),
+    };
+    let losing = sample(20_000, 1_100, 6_000); // A=2.2s > D=2s
+    assert_eq!(
+        controller.candidate_verdict(first, losing, declared_bps(first.rung)),
+        CandidateVerdict::Unsustainable,
+    );
+    assert!(controller.reject(
+        first,
+        RejectCause::CompletedUnsustainable,
+        controller.clock_ms(),
+    ));
+
+    let second = match controller.observe_next(sample(20_000, 500, 30_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a lower unknown actuator remains eligible"),
+    };
+    assert_ne!(
+        second.rung, first.rung,
+        "buffer growth incorrectly released a completed A>D certificate",
+    );
+}
+
+#[test]
+fn an_unsustainable_down_candidate_continues_recovery() {
+    let mut controller =
+        Controller::starting_at(Rung::Uhd, None, uhd_catalog()).pinned_to(Some(Rung::P1080));
+    let proposal = match controller.observe_next(sample(40_000, 250, 4_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the down pin should create a candidate transaction"),
+    };
+    assert_eq!(proposal.direction, Direction::Down);
+
+    let losing = sample(10_000, 1_500, 3_000); // A=3s > D=2s; one object is decodable.
+    assert_eq!(
+        controller.candidate_verdict(proposal, losing, declared_bps(proposal.rung)),
+        CandidateVerdict::Unsustainable,
+    );
+    assert_eq!(
+        controller.candidate_boundary_verdict(proposal, losing, declared_bps(proposal.rung)),
+        CandidateVerdict::Unsustainable,
+    );
+    assert!(controller.reject(
+        proposal,
+        RejectCause::CompletedUnsustainable,
+        controller.clock_ms(),
+    ));
+    assert_eq!(
+        controller.observe_next(sample(10_000, 1_500, 2_000).abandoned()),
+        Decision::Prime(Proposal {
+            rung: Rung::P240,
+            direction: Direction::Down
+        }),
+    );
+}
+
+#[test]
+fn an_unsustainable_floor_candidate_is_the_terminal_best_available_rung() {
+    let mut controller =
+        Controller::starting_at(Rung::P480, None, hd_catalog()).pinned_to(Some(Rung::P240));
+    let proposal = match controller.observe_next(sample(40_000, 250, 4_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the floor pin should create a candidate transaction"),
+    };
+    assert_eq!(
+        proposal,
+        Proposal {
+            rung: Rung::P240,
+            direction: Direction::Down
+        },
+    );
+
+    let losing = sample(10_000, 1_500, 3_000); // A=3s > D=2s; no lower actuator exists.
+    assert_eq!(
+        controller.candidate_verdict(proposal, losing, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+        "rejecting the floor would retain an even more expensive losing rung",
+    );
+    assert_eq!(
+        controller.candidate_boundary_verdict(proposal, losing, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+    );
+}
+
+/// A completed `A > D` result is a fact about one actuator under the link/service regime in
+/// which it was measured, not a permanent property of that actuator.  Buffer growth alone still
+/// says nothing new.  A current-rung delivery distribution whose conservative bound has moved
+/// above the old regime's recent estimate is new physical evidence, however, and must authorize
+/// one fresh excitation of the failed actuator.  Otherwise a temporary router squeeze leaves the
+/// controller at the recovery rung forever even after completed segments demonstrate a different
+/// end-to-end service regime.
+#[test]
+fn a_completed_unsustainable_candidate_rearms_after_stronger_link_evidence() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let first = match controller.observe_next(sample(20_000, 500, 6_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the exact current bag funds an excitation"),
+    };
+    assert!(controller.reject(
+        first,
+        RejectCause::CompletedUnsustainable,
+        controller.clock_ms(),
+    ));
+
+    let held = match controller.observe_next(sample(20_000, 500, 30_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a lower unknown actuator remains eligible"),
+    };
+    assert_ne!(
+        held.rung, first.rung,
+        "more reserve on the same measured link must not erase A>D evidence",
+    );
+    assert!(controller.reject(held, RejectCause::Circumstance, controller.clock_ms(),));
+
+    let retried = match controller.observe_next(sample(100_000, 500, 30_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a confidence-separated service regime must reopen exploration"),
+    };
+    assert_eq!(
+        retried.rung, first.rung,
+        "the old-regime certificate survived direct evidence that the live link changed",
+    );
+}
+
+/// A fresh PMS encoder's first object is a setup-bearing transaction leg, not yet the
+/// repeatable segment service of the rendition it starts. A remote PMS reproduced the distinction
+/// on device (2026-08-31): after the shaped link was released, the 22 Mbps request returned real
+/// 3840x2160 media, but its first 2 s object took 2464 ms because it included encoder/session
+/// startup.  The very next live 12 Mbps object took 1022 ms on the same path.  Classifying the
+/// first object as a steady `A>D` result blocked the proved 4K response behind `RejectBackoff`.
+///
+/// There is no sample-count heuristic here.  Exactly one object has the structural session-boundary
+/// bit.  If that complete object leaves enough reserve to fund its exact acquisition, it buys one
+/// ordinary observation from the already-running encoder; that ordinary observation still has to
+/// satisfy the unchanged `A<=D && B_post>=A` conservation rule.
+#[test]
+fn a_funded_candidate_session_boundary_buys_one_repeatable_observation() {
+    let mut controller = Controller::starting_at(Rung::P720Low, None, uhd_catalog());
+    let proposal = match controller.observe_next(sample(50_000, 500, 8_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the healthy current bag must fund a 4K excitation"),
+    };
+
+    let setup_bearing = sample(45_689, 1_232, 6_042); // A=2464ms, D=2000ms, B>A
+    assert_eq!(
+        controller
+            .candidate_boundary_verdict(proposal, setup_bearing, declared_bps(proposal.rung),),
+        CandidateVerdict::SetupBearing,
+    );
+
+    let repeatable = sample(45_689, 511, 7_042); // A=1022ms, D=2000ms, B>A
+    assert_eq!(
+        controller.candidate_verdict(proposal, repeatable, declared_bps(proposal.rung)),
+        CandidateVerdict::Ready,
+    );
+
+    let directly_repeatable = sample(45_689, 511, 7_042); // A=1022ms, D=2000ms, B>A
+    assert_eq!(
+        controller.candidate_boundary_verdict(
+            proposal,
+            directly_repeatable,
+            declared_bps(proposal.rung),
+        ),
+        CandidateVerdict::Ready,
+        "a boundary that already satisfies the steady law must not buy or require another object",
+    );
+
+    let setup_unfunded = sample(45_689, 1_232, 2_463); // A=2464ms, D=2000ms, B<A
+    assert_eq!(
+        controller.candidate_boundary_verdict(
+            proposal,
+            setup_unfunded,
+            declared_bps(proposal.rung),
+        ),
+        CandidateVerdict::Unfunded,
+        "the structural boundary must not manufacture reserve for its ordinary observation",
+    );
+}
+
+/// A multi-object staged candidate retains the one disposable-reserve endpoint on which the
+/// whole transaction started. If its ordinary phase is censored, the same starting surplus cannot
+/// immediately buy it again; no uncommitted media was credited to manufacture a second grant.
+#[test]
+fn a_repeatable_phase_cannot_shrink_the_failed_transactions_budget_frontier() {
+    let mut controller = Controller::starting_at(Rung::P720Low, None, uhd_catalog());
+    let proposal = match controller.observe_next(sample(20_000, 500, 10_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the initial 8s disposable reserve must fund the candidate"),
+    };
+    assert!(controller.set_executed_exploration_budget(proposal, 8_000));
+    assert!(controller.reject(proposal, RejectCause::Censored, controller.clock_ms()));
+
+    assert_eq!(
+        controller.observe_next(sample(20_000, 500, 9_000)),
+        Decision::Stay,
+        "a 7s disposable reserve replayed the transaction that already owned 8s",
+    );
+    assert_eq!(
+        controller.last_reason(),
+        Some(DecisionReason::Hls(HlsReason::RejectBackoff)),
+    );
+}
+
+/// A raster is a bounding-box refusal, not a blanket ladder failure. A response that does not fit
+/// rung j also cannot fit a smaller box, while a larger box may be exactly the remedy.
+#[test]
+fn a_structural_raster_refusal_keeps_larger_boxes_eligible() {
+    let mut controller =
+        Controller::starting_at(Rung::P480, None, hd_catalog()).pinned_to(Some(Rung::P720));
+    let mid = match controller.observe_next(sample(20_000, 500, 12_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("the pin should request its measured actuator"),
+    };
+    assert_eq!(mid.rung, Rung::P720);
+    assert!(controller.reject(mid, RejectCause::StructuralAtOrBelow, controller.clock_ms(),));
+
+    // Remove only the measurement pin. The controller scope and its structural frontier remain.
+    controller.clear_pin();
+    let next = match controller.observe_next(sample(20_000, 500, 12_000)) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a larger raster box remains a valid experiment"),
+    };
+    assert!(
+        next.rung > mid.rung,
+        "the raster mask pointed in the wrong direction"
+    );
+}
+
+/// Failure memory is ordered evidence, not a single replaceable cooldown.  A 20 Mbps failure at
+/// E=10 s must survive a later 18 Mbps failure at E=5 s; otherwise E=6 s retries the more expensive
+/// experiment on less reserve than it already consumed.
+#[test]
+fn a_lower_candidate_failure_cannot_erase_a_stronger_higher_failure() {
+    let mut controller = Controller::starting_at(Rung::P480, None, hd_catalog());
+    let observe_with_budget = |controller: &mut Controller, budget_ms: i64| {
+        // Each 500pm sample has A=1000ms and D=2000ms, hence stress runway R_s=1000ms.
+        controller.observe_next(sample(20_000, 500, budget_ms + 1_000))
+    };
+
+    let top = match observe_with_budget(&mut controller, 10_000) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("E=10s should fund the first excitation"),
+    };
+    assert_eq!(top.rung, Rung::P1080High);
+    assert!(controller.reject(top, RejectCause::Candidate, controller.clock_ms()));
+
+    let lower = match observe_with_budget(&mut controller, 5_000) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("a blocked top must not mask a cheaper unknown rung"),
+    };
+    assert!(lower.rung < top.rung);
+    assert!(controller.reject(lower, RejectCause::Candidate, controller.clock_ms()));
+
+    let retry = match observe_with_budget(&mut controller, 6_000) {
+        Decision::Prime(proposal) => proposal,
+        Decision::Stay => panic!("E=6s may retry the 5s failure or another cheaper rung"),
+    };
+    assert_ne!(
+        retry.rung, top.rung,
+        "the 10s top failure was erased by the later 5s lower failure",
+    );
 }

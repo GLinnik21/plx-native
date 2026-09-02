@@ -133,6 +133,7 @@ const POSTHOG_HOST: &str = "https://eu.i.posthog.com";
 const TIMEOUTS: crate::net::Timeouts = crate::net::Timeouts {
     connect_s: 6,
     total_s: 12,
+    total_ms: 0,
     low_speed_bps: 0,
     low_speed_s: 0,
 };

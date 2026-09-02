@@ -1,9 +1,9 @@
-# Adaptive playback: amended plan of record
+# Adaptive playback: historical implementation plan
 
-**Status: PLAN OF RECORD. Supersedes the mathematical rework plan reviewed on 2026-08-26.**
-Where this document and that one disagree, this one governs. Sections of the earlier plan that
-the design board ruled against are **VOID**, not caveated — they are listed as void in §0.2 and
-must not be implemented from the older text.
+**Status: IMPLEMENTED/HISTORICAL.** This records the 2026-08-26 design sequence and its baseline;
+[`adaptive-playback.md`](adaptive-playback.md) is the current behavioral and mathematical
+specification. Names such as `probe_spacing_ms` below describe planned increments or the named
+baseline, not the current implementation, which deliberately has no probe-spacing timer.
 
 **Baseline SHA: `5a8ef2ef`** (`playback: risk-aware adaptive controller, model read-out and
 shaped-link test tier`). Every "today" in this document means that commit. **Every `abr.rs:NNNN`
@@ -848,7 +848,15 @@ there — the index stays keyed to the target rung, with the field's doc now say
 describes. **§7.B's two inputs both landed the same day** (see §7.B), so what remains of I9 is
 building §7.B and then §7.A on top of it, and validating both — not measuring anything further. | — | — |
 
-### Landed 2026-08-28, outside the table above: the abort rule and the chain behind it
+### Historical 2026-08-28 abort rule and the chain behind it (partly superseded)
+
+The device failures and censored-sample fixes below remain evidence. The prefix-rate actuator does
+not. A 2026-08-30 remote-PMS run and subsequent Ghidra audit proved that PMS may advertise the
+current size of a still-growing HLS segment and asynchronously wait for the encoder within the
+same response body. The active cursor therefore now aborts only at observed `B = 0`; candidate
+warm-up uses only its absolute transaction deadline while reserve remains. After observed `B = 0`,
+a floor downshift keeps the only available response alive. Incomplete prefixes enter neither
+estimator.
 
 R16/R12's abort rule was built, and arming it turned `pipe_abr_down_outrun` from a quiet failure
 into a loud one — which is what exposed **five** defects, each hidden by the one before it. Full
@@ -859,8 +867,8 @@ record with both device logs: `docs/measurements/j3b-downshift-floor.md`.
 | 1 | The exhausted reserve was **absorbing**: a candidate transfer is bounded by the reserve it is paid from, so a DOWNSHIFT — whose benefit is the picture restarting — was refused precisely when it was needed. 321 correct `prime_down` decisions, none actionable. | floor the deadline at `R_target * D / C` |
 | 2 | That floor was a **central estimate**, so it was exceeded about half the time: `warmup_dl=1314ms` against `decided=1327ms`, 53 consecutive times. Invisible for a FAR target, which is why the first device leg passed. | widen by `CapacityEstimate::uncertainty_pm`, the estimator's own published error |
 | 3 | `observe` hardcoded `completed: true`, so an abandoned prefix entered as a completed measurement. | `SegmentSample::abandoned()` |
-| 4 | Marking it was not enough — the RATE still entered, and a prefix 4x the history trips `is_regime_change`, which RESTARTS the estimate at it. `slow` walked 5 632 -> 101 078 kbps against a real 500. | an abandoned transfer may LOWER the estimate and may never raise it |
-| 5 | Then it stopped learning at all: the abort fires on the first read (`prod=2pm`, 4 ms in), so nothing completed and the estimate froze. The same unaffordable target was chosen 36 times. | an abort waits until its own fetch is measurable (`MEASURABLE_OBSERVATION_US`) |
+| 4 | Marking it was not enough — the RATE still entered, and a prefix 4x the history trips `is_regime_change`, which RESTARTS the estimate at it. `slow` walked 5 632 -> 101 078 kbps against a real 500. | an abandoned transfer enters neither capacity estimate nor the completed-acquisition bag |
+| 5 | Then it stopped learning at all: the abort fires on the first read (`prod=2pm`, 4 ms in), so nothing completed and the estimate froze. The same unaffordable target was chosen 36 times. | the old measurability delay was an intermediate repair; the shipped rule no longer projects any prefix and waits for observed `B = 0` |
 
 **They share one shape**, which is worth carrying into the rest of the plan: every one is a
 quantity used for a purpose its derivation did not support — a reserve bound applied to a direction
@@ -981,7 +989,10 @@ paragraph used to describe the blocker as permanent scenery: `tests/serve_fixtur
 22 000 and every `auto_network` case used a 1080p fixture, so `admits` deleted Uhd — and
 `route::arm_auto_fixture` hardcoded the 1080p source raster *because* the rung 404'd, which made it
 circular. The server answers 22 000 with a real 3840x2160 clip, the raster is declared per case, and
-`pipe_abr_uhd_source_admits_4k` grades `floor_kbps: 22000`. The previous §21's tests E and F are
+`pipe_abr_uhd_source_admits_4k` separately grades the requested actuator with
+`floor_kbps: 22000` and the completed picture with `decoded_width_floor: 3800`. The separation
+matters because PMS may answer a 22 Mbps / 4K request with a smaller rendition. The previous
+§21's tests E and F are
 reachable on the pipeline tier now; what still blocks I9 is M3's indexing decision alone. **Do not build it without B**: in
 the shipped integer scale the argmax at every budget above 20 Mbps is P1080M18, not P1080High
 (76 − 3 > 76 − 4), with unresolved ties at 12 000 and 16 000 — §6 alone is worse than what ships.

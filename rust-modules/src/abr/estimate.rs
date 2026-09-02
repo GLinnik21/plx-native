@@ -13,7 +13,7 @@ pub(crate) struct CapacityEstimate {
 
 impl CapacityEstimate {
     pub(crate) fn update(&mut self, observation: CapacityObservation) {
-        // **AN ABANDONED TRANSFER MAY LOWER THIS ESTIMATE AND MAY NEVER RAISE IT.**
+        // **AN ABANDONED TRANSFER IS NOT A CAPACITY OBSERVATION IN EITHER DIRECTION.**
         //
         // The rule is not a safety margin; it is what the observation MEANS. A fetch is abandoned
         // because its projected remainder did not fit the reserve — the event is evidence that the
@@ -31,12 +31,12 @@ impl CapacityEstimate {
         // orders of magnitude above the truth. Every downshift then chose an unaffordable target,
         // overran, aborted, and fed the estimate again.
         //
-        // A slower-than-history prefix is kept, because that IS the abort's message and it is the
-        // direction the evidence supports. A faster one contributes its uncertainty and nothing
-        // else.
-        if !observation.completed && self.samples > 0 && observation.kbps >= self.slow_kbps {
-            self.uncertainty_pm = MAX_UNCERTAINTY_PM;
-            self.samples = self.samples.saturating_add(1);
+        // A slow prefix is censored by the same deadline as a fast one.  It proves that THIS
+        // acquisition did not finish inside its runway; it does not identify whether the missing
+        // service was path capacity, server production, pacing, startup, or a transient read.  Its
+        // consumer handles that deadline event transactionally.  Turning either sign into a point
+        // estimate is the category error behind the observed 16 -> 2 Mbit/s collapse.
+        if !observation.completed {
             return;
         }
         // **A measurement a factor of four away from the history, in EITHER direction, is not the
@@ -74,10 +74,9 @@ impl CapacityEstimate {
             };
             // The floor falls as agreeing samples accumulate, and never to zero: a link that has
             // behaved for ten segments can still change in the eleventh.
-            let sample_uncertainty = match (observation.completed, self.samples) {
-                (false, _) => MAX_UNCERTAINTY_PM,
-                (true, 1) => 300,
-                (true, _) => 200,
+            let sample_uncertainty = match self.samples {
+                1 => 300,
+                _ => 200,
             };
             self.uncertainty_pm = relative.max(sample_uncertainty);
             if observation.kbps < self.slow_kbps {
@@ -175,6 +174,7 @@ impl CapacityEstimate {
     ///
     /// `samples == 0` is not an estimate and returns `None`; so is a zero rate, which is what an
     /// unwritten snapshot reads as.
+    #[cfg(test)]
     pub(crate) fn from_snapshot(
         slow_kbps: u32,
         fast_kbps: u32,
@@ -240,10 +240,13 @@ impl CapacityObservation {
     /// ~500 KB, which crosses `NORMAL_OBSERVATION_BYTES` on size while arriving in ~200 us, so
     /// `network_kbps` read tens of millions of kbps unclamped. Consecutive samples read
     /// `18074, 18434921, 271729, 23303152, ...` kbps; each extreme reading inflated `fast_kbps`,
-    /// the next honest one was then more than a factor of four below it, and `is_collapse` fired —
-    /// which is the ONE call site of `AcquisitionWindow::reset`. The window was wiped six times
-    /// running and never again passed 4 of the 19 samples an upshift needs. The estimator's own
-    /// guard could not see the thing it was written for.
+    /// the next honest one was then more than a factor of four below it, and `is_collapse` fired.
+    /// In the retired order-statistic controller that was also the only acquisition-window reset:
+    /// six resets kept it below 4 of the 19 samples then required for an upshift. The live finite
+    /// bag no longer has that gate, but it still resets at actuator commits and at this explicit
+    /// delivery change point so pre-collapse surplus cannot subsidize the new regime. The
+    /// impossible rate also poisons bootstrap, Original comparison and diagnostics, so the
+    /// validity floor remains load-bearing.
     ///
     /// **No new quantity is introduced.** `STRONG_OBSERVATION_US` is promoted from one half of the
     /// `Strong` test to the validity floor it always described, and `Strong` keeps its own meaning
@@ -276,7 +279,7 @@ impl CapacityObservation {
     }
 
     pub(crate) fn is_collapse(self, prior: &CapacityEstimate) -> bool {
-        prior.fast_kbps > 0 && self.kbps.saturating_mul(4) < prior.fast_kbps
+        self.completed && prior.fast_kbps > 0 && self.kbps.saturating_mul(4) < prior.fast_kbps
     }
 
     /// **A transfer too short to measure reports latency, not capacity** — and reporting it as
@@ -307,7 +310,7 @@ impl CapacityObservation {
     /// seen (the controller's fast-down path reads it), while this one decides whether the history
     /// is still describing the present at all.
     pub(crate) fn is_regime_change(self, prior: &CapacityEstimate) -> bool {
-        if prior.slow_kbps == 0 || self.kbps == 0 {
+        if !self.completed || prior.slow_kbps == 0 || self.kbps == 0 {
             return false;
         }
         self.kbps.saturating_mul(REGIME_FACTOR) < prior.slow_kbps
@@ -355,6 +358,10 @@ pub(crate) struct SegmentSample {
     pub(super) active_fetch_us: u64,
     total_fetch_us: u64,
     pub(super) media_duration_ms: u32,
+    /// Conservative whole-millisecond reserve obligation for this object. The credited supply
+    /// above floors exact media time; reserve checks round the same duration upward so unit
+    /// projection can neither invent delivered media nor underfund a rollback.
+    media_obligation_ms: u32,
     pub(crate) buffer: BufferSnapshot,
     /// Did the fetch that produced these bytes RUN TO COMPLETION. See [`Self::abandoned`] — this
     /// is the one input `Controller::observe` used to hardcode, and the hardcoding is what let an
@@ -363,6 +370,7 @@ pub(crate) struct SegmentSample {
 }
 
 impl SegmentSample {
+    #[cfg(test)]
     pub(crate) fn new(
         bytes: u64,
         active_fetch_us: u64,
@@ -370,15 +378,35 @@ impl SegmentSample {
         media_duration_ms: u32,
         buffer: BufferSnapshot,
     ) -> Option<Self> {
+        Self::new_with_obligation(
+            bytes,
+            active_fetch_us,
+            total_fetch_us,
+            media_duration_ms,
+            media_duration_ms,
+            buffer,
+        )
+    }
+
+    pub(crate) fn new_with_obligation(
+        bytes: u64,
+        active_fetch_us: u64,
+        total_fetch_us: u64,
+        media_duration_ms: u32,
+        media_obligation_ms: u32,
+        buffer: BufferSnapshot,
+    ) -> Option<Self> {
         (bytes > 0
             && active_fetch_us > 0
             && total_fetch_us >= active_fetch_us
-            && media_duration_ms > 0)
+            && media_duration_ms > 0
+            && media_obligation_ms >= media_duration_ms)
             .then_some(Self {
                 bytes,
                 active_fetch_us,
                 total_fetch_us,
                 media_duration_ms,
+                media_obligation_ms,
                 buffer,
                 completed: true,
             })
@@ -399,12 +427,23 @@ impl SegmentSample {
     /// decided again — 53 times on one rung pair. The decision was never wrong; the number it was
     /// made from was.
     ///
-    /// Declaring it incomplete does not discard it. The bytes still count, and the estimate still
-    /// moves; what changes is that it moves with `MAX_UNCERTAINTY_PM` attached, and
-    /// `conservative_kbps` treats uncertainty as a DISCOUNT — so an abandoned fetch lowers the
-    /// budget it is asked to justify instead of raising it.
+    /// Declaring it incomplete discards the prefix from both capacity estimation and the completed
+    /// acquisition bag. The terminal/deadline event still reaches the controller as a censored
+    /// transaction result, but its bytes cannot identify path capacity in either direction: PMS
+    /// production, response pacing and network service are mixed until the response completes.
     pub(crate) fn abandoned(mut self) -> Self {
         self.completed = false;
+        self
+    }
+
+    /// Rebind the completed acquisition to the buffer state at the instant it is decided.
+    ///
+    /// Looking up the next rollback object may refresh a live playlist and wait.  Bytes, timing
+    /// and media duration still belong to the object which completed before that wait, while `B`
+    /// is a state variable and must be sampled afterwards.  Keeping this as a typed replacement
+    /// prevents callers from reconstructing (and accidentally changing) the acquisition facts.
+    pub(crate) fn with_buffer(mut self, buffer: BufferSnapshot) -> Self {
+        self.buffer = buffer;
         self
     }
 
@@ -418,6 +457,10 @@ impl SegmentSample {
 
     pub(crate) fn media_duration_ms(self) -> u32 {
         self.media_duration_ms
+    }
+
+    pub(crate) fn media_obligation_ms(self) -> u32 {
+        self.media_obligation_ms
     }
 
     /// **What this segment actually WAS, on the wire** — delivered bytes over its content
@@ -441,6 +484,14 @@ impl SegmentSample {
         self.total_fetch_us
     }
 
+    /// The part of the acquisition spent in body reads that returned bytes. The complement —
+    /// `total_fetch_us - active_fetch_us` — is fixed per-segment cost (connection, request,
+    /// headers, the AVIO open, FFmpeg's probe), and `AcquisitionWindow` needs the two apart
+    /// because only one of them grows with a bigger rendition.
+    pub(crate) fn active_fetch_us(self) -> u64 {
+        self.active_fetch_us
+    }
+
     /// Delivered bytes. The transfer bound's `b_i`, and the query for the current rung's own
     /// admission -- so it is the one field of `abr/window.rs`'s arithmetic that is not derivable
     /// from anything else already on the wire.
@@ -461,12 +512,11 @@ impl SegmentSample {
 /// **Bits over microseconds, as kbps** — `bytes * 8 / us` with the two thousands folded, so the
 /// unit conversion exists once.
 ///
-/// It is a free function rather than a method because three callers hold the same two numbers in
-/// three different shapes: `SegmentSample` (a completed segment), `ff.rs`'s `StallGuard` (a body
-/// still arriving) and `OriginalRecovery` (a delta between two progress readings). The last two
-/// open-coded it, and `ff.rs`'s log line carried a comment asking for exactly this — "spelled the
-/// same way `should_abort` spells it, so a log line and the decision behind it cannot drift
-/// apart" — settling for a comment where a call would enforce it.
+/// It is a free function rather than a method because the two valid complete/bounded observations
+/// hold the same numbers in different shapes: `SegmentSample` (a completed segment) and
+/// `OriginalRecovery` (a delta between two progress readings). An incomplete HLS prefix is
+/// deliberately absent: PMS production and network service are not identifiable before that
+/// response completes.
 ///
 /// `us` is clamped to 1: a zero divisor is a caller that has measured nothing, and every caller
 /// guards that case for its own reasons before reaching here.

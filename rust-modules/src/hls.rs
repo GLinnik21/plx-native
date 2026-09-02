@@ -110,8 +110,15 @@ impl SegmentTimeline {
         self.next_start_ns = clock.next_start_ns;
     }
 
+    #[cfg(test)]
     pub(crate) fn end(&self) -> MediaTimeMs {
         MediaTimeMs(self.next_start_ns / 1_000_000)
+    }
+
+    /// Exact committed boundary for a replacement encoder request. Display telemetry is in
+    /// milliseconds, but collapsing a 2.002 s HLS boundary to whole seconds repeats media.
+    pub(crate) fn end_ns(&self) -> i64 {
+        self.next_start_ns
     }
 }
 
@@ -1434,5 +1441,25 @@ mod tests {
         assert_eq!(second.normalize_video(7_020_000_000), MediaTimeMs(2_022));
         timeline.commit(second);
         assert_eq!(timeline.end(), MediaTimeMs(4_002));
+        assert_eq!(timeline.end_ns(), 4_002_000_000);
+    }
+
+    #[test]
+    fn an_exact_fractional_start_boundary_selects_the_next_segment() {
+        let base = source("/session/index.m3u8");
+        let parsed = parse_media(
+            &base,
+            "#EXTM3U\n#EXT-X-TARGETDURATION:3\n#EXT-X-START:TIME-OFFSET=2.002000\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.002000,\n00000.ts\n#EXTINF:2.002000,\n00001.ts\n#EXT-X-ENDLIST\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.preferred_start_index(), Ok(1));
+
+        let mut rounded = parsed;
+        rounded.start_offset_micros = Some(2_000_000);
+        assert_eq!(
+            rounded.preferred_start_index(),
+            Ok(0),
+            "whole-second flooring repeats the segment which already played",
+        );
     }
 }

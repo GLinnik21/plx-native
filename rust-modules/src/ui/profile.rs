@@ -150,7 +150,13 @@ mod imp {
                     a.total_ns += ns;
                     a.max_ns = a.max_ns.max(ns);
                 }
-                None => cpu.acc.push(CpuAcc { name, src, samples: 1, total_ns: ns, max_ns: ns }),
+                None => cpu.acc.push(CpuAcc {
+                    name,
+                    src,
+                    samples: 1,
+                    total_ns: ns,
+                    max_ns: ns,
+                }),
             }
         });
         result
@@ -560,7 +566,9 @@ mod imp {
 }
 
 #[cfg(feature = "devtriggers")]
-pub(crate) use imp::{frame_end, note_blur_config, phase, set_cpu_enabled, set_enabled, set_hwcnt_enabled};
+pub(crate) use imp::{
+    frame_end, note_blur_config, phase, set_cpu_enabled, set_enabled, set_hwcnt_enabled,
+};
 
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn set_enabled(_filter: &str) {}

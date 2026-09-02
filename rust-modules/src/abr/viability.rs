@@ -1,21 +1,20 @@
 use super::*;
 
-/// What one second of this source actually demands, average plus VBR headroom. The whole-file
-/// average is what PMS reports and what every caller has; this is the number a delivery estimate
-/// has to beat.
-pub(crate) fn source_requirement_kbps(source_kbps: u32, policy: &AbrPolicy) -> u32 {
-    (u64::from(source_kbps).saturating_mul(u64::from(policy.vbr_allowance_pm)) / 1_000)
-        .min(u64::from(u32::MAX)) as u32
+/// What one second of this source consumes on average.  PMS does not expose a peak envelope, so
+/// inflating the average by a fixed multiplier would be an unmeasured heuristic, not a bound.
+/// Short-term VBR demand is instead visible where it matters: in the playable-buffer derivative.
+pub(crate) fn source_requirement_kbps(source_kbps: u32, _policy: &AbrPolicy) -> u32 {
+    source_kbps
 }
 
 /// **The single number every measurement reaches the decision through.** Delivery variance, VBR
-/// headroom, buffer level and slope, and PMS cadence all end here, per candidate, so the utility
-/// comparison below has one risk term instead of one term per telemetry field.
+/// headroom and buffer level/slope end here, per candidate, so the utility comparison below has one
+/// risk term instead of one term per telemetry field. PMS cadence is published separately because
+/// the available observation is total acquisition, not an independent encoder clock.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CandidateRisk {
     pub(crate) starvation_seconds: Option<u32>,
     pub(crate) production_ratio_pm: Option<u32>,
-    pub(crate) production_risk: bool,
     pub(crate) buffer_risk: bool,
     pub(crate) score: u32,
 }
@@ -39,25 +38,15 @@ pub(crate) struct CandidateRisk {
 /// below the fallback horizon is consistent by construction, because that region is an EMERGENCY
 /// and is decided by a hard guard rather than by utility.
 ///
-/// The production term is the same shape between the two ratios that already name "comfortably
-/// ahead" and "at or slower than real time".
-///
-/// **The three coefficients are not new either** — 40 / 20 / 30 are the ladder's own worst-case
-/// values, so `score_max` stays 90 and every existing ratio to `visible_switch_cost` is unchanged
-/// at the endpoints. Two endpoint changes ARE deliberate: a comfortable horizon now scores **0**
+/// The two coefficients are not new either — 40 / 30 are the network and reserve ladder's own
+/// worst-case values. Two endpoint changes ARE deliberate: a comfortable horizon now scores **0**
 /// where the ladder charged 1, and an imminent one still scores 40.
 ///
 /// **Rounding is toward MORE risk**, which is the opposite of every other truncation in this
-/// module — those all round toward safety, and here safety is the larger number. `.max(1)` on the
-/// production divisor because `AbrPolicy` derives nothing that guarantees the two ratios differ.
+/// module — those all round toward safety, and here safety is the larger number.
 ///
 /// `buffer_risk` stays a labelled boolean hard guard and is deliberately NOT normalised.
-pub(crate) fn risk_score(
-    horizon_secs: Option<u32>,
-    predicted_ratio_pm: Option<u32>,
-    buffer_risk: bool,
-    policy: &AbrPolicy,
-) -> u32 {
+pub(crate) fn risk_score(horizon_secs: Option<u32>, buffer_risk: bool, policy: &AbrPolicy) -> u32 {
     let safe = i64::from(policy.starvation_safe_secs);
     let fallback = i64::from(policy.starvation_fallback_secs);
     // Per mille of the band, so the composition below is one integer multiply and one rounded
@@ -70,37 +59,26 @@ pub(crate) fn risk_score(
         Some(t) if i64::from(t) <= fallback => 1_000,
         Some(t) => (safe - i64::from(t)) * 1_000 / (safe - fallback).max(1),
     };
-    let r_prod_pm: i64 = match predicted_ratio_pm {
-        None => 0,
-        Some(ratio) => {
-            let over = i64::from(ratio) - i64::from(policy.production_safe_pm);
-            let band = i64::from(policy.production_max_pm)
-                .saturating_sub(i64::from(policy.production_safe_pm))
-                .max(1);
-            (over * 1_000 / band).clamp(0, 1_000)
-        }
-    };
     // `round_half_up` on a non-negative numerator is `(x + half) / whole`.
     let round_half_up = |weight: i64, pm: i64| ((weight * pm) + 500) / 1_000;
-    let mut score = round_half_up(RISK_NET, r_net_pm) + round_half_up(RISK_PROD, r_prod_pm);
+    let mut score = round_half_up(RISK_NET, r_net_pm);
     if buffer_risk {
         score += RISK_BUFFER;
     }
     u32::try_from(score).unwrap_or(u32::MAX)
 }
 
-/// The three weights [`risk_score`] sums. Named so that [`RISK_SCORE_MAX`] can be their sum rather
+/// The two weights [`risk_score`] sums. Named so that [`RISK_SCORE_MAX`] can be their sum rather
 /// than a fourth number that has to be edited alongside them: the const's whole purpose is that the
 /// panel cannot go on dividing by a stale denominator after a coefficient moves, and while the
 /// coefficients were literals it did not achieve that — moving one still meant editing the 90 by
 /// hand, which is the edit it exists to make unnecessary.
 const RISK_NET: i64 = 40;
-const RISK_PROD: i64 = 20;
 const RISK_BUFFER: i64 = 30;
 
 /// The largest value [`risk_score`] can return. It is the DENOMINATOR the read-out renders with,
 /// and it is here rather than as a literal at the render site.
-pub(crate) const RISK_SCORE_MAX: u32 = (RISK_NET + RISK_PROD + RISK_BUFFER) as u32;
+pub(crate) const RISK_SCORE_MAX: u32 = (RISK_NET + RISK_BUFFER) as u32;
 
 pub(crate) fn candidate_risk(
     candidate: HlsCandidate,
@@ -116,21 +94,19 @@ pub(crate) fn candidate_risk(
         candidate.expected_wire_kbps,
         conservative,
     );
-    // The candidate's OWN predicted server cost, not the ratio measured on the rung now running:
-    // "the server is at 0.5 on 1080p" and "the server would be at 1.05 on 4K" are different facts,
-    // and only the second one decides a move to 4K.
+    // Project the active end-to-end acquisition cadence onto the candidate's calibrated work
+    // class. This remains telemetry: the observation spans server wait, pacing and path transfer,
+    // so it cannot identify an independent server constraint.
     let predicted = production.predicted_ratio_pm(candidate, current, policy);
-    let production_risk = predicted.is_some_and(|ratio| {
-        ratio > policy.production_max_pm
-            || (ratio > policy.production_safe_pm && production.uncertainty_pm >= 500)
-    });
+    // This estimate is total end-to-end acquisition, not an independently identified encoder
+    // clock. Keep the projection in telemetry, but do not charge it a second time after network and
+    // exact candidate acquisition already charged the same service episode.
     let buffer_risk =
         buffer.buffered_ms < policy.emergency_buffer_ms || (buffer.starving() && buffer.draining());
-    let score = risk_score(horizon.seconds, predicted, buffer_risk, policy);
+    let score = risk_score(horizon.seconds, buffer_risk, policy);
     CandidateRisk {
         starvation_seconds: horizon.seconds,
         production_ratio_pm: predicted,
-        production_risk,
         buffer_risk,
         score,
     }
@@ -138,8 +114,9 @@ pub(crate) fn candidate_risk(
 
 /// The continuous NETWORK budget the actuator is then chosen FROM — never "one rung up".
 /// [`CapacityEstimate::conservative_kbps`] has already applied the estimator's uncertainty;
-/// nothing else may discount this rate. Production and reserve are independent feasibility
-/// constraints, evaluated in their own units by the candidate filter and the acquisition window.
+/// nothing else may discount this rate. Reserve remains an independent feasibility constraint,
+/// evaluated in its own units by the candidate filter and acquisition window. The available
+/// "production" observation is total acquisition and therefore is not independent of this budget.
 ///
 /// # [DELETED] Production pressure was folded into network capacity
 ///
@@ -147,10 +124,12 @@ pub(crate) fn candidate_risk(
 /// budget = budget * production_safe_pm / production.ratio_pm;
 /// ```
 ///
-/// A server taking longer to produce a segment does not reduce the link's bit rate. Production
-/// remains an independent feasibility test in both candidate selection and the final upshift
-/// guard; representing the same fact here as fewer network kilobits double-counted it and mixed
-/// two actuators into a number named for one.
+/// A server taking longer to produce a segment does not reduce the link's bit rate. Until the
+/// transport exposes an encoder-only clock, total acquisition remains telemetry and an upward
+/// candidate's own `A<=D` observation is its physical feasibility test. A terminal downshift has
+/// the explicit funded-floor exception documented by [`candidate_media_reserve_deadline`].
+/// Representing total acquisition here as fewer network kilobits double-counted it and mixed two
+/// actuators into a number named for one.
 ///
 /// # [DELETED] The third discount subtracted MILLISECONDS from KILOBITS PER SECOND
 ///
@@ -174,19 +153,24 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
     capacity.conservative_kbps()
 }
 
-/// **The wall-clock a candidate transfer may spend, and it is bounded in EVERY direction.**
+/// **The reserve-funded budget for a candidate's initial media transfer.**
 ///
-/// Two independent bounds, minimised — a conjunction of two physical facts, not a margin stacked
-/// on a margin. Each answers a different question and each can bind alone:
+/// At the transaction boundary `reserve` is playable presentation time. While the picture runs and
+/// the current stream is not being acquired, it falls by one millisecond per millisecond of
+/// playhead advance: `B_after = B_start - Δplayhead`, with no coefficient. This helper computes
+/// the duration grant; the transport seam chooses its clock. Upward exploration projects the
+/// playhead balance, while downshift recovery spends non-user-paused elapsed time so an internal
+/// stall remains recovery cost. Native-accepted user Pause spends neither.
 ///
-/// 1. **Can the reserve pay for it.** During a candidate fetch the current stream is not being
-///    acquired (the transaction runs inline on the demux worker) and the candidate's own output is
-///    staged privately until commit, so the playable reserve falls at exactly one millisecond of
-///    reserve per millisecond of wall clock. After `reserve` milliseconds it is gone. This is the
-///    conservation identity `B_after = B_start - t` evaluated at `B_after = 0`; it carries no
-///    coefficient, and it applies to an upshift and a downshift alike because it is a statement
-///    about the buffer rather than about the direction.
-/// 2. **Would the result be admissible anyway** — [`candidate_prime_budget`] below, upshift only.
+/// Direction changes what that boundary means. An upshift buys quality while a picture remains, so
+/// its initial media budget is exactly the reserve already granted to the end-to-end exploration.
+/// Admission is evaluated on the completed object; a setup-bearing object and at most one
+/// repeatable observation remain staged under that same grant until one final verdict. A
+/// downshift restores the picture, so refusing it before the measured whole-acquisition prediction
+/// would create an absorbing stall; its budget is therefore floored at that prediction below. Once
+/// either the current bag cannot replay its observed chronology at `B<R_o` or the main thread has
+/// observed terminal `B=0`, [`candidate_media_reserve_deadline`] separately removes the
+/// rollback-reserve deadline from the ladder-floor response because no cheaper actuator exists.
 ///
 /// # Why the downshift had NO deadline, and what that measured
 ///
@@ -211,16 +195,17 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
 /// enforceable rule, and that is deliberate. A tighter one needs one of two things that do not
 /// exist yet:
 ///
-/// * a projection of the REMAINING transfer from an in-segment rate quantile (the plan's R16),
-///   which is real, open, and needs chunk-level instrumentation this transport does not have; or
 /// * a bound on the reserve the new rung needs on arrival, `A_j` — which is exactly what the
 ///   acquisition window would supply, and exactly what it cannot supply here: a delivery collapse
 ///   resets the window, and a collapse is the event that produced the downshift.
 ///
-/// Absent either, the alternative to the physical bound is a fraction of it — which would be the
+/// An in-response prefix-rate projection is not an available alternative: a growing PMS HLS body
+/// right-censors server production together with network service. Absent an arrival-reserve bound,
+/// the alternative to the physical bound is a fraction of it — which would be the
 /// unexplained multiplier the design rule forbids, doing the work of a model nobody has written.
-/// So the deadline is the reserve, the tightening is a named open item, and the effect on
-/// `E_tx_down` is that it becomes bounded BY CONSTRUCTION rather than by luck.
+/// So the deadline is the reserve while that reserve exists, and the effect on `E_tx_down` is that
+/// it becomes bounded BY CONSTRUCTION rather than by luck. The already-stalled terminal floor is
+/// not `E_tx_down`: it is the only remaining recovery actuator and runs to a transport result.
 ///
 /// # Why a DOWNSHIFT's deadline is floored at the transfer's own requirement
 ///
@@ -268,40 +253,29 @@ pub(crate) fn hls_safe_budget(capacity: &CapacityEstimate) -> u32 {
 /// segments of reserve and the two upshift budgets sum to about 2.6, so condition 1 does not bind
 /// on a healthy upshift. It binds when the reserve fell between the proposal and the fetch — which
 /// is a real transaction, several hundred milliseconds long, on a link that has just deteriorated.
-/// **Does a candidate warm-up carry the abort rule?** Down, and not at the ladder floor.
+/// `fixed_overhead` is the per-segment cost that does not move bytes — connection, request, the
+/// AVIO open, FFmpeg's probe — taken from the acquisition window's worst observation. It is ADDED
+/// to the predicted transfer rather than folded into it, because the two are measured separately
+/// and only their sum is what a warm-up actually has to fit inside.
 ///
-/// The two halves are the two arguments that were already made elsewhere, applied here.
-///
-/// `Direction::Down`, because the abort rule protects the PICTURE and the question is whether the
-/// picture is still being fed while the warm-up runs. On an upshift it is: the current rung is
-/// affordable by construction — that is why a dearer one was proposed — so a warm-up that
-/// overruns costs a probe and nothing else. On a downshift it is not: the current rung being
-/// unaffordable IS the trigger, so the reserve drains for the whole warm-up and the budget the
-/// deadline is built from is the reserve itself. `candidate_warmup_budget` turns on the same
-/// asymmetry for the same reason.
-///
-/// **Not at the floor**, which is R12 exactly as `hls_read_loop` applies it to the active cursor:
-/// aborting buys an escape to a cheaper rung, and where there is no cheaper rung it re-fetches
-/// the same bytes and buys a loop instead of a picture.
-pub(crate) fn candidate_warmup_is_guarded(proposal: Proposal) -> bool {
-    proposal.direction == Direction::Down && !proposal.rung.at_floor()
-}
-
+/// **Without it the downshift floor pays for the body read alone**, and the device showed what
+/// that costs: nineteen consecutive `outcome=warmup_deadline` with `warmup=nonems`, deadlines of
+/// 430-723 ms against segments that measured `total_ms=582` in the STEADY state, on a freshly
+/// created encoder session that is dearer than steady state. See
+/// `a_downshift_warmup_budget_must_cover_the_whole_acquisition_not_only_the_body_read`.
 pub(crate) fn candidate_warmup_budget(
     proposal: Proposal,
-    media_duration: std::time::Duration,
+    _media_duration: std::time::Duration,
     reserve: std::time::Duration,
     predicted_transfer: std::time::Duration,
+    fixed_overhead: std::time::Duration,
 ) -> std::time::Duration {
     // A NEW PMS encoder's first segment carries decoder and encoder cold start and is not the
-    // cadence the replacement will sustain, so it is not held to the acceptance threshold; it gets
-    // a bounded content-duration window instead. `3/2` is the one number here that is a stated
-    // product choice rather than a measurement, and it is confined to the UPSHIFT, where the
-    // consequence of being wrong is a refused climb.
+    // cadence the replacement will sustain. An upshift therefore spends exactly the exploration
+    // reserve its caller proved disposable above the current runway; imposing `3/2·D` here was an
+    // unrelated timer that could both waste a deep reserve and reject a safely funded cold start.
     let cold_start = match proposal.direction {
-        Direction::Up => std::time::Duration::from_micros(
-            (media_duration.as_micros().saturating_mul(3) / 2).min(u128::from(u64::MAX)) as u64,
-        ),
+        Direction::Up => reserve,
         // A downshift has no acceptance test at all — see above — so the reserve is its only
         // acceptance bound. `MAX` is not a deadline; it is the identity element of the `min`
         // below, written that way so there is exactly one place where a candidate transfer's
@@ -310,9 +284,46 @@ pub(crate) fn candidate_warmup_budget(
     };
     // **The floor, and it applies to a DOWNSHIFT only.** See the section above it.
     match proposal.direction {
+        // The upshift budget already covers the whole transaction in presentation-reserve time,
+        // including fixed overhead while the playhead advances; adding that overhead again would
+        // double-count it. User Pause freezes the same budget in the transport layer.
         Direction::Up => cold_start.min(reserve),
-        Direction::Down => cold_start.min(reserve).max(predicted_transfer),
+        Direction::Down => cold_start
+            .min(reserve)
+            .max(predicted_transfer.saturating_add(fixed_overhead)),
     }
+}
+
+/// Apply the reserve-funded media deadline, except when the controller or the media clock has
+/// already removed the robust rollback guarantee that deadline protects.
+///
+/// A candidate deadline protects a still-playing picture from spending more reserve than the
+/// transaction was funded with. There are two exact terminal certificates:
+///
+/// * the main thread has observed `B = 0` and already holds the media clock; or
+/// * the completed current-rung bag has `B < R_o`, where `R_o` is its exact ordered-replay runway.
+///   `ReservePolicy::TerminalFloor` is the controller's typed transaction contract for that state.
+///
+/// The second certificate necessarily arrives first in the measured failure: the controller
+/// decides after a completed segment while `B` is still positive, then session creation and the
+/// playlists spend the remainder. Waiting for the strictly later `B=0` latch makes the floor
+/// response inherit a reserve deadline after its robust rollback premise has already been lost. It
+/// aborts, the old rung completes one more segment, and the same cycle starts again.
+///
+/// If the proposal is a downshift to the ladder floor, no cheaper response exists under either
+/// certificate. The floor response therefore runs to an actual transport result; HTTP, playlist
+/// and body liveness limits still apply, only the rollback-reserve deadline does not. Every other
+/// proposal retains its exact budget. This adds no threshold: `B<R_o` is the conservation
+/// predicate that selected the floor in the first place.
+pub(crate) fn candidate_media_reserve_deadline(
+    proposal: Proposal,
+    reserve_policy: ReservePolicy,
+    rebuffering: bool,
+    budget: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let no_rollback_path = rebuffering || reserve_policy == ReservePolicy::TerminalFloor;
+    (!(no_rollback_path && proposal.direction == Direction::Down && proposal.rung.at_floor()))
+        .then_some(budget)
 }
 
 /// **How long one segment at `target_wire_kbps` physically needs on a link measured at
@@ -359,73 +370,40 @@ pub(crate) fn predicted_transfer(
     std::time::Duration::from_millis(u64::try_from(widened).unwrap_or(u64::MAX))
 }
 
-/// The GRADED segment's budget, upshift only — the segment that decides whether the candidate is
-/// admitted. Bounded by the same reserve as the warm-up, and additionally by the ACCEPTANCE
-/// threshold: a candidate that cannot deliver one complete segment inside the production headroom
-/// [`Controller::candidate_ready`] requires can never be committed, so returning to the active
-/// encoder early costs nothing and saves the reserve.
+/// Historical unconditional second-segment budget retained for the archived plant and tests.
 ///
-/// **The threshold is READ from the policy, and it used to be a literal `4/5` that silently
-/// stopped matching.** The doc here has always claimed parity with `candidate_ready`, and it was
-/// true while that test was a bare `production_ratio_pm <= 800`. When the §4 admission work
-/// replaced the bare 800 with `production_max_pm` (1100 — "this JIT encoder cannot keep up"), this
-/// literal was left behind, and the two stopped meaning the same thing: the transport aborted a
-/// candidate at 0.8·D that the acceptance test would have admitted up to 1.1·D. Candidates in that
-/// band died at the deadline and never reached the rule at all.
-///
-/// That is a stacked margin of exactly the kind the design rule forbids — one threshold enforced
-/// twice at two different values, the stricter one invisible because it fires in the transport. So
-/// there is one number now and both sites read it.
+/// The live path does not call this helper. A boundary object which satisfies
+/// `A <= D && B_post >= A` decides immediately; only a funded setup-bearing object with `A > D`
+/// conditionally buys one ordinary observation from freshly credited reserve. This helper preserves
+/// the former unconditional `min(D, reserve)` calculation solely for compatibility fixtures.
+#[allow(dead_code)]
 pub(crate) fn candidate_prime_budget(
     media_duration: std::time::Duration,
-    policy: &AbrPolicy,
+    _policy: &AbrPolicy,
     reserve: std::time::Duration,
 ) -> std::time::Duration {
-    let micros = media_duration
-        .as_micros()
-        .saturating_mul(u128::from(policy.production_max_pm))
-        / 1_000;
-    std::time::Duration::from_micros(micros.min(u128::from(u64::MAX)) as u64).min(reserve)
+    // Real time is the physical boundary: a JIT encoder whose completed steady segment costs more
+    // wall time than the media it contributes drains reserve indefinitely.  `1000 pm` is a unit
+    // identity, not a product margin, so express it directly as the duration itself.
+    media_duration.min(reserve)
 }
 
-/// **`E_tx`: what one upshift transaction costs in unrefilled playback**, and the derivation the
-/// ledger left as "TBD from `E_tx`" for [`AbrPolicy`]'s two operational guards (N10, N11).
+/// Historical `E_tx` compatibility readout retained for archived transaction-ledger tests.
 ///
-/// It is **the sum of the two enforced deadlines** and nothing else — R19's own form, which is the
-/// only bound on this transaction that is a fact rather than an estimate. The warm-up fetch may
-/// run to [`candidate_warmup_budget`] and the graded fetch to [`candidate_prime_budget`]; the
-/// reserve does not refill during either, because the transaction runs inline on the demux worker
-/// and the candidate's output is staged privately until commit. So the cost is bounded by their
-/// sum, by construction, whatever the link does.
-///
-/// **No new number enters.** `3/2` and `production_max_pm` already exist, already have written
-/// derivations at their own sites, and are already enforced. At the 2 s segment this pipeline
-/// requests that is `3 s + 2.2 s = 5.2 s`. (`docs/adaptive-playback-plan.md` §6.2 records `E_tx`
-/// as "~4 600 (2.3·d)", which was written while `candidate_prime_budget` was a literal `4/5·d`;
-/// the ledger row is stale, not this function — see that function's own account of the `4/5`.)
-///
-/// The `reserve` argument the two budgets take is deliberately absent: this is the cost of a
-/// transaction that runs to its deadlines, and clamping it to the reserve of the moment would make
-/// a guard derived from it *shorter* exactly when the reserve is thin, which is backwards.
+/// Live exploration has no fixed post-transaction time debt: its initial phase spends the exact
+/// playhead-funded surplus, a conditional setup-bearing continuation is funded only after real
+/// media credit, and failure release requires strictly more actually executed disposable reserve.
+/// Returning zero prevents an old caller from reintroducing a second time charge after those
+/// physical clocks have already accounted for the transaction.
+#[allow(dead_code)] // compatibility seam for historical transaction-ledger tests
 pub(crate) fn upshift_transaction_cost(
-    media_duration: std::time::Duration,
-    policy: &AbrPolicy,
+    _media_duration: std::time::Duration,
+    _policy: &AbrPolicy,
 ) -> std::time::Duration {
-    let unbounded = std::time::Duration::MAX;
-    let warmup = candidate_warmup_budget(
-        Proposal {
-            rung: Rung::P240,
-            direction: Direction::Up,
-        },
-        media_duration,
-        unbounded,
-        // The downshift floor by construction cannot reach an `Up` proposal, and this ledger
-        // prices the UP path alone. `ZERO` is the identity element, so it is stated rather than
-        // fabricating a capacity this function has no access to.
-        std::time::Duration::ZERO,
-    );
-    let prime = candidate_prime_budget(media_duration, policy, unbounded);
-    warmup.saturating_add(prime)
+    // Retained as a compatibility/read-out seam. Exploration no longer has a time debt: its
+    // transaction is bounded by spendable reserve and another attempt is released by strictly
+    // more spendable reserve, not by waiting a computed interval.
+    std::time::Duration::ZERO
 }
 
 /// The playable reserve as a wall-clock budget. A reserve at or below zero is `ZERO`, which makes

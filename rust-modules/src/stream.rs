@@ -3,18 +3,19 @@
 //! in place. Header/chunk parsing is bounds-checked (no OOB).
 //!
 //! The host is a **name or an address literal of either family**, resolved through `getaddrinfo`
-//! ([`resolve`]) and dialled down the whole returned chain ([`connect_any`]). It used to be four
-//! decimal octets parsed by hand into a `sockaddr_in`, which made a hostname and every IPv6 server
-//! not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about.
+//! ([`resolve`]) and dialled down the whole returned chain ([`connect_any_result`]). It used to be
+//! four decimal octets parsed by hand into a `sockaddr_in`, which made a hostname and every IPv6
+//! server not "degraded" but impossible — the shape of the gap LG's checklist #43 CASE2 asks about.
 //! What is still missing here is TLS: this arm stays cleartext. [`crate::http`] sends an `https://`
 //! control-plane origin through [`crate::net`], while MEDIA bytes use [`crate::curlio`], a
 //! libcurl-multi pull source under the same `ff.rs` AVIO that this module serves for `http`.
 //!
-//! Failures the return value cannot carry are reported to the event log instead: a non-2xx
-//! response (in [`http_open`], where the code is known and the socket is about to close) and a
-//! body that came up short of its `Content-Length` ([`short_body_line`]). Neither changes what any
-//! function returns — a truncated body is still handed to its caller — and no line built here
-//! carries a query string, which is [`log_endpoint`]'s rule and the reason it exists.
+//! Failures the legacy `0`/`-1` return cannot carry are reported to the event log instead: a
+//! non-2xx response (where the code is known and the socket is about to close) and a body that came
+//! up short of its `Content-Length` ([`short_body_line`]). [`http_open_until_result`] additionally
+//! preserves the setup failure's typed cause for deadline-aware callers. A truncated body is still
+//! handed to its caller, and no line built here carries a query string, which is [`log_endpoint`]'s
+//! rule and the reason it exists.
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -57,6 +58,10 @@ pub struct HttpStream {
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+fn retry_interrupted_recv(result: isize, error: c_int) -> bool {
+    result != HTTP_READ_DEADLINE as isize && result < 0 && error == libc::EINTR
 }
 
 /// Case-insensitive search for an ASCII `needle` in a byte haystack — the header-block lookup
@@ -220,7 +225,6 @@ pub(crate) fn hs_status(hs: *const HttpStream) -> c_int {
     unsafe { (*hs).status }
 }
 
-/// one raw body byte (buffered first, then socket) — for chunk framing
 /// Internal read result reserved for a caller-owned wall-clock deadline. Ordinary callers never
 /// see it: [`http_read`] has no deadline and retains its historical `-1` error result.
 pub(crate) const HTTP_READ_DEADLINE: c_int = -2;
@@ -267,6 +271,47 @@ unsafe fn recv_until(fd: c_int, dst: *mut c_void, n: usize, deadline: Option<Ins
     }
 }
 
+/// The send-side twin of [`recv_until`]. Requests are normally one tiny write, but an absolute
+/// candidate-open budget is a whole-chain bound: a peer that stops reading cannot renew it through
+/// the relative `SO_SNDTIMEO` on every partial write.
+unsafe fn send_until(fd: c_int, src: *const c_void, n: usize, deadline: Option<Instant>) -> isize {
+    let Some(deadline) = deadline else {
+        return libc::send(fd, src, n, 0);
+    };
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return HTTP_READ_DEADLINE as isize;
+        }
+        let left_us = deadline.saturating_duration_since(now).as_micros();
+        let timeout_ms = ((left_us.saturating_add(999) / 1_000).min(c_int::MAX as u128)) as c_int;
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let ready = libc::poll(&mut pfd, 1, timeout_ms.max(1));
+        if ready == 0 {
+            return HTTP_READ_DEADLINE as isize;
+        }
+        if ready < 0 {
+            if errno() == libc::EINTR {
+                continue;
+            }
+            return -1;
+        }
+        let sent = libc::send(fd, src, n, libc::MSG_DONTWAIT);
+        if sent < 0 {
+            let e = errno();
+            if e == libc::EINTR || e == libc::EAGAIN || e == libc::EWOULDBLOCK {
+                continue;
+            }
+        }
+        return sent;
+    }
+}
+
+/// One raw body byte (buffered first, then socket) — for chunk framing.
 unsafe fn hs_getb(hs: &mut HttpStream, deadline: Option<Instant>) -> Result<Option<u8>, c_int> {
     if (hs.bpos as usize) < (hs.blen as usize) {
         let b = hs.buf[hs.bpos as usize];
@@ -426,11 +471,46 @@ fn header_is_chunked(hdr: &[u8]) -> bool {
 /// place. Doing better than serial-with-a-shared-deadline means the concurrent attempts of Happy
 /// Eyeballs (RFC 8305), which a blocking module with no thread of its own cannot run.
 const CONNECT_TIMEOUT_MS: c_int = 8000;
+const MEDIA_RECV_TIMEOUT_MS: c_int = 15_000;
+const MEDIA_SEND_TIMEOUT_MS: c_int = 10_000;
+
+/// The ordinary plaintext media inactivity contract. Candidate reserve projections may wake a
+/// read earlier, but retrying an obsolete projection must never renew this physical stall bound.
+pub(crate) fn media_stall_budget() -> std::time::Duration {
+    std::time::Duration::from_millis(MEDIA_RECV_TIMEOUT_MS as u64)
+}
+
+/// Why an HTTP request failed before its response body became readable.
+///
+/// The legacy open functions return only `0`/`-1`, but a caller composing its own absolute
+/// deadline must not infer the cause later from `Instant::now()`: a real HTTP response remains an
+/// HTTP response even if that caller is descheduled across the boundary after this function
+/// returns.  This type preserves every cause the raw transport can prove at the point it occurs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HttpOpenError {
+    /// The supplied absolute deadline stopped the connect/send/header operation. The caller which
+    /// selected that instant still owns its meaning (transaction reserve versus liveness).
+    Deadline,
+    /// A complete, syntactically usable response head carried a non-success status.
+    Status(c_int),
+    /// [`http_shutdown`] interrupted this request while it was being opened.
+    Aborted,
+    /// Invalid input, resolution/connect failure, malformed/truncated headers, or another I/O
+    /// failure for which this transport has no more specific fact.
+    Transport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectAttempt {
+    Connected,
+    TimedOut,
+    Failed,
+}
 
 /// `connect(2)` bounded by `timeout_ms`. Flips the socket to non-blocking for the handshake,
 /// waits on `poll(POLLOUT)`, then reads `SO_ERROR` to learn the real outcome (a writable socket
 /// does NOT mean success), and restores blocking mode so every read path below is unchanged.
-/// Returns 0 on a connected socket, -1 otherwise. The caller owns closing `fd`.
+/// The caller owns closing `fd`.
 ///
 /// The address arrives as a `(*const sockaddr, socklen_t)` pair rather than a `&sockaddr_in`
 /// because it now comes out of `getaddrinfo` and may be a `sockaddr_in6`: the pair IS the
@@ -438,28 +518,28 @@ const CONNECT_TIMEOUT_MS: c_int = 8000;
 /// having to know or test the family. A non-positive `timeout_ms` (the chain budget already spent)
 /// is clamped to 0 rather than passed on — `poll` reads a NEGATIVE timeout as "block forever",
 /// which would turn an exhausted budget into the unbounded wait this whole function removes.
-unsafe fn connect_timeout(
+unsafe fn connect_timeout_cause(
     fd: c_int,
     sa: *const libc::sockaddr,
     salen: libc::socklen_t,
     timeout_ms: c_int,
-) -> c_int {
+) -> ConnectAttempt {
     let flags = libc::fcntl(fd, libc::F_GETFL, 0);
     if flags < 0 {
-        return -1;
+        return ConnectAttempt::Failed;
     }
-    let restore = |ok: c_int| -> c_int {
+    let restore = |outcome: ConnectAttempt| -> ConnectAttempt {
         libc::fcntl(fd, libc::F_SETFL, flags);
-        ok
+        outcome
     };
     if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-        return -1;
+        return ConnectAttempt::Failed;
     }
     if libc::connect(fd, sa, salen) == 0 {
-        return restore(0); // connected immediately (loopback / same host)
+        return restore(ConnectAttempt::Connected); // connected immediately (loopback / same host)
     }
     if errno() != libc::EINPROGRESS {
-        return restore(-1);
+        return restore(ConnectAttempt::Failed);
     }
     let mut pfd = libc::pollfd {
         fd,
@@ -475,10 +555,10 @@ unsafe fn connect_timeout(
             break;
         }
         if r == 0 {
-            return restore(-1); // timed out — the host is not answering
+            return restore(ConnectAttempt::TimedOut); // the host is not answering
         }
         if errno() != libc::EINTR {
-            return restore(-1);
+            return restore(ConnectAttempt::Failed);
         }
         left = 0; // a signal ate the wait; poll once more without blocking again
     }
@@ -494,14 +574,29 @@ unsafe fn connect_timeout(
     ) < 0
         || err != 0
     {
-        return restore(-1);
+        return restore(ConnectAttempt::Failed);
     }
-    restore(0)
+    restore(ConnectAttempt::Connected)
+}
+
+/// Legacy result retained for the focused connect tests.
+#[cfg(test)]
+unsafe fn connect_timeout(
+    fd: c_int,
+    sa: *const libc::sockaddr,
+    salen: libc::socklen_t,
+    timeout_ms: c_int,
+) -> c_int {
+    if connect_timeout_cause(fd, sa, salen, timeout_ms) == ConnectAttempt::Connected {
+        0
+    } else {
+        -1
+    }
 }
 
 /// An address list from `getaddrinfo`, freed on drop — including on the early return every failed
-/// `connect` in [`connect_any`] can take. Only ever constructed around a NON-NULL head, because
-/// `freeaddrinfo(NULL)` is not a documented no-op the way `free(NULL)` is.
+/// `connect` in [`connect_any_result`] can take. Only ever constructed around a NON-NULL head,
+/// because `freeaddrinfo(NULL)` is not a documented no-op the way `free(NULL)` is.
 struct AddrList {
     head: *mut libc::addrinfo,
 }
@@ -627,8 +722,16 @@ unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
     Some(AddrList { head: res })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectFailure {
+    TimedOut,
+    Aborted,
+    Transport,
+}
+
 /// Dial down the address chain until one answers, within `budget_ms` for the WHOLE walk. Returns
-/// the connected fd — also left PUBLISHED in `hs` — or -1 with `hs` closed.
+/// the connected fd — also left PUBLISHED in `hs` — or the cause with `hs` closed. The legacy
+/// test adapter below deliberately folds every failure back to `-1` for the focused walk tests.
 ///
 /// Trying only the first address would be today's single-address limit wearing a resolver. A name
 /// with an A and an AAAA, or one behind two front ends, is routinely reachable on the second when
@@ -647,9 +750,14 @@ unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
 /// And the walk stops on [`HttpStream::interrupted`], which is the field's entire reason to exist:
 /// answering a teardown by dialling the next address would undo the interruptibility the early
 /// publish is there to give.
-unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c_int) -> c_int {
+unsafe fn connect_any_result(
+    hs: &HttpStream,
+    head: *const libc::addrinfo,
+    budget_ms: c_int,
+) -> Result<c_int, ConnectFailure> {
     let started = std::time::Instant::now();
     let mut ai = head;
+    let mut timed_out = false;
     while !ai.is_null() {
         let a = &*ai;
         ai = a.ai_next;
@@ -662,15 +770,53 @@ unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c
                        // [0, budget] whatever the clock did — a `u128` cast of a negative budget would otherwise
                        // come back enormous and hand the LAST attempt an unbounded-looking wait.
         let spent = started.elapsed().as_millis().min(budget_ms.max(0) as u128) as c_int;
-        if connect_timeout(fd, a.ai_addr, a.ai_addrlen, budget_ms.max(0) - spent) == 0 {
-            return fd;
+        match connect_timeout_cause(fd, a.ai_addr, a.ai_addrlen, budget_ms.max(0) - spent) {
+            ConnectAttempt::Connected => return Ok(fd),
+            ConnectAttempt::TimedOut => timed_out = true,
+            ConnectAttempt::Failed => {}
         }
         close_owned(hs); // published, so it must be RETIRED
         if hs.interrupted() {
-            break; // a teardown, not a dead address: do not answer it by dialling the next one
+            return Err(ConnectFailure::Aborted); // do not answer teardown with the next address
         }
     }
-    -1
+    if hs.interrupted() {
+        Err(ConnectFailure::Aborted)
+    } else if timed_out {
+        Err(ConnectFailure::TimedOut)
+    } else {
+        Err(ConnectFailure::Transport)
+    }
+}
+
+#[cfg(test)]
+unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c_int) -> c_int {
+    connect_any_result(hs, head, budget_ms).unwrap_or(-1)
+}
+
+unsafe fn set_socket_timeouts(fd: c_int, recv_timeout_ms: c_int, send_timeout_ms: c_int) {
+    let recv = libc::timeval {
+        tv_sec: (recv_timeout_ms.max(1) / 1000) as libc::time_t,
+        tv_usec: ((recv_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
+    };
+    libc::setsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        libc::SO_RCVTIMEO,
+        &recv as *const _ as *const c_void,
+        std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+    );
+    let send = libc::timeval {
+        tv_sec: (send_timeout_ms.max(1) / 1000) as libc::time_t,
+        tv_usec: ((send_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
+    };
+    libc::setsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        libc::SO_SNDTIMEO,
+        &send as *const _ as *const c_void,
+        std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+    );
 }
 
 pub(crate) fn http_open(
@@ -681,7 +827,7 @@ pub(crate) fn http_open(
     extra: *const c_char,
     method: &str,
 ) -> c_int {
-    http_open_with_timeouts(
+    legacy_open_result(http_open_with_timeouts(
         hs,
         host,
         port,
@@ -689,9 +835,11 @@ pub(crate) fn http_open(
         extra,
         method,
         CONNECT_TIMEOUT_MS,
-        15_000,
-        10_000,
-    )
+        MEDIA_RECV_TIMEOUT_MS,
+        MEDIA_SEND_TIMEOUT_MS,
+        None,
+        false,
+    ))
 }
 
 /// [`http_open`] with the whole-chain connect and stalled-I/O ceiling selected by the caller.
@@ -706,9 +854,47 @@ pub(crate) fn http_open_probe(
     method: &str,
     timeout_ms: c_int,
 ) -> c_int {
+    legacy_open_result(http_open_with_timeouts(
+        hs, host, port, path, extra, method, timeout_ms, timeout_ms, timeout_ms, None, false,
+    ))
+}
+
+/// Open a candidate media request inside one absolute setup snapshot. Unlike
+/// [`http_open_probe`], this bound applies to the whole connect/send/header chain and is removed
+/// after successful headers; body reads receive their own current projection from the caller.
+///
+/// The result records the cause at the transport seam, before a higher layer can cross `deadline`
+/// and accidentally reclassify a known HTTP status as timeout.
+pub(crate) fn http_open_until_result(
+    hs: *mut HttpStream,
+    host: *const c_char,
+    port: c_int,
+    path: *const c_char,
+    extra: *const c_char,
+    method: &str,
+    deadline: Instant,
+) -> Result<(), HttpOpenError> {
     http_open_with_timeouts(
-        hs, host, port, path, extra, method, timeout_ms, timeout_ms, timeout_ms,
+        hs,
+        host,
+        port,
+        path,
+        extra,
+        method,
+        CONNECT_TIMEOUT_MS,
+        MEDIA_RECV_TIMEOUT_MS,
+        MEDIA_SEND_TIMEOUT_MS,
+        Some(deadline),
+        true,
     )
+}
+
+fn legacy_open_result(result: Result<(), HttpOpenError>) -> c_int {
+    if result.is_ok() {
+        0
+    } else {
+        -1
+    }
 }
 
 fn http_open_with_timeouts(
@@ -721,14 +907,20 @@ fn http_open_with_timeouts(
     connect_timeout_ms: c_int,
     recv_timeout_ms: c_int,
     send_timeout_ms: c_int,
-) -> c_int {
+    open_deadline: Option<Instant>,
+    restore_media_timeouts: bool,
+) -> Result<(), HttpOpenError> {
     if hs.is_null() || host.is_null() || path.is_null() {
-        return -1;
+        return Err(HttpOpenError::Transport);
     }
     unsafe {
         let hs = &mut *hs;
         hs.reset_fields();
         hs.set_fd(-1);
+
+        if open_deadline.is_some_and(|at| Instant::now() >= at) {
+            return Err(HttpOpenError::Deadline);
+        }
 
         let host_s = CStr::from_ptr(host).to_string_lossy();
         let path_s = CStr::from_ptr(path).to_string_lossy();
@@ -748,7 +940,11 @@ fn http_open_with_timeouts(
                     "stream: {method} {} DNS FAILED host={host_s}",
                     log_endpoint(&path_s)
                 ));
-                return -1;
+                return Err(if hs.interrupted() {
+                    HttpOpenError::Aborted
+                } else {
+                    HttpOpenError::Transport
+                });
             }
         };
         // PUBLISHED BEFORE CONNECT, on every attempt (`connect_any` does it) — which makes the
@@ -781,15 +977,40 @@ fn http_open_with_timeouts(
         // the publish, and — on Darwin, per `tools/sockprobe.c` — an aborted handshake can even
         // report SUCCESS, which no `connect` return value would catch.
         if hs.interrupted() {
-            return -1; // torn down while resolving; no descriptor was ever created
+            return Err(HttpOpenError::Aborted); // torn down while resolving; no descriptor existed
         }
-        let fd = connect_any(hs, list.head, connect_timeout_ms.max(1));
-        if fd < 0 {
-            return -1; // every attempt retired its own fd; `hs` is closed
-        }
+        let base_connect_ms = connect_timeout_ms.max(1);
+        let (connect_budget_ms, caller_deadline_is_connect_ceiling) = match open_deadline {
+            Some(at) => {
+                let now = Instant::now();
+                if now >= at {
+                    return Err(HttpOpenError::Deadline);
+                }
+                let left = at.saturating_duration_since(now);
+                let left_us = left.as_micros();
+                let left_ms = ((left_us.saturating_add(999) / 1_000)
+                    .max(1)
+                    .min(c_int::MAX as u128)) as c_int;
+                (
+                    base_connect_ms.min(left_ms),
+                    left <= std::time::Duration::from_millis(base_connect_ms as u64),
+                )
+            }
+            None => (base_connect_ms, false),
+        };
+        let fd = match connect_any_result(hs, list.head, connect_budget_ms) {
+            Ok(fd) => fd,
+            Err(ConnectFailure::Aborted) => return Err(HttpOpenError::Aborted),
+            Err(ConnectFailure::TimedOut) if caller_deadline_is_connect_ceiling => {
+                return Err(HttpOpenError::Deadline);
+            }
+            Err(ConnectFailure::TimedOut | ConnectFailure::Transport) => {
+                return Err(HttpOpenError::Transport);
+            }
+        };
         if hs.interrupted() {
             close_owned(hs); // connected through a teardown: retire it rather than send on it
-            return -1;
+            return Err(HttpOpenError::Aborted);
         }
         let one: c_int = 1;
         libc::setsockopt(
@@ -799,33 +1020,10 @@ fn http_open_with_timeouts(
             &one as *const _ as *const c_void,
             4,
         );
-        // Candidate probes carry their tier budget through this same seam. This is an inactivity
-        // ceiling rather than a perfect wall clock (the coordinator owns that), but it prevents a
-        // late worker from sitting in a stalled read long after its result was expired.
-        let tv = libc::timeval {
-            tv_sec: (recv_timeout_ms.max(1) / 1000) as libc::time_t,
-            tv_usec: ((recv_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
-        };
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_RCVTIMEO,
-            &tv as *const _ as *const c_void,
-            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-        );
-        // …and the send side, which had no bound at all: a peer that stops reading blocks the
-        // request write for as long as its window stays shut.
-        let stv = libc::timeval {
-            tv_sec: (send_timeout_ms.max(1) / 1000) as libc::time_t,
-            tv_usec: ((send_timeout_ms.max(1) % 1000) * 1000) as libc::suseconds_t,
-        };
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_SNDTIMEO,
-            &stv as *const _ as *const c_void,
-            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-        );
+        // Candidate probes carry their tier budget through this same seam. These socket options
+        // remain the ordinary inactivity contract; `open_deadline` below is the separate absolute
+        // conservation snapshot and is removed at the header/body boundary.
+        set_socket_timeouts(fd, recv_timeout_ms, send_timeout_ms);
 
         // build + send the request (default Accept only if caller set none)
         let extra_s: String = if extra.is_null() {
@@ -846,15 +1044,22 @@ fn http_open_with_timeouts(
         let bytes = req.as_bytes();
         let mut off = 0usize;
         while off < bytes.len() {
-            let w = libc::send(
+            let w = send_until(
                 fd,
                 bytes[off..].as_ptr() as *const c_void,
                 bytes.len() - off,
-                0,
+                open_deadline,
             );
             if w <= 0 {
+                let error = if hs.interrupted() {
+                    HttpOpenError::Aborted
+                } else if w == HTTP_READ_DEADLINE as isize {
+                    HttpOpenError::Deadline
+                } else {
+                    HttpOpenError::Transport
+                };
                 close_owned(hs);
-                return -1;
+                return Err(error);
             }
             off += w as usize;
         }
@@ -864,17 +1069,24 @@ fn http_open_with_timeouts(
         let mut hdr_end: Option<usize> = None;
         hs.blen = 0;
         while hdr_end.is_none() && (hs.blen as usize) < cap - 1 {
-            let r = libc::recv(
+            let r = recv_until(
                 fd,
                 hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
                 cap - hs.blen as usize,
-                0,
+                open_deadline,
             );
             // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
             // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
             if r <= 0 {
+                let error = if hs.interrupted() {
+                    HttpOpenError::Aborted
+                } else if r == HTTP_READ_DEADLINE as isize {
+                    HttpOpenError::Deadline
+                } else {
+                    HttpOpenError::Transport
+                };
                 close_owned(hs);
-                return -1;
+                return Err(error);
             }
             hs.blen += r as c_int;
             let blen = hs.blen as usize;
@@ -895,7 +1107,7 @@ fn http_open_with_timeouts(
             Some(e) => e,
             None => {
                 close_owned(hs);
-                return -1;
+                return Err(HttpOpenError::Transport);
             }
         };
 
@@ -945,12 +1157,10 @@ fn http_open_with_timeouts(
 
         hs.bpos = hdr_end as c_int; // first body byte
         if hs.status < 200 || hs.status >= 300 {
-            // The code is known exactly here and the return value cannot carry it: the open
-            // reports a flat `-1` whatever went wrong. It does survive in the struct —
-            // `close_owned` touches only the fd — and both current consumers read it: the
-            // plaintext control arm in `crate::http` returns the status with the body, while the
-            // AVIO open uses it to diagnose a refused media request. A seek reopen still has only
-            // the flat failure, because it has no HTTP response surface to return through.
+            // The code is known exactly here. The typed deadline API returns it directly; legacy
+            // callers still receive `-1`, and it also survives in the struct because `close_owned`
+            // touches only the fd. A seek reopen remains a legacy caller and therefore still has
+            // only the flat failure.
             //
             // `status=0` is not a code any server sent: it is what the parse above leaves when the
             // status line was not `HTTP/1.x` followed by exactly three digits.
@@ -959,10 +1169,21 @@ fn http_open_with_timeouts(
                 log_endpoint(&path_s),
                 hs.status
             ));
+            let error = if hs.status == 0 {
+                HttpOpenError::Transport
+            } else {
+                HttpOpenError::Status(hs.status)
+            };
             close_owned(hs);
-            return -1;
+            return Err(error);
         }
-        0
+        if restore_media_timeouts {
+            // The absolute open snapshot and its short socket options belong only to
+            // DNS/connect/send/headers. A paused candidate body is still a live media transfer;
+            // restore the ordinary inactivity contract before returning it to AVIO.
+            set_socket_timeouts(fd, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS);
+        }
+        Ok(())
     }
 }
 
@@ -970,9 +1191,9 @@ pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_i
     http_read_until(hs, dst, n, None)
 }
 
-/// [`http_read`] with an optional absolute deadline. This is intentionally not expressed as a
-/// socket option: `SO_RCVTIMEO` is an inactivity bound and restarts after every successful recv,
-/// while an ABR prime owns one finite wall-clock budget for the complete segment.
+/// [`http_read`] with an optional absolute wake. This is intentionally not expressed as a shorter
+/// socket option: `SO_RCVTIMEO` remains an inactivity bound, while ABR composes a current
+/// projection of its playhead-funded reserve and classifies whichever clock actually fired.
 pub(crate) fn http_read_until(
     hs: *mut HttpStream,
     dst: *mut c_uchar,
@@ -984,9 +1205,6 @@ pub(crate) fn http_read_until(
     }
     unsafe {
         let hs = &mut *hs;
-        if deadline.is_some_and(|at| Instant::now() >= at) {
-            return HTTP_READ_DEADLINE;
-        }
         let n = n as usize;
         if hs.chunked != 0 {
             if hs.chunk_left <= 0 {
@@ -1015,7 +1233,7 @@ pub(crate) fn http_read_until(
                 } else if hs.fd() >= 0 {
                     let r = recv_until(hs.fd(), dst.add(got) as *mut c_void, want - got, deadline);
                     if r < 0 {
-                        if errno() == libc::EINTR {
+                        if retry_interrupted_recv(r, errno()) {
                             continue;
                         }
                         if got == 0 {
@@ -1060,10 +1278,17 @@ pub(crate) fn http_read_until(
         if hs.fd() < 0 {
             return 0;
         }
+        // Already-buffered response bytes and an already-proven EOF/completion are facts from the
+        // transport before this call began. Only a read which would perform fresh I/O can be
+        // stopped by the caller's clock; checking it earlier retrospectively relabelled a complete
+        // response when its consumer was descheduled across the boundary.
+        if deadline.is_some_and(|at| Instant::now() >= at) {
+            return HTTP_READ_DEADLINE;
+        }
         loop {
             let r = recv_until(hs.fd(), dst as *mut c_void, n, deadline);
             if r < 0 {
-                if errno() == libc::EINTR {
+                if retry_interrupted_recv(r, errno()) {
                     continue;
                 }
                 return r as c_int;
@@ -1178,6 +1403,15 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn a_deadline_sentinel_is_never_retried_as_stale_eintr() {
+        assert!(!retry_interrupted_recv(
+            HTTP_READ_DEADLINE as isize,
+            libc::EINTR,
+        ));
+        assert!(retry_interrupted_recv(-1, libc::EINTR));
+    }
+
+    #[test]
     fn an_absolute_read_deadline_beats_the_socket_inactivity_timeout() {
         use std::os::fd::AsRawFd;
         let (reader, _silent_peer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
@@ -1198,6 +1432,46 @@ mod tests {
             took >= std::time::Duration::from_millis(50)
                 && took < std::time::Duration::from_secs(2),
             "absolute deadline took {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_typed_open_reports_the_header_deadline_that_stopped_it() {
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = srv.local_addr().unwrap().port();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (_silent_peer, _) = srv.accept().expect("accept");
+            let _ = release_rx.recv();
+        });
+
+        let host = std::ffi::CString::new("127.0.0.1").unwrap();
+        let path = std::ffi::CString::new("/stall").unwrap();
+        let mut hs = http_stream_boxed();
+        let started = Instant::now();
+        let result = http_open_until_result(
+            &mut *hs,
+            host.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
+            started + std::time::Duration::from_millis(80),
+        );
+        let took = started.elapsed();
+
+        let _ = release_tx.send(());
+        server.join().unwrap();
+        assert_eq!(result, Err(HttpOpenError::Deadline));
+        assert_eq!(
+            hs.fd(),
+            -1,
+            "a deadline failure must retire the published fd"
+        );
+        assert!(
+            took >= std::time::Duration::from_millis(50)
+                && took < std::time::Duration::from_secs(2),
+            "typed open deadline took {took:?}"
         );
     }
 
@@ -1432,13 +1706,14 @@ mod tests {
         let t0 = Instant::now();
         let (rv, waited) = std::thread::scope(|sc| {
             let opener = sc.spawn(move || {
-                let rv = http_open(
+                let rv = http_open_until_result(
                     addr as *mut HttpStream,
                     ip.as_ptr(),
                     port as c_int,
                     path.as_ptr(),
                     std::ptr::null(),
                     "GET",
+                    t0 + std::time::Duration::from_secs(10),
                 );
                 (rv, t0.elapsed())
             });
@@ -1448,7 +1723,11 @@ mod tests {
             opener.join().unwrap()
         });
 
-        assert_eq!(rv, -1, "an interrupted open must report failure");
+        assert_eq!(
+            rv,
+            Err(HttpOpenError::Aborted),
+            "an interrupted open must preserve the abort cause"
+        );
         assert!(
             waited.as_secs() < 3,
             "took {waited:?} — the open sat out SO_RCVTIMEO, so it was NOT interrupted"
@@ -2281,6 +2560,56 @@ mod tests {
         assert_eq!(r.status, 401);
         assert!(!r.ok(), "…and it is still not a success");
         h.join().unwrap();
+    }
+
+    /// Regression: the caller used to receive only `-1` and infer `deadline` afterwards. A valid
+    /// PMS 500 parsed just before that caller was descheduled across the boundary therefore wore a
+    /// timeout and triggered a reserve retry. The transport has the exact status while parsing the
+    /// head; crossing the clock afterwards cannot erase that fact.
+    #[test]
+    fn a_500_response_remains_a_status_after_its_deadline_passes() {
+        let (port, h) = one_shot_server(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        );
+        let host = std::ffi::CString::new("127.0.0.1").unwrap();
+        let path = std::ffi::CString::new("/boundary").unwrap();
+        let mut hs = http_stream_boxed();
+        let deadline = Instant::now() + std::time::Duration::from_millis(250);
+
+        let result = http_open_until_result(
+            &mut *hs,
+            host.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
+            deadline,
+        );
+        h.join().unwrap();
+        let until_boundary = deadline.saturating_duration_since(Instant::now());
+        if !until_boundary.is_zero() {
+            std::thread::sleep(until_boundary + std::time::Duration::from_millis(10));
+        }
+
+        assert!(
+            Instant::now() >= deadline,
+            "the fixture did not cross its deadline"
+        );
+        assert_eq!(
+            result,
+            Err(HttpOpenError::Status(500)),
+            "a known server response must not become a retrospective timeout"
+        );
+        assert_eq!(
+            hs_status(&*hs),
+            500,
+            "the response code must also remain observable on hs"
+        );
+        assert_eq!(
+            hs.fd(),
+            -1,
+            "a rejected response must retire the published fd"
+        );
     }
 
     /// Nothing listening is the OTHER outcome, and it must not wear a status. `0` is what

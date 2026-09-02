@@ -200,6 +200,39 @@ pub(crate) fn aq_abort(q: *mut AuQueue) {
     }
 }
 
+/// Run one small publication step only if teardown has not linearized on this queue.
+///
+/// The closure executes while holding the same mutex [`aq_abort`] uses to publish `abort`.  This
+/// is intentionally stronger than an `aq_is_aborted` check followed by the publication: that pair
+/// has a gap in which teardown can win, join the producer, and still let the producer publish a
+/// replacement playback resource.  Keep the closure free of blocking I/O; cleanup belongs after
+/// this function releases the queue lock.
+pub(crate) fn aq_if_not_aborted<T>(q: *mut AuQueue, f: impl FnOnce() -> T) -> Option<T> {
+    if q.is_null() {
+        return None;
+    }
+
+    struct Unlock(*mut libc::pthread_mutex_t);
+    impl Drop for Unlock {
+        fn drop(&mut self) {
+            unsafe {
+                libc::pthread_mutex_unlock(self.0);
+            }
+        }
+    }
+
+    unsafe {
+        let mutex = ptr::addr_of_mut!((*q).m);
+        libc::pthread_mutex_lock(mutex);
+        let _unlock = Unlock(mutex);
+        if (*q).abort != 0 {
+            None
+        } else {
+            Some(f())
+        }
+    }
+}
+
 pub(crate) fn aq_bytes(q: *mut AuQueue) -> c_long {
     if q.is_null() {
         return 0;
@@ -209,5 +242,56 @@ pub(crate) fn aq_bytes(q: *mut AuQueue) -> c_long {
         let b = (*q).queued_bytes;
         libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
         b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn a_preexisting_abort_prevents_the_publication_closure() {
+        let mut q = aq_new(1);
+        let called = AtomicBool::new(false);
+        aq_abort(&mut *q);
+
+        let result = aq_if_not_aborted(&mut *q, || called.store(true, Ordering::SeqCst));
+
+        assert_eq!(result, None);
+        assert!(!called.load(Ordering::SeqCst));
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn publication_and_abort_share_one_linearization_mutex() {
+        let mut q = aq_new(1);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let entered_worker = Arc::clone(&entered);
+        let release_worker = Arc::clone(&release);
+        let worker = std::thread::spawn(move || {
+            aq_if_not_aborted(q_addr as *mut AuQueue, || {
+                entered_worker.wait();
+                release_worker.wait();
+                41
+            })
+        });
+
+        entered.wait();
+        let mutex = unsafe { ptr::addr_of_mut!((*(q_addr as *mut AuQueue)).m) };
+        assert_eq!(
+            unsafe { libc::pthread_mutex_trylock(mutex) },
+            libc::EBUSY,
+            "the publication closure must own the abort mutex",
+        );
+        release.wait();
+        assert_eq!(worker.join().unwrap(), Some(41));
+
+        aq_abort(&mut *q);
+        assert!(unsafe { aq_is_aborted(&*q) });
+        aq_destroy(&mut *q);
     }
 }

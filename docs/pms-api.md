@@ -628,23 +628,38 @@ Byte-range serving works, so seek-by-range is available to the player.
 
 Auto first tries to avoid an encoder entirely. Local uses Original immediately. On a direct Remote,
 PlxNative samples a bounded prefix of the actual Part and admits direct play or a codec-preserving
-remux only with 1.35× headroom over `Media[0].bitrate`; missing/slow/inconclusive measurements and
-Relay fall back to the HLS transcode endpoint (`/video/:/transcode/universal/start.m3u8`). The
-progressive path continues measuring successful body-read time and normalized A/V buffer time, so
+remux when a completed response delivers at least as fast as the source consumes. There is no
+fixed bitrate-headroom multiplier: short-term VBR risk is observed later in the playable-buffer
+derivative rather than guessed from the whole-file average. An incomplete response or HTTP/
+transport failure means capacity is unknown, not zero; Relay and an unknown result begin on HLS
+(`/video/:/transcode/universal/start.m3u8`). The official Chromium/webOS client's “Checking
+connection speed” uses the same physical object—an ordinary uncapped raw Part GET before
+`player.open()`, not a dedicated PMS speed-test endpoint. PlxNative bounds that read to one finite
+Range response and gives it the playback's durable logical resource identity so the winning route
+can reuse it. The progressive path continues measuring successful body-read time and normalized A/V buffer time, so
 a later bandwidth collapse can replace Original with HLS at the current position — decided on a
 starvation horizon in seconds (`T_starve = B·R/(R−C)`) rather than on a window count, and the
 conservative estimate, not the last window's raw rate, selects the replacement rung directly however
 far down the ladder it is. The
 measured PMS exposes one fixed rendition per encoder session, so PlxNative performs HLS adaptation
 by priming a separately named encoder and committing only after complete candidate media is
-decodable and sustainable. Network delivery and PMS production are estimated separately and neither
-can override the other, so a server falling behind real time discounts the budget with no network
-evidence at all; hysteresis is a per-switch penalty decaying over the playback's own transition
+decodable and its direction-specific conservation/reserve transaction passes. Conservative body
+delivery and reserve refill order experiments; the candidate's complete end-to-end acquisition
+then grades wall-clock feasibility. That acquisition includes PMS wait, pacing and path transfer,
+so it is not also charged as an independently identified production constraint. The calibrated
+PMS-work class remains a recurring cost in Original/HLS utility. Hysteresis is a per-switch penalty
+decaying over the playback's own transition
 history rather than a hold-down counter, so a single slow PMS segment cannot flap 20→8→20 Mbit/s.
-Returning to Original requires neither the top rung nor a fixed number of probes: bounded probes of
-the actual Part are spaced and gated on a deep, refilling reserve plus spare capacity in the HLS
-evidence, and each updates an estimate whose own uncertainty decides whether the 1.35× requirement
-is met. The accepted playlist subset, session-ID precedence, safe probe tooling
+Returning to Original requires neither the top rung nor a fixed number of probes. A bounded Part
+probe is admitted only when the current reserve can pay both finite probe phases while preserving
+the next HLS acquisition (`B >= 2P + max(R_s,D)`). It runs under the exact active HLS resource id,
+without stopping or closing that route. An insufficient or failed request is rearmed only when
+confidence-separated stronger HLS evidence appears. After a completed terminal comparison, an
+upward HLS commit instead re-scores retained source evidence, while a downshift retires that
+old-regime result before a fresh bounded request. There is no spacing timer and a demand-capped
+response is not treated as spare link capacity. Each completed source observation updates an
+estimate whose own uncertainty decides whether source consumption is sustainable. The accepted
+playlist subset, session-ID precedence, safe probe tooling
 and redacted live evidence are documented in `docs/pms-hls-protocol-probe.md`, and the controller
 itself in `docs/adaptive-playback.md`. Original and the five
 user-selected fixed rungs remain on the progressive direct-play/start.mkv paths described above.

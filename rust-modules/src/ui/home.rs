@@ -1865,12 +1865,12 @@ pub(crate) fn home_draw() {
         let h = scene();
         let env = h.env(0.0);
         phase("hm.layout", || h.grid.layout(env.screen, &env)); // &mut layout before the &self composite draw
-                                         // THE page transition, as ONE cascade-alpha push at the root of the tree: the backdrop,
-                                         // hero, grid and read-out are what a route change REPLACES, so they dip to the app ground
-                                         // and back (`ui::nav`). Nothing per-element is needed — `Painter::alpha` is multiplicative
-                                         // and folded into every primitive by `Painter::c`, `Painter::ambient` included since it
-                                         // learned to mix toward `SURFACE_APP`, which is the same colour `frame_clear` just laid
-                                         // down. The shared top band below is deliberately NOT on it.
+                                                                // THE page transition, as ONE cascade-alpha push at the root of the tree: the backdrop,
+                                                                // hero, grid and read-out are what a route change REPLACES, so they dip to the app ground
+                                                                // and back (`ui::nav`). Nothing per-element is needed — `Painter::alpha` is multiplicative
+                                                                // and folded into every primitive by `Painter::c`, `Painter::ambient` included since it
+                                                                // learned to mix toward `SURFACE_APP`, which is the same colour `frame_clear` just laid
+                                                                // down. The shared top band below is deliberately NOT on it.
         let pc = Painter::root().alpha(crate::ui::nav::page_alpha());
         h.draw(&env, pc);
         // loading / empty / error, only when there are no shelves. In the CONTENT layer (it stands

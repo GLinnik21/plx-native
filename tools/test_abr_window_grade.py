@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Tests for `tools/abr-window-grade.py`.
+"""Adversarial tests for the independent exact finite-episode telemetry grader.
 
-The grader's whole value is that it disagrees with the app when the app is wrong, so the tests that
-matter are the ones that INJECT a wrong line and check it is caught. A grader that only ever reports
-zero disagreements is indistinguishable from one that parses nothing, and that failure mode is the
-realistic one here: the app writes these lines on a television and this runs on a Mac, so "no
-disagreements" and "no lines" look identical in the summary.
+The useful cases inject a lie into one field and require the grader to disagree. A green test that
+only feeds the grader honest output would not distinguish a proof checker from a parser matching no
+lines at all.
 """
 
 from __future__ import annotations
 
-import contextlib
 import importlib.util
 import io
 import pathlib
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -25,289 +23,397 @@ wg = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wg)
 
 
-def sample(prod_pm, dur_ms=2000, buf_ms=8000):
-    # `buf_ms="none"` is the app's own spelling for a reserve it cannot read this segment.
+def sample(prod_pm, dur_ms=2000, buf_ms=8000, complete=1):
     buf = f"{buf_ms}ms" if buf_ms != "none" else "none"
-    return (f"abr: sample current=4000kbps media=3000kbps net=9000kbps buf={buf} "
-            f"vbuf=8000ms abuf=8000ms dur={dur_ms}ms prod={prod_pm}pm n=9 "
-            f"decision=stay target=0kbps")
+    complete_field = "" if complete is None else f" complete={complete}"
+    return (
+        f"abr: sample current=4000kbps media=3000kbps net=9000kbps buf={buf} "
+        f"vbuf=8000ms abuf=8000ms dur={dur_ms}ms prod={prod_pm}pm n=9 "
+        f"decision=stay target=0kbps{complete_field} reason=None"
+    )
 
 
-def window(verdict, have, want, bound, demand, supply, excess, sus, sur,
-           byte_count=1000, dur_ms=2000, resets=0):
-    return (f"abr: window current=4000kbps verdict={verdict} have={have}/{want} eps=100pm "
-            f"clamp=0 bound={bound}ms demand={demand}ms supply={supply}ms excess={excess}ms "
-            f"sus={sus} sur={sur} reset={resets} bytes={byte_count} dur={dur_ms}ms")
+def window(have, demand=None, supply=None, excess=None, runway=None, *, sus=1, sur=1,
+           verdict=None, want=None, byte_count=1000, dur_ms=2000, resets=0, eps=0,
+           clamp=0, bound=-1):
+    want = have if want is None else want
+    if have == 0:
+        demand = supply = excess = runway = -1
+        sus = sur = 0
+        verdict = "filling" if verdict is None else verdict
+    else:
+        assert None not in (demand, supply, excess, runway)
+        verdict = ("admit" if sus and sur else "refuse") if verdict is None else verdict
+    return (
+        f"abr: window current=4000kbps verdict={verdict} have={have}/{want} eps={eps}pm "
+        f"clamp={clamp} bound={bound}ms demand={demand}ms supply={supply}ms "
+        f"excess={excess}ms runway={runway}ms sus={sus} sur={sur} reset={resets} "
+        f"bytes={byte_count} dur={dur_ms}ms"
+    )
+
+
+def seed():
+    return "abr: seed rung=4000kbps prior=none slow=4000kbps fast=4000kbps unc=500pm n=0 pin=none"
+
+
+def commit_marker(direction="Up", to_kbps=None):
+    if to_kbps is None:
+        to_kbps = 6000 if direction == "Up" else 4000
+    return f"abr: committed {direction} to {to_kbps}kbps 1920x1080 out=1918x802"
+
+
+def transaction(direction="Up", outcome="committed", candidate_acq=900,
+                candidate_bytes=1441792, candidate_dur=2000):
+    from_kbps, to_kbps = ((4000, 6000) if direction == "Up" else (6000, 4000))
+    return (
+        f"abr: tx {direction} {from_kbps}->{to_kbps}kbps outcome={outcome} "
+        "decided=3065ms total=4100ms control=120ms prime=40ms master=30ms media=50ms "
+        "warmup=1800ms graded=900ms warmup_dl=2200ms buf_start=9000ms "
+        "buf_decided=6000ms feed=900ms buf_fed=9000ms buf_end=9000ms "
+        "cur_acq_before=1200ms net=9000kbps fast=9200kbps slow=8800kbps unc=120pm "
+        f"declared=5602kbps graded_bytes=1441792 candidate_acq={candidate_acq}ms "
+        f"candidate_bytes={candidate_bytes} candidate_dur={candidate_dur}ms"
+    )
 
 
 def graded(lines):
-    """(result, printed) for one synthetic log.
-
-    `grade` and `occupancy` both take PARSED rows -- the file is read and paired once, by the
-    caller, which is what stopped every log being walked twice and `paired`'s skip note printing
-    twice per file.
-    """
-    buf = io.StringIO()
-    with redirect_stdout(buf):
+    printed = io.StringIO()
+    with redirect_stdout(printed):
         result = wg.grade(wg.paired(list(lines)))
-    return result, buf.getvalue()
+    return result, printed.getvalue()
 
 
-class Transfer(unittest.TestCase):
-    def test_the_ceiling_matches_the_shipped_form(self):
-        # Differential against truncation: 100*10//7 is 142, the ceiling is 143.
-        self.assertEqual(wg.transferred_us(7, 100, 10), 143)
-        self.assertEqual(100 * 10 // 7, 142)
-
-    def test_a_downshift_query_is_flat(self):
-        self.assertEqual(wg.transferred_us(1000, 100, 500), 100)
-        self.assertEqual(wg.transferred_us(1000, 100, 1000), 100)
+def exact_flat_run(count=9):
+    lines = []
+    for n in range(1, count + 1):
+        lines.extend([
+            sample(500), window(n, n * 1000, n * 2000, 0, 1000),
+        ])
+    return lines
 
 
 class Pairing(unittest.TestCase):
-    def test_a_window_line_with_no_sample_before_it_is_an_error(self):
-        # Silent mis-pairing would attribute every number to the wrong segment, and every check
-        # downstream would still "pass" against the neighbouring segment's numbers.
+    def test_window_without_sample_is_an_error(self):
         with self.assertRaises(SystemExit):
-            graded([window("filling", 1, 9, -1, -1, -1, -1, 0, 0)])
+            wg.paired([window(0)])
 
-    def test_an_unknown_reserve_is_a_STATED_skip_and_not_a_pairing_break(self):
-        """A `buf=none` segment still emits its `abr: window` line — the readout sits above every
-        early return in the controller — so the window has a sample before it and the pairing is
-        intact. What it does NOT have is a reserve, which is the entire subject of condition (2),
-        so the pair is dropped and counted rather than graded against a fabricated zero (which
-        would score every such segment as an unsurvivable window)."""
-        rows = wg.paired([sample(500, buf_ms="none"),
-                          window("admit", 9, 9, 1000, 2600, 6000, 0, 1, 1),
-                          sample(600), window("admit", 9, 9, 1000, 2600, 6000, 0, 1, 1)])
-        self.assertEqual(len(rows), 1, "only the gradeable segment survives")
-        self.assertEqual(rows[0][1]["prod_pm"], 600)
+    def test_two_samples_without_window_are_an_error(self):
+        with self.assertRaises(SystemExit):
+            wg.paired([sample(500), sample(500)])
 
-    def test_the_skip_is_reported_rather_than_silent(self):
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            wg.paired([sample(500, buf_ms="none"),
-                       window("admit", 9, 9, 1000, 2600, 6000, 0, 1, 1)])
-        self.assertIn("skipped", err.getvalue())
-        self.assertIn("1 segment", err.getvalue())
+    def test_unknown_reserve_remains_none(self):
+        rows = wg.paired([sample(500, buf_ms="none"), window(1, 1000, 2000, 0, 1000)])
+        self.assertIsNone(rows[0][1]["buf_ms"])
 
-    def test_pairs_come_out_in_order(self):
-        rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0),
-                          sample(600), window("filling", 2, 9, -1, -1, -1, -1, 0, 0)])
-        self.assertEqual([r[2]["have"] for r in rows], [1, 2])
-        self.assertEqual([r[1]["prod_pm"] for r in rows], [500, 600])
+    def test_window_fields_are_named_by_the_harness_contract(self):
+        row = wg.paired([sample(500), window(1, 1000, 2000, 0, 1000)])[0][2]
+        self.assertEqual((row["demand_ms"], row["runway_ms"], row["sus"], row["sur"]),
+                         (1000, 1000, 1, 1))
 
 
-class TheQuantizationInterval(unittest.TestCase):
-    def test_a_truncated_prod_admits_one_duration_of_acquisition(self):
-        # prod = total_fetch_us / dur_ms truncated, so prod=500 at dur=2000 means the acquisition
-        # was in [1_000_000, 1_002_000) us. Any tolerance narrower than this would report the app
-        # as wrong for rounding correctly.
+class Quantisation(unittest.TestCase):
+    def test_prod_is_an_exact_half_open_interval(self):
         self.assertEqual(wg.acquisition_interval({"prod_pm": 500, "dur_ms": 2000}),
                          (1_000_000, 1_002_000))
 
+    def test_zero_prod_still_means_a_positive_transfer(self):
+        self.assertEqual(wg.acquisition_interval({"prod_pm": 0, "dur_ms": 2000}), (1, 2_000))
 
-class AnHonestLogIsAccepted(unittest.TestCase):
-    """A flat window whose numbers the app could really have produced."""
+    def test_saturated_prod_has_no_fictitious_upper_endpoint(self):
+        lo, hi = wg.acquisition_interval({"prod_pm": 2**32 - 1, "dur_ms": 1})
+        self.assertEqual(lo, 2**32 - 1)
+        self.assertIsNone(hi)
 
-    @classmethod
-    def build(cls, demand=None, excess=0, sus=1):
-        # Nine identical segments at prod=500pm (1.000-1.002 s each) against a 2 s duration.
-        lines, n = [], 9
-        for i in range(n):
-            lines.append(sample(500))
-            if i < n - 1:
-                lines.append(window("filling", i + 1, n, -1, -1, -1, -1, 0, 0))
-        # 9 x [1000, 1002) ms of demand against 9 x 2000 ms of supply.
-        lines.append(window("admit", n, n, 1001, 9009 if demand is None else demand,
-                            18000, excess, sus, 1))
-        return lines
 
-    def test_a_consistent_log_reports_no_disagreement(self):
-        result, printed = graded(self.build())
+class ExactFiniteEpisode(unittest.TestCase):
+    def test_one_sample_runway_includes_the_terminal_acquisition(self):
+        result, printed = graded([sample(500), window(1, 1000, 2000, 0, 1000)])
         self.assertEqual(result["disagree"], 0, printed)
-        self.assertEqual(result["checked"], 1)
-        self.assertEqual(result["filling"], 8)
 
-    def test_both_ends_of_the_interval_are_accepted(self):
-        for demand in (9000, 9017):        # 9 x 1000 and 9 x 1001 (floor of 1001.999)
-            with self.subTest(demand=demand):
-                result, printed = graded(self.build(demand=demand))
-                self.assertEqual(result["disagree"], 0, printed)
+    def test_each_observation_keeps_its_own_duration(self):
+        result, printed = graded([
+            sample(1200, dur_ms=1500),
+            window(1, 1800, 1500, 300, 1800, sus=0, dur_ms=1500),
+            sample(400, dur_ms=2500),
+            window(2, 2800, 4000, 300, 1800, dur_ms=2500),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
 
-
-class AWrongLogIsCaught(unittest.TestCase):
-    """Each of these is a way the shipped arithmetic could be wrong, injected one at a time."""
-
-    def test_a_demand_outside_the_interval_is_caught(self):
-        result, printed = graded(AnHonestLogIsAccepted.build(demand=8999))
+    def test_window_duration_cannot_define_its_own_expected_supply(self):
+        result, printed = graded([
+            sample(500, dur_ms=1500), window(1, 750, 1500, 0, 750, dur_ms=2000),
+        ])
         self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("sample dur", printed)
+
+    def test_abandoned_prefix_is_excluded_but_its_reserve_is_current(self):
+        result, printed = graded([
+            sample(500, buf_ms=2000), window(1, 1000, 2000, 0, 1000),
+            sample(500, buf_ms=500, complete=0),
+            window(1, 1000, 2000, 0, 1000, sur=0),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+
+    def test_unknown_reserve_appends_sample_and_reuses_last_observation(self):
+        result, printed = graded([
+            sample(500, buf_ms=8000), window(1, 1000, 2000, 0, 1000),
+            sample(500, buf_ms="none"), window(2, 2000, 4000, 0, 1000),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+
+    def test_window_bytes_cannot_choose_membership(self):
+        result, printed = graded([
+            sample(500), window(1, 1000, 2000, 0, 1000, byte_count=0),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+
+    def test_missing_complete_bit_is_incompatible_and_not_guessed(self):
+        result, printed = graded([
+            sample(500, complete=None), window(1, 1000, 2000, 0, 1000),
+        ])
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertEqual(result["ungraded"], 1)
+        self.assertIn("no complete=", printed)
+
+    def test_empty_episode_has_the_only_legal_filling_shape(self):
+        result, printed = graded([sample(500, complete=0), window(0)])
+        self.assertEqual((result["disagree"], result["filling"]), (0, 1), printed)
+
+    def test_missing_terminal_cost_is_caught(self):
+        result, printed = graded([sample(500), window(1, 1000, 2000, 0, 0)])
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("runway", printed)
+
+    def test_reserve_below_runway_forces_refusal(self):
+        result, printed = graded([
+            sample(500, buf_ms=999), window(1, 1000, 2000, 0, 1000, sur=0),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+
+    def test_live_episode_keeps_all_entries_after_the_diagnostic_ring_would_wrap(self):
+        result, printed = graded(exact_flat_run(65))
+        self.assertEqual(result["disagree"], 0, printed)
+        self.assertEqual(result["checked"], 65)
+
+
+class IndependentFailureDetection(unittest.TestCase):
+    def test_bad_eps_does_not_disable_finite_arithmetic(self):
+        result, printed = graded([
+            sample(500), window(1, 999, 2000, 0, 1000, eps=100),
+        ])
+        self.assertGreaterEqual(result["disagree"], 2)
+        self.assertIn("eps=100", printed)
         self.assertIn("demand", printed)
 
-    def test_a_supply_that_is_not_n_times_d_is_caught(self):
-        lines = AnHonestLogIsAccepted.build()
-        lines[-1] = window("admit", 9, 9, 1001, 9009, 16000, 0, 1, 1)
+    def test_bad_want_cannot_select_a_self_confirming_subset(self):
+        result, printed = graded([
+            sample(500), window(1, 1000, 2000, 0, 1000),
+            sample(500), window(2, 1000, 4000, 0, 1000, want=1),
+        ])
+        self.assertGreaterEqual(result["disagree"], 2)
+        self.assertIn("want=1", printed)
+        self.assertIn("demand", printed)
+
+    def test_have_not_justified_by_events_is_caught(self):
+        lines = exact_flat_run(2)
+        lines[-1] = window(3, 2000, 4000, 0, 1000)
         result, printed = graded(lines)
         self.assertGreaterEqual(result["disagree"], 1)
-        self.assertIn("supply", printed)
+        self.assertIn("certified event stream", printed)
 
-    def test_an_excess_the_segments_cannot_produce_is_caught(self):
-        # Every segment is under the 2 s duration, so `sum (T_i - D)+` is exactly zero.
-        result, printed = graded(AnHonestLogIsAccepted.build(excess=400))
-        self.assertGreaterEqual(result["disagree"], 1)
-        self.assertIn("excess", printed)
+    def test_wrong_supply_excess_and_runway_are_each_caught(self):
+        for field, bad in (("supply", (1000, 1900, 0, 1000)),
+                           ("excess", (1000, 2000, 10, 1000)),
+                           ("runway", (1000, 2000, 0, 999))):
+            with self.subTest(field=field):
+                result, printed = graded([sample(500), window(1, *bad)])
+                self.assertGreaterEqual(result["disagree"], 1)
+                self.assertIn(field, printed)
 
-    def test_a_sustainability_flag_contradicting_its_own_sums_is_caught(self):
-        result, printed = graded(AnHonestLogIsAccepted.build(sus=0))
+    def test_forced_sustainability_flag_is_checked(self):
+        result, printed = graded([
+            sample(500), window(1, 1000, 2000, 0, 1000, sus=0),
+        ])
         self.assertGreaterEqual(result["disagree"], 1)
         self.assertIn("sustainable", printed)
 
-    def test_a_have_count_the_segment_stream_cannot_justify_is_caught(self):
-        # The check that the shadow SAW the same segments: this is what would catch an `observe`
-        # placed below an early return, which is the exact defect the shipped `safe_budget`
-        # already suffered on 397 of 527 lines.
-        lines = AnHonestLogIsAccepted.build()
-        lines[-1] = window("admit", 4, 9, 1001, 9009, 18000, 0, 1, 1)
-        result, printed = graded(lines)
+    def test_wire_verdict_always_matches_logged_boolean_pair(self):
+        result, printed = graded([
+            sample(500), window(1, 1000, 2000, 0, 1000, verdict="refuse"),
+        ])
         self.assertGreaterEqual(result["disagree"], 1)
-        self.assertIn("have", printed)
-
-    def test_a_full_window_still_claiming_to_be_filling_is_caught(self):
-        lines = AnHonestLogIsAccepted.build()
-        lines[-1] = window("filling", 9, 9, -1, -1, -1, -1, 0, 0)
-        result, printed = graded(lines)
-        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("requires admit", printed)
 
 
-class Occupancy(unittest.TestCase):
-    """The half a pass/fail cannot report: what the run actually exercised."""
-
-    def test_an_idle_link_is_reported_as_an_idle_link(self):
-        occ = wg.occupancy(wg.paired(AnHonestLogIsAccepted.build()))
-        self.assertEqual(occ["graded"], 1)
-        self.assertEqual(occ["verdicts"], {"admit": 1, "refuse": 0})
-        self.assertAlmostEqual(occ["load_mean"], 9009 / 18000)
-        self.assertEqual(occ["excess_nonzero"], 0)
-
-    def test_a_log_with_nothing_graded_reports_none_rather_than_a_zero(self):
-        self.assertIsNone(wg.occupancy(wg.paired(
-            [sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0)])))
-
-
-class TheResetPath(unittest.TestCase):
-    """A delivery collapse clears the window, and the grader cannot see a collapse.
-
-    So it replays the reset from the app's own monotone counter. That has to be free when the
-    counter moves and caught when it does not -- otherwise the grader either reports every
-    collapsing run as broken (which it did, on `pipe_abr_down_collapse`, before the counter
-    existed) or stops noticing a window that lost its history for no stated reason.
-    """
-
-    @staticmethod
-    def run_of(reset_at=None, reset_value=1):
-        """Twelve segments; optionally the window resets before segment `reset_at`."""
-        lines, resets = [], 0
-        have = 0
-        for i in range(12):
-            if reset_at is not None and i == reset_at:
-                resets = reset_value
-                have = 0
-            have += 1
-            lines.append(sample(500))
-            lines.append(window("filling", have, 19, -1, -1, -1, -1, 0, 0, resets=resets))
-        return lines
-
-    def test_a_reset_the_counter_accounts_for_costs_no_disagreement(self):
-        result, printed = graded(self.run_of(reset_at=6))
+class ThresholdCoverage(unittest.TestCase):
+    def test_sustainability_straddling_quantisation_is_counted_ambiguous(self):
+        result, printed = graded([
+            sample(1000), window(1, 2000, 2000, 0, 2000),
+        ])
         self.assertEqual(result["disagree"], 0, printed)
-        self.assertEqual(result["resets"], 1)
+        self.assertEqual(result["ambiguous_sus"], 1)
 
-    def test_a_run_with_no_reset_reports_none(self):
-        result, printed = graded(self.run_of())
-        self.assertEqual((result["disagree"], result["resets"]), (0, 0), printed)
+    def test_survival_straddling_quantisation_is_counted_ambiguous(self):
+        result, printed = graded([
+            sample(500, buf_ms=1001), window(1, 1001, 2000, 0, 1001),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+        self.assertEqual(result["ambiguous_sur"], 1)
 
-    def test_a_have_that_drops_without_the_counter_moving_is_still_caught(self):
-        # The check the counter must not weaken. Before it existed this was the ONLY signal, and
-        # keying on the counter would be worthless if it swallowed this case too.
-        lines = self.run_of()
-        lines[13] = window("filling", 1, 19, -1, -1, -1, -1, 0, 0)   # segment 7 restarts at 1
-        result, printed = graded(lines)
+    def test_saturated_ratio_is_reported_ungraded_not_fully_checked(self):
+        result, printed = graded([
+            sample(2**32 - 1, dur_ms=1, buf_ms=0),
+            window(1, 4294967, 1, 4294966, 4294967, sus=0, sur=0, dur_ms=1),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+        self.assertEqual((result["checked"], result["ungraded"], result["saturated"]),
+                         (0, 1, 1))
+
+
+class CommitCertificate(unittest.TestCase):
+    def test_matching_marker_and_transaction_seed_one_candidate(self):
+        rows = wg.paired([commit_marker(), transaction()])
+        self.assertEqual([row[0] for row in rows], ["commit"])
+        self.assertEqual(rows[0][1], {
+            "acq_lo_us": 900_000, "acq_hi_us": 901_000, "dur_us": 2_000_000,
+        })
+
+    def test_zero_millisecond_candidate_is_a_valid_positive_interval(self):
+        rows = wg.paired([commit_marker(), transaction(candidate_acq=0)])
+        self.assertEqual((rows[0][1]["acq_lo_us"], rows[0][1]["acq_hi_us"]), (1, 1000))
+
+    def test_committed_outcome_without_marker_never_seeds(self):
+        result, printed = graded([transaction()])
+        self.assertEqual(result["candidates"], 0)
         self.assertGreaterEqual(result["disagree"], 1)
-        self.assertIn("have", printed)
+        self.assertIn("no preceding commit certificate", printed)
 
-    def test_a_counter_going_backwards_is_caught(self):
-        # Monotone is the whole contract: a counter that can fall could hide a reset by
-        # cancelling itself out across two segments.
-        # Segment 8's window line: index 2*8+1. Even indices are `abr: sample`, and overwriting
-        # one of those would break the pairing instead of testing the counter.
-        lines = self.run_of(reset_at=4, reset_value=3)
-        lines[17] = window("filling", 5, 19, -1, -1, -1, -1, 0, 0, resets=1)
-        result, printed = graded(lines)
+    def test_marker_and_transaction_must_match_direction_and_target(self):
+        result, printed = graded([commit_marker("Down"), transaction("Up")])
+        self.assertEqual(result["candidates"], 0)
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("disagrees", printed)
+
+    def test_rejected_candidate_does_not_touch_the_episode(self):
+        self.assertEqual(wg.paired([transaction(outcome="not_ready")]), [])
+
+    def test_commit_marker_followed_by_rejection_is_a_hard_error(self):
+        result, printed = graded([commit_marker(), transaction(outcome="not_ready")])
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("outcome=not_ready", printed)
+
+    def test_commit_requires_complete_candidate_triple(self):
+        result, printed = graded([
+            commit_marker(), transaction(candidate_acq=-1, candidate_bytes=-1, candidate_dur=-1),
+        ])
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("no complete candidate evidence", printed)
+
+    def test_up_and_down_commit_replace_then_extend_the_episode(self):
+        for direction in ("Up", "Down"):
+            with self.subTest(direction=direction):
+                result, printed = graded([
+                    sample(500), window(1, 1000, 2000, 0, 1000),
+                    commit_marker(direction), transaction(direction),
+                    sample(500), window(2, 1900, 4000, 0, 1000, resets=1),
+                ])
+                self.assertEqual(result["disagree"], 0, printed)
+                self.assertEqual((result["candidates"], result["resets"]), (1, 1))
+
+
+class EpochAndReset(unittest.TestCase):
+    def test_seed_starts_a_new_epoch_and_resets_reserve_to_zero(self):
+        result, printed = graded([
+            sample(500, buf_ms=8000), window(1, 1000, 2000, 0, 1000), seed(),
+            sample(500, buf_ms="none"), window(1, 1000, 2000, 0, 1000, sur=0),
+        ])
+        self.assertEqual(result["disagree"], 0, printed)
+        self.assertEqual(result["epochs"], 1)
+
+    def test_reset_without_commit_is_not_a_benign_resync(self):
+        result, printed = graded([
+            sample(500), window(1, 1000, 2000, 0, 1000, resets=1),
+        ])
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("no commit evidence", printed)
+
+    def test_multi_step_reset_jump_with_one_commit_is_caught(self):
+        result, printed = graded([
+            commit_marker(), transaction(),
+            sample(500), window(2, 1900, 4000, 0, 1000, resets=2),
+        ])
+        self.assertGreaterEqual(result["disagree"], 1)
+        self.assertIn("expected exactly 1", printed)
+
+    def test_counter_going_backwards_is_caught(self):
+        result, printed = graded([
+            commit_marker(), transaction(),
+            sample(500), window(2, 1900, 4000, 0, 1000, resets=1),
+            sample(500), window(3, 2900, 6000, 0, 1000, resets=0),
+        ])
         self.assertGreaterEqual(result["disagree"], 1)
         self.assertIn("BACKWARDS", printed)
 
-    def test_a_multi_step_jump_in_the_counter_is_one_resync_not_a_failure(self):
-        # Two collapses between two logged segments is legal (nothing promises one per segment).
-        result, printed = graded(self.run_of(reset_at=6, reset_value=2))
+    def test_seed_makes_counter_zero_legal_again(self):
+        result, printed = graded([
+            commit_marker(), transaction(),
+            sample(500), window(2, 1900, 4000, 0, 1000, resets=1), seed(),
+            sample(500), window(1, 1000, 2000, 0, 1000),
+        ])
         self.assertEqual(result["disagree"], 0, printed)
-        self.assertEqual(result["resets"], 2)
 
 
-class TheCandidateObservation(unittest.TestCase):
-    """A transaction adds ONE sample to the window that no `abr: window` line describes.
-
-    `Controller::observe_candidate` puts the graded candidate segment in, and every `abr: window`
-    line is a CURRENT-stream segment — so a replayer that only reads those counts one short after
-    every transaction, forever. That is not the app miscounting, and before `graded_bytes=` reached
-    the wire this grader reported 54 disagreements on a healthy 15-case run.
-    """
-
-    TX = ("abr: tx Up 4000->6000kbps outcome=committed decided=3065ms total=4100ms control=120ms "
-          "prime=40ms master=30ms media=50ms warmup=1800ms graded=900ms warmup_dl=2200ms "
-          "buf_start=9000ms "
-          "buf_decided=6000ms feed=900ms buf_fed=9000ms buf_end=9000ms cur_acq_before=1200ms "
-          "net=9000kbps fast=9200kbps slow=8800kbps unc=120pm declared=5602kbps "
-          "graded_bytes=1441792")
-
-    def test_a_transaction_line_contributes_one_observation(self):
-        rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0), self.TX])
-        self.assertEqual([r[0] for r in rows], ["segment", "candidate"])
-        self.assertEqual(rows[1], ("candidate", 1441792, 900_000))
-
-    def test_it_lands_between_the_windows_either_side_of_it(self):
-        """Exact, not approximate: the transaction runs inline on the demux worker, so no
-        current-stream segment is acquired while it is in flight."""
-        rows = wg.paired([sample(500), window("filling", 1, 9, -1, -1, -1, -1, 0, 0),
-                          self.TX,
-                          sample(600), window("filling", 3, 9, -1, -1, -1, -1, 0, 0)])
-        self.assertEqual([r[0] for r in rows], ["segment", "candidate", "segment"])
-
-    def test_the_run_grades_clean_when_the_candidate_is_accounted_for(self):
-        lines = []
-        for i in range(9):
-            lines.append(sample(500))
-            lines.append(window("filling", i + 1, 19, -1, -1, -1, -1, 0, 0))
-        lines.append(self.TX)
-        lines.append(sample(500))
-        lines.append(window("filling", 11, 19, -1, -1, -1, -1, 0, 0))
-        result, printed = graded(lines)
+class HonestRunAndOccupancy(unittest.TestCase):
+    def test_flat_run_is_fully_graded(self):
+        result, printed = graded(exact_flat_run())
         self.assertEqual(result["disagree"], 0, printed)
-        self.assertEqual(result["candidates"], 1)
+        self.assertEqual((result["checked"], result["filling"]), (9, 0))
 
-    def test_an_unaccounted_extra_sample_is_still_caught(self):
-        """The check the splice must not weaken: a `have` that jumps with no transaction to
-        explain it is the app miscounting, and that has to keep failing."""
-        lines = [sample(500), window("filling", 1, 19, -1, -1, -1, -1, 0, 0),
-                 sample(500), window("filling", 3, 19, -1, -1, -1, -1, 0, 0)]
-        result, printed = graded(lines)
-        self.assertGreaterEqual(result["disagree"], 1)
-        self.assertIn("have", printed)
+    def test_both_quantisation_endpoints_are_accepted(self):
+        for demand in (9000, 9017):
+            with self.subTest(demand=demand):
+                lines = exact_flat_run()
+                lines[-1] = window(9, demand, 18000, 0, 1001 if demand == 9017 else 1000)
+                result, printed = graded(lines)
+                self.assertEqual(result["disagree"], 0, printed)
 
-    def test_a_rejected_transaction_still_contributes_its_observation(self):
-        """A rejected candidate MEASURED the link, so its graded segment is in the window too."""
-        rejected = self.TX.replace("outcome=committed", "outcome=not_ready")
-        rows = wg.paired([rejected])
-        self.assertEqual(rows[0][0], "candidate")
+    def test_occupancy_describes_what_was_exercised(self):
+        occ = wg.occupancy(wg.paired(exact_flat_run()))
+        self.assertEqual(occ["graded"], 9)
+        self.assertEqual(occ["verdicts"], {"admit": 9, "refuse": 0})
+        self.assertAlmostEqual(occ["load_mean"], 0.5)
+        self.assertEqual(occ["excess_nonzero"], 0)
+
+    def test_only_empty_episode_reports_no_occupancy(self):
+        self.assertIsNone(wg.occupancy(wg.paired([sample(500, complete=0), window(0)])))
+
+
+class CommandExitStatus(unittest.TestCase):
+    def run_main(self, lines):
+        with tempfile.NamedTemporaryFile("w", suffix=".log") as trace:
+            trace.write("\n".join(lines))
+            trace.flush()
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                status = wg.main([trace.name])
+            return status, printed.getvalue()
+
+    def test_a_fully_graded_trace_exits_successfully(self):
+        status, printed = self.run_main(exact_flat_run(2))
+        self.assertEqual(status, 0, printed)
+
+    def test_no_current_trace_is_a_failure_not_a_clean_zero(self):
+        status, printed = self.run_main(["an unrelated old log line"])
+        self.assertEqual(status, 1)
+        self.assertIn("NO TRACE", printed)
+
+    def test_ungraded_saturation_makes_the_command_fail(self):
+        status, printed = self.run_main([
+            sample(2**32 - 1, dur_ms=1, buf_ms=0),
+            window(1, 4294967, 1, 4294966, 4294967, sus=0, sur=0, dur_ms=1),
+        ])
+        self.assertEqual(status, 1)
+        self.assertIn("1 ungraded", printed)
 
 
 if __name__ == "__main__":

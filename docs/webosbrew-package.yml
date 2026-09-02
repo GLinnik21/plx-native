@@ -111,10 +111,12 @@ description: |
     bit depth, so 10-bit is still claimed without asking.
 
   The app talks to the Plex Media Servers your account can reach, to plex.tv to sign in, and to
-  discover.provider.plex.tv for cast biographies. Crash reports and usage are two separate
-  switches, both OFF by default and both reversible; the screen that asks shows you the exact
-  messages before you answer, and no title, search term, server name or address can appear in one.
-  With both off the app sends nothing to its developer at all. Sign-in to your Plex account is
+  discover.provider.plex.tv for cast biographies. Error reports and usage are two separate
+  switches. The first question presents both selected, but that is only an inert draft: nothing is
+  collected or sent until you explicitly save reporting settings, BACK cancels, and Continue
+  without reporting records both as off. The choices remain reversible under Account → Reporting
+  settings, the question shows the exact messages before anything can be enabled, and no title,
+  search term, server name or address can appear in one. Sign-in to your Plex account is
   encrypted; traffic to a media server is not (above).
 
   Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.

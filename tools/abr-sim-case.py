@@ -89,6 +89,7 @@ def main():
     # (what `pipe_auto_original_slow_recover`'s Original -> HLS -> Original arc is written against).
     srv.set_segment_profile(case.get("segment_profile"))
     srv.set_network_profile(case.get("network_profile"))
+    srv.set_abr_response_profile(case.get("abr_response_profile"))
 
     # One instance root PER CASE, so several of these run side by side — which is the capability
     # the television does not have and the reason this file is worth its length.

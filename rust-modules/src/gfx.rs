@@ -4273,24 +4273,39 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(src.contains("varying vec2 v_uv"), "the coordinate stays fp16");
+        assert!(
+            src.contains("varying vec2 v_uv"),
+            "the coordinate stays fp16"
+        );
         assert!(!src.contains("varying highp vec2 v_uv"));
         assert!(
             src.contains("mix(v_top, v_bot, v_uv.y)"),
             "ONE mix per fragment: the corner mixes are exact varyings from vs_ambient.vert"
         );
-        assert!(!src.contains("u_atl"), "the corners are the vertex shader's business now");
+        assert!(
+            !src.contains("u_atl"),
+            "the corners are the vertex shader's business now"
+        );
         let vs = VS_AMBIENT.to_str().unwrap();
         assert!(vs.contains("v_top = mix(u_atl, u_atr, a_pos.x)"));
         assert!(vs.contains("v_bot = mix(u_abl, u_abr, a_pos.x)"));
         assert!(src.contains("uniform float u_noise"));
-        assert!(src.contains("if (u_noise > 0.0)"), "the dither is behind a uniform branch");
+        assert!(
+            src.contains("if (u_noise > 0.0)"),
+            "the dither is behind a uniform branch"
+        );
         assert!(
             src.contains("texture2D(u_noise_tex, gl_FragCoord.xy"),
             "the dither is a texture fetch on the idle pipe, not arithmetic"
         );
-        assert!(!src.contains("fract("), "no hash arithmetic on a full-screen quad");
-        assert!(!src.contains("sin("), "no transcendental in a full-screen fragment shader");
+        assert!(
+            !src.contains("fract("),
+            "no hash arithmetic on a full-screen quad"
+        );
+        assert!(
+            !src.contains("sin("),
+            "no transcendental in a full-screen fragment shader"
+        );
     }
 
     /// Thick diffuse material collects radiance across the WHOLE support. It must not inherit the

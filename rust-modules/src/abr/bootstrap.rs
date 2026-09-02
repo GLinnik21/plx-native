@@ -22,9 +22,9 @@ pub(crate) enum BootstrapReason {
     /// Relay. Plex's relay is bandwidth-limited by design, so Original is not a candidate and
     /// measuring it would be theatre.
     RelayLimited,
-    /// A bounded probe cleared the cold-start confidence margin.
+    /// A bounded probe delivered source bytes at least as fast as playback consumes them.
     ProbeSustainable,
-    /// The probe completed and did not clear it. Its VALUE is still the best evidence there is,
+    /// The probe completed below the source consumption rate. Its VALUE is still the best evidence there is,
     /// and it picks the starting rung.
     ProbeBelowRequirement,
     /// The probe never finished inside its budget, or the source bitrate is unknown, so there is
@@ -88,15 +88,10 @@ pub(crate) fn bootstrap(
                 return deny(BootstrapReason::ProbeInconclusive);
             };
             if !probe.completed {
-                // A probe that ran out of budget measured how far it got, not what the link can
-                // do. Its rate is a floor, so it still beats guessing for the starting rung.
-                let prior = CapacityEstimate::from_prior(probe.kbps);
-                return BootstrapDecision {
-                    original: false,
-                    rung: startup_rung(probe.kbps, catalog, fallback_rung),
-                    reason: BootstrapReason::ProbeInconclusive,
-                    prior: Some(prior),
-                };
+                // A deadline-censored prefix has no sustained-rate meaning. Its opening socket
+                // burst can be arbitrarily fast before the response stalls, so it identifies
+                // neither an opening actuator nor a steady-state prior.
+                return deny(BootstrapReason::ProbeInconclusive);
             }
             let sustainable =
                 original_sustainable(source_kbps, probe.kbps, probe.completed, policy);
@@ -119,15 +114,50 @@ pub(crate) fn bootstrap(
     }
 }
 
-/// Startup keeps a fifth of the measurement in reserve rather than spending all of it: there is no
-/// buffer yet, so the opening seconds are the least forgiving moment of the whole playback.
+/// Choose the first HLS actuator when an existing playback is handed back to Auto.
+///
+/// This is not a cold start: throwing the route away and applying [`policy_startup_floor_kbps`]
+/// would discard two kinds of evidence the playback may already own.  Let `F` be the feasible
+/// catalog, `W(r)` its calibrated wire demand, `r_c` the currently playing fixed rung, and `C_p`
+/// the carried posterior's conservative capacity.  The re-entry point is
+///
+/// `arg max W(r)` over the union of `{r_c in F}`, `{r in F: W(r) <= C_p}`, and the ordinary
+/// unknown-link fallback.
+///
+/// Thus Auto never begins below the control point it is replacing, may immediately reclaim a
+/// higher rung already supported by its own posterior, and invents no connection-speed claim when
+/// neither exists.  Source/device feasibility is applied before all three terms.
+pub(crate) fn hls_reentry_rung(
+    current: Option<Rung>,
+    prior: Option<CapacityEstimate>,
+    catalog: &HlsActuatorCatalog,
+    policy: &AbrPolicy,
+) -> Rung {
+    let fallback = catalog
+        .best_for_budget(policy_startup_floor_kbps(policy))
+        .or_else(|| catalog.feasible().next());
+    let current = current.and_then(|rung| catalog.feasible().find(|c| c.rung == rung));
+    let posterior =
+        prior.and_then(|estimate| catalog.best_for_budget(estimate.conservative_kbps()));
+    fallback
+        .into_iter()
+        .chain(current)
+        .chain(posterior)
+        .max_by_key(|candidate| candidate.expected_wire_kbps)
+        .map(|candidate| candidate.rung)
+        .unwrap_or(Rung::P480)
+}
+
+/// Pick the highest rendition whose declared demand does not exceed the service the completed
+/// probe actually achieved.  Startup reserve is handled as media time by the player; multiplying
+/// the rate by an unrelated fraction would be a second, dimensionally hidden reserve.
 pub(crate) fn startup_rung(
     measured_kbps: u32,
     catalog: &HlsActuatorCatalog,
     fallback: Rung,
 ) -> Rung {
     catalog
-        .best_for_budget(measured_kbps.saturating_mul(4) / 5)
+        .best_for_budget(measured_kbps)
         .map(|candidate| candidate.rung)
         .unwrap_or(fallback)
 }

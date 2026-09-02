@@ -31,7 +31,7 @@ mod sys {
     use std::os::raw::{c_char, c_int, c_long, c_uint};
 
     extern "C" {
-        pub(super) fn sf_load(payload: *const c_char) -> c_int;
+        pub(super) fn sf_load(payload: *const c_char, epoch: c_uint) -> c_int;
         pub(super) fn sf_ready() -> c_int;
         pub(super) fn sf_is_load_completed() -> c_int;
         pub(super) fn sf_play() -> c_int;
@@ -43,7 +43,10 @@ mod sys {
         pub(super) fn sf_send_segment() -> c_int;
         pub(super) fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char;
         pub(super) fn sf_unload();
-        pub(super) fn sf_destroy();
+        pub(super) fn sf_callback_gate_retire() -> c_int;
+        pub(super) fn sf_callback_intercepts() -> c_uint;
+        pub(super) fn sf_destroy() -> c_int;
+        pub(super) fn sf_quarantine();
 
         pub(super) fn vp_mode() -> c_int;
         pub(super) fn vp_create_window() -> *const c_char;
@@ -75,14 +78,53 @@ mod sys {
 /// the main thread would stall the frame loop for the whole load. Everything the main thread does
 /// next is gated on `sf_ready()` / `loadCompleted`, which is what keeps that safe.
 #[inline]
-pub(crate) unsafe fn sf_load(payload: *const c_char) -> c_int {
-    sys::sf_load(payload)
+pub(crate) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
+    sys::sf_load(payload, epoch)
 }
 
 #[inline]
 pub(crate) unsafe fn sf_ready(_: &MainThread) -> c_int {
     sys::sf_ready()
 }
+/// **Test-only: force the host clock sink on.** `sys` is private on purpose (see the module doc),
+/// so the override reaches tests the same way every other seam call does — through a wrapper here
+/// rather than by widening the declarations' visibility.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_clocksink_for_test(on: bool) {
+    sys::FORCE_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_play_result_for_test(result: Option<c_int>) {
+    sys::FORCE_PLAY_RESULT.store(
+        result.unwrap_or(i32::MIN),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn play_calls_for_test() -> u64 {
+    sys::PLAY_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_callback_intercepts_for_test(value: u32) {
+    sys::force_callback_intercepts_for_test(value);
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn reset_native_lifecycle_for_test() {
+    sys::reset_native_lifecycle_for_test();
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_pause_result_for_test(result: Option<c_int>) {
+    sys::FORCE_PAUSE_RESULT.store(
+        result.unwrap_or(i32::MIN),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 #[inline]
 pub(crate) unsafe fn sf_is_load_completed(_: &MainThread) -> c_int {
     sys::sf_is_load_completed()
@@ -130,8 +172,20 @@ pub(crate) unsafe fn sf_unload(_: &MainThread) {
     sys::sf_unload()
 }
 #[inline]
-pub(crate) unsafe fn sf_destroy(_: &MainThread) {
+pub(crate) unsafe fn sf_callback_gate_retire(_: &MainThread) -> c_int {
+    sys::sf_callback_gate_retire()
+}
+#[inline]
+pub(crate) unsafe fn sf_callback_intercepts(_: &MainThread) -> u32 {
+    sys::sf_callback_intercepts()
+}
+#[inline]
+pub(crate) unsafe fn sf_destroy(_: &MainThread) -> c_int {
     sys::sf_destroy()
+}
+#[inline]
+pub(crate) unsafe fn sf_quarantine(_: &MainThread) {
+    sys::sf_quarantine()
 }
 
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long

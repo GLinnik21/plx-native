@@ -4288,8 +4288,8 @@ pub(crate) fn on_ok() -> bool {
                     None => play_episode_at(0),
                 }
             } else {
-                if let Some(m) = selected() {
-                    crate::route::request_play_movie(m);
+                let requested = if let Some(m) = selected() {
+                    crate::route::request_play_movie(m)
                 } else if let Some(d) = metadata::current() {
                     // a hub refetch can orphan the page's catalog row (the item left the hubs) —
                     // the loaded Detail carries everything the string-based route entry needs,
@@ -4304,15 +4304,15 @@ pub(crate) fn on_ok() -> bool {
                         &d.acodec,
                         &d.title,
                         "",
-                    );
+                    )
                 } else {
                     return false;
-                }
+                };
                 set_resume(
                     metadata::current().map(|d| d.resume_ms).unwrap_or(0),
                     metadata::current().map(|d| d.dur_ms).unwrap_or(0),
                 );
-                true
+                requested
             };
             commit_resume(from_start);
             started
@@ -5266,8 +5266,7 @@ fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
         &ep.acodec,
         &hud_title,
         &hud_ctx,
-    );
-    true
+    )
 }
 
 // ---- About footer (section 5): heading + card + Information/Languages/Accessibility ----

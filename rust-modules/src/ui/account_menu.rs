@@ -375,7 +375,7 @@ mod tests {
     /// No session at all: the one honest ACCOUNT action is signing in, with Settings beside it so
     /// privacy, legal and diagnostics remain reachable without an account.
     #[test]
-    fn signed_out_offers_sign_in_beside_the_rows_that_need_no_account() {
+    fn signed_out_profile_menu_does_not_offer_playback_diagnostics() {
         let (name, rows) = menu(&Session::default(), None);
         assert_eq!(name, "Account");
         assert_eq!(rows, vec!["Sign in", "Settings"]);

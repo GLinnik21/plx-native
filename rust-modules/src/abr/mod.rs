@@ -1,41 +1,29 @@
-//! Client-managed adaptive-quality policy for Plex's measured fixed-rendition HLS sessions.
+//! Adaptive playback has two deliberately separate controllers.
 //!
-//! The PMS probe proved that one HLS encoder session has one fixed rendition. A quality move is
-//! therefore a transaction: propose a rung, prime a separately named encoder, then commit only
-//! after that candidate has delivered a decodable segment with enough headroom. A rejected prime
-//! leaves this controller's current rung untouched.
-//!
-//! All presentation values are normalized [`MediaTimeMs`] values. Raw FFmpeg PTS, stream time
-//! bases, segment-local offsets and discontinuity counters never cross this boundary.
-//!
-//! # The decision pipeline
-//!
-//! Every Auto decision — the first one at startup and every one during playback — runs the same
-//! ordered stages, and the ordering is the design:
+//! The HLS rung controller is physical. A finite response at the current rendition is
+//! demand-capped and therefore cannot reveal unused path capacity. Completed acquisitions form a
+//! finite bag `(A_i, D_i)` and decide only what they directly identify:
 //!
 //! ```text
-//! feasibility  -> which playback states are technically possible at all
-//! estimation   -> delivery capacity, PMS production, buffer, each with UNCERTAINTY
-//! risk         -> per-candidate starvation horizon + production + buffer stress
-//! utility      -> compare feasible states: quality + features - risk - server - transition
-//! selection    -> argmax utility
-//! validation   -> prime the winner off-screen and grade the actual media
-//! commit       -> or keep the current state, untouched
+//! sustainable  <=> ΣA_i <= ΣD_i
+//! ordered R_o    =  max_i(Σ_{j<i}(A_j-D_j) + A_i)
+//! stress R_s     =  Σ(A_i-D_i)+ + max_i min(A_i,D_i)
+//! exploration E  =  (B-max(R_s,D_next))+
 //! ```
 //!
-//! Three consequences are worth stating, because each replaced an earlier rule that looked
-//! reasonable and was wrong:
+//! An upshift is the missing excitation. PMS uses fixed-rendition sessions, so the candidate is
+//! primed as a separate encoder under the absolute `E` deadline and commits only from its own
+//! completed `A <= D && B_post >= A` evidence. `R_o` diagnoses the observed current-point queue;
+//! `R_s` remains a retrospective stress diagnostic and conservative experiment-funding runway, not
+//! a predictive downshift trigger. There is no dwell, rate headroom, fixed buffer threshold, passive
+//! capacity ceiling or probability claim in that decision. Abandoned prefixes are censored and
+//! never become capacity samples.
 //!
-//! * **Feasibility is not a utility term.** A candidate the decoder cannot decode, or a raster
-//!   the device's own codec table refuses, is removed before anything is scored. No weight can be
-//!   large enough to make an impossible state the argmax, so no weight is asked to.
-//! * **Measurements feed [`CandidateRisk`], not the utility formula.** Variance, VBR headroom,
-//!   buffer slope and PMS cadence all reach the decision through one risk number per candidate.
-//!   The alternative — one term per telemetry field — is how a utility function becomes
-//!   untunable, since every new measurement silently reweights every old one.
-//! * **A deficit is not an emergency.** `C < R` says the buffer drains, not that playback stops:
-//!   [`starvation_horizon`] turns the pair into seconds, and 60 s of reserve against a 3% deficit
-//!   is half an hour away from trouble. Auto used to abandon Original on two slow windows.
+//! Original versus HLS is a product utility decision, not a network theorem. Original creates a
+//! new stream and visibly reloads the pipeline, but preserves direct-play/remux quality, DV/Atmos
+//! and removes recurring PMS video-encode work. Those recurring effects scale with remaining
+//! playback; the one-time visible transition cost does not. The weights are explicit product
+//! choices and must never be described as inferred probabilities.
 //!
 //! # What this module deliberately does not model
 //!
@@ -49,6 +37,11 @@
 //!   actually are here: production ratio drift, delivery drift, buffer slope.
 //! * **Anything learned.** Every number below is a measurement or a policy constant with a
 //!   product meaning in [`AbrPolicy`].
+//!
+//! All presentation values are normalized [`MediaTimeMs`] values. Raw FFmpeg PTS, segment-local
+//! offsets and discontinuity counters do not cross this boundary. See
+//! `docs/adaptive-playback.md` for the current contract and
+//! `docs/adaptive-playback-spec.md` for its derivation/history.
 
 // The split is by DECISION STAGE, matching the pipeline in the doc above: `plant` is what the
 // world does, `estimate` is what we believe about it, `viability`/`mode` are the comparisons,
@@ -82,29 +75,19 @@ pub(crate) use window::*;
 /// which is the test a number has to pass to live here at all. What this type replaced was a
 /// scatter of `3 good samples`, `8 cooldown samples`, `2 bad windows` and a bare `1_100`, none of
 /// which said what it was for, so none of them could be argued with.
-/// **How long a source probe may run.** One definition, referenced by the policy default AND by
-/// `route::REMOTE_PROBE_BUDGET`, so the gate that rules a probe affordable and the transfer that
-/// spends it cannot mean different numbers.
+/// **Operational ceiling on how long a source probe may run.** Its ordinary deadline is derived
+/// from the duration represented by the finite source object; this cap binds only when the minimum
+/// byte sample for a tiny source represents longer. [`source_probe_plan`] is the one derivation
+/// consumed by both the gate and transfer, so affordability cannot drift from execution.
 pub(crate) const PROBE_BUDGET_MS: u64 = 4_000;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AbrPolicy {
-    /// **The section 4 admission rule's two explicit choices** -- see [`AdmissionPolicy`]. Both are
-    /// classification (4), and both now GATE EVERY UPSHIFT: `n = k/eps - 1` is the evidence the
-    /// controller must hold before it may propose one, and the same window decides whether the
-    /// primed candidate commits.
+    /// Retired order-statistic calibration retained for offline corpus comparisons; see
+    /// [`AdmissionPolicy`]. The live controller does not read either value: current-rung physics
+    /// uses the whole finite bag and a candidate commits from its own completed acquisition.
+    #[allow(dead_code)] // legacy/offline order-statistic calibration; not a live ABR gate
     pub(crate) admission: AdmissionPolicy,
-    /// **The last remaining upshift-admission headroom.** Proposing a rung starts a real PMS
-    /// encoder session and leaves playback unrefilled while the candidate primes, whereas staying
-    /// on the current rung has no symmetric transaction cost. This is therefore an explicit
-    /// product choice, not a second estimate of capacity. Plan measurement M-D6 owns its removal.
-    pub(crate) upshift_admission_headroom_pm: u32,
-    /// PMS is comfortably ahead of real time below this segment-acquisition ratio. Above it a
-    /// candidate may still play, but it has no margin left for a slower scene.
-    pub(crate) production_safe_pm: u32,
-    /// At or above this, the server is producing at or slower than real time: a JIT encoder that
-    /// cannot keep up will drain any buffer eventually, whatever the network does.
-    pub(crate) production_max_pm: u32,
     /// **The part of segment acquisition that is not production** — connection, request, time to
     /// first byte, playlist latency — as a per-mille of content duration. 250 is half a second of a
     /// two-second segment, which is an ordinary round trip to a remote PMS. It exists so
@@ -146,30 +129,13 @@ pub(crate) struct AbrPolicy {
     /// ladder measures 98-159, and the audio lane is the one that BINDS down there, so an assumed
     /// value there is optimistic and the measured one must be preferred wherever it exists.
     pub(crate) assumed_audio_kbps: u32,
-    /// **VBR headroom over a whole-file average.** A file averaging 60 Mbit/s contains scenes well
-    /// above it, so the average is a lower bound on demand, not the demand. Spending the entire
-    /// measured link on the average merely postpones starvation to the first busy scene.
-    pub(crate) vbr_allowance_pm: u32,
-    /// Cold-start Original admission, where there is exactly one probe and no history: at that
-    /// moment the estimate has no dispersion to discount, so this margin has to carry the
-    /// uncertainty itself.
-    ///
-    /// **This doc said "Higher than [`Self::vbr_allowance_pm`] on purpose" and the two are EQUAL
-    /// in `measured()` — both 1 350.** The sentence was a design intent that the value never
-    /// carried, and the gap it describes is real but points the other way: cold start compares a
-    /// RAW measurement against 1.35x, while recovery compares an uncertainty-DISCOUNTED one
-    /// against the same 1.35x, so the effective bar is 1.35x when the estimate has one sample and
-    /// 1.69x-2.70x once it has a history. The moment we know least is the moment we admit most
-    /// easily — the inverse of what this comment claimed, and `docs/adaptive-playback-plan.md`
-    /// §6.3(4) already files the 1.35-vs-1.69 pair as a defect ("do not leave two undocumented
-    /// gates 2x apart"). Resolving that is a policy change and is not made here; what is fixed is
-    /// the doc asserting a relation the constants do not have.
-    pub(crate) bootstrap_confidence_pm: u32,
     /// How fast an unmeasured gap costs confidence. One of these is a widening; four is a demotion
     /// to a prior ([`CapacityEstimate::age_ms`]).
     pub(crate) stale_half_life_ms: u32,
-    /// Below this starvation horizon, a mode change is worth its visible cost — the buffer will
-    /// not survive the wait for a better answer.
+    /// Below this starvation horizon, a mode change is worth its visible cost. This is a policy
+    /// boundary, not evidence that one derivative is a trend: runtime Original confirms a drain
+    /// when the observed runway can afford it, and bypasses confirmation when waiting would spend
+    /// that runway down to [`Self::emergency_buffer_ms`].
     pub(crate) starvation_fallback_secs: u32,
     /// Above this horizon the deficit is arithmetic rather than a problem: 60 s of reserve against
     /// a 3% shortfall is half an hour away, and abandoning Original for it would be the old
@@ -248,64 +214,34 @@ pub(crate) struct AbrPolicy {
     /// the safe direction (the wall interval is longer under backpressure, so the new rule is at
     /// least as patient), and the observed ratio is an M2 measurement nobody has taken.
     pub(crate) sustained_unsafe_deficit_ms: i64,
-    /// **Minimum spacing between source probes**, wall clock (N13). It was
-    /// `ORIGINAL_PROBE_SPACING = 3`, which is not an Original window at all — it counted HLS
-    /// SEGMENTS, on a third clock, behind an `ORIGINAL_` prefix shared with the window counter
-    /// above. 6 000 ms is those three segments at the 2 s duration this pipeline requests, carried
-    /// across so nothing moves; unlike the count, it stays a duration if the server ignores the
-    /// requested segment length.
-    /// **How long a source probe may run, ms** — and therefore the reserve one costs.
+    /// **Operational maximum for a source probe, ms.**
     ///
-    /// The authoritative copy: `route::probe_original` passes this to
-    /// `curlio::sample_throughput` as its wall-clock budget, and `OriginalRecovery::probe_due`
-    /// requires a reserve at least this deep. One constant rather than two, because the gate that
-    /// decides a probe is affordable and the transfer that spends it MUST agree — they were a
-    /// `3 * segment` in `abr` against a `Duration::from_secs(4)` in `route`, which agree at 2 s
-    /// segments and at no other duration.
+    /// [`source_probe_plan`] derives the useful deadline from the duration represented by the
+    /// exact target bytes and caps it here. Both `route::probe_original` and
+    /// `OriginalRecovery::probe_due` consume that same plan, so the gate and transfer cannot drift.
+    /// The gate additionally preserves `max(R_s,D_next)`, the larger of the HLS stress-replay
+    /// boundary and the exact next parsed media object; charging only the probe used to leave the
+    /// following acquisition unfunded.
     pub(crate) probe_budget_ms: u64,
-    pub(crate) probe_spacing_ms: u64,
 }
 
 impl AbrPolicy {
     pub(crate) fn measured() -> Self {
         Self {
-            // **eps = 50pm, k = 1, so n = 19.** The frequency reading below is an EMPIRICAL,
-            // MARGINAL expectation and not a guarantee this rule delivers — `AdmissionPolicy`'s
-            // doc has the three reasons the coverage reading is unavailable (the raw bound the
-            // domination argument rests on does not hold for an upshift; invocation is selected by
-            // the same data; the window's contents are shaped by the collapse reset). Read against
-            // the corpus rather than against the number: at nominal on stationary legs, about 2x
-            // over on swept ones.
-            //
-            // Stated as what it costs a viewer rather than as a percentage: about one acquisition
-            // in twenty exceeding the bound, and at the 2 s segment this pipeline requests that is
-            // **one exceedance per ~40 s of playback**. An exceedance is not a stall — it is one
-            // segment arriving later than the bound promised, which condition (2) has already
-            // required the reserve to absorb — so the quantity being chosen is how often the
-            // reserve is drawn on, not how often the picture stops. What the choice really fixes,
-            // deterministically, is the EVIDENCE LENGTH `n = 19` and, through (2), the `n*D` span
-            // of media survival is proven over.
-            //
-            // `k = 1` takes the window's maximum: the tightest bound available at this eps, and
-            // the most sensitive to a single outlier. It is the conservative end of the one axis
-            // that is free once eps is fixed. Raising `k` buys a longer proof horizon at the same
-            // eps (n = k/eps - 1) and should be argued from a stated passage length, which this
-            // project does not have yet.
+            // Historical comparator only: eps = 50pm and k = 1 imply n = 19. The former marginal
+            // probability interpretation is unavailable for selected, demand-capped requests;
+            // `AdmissionPolicy` records the full downgrade. Keeping the measured setting makes
+            // archived traces reproducible without putting either number back on the live path.
             admission: AdmissionPolicy {
                 epsilon_pm: 50,
                 k: 1,
             },
-            upshift_admission_headroom_pm: 800,
-            production_safe_pm: 750,
-            production_max_pm: 1_100,
             production_floor_pm: 250,
             emergency_buffer_ms: 2_000,
             buffer_target_ms: 2_500,
             buffer_reserve_fraction_pm: 500,
             buffer_refill_horizon_ms: 10_000,
             assumed_audio_kbps: 192,
-            vbr_allowance_pm: 1_350,
-            bootstrap_confidence_pm: 1_350,
             stale_half_life_ms: 30_000,
             starvation_fallback_secs: 20,
             starvation_safe_secs: 60,
@@ -321,9 +257,8 @@ impl AbrPolicy {
             risk_weight: 2,
             server_cost_weight: 4,
             sustained_unsafe_deficit_ms: 4_500,
-            // The transfer's own deadline. `route::REMOTE_PROBE_BUDGET` is this value.
+            // Operational cap; `source_probe_plan` derives the actual transfer deadline.
             probe_budget_ms: PROBE_BUDGET_MS,
-            probe_spacing_ms: 6_000,
         }
     }
 }

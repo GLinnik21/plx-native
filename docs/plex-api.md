@@ -36,7 +36,8 @@ Otherwise (HEVC/AV1, MP4/AAC/EAC3/TrueHD, etc.) the delivery depends on the pers
   and can lose to one with little of the film left to play. A verified Local link uses it
   immediately; a direct Remote
   samples a bounded prefix of the actual Part and uses direct play or a codec-preserving remux only
-  when measured throughput is at least 1.35× the whole-file bitrate. Relay, unknown/failed samples,
+  when a completed response delivers at least as fast as the source consumes. There is no fixed
+  headroom multiplier; VBR risk is observed from the later buffer derivative. Relay, unknown/failed samples,
   and slower Remote links request fixed-rendition HLS/MPEG-TS with H.264/AAC. A Remote that began
   on Original remains watched: every 750 ms window of ACTIVE body-read time re-computes a
   starvation horizon, and playback leaves Original when that horizon falls inside the fallback
@@ -47,9 +48,12 @@ Otherwise (HEVC/AV1, MP4/AAC/EAC3/TrueHD, etc.) the delivery depends on the pers
   downloads one segment at a time, normalizes timestamps, measures network/production/buffer
   headroom, and transactionally replaces the PMS encoder when another rung is sustainable. HLS is
   not terminal, and recovery waits for neither the top rung nor a fixed probe count: bounded source
-  probes are spaced and gated on a deep, refilling reserve plus spare capacity in the HLS evidence,
-  and how many are needed is an output of the estimate's confidence — a probe at twice the
-  requirement clears the bar alone, a marginal one must be confirmed. A recovered playback is
+  probes run under the exact active resource identity only when reserve can pay both finite probe
+  phases while preserving the next HLS acquisition (`B >= 2P + max(R,D)`). There is no spacing
+  timer or inference of spare link capacity from a demand-capped HLS response; an insufficient or
+  failed probe is rearmed only by confidence-separated stronger HLS evidence. After a completed
+  terminal comparison, an upward HLS commit re-scores the retained source result, while a downshift
+  retires that old-regime evidence before a fresh bounded probe. A recovered playback is
   watched by the same rule, so another sustained collapse falls back again. The
   restricted playlist contract and measured server behavior are in
   `docs/pms-hls-protocol-probe.md` and the controller in `docs/adaptive-playback.md`;

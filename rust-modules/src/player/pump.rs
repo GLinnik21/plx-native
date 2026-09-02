@@ -1,8 +1,10 @@
 //! player::pump — the main-thread pump (was bufferfeed_pump). Runs each frame from
 //! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
 //! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
-use super::engine::{drain_aq, engine, feed_audio_lane, feed_sample, feed_stream, Engine, Source};
-use super::shared::Stage;
+use super::engine::{
+    arm_live_clock_prime, drain_aq, engine, feed_both_lanes, feed_sample, Engine, Source,
+};
+use super::shared::{HlsPauseCompletion, HlsPrimeKind, HlsSeekPause, Stage};
 use super::{ffi, ACB_OK, SHARED, TX};
 use crate::task::MainThread;
 use std::os::raw::c_char;
@@ -32,6 +34,114 @@ fn prime_before_play(rebase_pending: bool, segmented_hls: bool) -> bool {
     rebase_pending || segmented_hls
 }
 
+/// Playable HLS reserve in the same content-time coordinates as the demux controller. The main
+/// thread needs this read for the exact depleted-buffer fallback and for rebuffer diagnostics;
+/// ordinary ABR decisions remain on the worker.
+fn hls_buffered_ms() -> Option<i64> {
+    let video = SHARED.hls_video_tail_ns.load(Acquire);
+    if video < 0 {
+        return None;
+    }
+    let audio = SHARED.hls_audio_tail_ns.load(Acquire);
+    let tail = if audio >= 0 { video.min(audio) } else { video };
+    let display_base = SHARED.disp_base.load(Relaxed).max(0);
+    Some(
+        tail.saturating_add(display_base)
+            .saturating_sub(SHARED.playpos_ns.load(Relaxed).max(0))
+            .max(0)
+            / 1_000_000,
+    )
+}
+
+fn should_begin_hls_rebuffer(
+    requested: bool,
+    _trial_reserve_ms: i64,
+    _runtime_runway_ms: i64,
+    buffered_ms: Option<i64>,
+) -> bool {
+    // `runtime_runway_ms` is a boundary requirement: it says how much reserve must be present
+    // when a clock starts, not how much of the same acquisition remains at every later pump tick.
+    // Comparing a decreasing mid-fetch B with the original full R makes a sustainable stream
+    // pause shortly before virtually every segment lands. The reserve retained by a bounded
+    // candidate is a boundary balance too: `exploration_budget_ms` gives the transaction only
+    // B-max(R,D), and its deadline is the actuator that enforces that spend. Treating R as a live
+    // main-thread stop arm duplicates the deadline and, on the device, latched seconds of stopped
+    // playback after 136 ms of harmless measurement/clock skew (B=5167, R=5303).
+    //
+    // Only the in-flight response, which can see its current byte progress, may request an early
+    // hold. Actual B=0 remains the coefficient-free terminal condition when no response byte has
+    // arrived. Keep the boundary arguments in this pure function so the regression exercises the
+    // exact values the pump samples and so the diagnostic line below can continue publishing them.
+    requested || buffered_ms == Some(0)
+}
+
+fn rebuffer_request_is_current(
+    requested: bool,
+    requested_tail_ns: i64,
+    current_tail_ns: i64,
+) -> bool {
+    requested && (requested_tail_ns < 0 || current_tail_ns <= requested_tail_ns)
+}
+
+/// Stop the INTERNAL A/V clock at a physical reserve boundary while leaving demux and feeding
+/// alive. This is intentionally not `TX.paused`: the viewer did not pause, and the whole point is
+/// to keep acquiring until `try_prime` sees enough measured runway to resume smoothly.
+fn maybe_begin_hls_rebuffer(mt: &MainThread, eng: &mut Engine) {
+    if !crate::route::is_segmented_hls()
+        || eng.stage < Stage::Playing
+        || eng.prime_play
+        || TX.paused.load(Relaxed)
+    {
+        return;
+    }
+    // Consume atomically: a worker request racing this tick must either be the value returned here
+    // or remain set for the next tick, never be erased by a later unconditional store.
+    let requested = SHARED.hls_rebuffer_requested.swap(false, Acquire);
+    let requested_tail_ns = SHARED.hls_rebuffer_request_tail_ns.load(Acquire);
+    let current_tail_ns = SHARED.hls_video_tail_ns.load(Acquire);
+    let requested = rebuffer_request_is_current(requested, requested_tail_ns, current_tail_ns);
+    let trial_reserve_ms = SHARED.hls_trial_reserve_ms.load(Acquire);
+    let runtime_runway_ms = SHARED.hls_prime_runway_ms.load(Acquire);
+    let buffered_ms = hls_buffered_ms();
+    if !should_begin_hls_rebuffer(requested, trial_reserve_ms, runtime_runway_ms, buffered_ms) {
+        return;
+    }
+    let Some(pause_token) = SHARED.prepare_hls_rebuffer_pause() else {
+        if requested {
+            SHARED.hls_rebuffer_requested.store(true, Release);
+        }
+        super::log("hls: auto-rebuffer pause deferred by clock transition; will retry");
+        return;
+    };
+    let paused = unsafe { ffi::sf_pause(mt) };
+    match SHARED.complete_hls_rebuffer_pause(pause_token, paused != 0) {
+        HlsPauseCompletion::Accepted => {}
+        HlsPauseCompletion::Refused => {
+            if requested {
+                SHARED.hls_rebuffer_requested.store(true, Release);
+            }
+            super::log("hls: auto-rebuffer pause refused by Starfish; will retry");
+            return;
+        }
+        HlsPauseCompletion::Stale => {
+            if requested {
+                SHARED.hls_rebuffer_requested.store(true, Release);
+            }
+            super::log("hls: auto-rebuffer pause result was stale; will retry");
+            return;
+        }
+    }
+    arm_live_clock_prime(eng);
+    // The pause-local proof was armed before sf_pause, so a completed segment in the native-call
+    // window is already part of this hold instead of being silently discarded.
+    super::log(&format!(
+        "hls: auto-rebuffer pause buf={}ms trial_reserve={}ms runway={}ms",
+        buffered_ms.unwrap_or(-1),
+        trial_reserve_ms,
+        runtime_runway_ms,
+    ));
+}
+
 /// Place the webOS 5+ exported window: source frame -> on-screen rect.
 ///
 /// No-op on the ACB path. `src` is the frame being FED and `dst` where it lands, and the pair is
@@ -43,7 +153,7 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
     if ffi::vp_mode() != ffi::VP_EXPORTED {
         return;
     }
-    let (w, h) = (SHARED.video_w.load(Relaxed), SHARED.video_h.load(Relaxed));
+    let (w, h) = SHARED.video_raster();
     let src = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
     let rv = unsafe { ffi::vp_place(mt, src.0, src.1, 0, 0, 1920, 1080) };
     eng.placed_src = src;
@@ -62,20 +172,23 @@ fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
     ));
 }
 
-/// Mirror the Engine-confined diagnostics into `Shared` for the render path.
+/// Mirror Engine-confined observations into `Shared` for diagnostics and handled-error context.
 ///
 /// The read-out cannot call `engine(&MainThread)` itself — that hands out a `&'static mut` to a
 /// `static mut`, and the draw runs inside a frame where the pump's borrow may still be live, so a
 /// second one is instant UB. This is the only bridge, it is one-way, and nothing in the playback
 /// state machine may read these fields back.
 ///
-/// `aq_bytes` takes each queue's pthread mutex, which is why it is sampled HERE, once per tick on
-/// the main thread, and never from a draw.
+/// The stage is a cheap scalar and is always published so an opted-in terminal report does not
+/// depend on whether Stats for Nerds happened to be open. `aq_bytes` takes each queue's pthread
+/// mutex, which is why the rest is sampled HERE, once per visible diagnostics tick, and never from
+/// a draw.
 /// Last `frames` we saw, so a CHANGE can be stamped. A decrease counts: `frames` is seek-scoped
 /// and the pump zeroes it applying a seek, which is motion, not a freeze.
 static LAST_FRAMES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 fn publish_diag(eng: &Engine, now: u32) {
+    SHARED.dg_stage.store(eng.stage as u8, Relaxed);
     // Nobody is looking: skip it. `aq_bytes` takes each queue's pthread mutex, and the read-out
     // samples at 2 Hz, so publishing at 60 Hz is 30x more often than anything can observe. Costs
     // no freshness — the loop order is pump → stats::update → stats::draw, so the frame the panel
@@ -83,7 +196,6 @@ fn publish_diag(eng: &Engine, now: u32) {
     if !crate::ui::stats::enabled() {
         return;
     }
-    SHARED.dg_stage.store(eng.stage as u8, Relaxed);
     let qv = eng.aq_video.as_ref().map_or(0, |q| {
         crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
     });
@@ -103,6 +215,196 @@ fn publish_diag(eng: &Engine, now: u32) {
     }
 }
 
+/// The failed half of the deferred Original recovery: put the old route back and say where to
+/// resume it, in nanoseconds. `None` means there was no recovery in flight, and the caller's
+/// failure means what it always did.
+///
+/// The three failure gates below all route through here rather than one of them, because the three
+/// ways a source can refuse to open are not distinguishable from the outside and all three cost
+/// the same thing: `demux_io_failed` is the transfer dying, `demux_failed` with no frames is the
+/// open being rejected, and `load_failed` is the pipeline refusing the payload the source implied.
+/// The device case was the first; a 404 or a codec the set will not take are the other two.
+enum OriginalRollbackPreparation {
+    NotPending,
+    RebaseFailed,
+    Prepared(crate::route::OriginalRollback),
+}
+
+fn prepare_failed_original_rollback(status: i32) -> OriginalRollbackPreparation {
+    let Some(rollback) = crate::route::rollback_original_recovery() else {
+        return OriginalRollbackPreparation::NotPending;
+    };
+    let secs = rollback.offset_ns / 1_000_000_000;
+    if status >= 400 {
+        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
+    } else {
+        // HTTP 200 followed by demux/Load failure is meaningfully different from no response.
+        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
+    }
+    // The held rollback resource is still alive, but its old start URL begins at the boundary
+    // where that worker was created. Register a fresh physical HLS session at the recovery
+    // position before reloading it; reopening the saved URL pairs a new display base with old media
+    // and makes the picture jump backwards while the clock claims it did not.
+    if crate::route::transcode_seek(secs).is_none() {
+        super::log("abr: restored HLS encoder but could not rebase it to the recovery position");
+        return OriginalRollbackPreparation::RebaseFailed;
+    }
+    super::report::note_delivery_requested_for(
+        crate::route::playback_trace_generation(),
+        super::report::DeliveryClass::Hls,
+        super::report::QualityClass::Unknown,
+        super::report::DeliveryReason::OriginalOpenRollback,
+    );
+    OriginalRollbackPreparation::Prepared(rollback)
+}
+
+fn recover_from_failed_original() -> Option<crate::route::OriginalRollback> {
+    // Capture before `reload_transcode` clears the engine-scoped HTTP mirror. This sticky pair is
+    // the reason a successful HLS rollback can still explain on screen why Original was refused.
+    let status = SHARED.dg_http_status.load(Relaxed);
+    match prepare_failed_original_rollback(status) {
+        OriginalRollbackPreparation::Prepared(rollback) => Some(rollback),
+        OriginalRollbackPreparation::NotPending | OriginalRollbackPreparation::RebaseFailed => None,
+    }
+}
+
+/// Foreground can observe a synchronous construction failure before an Engine exists for
+/// [`pump`] to inspect. Take the same typed Original -> restored-HLS edge used by asynchronous
+/// open failures and return the exact replacement Load token to the foreground lifecycle.
+pub(crate) enum ForegroundOriginalRecovery {
+    NotOriginal,
+    Tracking(crate::route::RouteStartAttempt),
+    /// PMS preparation succeeded and the HLS candidate remains retryable, but native Engine
+    /// construction failed before an asynchronous Load could be observed.
+    RetryPrepared,
+    /// Rollback consumed the Original snapshot but could not rebuild/rebase a truthful HLS route.
+    Terminal,
+}
+
+pub(crate) fn recover_failed_foreground_original(mt: &MainThread) -> ForegroundOriginalRecovery {
+    // No HTTP request necessarily happened: do not inherit the previous Engine's sticky status.
+    let rollback = match prepare_failed_original_rollback(0) {
+        OriginalRollbackPreparation::NotPending => {
+            return ForegroundOriginalRecovery::NotOriginal;
+        }
+        OriginalRollbackPreparation::RebaseFailed => {
+            set_state(super::shared::PlaybackState::Error);
+            return ForegroundOriginalRecovery::Terminal;
+        }
+        OriginalRollbackPreparation::Prepared(rollback) => rollback,
+    };
+    match super::engine::reload_transcode_tracked(mt, rollback.offset_ns) {
+        super::engine::BufferfeedStartOutcome::Launched(attempt) => {
+            ForegroundOriginalRecovery::Tracking(attempt)
+        }
+        super::engine::BufferfeedStartOutcome::Failed => ForegroundOriginalRecovery::RetryPrepared,
+        super::engine::BufferfeedStartOutcome::AlreadyRunning => {
+            set_state(super::shared::PlaybackState::Error);
+            ForegroundOriginalRecovery::Terminal
+        }
+    }
+}
+
+/// Which recovery owns a source/pipeline open failure. Pure so the ordering cannot regress while
+/// the device-only reload calls remain outside host tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenFailureAction {
+    /// HLS→Original had a live encoder held specifically for this outcome.
+    RollbackPendingOriginal,
+    /// Cold Auto Original never produced a frame; build the HLS contingency bootstrap retained.
+    StartAutoHls,
+    /// Manual Original, a post-frame interruption, or no viable route.
+    Error,
+}
+
+fn open_failure_action(
+    pending_original: bool,
+    auto_original: bool,
+    no_frames: bool,
+) -> OpenFailureAction {
+    if pending_original {
+        OpenFailureAction::RollbackPendingOriginal
+    } else if auto_original && no_frames {
+        OpenFailureAction::StartAutoHls
+    } else {
+        OpenFailureAction::Error
+    }
+}
+
+/// Recover either kind of failed Original open and return the reload position in nanoseconds.
+/// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting
+/// a third transaction on route state whose encoder restore already failed.
+fn recover_failed_source_route() -> Option<crate::route::OriginalRollback> {
+    let action = open_failure_action(
+        crate::route::original_recovery_pending(),
+        crate::route::auto_original_watch().is_some(),
+        SHARED.frames.load(Relaxed) == 0,
+    );
+    match action {
+        OpenFailureAction::RollbackPendingOriginal => recover_from_failed_original(),
+        OpenFailureAction::StartAutoHls => {
+            let status = SHARED.dg_http_status.load(Relaxed);
+            if status >= 400 {
+                super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
+            } else {
+                super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
+            }
+            let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+            crate::route::fallback_unopened_auto_to_hls(secs)?;
+            Some(crate::route::OriginalRollback::without_deferred(
+                secs * 1_000_000_000,
+            ))
+        }
+        OpenFailureAction::Error => None,
+    }
+}
+
+/// Settle a synchronous native reload effect.  A failed `start_bufferfeed` used to be only a log:
+/// callers had already advanced the route reducer and then returned, leaving no Engine to publish
+/// the failure and (for Original) an `OriginalTrial` which could never receive its first frame.
+fn settle_reload(outcome: super::engine::ReloadOutcome, operation: &str) -> bool {
+    if outcome == super::engine::ReloadOutcome::Started {
+        return true;
+    }
+    super::log(&format!(
+        "route transition: {operation} failed synchronously ({outcome:?})",
+    ));
+    set_state(super::shared::PlaybackState::Error);
+    false
+}
+
+/// Start the native half of an HLS→Original transaction.  The reducer already owns a complete HLS
+/// rollback snapshot; a synchronous Load construction failure is the same typed rejection as an
+/// HTTP/demux/Load callback failure and must cross that rollback edge immediately.
+fn start_original_trial_reload(
+    mt: &MainThread,
+    reload: crate::route::AutoOriginalReload,
+    position_ns: i64,
+) -> bool {
+    let outcome = match reload {
+        crate::route::AutoOriginalReload::Direct => super::engine::reload_at(mt, position_ns),
+        crate::route::AutoOriginalReload::Remux => super::engine::reload_transcode(mt, position_ns),
+    };
+    if outcome == super::engine::ReloadOutcome::Started {
+        return true;
+    }
+    super::log(&format!(
+        "abr: Original trial could not start ({outcome:?}); taking explicit rollback edge",
+    ));
+    let Some(rollback) = recover_from_failed_original() else {
+        set_state(super::shared::PlaybackState::Error);
+        return false;
+    };
+    let restored = super::engine::reload_transcode(mt, rollback.offset_ns);
+    if restored == super::engine::ReloadOutcome::Started {
+        true
+    } else {
+        super::log(&format!("abr: HLS rollback could not start ({restored:?})",));
+        set_state(super::shared::PlaybackState::Error);
+        false
+    }
+}
+
 pub(crate) fn pump(mt: &MainThread, now: u32) {
     use super::shared::PlaybackState;
     let eng = match engine(mt) {
@@ -118,105 +420,309 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // the `sf_ready` and producer-died bail-outs — which is precisely when a stalled user is
     // looking at the panel. See `Shared`'s diagnostics-mirror block for the one-way rule.
     publish_diag(eng, now);
+    // The media thread may have returned from sf_load immediately, but it is not allowed to make
+    // the route Stable before this Engine exists in the main-thread slot. Drain its exact-token
+    // result here, after installation and before any worker publication can be accepted.
+    crate::route::drain_route_start_results();
+    // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
+    // otherwise the pump returns Connecting forever and never consumes the explicit failure.
+    if SHARED.load_failed.load(Acquire) {
+        if let Some(rollback) = recover_failed_source_route() {
+            let started = settle_reload(
+                super::engine::reload_transcode(mt, rollback.offset_ns),
+                "HLS rollback after native Load failure",
+            );
+            let _ = started;
+            return;
+        }
+        crate::route::fail_current_engine();
+        set_state(PlaybackState::Error);
+        return;
+    }
     // wait for the media-thread ctor
     if unsafe { ffi::sf_ready(mt) } == 0 {
         set_state(PlaybackState::Connecting);
         return;
     }
-    // Auto began on a proven-fast direct Remote, but the live transfer later lost both rate and
-    // content reserve. The demuxer has stopped cleanly at a packet boundary; replace the route and
-    // pipeline at the current movie position. This precedes the generic producer-death gates so
-    // the intentional handoff cannot be mistaken for EOF/Error.
-    let fallback_kbps = SHARED.auto_fallback_kbps.swap(0, Acquire);
-    if fallback_kbps > 0 {
-        let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-        let measured_kbps = u32::try_from(fallback_kbps).unwrap_or(u32::MAX);
-        if crate::route::fallback_auto_to_hls(measured_kbps, secs).is_some() {
-            super::engine::reload_transcode(mt, secs * 1_000_000_000);
-            return;
-        }
-        super::log("auto: Original watchdog handoff was stale or the HLS rebuild failed");
-        SHARED.demux_io_failed.store(true, Relaxed);
+    // ---------- the Original recovery, once it has to answer for itself ----------
+    //
+    // `recover_auto_to_original` deferred two irreversible things — the server-side stop and the
+    // old route — because the probes that authorised the switch are a claim about a byte range
+    // fetched seconds ago, not about the fresh open the reload above just performed. Here is where
+    // that open is graded.
+    //
+    // **Decoded frames, not `loadCompleted`.** A completed Load is the pipeline accepting a
+    // PAYLOAD DECLARATION; it says nothing about the source delivering. `frames` is zeroed by
+    // `teardown(for_reload=true)` on the way into this reload (`SHARED::reset_session`), so a
+    // non-zero count here belongs to the new source and to nothing else.
+    if crate::route::original_recovery_pending() && SHARED.frames.load(Relaxed) > 0 {
+        crate::route::confirm_original_recovery();
     }
-    // The symmetric Auto handoff. The HLS worker stopped only after two successful probes of the
-    // actual source; restore either direct play (source seek + native payload) or a zero-video-
-    // encode remux (offset transcode + matching payload). Both replace the Engine, so return.
-    let recover_kbps = SHARED.auto_recover_kbps.swap(0, Acquire);
-    if recover_kbps > 0 {
-        let pos_ns = SHARED.playpos_ns.load(Relaxed).max(0);
-        let secs = pos_ns / 1_000_000_000;
-        match crate::route::recover_auto_to_original(secs) {
-            Some(crate::route::AutoOriginalReload::Direct) => {
-                super::engine::reload_at(mt, pos_ns);
-                return;
-            }
-            Some(crate::route::AutoOriginalReload::Remux) => {
-                super::engine::reload_transcode(mt, pos_ns);
-                return;
-            }
-            None => {
-                super::log(
-                    "auto: Original recovery handoff was stale or the source rebuild failed",
-                );
-                SHARED.demux_io_failed.store(true, Relaxed);
-            }
-        }
+    if SHARED.frames.load(Relaxed) > 0 {
+        crate::route::confirm_resume_presented();
     }
+
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
     // so it can NEVER fire, and the player used to sit on a black screen forever with no error
     // and no exit. Surface it instead — BACK is already the escape.
-    if SHARED.demux_io_failed.load(Relaxed) {
+    //
+    // **Unless there is a way back**, which is the whole of the deferral above. Device,
+    // 2026-08-29: the viewer asked for Original by hand on a film that was playing, the source URL
+    // failed the way the same server's Original probe had failed forty seconds earlier, and this
+    // line raised the failure read-out on a stream that had been working. A failed recovery is
+    // worth a second reload; it is not worth the playback.
+    // A worker may publish a more specific terminal code immediately before this generic Release
+    // flag. Acquire is the matching hand-off; `error_now` can then report the transaction cause
+    // instead of racing it into the generic producer bucket.
+    if SHARED.demux_io_failed.load(Acquire) {
+        if let Some(rollback) = recover_failed_source_route() {
+            let started = settle_reload(
+                super::engine::reload_transcode(mt, rollback.offset_ns),
+                "HLS rollback after source I/O failure",
+            );
+            let _ = started;
+            return;
+        }
+        crate::route::fail_current_engine();
         set_state(PlaybackState::Error);
         return;
     }
-    if SHARED.demux_failed.load(Relaxed) && SHARED.frames.load(Relaxed) == 0 {
-        set_state(PlaybackState::Error);
-        return;
-    }
-    // The same escape for a Load the pipeline REFUSED. `loadCompleted` can never arrive after
-    // that, so without this the pump stays in Stage::Loading and the user watches a spinner with
-    // no error and no way to tell it apart from a slow server.
-    if SHARED.load_failed.load(Relaxed) {
+    if SHARED.demux_failed.load(Acquire) && SHARED.frames.load(Relaxed) == 0 {
+        if let Some(rollback) = recover_failed_source_route() {
+            let started = settle_reload(
+                super::engine::reload_transcode(mt, rollback.offset_ns),
+                "HLS rollback after demux failure",
+            );
+            let _ = started;
+            return;
+        }
+        crate::route::fail_current_engine();
         set_state(PlaybackState::Error);
         return;
     }
     let stream = matches!(eng.source, Source::Stream);
 
-    // ---------- pending NATIVE audio-track switch (direct-play, no transcode): reload
-    // direct-play feeding the chosen audio stream from the same MKV. REPLACES the ENGINE, so
-    // `eng` dangles — return immediately. ----------
-    let nidx = SHARED.pending_audio_idx.swap(-1, Relaxed);
-    if stream && nidx >= 0 && eng.stage >= Stage::Playing {
-        let pos = SHARED.playpos_ns.load(Relaxed).max(0);
-        super::log(&format!(
-            "audio switch (native): idx={nidx} at {}s → reload",
-            pos / 1_000_000_000
-        ));
-        super::engine::switch_audio_native(mt, nidx, pos);
-        return;
-    }
-
-    // ---------- pending audio-track switch OR subtitle-burn refresh: force a fresh transcode
-    // (H264/AC3) with the selected audio + subtitle at the CURRENT position, then RELOAD the
-    // pipeline. A direct-play item is Loaded for its native codec (e.g. H265); the transcode
-    // output is H264, so we MUST re-Load with the H264 payload — flush+refeeding H264 into the
-    // H265 pipeline stalls. reload_transcode REPLACES the ENGINE, so `eng` dangles after it:
-    // return immediately. ----------
-    let asid = SHARED.pending_audio_sid.swap(-1, Relaxed);
-    let refresh = SHARED.pending_retranscode.swap(false, Relaxed);
-    if stream && (asid >= 0 || refresh) && eng.stage >= Stage::Playing {
-        let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-        let rebuilt = if asid >= 0 {
-            crate::route::switch_audio(asid, secs)
-        } else {
-            crate::route::retranscode(secs)
-        };
-        if rebuilt.is_some() {
-            super::log(&format!(
-                "re-transcode: asid={asid} refresh={refresh} offset={secs}s → reload"
-            ));
-            super::engine::reload_transcode(mt, secs * 1_000_000_000);
-            return;
+    // ---------- one synchronized route/action state machine ----------
+    //
+    // User quality/track changes survive pre-roll and outrank automatic ABR. A simultaneous seek
+    // is not a competing mailbox: it supplies this action's target, so the two become ONE reload
+    // instead of either resetting the seek or rebuilding at the position the viewer already left.
+    if stream && eng.stage >= Stage::Playing && !(eng.flushed && eng.rebase_pending) {
+        if let Some(action) = crate::route::claim_route_action() {
+            let pending_seek = TX.seek_to_ns.load(Relaxed);
+            let current_pos = SHARED.playpos_ns.load(Relaxed).max(0);
+            let user_target = if pending_seek >= 0 {
+                pending_seek
+            } else {
+                current_pos
+            };
+            match action.intent.clone() {
+                crate::route::RouteIntent::User(intent) => match intent {
+                    crate::route::UserRouteIntent::Retranscode => {
+                        let secs = user_target / 1_000_000_000;
+                        if crate::route::retranscode_for(&action.ticket, secs).is_some() {
+                            crate::route::finish_route_action(
+                                &action,
+                                crate::route::RouteApplyResult::Prepared,
+                            );
+                            if pending_seek >= 0 {
+                                crate::route::commit_user_seek();
+                            }
+                            super::log(&format!(
+                                "route transition: user retranscode at {secs}s{}",
+                                if pending_seek >= 0 { " + seek" } else { "" },
+                            ));
+                            settle_reload(
+                                super::engine::reload_transcode(mt, user_target),
+                                "user retranscode reload",
+                            );
+                            return;
+                        }
+                        crate::route::finish_route_action(
+                            &action,
+                            crate::route::RouteApplyResult::Rejected,
+                        );
+                        super::log("route transition: user retranscode was rejected; current stream retained");
+                    }
+                    crate::route::UserRouteIntent::NativeAudioReload => {
+                        let idx = SHARED.desired_audio_idx.load(Relaxed);
+                        crate::route::finish_route_action(
+                            &action,
+                            crate::route::RouteApplyResult::Prepared,
+                        );
+                        if pending_seek >= 0 {
+                            crate::route::commit_user_seek();
+                        }
+                        super::log(&format!(
+                            "route transition: native audio idx={idx} at {}s{}",
+                            user_target / 1_000_000_000,
+                            if pending_seek >= 0 { " + seek" } else { "" },
+                        ));
+                        settle_reload(
+                            super::engine::switch_audio_native(mt, idx, user_target),
+                            "native audio reload",
+                        );
+                        return;
+                    }
+                    crate::route::UserRouteIntent::AdaptiveReload => {
+                        if crate::route::is_transcoding() {
+                            let secs = user_target / 1_000_000_000;
+                            if crate::route::transcode_seek(secs).is_some() {
+                                crate::route::finish_route_action(
+                                    &action,
+                                    crate::route::RouteApplyResult::Prepared,
+                                );
+                                if pending_seek >= 0 {
+                                    crate::route::commit_user_seek();
+                                }
+                                super::log(&format!(
+                                    "route transition: adaptive worker reload at {secs}s{}",
+                                    if pending_seek >= 0 { " + seek" } else { "" },
+                                ));
+                                settle_reload(
+                                    super::engine::reload_transcode(mt, user_target),
+                                    "adaptive HLS reload",
+                                );
+                                return;
+                            }
+                            crate::route::finish_route_action(
+                                &action,
+                                crate::route::RouteApplyResult::Rejected,
+                            );
+                            super::log("route transition: adaptive transcode reload was rejected");
+                        } else {
+                            crate::route::finish_route_action(
+                                &action,
+                                crate::route::RouteApplyResult::Prepared,
+                            );
+                            if pending_seek >= 0 {
+                                crate::route::commit_user_seek();
+                            }
+                            super::log(&format!(
+                                "route transition: adaptive direct reload at {}s{}",
+                                user_target / 1_000_000_000,
+                                if pending_seek >= 0 { " + seek" } else { "" },
+                            ));
+                            settle_reload(
+                                super::engine::reload_at(mt, user_target),
+                                "adaptive direct reload",
+                            );
+                            return;
+                        }
+                    }
+                    crate::route::UserRouteIntent::RecoverOriginal => {
+                        let secs = user_target / 1_000_000_000;
+                        match crate::route::recover_auto_to_original_for(
+                            &action.ticket,
+                            secs,
+                            false,
+                        ) {
+                            Some(reload) => {
+                                crate::route::commit_user_seek();
+                                start_original_trial_reload(mt, reload, user_target);
+                                return;
+                            }
+                            None => {
+                                crate::route::finish_route_action(
+                                    &action,
+                                    crate::route::RouteApplyResult::Rejected,
+                                );
+                                super::log("route transition: manual Original was rejected; current stream retained");
+                            }
+                        }
+                    }
+                },
+                crate::route::RouteIntent::Automatic(intent) => {
+                    match intent {
+                        crate::route::AutomaticRouteIntent::OriginalToHls {
+                            ticket,
+                            conservative_kbps,
+                            position_ns,
+                        } => {
+                            let position_ns = position_ns.max(0);
+                            let secs = position_ns / 1_000_000_000;
+                            if ticket != action.ticket {
+                                crate::route::finish_route_action(
+                                    &action,
+                                    crate::route::RouteApplyResult::Cancelled,
+                                );
+                                super::log("auto: discarded fallback action whose ticket changed before claim");
+                                return;
+                            }
+                            if crate::route::fallback_auto_to_hls_for(
+                                &action.ticket,
+                                conservative_kbps,
+                                secs,
+                            )
+                            .is_some()
+                            {
+                                crate::route::finish_route_action(
+                                    &action,
+                                    crate::route::RouteApplyResult::Prepared,
+                                );
+                                crate::route::commit_user_seek();
+                                settle_reload(
+                                    super::engine::reload_transcode(mt, position_ns),
+                                    "automatic Original-to-HLS reload",
+                                );
+                                return;
+                            }
+                            crate::route::finish_route_action(
+                                &action,
+                                crate::route::RouteApplyResult::Rejected,
+                            );
+                            super::log("auto: synchronized Original fallback could not build HLS");
+                            SHARED.demux_io_failed.store(true, Relaxed);
+                        }
+                        crate::route::AutomaticRouteIntent::HlsToOriginal {
+                            ticket,
+                            evidence_kbps: _,
+                            position_ns,
+                        } => {
+                            let position_ns = position_ns.max(0);
+                            let secs = position_ns / 1_000_000_000;
+                            if ticket != action.ticket {
+                                crate::route::finish_route_action(
+                                    &action,
+                                    crate::route::RouteApplyResult::Cancelled,
+                                );
+                                super::log("auto: discarded Original action whose ticket changed before claim");
+                                return;
+                            }
+                            match crate::route::recover_auto_to_original_for(
+                                &action.ticket,
+                                secs,
+                                true,
+                            ) {
+                                Some(reload) => {
+                                    crate::route::commit_user_seek();
+                                    start_original_trial_reload(mt, reload, position_ns);
+                                    return;
+                                }
+                                None => {
+                                    crate::route::finish_route_action(
+                                        &action,
+                                        crate::route::RouteApplyResult::Rejected,
+                                    );
+                                    // The HLS worker stopped only to hand this action to the main
+                                    // thread. A refused/lost Original decision leaves its route fully
+                                    // intact, so rebuild that exact HLS Engine instead of converting a
+                                    // recoverable probe failure into the terminal playback screen.
+                                    super::log(
+                                        "auto: Original recovery was rejected; reopening retained HLS",
+                                    );
+                                    crate::route::commit_user_seek();
+                                    settle_reload(
+                                        super::engine::reload_transcode(mt, position_ns),
+                                        "retained HLS reopen after rejected Original",
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -242,6 +748,12 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             SHARED.seek_target_ns.load(Relaxed)
         }
         .max(0);
+        if pending >= 0 {
+            // The coalesced tap is a distinct desired timeline. It used to replace the demux
+            // target below without crossing the reducer boundary, leaving `pending_seek_ns`
+            // permanently Busy and old ABR evidence authorized against the new bytes.
+            crate::route::commit_user_seek();
+        }
         if eng.seek_retries < 2 {
             eng.seek_retries += 1;
             SHARED.seek_to_ns.store(tgt, Release); // re-publish; the demux thread seeks on it
@@ -258,7 +770,10 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
                 "seek: in-place stuck → reload at {}s",
                 tgt / 1_000_000_000
             ));
-            super::engine::reload_at(mt, tgt); // REPLACES the engine — eng dangles, return
+            settle_reload(
+                super::engine::reload_at(mt, tgt),
+                "stuck in-place seek reload",
+            ); // REPLACES the engine — eng dangles, return
             return;
         }
     }
@@ -270,6 +785,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     let is_transcode = crate::route::is_transcoding();
     if stream
         && t >= 0
+        && !crate::route::original_recovery_pending()
         && !(eng.flushed && eng.rebase_pending) // coalesce: don't stack in-place seeks
         && eng.stage >= Stage::Playing
         && SHARED.duration_ns.load(Relaxed) > 0
@@ -287,7 +803,11 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         if is_transcode {
             let secs = t / 1_000_000_000;
             if crate::route::transcode_seek(secs).is_some() {
-                super::engine::reload_transcode(mt, t);
+                crate::route::commit_user_seek();
+                settle_reload(
+                    super::engine::reload_transcode(mt, t),
+                    "transcode seek reload",
+                );
             } else {
                 // Give up on THIS seek and say so, or the spinner and the frozen playhead outlive
                 // the playback — see `player::abandon_seek`. The engine is untouched here (no
@@ -307,12 +827,63 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // feed_stream when sendSegmentEvent can't find it). reload_at REPLACES the ENGINE, so
         // `eng` dangles after it: return immediately.
         if !super::INPLACE_SEEK_OK.load(Relaxed) {
-            super::engine::reload_at(mt, t);
+            crate::route::commit_user_seek();
+            settle_reload(super::engine::reload_at(mt, t), "direct seek reload");
             return;
         }
+        // Pause, user-held seek reuse and eventual prime all share one actuator state. In
+        // particular a seek from Paused must not issue a redundant native Pause, and a result from
+        // an older transition must not authorize flushing this session's queues.
+        match SHARED.prepare_seek_pause() {
+            Some(HlsSeekPause::AlreadyHeld) => {}
+            Some(HlsSeekPause::Issue(token)) => {
+                let accepted = unsafe { ffi::sf_pause(mt) } != 0;
+                match SHARED.complete_seek_pause(token, accepted) {
+                    HlsPauseCompletion::Accepted => {}
+                    HlsPauseCompletion::Refused => {
+                        super::log("seek(in-place): Starfish refused Pause → reload fallback");
+                        crate::route::commit_user_seek();
+                        settle_reload(
+                            super::engine::reload_at(mt, t),
+                            "seek reload after native Pause refusal",
+                        );
+                        return;
+                    }
+                    HlsPauseCompletion::Stale => {
+                        super::log("seek(in-place): stale Pause result → reload fallback");
+                        crate::route::commit_user_seek();
+                        settle_reload(
+                            super::engine::reload_at(mt, t),
+                            "seek reload after stale Pause",
+                        );
+                        return;
+                    }
+                }
+            }
+            None => {
+                // The main-thread transition in flight will settle before the next pump tick. Keep
+                // the newest seek mailbox intact rather than consuming it into no operation.
+                TX.seek_to_ns.store(t, Release);
+                TX.seek_reqs.store(1, Release);
+                super::log("seek(in-place): clock transition busy; retrying");
+                return;
+            }
+        }
+        if !SHARED.begin_native_media_discontinuity(eng.native_epoch) {
+            crate::route::commit_user_seek();
+            super::log("seek(in-place): native callback epoch retired → reload fallback");
+            settle_reload(
+                super::engine::reload_at(mt, t),
+                "seek reload after retired native epoch",
+            );
+            return;
+        }
+        // This is the applied media boundary: everything after it belongs to the new playhead.
+        // Advancing earlier would strand the live worker when PMS/native refused; advancing later
+        // would let pre-seek ABR evidence publish while queues are already being reset.
+        crate::route::commit_user_seek();
         unsafe {
-            ffi::sf_flush(mt); // drop decoded/queued frames
-            ffi::sf_pause(mt); // freeze the clock; feed_stream Plays once PRIME_NS is buffered
+            ffi::sf_flush(mt); // drop decoded/queued frames only after the clock is really held
         }
         drain_aq(eng);
         // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame
@@ -323,6 +894,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         // eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on the first post-seek
         // keyframe. disp_base=0 (rebase to the landed keyframe).
         eng.flushed = true;
+        eng.presentation_rearm_pending = false;
         SHARED.seek_to_ns.store(t, Release); // the demux thread's av_seek target
         SHARED.seek_target_ns.store(t, Relaxed); // rebase guard: reject stale drifted keyframes
         SHARED.disp_base.store(0, Relaxed);
@@ -395,8 +967,32 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
-            unsafe { ffi::sf_play(mt) };
-            super::log("SMP Play");
+            let generation = SHARED.hls_candidate_generation.load(Acquire);
+            let recovery = SHARED.hls_recovery();
+            if let Some((token, _)) =
+                SHARED.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
+            {
+                let accepted = unsafe { ffi::sf_play(mt) } != 0;
+                match SHARED.complete_hls_prime_play(token, accepted) {
+                    super::shared::HlsPlayCompletion::Accepted { resume_acb } => {
+                        if resume_acb {
+                            super::acb_mirror_playstate(mt, true);
+                        }
+                        super::log("SMP Play");
+                    }
+                    super::shared::HlsPlayCompletion::Refused => {
+                        eng.prime_play = true;
+                        super::log("SMP Play refused; priming for retry");
+                    }
+                    super::shared::HlsPlayCompletion::Stale => {
+                        eng.prime_play = true;
+                        super::log("SMP Play result stale; priming for retry");
+                    }
+                }
+            } else {
+                eng.prime_play = true;
+                super::log("SMP Play fenced; priming before retry");
+            }
         }
     }
 
@@ -458,22 +1054,23 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     // costs one call, and Kodi re-places on every render-area change anyway.
     // ----------
     if eng.stage >= Stage::Playing && eng.placed_src != (0, 0) {
-        let now = (SHARED.video_w.load(Relaxed), SHARED.video_h.load(Relaxed));
+        let now = SHARED.video_raster();
         if now.0 > 0 && now.1 > 0 && now != eng.placed_src {
             place_exported(mt, eng);
         }
     }
 
-    // ---------- feed AUs once playing (Feed only succeeds after Play). NOT while a seek
-    // is armed: on a resume the seek is armed before PLAYING, so feeding first would
-    // present the file start for a frame before the seek repositions — a visible jump. ----------
-    if eng.stage >= Stage::Playing && !TX.paused.load(Relaxed) && TX.seek_to_ns.load(Relaxed) < 0 {
+    // ---------- feed AUs after the initial Load has reached Playing. The native clock may itself
+    // be Running or Paused: runtime rebuffer and ResumePrime deliberately fill both lanes before
+    // issuing Play. NOT while a seek is armed: on a resume the seek is armed before PLAYING, so
+    // feeding first would present the file start for a frame before the seek repositions — a
+    // visible jump. ----------
+    maybe_begin_hls_rebuffer(mt, eng);
+    if eng.stage >= Stage::Playing && TX.feed_allowed() && TX.seek_to_ns.load(Relaxed) < 0 {
         if stream {
-            // Two-lane feed: VIDEO lane first — it owns the seek rebase (clears rebase_pending +
-            // publishes pts_shift) — then the AUDIO lane, which sees that fresh shift the same tick.
-            // A BufferFull in one lane no longer stalls the other.
-            feed_stream(mt, eng);
-            feed_audio_lane(mt, eng);
+            // Two-lane feed, then the prime attempt — the ordering and the reason both live in
+            // `feed_both_lanes`, so this call site cannot drift from them.
+            feed_both_lanes(mt, eng);
         } else {
             feed_sample(mt, eng);
         }
@@ -491,7 +1088,7 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
         PlaybackState::Seeking
     } else if eng.stage == Stage::Loading {
         PlaybackState::Connecting
-    } else if SHARED.frames.load(Relaxed) == 0 {
+    } else if SHARED.hls_rebuffering.load(Relaxed) || SHARED.frames.load(Relaxed) == 0 {
         PlaybackState::Buffering
     } else {
         PlaybackState::Playing
@@ -514,7 +1111,31 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::prime_before_play;
+    use super::{
+        open_failure_action, prime_before_play, rebuffer_request_is_current,
+        should_begin_hls_rebuffer, OpenFailureAction,
+    };
+
+    #[test]
+    fn a_failed_original_open_prefers_rollback_then_cold_auto_before_error() {
+        use OpenFailureAction::{Error, RollbackPendingOriginal, StartAutoHls};
+
+        assert_eq!(
+            open_failure_action(true, true, true),
+            RollbackPendingOriginal
+        );
+        assert_eq!(open_failure_action(false, true, true), StartAutoHls);
+        assert_eq!(
+            open_failure_action(false, true, false),
+            Error,
+            "a post-frame failure is not a cold open"
+        );
+        assert_eq!(
+            open_failure_action(false, false, true),
+            Error,
+            "manual Original stays the user's fixed choice"
+        );
+    }
 
     #[test]
     fn segmented_hls_primes_both_lanes_even_without_a_seek() {
@@ -522,5 +1143,36 @@ mod tests {
         assert!(prime_before_play(true, true));
         assert!(prime_before_play(true, false));
         assert!(!prime_before_play(false, false));
+    }
+
+    #[test]
+    fn boundary_reserves_are_resume_gates_not_mid_acquisition_pause_triggers() {
+        assert!(
+            !should_begin_hls_rebuffer(false, -1, 3_000, Some(2_999)),
+            "a full acquisition runway cannot be compared to a partially spent buffer mid-fetch",
+        );
+        assert!(
+            should_begin_hls_rebuffer(true, -1, 3_000, Some(2_999)),
+            "the in-flight fetch may still request a controlled hold from its live progress",
+        );
+        assert!(
+            !should_begin_hls_rebuffer(false, 5_303, 5_303, Some(5_167)),
+            "a bounded candidate that reaches its deadline must finish instead of latching a \
+             multi-second playback hold at the retrospective replay balance",
+        );
+        assert!(
+            should_begin_hls_rebuffer(false, -1, 3_000, Some(0)),
+            "physical depletion must hold the clock even when a fetch has no measurable prefix",
+        );
+    }
+
+    #[test]
+    fn media_completed_after_a_hold_request_makes_that_request_stale() {
+        assert!(rebuffer_request_is_current(true, 10_000, 10_000));
+        assert!(
+            !rebuffer_request_is_current(true, 10_000, 12_000),
+            "a completed and feedable segment removed the underflow the old request described",
+        );
+        assert!(!rebuffer_request_is_current(false, 10_000, 10_000));
     }
 }

@@ -253,7 +253,7 @@ fn guid_type(guid: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::guid_type;
+    use super::*;
 
     /// The numbers are PMS's, and the mapping is the only thing standing between "Also available"
     /// showing a quality badge and showing none — `type` is what makes `/library/all?guid=…` return

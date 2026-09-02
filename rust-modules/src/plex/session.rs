@@ -889,7 +889,13 @@ pub fn load() -> Session {
     let read = read_locked();
     let persisted = !matches!(read, ReadState::Missing);
     let locked = matches!(read, ReadState::Locked);
-    let plaintext = matches!(read, ReadState::Ready { plaintext: true, .. });
+    let plaintext = matches!(
+        read,
+        ReadState::Ready {
+            plaintext: true,
+            ..
+        }
+    );
     let mut s = match read {
         ReadState::Ready { session, .. } => session,
         ReadState::Missing | ReadState::Locked => Session::default(),
@@ -2029,7 +2035,10 @@ mod tests {
         std::fs::write(t.file(), &original).unwrap();
 
         let loaded = load();
-        assert!(!loaded.client_id.is_empty(), "the run still gets an ephemeral id");
+        assert!(
+            !loaded.client_id.is_empty(),
+            "the run still gets an ephemeral id"
+        );
         assert_eq!(std::fs::read(t.file()).unwrap(), original);
 
         save(&signed_in());
@@ -2057,7 +2066,10 @@ mod tests {
         std::fs::write(t.file(), original).unwrap();
 
         let loaded = load();
-        assert!(!loaded.client_id.is_empty(), "the run still gets an ephemeral id");
+        assert!(
+            !loaded.client_id.is_empty(),
+            "the run still gets an ephemeral id"
+        );
         assert_eq!(
             std::fs::read(t.file()).unwrap(),
             original,

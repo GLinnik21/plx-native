@@ -118,7 +118,7 @@ ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
-    "plxnative-play", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
+    "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
     "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-homefoldosc",
     "plxnative-info", "plxnative-chapters", "plxnative-profile",
@@ -834,7 +834,12 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "subtitle":
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
-        # "play" and "resume" need no extra trigger (resume rides the seeded viewOffset).
+        elif kind == "pause_resume":
+            files.append((
+                "plxnative-autopause",
+                f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
+            ))
+        # "play" and startup "resume" need no extra trigger (resume rides the seeded viewOffset).
     return files
 
 
@@ -958,6 +963,7 @@ RE_SMP_SOURCE_INFO = re.compile(r"smp_cb type=4 num=-?\d+ str=(\{.*\})")
 # accepting a compressed audio AU: not proof a loudspeaker made sound, but the strongest event-log
 # readiness fact available and exactly what the badly interleaved first fixture never reached.
 RE_AUDIO_FEED = re.compile(r"\bfeed a#(\d+)\s+sz=(\d+)\s+fed=(-?\d+)\s+reply=(.)\s+qbytes=(\d+)")
+RE_VIDEO_FEED = re.compile(r"\bfeed v#(\d+)\s+sz=(\d+)\s+fed=(-?\d+)\s+reply=(.)\s+qbytes=(\d+)")
 # the media URL carries the secret X-Plex-Token; strip it from anything we print/log.
 RE_TOKEN = re.compile(r"(X-Plex-Token=)[^&\s]+")
 
@@ -1361,7 +1367,7 @@ def a_auto_network_recovery(lines, max_fallback_kbps, min_recovered_kbps):
 RE_ABR_SAMPLE = re.compile(
     r"abr: sample current=(\d+)kbps media=(\d+)kbps net=(\d+)kbps buf=(\S+) "
     r"vbuf=(-?\d+)ms abuf=(\S+) dur=(\d+)ms prod=(\d+)pm n=(\d+) decision=(\S+) "
-    r"target=(\d+)kbps"
+    r"target=(\d+)kbps(?: complete=(\d+))?"
 )
 # The re-seed after a fresh controller is built (plan I0-G) and the switch-history state the
 # worker starts from (plan I0-H). Both are characterisation surfaces: I0 reports them, I4 and I8
@@ -1424,10 +1430,10 @@ def abr_gates(lines):
 # never fetched a master, which is not zero. Differencing it against `to_kbps` on a captured trace
 # is the catalog's error, measured, with no extra instrumentation.
 #
-# `graded_bytes` pairs with `graded=` to make the ONE observation a transaction adds to the
-# controller's acquisition window replayable. Without it a trace cannot reconstruct that window:
-# every `abr: window` line describes a CURRENT-stream segment, and `observe_candidate` adds a
-# sample none of them mentions -- which reads to a replayer as the app miscounting.
+# `candidate_acq`/`candidate_bytes`/`candidate_dur` name the ONE completed observation that seeds
+# the new operating point after a commit. They exist for both directions; `graded*` remains the
+# upshift-only steady-production leg. Without the candidate triple a trace sees reset increment but
+# cannot reconstruct the finite conservation bag that the following `abr: window` line describes.
 #
 # The whole transaction, one line per proposal on every exit path. `decided` is the DECISION cost
 # and `feed` is the post-commit backpressure that used to be inside it; `control` is the sum of
@@ -1443,7 +1449,8 @@ RE_ABR_TX = re.compile(
     r"buf_start=" + _MS + r"ms buf_decided=" + _MS + r"ms feed=" + _MS + r"ms "
     r"buf_fed=" + _MS + r"ms buf_end=" + _MS + r"ms cur_acq_before=(-?\d+)ms "
     r"net=(\d+)kbps fast=(\d+)kbps slow=(\d+)kbps unc=(\d+)pm declared=(-?\d+)kbps "
-    r"graded_bytes=(-?\d+)"
+    r"graded_bytes=(-?\d+) candidate_acq=" + _MS + r"ms "
+    r"candidate_bytes=(-?\d+) candidate_dur=(-?\d+)ms"
 )
 TX_FIELDS = (
     "direction", "from_kbps", "to_kbps", "outcome",
@@ -1451,7 +1458,7 @@ TX_FIELDS = (
     "warmup_ms", "graded_ms", "warmup_dl_ms", "buf_start_ms", "buf_decided_ms", "feed_ms",
     "buf_fed_ms",
     "buf_end_ms", "cur_acq_before_ms", "net_kbps", "fast_kbps", "slow_kbps", "unc_pm",
-    "declared_kbps", "graded_bytes",
+    "declared_kbps", "graded_bytes", "candidate_acq_ms", "candidate_bytes", "candidate_dur_ms",
 )
 
 # One line per acquired segment. `open_ms` is the successful open only (a NotReady retry is
@@ -1663,6 +1670,16 @@ def early_exit_allowed(case, cfg):
     it exists for — observed on the first run of `auto_link_squeeze`, which passed in 70 s of a
     150 s profile whose second leg starts at 50 s.
 
+    `delay_ms` on an operation: the operation HAS NOT HAPPENED YET, and its assertion can be
+    satisfied by evidence something else produced. Measured on `auto_pin_then_original_and_seek`,
+    whose seek is scheduled at 95 s: the case exited early at 71 s reporting `[PASS] seek_transcode`,
+    because `op_seek_transcode` matches `reload_transcode: fresh Load at offset` and a QUALITY
+    SWITCH emits that same line -- so the switch's reload graded as a seek that had not fired. Run
+    to its full window the seek fires and the case passes on the right evidence. Note this is NOT a
+    monotonicity failure: the assertion is monotone, it is merely satisfiable by a look-alike. That
+    is why the rule keys on the SCHEDULE rather than on the operation kind -- an undelayed seek
+    fires promptly and stays eligible.
+
     `min_play_rate_pm`: the same shape from the other side. It grades the WORST window of the
     media clock, so it is satisfied by every prefix that has not met the slow leg yet, and a case
     that stopped early would report the rate of its healthy opening. Both tiers ask it now, which
@@ -1680,6 +1697,8 @@ def early_exit_allowed(case, cfg):
         return False, "min_play_rate_pm grades the WORST window, which a prefix cannot settle"
     if case.get("link_profile"):
         return False, "a link_profile has legs; the last one must actually run"
+    if any(o.get("delay_ms") for o in case.get("operations") or []):
+        return False, "an operation is scheduled by delay_ms; a prefix can satisfy its assertion before it fires"
     return True, ""
 
 
@@ -1692,19 +1711,19 @@ def early_exit_allowed(case, cfg):
 # baseline captured before it existed. Do NOT fold these fields into that regex.
 #
 # `verdict=filling` is the ordinary state for the first `n` segments of every playback, and
-# `demand`/`supply`/`excess`/`bound` are `-1` there -- "not computed", not zero.
+# `demand`/`supply`/`excess`/`runway`/`bound` are `-1` there -- "not computed", not zero.
 #
 # `reset` is a cumulative, monotone count of window resets (one per delivery collapse). It is what
 # makes `have` dropping back to 1 mid-playback ATTRIBUTABLE: without it, a legitimate regime-change
 # reset and a window that lost its history for some other reason are the same two lines.
 RE_ABR_WINDOW = re.compile(
     r"abr: window current=(\d+)kbps verdict=(\S+) have=(\d+)/(\d+) eps=(\d+)pm clamp=(\d+) "
-    r"bound=(-?\d+)ms demand=(-?\d+)ms supply=(-?\d+)ms excess=(-?\d+)ms "
+    r"bound=(-?\d+)ms demand=(-?\d+)ms supply=(-?\d+)ms excess=(-?\d+)ms runway=(-?\d+)ms "
     r"sus=(\d+) sur=(\d+) reset=(\d+) bytes=(\d+) dur=(\d+)ms"
 )
 WINDOW_FIELDS = (
     "current_kbps", "verdict", "have", "want", "eps_pm", "clamp",
-    "bound_ms", "demand_ms", "supply_ms", "excess_ms",
+    "bound_ms", "demand_ms", "supply_ms", "excess_ms", "runway_ms",
     "sustainable", "survivable", "resets", "bytes", "dur_ms",
 )
 
@@ -1780,6 +1799,7 @@ def abr_samples(lines):
             "dur_ms": dur,
             "prod_pm": int(m.group(8)), "n": int(m.group(9)),
             "decision": m.group(10), "target_kbps": int(m.group(11)),
+            "completed": None if m.group(12) is None else bool(int(m.group(12))),
             "at": (stamps[i] if stamps and i < len(stamps) else None),
             "fetch_ms": (media * dur / net) if net else 0.0,
         })
@@ -2138,7 +2158,7 @@ def a_abr_shape(lines, spec, dip_windows=()):
     on the controller being TOO EAGER: a link that carries 4 Mbit/s and a client that spends the
     whole film reaching for 20 both "play", and only a ceiling can tell them apart.
 
-    Four independent bounds, each optional, each answering one question a profile poses:
+    Five independent bounds, each optional, each answering one question a profile poses:
 
     * ``ceiling_kbps`` -- no rung above this was ever active. The overreach guard.
     * ``floor_kbps`` -- some rung at or above this WAS active. The under-reach guard: a controller
@@ -2146,6 +2166,9 @@ def a_abr_shape(lines, spec, dip_windows=()):
     * ``max_commits`` -- at most this many committed rung changes. The FLAP guard, and the one that
       grades the decaying transition penalty: an oscillating link must not produce a commit per
       oscillation, because each one is a visible quality change to the person watching.
+    * ``decoded_width_floor`` -- some completed candidate actually decoded at least this wide.
+      This is deliberately separate from ``floor_kbps``: the latter is the request actuator, and
+      PMS may answer a 22 Mbps / 4K request with a 720p rendition.
     * ``settle_min_kbps`` / ``settle_max_kbps`` -- where it ENDED. Bounds rather than a value,
       because the ladder has 13 points and a link between two of them may legitimately settle on
       either; a profile that wants an exact rung sets both to it.
@@ -2198,6 +2221,13 @@ def a_abr_shape(lines, spec, dip_windows=()):
     stall_max, stall_total, beats = abr_stalls(lines)
     rate_mean, rate_worst, _rate_beats, rate_legs = playback_rate(lines)
     rasters, raster_src = abr_raster_changes(lines)
+    decoded_rasters = [
+        (int(m.group(1)), int(m.group(2)))
+        for line in lines
+        for m in [RE_ABR_COMMIT_OUT.search(line)]
+        if m and int(m.group(1)) > 0 and int(m.group(2)) > 0
+    ]
+    decoded_max = max(decoded_rasters, default=None)
     story += (f" | min_buf_ms={min_buf if min_buf is not None else 'n/a'}"
               f" dip_max_kbps={dip_kbps if dip_kbps is not None else 'n/a'} ({dip_note})"
               f" max_stall_s={stall_max if stall_max is not None else 'n/a'}"
@@ -2205,6 +2235,7 @@ def a_abr_shape(lines, spec, dip_windows=()):
               f" +/-1s) play_rate_pm={rate_mean if rate_mean is not None else 'n/a'}"
               f"/worst{rate_worst if rate_worst is not None else 'n/a'} over {rate_legs} leg(s)"
               f" raster_changes={rasters} ({raster_src}) lane[{abr_binding_lane(samples)}]"
+              f" decoded_max={f'{decoded_max[0]}x{decoded_max[1]}' if decoded_max else 'n/a'}"
               f" segments={len(samples)}")
     if not samples:
         story += " | WARNING: no `abr: sample` line — every metric above is blind"
@@ -2224,6 +2255,15 @@ def a_abr_shape(lines, spec, dip_windows=()):
     raster_cap = spec.get("raster_changes_max")
     if raster_cap is not None and rasters > raster_cap:
         return False, f"{rasters} raster change(s), want <= {raster_cap} :: {story}"
+    decoded_width_floor = spec.get("decoded_width_floor")
+    if decoded_width_floor is not None and (
+        decoded_max is None or decoded_max[0] < decoded_width_floor
+    ):
+        actual = "no decoded candidate" if decoded_max is None else f"{decoded_max[0]}x{decoded_max[1]}"
+        return False, (
+            f"best completed candidate decoded {actual}, want width >= {decoded_width_floor} :: "
+            f"{story}"
+        )
 
     ceiling = spec.get("ceiling_kbps")
     if ceiling is not None and max(visited) > ceiling:
@@ -2321,6 +2361,19 @@ def a_reload_ceiling(lines, limit):
     n = len(reloads)
     where = " | ".join(ln.strip()[:90] for ln in reloads[:6]) or "<none>"
     return n <= limit, f"{n} reload(s), ceiling {limit} :: {where}"
+
+
+def a_reload_floor(lines, limit):
+    """Require mode transitions a case exists to exercise, not merely bound their damage.
+
+    The released Original squeeze has exactly two legitimate fresh Loads: Original -> HLS while
+    the link is constrained, then HLS -> Original after it is restored.  A ceiling alone accepts
+    zero or one and therefore called a controller permanently stranded in low HLS a PASS.
+    """
+    reloads = [ln for ln in lines if "reload_at:" in ln or "reload_transcode:" in ln]
+    n = len(reloads)
+    where = " | ".join(ln.strip()[:90] for ln in reloads[:6]) or "<none>"
+    return n >= limit, f"{n} reload(s), floor {limit} :: {where}"
 
 
 def gst_clock_ms(line):
@@ -2652,6 +2705,54 @@ def op_quality_switch(lines, steps):
                   f"{ts[-1][0] - ts[0][0]}s over {len(ts)} sample(s); {adapt}")
 
 
+def op_pause_resume(lines, min_climb_after_s):
+    """The authored user hold was accepted by both clock edges and playback recovered afterward.
+
+    This deliberately grades external state, not an ABR diagnostic flag: integer playhead samples
+    must stay put during the accepted hold and then climb after Resume. The +/-1 second tolerance
+    is the heartbeat's documented quantisation, not a playback threshold.
+    """
+    pause = next((i for i, line in enumerate(lines)
+                  if "autopause: Pause accepted" in line), None)
+    if pause is None:
+        return False, "no accepted scripted Pause edge"
+    resume = next((i for i, line in enumerate(lines)
+                   if i > pause and "autopause: Resume accepted" in line), None)
+    if resume is None:
+        return False, "Pause was accepted but the scripted Resume edge never committed"
+    held = [int(match.group(1)) for line in lines[pause + 1:resume]
+            for match in [RE_POS.search(line)] if match]
+    if len(held) < 2:
+        return False, f"only {len(held)} playhead sample(s) inside the accepted hold"
+    if max(held) - min(held) > 1:
+        return False, f"playhead advanced during user Pause: {held}"
+    resumed_lines = lines[resume + 1:]
+    after = [int(match.group(1)) for line in resumed_lines
+             for match in [RE_POS.search(line)] if match]
+    if len(after) < 2:
+        return False, f"only {len(after)} playhead sample(s) after Resume"
+    climb = max(after) - min(after)
+    if climb < min_climb_after_s:
+        return False, (
+            f"playhead climbed only {climb}s after Resume, want >= {min_climb_after_s}s"
+        )
+    video_feeds = [match for line in resumed_lines
+                   for match in [RE_VIDEO_FEED.search(line)] if match and match.group(4) == "O"]
+    audio_feeds = [match for line in resumed_lines
+                   for match in [RE_AUDIO_FEED.search(line)] if match and match.group(4) == "O"]
+    if not video_feeds or not audio_feeds:
+        missing = "/".join(
+            name for name, feeds in (("video", video_feeds), ("audio", audio_feeds)) if not feeds
+        )
+        return False, (
+            f"playhead recovered after Resume but no accepted {missing} feed followed it"
+        )
+    return True, (
+        f"Pause held {held[0]}..{held[-1]}s over {len(held)} samples; "
+        f"Resume climbed {climb}s over {len(after)} samples with both A/V lanes feeding"
+    )
+
+
 def op_seek_refused(lines, target_s):
     """A seek the app CANNOT serve must be refused cleanly, and playback must survive the refusal.
 
@@ -2761,6 +2862,20 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
         or find(lines, "reload_at: fresh Load at %ds" % target_s)
     if hit is None:
         return False, "no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) present"
+    hit_i = lines.index(hit)
+    if "reload_transcode: fresh Load at offset" in hit:
+        retired = next(
+            (line for line in lines[hit_i:]
+             if "seek:" in line and "retired previous encoder ok=" in line),
+            None,
+        )
+        if retired is None:
+            return False, (
+                "the seek published a replacement but never retired the previous physical "
+                "encoder (`seek: … retired previous encoder` absent)"
+            )
+        if "ok=1" not in retired:
+            return False, f"the previous physical encoder was not retired: {retired.strip()}"
     reached, err = _reached_target(lines, target_s)
     if err:
         return False, err
@@ -2772,7 +2887,7 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # `timeline_climb`. `min_climb_after_s` grades the series from the target ONWARD, which is
     # the only window a post-seek death is visible in.
     if min_climb_after_s:
-        after = [t for t, _ in progress_secs(lines[lines.index(hit) + 1:]) if t >= target_s - 5]
+        after = [t for t, _ in progress_secs(lines[hit_i + 1:]) if t >= target_s - 5]
         span = (max(after) - min(after)) if len(after) >= 2 else 0
         if span < min_climb_after_s:
             return False, (f"the seek landed but the playback did not survive it: only {span}s of "
@@ -3397,6 +3512,8 @@ def evaluate(case, lines):
     if exp.get("require_video_bound", True):
         results.append(("video_bound", *a_video_bound(lines)))
     results.append(("timeline_climb", *a_timeline_climb(lines, exp.get("min_timeline_climb_s", 12))))
+    if "min_reloads" in exp:
+        results.append(("reload_floor", *a_reload_floor(lines, exp["min_reloads"])))
     if "max_reloads" in exp:
         results.append(("reload_ceiling", *a_reload_ceiling(lines, exp["max_reloads"])))
     if "min_play_rate_pm" in exp:
@@ -3431,6 +3548,9 @@ def evaluate(case, lines):
         elif k == "quality_switch":
             steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
             results.append(("quality_switch", *op_quality_switch(lines, steps)))
+        elif k == "pause_resume":
+            results.append(("pause_resume", *op_pause_resume(
+                lines, op.get("min_climb_after_s", 8))))
         elif k == "audio_switch" and op.get("mode") == "native":
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
@@ -3786,6 +3906,9 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
             results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif op["op"] == "seek":
             results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
+        elif op["op"] == "pause_resume":
+            results.append(("pause_resume", *op_pause_resume(
+                lines, op.get("min_climb_after_s", 8))))
 
     # Last, so its evidence sits next to the seek assertion it corroborates.
     results.append(("server_wire", *a_server_wire(
@@ -3846,6 +3969,10 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # reset per case (each setter clears when given None), and they COMPOSE — the
     # request-indexed one wins where it applies.
     srv.set_segment_profile(case.get("segment_profile"))
+    # A fresh PMS session may map the same request actuator to a different completed rendition.
+    # The fixture generation rides in the child playlist URI so the old live session and the
+    # candidate refresh remain distinct even though both paths say /__abr/22000.
+    srv.set_abr_response_profile(case.get("abr_response_profile"))
     files = triggers_for_case(case, url_base=url_base)
     apply_triggers(tv, files)
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))

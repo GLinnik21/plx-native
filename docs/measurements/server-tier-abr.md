@@ -62,8 +62,11 @@ three requests rather than a near-zero-byte transfer; this is the deployment mag
 
 ## The finding that has a decision behind it
 
-`candidate_warmup_budget(Up, ..)` is `3/2 * media_duration` — 3000 ms at this pipeline's 2 s
-segments, and a derived quantity rather than an invented one. Against a real PMS it is **marginal**:
+At the time of this measurement, `candidate_warmup_budget(Up, ..)` was
+`3/2 * media_duration` — 3000 ms at this pipeline's 2 s segments. The current controller instead
+arms the exact disposable exploration reserve `E = max(B - max(R,D), 0)` end to end, so the budget
+line below is historical evidence for why the fixed rule was retired, not a statement of current
+policy. Against that real PMS the old budget was **marginal**:
 
 ```
 warmup observed: 1155 … 2248 ms  (n=6 committed)
@@ -79,10 +82,13 @@ tx Up 2000->4000kbps outcome=warmup_deadline decided=3877ms total=3882ms
    buf_start=46335ms buf_decided=42502ms net=138716kbps
 ```
 
-* It is an **UPSHIFT**, so this session's abort rule correctly does not arm — and the reason it
-  should not is visible on the same line: the reserve fell 46335 -> 42502, i.e. **3833 ms across a
-  3877 ms transaction**, exactly real time. The picture kept playing throughout, which is the
-  premise `candidate_warmup_is_guarded` turns on. Aborting early would have bought nothing.
+* It is an **UPSHIFT**. At the time of this measurement the candidate prefix-abort rule did not arm
+  in that direction, and the reason that looked correct is visible on the same line: the reserve
+  fell 46335 -> 42502, i.e. **3833 ms across a 3877 ms transaction**, exactly real time. The
+  picture kept playing throughout, so aborting early would have bought nothing. The rule was later
+  removed in both directions after a real-PMS body proved that prefix rate does not identify the
+  unseen completion time; candidate transactions retain their absolute reserve deadline except
+  for the already-stalled floor recovery, where no cheaper response exists.
 * `net=138716kbps`. The LAN is not the constraint. The miss is **production latency**, which is the
   term the synthetic tier cannot produce at all.
 

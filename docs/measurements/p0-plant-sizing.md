@@ -85,6 +85,13 @@ circular.
 
 ## Landed 2026-08-28
 
+> **Historical configuration, superseded 2026-09-01.** The `not_ready_fed` ownership protocol
+> below mixed AUs from an encoder which the route ultimately rejected into the active decoder
+> timeline, then advanced a different encoder's cursor by count. The current transaction stages
+> every candidate object privately and has only two media outcomes: commit and feed all staged AUs,
+> or discard all of them without moving the active cursor/timeline. The measurements remain useful
+> evidence for the former queue configuration; they do not describe current runtime ownership.
+
 The recommendation is implemented, as two changes that are one decision:
 
 * **The graded-reject feed** — `ff.rs`'s `not_ready` arm now feeds its already-fetched,

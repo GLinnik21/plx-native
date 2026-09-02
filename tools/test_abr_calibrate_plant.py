@@ -202,7 +202,11 @@ class TheShippedTableMatchesTheEvidence(unittest.TestCase):
                 self.assertIn(rung, self.points, f"rung {rung} is in sim.rs but not in the census")
                 p = self.points[rung]
                 self.assertEqual(
-                    arm, (p["ts_kbps"], p["audio_es_kbps"], p["overhead_ms"]),
+                    arm,
+                    (
+                        p["ts_kbps"], p["audio_es_kbps"], p["overhead_ms"],
+                        p["declared_kbps"], p["decoded_width"], p["decoded_height"],
+                    ),
                     f"rung {rung}: sim.rs disagrees with the committed logs. Regenerate with "
                     "`tools/abr-calibrate-plant.py --rust`.")
 

@@ -4,7 +4,11 @@
  * 3-arg ACB taskId out-param. Callers touch only the flat sf_ / acb_ verbs. */
 #include "starfish.h"
 #include <dlfcn.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern FILE *elogf;   /* the event log (owned by the boot shim) */
@@ -181,8 +185,21 @@ void vp_destroy_window(void) {
  * arg); we read the char* at offset 0 (SSO holds "Ok"/"BufferFull"). ---- */
 extern void SMP_ctor(void *self, const char *appId) __asm__("_ZN17StarfishMediaAPIsC1EPKc");
 extern void SMP_dtor(void *self) __asm__("_ZN17StarfishMediaAPIsD1Ev");
-extern int  SMP_Load(void *self, const char *payload, void (*cb)(int, long long, const char *))
-    __asm__("_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_E");
+/* Callback-context overload, device-proven on webOS 4.10.2:
+ *   _ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_PvES2_
+ * stores cb at object+0x9c and ctx at +0xa0, then tail-calls the ordinary Load. The tail call
+ * preserves Load's integer result in r0. `sendCallbackEvent` dispatches this callback with that
+ * exact context. This is what lets Rust reject a late event from a retired Load without guessing
+ * from PTS or payload contents. It is dlsym'd rather than a strong ELF reference because only this
+ * firmware artifact proves the overload's behaviour: a release which lacks it must refuse playback
+ * at runtime, not prevent the whole app from reaching main. The firmware inventories prove only
+ * that the symbol exists across supported releases; they cannot prove the context dispatch
+ * described by the device/decompile evidence above. */
+typedef int (*SMP_LoadWithContextFn)(
+    void *self,
+    const char *payload,
+    void (*cb)(int, long long, const char *, void *),
+    void *ctx);
 extern void SMP_Feed(void *sret, void *self, const char *payload)
     __asm__("_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc");
 extern int  SMP_Play(void *self) __asm__("_ZN17StarfishMediaAPIs4PlayEv");
@@ -214,48 +231,375 @@ extern void CP_setContentInfo(void *pipeline, int srcType, void *ci)
 #define CI_SIZE      0x138           /* sizeof(MEDIA_CUSTOM_CONTENT_INFO_T) = 312 (verified) */
 #define CI_PTS_OFF   0x28            /* int64 ptsToDecode offset (verified 3 ways) */
 
-static unsigned char g_smp[65536] __attribute__((aligned(16)));
-/* Publishes the 64 KB in-place-constructed StarfishMediaAPIs object ACROSS THREADS: written
-   on the load thread (player/threads.rs load_thread) right after SMP_ctor, read on the main
-   thread every frame (pump.rs). A plain int gives the compiler and the A53 licence to make
-   the store visible before the constructor's writes, so the main thread could dispatch
-   SMP_Play / sf_feed through a half-built object — a startup-only, timing-dependent SIGSEGV
-   inside libplayerAPIs. Release/acquire pairs the flag with the ctor that precedes it. */
+/* callbackFunctionHook's exact ABI on ARM32/AAPCS is:
+ *
+ *   r0 = StarfishMediaAPIs *this, r1 = int, r2/r3 = aligned int64, stack[0] = const char *
+ *
+ * libplayerAPIs' fixed libpf callback thunk passes the original Starfish object as `this`, then
+ * reaches this symbol through its R_ARM_JUMP_SLOT. The executable exports this definition so it
+ * preempts the library definition; RTLD_NEXT below resolves the real implementation. The gate
+ * counts an admitted call as in-flight across the complete real hook without holding a mutex
+ * during that call (a nested firmware callback must not deadlock). After active is cleared, new
+ * calls drop before dereferencing the object and teardown waits without a timeout for in-flight
+ * to reach zero.
+ *
+ * A slot, including the 64 KB object ADDRESS, is never freed or reused. A late libpf thunk has no
+ * generation token, only this address, so reusing the old g_smp address would let it select a new
+ * session before Rust ever saw the callback. Retired slots remain in the registry until process
+ * exit; the interposer looks them up without dereferencing their destroyed object storage. */
+#define SMP_STORAGE_SIZE 65536u
+#define SMP_CALLBACK_HOOK_SYMBOL "_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc"
+#define SMP_LOAD_WITH_CONTEXT_SYMBOL "_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_PvES2_"
+
+typedef void (*SMP_CallbackHook)(void *, int, long long, const char *);
+_Static_assert(sizeof(void *) == 4, "Starfish seam requires the 32-bit ARM ABI");
+_Static_assert(sizeof(unsigned int) == 4, "Rust epoch/c_uint width mismatch");
+_Static_assert(sizeof(long long) == 8, "Rust callback i64 width mismatch");
+
+typedef struct SfSlot {
+    struct SfSlot *next;
+    pthread_mutex_t gate;
+    pthread_cond_t drained;
+    unsigned int epoch;
+    unsigned int intercepted;
+    unsigned int dropped;
+    unsigned int inflight;       /* protected by gate */
+    int active;                 /* protected by gate */
+    int evidence_armed;         /* protected by gate; true only once this Load is entering */
+    int gate_retired;           /* protected by gate */
+    volatile int unload_completed;
+    volatile int destroyed;
+    unsigned char object[SMP_STORAGE_SIZE] __attribute__((aligned(16)));
+} SfSlot;
+_Static_assert(_Alignof(SfSlot) >= 16, "Starfish slot allocation must preserve 16-byte alignment");
+_Static_assert(offsetof(SfSlot, object) % 16 == 0, "Starfish object offset lost alignment");
+
+static pthread_mutex_t g_slots_lock = PTHREAD_MUTEX_INITIALIZER;
+static SfSlot *g_slots;
+static SfSlot *g_current;
+static pthread_once_t g_hook_once = PTHREAD_ONCE_INIT;
+static SMP_CallbackHook g_real_callback_hook;
+static SMP_LoadWithContextFn g_load_with_context;
+static volatile int g_hook_valid;
+static volatile int g_lifecycle_blocked;
+
+void sf_callback_hook_interposer(void *self, int type, long long num, const char *str)
+    __asm__(SMP_CALLBACK_HOOK_SYMBOL);
+
+static void sf_resolve_callback_hook_once(void) {
+    dlerror();
+    SMP_CallbackHook real = (SMP_CallbackHook)dlsym(RTLD_NEXT, SMP_CALLBACK_HOOK_SYMBOL);
+    int hook_lookup_ok = dlerror() == NULL;
+    Dl_info owner, load_owner;
+    memset(&owner, 0, sizeof owner);
+    memset(&load_owner, 0, sizeof load_owner);
+    int owner_ok = real && real != sf_callback_hook_interposer &&
+                   dladdr((void *)real, &owner) != 0 && owner.dli_fname &&
+                   strstr(owner.dli_fname, "libplayerAPIs.so") != NULL;
+
+    dlerror();
+    SMP_LoadWithContextFn load =
+        (SMP_LoadWithContextFn)dlsym(RTLD_DEFAULT, SMP_LOAD_WITH_CONTEXT_SYMBOL);
+    int load_lookup_ok = dlerror() == NULL;
+    int load_owner_ok = load && dladdr((void *)load, &load_owner) != 0 &&
+                        load_owner.dli_fname &&
+                        strstr(load_owner.dli_fname, "libplayerAPIs.so") != NULL;
+    if (hook_lookup_ok && owner_ok && load_lookup_ok && load_owner_ok) {
+        g_real_callback_hook = real;
+        g_load_with_context = load;
+        __atomic_store_n(&g_hook_valid, 1, __ATOMIC_RELEASE);
+        if (elogf) {
+            fprintf(elogf,
+                    "native callback gate: hook=%p owner=%s loadCtx=%p loadOwner=%s\n",
+                    (void *)real, owner.dli_fname, (void *)load, load_owner.dli_fname);
+            fflush(elogf);
+        }
+        return;
+    }
+    __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+    if (elogf) {
+        fprintf(elogf,
+                "native callback gate: BLOCKED symbol=%s real=%p owner=%s hookLookup=%d "
+                "loadSymbol=%s load=%p loadOwner=%s loadLookup=%d\n",
+                SMP_CALLBACK_HOOK_SYMBOL, (void *)real,
+                owner.dli_fname ? owner.dli_fname : "(none)",
+                hook_lookup_ok, SMP_LOAD_WITH_CONTEXT_SYMBOL, (void *)load,
+                load_owner.dli_fname ? load_owner.dli_fname : "(none)",
+                load_lookup_ok);
+        fflush(elogf);
+    }
+}
+
+static int sf_prepare_callback_hook(void) {
+    if (pthread_once(&g_hook_once, sf_resolve_callback_hook_once) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return 0;
+    }
+    return __atomic_load_n(&g_hook_valid, __ATOMIC_ACQUIRE);
+}
+
+/* `lookup_ok == 0` means the registry lock itself failed: fail closed instead of forwarding a
+ * possibly-owned object without its gate. A successful lookup with no match is an object owned by
+ * some other in-process client and must retain libplayerAPIs' ordinary behaviour. */
+static SfSlot *sf_find_slot(void *object, int *lookup_ok) {
+    *lookup_ok = 0;
+    if (pthread_mutex_lock(&g_slots_lock) != 0) return NULL;
+    SfSlot *slot = g_slots;
+    while (slot && slot->object != (unsigned char *)object) slot = slot->next;
+    *lookup_ok = pthread_mutex_unlock(&g_slots_lock) == 0;
+    return *lookup_ok ? slot : NULL;
+}
+
+__attribute__((visibility("default"), externally_visible, used))
+void sf_callback_hook_interposer(void *self, int type, long long num, const char *str) {
+    if (!sf_prepare_callback_hook()) return;
+
+    int lookup_ok = 0;
+    SfSlot *slot = sf_find_slot(self, &lookup_ok);
+    if (!lookup_ok) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    if (!slot) {
+        g_real_callback_hook(self, type, num, str);
+        return;
+    }
+
+    if (pthread_mutex_lock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    if (slot->active) {
+        if (slot->evidence_armed)
+            __atomic_add_fetch(&slot->intercepted, 1u, __ATOMIC_RELAXED);
+        ++slot->inflight;
+    } else {
+        __atomic_add_fetch(&slot->dropped, 1u, __ATOMIC_RELAXED);
+        if (pthread_mutex_unlock(&slot->gate) != 0)
+            __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    if (pthread_mutex_unlock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return;
+    }
+
+    g_real_callback_hook(self, type, num, str);
+
+    if (pthread_mutex_lock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    if (slot->inflight == 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+    } else if (--slot->inflight == 0 && pthread_cond_broadcast(&slot->drained) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+    }
+    if (pthread_mutex_unlock(&slot->gate) != 0)
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+}
+
+/* Publishes the per-session in-place-constructed object ACROSS THREADS: written on the load
+   thread right after SMP_ctor, read on the main thread every frame. Release/acquire pairs the
+   ready flag with the constructor and the g_current publication that precede it. */
 static volatile int g_smp_ready = 0;
 #define SMP_READY()      __atomic_load_n(&g_smp_ready, __ATOMIC_ACQUIRE)
 #define SMP_SET_READY(v) __atomic_store_n(&g_smp_ready, (v), __ATOMIC_RELEASE)
+
+static SfSlot *sf_current_slot(void) {
+    return __atomic_load_n(&g_current, __ATOMIC_ACQUIRE);
+}
+
+static void *sf_ready_object(void) {
+    SfSlot *slot = sf_current_slot();
+    return SMP_READY() && slot ? slot->object : NULL;
+}
 static long g_acb = 0, g_taskId = 0;
 
 /* trampolines: forward library-thread events to the consumer's handlers */
-static void sf_cb(int type, long long num, const char *str) { sf_on_event(type, num, str); }
+static void sf_cb(int type, long long num, const char *str, void *ctx) {
+    unsigned int epoch = (unsigned int)(uintptr_t)ctx;
+    SfSlot *slot = sf_current_slot();
+    if (type == 23 && slot && slot->epoch == epoch)
+        __atomic_store_n(&slot->unload_completed, 1, __ATOMIC_RELEASE);
+    sf_on_event(epoch, type, num, str);
+}
 static void acb_cb(long a, long t, long ev, long app, long play, const char *reply) {
     (void)a; (void)t; (void)app; (void)play;
     acb_on_event(ev, reply);
 }
 
 /* ---- StarfishMediaAPIs verbs ---- */
-int sf_load(const char *payload) {
-    SMP_ctor(g_smp, NULL);   /* uid=NULL: registers on the pre-authorized uMS namespace */
+int sf_load(const char *payload, unsigned int epoch) {
+    if (!payload || epoch == 0 ||
+        __atomic_load_n(&g_lifecycle_blocked, __ATOMIC_ACQUIRE) ||
+        SMP_READY() || sf_current_slot() || !sf_prepare_callback_hook()) {
+        if (elogf) {
+            fprintf(elogf, "native lifecycle: Load refused blocked=%d ready=%d current=%p epoch=%u\n",
+                    __atomic_load_n(&g_lifecycle_blocked, __ATOMIC_ACQUIRE), SMP_READY(),
+                    (void *)sf_current_slot(), epoch);
+            fflush(elogf);
+        }
+        return 0;
+    }
+
+    SfSlot *slot = NULL;
+    if (posix_memalign((void **)&slot, 16, sizeof *slot) == 0) memset(slot, 0, sizeof *slot);
+    int gate_ready = slot && pthread_mutex_init(&slot->gate, NULL) == 0 &&
+                     pthread_cond_init(&slot->drained, NULL) == 0;
+    if (!gate_ready) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        if (elogf) {
+            fprintf(elogf, "native lifecycle: Load refused (callback gate allocation/init failed)\n");
+            fflush(elogf);
+        }
+        /* Do not recycle even an unpublished candidate: unique-address identity stays monotonic. */
+        return 0;
+    }
+    slot->epoch = epoch;
+    slot->active = 1;
+
+    if (pthread_mutex_lock(&g_slots_lock) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return 0;
+    }
+    slot->next = g_slots;
+    g_slots = slot;
+    if (pthread_mutex_unlock(&g_slots_lock) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return 0;
+    }
+    __atomic_store_n(&g_current, slot, __ATOMIC_RELEASE);
+
+    SMP_ctor(slot->object, NULL);   /* uid=NULL: registers on the pre-authorized uMS namespace */
     SMP_SET_READY(1);        /* RELEASE: the ctor's writes must be visible before the flag */
-    SMP_notifyForeground(g_smp);
-    return SMP_Load(g_smp, payload, sf_cb);
+    SMP_notifyForeground(slot->object);
+    if (pthread_mutex_lock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        SMP_SET_READY(0); /* constructed object stays quarantined; never D1/reuse */
+        return 0;
+    }
+    slot->evidence_armed = 1;
+    if (pthread_mutex_unlock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        SMP_SET_READY(0); /* constructed object stays quarantined; never D1/reuse */
+        return 0;
+    }
+    return g_load_with_context(slot->object, payload, sf_cb, (void *)(uintptr_t)epoch);
 }
 int  sf_ready(void)               { return SMP_READY(); }
-int  sf_is_load_completed(void)   { return SMP_READY() ? SMP_isLoadCompleted(g_smp) : 0; }
-int  sf_play(void)                { return SMP_READY() ? SMP_Play(g_smp) : 0; }
-int  sf_pause(void)               { return SMP_READY() ? SMP_Pause(g_smp) : 0; }
-int  sf_flush(void)               { return SMP_READY() ? SMP_flush(g_smp) : 0; }
-int  sf_push_eos(void)            { return SMP_READY() ? SMP_pushEOS(g_smp) : 0; }
-void sf_unload(void)              { if (SMP_READY()) SMP_Unload(g_smp); }
-void sf_destroy(void)             { if (SMP_READY()) { SMP_dtor(g_smp); SMP_SET_READY(0); } }
+int sf_is_load_completed(void) {
+    void *object = sf_ready_object();
+    return object ? SMP_isLoadCompleted(object) : 0;
+}
+int sf_play(void) {
+    void *object = sf_ready_object();
+    return object ? SMP_Play(object) : 0;
+}
+int sf_pause(void) {
+    void *object = sf_ready_object();
+    return object ? SMP_Pause(object) : 0;
+}
+int sf_flush(void) {
+    void *object = sf_ready_object();
+    return object ? SMP_flush(object) : 0;
+}
+int sf_push_eos(void) {
+    void *object = sf_ready_object();
+    return object ? SMP_pushEOS(object) : 0;
+}
+void sf_unload(void) {
+    void *object = sf_ready_object();
+    if (object) SMP_Unload(object);
+}
+
+/* Close admission and wait without a timeout for every real hook call which already entered.
+ * Synthetic UnloadCompleted bypasses callbackFunctionHook, so its independent marker is checked
+ * in sf_destroy (and by Rust) rather than being confused with the interception counter. */
+int sf_callback_gate_retire(void) {
+    SfSlot *slot = sf_current_slot();
+    if (!slot || pthread_mutex_lock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        return 0;
+    }
+    slot->active = 0;
+    int drained = 1;
+    while (slot->inflight != 0) {
+        if (pthread_cond_wait(&slot->drained, &slot->gate) != 0) {
+            __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+            drained = 0;
+            break;
+        }
+    }
+    slot->gate_retired = drained && slot->inflight == 0;
+    unsigned int intercepted = __atomic_load_n(&slot->intercepted, __ATOMIC_RELAXED);
+    unsigned int dropped = __atomic_load_n(&slot->dropped, __ATOMIC_RELAXED);
+    int proven = slot->gate_retired &&
+                 __atomic_load_n(&g_hook_valid, __ATOMIC_ACQUIRE) && intercepted != 0 &&
+                 !__atomic_load_n(&g_lifecycle_blocked, __ATOMIC_ACQUIRE);
+    if (pthread_mutex_unlock(&slot->gate) != 0) {
+        __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+        proven = 0;
+    }
+    if (elogf) {
+        fprintf(elogf, "native callback gate: epoch=%u intercepted=%u dropped=%u proven=%d\n",
+                slot->epoch, intercepted, dropped, proven);
+        fflush(elogf);
+    }
+    return proven;
+}
+
+unsigned int sf_callback_intercepts(void) {
+    SfSlot *slot = sf_current_slot();
+    return slot ? __atomic_load_n(&slot->intercepted, __ATOMIC_RELAXED) : 0;
+}
+
+void sf_quarantine(void) {
+    SfSlot *slot = sf_current_slot();
+    if (slot) (void)sf_callback_gate_retire();
+    __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
+    SMP_SET_READY(0);
+    if (elogf) {
+        fprintf(elogf,
+                "native lifecycle: QUARANTINED epoch=%u object=%p; D1/reuse and future Load disabled\n",
+                slot ? slot->epoch : 0, slot ? (void *)slot->object : NULL);
+        fflush(elogf);
+    }
+}
+
+int sf_destroy(void) {
+    SfSlot *slot = sf_current_slot();
+    if (!slot || !SMP_READY()) return 0;
+    if (pthread_mutex_lock(&slot->gate) != 0) {
+        sf_quarantine();
+        return 0;
+    }
+    int safe = !slot->active && slot->gate_retired &&
+               __atomic_load_n(&slot->intercepted, __ATOMIC_RELAXED) != 0 &&
+               __atomic_load_n(&slot->unload_completed, __ATOMIC_ACQUIRE) &&
+               __atomic_load_n(&g_hook_valid, __ATOMIC_ACQUIRE) &&
+               !__atomic_load_n(&g_lifecycle_blocked, __ATOMIC_ACQUIRE);
+    if (pthread_mutex_unlock(&slot->gate) != 0) safe = 0;
+    if (!safe) {
+        sf_quarantine();
+        return 0;
+    }
+
+    SMP_dtor(slot->object);
+    __atomic_store_n(&slot->destroyed, 1, __ATOMIC_RELEASE);
+    SMP_SET_READY(0);
+    __atomic_store_n(&g_current, NULL, __ATOMIC_RELEASE);
+    return 1;
+}
 
 /* The CustomPipeline* reached from our object (VERIFIED by decompile: StarfishMediaAPIs::
- * player is a shared_ptr _M_ptr at g_smp+0x4c; AbstractPlayer::pipeline _M_ptr at player+0x4;
+ * player is a shared_ptr _M_ptr at object+0x4c; AbstractPlayer::pipeline _M_ptr at player+0x4;
  * Pipeline is CustomPipeline's primary base so the ptr is usable as `this`). player@0x4c is
  * populated on our uid=NULL object — sf_play/sf_flush already dispatch through it. */
 static void *sf_pipeline(void) {
-    if (!SMP_READY()) return 0;
-    void *player = *(void **)((unsigned char *)g_smp + 0x4c);
+    unsigned char *object = sf_ready_object();
+    if (!object) return 0;
+    void *player = *(void **)(object + 0x4c);
     if (!player) return 0;
     return *(void **)((unsigned char *)player + 0x04);
 }
@@ -265,10 +609,11 @@ static void *sf_pipeline(void) {
  * absence is the stale-segment stall the reload path works around). position_ns = the fed
  * (0-based rebased) PTS of that first frame. */
 int sf_set_time_to_decode(long long position_ns) {
-    if (!SMP_READY()) return 0;
+    void *object = sf_ready_object();
+    if (!object) return 0;
     char j[64];
     snprintf(j, sizeof j, "{\"position\":%lld}", position_ns);
-    return SMP_setTimeToDecode(g_smp, j);
+    return SMP_setTimeToDecode(object, j);
 }
 int sf_send_segment(void) {
     void *p = sf_pipeline();
@@ -300,13 +645,14 @@ int sf_set_content_info(long long position_ns) {
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
     /* The only verb that used to dispatch with NO readiness check — it relied entirely on
        pump.rs returning early. Guard it here too so the object can never be fed mid-ctor. */
-    if (!SMP_READY()) return 'e';
+    void *object = sf_ready_object();
+    if (!object) return 'e';
     char j[160];
     snprintf(j, sizeof j, "{\"bufferAddr\":\"%p\",\"bufferSize\":%u,\"pts\":%lld,\"esData\":%d}",
              (const void *)p, size, pts, esData);
     unsigned char ret[32];
     memset(ret, 0, sizeof ret);
-    SMP_Feed(ret, g_smp, j);
+    SMP_Feed(ret, object, j);
     char *s = *(char **)ret;             /* std::string _M_p at offset 0 */
     static int logged = 0;
     if (elogf && logged < 3) { logged++;

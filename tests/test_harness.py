@@ -1027,6 +1027,39 @@ class AutoNetworkProfile(unittest.TestCase):
         self.assertFalse(run.a_abr_shape(recovering[:-1], {"settle_min_kbps": 8000})[0],
                          "a run that ended on the floor did not recover, whatever it reached before")
 
+    def test_a_requested_rung_cannot_substitute_for_the_picture_pms_returned(self):
+        """The reported regression is request=22 Mbps/4K but decoded=720p.
+
+        A rung floor alone calls that run recovered because it reads the actuator sent to PMS.
+        The recovery case needs a separate bound on ``out=`` from the completed candidate, which
+        is the picture the decoder actually received.  Catalog geometry must not satisfy it.
+        """
+        underfilled = [
+            "abr: steady current=720kbps safe=20000kbps pending=0kbps",
+            "abr: committed Up to 22000kbps 3840x2160 out=720x404",
+            "abr: steady current=22000kbps safe=20000kbps pending=0kbps",
+        ]
+        self.assertTrue(
+            run.a_abr_shape(underfilled, {"floor_kbps": 20000})[0],
+            "the old actuator assertion must false-pass, or this is not the reported hole",
+        )
+        ok, why = run.a_abr_shape(underfilled, {"decoded_width_floor": 1900})
+        self.assertFalse(ok, why)
+        self.assertIn("720", why)
+        ok, why = run.a_abr_shape(
+            [line.split(" out=")[0] for line in underfilled],
+            {"decoded_width_floor": 1900},
+        )
+        self.assertFalse(ok, "a catalog-sized box with no decoded observation must fail closed")
+        self.assertIn("no decoded candidate", why)
+
+        recovered = [
+            *underfilled,
+            "abr: committed Up to 22000kbps 3840x2160 out=1920x1080",
+        ]
+        ok, why = run.a_abr_shape(recovered, {"decoded_width_floor": 1900})
+        self.assertTrue(ok, why)
+
     def test_every_shaped_abr_case_grades_something_a_position_climb_cannot(self):
         """Each shaped profile must carry at least one `abr_shape` bound.
 
@@ -1398,14 +1431,15 @@ class NetcondRate(unittest.TestCase):
 # run of the code it grades.
 # ---------------------------------------------------------------------------
 def _sample_line(current=10000, media=9800, net=40000, buf=8000, vbuf=8000,
-                 abuf="8200ms", dur=2000, prod=300, n=5, decision="stay", target=0):
+                 abuf="8200ms", dur=2000, prod=300, n=5, decision="stay", target=0,
+                 complete=1):
     # `buf` takes an int OR the literal string "none", exactly as the app emits it: the playable
     # reserve is not knowable on a segment whose audio lane has produced no timestamp since the
     # open or the seek, and the app says so rather than printing a zero that reads as empty.
     buf = f"{buf}ms" if buf != "none" else "none"
     return (f"[  12.345] abr: sample current={current}kbps media={media}kbps net={net}kbps "
             f"buf={buf} vbuf={vbuf}ms abuf={abuf} dur={dur}ms prod={prod}pm n={n} "
-            f"decision={decision} target={target}kbps reason=None")
+            f"decision={decision} target={target}kbps complete={complete} reason=None")
 
 
 def _stamped(lines, stamps):
@@ -1533,6 +1567,59 @@ class AbrTraceMetrics(unittest.TestCase):
         # ...and the boundary is inclusive on the lump side, so a long-segment pack still counts.
         edge = [f"loop=60 fps=60 pos={p}s" for p in [5, 5 + run.LUMP_SEEK_S, 99 + run.LUMP_SEEK_S]]
         self.assertEqual(run.playback_lumpiness(edge)[0], 1)
+
+    def test_pause_resume_grades_the_two_accepted_edges_and_the_recovery(self):
+        lines = [
+            "loop=60 fps=60 pos=20s",
+            "autopause: Pause accepted hold=4000ms",
+            "loop=60 fps=60 pos=20s",
+            "loop=60 fps=60 pos=20s",
+            "loop=60 fps=60 pos=21s",  # integer-heartbeat quantisation allowance
+            "autopause: Resume accepted",
+            "loop=60 fps=60 pos=21s",
+            "feed v#100 sz=4096 fed=22000000000 reply=O qbytes=8192",
+            "feed a#200 sz=512 fed=22000000000 reply=O qbytes=1024",
+            "loop=60 fps=60 pos=22s",
+            "loop=60 fps=60 pos=23s",
+            "loop=60 fps=60 pos=24s",
+        ]
+        self.assertTrue(run.op_pause_resume(lines, 3)[0])
+        self.assertFalse(run.op_pause_resume(lines[:-3], 3)[0], "a Resume without recovery fails")
+        self.assertFalse(
+            run.op_pause_resume([line for line in lines if "feed a#" not in line], 3)[0],
+            "moving pictures without a resumed audio lane are the reported failure, not recovery",
+        )
+
+    def test_pipeline_evaluation_cannot_drop_the_pause_resume_operation(self):
+        """The synthetic device tier has its own evaluator, so adding an operation only to the
+        PMS evaluator produces a green TV run which never graded the operation it executed.
+        Exercise the dispatcher itself, not merely `op_pause_resume` in isolation.
+        """
+        lines = [
+            "loop=60 route=player overlay=none pos=20s",
+            "autopause: Pause accepted hold=4000ms",
+            "loop=60 route=player overlay=none pos=20s",
+            "loop=60 route=player overlay=none pos=20s",
+            "autopause: Resume accepted",
+            "loop=60 route=player overlay=none pos=20s",
+            "feed v#100 sz=4096 fed=22000000000 reply=O qbytes=8192",
+            "feed a#200 sz=512 fed=22000000000 reply=O qbytes=1024",
+            "loop=60 route=player overlay=none pos=24s",
+        ]
+        case = {
+            "fixture": "fixture.mp4",
+            "expect": {"require_video_bound": False, "min_pos_climb_s": 0},
+            "operations": [{"op": "pause_resume", "min_climb_after_s": 3}],
+        }
+        with mock.patch.object(run, "a_stream_path", return_value=(True, "fixture opened")), \
+             mock.patch.object(run, "a_load_decl", return_value=(True, "payload loaded")):
+            _passed, results = run.evaluate_pipeline(case, lines, (1, 0))
+        labels = [label for label, _ok, _evidence in results]
+        self.assertIn(
+            "pause_resume",
+            labels,
+            "the pipeline evaluator must grade every authored Pause/Resume edge",
+        )
 
     def test_raster_changes_count_transitions_not_commits(self):
         """MATHEMATICAL INVARIANT: eight rungs share 1920x1080 and are eventless to a viewer."""
@@ -2047,6 +2134,16 @@ class AbrTriggers(unittest.TestCase):
         self.assertEqual(
             self._names({**self.BASE, "abr_policy": "legacy"})["plxnative-abrpolicy"], "legacy")
 
+    def test_pause_resume_is_one_authored_trigger_not_two_wall_clock_writes(self):
+        case = {
+            **self.BASE,
+            "operations": [{"op": "pause_resume", "delay_ms": 25_000, "hold_ms": 6_000}],
+        }
+        self.assertEqual(
+            self._names(case)["plxnative-autopause"],
+            "delay=25000,hold=6000",
+        )
+
     def test_no_manifest_case_carries_a_new_abr_bound_yet(self):
         """POLICY GUARD, not a policy test. Increment I0 adds the metrics and deliberately grades
         none of them: a bound written before the I1 baseline exists is a number somebody guessed.
@@ -2235,7 +2332,8 @@ class LogLineContract(unittest.TestCase):
             "control=118ms prime=94ms master=12ms media=12ms warmup=2210ms graded=1804ms "
             "warmup_dl=3000ms buf_start=24835ms buf_decided=21770ms feed=6498ms buf_fed=24918ms "
             "buf_end=24918ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
-            "slow=39800kbps unc=120pm declared=5602kbps graded_bytes=1441792"
+            "slow=39800kbps unc=120pm declared=5602kbps graded_bytes=1441792 "
+            "candidate_acq=1804ms candidate_bytes=1441792 candidate_dur=2000ms"
         )
         rows = run.abr_transactions([line])
         self.assertEqual(len(rows), 1, "the committed-upshift shape must parse")
@@ -2248,6 +2346,11 @@ class LogLineContract(unittest.TestCase):
                          "the candidate's OWN rate, which is not `to_kbps` and not the catalog's")
         self.assertEqual(row["graded_bytes"], 1441792,
                          "with `graded=`, the one window observation a transaction adds")
+        self.assertEqual(
+            (row["candidate_acq_ms"], row["candidate_bytes"], row["candidate_dur_ms"]),
+            (1804, 1441792, 2000),
+            "a committed transaction can reseed the exact finite-bag replay",
+        )
 
     def test_a_transaction_line_from_an_older_generation_is_reported_not_dropped(self):
         """The corpus is append-only and spans several instrumentation generations. A strict
@@ -2271,7 +2374,8 @@ class LogLineContract(unittest.TestCase):
             "control=none prime=none master=none media=none warmup=none graded=none "
             "warmup_dl=nonems buf_start=24835ms buf_decided=24835ms feed=nonems buf_fed=nonems "
             "buf_end=24835ms cur_acq_before=1583ms net=41200kbps fast=41200kbps "
-            "slow=39800kbps unc=120pm declared=-1kbps graded_bytes=-1"
+            "slow=39800kbps unc=120pm declared=-1kbps graded_bytes=-1 "
+            "candidate_acq=nonems candidate_bytes=-1 candidate_dur=-1ms"
         ).replace("control=none", "control=nonems").replace(
             "prime=none ", "prime=nonems ").replace("master=none ", "master=nonems ").replace(
             "media=none ", "media=nonems ").replace("warmup=none ", "warmup=nonems ").replace(
@@ -2363,6 +2467,95 @@ class AbrSegmentVariation(unittest.TestCase):
                     int(shapes[key].get("hls_segments") or 0), 2,
                     f"{key} is served as an ABR rung but is not cut into segments, so that rung "
                     "delivers one byte size for the whole playback")
+
+
+class AbrResponseProfile(unittest.TestCase):
+    """One request actuator may produce different completed renditions in fresh PMS sessions."""
+
+    def _server(self):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.abr_response_profile = {}
+        srv.abr_response_counts = {}
+        srv.abr_response_generations = {}
+        return srv
+
+    def test_fresh_sessions_walk_the_declared_responses_then_hold_the_last(self):
+        """Reproduce PMS answering 22 Mbps/4K with 720p, then 4K after link recovery."""
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+
+        first_generation, first_response = srv.begin_abr_response("22000")
+        self.assertEqual(first_response, "2000")
+        self.assertEqual(
+            srv.abr_response_rung("22000", first_generation),
+            "2000",
+            "the media and segment requests must stay on their master's response",
+        )
+
+        second_generation, second_response = srv.begin_abr_response("22000")
+        self.assertEqual(second_response, "22000")
+        self.assertEqual(srv.abr_response_rung("22000", second_generation), "22000")
+        self.assertEqual(
+            srv.begin_abr_response("22000")[1],
+            "22000",
+            "an unexpected third refresh must not wrap back to the underfilled response",
+        )
+
+    def test_unprofiled_requests_and_an_empty_profile_are_bit_identical(self):
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+        self.assertEqual(srv.begin_abr_response("20000"), (None, "20000"))
+        self.assertEqual(srv.abr_response_rung("20000", None), "20000")
+        srv.set_abr_response_profile(None)
+        self.assertEqual(srv.begin_abr_response("22000"), (None, "22000"))
+
+    def test_unknown_rungs_and_empty_response_lists_are_refused(self):
+        for bad in ({"999": ["2000"]}, {"22000": ["999"]}, {"22000": []}):
+            with self.subTest(profile=bad):
+                with self.assertRaises(ValueError):
+                    self._server().set_abr_response_profile(bad)
+
+    def test_generation_rides_from_master_through_media_to_the_segment_file(self):
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+        with tempfile.TemporaryDirectory() as root:
+            srv.root = os.path.realpath(root)
+            srv._abr_parts = {}
+            for rung in ("2000", "22000"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"fixture")
+
+            handler = serve_fixtures.FixtureHandler.__new__(serve_fixtures.FixtureHandler)
+            handler.server = srv
+            handler.path = "/__abr/22000/master.m3u8"
+            first = handler._abr_playlist().decode()
+            self.assertIn("BANDWIDTH=2000000,RESOLUTION=1280x720", first)
+            self.assertIn("media.m3u8?fixtureGeneration=1", first)
+
+            handler.path = "/__abr/22000/media.m3u8?fixtureGeneration=1"
+            media = handler._abr_playlist().decode()
+            self.assertIn("segment.ts?sequence=0&fixtureGeneration=1", media)
+            handler.path = "/__abr/22000/segment.ts?sequence=0&fixtureGeneration=1"
+            match = serve_fixtures.RE_ABR_SEGMENT.match(handler.path.split("?", 1)[0])
+            self.assertEqual(handler._abr_segment_file(match), serve_fixtures.ABR_FIXTURE["2000"])
+
+            handler.path = "/__abr/22000/master.m3u8"
+            second = handler._abr_playlist().decode()
+            self.assertIn("BANDWIDTH=22000000,RESOLUTION=3840x2160", second)
+            self.assertIn("media.m3u8?fixtureGeneration=2", second)
+
+    def test_manifest_case_reproduces_the_underfilled_top_then_requires_real_4k(self):
+        case = next(
+            case
+            for case in _manifest()["pipeline_cases"]
+            if case["name"] == "pipe_abr_underfilled_top_refresh"
+        )
+        self.assertEqual(case["abr_response_profile"], {"22000": [2000, 2000, 22000]})
+        self.assertGreater(case["network_profile"][-1]["kbps"], case["network_profile"][0]["kbps"])
+        shape = case["expect"]["abr_shape"]
+        self.assertEqual(shape["floor_kbps"], 22000)
+        self.assertGreaterEqual(shape["decoded_width_floor"], 3800)
 
 
 class SharedLinkShaping(unittest.TestCase):
@@ -2491,6 +2684,35 @@ class EarlyExitSoundness(unittest.TestCase):
     def test_gst_trace_never_grades_early(self):
         allowed, _ = run.early_exit_allowed({"expect": {}, "gst_trace": True}, {})
         self.assertFalse(allowed)
+
+    def test_a_delayed_operation_never_grades_early(self):
+        """A `delay_ms` operation has not happened yet, and its assertion can pass without it.
+
+        Measured 2026-08-29 on `auto_pin_then_original_and_seek`, whose seek is scheduled at
+        `delay_ms=95000`: the case exited early at 71 s and reported `[PASS] seek_transcode`. It
+        could, because `op_seek_transcode` matches `reload_transcode: fresh Load at offset` and a
+        QUALITY SWITCH emits exactly that line — so the switch's own reload satisfied a seek that
+        had not fired. With `--no-early` the same case ran its 150 s, the seek fired at 95 s, and
+        it passed on the right evidence.
+
+        This is the `link_profile` argument in a second costume: the interesting event is never
+        the first one, and a prefix that happens to contain a look-alike line grades the wrong
+        thing. Monotonicity is not the issue — the assertion really is monotone. The issue is that
+        it is satisfiable by evidence the operation did not produce.
+        """
+        case = {"expect": {"no_error": True},
+                "operations": [{"op": "play"},
+                               {"op": "seek", "target_s": 300, "delay_ms": 95000}]}
+        allowed, why = run.early_exit_allowed(case, {})
+        self.assertFalse(allowed, "a scheduled operation must be allowed to fire before grading stops")
+        self.assertIn("delay", why.lower())
+
+    def test_an_undelayed_operation_still_exits_early(self):
+        """The rule is about SCHEDULING, not about seeks: an ordinary seek fires promptly."""
+        case = {"expect": {"no_error": True},
+                "operations": [{"op": "play"}, {"op": "seek", "mode": "inplace", "target_s": 40}]}
+        allowed, _ = run.early_exit_allowed(case, {})
+        self.assertTrue(allowed, "an operation with no delay_ms is not window-length sensitive")
 
     def test_an_ordinary_case_still_exits_early(self):
         allowed, why = run.early_exit_allowed({"expect": {"codec": "h264", "no_error": True}}, {})
@@ -2697,9 +2919,10 @@ class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
     exactly like the feature never ran, i.e. like a total regression, on the one tier where the
     only copy of the evidence is the captured log.
 
-    So the Rust test module pins the exact wire form as string constants and this reads them back
-    out of the source. It is a source-extraction test rather than a fixture on purpose: a fixture
-    copied here would drift with the regex it is supposed to grade, and agree with it forever.
+    So the Rust test module pins both the live exact generation and the retired order-statistic
+    generation as string constants, and this reads them back out of the source. It is a
+    source-extraction test rather than a fixture on purpose: a fixture copied here would drift with
+    the regex it is supposed to grade, and agree with it forever.
     """
 
     WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "src", "abr", "window.rs")
@@ -2733,11 +2956,19 @@ class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
 
     def test_a_filling_verdict_parses_as_not_computed_rather_than_zero(self):
         filling = [ln for ln in self.wire_examples() if "verdict=filling" in ln]
-        self.assertTrue(filling, "the filling state needs an example; it is every playback's first n")
+        self.assertTrue(filling, "the retired filling generation still needs an honest example")
         row = run.abr_windows(filling)[0]
-        for field in ("bound_ms", "demand_ms", "supply_ms", "excess_ms"):
+        for field in ("bound_ms", "demand_ms", "supply_ms", "excess_ms", "runway_ms"):
             self.assertEqual(row[field], -1, f"{field} must say NOT COMPUTED, not zero")
         self.assertLess(row["have"], row["want"])
+
+    def test_the_live_generation_is_exact_and_uses_the_whole_bag(self):
+        live = [ln for ln in self.wire_examples() if "eps=0pm" in ln]
+        self.assertTrue(live, "the current exact generation needs its own wire example")
+        row = run.abr_windows(live)[0]
+        self.assertEqual(row["have"], row["want"])
+        self.assertEqual((row["eps_pm"], row["clamp"], row["bound_ms"]), (0, 0, -1))
+        self.assertIn(row["verdict"], ("admit", "refuse"))
 
     def test_a_full_verdict_parses_every_term(self):
         full = [ln for ln in self.wire_examples() if "verdict=admit" in ln]
@@ -2747,6 +2978,7 @@ class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
         self.assertEqual((row["sustainable"], row["survivable"]), (1, 1))
         self.assertLessEqual(row["demand_ms"], row["supply_ms"], "condition (1), as logged")
         self.assertGreaterEqual(row["excess_ms"], 0)
+        self.assertGreaterEqual(row["runway_ms"], row["excess_ms"])
 
     def test_the_window_line_does_not_also_match_the_sample_regex(self):
         """Both are `abr: ` lines emitted on the same segment; a `search` that matched both would
@@ -2759,12 +2991,13 @@ class TheAbrWindowLineMatchesTheHarnessRegex(unittest.TestCase):
 class AbrSeekSupport(unittest.TestCase):
     """The seek arm of an ABR case, which is the one this suite could not express.
 
-    A collision between a candidate encoder's name and the live session's is only reachable
-    either side of a seek — `route::transcode_seek` reuses the session id on purpose — and only
-    once a transaction has COMMITTED, which needs tens of seconds of samples. The app fires the
-    first seek step at a fixed ~12 s, so without a delay every seek in this suite lands before
-    the controller has ever switched, and the state is untestable. These pin the two halves that
-    make it expressible.
+    The original collision between a candidate encoder's name and the live session's was reachable
+    only across a seek, after a transaction had COMMITTED. A seek now allocates its own fresh
+    physical session, but the delayed arm remains the regression surface for both lifecycle
+    boundaries: old encoder retirement and the post-seek controller's first transaction. The app
+    fires the first seek step at a fixed ~12 s, so without a delay every seek in this suite lands
+    before the controller has ever switched and that state is untestable. These pin the two halves
+    that make it expressible.
     """
 
     def _seek_trigger(self, op):
@@ -2830,6 +3063,15 @@ class ReloadCeiling(unittest.TestCase):
         _, why = run.a_reload_ceiling(self._lines(3), 2)
         self.assertIn("fresh Load", why)
 
+    def test_the_floor_rejects_a_missing_original_recovery(self):
+        ok, why = run.a_reload_floor(self._lines(1), 2)
+        self.assertFalse(ok, why)
+        self.assertIn("1 reload", why)
+
+    def test_the_floor_accepts_both_required_mode_transitions(self):
+        ok, why = run.a_reload_floor(self._lines(2), 2)
+        self.assertTrue(ok, why)
+
 
 class PostSeekSurvival(unittest.TestCase):
     """Reaching a seek target and SURVIVING it are different claims, and they came apart.
@@ -2841,10 +3083,28 @@ class PostSeekSurvival(unittest.TestCase):
     death never reaches. These pin the two assertions added to close that.
     """
 
-    def _log(self, positions, tail=()):
+    def _log(self, positions, tail=(), retired=True):
         out = ["reload_transcode: fresh Load at offset 300s"]
+        if retired:
+            out.append("seek: retired previous encoder ok=1")
         out += [f"loop=60 fps=60 pos={t}s play=1000pm" for t in positions]
         return out + list(tail)
+
+    def test_a_reload_that_never_retires_the_old_physical_session_fails(self):
+        ok, why = run.op_seek_transcode(
+            self._log(range(300, 480), retired=False),
+            300,
+            min_climb_after_s=45,
+        )
+        self.assertFalse(ok, why)
+        self.assertIn("retire", why)
+
+    def test_a_stop_that_the_server_rejected_is_not_a_successful_retirement(self):
+        lines = self._log(range(300, 480), retired=False)
+        lines.insert(1, "seek: retired previous encoder ok=0")
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
+        self.assertFalse(ok, why)
+        self.assertIn("ok=0", why)
 
     def test_a_seek_that_lands_and_then_dies_fails(self):
         """The pre-fix shape: the target is reached, then 14 s and silence."""
@@ -2863,8 +3123,8 @@ class PostSeekSurvival(unittest.TestCase):
         ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
         self.assertFalse(ok, why)
 
-    def test_without_the_floor_the_old_behaviour_is_unchanged(self):
-        """Every existing seek case passes 0 and must grade exactly as before."""
+    def test_without_the_survival_floor_the_lifecycle_is_still_graded(self):
+        """A short seek case may omit post-climb, never physical-session retirement."""
         ok, _ = run.op_seek_transcode(self._log(range(300, 315)), 300)
         self.assertTrue(ok)
 
@@ -2895,7 +3155,8 @@ class AbrCasesAreWiredUp(unittest.TestCase):
     """The two cases added for the 2026-08-29 incident, against the real tracked manifest."""
 
     def _case(self, name):
-        m = json.load(open(os.path.join(os.path.dirname(__file__), "manifest.json")))
+        with open(os.path.join(os.path.dirname(__file__), "manifest.json"), encoding="utf-8") as f:
+            m = json.load(f)
         return next(c for c in m["cases"] if c["name"] == name)
 
     def test_the_seek_case_seeks_after_a_commit_can_have_happened(self):
@@ -2935,8 +3196,24 @@ class AbrCasesAreWiredUp(unittest.TestCase):
         self.assertEqual(modes[0], "pass", "it must start at full speed")
         self.assertEqual(modes[-1], "pass", "and be RELEASED to full speed — the reported case")
         self.assertTrue(any(m.startswith("rate:") for m in modes), "with a real drop between")
-        # Two Loads is the whole budget: one to leave Original, one to come back.
+        # Two Loads are both the requirement and the whole budget: one to leave Original, one to
+        # come back. A ceiling alone accepted the reproduced one-way fallback as a false PASS.
+        self.assertEqual(c["expect"]["min_reloads"], 2)
         self.assertEqual(c["expect"]["max_reloads"], 2)
+        self.assertTrue(
+            c["expect"].get("no_demux_failure"),
+            "the optional Original experiment must not kill an otherwise healthy HLS pipeline",
+        )
+
+    def test_the_original_seek_case_waits_past_the_reported_failure_window(self):
+        c = self._case("auto_original_seek_stays_original")
+        seek = next(o for o in c["operations"] if o["op"] == "seek")
+        self.assertEqual(c["quality"], "auto")
+        self.assertEqual(c["item"], "movie_hevc_4k_dovi_p8")
+        self.assertEqual(seek.get("mode"), "inplace")
+        self.assertGreaterEqual(seek.get("min_climb_after_s", 0), 60)
+        self.assertLess(12 + seek.get("delay_ms", 0) / 1000 + 60, c["run_secs"])
+        self.assertEqual(c["expect"].get("max_reloads"), 0)
 
 
 if __name__ == "__main__":

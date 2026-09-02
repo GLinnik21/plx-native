@@ -192,8 +192,19 @@ fn row_for(a: Action) -> Row {
     }
 }
 
-pub fn open() {
+fn initial_selection(rows: &[Action], quality: Option<crate::route::Quality>) -> i32 {
+    quality
+        .and_then(|q| {
+            rows.iter()
+                .position(|a| *a == Action::SetQuality(q))
+                .and_then(|i| i32::try_from(i).ok())
+        })
+        .unwrap_or(0)
+}
+
+fn open_focused(quality: Option<crate::route::Quality>) {
     let rows = rows_for();
+    let initial = initial_selection(&rows, quality);
     // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
     // both, so the split here is presentational and the ORDER is the contract.
     let mut options = Section::new("Options");
@@ -205,7 +216,7 @@ pub fn open() {
         }
     }
     table().compact = true; // a short action list — BODY labels, like the profile menu
-    table().set_sections(vec![options, quality], 0, false);
+    table().set_sections(vec![options, quality], initial, false);
     // ROWS *is* the index→action map, so it must stay one-to-one with what was built above.
     debug_assert_eq!(rows.len() as i32, table().n_rows());
     // ASSIGN, never `ptr::write`: `ROWS` owns its `Vec` now, and `write` does not drop what was
@@ -213,6 +224,19 @@ pub fn open() {
     // replaced had nothing to drop, which is why the old spelling was correct and this one is not.)
     unsafe { *addr_of_mut!(ROWS) = rows };
     pop().open();
+}
+
+pub fn open() {
+    open_focused(None);
+}
+
+/// Open the existing overflow menu directly on the active quality row.
+///
+/// The terminal playback screen has no transport discs, so OK enters the one useful recovery
+/// section explicitly rather than parking on “Stats for nerds”.  It is still the SAME TableView
+/// and action map as the ordinary `…` menu; only the initial cursor differs.
+pub fn open_quality() {
+    open_focused(Some(crate::route::quality()));
 }
 
 pub fn close() {
@@ -408,6 +432,24 @@ mod tests {
         for (i, q) in crate::route::available_quality_ladder().iter().enumerate() {
             assert_eq!(action_at(&rows, 1 + i as i32), Action::SetQuality(*q));
         }
+    }
+
+    #[test]
+    fn failure_entry_can_focus_the_active_quality_in_the_shared_menu() {
+        let rows = rows_for();
+        for q in crate::route::available_quality_ladder() {
+            let i = rows
+                .iter()
+                .position(|a| *a == Action::SetQuality(*q))
+                .expect("every available quality has a row");
+            assert_eq!(initial_selection(&rows, Some(*q)), i as i32);
+            assert!(i > 0, "quality recovery must skip the Options section");
+        }
+        assert_eq!(
+            initial_selection(&rows, None),
+            0,
+            "ordinary … starts at Options"
+        );
     }
 
     /// Out-of-range must be `None`, never a neighbouring action: `sel` survives a rebuild, so a

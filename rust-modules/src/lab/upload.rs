@@ -146,6 +146,7 @@ fn send(url: &str, secret: &str, session: &str, pin: &str, seq: u32, doc: String
     let t = crate::net::Timeouts {
         connect_s: 8,
         total_s: 60,
+        total_ms: 0,
         low_speed_bps: 0,
         low_speed_s: 0,
     };

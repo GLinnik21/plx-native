@@ -161,6 +161,7 @@ pub(crate) struct CURLMsg {
 const CURLMSG_DONE: c_int = 1;
 const CURLM_OK: c_int = 0;
 const CURL_WAIT_POLLIN: i16 = 0x0001;
+const CURLE_OPERATION_TIMEDOUT: c_int = 28;
 
 // curl.h option ids. STRINGPOINT/OBJECTPOINT/CBPOINT/SLISTPOINT = 10000, FUNCTIONPOINT = 20000,
 // LONG = 0 — read off `curl/curl.h` rather than remembered.
@@ -221,6 +222,12 @@ const CONNECT_TIMEOUT_S: c_long = 15;
 /// answers headers and then stops sending parks the demuxer forever, which is exactly the
 /// `tools/netcond.py --mode stall` case.
 const LOW_SPEED_TIME_S: c_long = 30;
+
+/// The ordinary HTTPS media low-speed contract. ABR reserve snapshots may wake earlier, but
+/// retries carry this independent liveness balance instead of renewing it.
+pub(crate) fn media_stall_budget() -> std::time::Duration {
+    std::time::Duration::from_secs(LOW_SPEED_TIME_S as u64)
+}
 
 // ---- the wake pipe ---------------------------------------------------------------------------
 
@@ -440,7 +447,7 @@ pub(crate) fn available() -> bool {
 /// Why an open or a seek did not produce a readable stream. Every variant is a **clean refusal**:
 /// nothing here panics, so a television without the multi table lands on the player's failure
 /// read-out instead of killing a thread.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OpenErr {
     /// libcurl, or its multi interface, could not be bound on this device.
     Unavailable,
@@ -578,6 +585,17 @@ impl CurlSource {
         Self::open_with_reservation(url, at, reservation)
     }
 
+    /// Finish a reserved open inside a caller-owned absolute deadline. ABR candidate setup uses
+    /// this so DNS/TLS/headers spend the same conservation budget as the response body.
+    pub(crate) fn open_reserved_until(
+        url: &str,
+        at: i64,
+        reservation: OpenReservation,
+        deadline: std::time::Instant,
+    ) -> Result<Box<CurlSource>, OpenErr> {
+        Self::open_with_reservation_until(url, at, reservation, Some(deadline))
+    }
+
     /// [`open`](Self::open) with the availability verdict injected, so the host suite can grade
     /// the no-libcurl path without poisoning a process-global table.
     #[cfg(test)]
@@ -601,6 +619,32 @@ impl CurlSource {
     fn open_with_reservation_until(
         url: &str,
         at: i64,
+        reservation: OpenReservation,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Box<CurlSource>, OpenErr> {
+        Self::open_with_reservation_range_until(url, at, None, reservation, deadline)
+    }
+
+    /// Open the finite prefix used by an Original throughput experiment. Unlike an ordinary
+    /// offset-zero media open this sends `Range: bytes=0-(len-1)`, so completing the sample also
+    /// completes the HTTP response instead of abandoning the rest of a multi-gigabyte file.
+    fn open_bounded_with_reservation_until(
+        url: &str,
+        len: usize,
+        reservation: OpenReservation,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Box<CurlSource>, OpenErr> {
+        let end = i64::try_from(len)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .ok_or(OpenErr::Local)?;
+        Self::open_with_reservation_range_until(url, 0, Some(end), reservation, deadline)
+    }
+
+    fn open_with_reservation_range_until(
+        url: &str,
+        at: i64,
+        range_end: Option<i64>,
         reservation: OpenReservation,
         deadline: Option<std::time::Instant>,
     ) -> Result<Box<CurlSource>, OpenErr> {
@@ -631,7 +675,7 @@ impl CurlSource {
             readable: false,
             poisoned: false,
         });
-        src.start_until(at, deadline)?;
+        src.start_range_until(at, range_end, deadline)?;
         Ok(src)
     }
 
@@ -643,6 +687,15 @@ impl CurlSource {
     fn start_until(
         &mut self,
         at: i64,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), OpenErr> {
+        self.start_range_until(at, None, deadline)
+    }
+
+    fn start_range_until(
+        &mut self,
+        at: i64,
+        range_end: Option<i64>,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), OpenErr> {
         self.stop();
@@ -672,15 +725,17 @@ impl CurlSource {
             return Err(OpenErr::Local);
         }
         self.easy = easy;
-        // `bytes=N-` open-ended, exactly the header `stream.rs`'s seek path sends. Held in `self`
-        // rather than a local: libcurl copies string options (7.17+), but the whole table here is
-        // bound at runtime and an owned copy costs nothing to be sure of.
-        self.range = if at > 0 {
-            CString::new(format!("{at}-")).ok()
-        } else {
-            None
+        // Ordinary seeks use `bytes=N-`; the throughput probe uses the finite `bytes=0-M` form.
+        // Held in `self` rather than a local: libcurl copies string options (7.17+), but the whole
+        // table here is bound at runtime and an owned copy costs nothing to be sure of.
+        self.range = match range_end {
+            Some(end) if end >= at => CString::new(format!("{at}-{end}")).ok(),
+            Some(_) => return Err(OpenErr::Local),
+            None if at > 0 => CString::new(format!("{at}-")).ok(),
+            None => None,
         };
-        unsafe {
+        let setup_timeout_at = unsafe {
+            let mut setup_timeout_ms = None;
             macro_rules! require_setopt {
                 ($call:expr, $name:literal) => {{
                     let rc = $call;
@@ -755,7 +810,11 @@ impl CurlSource {
                 "CURLOPT_PROTOCOLS"
             );
             require_setopt!(
-                crate::net::curl_easy_setopt_long(easy, CURLOPT_REDIR_PROTOCOLS, redirect_protocols),
+                crate::net::curl_easy_setopt_long(
+                    easy,
+                    CURLOPT_REDIR_PROTOCOLS,
+                    redirect_protocols
+                ),
                 "CURLOPT_REDIR_PROTOCOLS"
             );
             crate::net::curl_easy_setopt_long(easy, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT_S);
@@ -766,6 +825,7 @@ impl CurlSource {
                     .max(1)
                     .min(c_long::MAX as u128) as c_long;
                 crate::net::curl_easy_setopt_long(easy, CURLOPT_TIMEOUT_MS, left_ms);
+                setup_timeout_ms = Some(left_ms as u64);
             }
             crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_LIMIT, 1);
             crate::net::curl_easy_setopt_long(easy, CURLOPT_LOW_SPEED_TIME, LOW_SPEED_TIME_S);
@@ -775,6 +835,10 @@ impl CurlSource {
             // NB no CURLOPT_TIMEOUT: a whole movie has no deadline. The low-speed pair above is
             // what bounds a stall, and unlike a total timeout it cannot kill a healthy transfer.
             // NB no CURLOPT_ACCEPT_ENCODING either — the demuxer wants the bytes the file has.
+            // libcurl starts its total timer when this handle enters the multi. Capture a lower
+            // bound immediately before that call so a DONE/28 can be attributed to the timer we
+            // own without confusing an earlier connect/low-speed timeout with reserve expiry.
+            let setup_timer_started = std::time::Instant::now();
             let rc = curl_multi_add_handle(self.multi, easy);
             if rc != CURLM_OK {
                 crate::player::log(&format!("curlio: curl_multi_add_handle failed mcode={rc}"));
@@ -783,7 +847,10 @@ impl CurlSource {
                 self.done = true;
                 return Err(OpenErr::Multi(rc));
             }
-        }
+            setup_timeout_ms.and_then(|ms| {
+                setup_timer_started.checked_add(std::time::Duration::from_millis(ms))
+            })
+        };
         // Pump until the final response's headers are in, the transfer ends, or teardown fires.
         while !self.xfer.headers_done && !self.done {
             if self.abort.is_set() {
@@ -814,16 +881,37 @@ impl CurlSource {
                 _ => {}
             }
         }
-        self.validate(at)
+        self.validate(at, setup_timeout_at)?;
+        if deadline.is_some() {
+            // `CURLOPT_TIMEOUT_MS` is a TOTAL request timeout. We use it above only to make the
+            // DNS/TLS/header phase obey the caller's open snapshot; leaving it armed would let
+            // that stale wall-clock projection kill the response body after open has succeeded.
+            // Body readers own their deadline independently through `read_until` (and may replace
+            // an expired projection while the presentation clock is paused), so disarm the open
+            // bound at the exact phase boundary.
+            unsafe {
+                crate::net::curl_easy_setopt_long(self.easy, CURLOPT_TIMEOUT_MS, 0);
+            }
+        }
+        Ok(())
     }
 
     /// Grade the response we just got headers for. Order matters: a transport failure explains a
     /// missing status, so it is reported first.
-    fn validate(&mut self, at: i64) -> Result<(), OpenErr> {
+    fn validate(
+        &mut self,
+        at: i64,
+        setup_timeout_at: Option<std::time::Instant>,
+    ) -> Result<(), OpenErr> {
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
         }
         if self.done && self.failed {
+            if self.rc == CURLE_OPERATION_TIMEDOUT
+                && setup_timeout_at.is_some_and(|at| std::time::Instant::now() >= at)
+            {
+                return Err(OpenErr::Deadline);
+            }
             crate::player::log(&format!(
                 "curlio: transport failed rc={} — {}",
                 self.rc,
@@ -846,12 +934,16 @@ impl CurlSource {
         // file while the demuxer believes it is at `at`. A real Range answer is 206 and MUST name
         // the requested first byte in Content-Range. Missing/malformed is `-1` and is just as
         // unverified as a different positive offset.
-        if at > 0 {
+        if self.range.is_some() {
             if self.xfer.status != 206 || self.xfer.range_start != at {
                 crate::player::log(&format!(
-                    "curlio: asked for bytes={at}- and got status={} start={} — refusing rather than \
+                    "curlio: asked for bytes={} and got status={} start={} — refusing rather than \
                      feeding the demuxer the wrong offset",
-                    self.xfer.status, self.xfer.range_start
+                    self.range
+                        .as_ref()
+                        .map_or("?", |range| range.to_str().unwrap_or("?")),
+                    self.xfer.status,
+                    self.xfer.range_start
                 ));
                 return Err(OpenErr::RangeIgnored);
             }
@@ -948,14 +1040,15 @@ impl CurlSource {
     /// Deliver up to `dst.len()` bytes. **`>0` = bytes, `0` = clean end of stream, `<0` = error or
     /// teardown** — the same three-way return `stream::http_read` gives. `ff.rs` preserves curl's
     /// negative result as an I/O error rather than collapsing a truncated transfer into EOF.
+    #[allow(dead_code)] // convenience wrapper retained for transport tests; production passes deadlines
     pub(crate) fn read(&mut self, dst: &mut [u8]) -> c_int {
         self.read_until(dst, None)
     }
 
-    /// Deliver bytes within one caller-owned absolute wall-clock budget. libcurl's low-speed
-    /// options detect a stalled movie transfer, but they deliberately do not bound total time;
-    /// an ABR upshift candidate is different because it becomes unusable once producing one
-    /// segment takes more than 80% of that segment's media duration.
+    /// Deliver bytes until an optional caller-owned absolute wake. This transport does not decide
+    /// what the instant proves: ABR passes a current wall projection of its playhead-funded reserve
+    /// and retrospectively classifies the owning clock, while bounded probes may pass a true body
+    /// deadline. libcurl's low-speed policy remains an independent transport-liveness bound.
     pub(crate) fn read_until(
         &mut self,
         dst: &mut [u8],
@@ -1081,11 +1174,22 @@ impl CurlSource {
 /// A bounded sample of the actual remote file used by Auto before it commits to Original.
 /// `elapsed` covers body reads only; DNS/TLS/header latency is bounded by the same outer deadline
 /// but is not confused with sustainable byte throughput.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ThroughputSample {
     pub(crate) bytes: u64,
     pub(crate) elapsed: std::time::Duration,
     pub(crate) target_reached: bool,
+}
+
+/// Why a bounded source measurement did not produce even one body byte.  Keeping the setup
+/// failure typed is what lets Auto distinguish a PMS refusal from a zero-rate link: an HTTP 500,
+/// 503 or 509 is a statement about this request, not a throughput observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThroughputFailure {
+    Open(OpenErr),
+    BodyDeadline,
+    BodyRead { status: c_int },
+    NoBody { status: c_int },
 }
 
 impl ThroughputSample {
@@ -1095,38 +1199,114 @@ impl ThroughputSample {
     }
 }
 
-/// Read at most `target_bytes` from a URL before `budget` expires, without taking over the live
-/// demuxer's abort registry. The lower curl boundary enforces the same credential-transport policy
-/// as the live demuxer; this function otherwise reports only observation.
-/// Dropping the source stops the request as soon as the sample is complete, so the prefix is not
-/// retained and the remainder of the movie is never downloaded here.
-pub(crate) fn sample_throughput(
+/// Read at most `target_bytes` from a URL inside two separately bounded serial phases, without
+/// taking over the live demuxer's abort registry.
+///
+/// `setup_budget` bounds DNS/TLS/response headers. `body_budget` starts only after those headers
+/// exist and is the interval reported in [`ThroughputSample::elapsed`]. Sharing one absolute
+/// deadline between them confounds a one-off reload cost with ongoing body service: a fast body
+/// can be truncated merely because setup spent the first part of its measurement window. The
+/// caller funds both phases; this function reports only the body observation. Dropping the source
+/// stops the request as soon as the sample is complete, so the remainder of the movie is never
+/// downloaded here.
+/// Bounded source measurement used by the ABR control path. Its typed failure keeps a server
+/// refusal visible instead of collapsing it into an absent/zero capacity sample. The lower curl
+/// boundary enforces the same credential-transport policy as the live demuxer.
+pub(crate) fn sample_throughput_result(
     url: &str,
     target_bytes: usize,
-    budget: std::time::Duration,
-) -> Option<ThroughputSample> {
-    if target_bytes == 0 || budget.is_zero() || !available() {
-        return None;
+    setup_budget: std::time::Duration,
+    body_budget: std::time::Duration,
+) -> Result<ThroughputSample, ThroughputFailure> {
+    let setup_deadline = sample_setup_deadline(target_bytes, setup_budget, body_budget)?;
+    let reservation = OpenReservation::private().ok_or(ThroughputFailure::Open(OpenErr::Local))?;
+    sample_throughput_with_reservation(url, target_bytes, setup_deadline, body_budget, reservation)
+}
+
+/// The same finite measurement while it is the demux worker's current blocking operation.
+///
+/// Publish the probe in teardown's registry *before* checking the AU-lane cancellation supplied
+/// by the caller.  Those two operations close the lost-wake race exactly as a normal media open
+/// does: teardown either signals this reservation, or it aborted the queue first and
+/// `cancelled()` refuses to start the request.  Cold preflight deliberately uses
+/// [`sample_throughput_result`] instead because an outgoing player may still own the registry.
+pub(crate) fn sample_active_throughput_result<F>(
+    url: &str,
+    target_bytes: usize,
+    setup_budget: std::time::Duration,
+    body_budget: std::time::Duration,
+    cancelled: F,
+) -> Result<ThroughputSample, ThroughputFailure>
+where
+    F: FnOnce() -> bool,
+{
+    let setup_deadline = sample_setup_deadline(target_bytes, setup_budget, body_budget)?;
+    let reservation = OpenReservation::publish().ok_or(ThroughputFailure::Open(OpenErr::Local))?;
+    if cancelled() {
+        return Err(ThroughputFailure::Open(OpenErr::Aborted));
     }
-    let deadline = std::time::Instant::now().checked_add(budget)?;
-    let reservation = OpenReservation::private()?;
-    let mut src =
-        CurlSource::open_with_reservation_until(url, 0, reservation, Some(deadline)).ok()?;
+    sample_throughput_with_reservation(url, target_bytes, setup_deadline, body_budget, reservation)
+}
+
+fn sample_setup_deadline(
+    target_bytes: usize,
+    setup_budget: std::time::Duration,
+    body_budget: std::time::Duration,
+) -> Result<std::time::Instant, ThroughputFailure> {
+    if target_bytes == 0 || setup_budget.is_zero() || body_budget.is_zero() || !available() {
+        return Err(ThroughputFailure::Open(OpenErr::Unavailable));
+    }
+    std::time::Instant::now()
+        .checked_add(setup_budget)
+        .ok_or(ThroughputFailure::Open(OpenErr::Local))
+}
+
+fn sample_throughput_with_reservation(
+    url: &str,
+    target_bytes: usize,
+    setup_deadline: std::time::Instant,
+    body_budget: std::time::Duration,
+    reservation: OpenReservation,
+) -> Result<ThroughputSample, ThroughputFailure> {
+    let mut src = CurlSource::open_bounded_with_reservation_until(
+        url,
+        target_bytes,
+        reservation,
+        Some(setup_deadline),
+    )
+    .map_err(ThroughputFailure::Open)?;
+    // `start_range_until` disarms its setup-only total timeout after validating the headers.
+    // `read_until` supplies the independently bounded body deadline from this point on.
     let started = std::time::Instant::now();
+    let body_deadline = started
+        .checked_add(body_budget)
+        .ok_or(ThroughputFailure::Open(OpenErr::Local))?;
     let mut bytes = 0usize;
+    let mut last_read = 0;
     let mut chunk = [0u8; 64 * 1024];
     while bytes < target_bytes {
         let want = chunk.len().min(target_bytes - bytes);
-        let n = src.read_until(&mut chunk[..want], Some(deadline));
+        let n = src.read_until(&mut chunk[..want], Some(body_deadline));
+        last_read = n;
         if n <= 0 {
             break;
         }
         bytes = bytes.saturating_add(n as usize);
     }
     if bytes == 0 {
-        return None;
+        return Err(if std::time::Instant::now() >= body_deadline {
+            ThroughputFailure::BodyDeadline
+        } else if last_read < 0 {
+            ThroughputFailure::BodyRead {
+                status: src.status(),
+            }
+        } else {
+            ThroughputFailure::NoBody {
+                status: src.status(),
+            }
+        });
     }
-    Some(ThroughputSample {
+    Ok(ThroughputSample {
         bytes: bytes as u64,
         elapsed: started.elapsed(),
         target_reached: bytes >= target_bytes,
@@ -1446,6 +1626,15 @@ mod tests {
         Honour,
         Ignore,
         Stall,
+        /// Headers and body are each individually inside the caller's probe budget, while their
+        /// serial sum is not. Used to prove that connection setup cannot consume the body window.
+        DelayedSample,
+        /// Return headers immediately, then hold the body past the deadline supplied to open.
+        /// The open deadline is a headers/setup bound; body reads own their deadline separately.
+        DelayedBody,
+        /// Accept the request but do not produce response headers until after the open deadline.
+        /// libcurl's own total timer, rather than our outer wait check, may end this phase.
+        DelayedHeaders,
         /// Answer a Range with 206 but omit the header that proves its starting offset.
         OmitContentRange,
         /// Fail the first seek request with 503, then honour a later retry.
@@ -1534,6 +1723,12 @@ mod tests {
             };
             let request_no = requests.fetch_add(1, Ordering::AcqRel) + 1;
             let start = range_start_of(&head);
+            if mode == RangeMode::DelayedHeaders {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let _ = w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                let _ = w.flush();
+                continue;
+            }
             if mode == RangeMode::Stall {
                 // Headers, then silence — the shape `tools/netcond.py --mode stall` produces
                 // against a real PMS: the transfer is live and delivers nothing.
@@ -1543,6 +1738,42 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 return;
+            }
+            if mode == RangeMode::DelayedSample {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let bounded = String::from_utf8_lossy(&head)
+                    .to_ascii_lowercase()
+                    .contains("range: bytes=0-7\r\n");
+                if !bounded {
+                    let _ = w.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+                    let _ = w.flush();
+                    continue;
+                }
+                let hdr = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\n\r\n",
+                    BODY.len() - 1,
+                    BODY.len(),
+                    BODY.len(),
+                );
+                if w.write_all(hdr.as_bytes()).is_err() || w.flush().is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                if w.write_all(BODY).is_err() || w.flush().is_err() {
+                    return;
+                }
+                continue;
+            }
+            if mode == RangeMode::DelayedBody {
+                let hdr = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
+                if w.write_all(hdr.as_bytes()).is_err() || w.flush().is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                if w.write_all(BODY).is_err() || w.flush().is_err() {
+                    return;
+                }
+                continue;
             }
             if matches!(mode, RangeMode::Honour | RangeMode::FailFirstSeek)
                 && start >= BODY.len() as i64
@@ -1783,6 +2014,79 @@ mod tests {
         });
     }
 
+    /// A connection handshake is a one-off reload cost; the body interval is the evidence about
+    /// whether ongoing Original can replenish media. Sharing one deadline between them truncated
+    /// the device probe after 625 ms of body at 35 Mbit/s merely because setup had spent the first
+    /// ~375 ms, then called a 25 Mbit/s source inconclusive although manual Original played. The
+    /// request itself must also name a finite byte range: reading a prefix from an unbounded 200
+    /// and dropping the handle leaves PMS serving the rest of an 18 GB file into a broken pipe.
+    #[test]
+    fn source_probe_gives_setup_and_body_their_own_bounded_windows() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::DelayedSample, |port, _, _| {
+            let sample = sample_throughput_result(
+                &format!("http://127.0.0.1:{port}/f.mkv"),
+                BODY.len(),
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_millis(500),
+            )
+            .expect("both individually bounded phases should complete");
+            assert!(sample.target_reached);
+            assert_eq!(sample.bytes, BODY.len() as u64);
+        });
+    }
+
+    /// Runtime Original sampling runs synchronously on the demux worker.  If it used the cold
+    /// preflight's private reservation, engine teardown would abort the queues and then wait for
+    /// this stalled request's entire setup/body budget before the worker could join.  The active
+    /// variant must instead be the exact request reached by teardown's one wake signal.
+    #[test]
+    fn teardown_aborts_a_runtime_source_probe_without_waiting_out_its_budget() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Stall, |port, _, _| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let started = std::time::Instant::now();
+            std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    sample_active_throughput_result(
+                        &url,
+                        BODY.len(),
+                        std::time::Duration::from_secs(5),
+                        std::time::Duration::from_secs(5),
+                        || false,
+                    )
+                });
+                let published_by = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                while lock_active().is_none() {
+                    assert!(
+                        std::time::Instant::now() < published_by,
+                        "runtime probe never published teardown's wake target"
+                    );
+                    std::thread::yield_now();
+                }
+                abort_active();
+                let result = worker.join().expect("probe worker");
+                assert!(
+                    matches!(
+                        result,
+                        Err(ThroughputFailure::Open(OpenErr::Aborted))
+                            | Err(ThroughputFailure::BodyRead { .. })
+                    ),
+                    "teardown must end the sample as an abort, got {result:?}"
+                );
+            });
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "teardown waited out the runtime probe budget: {:?}",
+                started.elapsed()
+            );
+            assert!(
+                lock_active().is_none(),
+                "the aborted probe must retire its reservation"
+            );
+        });
+    }
+
     /// The header parse itself, with no libcurl involved — so the arithmetic is graded even on a
     /// host where the tests above are vacuous.
     #[test]
@@ -1910,6 +2214,81 @@ mod tests {
                 took >= std::time::Duration::from_millis(80)
                     && took < std::time::Duration::from_secs(2),
                 "deadline wait took {took:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn an_open_deadline_does_not_leak_into_the_response_body() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::DelayedBody, |port, _, _| {
+            let reservation = CurlSource::reserve_open().expect("reserve");
+            let open_deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
+            let mut src = CurlSource::open_reserved_until(
+                &format!("http://127.0.0.1:{port}/f.mkv"),
+                0,
+                reservation,
+                open_deadline,
+            )
+            .expect("headers arrive inside the open deadline");
+
+            let read_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut got = Vec::new();
+            let mut chunk = [0u8; 32];
+            loop {
+                let n = src.read_until(&mut chunk, Some(read_deadline));
+                assert!(n >= 0, "the expired open timeout must not abort the body");
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&chunk[..n as usize]);
+            }
+            assert_eq!(got, BODY);
+        });
+    }
+
+    #[test]
+    fn libcurl_firing_the_open_timer_is_still_a_typed_deadline() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::DelayedHeaders, |port, _, _| {
+            let reservation = CurlSource::reserve_open().expect("reserve");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
+            let result = CurlSource::open_reserved_until(
+                &format!("http://127.0.0.1:{port}/f.mkv"),
+                0,
+                reservation,
+                deadline,
+            );
+            assert_eq!(result.err(), Some(OpenErr::Deadline));
+        });
+    }
+
+    #[test]
+    fn a_done_28_belongs_to_the_setup_timer_only_after_its_owned_boundary() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Honour, |port, _, _| {
+            let mut src = CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+                .expect("fixture open");
+            src.done = true;
+            src.failed = true;
+            src.rc = CURLE_OPERATION_TIMEDOUT;
+
+            let future = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            assert_eq!(
+                src.validate(0, Some(future)),
+                Err(OpenErr::Transport(CURLE_OPERATION_TIMEDOUT)),
+                "an earlier connect/low-speed timeout is not the caller's reserve boundary",
+            );
+            assert_eq!(
+                src.validate(0, Some(std::time::Instant::now())),
+                Err(OpenErr::Deadline),
+                "the total timer we armed owns DONE/28 once its boundary is reached",
+            );
+            src.abort.signal();
+            assert_eq!(
+                src.validate(0, Some(std::time::Instant::now())),
+                Err(OpenErr::Aborted),
+                "teardown remains higher priority than a simultaneous timer",
             );
         });
     }

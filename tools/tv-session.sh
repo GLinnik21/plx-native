@@ -18,8 +18,11 @@
 #                     the close, the launch, the triggers and the log all follow it.
 #
 # `up` options:
-#   --screen <name>   home (default) | onboard | consent=crash|product | profiles | library[=N]
-#                     | detail=<rk> | person=<movie rk> | player=<rk> | login | account | itemmenu
+#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | person=<movie rk>
+#                     | player=<rk> | login | account | itemmenu
+#   --server <slot>   open detail=/player= on this registered Plex server slot instead of the
+#                     current one; boots through the signed-in stored roster so secondary slots
+#                     exist (an already-armed plxnative-servers also survives with --keep)
 #   --guest           run as the managed test user rather than the owner (default: owner)
 #   --stream[=PORT]   also start tools/stream-screen.py for a live browser view (default 8909)
 #                     STREAM_RES=480x270 makes mpeg encode ~4x cheaper (see the skill)
@@ -122,7 +125,9 @@ set -- ${_argv[@]+"${_argv[@]}"}
 # the failed `read` above left FLAVOR empty, so echoing it back here would name nothing.
 # Test the LAST value read, not a middle one: a short answer (an older Makefile missing a goal)
 # fills the earlier variables and leaves only the tail empty. That tail is `print-tv` now.
-[ -n "${HOST:-}" ] || { echo "cannot resolve the flavour above from $REPO/Makefile" >&2; exit 2; }
+[ -n "${HOST:-}" ] || [ "${1:-}" = selftest ] || {
+  echo "cannot resolve the flavour above from $REPO/Makefile" >&2; exit 2;
+}
 # The app mkfifos this at boot inside its own runtime root; the NAME is unchanged across flavours,
 # only the directory moved.
 REMOTE_FIFO="$RUNDIR/plxnative-remote"
@@ -348,13 +353,116 @@ assert_route() {
   bad "wanted route=$want, got $seen"; return 1
 }
 
+# Resolve everything implied by `--server` in one testable place. Bash's dynamic local scope is
+# intentional here: cmd_up and cmd_selftest each own these names, and this helper fills that
+# caller-owned state without globals or Bash-4 namerefs (the host still ships Bash 3.2).
+configure_direct_screen() {
+  [ "$server_set" = 1 ] || return 0
+  [ -n "$server_slot" ] || { bad "--server needs a registry slot"; return 2; }
+  case "$server_slot" in
+    *[!0-9]*) bad "--server must be a numeric registry slot, got: $server_slot"; return 2 ;;
+  esac
+  # The app logs ServerId's numeric value, so accept only the one spelling that can round-trip
+  # through that identity marker. `01` used to arm slot 1 successfully and then make this command
+  # reject its own `server=1 start` proof because it was waiting for `server=01 start`.
+  case "$server_slot" in
+    0|[1-9]|[1-9][0-9]*) ;;
+    *) bad "--server must use canonical decimal (no leading zero), got: $server_slot"; return 2 ;;
+  esac
+  case "$screen" in
+    detail=*|player=*) ;;
+    *) bad "--server applies only to --screen detail=<rk> or player=<rk>"; return 2 ;;
+  esac
+  direct_kind="${screen%%=*}"
+  direct_rk="${screen#*=}"
+  case "$direct_rk" in
+    ''|*[!0-9]*) bad "a server-qualified ratingKey must be numeric, got: $direct_rk"; return 2 ;;
+  esac
+
+  # A singular dev token installs only the compiled primary PMS. The signed-in session, on the
+  # other hand, restores its persisted multi-server roster before the direct trigger fires. Make
+  # that the supported path automatically; requiring an undocumented `--no-token` was exactly the
+  # reason `--server 1` could otherwise select a slot the same command had just erased.
+  no_token=1
+  case "$direct_kind" in
+    player) direct_marker="plxnative-play: rk=$direct_rk server=$server_slot start" ;;
+    detail) direct_marker="plxnative-detail: rk=$direct_rk server=$server_slot start" ;;
+  esac
+}
+
+# Pure decision core for the bounded direct-screen waiter below. Keeping this separate lets the
+# host selftest exhaust the meaningful states without sleeping or touching the television.
+direct_poll_state() {
+  local marker_seen="$1" route_seen="$2" refused_seen="$3" alive="$4"
+  [ "$refused_seen" = 1 ] && { printf '%s\n' refused; return; }
+  [ "$alive" = 1 ] || { printf '%s\n' dead; return; }
+  if [ "$marker_seen" = 1 ] && [ "$route_seen" = 1 ]; then
+    printf '%s\n' ready
+  else
+    printf '%s\n' wait
+  fi
+}
+
+# Direct item triggers deliberately perform a synchronous metadata fetch before they route: two
+# PMS API calls for a movie and up to five for a show. Each API call has the documented 25-second
+# total deadline, so an 8-second launch snapshot cannot distinguish a slow healthy remote PMS from
+# a rejected trigger. Poll through the structural 5*25-second upper bound plus launch slack, while
+# still returning immediately on an explicit refusal or process death. This is tooling patience,
+# not a playback/ABR heuristic.
+await_direct_screen() {
+  local marker="$1" want_route="$2" max_wait_s=130 waited=0 snapshot=""
+  local marker_seen=0 route_seen=0 refused_seen=0 alive=0 state=""
+  while [ "$waited" -le "$max_wait_s" ]; do
+    snapshot=$(tvq "
+      if grep -F '$marker' $EVENTLOG >/dev/null 2>&1; then echo marker=1; fi
+      if grep -F 'plxnative-$direct_kind: refused:' $EVENTLOG >/dev/null 2>&1; then echo refused=1; fi
+      grep -oE 'route=[a-z]+' $EVENTLOG 2>/dev/null | tail -1
+      if fuser $APPDIR/plxnative >/dev/null 2>&1; then echo alive=1; fi
+    ")
+    marker_seen=0; route_seen=0; refused_seen=0; alive=0
+    printf '%s\n' "$snapshot" | grep -qx 'marker=1' && marker_seen=1
+    printf '%s\n' "$snapshot" | grep -qx "route=$want_route" && route_seen=1
+    printf '%s\n' "$snapshot" | grep -qx 'refused=1' && refused_seen=1
+    printf '%s\n' "$snapshot" | grep -qx 'alive=1' && alive=1
+    state=$(direct_poll_state "$marker_seen" "$route_seen" "$refused_seen" "$alive")
+    case "$state" in
+      ready)
+        ok "direct identity confirmed ($direct_kind rk=$direct_rk server=$server_slot)"
+        ok "on the requested screen (route=$want_route)"
+        return 0
+        ;;
+      refused)
+        bad "$direct_kind rk=$direct_rk on server $server_slot was explicitly refused"
+        info "see the plxnative-$direct_kind: refused line in $EVENTLOG"
+        return 1
+        ;;
+      dead)
+        bad "$APPID died while opening $direct_kind rk=$direct_rk on server $server_slot"
+        info "check: tools/crash-report.sh --flavor $FLAVOR"
+        return 1
+        ;;
+    esac
+    [ "$waited" -eq "$max_wait_s" ] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  bad "direct screen did not become ready within ${max_wait_s}s"
+  [ "$marker_seen" = 1 ] || info "missing identity: $marker"
+  [ "$route_seen" = 1 ] || info "last route: $(printf '%s\n' "$snapshot" | grep '^route=' | tail -1)"
+  return 1
+}
+
 # ------------------------------------------------------------ commands -------
 cmd_up() {
-  local screen=home guest=0 stream="" no_token=0 keep=0 remote=""
+  local screen=home guest=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
+  local direct_kind="" direct_rk="" direct_marker=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --screen) screen="$2"; shift 2 ;;
       --screen=*) screen="${1#*=}"; shift ;;
+      --server) [ $# -ge 2 ] || { bad "--server needs a registry slot"; exit 2; }
+                server_slot="$2"; server_set=1; shift 2 ;;
+      --server=*) server_slot="${1#*=}"; server_set=1; shift ;;
       --guest) guest=1; shift ;;
       --stream) stream=8909; shift ;;
       --stream=*) stream="${1#*=}"; shift ;;
@@ -365,6 +473,7 @@ cmd_up() {
       *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
   done
+  configure_direct_screen || exit 2
   # --remote is --stream plus a front door: there is nothing to publish without a stream, so it
   # turns one on rather than making the caller remember to pass both.
   if [ -n "$remote" ]; then
@@ -392,12 +501,6 @@ cmd_up() {
   local files=() want_route=""
   case "$screen" in
     home)      want_route=home ;;
-    # First-run routes are normally one-shot gates and therefore need named session entries for
-    # visual verification after they have been answered. These triggers alter presentation state
-    # only; they do not record source or reporting choices.
-    onboard)   files+=("plxnative-firstrun="); want_route=onboard ;;
-    consent=crash) files+=("plxnative-consent=crash"); want_route=home ;;
-    consent=product) files+=("plxnative-consent=product"); want_route=home ;;
     # The picker is what an ORDINARY boot shows: it needs the stored session and NO
     # automation. An injected token suppresses it (token beats session), and
     # plxnative-pickuser forces it only to auto-pick a tile and move straight on — so
@@ -423,6 +526,7 @@ cmd_up() {
     player=*)  files+=("plxnative-play=${screen#*=}"); want_route=player ;;
     *) echo "unknown --screen: $screen" >&2; exit 2 ;;
   esac
+  [ "$server_set" = 1 ] && files+=("plxnative-server=$server_slot")
   # capture trigger is DIAG-exempt: arming the live view must not suppress the picker.
   # The content is the port to listen on, and it is written EXPLICITLY rather than left empty
   # (which would fall through to the app's own default) so that the number the app binds and the
@@ -454,14 +558,24 @@ cmd_up() {
     # with a stored session this lands on the who's-watching picker; only an install with
     # no session of its OWN falls through to QR — the file is named for the app id, so the
     # other flavour having signed in does not count
-    info "no token by request — boots as a real user would (picker, or QR if $APPID has no session)"
+    if [ "$server_set" = 1 ]; then
+      info "stored session identity — restoring the signed-in multi-server roster for slot $server_slot"
+    else
+      info "no token by request — boots as a real user would (picker, or QR if $APPID has no session)"
+    fi
   fi
 
   PREV_PIDS=$(app_pids)
   relaunch
   assert_running || { info "check: tools/crash-report.sh --flavor $FLAVOR"; exit 1; }
-  assert_install || true
-  assert_route "$want_route" || true
+  if ! assert_install; then
+    [ "$server_set" = 1 ] && exit 1
+  fi
+  if [ "$server_set" = 1 ]; then
+    await_direct_screen "$direct_marker" "$want_route" || exit 1
+  else
+    assert_route "$want_route" || true
+  fi
 
   if [ -n "$stream" ]; then
     # fully detach: without </dev/null the child keeps the caller's stdout pipe open and
@@ -535,6 +649,55 @@ cmd_up() {
     bad "no remote FIFO — the app creates it at boot; it may not be fully up yet"
   fi
   echo "== session up"
+}
+
+# Host-only regression for the command contract above. It deliberately performs no TV I/O and is
+# run by `make check`; keeping it in this script proves the same Bash-3 code cmd_up calls rather
+# than a Python reimplementation of the option semantics.
+cmd_selftest() {
+  local screen=player=5469 server_set=1 server_slot=1 no_token=0
+  local direct_kind="" direct_rk="" direct_marker=""
+  configure_direct_screen >/dev/null || { bad "direct-screen selftest setup failed"; return 1; }
+  [ "$no_token" = 1 ] || { bad "--server did not select the stored-roster boot"; return 1; }
+  [ "$direct_marker" = "plxnative-play: rk=5469 server=1 start" ] || {
+    bad "wrong player identity marker: $direct_marker"; return 1;
+  }
+
+  screen=detail=42; server_slot=0; no_token=0; direct_kind=""; direct_rk=""; direct_marker=""
+  configure_direct_screen >/dev/null || { bad "detail selftest setup failed"; return 1; }
+  [ "$direct_marker" = "plxnative-detail: rk=42 server=0 start" ] || {
+    bad "wrong detail identity marker: $direct_marker"; return 1;
+  }
+
+  screen=home
+  if configure_direct_screen >/dev/null 2>&1; then
+    bad "--server incorrectly accepted a non-item screen"; return 1
+  fi
+  screen=player=not-a-rating-key
+  if configure_direct_screen >/dev/null 2>&1; then
+    bad "--server incorrectly accepted a nonnumeric ratingKey"; return 1
+  fi
+  screen=player=42; server_slot=01
+  if configure_direct_screen >/dev/null 2>&1; then
+    bad "--server incorrectly accepted a noncanonical slot"; return 1
+  fi
+
+  [ "$(direct_poll_state 1 1 0 1)" = ready ] || {
+    bad "direct waiter did not accept marker + route"; return 1;
+  }
+  [ "$(direct_poll_state 0 1 0 1)" = wait ] || {
+    bad "direct waiter accepted a route without item identity"; return 1;
+  }
+  [ "$(direct_poll_state 1 0 0 1)" = wait ] || {
+    bad "direct waiter accepted item identity before its route"; return 1;
+  }
+  [ "$(direct_poll_state 1 1 1 1)" = refused ] || {
+    bad "direct waiter ignored an explicit refusal"; return 1;
+  }
+  [ "$(direct_poll_state 1 1 0 0)" = dead ] || {
+    bad "direct waiter ignored process death"; return 1;
+  }
+  ok "tv-session direct-screen contract"
 }
 
 cmd_status() {
@@ -643,6 +806,7 @@ cmd_screen() {
 }
 
 case "${1:-}" in
+  selftest) cmd_selftest ;;
   up)     shift; cmd_up "$@" ;;
   screen) shift; cmd_screen "$@" ;;
   status) shift; cmd_status ;;

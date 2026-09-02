@@ -45,10 +45,12 @@ impl TransitionHistory {
     }
 }
 
-/// **Asymmetric, because the transitions are.** An HLS rung change is a background prime the
-/// viewer never sees; leaving Original tears down a direct-play session and re-Loads the pipeline;
-/// returning to Original does the same and additionally bets that a link which just failed will
-/// hold. A single "switch cost" constant cannot say that.
+/// **Asymmetric between an HLS rung change and a mode change.** A rung change is a background
+/// prime and reaches this function as `Hls -> Hls`, so the viewer pays zero mode cost. Either
+/// Original/HLS direction tears down one stream and re-Loads the pipeline, so both currently pay
+/// the same visible base cost plus history. Returning to Original additionally bets on the source
+/// path, but that uncertainty is carried by the mandatory completed source probe rather than by an
+/// invented directional multiplier here.
 pub(crate) fn transition_cost(
     from: ModeKind,
     to: ModeKind,
@@ -270,8 +272,10 @@ pub(crate) fn original_utility(inputs: &ModeInputs, policy: &AbrPolicy) -> Optio
         return None;
     }
     let scale = benefit_scale_pm(inputs.remaining_ms, policy);
-    // Original's requirement is the source's, with VBR headroom, and its delivery evidence is the
-    // source probe's — never the HLS estimate, which measured a different request.
+    // Original's average requirement is the source's own measured average, and its delivery
+    // evidence is the source probe's — never the HLS estimate, which measured a different finite
+    // request. Short-term VBR is observed through the reserve derivative, not guessed by a fixed
+    // multiplier here.
     let requirement = source_requirement_kbps(inputs.source_kbps, policy);
     let horizon = starvation_horizon(
         inputs.buffer.buffered_ms,
@@ -462,6 +466,15 @@ pub(crate) fn choose_mode(
             orig,
             Some(hls),
         ),
+        Some(orig) if orig.total == hls.total && inputs.current == ModeKind::Original => {
+            // A tie contains no benefit with which to pay for a visible reload.
+            (
+                ModeKind::Original,
+                ModeReason::OriginalWorthIt,
+                orig,
+                Some(hls),
+            )
+        }
         Some(orig) => (
             ModeKind::Hls,
             ModeReason::OriginalNotWorthIt,

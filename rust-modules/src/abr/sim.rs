@@ -68,11 +68,10 @@
 //! On `Decision::Prime` the demux worker runs the candidate transaction **inline on its own loop**:
 //! the current stream is not read while it runs. So a prime costs wall time with **no fill**.
 //!
-//! **A rejected one no longer costs it for nothing**, as of 2026-08-28: a candidate whose raster
-//! was within bound but whose headroom was not is FED before its session is abandoned (`ff.rs`'s
-//! `not_ready_fed` arm — Phase 0 lever 1 of `docs/measurements/p0-plant-sizing.md`). The wall cost
-//! is identical; the reserve gains one segment rather than zero. That is the difference between an
-//! up-guard that is `Omega(D)` and one that is not, which is R2's whole argument. That cost is a [`TransactionModel`] split four ways — up/down x
+//! A rejected transaction costs its control/media wall time and contributes no playable media.
+//! Candidate objects remain staged until the verdict, so modelling a rejected object as buffer
+//! credit would recreate the cross-encoder ownership bug removed from the runtime. That cost is a
+//! [`TransactionModel`] split four ways — up/down x
 //! commit/reject, each with its control-plane and media legs — and every leg is `Option`, because
 //! none of them is measured yet. [`run`] REFUSES an unmeasured leg rather than substituting a
 //! constant: one flat number for all four made `T_down` growing on a collapsing link
@@ -83,7 +82,10 @@
 //! Virtual time only. No `Instant`, no sleep, no thread. The same trace and the same plant produce
 //! the same [`Report`] on every machine, which is what makes a two-parameter-set A/B meaningful.
 
-use super::{BufferSnapshot, Controller, Decision, Direction, MediaTimeMs, Rung, SegmentSample};
+use super::{
+    BufferSnapshot, Controller, Decision, Direction, MediaTimeMs, ObservedHlsVariant, Rung,
+    SegmentSample,
+};
 
 /// Video AU queue byte cap. `player::engine::AQ_VIDEO_BYTES` = `10 * 1024 * 1024`, carried by value
 /// because this plant must not depend on the app's own model of itself (see the module note). If
@@ -128,6 +130,22 @@ pub(super) struct OperatingPoint {
     pub(super) video_es_kbps: u32,
     pub(super) audio_es_kbps: u32,
     pub(super) overhead_ms: i64,
+    /// Physical response identity from the same pin capture: master declaration and decoded
+    /// output, kept separate from both request rung and measured transport rate.
+    pub(super) declared_kbps: u32,
+    pub(super) decoded_width: u16,
+    pub(super) decoded_height: u16,
+}
+
+impl OperatingPoint {
+    fn variant(self) -> ObservedHlsVariant {
+        ObservedHlsVariant::new(
+            u64::from(self.declared_kbps).saturating_mul(1_000),
+            i32::from(self.decoded_width),
+            i32::from(self.decoded_height),
+        )
+        .expect("a calibrated operating point carries a valid physical response")
+    }
 }
 
 /// What one candidate transaction costs, split the four ways the device can distinguish. Every
@@ -144,14 +162,6 @@ pub(super) struct TransactionCost {
     pub(super) warmup_acq_ms: i64,
     /// Acquisition of the graded segment, where one is fetched at all.
     pub(super) graded_acq_ms: i64,
-}
-
-impl TransactionCost {
-    pub(super) fn total_ms(&self) -> i64 {
-        self.control_plane_ms
-            .saturating_add(self.warmup_acq_ms)
-            .saturating_add(self.graded_acq_ms)
-    }
 }
 
 /// The four legs a transaction can take. An absent leg is an ADMISSION THAT IT WAS NEVER MEASURED,
@@ -195,23 +205,22 @@ impl TransactionModel {
     /// completed a fetch, so it logs `warmup=none`; a median over nothing is zero, and a leg
     /// costing 0 would model a downshift reject as FREE — 5 ms of control plane for a transaction
     /// that really cost 2 226 ms, a 445x understatement, in the one direction that matters. Its
-    /// true cost is `min(acceptance budget, reserve)`, which is a STATE VARIABLE.
+    /// cost is the lesser of the actual acquisition and a state-derived deadline; terminal floor
+    /// recovery has no rollback-reserve deadline at all.
     ///
-    /// **The plant could compute it.** `sim.rs` models the reserve, so it could charge a deadline
-    /// abort `min(acceptance, buffered_ms)` from its own state instead of from a table. That is
-    /// the increment this observation asks for, and it is the thing that would let the simulator
-    /// exhibit the deadline at all — see the note below on why a fixed median cannot.
+    /// **The plant could compute it.** `sim.rs` models reserve and link state, so it could derive the
+    /// live whole-acquisition prediction, overhead and terminal-floor policy instead of reading a
+    /// table. That is what would let the simulator exhibit the deadline at all — see the note below
+    /// on why a fixed median cannot.
     /// `tools/abr-calibrate-plant.py` refuses to emit a leg with no acquisition measurement rather
     /// than emitting a zero, so this stays `None` until the plant learns to derive it.
     ///
     /// **The plant charges a fixed median per leg, so it cannot exhibit the downshift DEADLINE.**
-    /// J3b bounds a candidate transfer by the reserve it is spending, and the bound binds only
-    /// when the rate during the fetch is below the rate the target was chosen from — which a
-    /// constant cost cannot express, because it has no dependence on the link at all. Device
-    /// evidence exists now (`docs/measurements/j3b-deadline.md` §8), and closing the gap needs the
-    /// leg cost to become `bytes(target) * 8 / C_now` against the modelled reserve rather than a
-    /// median. Everything that needs is already here: the byte table above, the reserve, and the
-    /// link trace.
+    /// A non-terminal recovery combines current reserve with a whole-acquisition prediction and
+    /// measured overhead; the terminal floor removes that rollback deadline. A constant cost can
+    /// express neither because it has no dependence on link or controller state. Device evidence
+    /// exists now (`docs/measurements/j3b-deadline.md` §8); closing the gap needs the plant to model
+    /// the same stateful transaction rather than substitute a fixed median.
     ///
     /// **`control_plane_ms: 6` is the FIXTURE SERVER's control plane, not a PMS's.** These captures
     /// come from the synthetic pipeline tier, where `tests/serve_fixtures.py` answers a playlist off
@@ -383,14 +392,14 @@ impl Calibration {
     }
 
     pub(super) fn point(rung_request_kbps: u32) -> Option<OperatingPoint> {
-        let (ts, audio, overhead) = match rung_request_kbps {
-            320 => (376u32, 98u32, 21i64),
-            720 => (806, 131, 24),
-            2_000 => (2_221, 159, 51),
-            4_000 => (4_386, 159, 84),
-            10_000 => (10_881, 192, 171),
-            16_000 => (16_798, 192, 264),
-            20_000 => (20_706, 192, 323),
+        let (ts, audio, overhead, declared, width, height) = match rung_request_kbps {
+            320 => (376u32, 98u32, 21i64, 320u32, 426u16, 240u16),
+            720 => (806, 131, 24, 720, 854, 480),
+            2_000 => (2_221, 159, 51, 2_000, 1_280, 720),
+            4_000 => (4_386, 159, 84, 4_000, 1_280, 720),
+            10_000 => (10_881, 192, 171, 10_000, 1_920, 1_080),
+            16_000 => (16_798, 192, 264, 16_000, 1_920, 1_080),
+            20_000 => (20_706, 192, 323, 20_000, 1_920, 1_080),
             _ => return None,
         };
         Some(OperatingPoint {
@@ -398,6 +407,9 @@ impl Calibration {
             video_es_kbps: (u64::from(ts - audio) * 100 / 104) as u32,
             audio_es_kbps: audio,
             overhead_ms: overhead,
+            declared_kbps: declared,
+            decoded_width: width,
+            decoded_height: height,
         })
     }
 }
@@ -430,8 +442,122 @@ pub(super) struct Report {
     /// Wall time spent inside transactions, split the way the device can distinguish it.
     pub(super) tx_control_plane_ms: i64,
     pub(super) tx_media_ms: i64,
+    /// Candidate objects which became playable. A direct commit adds one; a setup-bearing commit
+    /// atomically publishes two. Rejected private objects never increment it.
+    pub(super) committed_candidate_objects: u32,
     pub(super) first_decision: Option<Decision>,
     pub(super) first_buf_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CandidateAttempt {
+    spent_ms: i64,
+    control_ms: i64,
+    media_ms: i64,
+    staged_objects: u32,
+    final_sample: Option<SegmentSample>,
+    commits: bool,
+    expired: bool,
+}
+
+fn candidate_attempt(
+    controller: &Controller,
+    proposal: super::Proposal,
+    plant: &Plant,
+    point: OperatingPoint,
+    active: ObservedHlsVariant,
+    capacity_kbps: u32,
+    buffer_start_ms: i64,
+    cost: TransactionCost,
+    exploration_budget_ms: Option<i64>,
+) -> CandidateAttempt {
+    let d = plant.segment_ms.max(1);
+    let bits = u64::from(point.ts_kbps).saturating_mul(d as u64);
+    let fetch_ms = (bits / u64::from(capacity_kbps.max(1))).min(i64::MAX as u64) as i64;
+    let steady_acquire_ms = fetch_ms.saturating_add(point.overhead_ms).max(1);
+    let deadline = exploration_budget_ms.unwrap_or(i64::MAX).max(0);
+    let control_ms = cost.control_plane_ms.max(0);
+
+    let sample_at = |acquire_ms: i64, staged_objects: u32, spent_ms: i64| {
+        let buffered = buffer_start_ms
+            .saturating_add(d.saturating_mul(i64::from(staged_objects)))
+            .saturating_sub(spent_ms)
+            .max(0);
+        SegmentSample::new(
+            (bits / 8).max(1),
+            (fetch_ms.max(1) as u64).saturating_mul(1_000),
+            (acquire_ms.max(fetch_ms).max(1) as u64).saturating_mul(1_000),
+            u32::try_from(d).unwrap_or(u32::MAX),
+            BufferSnapshot {
+                playback: MediaTimeMs(0),
+                video_tail: MediaTimeMs(buffered),
+                audio_tail: Some(MediaTimeMs(buffered)),
+                audio_expected: true,
+            },
+        )
+        .expect("plant produced a degenerate candidate segment")
+    };
+
+    let warmup_ms = steady_acquire_ms.max(cost.warmup_acq_ms.max(0));
+    let boundary_end = control_ms.saturating_add(warmup_ms);
+    if boundary_end > deadline {
+        let spent = deadline;
+        return CandidateAttempt {
+            spent_ms: spent,
+            control_ms: control_ms.min(spent),
+            media_ms: spent.saturating_sub(control_ms.min(spent)),
+            staged_objects: 0,
+            final_sample: None,
+            commits: false,
+            expired: true,
+        };
+    }
+
+    let declared_bps = u64::from(point.declared_kbps).saturating_mul(1_000);
+    let boundary = sample_at(warmup_ms, 1, boundary_end);
+    let mut verdict = if proposal.direction == Direction::Up {
+        controller.candidate_boundary_verdict(proposal, boundary, declared_bps)
+    } else {
+        controller.candidate_verdict(proposal, boundary, declared_bps)
+    };
+    let mut spent = boundary_end;
+    let mut staged_objects = 1;
+    let mut final_sample = boundary;
+
+    if verdict == super::CandidateVerdict::SetupBearing {
+        let graded_ms = steady_acquire_ms.max(cost.graded_acq_ms.max(0));
+        let graded_end = spent.saturating_add(graded_ms);
+        if graded_end > deadline {
+            let capped = deadline;
+            return CandidateAttempt {
+                spent_ms: capped,
+                control_ms,
+                media_ms: capped.saturating_sub(control_ms),
+                staged_objects,
+                final_sample: Some(final_sample),
+                commits: false,
+                expired: true,
+            };
+        }
+        spent = graded_end;
+        staged_objects = 2;
+        final_sample = sample_at(graded_ms, staged_objects, spent);
+        verdict = controller.candidate_verdict(proposal, final_sample, declared_bps);
+    }
+
+    let bounds = proposal.rung.raster();
+    let raster_ready = point.decoded_width <= bounds.0 && point.decoded_height <= bounds.1;
+    let quality_improves =
+        proposal.direction != Direction::Up || point.variant().strictly_dominates(active);
+    CandidateAttempt {
+        spent_ms: spent,
+        control_ms,
+        media_ms: spent.saturating_sub(control_ms),
+        staged_objects,
+        final_sample: Some(final_sample),
+        commits: raster_ready && quality_improves && verdict == super::CandidateVerdict::Ready,
+        expired: false,
+    }
 }
 
 impl Report {
@@ -551,6 +677,13 @@ pub(super) fn run(
         report.stall_ms_max = report.stall_ms_max.max(observed.stall_ms);
         report.samples.push(observed);
 
+        // Runtime observes the active response's declared rate and decoded raster before asking
+        // the controller for a transition.  Strict-Pareto candidate admission is intentionally
+        // relative to that physical response, not to the request rung.  Seed the same fact here;
+        // leaving it absent makes the simulator reject every first upward candidate even though
+        // the device has already decoded the current stream.
+        let active_variant = point.variant();
+        controller.observe_active_variant(active_variant, sample.network_kbps());
         let decision = controller.observe(sample, u64::try_from(now_ms).unwrap_or(0));
         if report.first_decision.is_none() {
             report.first_decision = Some(decision);
@@ -568,83 +701,123 @@ pub(super) fn run(
             },
         )?;
 
-        // Decide the outcome FIRST, because the cost of a transaction differs by outcome and the
-        // plant may not charge one number for all four legs.
         let capacity = trace.capacity_kbps(now_ms);
-        let bits = u64::from(cand_point.ts_kbps).saturating_mul(plant.segment_ms.max(0) as u64);
-        let cand_fetch = (bits / u64::from(capacity.max(1))).min(i64::MAX as u64) as i64;
-        let cand_acquire = cand_fetch.saturating_add(cand_point.overhead_ms).max(1);
-
-        let would_commit = {
-            let probe = SegmentSample::new(
-                (bits / 8).max(1),
-                (cand_fetch.max(1) as u64).saturating_mul(1_000),
-                (cand_acquire as u64).saturating_mul(1_000),
-                u32::try_from(plant.segment_ms).unwrap_or(2_000),
-                BufferSnapshot {
-                    playback: MediaTimeMs(0),
-                    video_tail: MediaTimeMs(buf_ms),
-                    audio_tail: Some(MediaTimeMs(buf_ms)),
-                    audio_expected: true,
-                },
-            )
-            .expect("plant produced a degenerate candidate segment");
-            // **The plant declares what it was asked for.** There is no PMS in the simulator to
-            // do otherwise, so `sigma` is the only thing standing between the request and the
-            // query -- which makes this a modelling assumption and not a measurement, and it is
-            // the reason the plant cannot grade the catalog-rate error the device can.
-            let declared_bps = u64::from(proposal.rung.kbps()).saturating_mul(1_000);
-            controller.observe_candidate(probe);
-            controller.candidate_ready(proposal, probe, declared_bps)
+        // Runtime re-reads and arms the exact executable exploration balance immediately before
+        // an upward transaction. One budget covers control, the boundary object and — only when
+        // that object is setup-bearing — one ordinary object from the already-running encoder.
+        let executed_up_budget_ms = if proposal.direction == Direction::Up {
+            let budget = controller.exploration_budget_ms(buf_ms).ok_or_else(|| {
+                format!(
+                    "upward proposal {}kbps has no executable exploration reserve at {buf_ms}ms",
+                    proposal.rung.kbps(),
+                )
+            })?;
+            if !controller.set_executed_exploration_budget(proposal, budget) {
+                return Err(format!(
+                    "upward proposal {}kbps lost its executable exploration frontier",
+                    proposal.rung.kbps(),
+                ));
+            }
+            Some(budget)
+        } else {
+            None
         };
-        let cost = tx.leg(proposal.direction, would_commit).ok_or_else(|| {
+
+        // Outcome-specific transaction rows are a measured fixed point, not an oracle. Evaluate
+        // the commit row first; if its physical phases do not commit, the reject row must itself
+        // reject. A model whose commit row rejects while its reject row commits is contradictory
+        // and is refused instead of choosing the convenient answer.
+        let commit_cost = tx.leg(proposal.direction, true).ok_or_else(|| {
             format!(
-                "transaction leg {:?}/{} is UNMEASURED — increment I2 exists to measure it",
+                "transaction leg {:?}/commit is UNMEASURED — increment I2 exists to measure it",
                 proposal.direction,
-                if would_commit { "commit" } else { "reject" },
             )
         })?;
+        let commit_attempt = candidate_attempt(
+            controller,
+            proposal,
+            plant,
+            cand_point,
+            active_variant,
+            capacity,
+            buf_ms,
+            commit_cost,
+            executed_up_budget_ms,
+        );
+        let attempt = if commit_attempt.commits {
+            commit_attempt
+        } else {
+            let reject_cost = tx.leg(proposal.direction, false).ok_or_else(|| {
+                format!(
+                    "transaction leg {:?}/reject is UNMEASURED — increment I2 exists to measure it",
+                    proposal.direction,
+                )
+            })?;
+            let reject_attempt = candidate_attempt(
+                controller,
+                proposal,
+                plant,
+                cand_point,
+                active_variant,
+                capacity,
+                buf_ms,
+                reject_cost,
+                executed_up_budget_ms,
+            );
+            if reject_attempt.commits {
+                return Err(format!(
+                    "transaction model is self-contradictory at {}kbps: commit leg rejects but reject leg commits",
+                    proposal.rung.kbps(),
+                ));
+            }
+            reject_attempt
+        };
 
-        // The current stream is not read for the whole transaction, so the reserve drains for all
-        // of it whichever way the decision goes. What a REJECT delivers changed on 2026-08-28 —
-        // see the credit below.
-        let spent = cost.total_ms();
+        // Candidate media is private until commit. The old reserve therefore drains by the whole
+        // chosen attempt first; only a successful atomic publication credits one or two objects.
+        let spent = attempt.spent_ms;
         let tx_stall = (spent - buf_ms).max(0);
         buf_ms = (buf_ms - spent).max(0);
         now_ms += spent;
         report.stall_ms_total += tx_stall;
         report.stall_ms_max = report.stall_ms_max.max(tx_stall);
-        report.tx_control_plane_ms += cost.control_plane_ms;
-        report.tx_media_ms += cost.warmup_acq_ms.saturating_add(cost.graded_acq_ms);
+        report.tx_control_plane_ms += attempt.control_ms;
+        report.tx_media_ms += attempt.media_ms;
 
-        // `now_ms` has already been advanced by the transaction's own duration, so this is the
-        // instant of the COMMIT rather than of the proposal — which is what the dwell interval is
-        // defined between, and what the device now passes for the same reason.
+        // `now_ms` has already advanced by the transaction's duration, so this is the commit
+        // instant rather than the proposal instant and matches the device's diagnostic timeline.
         let closed_at = u64::try_from(now_ms).unwrap_or(0);
-        if would_commit && controller.commit(proposal, closed_at) {
+        let observed = cand_point.variant();
+        if attempt.expired {
+            controller.reject(proposal, crate::abr::RejectCause::Censored, closed_at);
+            report.rejects += 1;
+        } else if attempt.commits {
+            let sample = attempt
+                .final_sample
+                .expect("a committing candidate has completed evidence");
+            if !controller.commit_candidate(proposal, sample, observed, closed_at) {
+                return Err(format!(
+                    "controller refused candidate after the plant had authorized its commit at {}kbps",
+                    proposal.rung.kbps(),
+                ));
+            }
+            // Device parity: the successful candidate's own steady sample atomically starts the
+            // new finite bag. A setup-bearing success publishes both private objects together.
             buf_ms = buf_ms
-                .saturating_add(plant.segment_ms)
+                .saturating_add(
+                    plant
+                        .segment_ms
+                        .saturating_mul(i64::from(attempt.staged_objects)),
+                )
                 .min(plant.b_max_ms(&cand_point));
+            report.committed_candidate_objects = report
+                .committed_candidate_objects
+                .saturating_add(attempt.staged_objects);
             report.commits.push((now_ms, proposal.rung.kbps()));
         } else {
-            // **A graded reject now DELIVERS its segment** (`ff.rs`'s `not_ready_fed` arm, Phase 0
-            // lever 1). It costs the same wall time as before — `cost` is unchanged, and the feed
-            // is charged separately on the device as `feed=` — but the reserve gains one segment
-            // instead of nothing, which is the entire point of the lever and is what takes the
-            // up-guard off `Omega(D)`.
-            //
-            // Clamped to the CURRENT rung's ceiling, not the candidate's: the encoder session was
-            // abandoned, so the very next segment comes from the rung still playing.
-            //
-            // `would_commit` here is `candidate_ready`, which is exactly the device's `!ready`
-            // test, and the plant always produces a raster inside the proposal's bound — so every
-            // reject this loop can reach is the fed one. The device has six other reject outcomes
-            // (a warm-up deadline, a transport failure, a refused raster, three control-plane
-            // ones) and NONE of them feeds; the plant cannot express those, which is a gap on the
-            // pessimistic side and is stated here rather than modelled optimistically.
-            buf_ms = buf_ms
-                .saturating_add(plant.segment_ms)
-                .min(plant.b_max_ms(&point));
+            // Runtime parity: every candidate object is private until commit. Rejection abandons
+            // that encoder and leaves both the active cursor and its playable reserve untouched;
+            // only the transaction wall time already subtracted above is visible to the plant.
             controller.reject(proposal, crate::abr::RejectCause::Candidate, closed_at);
             report.rejects += 1;
         }
@@ -677,8 +850,10 @@ mod tests {
     /// **The regression test for the defect this module shipped with.** In a settled, backpressured
     /// state `blocked_until` is exactly `d`, so wall time is `d` and a plant that passed wall time
     /// as `total_fetch_us` reported `production_ratio_pm = 1000` at every rung and every link
-    /// speed. The controller's upshift gate is `ratio_pm <= 750`, so that plant vetoed upshifting
-    /// out of any settled reserve — the exact behaviour it was built to study.
+    /// speed. At the time the controller's upshift gate was `ratio_pm <= 750`, so that plant
+    /// vetoed upshifting out of any settled reserve. The live controller now grades a real
+    /// candidate at `A <= D`; this plant invariant still matters because it must deliver the
+    /// acquisition time that comparison consumes rather than backpressure wall time.
     ///
     /// This asserts the two quantities are DIFFERENT and that the controller is told the smaller
     /// one. It is differential: it cannot pass against the old expression.
@@ -891,6 +1066,7 @@ mod tests {
                 video_es_kbps: es,
                 audio_es_kbps: es.max(1),
                 overhead_ms: 0,
+                ..p720()
             };
             assert!(plant.b_max_ms(&point) > 0, "es={es}");
             let trace = Trace::new(&[(600.0, u32::MAX)]);
@@ -962,6 +1138,15 @@ mod tests {
             "time went backwards"
         );
         assert!(ra.samples.iter().all(|s| s.capacity_kbps == 60_000));
+        assert!(
+            ra.commits.iter().any(|&(_, rung)| rung == Rung::P720.kbps()),
+            "a fast measured link must let a low-start simulation commit its first strict-Pareto upshift; commits={:?}",
+            ra.commits,
+        );
+        assert_eq!(
+            ra.committed_candidate_objects, 1,
+            "a directly sustainable boundary commits without fetching a gratuitous second object",
+        );
         // Every sample carries the CALIBRATED transport rate of the rung it was taken at — never
         // the catalog's request rate, which is 92% low at P480 and 8.4% high at P1080High.
         assert!(
@@ -969,6 +1154,35 @@ mod tests {
                 .iter()
                 .all(|s| { Calibration::point(s.rung_kbps).map(|p| p.ts_kbps) == Some(s.ts_kbps) }),
             "a sample carried a rate that is not its rung's calibrated one",
+        );
+    }
+
+    #[test]
+    fn a_setup_bearing_boundary_commits_with_one_ordinary_object_atomically() {
+        let setup_then_steady = TransactionCost {
+            control_plane_ms: 100,
+            warmup_acq_ms: 2_500,
+            graded_acq_ms: 900,
+        };
+        let tx = TransactionModel {
+            up_commit: Some(setup_then_steady),
+            up_reject: Some(setup_then_steady),
+            down_commit: Some(setup_then_steady),
+            down_reject: Some(setup_then_steady),
+        };
+        let plant = Plant::default();
+        let trace = Trace::new(&[(200.0, 60_000)]);
+        let mut controller =
+            Controller::starting_at(Rung::P480, None, cat()).pinned_to(Some(Rung::P720));
+
+        let report = run(&plant, &trace, &mut controller, &tx).expect("fully measured model");
+        assert!(
+            report.commits.iter().any(|&(_, rung)| rung == Rung::P720.kbps()),
+            "the ordinary object from the running encoder must be able to validate its setup-bearing boundary",
+        );
+        assert_eq!(
+            report.committed_candidate_objects, 2,
+            "both staged objects publish together; neither is credited before commit",
         );
     }
 
@@ -1010,12 +1224,12 @@ mod tests {
     /// Profiles are named for the device cases they mirror, so a divergence between this and the
     /// television is a comparison and not a coincidence.
     #[test]
-    fn the_controller_never_rebuffers_on_a_link_that_can_carry_the_ladder() {
+    fn the_controller_never_rebuffers_in_every_device_calibrated_matrix_cell() {
         let plant = Plant::default();
         let tx = TransactionModel::measured();
-        // (name, legs, the capacity the run ENDS on). Weighted toward the CENSUSED region of the
-        // ladder, because that is the only region this instrument can grade — see the skip list
-        // below, which pins the gap rather than hiding it.
+        // (name, legs, the capacity the run ENDS on). This matrix uses a 720p source so every
+        // structurally useful candidate is inside the measured 320/720/2000/4000 census. A
+        // separate HD fixture below pins the uncensused middle of the 1080p ladder.
         //
         // **A leg is `(until_seconds, kbps)` — an absolute BOUNDARY, not a duration.**
         // `Trace::capacity_kbps` takes the first leg whose `until` is still ahead, so a list of
@@ -1040,22 +1254,16 @@ mod tests {
             ),
             ("flat-fast", &[(240.0, 60_000)], 60_000),
         ];
-        // **Cells the census cannot grade are LISTED, never silently dropped.** Seven of thirteen
-        // rungs are calibrated, and `run` refuses the rest rather than inventing an operating point
-        // — so a fast link that climbs into the uncensused middle of the ladder cannot be graded
-        // here at all. Reporting that is the difference between "this matrix passed" and "this
-        // matrix passed over whatever it happened to reach".
+        // `run` still refuses an uncalibrated operating point. Keep the skip path visible so an
+        // accidental expansion of this supposedly closed measured scope fails with its exact gap.
         let mut skipped: Vec<String> = Vec::new();
         let mut graded = 0;
         for (name, legs, final_capacity) in matrix {
             let trace = Trace::new(legs);
-            // **An HD catalog, because the census fixture is 1080p and so is every clip in the
-            // pipeline pack.** `HlsActuatorCatalog::feasible` removes the 4K rung for an HD source
-            // on a real playback too, so this is the configuration the device runs rather than a
-            // convenience — and without it three of five cells climb to rung 22000, which no
-            // census has ever reached and which the plant rightly refuses to invent.
+            // A 720p source makes P720 the smallest sufficient box. Higher requests cannot improve
+            // its raster and are removed by the same feasibility rule used in real playback.
             let catalog =
-                super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1920, 1080));
+                super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1280, 720));
             let mut controller = Controller::starting_at(Rung::P480, None, catalog);
             let report = match run(&plant, &trace, &mut controller, &tx) {
                 Ok(report) => report,
@@ -1126,12 +1334,20 @@ mod tests {
                     .join(" "),
             );
         }
-        assert!(
-            graded >= 6,
-            "only {graded} of {} cells were gradeable; the census is too narrow for this matrix to \
-             mean anything. Skipped:\n  {}",
+        assert_eq!(
+            graded,
             matrix.len(),
-            skipped.join("\n  "),
+            "every 720p matrix cell is inside the measured census"
+        );
+        assert_eq!(
+            graded + skipped.len(),
+            matrix.len(),
+            "a matrix cell vanished without a result"
+        );
+        assert!(
+            skipped.is_empty(),
+            "the measured 720p scope unexpectedly reached a gap:\n  {}",
+            skipped.join("\n  ")
         );
 
         // **The census gap, pinned.** A fast link climbs into the middle of the ladder, and the M4
@@ -1148,19 +1364,8 @@ mod tests {
         // `abr/tests.rs` and the device case are what grade it. Censusing 18000 is what would
         // change that, and it is one pin.
         //
-        // **The set MOVED from 18000 to 6000 on 2026-08-28, and the reason is a policy change
-        // rather than a new pin.** `CapacityObservation::quality` now applies the interval floor to
-        // every tier, so a large-but-brief transfer is `Weak` and is clamped to
-        // `WEAK_SAMPLE_HEADROOM` times the rung it was measured on. The fast leg therefore climbs
-        // geometrically instead of jumping on one fabricated reading, and inside this matrix's
-        // horizon it now reaches 6000 rather than the top — so it no longer descends through
-        // 18000 either. That is the designed ramp (`clamped_to_evidence`'s doc argues it) and it is
-        // also a LOSS of reach for this instrument: the top-of-ladder shape above is now further
-        // out of the closed loop's range than it was, not nearer. Both pins are still owed.
-        //
-        // Asserted as an exact set on purpose. If it shrinks, somebody censused a rung and this
-        // list should shrink with it; if it grows, a profile now reaches a gap nobody accounted
-        // for. Either way the reader is told, which a bare skip count does not do.
+        // The matrix deliberately has no gaps; assert the exact empty set so a feasibility change
+        // cannot silently reduce its coverage.
         let mut gaps: Vec<u32> = skipped
             .iter()
             .filter_map(|s| s.split("rung ").nth(1)?.split("kbps").next()?.parse().ok())
@@ -1169,7 +1374,7 @@ mod tests {
         gaps.dedup();
         assert_eq!(
             gaps,
-            vec![6_000],
+            Vec::<u32>::new(),
             "the uncensused rungs this matrix reaches have changed; skipped:\n  {}",
             skipped.join("\n  "),
         );
@@ -1214,8 +1419,14 @@ mod tests {
         // conservative estimate still lags the collapse. 18000 has no pin. 3 Mbit/s keeps the whole
         // run inside 320/720/2000/4000, which is the part of the ladder the census can express.
         let trace = Trace::new(&[(20.0, 3_000), (240.0, 500)]);
+        // Bound the fixture to the fully calibrated 720p actuator set. Exploration now excites
+        // the highest unknown feasible point directly (it no longer projects a capacity ceiling
+        // from the demand-capped current response), so a 1080p catalog would correctly request an
+        // uncensused 18 Mbit/s point before this test ever reached its collapse leg. That is a
+        // measurement gap, not a controller failure; the test's subject is the calibrated
+        // 4000 -> 2000 -> 720 -> 320 descent.
         let catalog =
-            super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1920, 1080));
+            super::super::HlsActuatorCatalog::measured().limited_to((3840, 2176), (1280, 720));
         let mut controller = Controller::starting_at(Rung::P720Low, None, catalog);
         let report = run(
             &plant,
@@ -1304,27 +1515,35 @@ mod tests {
         );
     }
 
-    /// Plan I3: the first segment has only one segment of reserve, so the old `starving()` rule
-    /// proposed a downshift on every link, including this 400 Mbit/s one. The structural
-    /// precondition and the decision are both graded now: cold-start evidence is measured, but it
-    /// cannot move the actuator.
+    /// The first finite response on a demand-capped stream establishes only that this response was
+    /// fast. It may forbid a spurious downshift, but it cannot reveal the path ceiling. Once the
+    /// completed segment leaves reserve above the larger of the replay runway and one rollback
+    /// media horizon, the next observation must spend that surplus on an actual candidate rather
+    /// than hold forever at the bootstrap rung.
     #[test]
-    fn characterise_the_first_segment_of_a_fast_link() {
+    fn a_fast_first_segment_excites_an_actual_higher_candidate() {
         let plant = Plant::default();
         let trace = Trace::new(&[(60.0, 400_000)]);
         let point = p720();
-        let (mut now, mut buf) = (0, 0);
+        // One segment is already playable. The sample below is the first finite link observation,
+        // not the startup fill; after it lands the bag contains enough physical time for max(R_s,D)
+        // and therefore has genuine discretionary surplus.
+        let (mut now, mut buf) = (0, plant.segment_ms);
         let (o, sample) = step(&plant, &trace, &point, &mut now, &mut buf, 720);
         assert!(
-            o.buf_ms <= plant.segment_ms,
-            "one segment in, the reserve is one segment"
+            o.buf_ms > plant.segment_ms,
+            "the second segment must deepen the reserve"
         );
         let mut c = Controller::starting_at(Rung::P480, None, cat());
         let decision = c.observe_next(sample);
+        let Decision::Prime(proposal) = decision else {
+            panic!("a fast demand-capped response must fund a real candidate; got {decision:?}");
+        };
+        assert_eq!(proposal.direction, super::super::Direction::Up);
         assert_eq!(
-            decision,
-            Decision::Stay,
-            "a cold start on a fast link must hold its rung"
+            proposal.rung,
+            Rung::Uhd,
+            "all unknown candidates spend the same bounded reserve, so excite the most useful one",
         );
         println!(
             "CHARACTERISATION first-segment: buf={}ms acquire={}ms prod={}pm decision={:?}",

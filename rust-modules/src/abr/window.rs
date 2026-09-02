@@ -1,125 +1,41 @@
-//! **The acquisition window, and the admission rule built on it.** `docs/adaptive-playback-spec.md`
-//! §2a and §4.
+//! Finite acquisition-bag physics for the active HLS operating point.
 //!
-//! This module replaces a chain of estimates — a throughput EWMA, an uncertainty discount, a
-//! production fold, a `4/5` haircut and a bare `800` — with two sums over the last `n` segments.
-//! Nothing here is fitted and nothing here is a float.
-//!
-//! # What it computes
-//!
-//! Given a window of observed `(bytes, acquisition)` pairs and a candidate's worst-case byte count
-//! `q`, the **transfer bound** says what that candidate's acquisition can cost:
+//! The live controller never treats `bytes / active_time` from a finite, demand-capped response as
+//! the path's unused capacity. For every completed acquisition `i` in the current finite
+//! operating-point episode, this module records only facts: end-to-end acquisition time `A_i` and
+//! playable media duration `D_i`. It then computes
 //!
 //! ```text
-//! T_i(q) = A_i * max(1, q / b_i)
+//! sustainable       <=>  Σ A_i <= Σ D_i
+//! ordered runway R_o  =  max_i(Σ_(j<i)(A_j-D_j) + A_i)
+//! stress runway R_s   =  Σ (A_i-D_i)+ + max_i min(A_i,D_i)
 //! ```
 //!
-//! Both halves of that are tight. `O0 >= 0` gives `tau <= A_i/b_i`, so an upshift costs at most
-//! `A_i * q/b_i`; `tau >= 0` gives `A_j <= A_i` for a downshift. So `T` is the exact worst case
-//! over every split of `A_i` between the two coefficients of `A = O0 + bytes*tau` — which is
-//! precisely the split this project's corpus was shown unable to identify (R7). **No estimator for
-//! `O0` or `tau` exists here because none is needed.**
+//! `R_o` is the exact starting reserve for the chronology actually observed and is the live
+//! current-rung stay/down certificate. `R_s` is the exact worst-permutation replay boundary used
+//! to fund discretionary exploration. Its terminal `max min(A,D)` matters because a segment's
+//! media is credited only after the acquisition completes. Both are retrospective conservation
+//! identities, not confidence margins or a claim about an unseen future draw. Their sufficient
+//! statistics are folded into an exact associative summary, so an episode does not forget its
+//! first acquisition when the separate diagnostics ring wraps.
 //!
-//! One asymmetry decides how much of the ladder needs a size prediction at all, and it is worth
-//! stating precisely because the loose version of it is wrong. `T_i(q) = A_i` exactly when
-//! `q <= b_i` — so the transfer is free of `q` not for "a downshift" in general but **whenever the
-//! candidate's worst case is under what the sample actually weighed**:
+//! A higher rendition cannot be inferred from this bag: its larger request may obtain more service
+//! than the current demand-capped response ever asked for. The controller therefore spends only
+//! reserve above `max(R_s,D_next)` on an actual candidate transaction and grades that candidate
+//! directly. A completed one-point upshift reduces to `A <= D && B_post >= A`; an abandoned prefix
+//! enters no bag.
 //!
-//! ```text
-//! sigma_j * W_j * D / 8000  <=  b_i
-//! ```
-//!
-//! That is not independent of `sigma_j`; it is INSENSITIVE to it, which is a weaker claim and the
-//! true one. `W_j` is a cap (§3), so a real downshift moves the rate by 1.1x to 60x, and the
-//! condition then holds for any `sigma_j` up to `8000*b_i/(W_j*D)` — a threshold in the tens at the
-//! bottom of the ladder against measured spreads under 1. **This is why the three rungs where
-//! `sigma` has no usable ceiling (320, 720, 2000) are still admissible: they are downshift targets,
-//! and the margin there is orders of magnitude, not a fitted number.** An earlier draft of this
-//! paragraph said `T = A_i` held "whatever the candidate turns out to weigh", which drops the
-//! condition entirely and would license an UPSHIFT on the same reasoning.
-//!
-//! Nothing in the code depends on which case applies — [`AcquisitionWindow::transferred_us`] takes
-//! `q` and is correct either way. The distinction decides only where a good `sigma` is needed, and
-//! therefore which candidates the rule can price today.
-//!
-//! # What `eps` is, and what it is NOT — downgraded 2026-08-29
-//!
-//! This section used to open with a probability:
-//!
-//! ```text
-//! P( A_next > k-th largest of { T_i(q) } )  <=  k/(n+1)
-//! ```
-//!
-//! and argue it via domination: the transferred values are not exchangeable (the map `g_q` is
-//! indexed by the query), but the RAW order statistic is "the identity map, genuinely fixed", and
-//! every transfer factor is `>= 1`, so the transferred bound dominates the raw one pointwise and
-//! the exceedance probability can only fall.
-//!
-//! **The domination step is real; the raw bound it dominates is not available.** The quantity being
-//! bounded is the cost of the CANDIDATE at query bytes `q`. An upshift — the only direction this
-//! rule gates — has `q > b_i`, so `A_next` is the cost of a strictly larger transfer than any
-//! sample in the window: stochastically larger, not exchangeable with the raw `A_i`, and the raw
-//! inequality fails in exactly the direction that matters. Dominating a bound that does not hold
-//! proves nothing. The sound repair routes through counterfactual same-size costs
-//! `A_i(q) = O0_i + q*tau_i` — but that needs the affine model with per-segment coefficients
-//! identically distributed across the window and the next draw, which is the same-link precondition
-//! this project's own corpus refutes on 36.6% of pairs.
-//!
-//! Two further reasons the coverage reading is unavailable, either sufficient alone: the controller
-//! INVOKES this rule only at moments selected by the same recent data (dwell expired, reserve above
-//! the gate, not draining, no reject block), and order-statistic coverage is marginal rather than
-//! conditional; and the window's own contents are shaped by the collapse reset, which guarantees an
-//! evaluated window holds only post-collapse samples. [`AdmissionPolicy`] has the full account.
-//!
-//! **What the rule delivers instead**, and it is enough: a DETERMINISTIC property — at most `k-1` of
-//! the last `n` transferred values exceed the bound — plus conditions (1) and (2) as deterministic
-//! statements about the last `n*D` of media under the worst-case transfer. `eps` is the design ratio
-//! `k/(n+1)`, chosen for the window length it implies. Nothing in the decision path reads it as a
-//! probability: `bound_us` is telemetry with no consumer outside the read-out, and `admits` consumes
-//! only `n`.
-//!
-//! The empirical record stays worth having and stays EMPIRICAL: the raw control
-//! (`tools/abr-transfer-bound.py`, `RAW ctrl`) lands at nominal on the stationary device corpus
-//! while the transferred column sits 2-4x under, and about 2x OVER on swept legs. An earlier draft
-//! read the under-shoot as evidence that exchangeability holds; it is not, being forced by the
-//! domination. A ratio realized 2-4x off in either direction is a design dial, not a coverage
-//! guarantee.
-//!
-//! # The two admission conditions
-//!
-//! ```text
-//! (1) sum_i T_i(q)  <=  n * D                 sustainability, on the AVERAGE
-//! (2) B  >=  sum_i ( T_i(q) - D )+            the reserve covers the peak excursion
-//! ```
-//!
-//! (1) is exact and has no margin in it: the reserve moves by `D - A` per segment, so `sum A <= nD`
-//! is precisely "this rung does not drain the buffer over the window". (2) sums every excess rather
-//! than taking the observed maximum drawdown because under exchangeability the ORDER of the window
-//! carries no information, so the worst ordering — every hard segment consecutive — is the only one
-//! that may be assumed.
-//!
-//! **(2) proves survival for the span of the evidence, `n*D` of media, and not one segment further.**
-//! That is sound only because the controller re-evaluates every segment, and it is why `n` is
-//! load-bearing rather than free.
-//!
-//! # Why there is no step-size cap
-//!
-//! A large jump is not forbidden, it is PRICED, and the price is measured. `E_tx_up` grows roughly
-//! linearly in the jump ratio — about 5 s per unit of ratio on the device corpus: 4.4 s at 1.14x,
-//! 8.0 s at 2x, 12.5 s at 3x, 22.2 s at 5x, 63.4 s at 8x. The decision arm charges it by re-running
-//! (2) against `B - E_tx_up`. Since `B_max` falls as `1/R`, a big jump at a high rung is
-//! unaffordable automatically. A per-decision rung cap would be exactly the unexplained
-//! rung-walking rule the design directive forbids, and it would reintroduce the encoder churn that
-//! jumping straight to the best candidate exists to avoid.
-//!
-//! **That charge is not in this module yet, deliberately.** It needs a candidate's byte count
-//! (`sigma * W_j * D / 8000`), and `sigma` has a usable ceiling only at rungs >= 4000; both arrive
-//! with the decision. Writing the method here ahead of its one caller would have been an
-//! unexercised branch in the file whose entire purpose is that every branch is proven.
+//! The bounded ring and its older transferred-byte/order-statistic machinery remain executable
+//! below for historical corpus comparisons and diagnostics. They are explicitly not a live ABR
+//! gate: adaptive invocation is data-dependent, candidate size changes the queried distribution,
+//! and no exchangeability theorem licenses its former probability interpretation.
 
-/// **Storage bound on the window, not a policy choice.** The window length that decides behaviour
-/// is `n = k/eps - 1` (see [`AdmissionPolicy`]); this is only how many samples the ring can hold,
-/// and it is an implementation limit stated as one.
+use super::Rung;
+
+/// **Storage bound on the retired diagnostics ring, not a live policy choice.** The exact live
+/// summary is episode-long and does not evict. The retired order-statistic readout asks for
+/// `n = k/eps - 1` (see [`AdmissionPolicy`]); that historical request is clamped to this
+/// implementation limit but no longer decides playback.
 ///
 /// A previous draft of the specification wrote `n <= 32` into the *derivation*, which silently made
 /// several `(n, k)` settings unreachable — at that cap `eps >= k/33`, so `k = 3` could not express
@@ -133,9 +49,209 @@ pub(crate) const WINDOW_CAPACITY: usize = 64;
 struct Acquisition {
     bytes: u64,
     acquisition_us: u64,
+    /// Playable media credited only after this acquisition completes.  It belongs to the sample:
+    /// EXTINF durations may vary, so substituting the current segment's `D` for every historical
+    /// observation breaks both conservation sums dimensionally.
+    media_duration_ms: i64,
+    /// The part of `acquisition_us` that does NOT grow with `bytes`: connection, request, headers,
+    /// the AVIO open, FFmpeg's probe, scheduling. `acquisition_us - active_fetch_us`.
+    ///
+    /// Kept because [`AcquisitionWindow::transferred_us`] has to scale one part and not the other,
+    /// and the two are only separable at observation time. Device-measured 2026-08-30: a 130 284
+    /// byte segment cost `total_ms=582` of which `open_ms=370` (`open_probe_ms=207`) was open and
+    /// probe, on a server whose `not_ready` was 0 on every segment of the run — so the fixed half
+    /// was 64% of the acquisition and multiplying it by a byte ratio invented over a second per
+    /// sample.
+    overhead_us: u64,
 }
 
-/// **The two numbers that decide `n`, both explicit choices under the classification rule.**
+/// Exact sufficient statistics for one finite operating-point episode.
+///
+/// For a sequence `x` followed by `y`, the ordered replay boundary composes as
+///
+/// ```text
+/// delta(x)       = sum_A(x) - sum_D(x)
+/// runway(x ++ y) = max(runway(x), delta(x) + runway(y))
+/// ```
+///
+/// while all sums add and all sample maxima take `max`. That makes this a constant-space,
+/// associative summary of the complete episode: callers may fold samples one at a time or merge
+/// adjacent chunks and obtain exactly the same terms. The two stress-runway components are kept
+/// separately because `sum (A-D)+ + max min(A,D)` is the exact worst-permutation boundary.
+///
+/// Every fallible operation is checked. `overflowed` is absorbing; once exact representation is
+/// impossible, both live admission forms return a conservative refusal. Saturating an acquisition
+/// sum and a duration sum independently can make them equal and silently turn overflow into an
+/// upgrade, so saturation is not a valid implementation of this summary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AdmissionSummary {
+    /// Number of completed acquisitions in the episode.
+    n: usize,
+    /// `Σ A_i`.
+    sum_acquisition_us: i64,
+    /// `Σ D_i`.
+    sum_duration_us: i64,
+    /// `Σ(A_i-D_i)`; also the shift applied to a following chunk's prefix runway.
+    delta_us: i64,
+    /// `max_i(Σ_(j<i)(A_j-D_j) + A_i)` in the episode's observed order.
+    max_prefix_runway_us: i64,
+    /// `Σ(A_i-D_i)+`, the additive part of the worst-permutation runway.
+    positive_slack_sum_us: i64,
+    /// `max_i min(A_i,D_i)`, the terminal part of the worst-permutation runway.
+    max_capped_delivery_us: i64,
+    /// `max_i(A_i-active_i)`, retained independently of the diagnostics ring.
+    sample_overhead_max_us: u64,
+    overflowed: bool,
+}
+
+impl AdmissionSummary {
+    fn from_sample(sample: Acquisition) -> Self {
+        let overhead = sample.overhead_us;
+        let Ok(acquisition_us) = i64::try_from(sample.acquisition_us) else {
+            return Self::poisoned(1, overhead);
+        };
+        let Some(duration_us) = sample.media_duration_ms.checked_mul(1_000) else {
+            return Self::poisoned(1, overhead);
+        };
+        let Some(delta_us) = acquisition_us.checked_sub(duration_us) else {
+            return Self::poisoned(1, overhead);
+        };
+        let summary = Self {
+            n: 1,
+            sum_acquisition_us: acquisition_us,
+            sum_duration_us: duration_us,
+            delta_us,
+            max_prefix_runway_us: acquisition_us,
+            positive_slack_sum_us: delta_us.max(0),
+            max_capped_delivery_us: acquisition_us.min(duration_us),
+            sample_overhead_max_us: overhead,
+            overflowed: false,
+        };
+        // For one sample the stress runway is exactly A. Keep the derived checked operation in the
+        // construction path so a future change cannot add individually representable terms whose
+        // live runway is not representable.
+        if summary.stress_runway_us().is_none() {
+            Self::poisoned(1, overhead)
+        } else {
+            summary
+        }
+    }
+
+    /// Concatenate two adjacent episode summaries. Exact inputs either produce their exact
+    /// associative composition or the absorbing conservative overflow state.
+    fn combine(self, rhs: Self) -> Self {
+        let sample_overhead_max_us = self.sample_overhead_max_us.max(rhs.sample_overhead_max_us);
+        let Some(n) = self.n.checked_add(rhs.n) else {
+            return Self::poisoned(usize::MAX, sample_overhead_max_us);
+        };
+        if self.overflowed || rhs.overflowed {
+            return Self::poisoned(n, sample_overhead_max_us);
+        }
+        let Some(sum_acquisition_us) = self.sum_acquisition_us.checked_add(rhs.sum_acquisition_us)
+        else {
+            return Self::poisoned(n, sample_overhead_max_us);
+        };
+        let Some(sum_duration_us) = self.sum_duration_us.checked_add(rhs.sum_duration_us) else {
+            return Self::poisoned(n, sample_overhead_max_us);
+        };
+        // Derive the canonical delta from the two non-negative monotone sums. Accumulating signed
+        // deltas directly would make overflow depend on grouping when later samples cancel it.
+        let Some(delta_us) = sum_acquisition_us.checked_sub(sum_duration_us) else {
+            return Self::poisoned(n, sample_overhead_max_us);
+        };
+        let Some(shifted_rhs_runway) = self.delta_us.checked_add(rhs.max_prefix_runway_us) else {
+            return Self::poisoned(n, sample_overhead_max_us);
+        };
+        let max_prefix_runway_us = self.max_prefix_runway_us.max(shifted_rhs_runway.max(0));
+        let Some(positive_slack_sum_us) = self
+            .positive_slack_sum_us
+            .checked_add(rhs.positive_slack_sum_us)
+        else {
+            return Self::poisoned(n, sample_overhead_max_us);
+        };
+        let max_capped_delivery_us = self.max_capped_delivery_us.max(rhs.max_capped_delivery_us);
+        let summary = Self {
+            n,
+            sum_acquisition_us,
+            sum_duration_us,
+            delta_us,
+            max_prefix_runway_us,
+            positive_slack_sum_us,
+            max_capped_delivery_us,
+            sample_overhead_max_us,
+            overflowed: false,
+        };
+        if summary.stress_runway_us().is_none() {
+            Self::poisoned(n, sample_overhead_max_us)
+        } else {
+            summary
+        }
+    }
+
+    fn poisoned(n: usize, sample_overhead_max_us: u64) -> Self {
+        Self {
+            n,
+            sum_acquisition_us: i64::MAX,
+            sum_duration_us: i64::MAX,
+            delta_us: 0,
+            max_prefix_runway_us: i64::MAX,
+            positive_slack_sum_us: i64::MAX,
+            max_capped_delivery_us: i64::MAX,
+            sample_overhead_max_us,
+            overflowed: true,
+        }
+    }
+
+    fn stress_runway_us(self) -> Option<i64> {
+        self.positive_slack_sum_us
+            .checked_add(self.max_capped_delivery_us)
+    }
+
+    fn conservative_refusal(self) -> Admission {
+        Admission {
+            sustainable: false,
+            survivable: false,
+            demand_us: i64::MAX,
+            supply_us: 0,
+            excess_us: i64::MAX,
+            runway_us: i64::MAX,
+            samples: self.n,
+        }
+    }
+
+    fn admission(self, reserve_ms: i64, ordered: bool) -> Option<Admission> {
+        if self.n == 0 {
+            return None;
+        }
+        if self.overflowed {
+            return Some(self.conservative_refusal());
+        }
+        let (excess_us, runway_us) = if ordered {
+            (self.delta_us.max(0), self.max_prefix_runway_us)
+        } else {
+            let Some(runway_us) = self.stress_runway_us() else {
+                return Some(self.conservative_refusal());
+            };
+            (self.positive_slack_sum_us, runway_us)
+        };
+        // A reserve outside the microsecond representation is not permission. This is unreachable
+        // for real media lengths, but the failure direction remains conservative at the type edge.
+        let survivable = reserve_ms
+            .checked_mul(1_000)
+            .is_some_and(|reserve_us| reserve_us >= runway_us);
+        Some(Admission {
+            sustainable: self.sum_acquisition_us <= self.sum_duration_us,
+            survivable,
+            demand_us: self.sum_acquisition_us,
+            supply_us: self.sum_duration_us,
+            excess_us,
+            runway_us,
+            samples: self.n,
+        })
+    }
+}
+
+/// **Retired/offline only:** the two numbers that decide `n` in the old classification rule.
 ///
 /// # `eps` is a DESIGN RATIO, not a probability — downgraded 2026-08-29
 ///
@@ -157,10 +273,10 @@ struct Acquisition {
 ///    block is live — every one a function of the same recent data. Conditioning on "the window
 ///    looks healthy" selects windows whose k-th largest is low, so conditional exceedance exceeds
 ///    `k/(n+1)` even for i.i.d. samples. No exotic dependence is needed.
-/// 3. **The sample is shaped.** The collapse reset guarantees an evaluated window holds only
-///    post-collapse samples (survivorship, in the anti-conservative direction), and the window
-///    survives a pause while `on_resume` demotes the ESTIMATE — pre-pause acquisitions keep
-///    informing the bound after the estimator has retracted its confidence in that era.
+/// 3. **The sample was shaped.** A detected collapse resets both the retired window and today's
+///    live finite bag, so evaluated histories hold only post-collapse samples (survivorship, in
+///    the anti-conservative direction), while pauses can survive as the estimator retracts
+///    confidence in the preceding era.
 ///
 /// **What the rule does deliver**, and what should be argued about instead: (i) a deterministic
 /// property — at most `k-1` of the last `n` transferred values exceed the bound; (ii) conditions
@@ -194,6 +310,7 @@ pub(crate) struct AdmissionPolicy {
     pub(crate) k: u32,
 }
 
+#[allow(dead_code)] // retired order-statistic design remains executable for offline corpus tests
 impl AdmissionPolicy {
     /// `n = k/eps - 1`, clamped to what the ring can hold.
     ///
@@ -254,16 +371,22 @@ impl AdmissionPolicy {
 /// controller ended up with a `4/5` haircut standing in for both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Admission {
-    /// `sum T_i <= n*D`.
+    /// `sum A_i <= sum D_i`.
     pub(crate) sustainable: bool,
-    /// `B >= sum (T_i - D)+`.
+    /// Whether `B` covers [`Self::runway_us`] under the evaluator's replay order.
     pub(crate) survivable: bool,
-    /// `sum T_i`, microseconds.
+    /// `sum A_i`, microseconds.
     pub(crate) demand_us: i64,
-    /// `n * D`, microseconds — what (1) compares against.
+    /// `sum D_i`, microseconds — each acquisition keeps its own EXTINF duration.
     pub(crate) supply_us: i64,
-    /// `sum (T_i - D)+`, microseconds — what (2) needs the reserve to cover.
+    /// Non-negative deficit statistic used by the evaluator: total positive deficits for the
+    /// adversarial stress replay, terminal prefix debt for the chronological replay.
     pub(crate) excess_us: i64,
+    /// Minimum reserve for the evaluator's replay order when media is credited only at the end of
+    /// each acquisition. Stress evaluation uses the worst permutation
+    /// `sum(T-D)+ + max(min(T,D))`; current-rung evaluation uses the observed chronology
+    /// `max_i(sum_(j<i)(A_j-D_j) + A_i)`.
+    pub(crate) runway_us: i64,
     /// Samples the verdict rests on.
     pub(crate) samples: usize,
 }
@@ -274,76 +397,64 @@ impl Admission {
     }
 }
 
-/// **Everything the §4 rule concluded, in one struct, for one event-log line.**
+/// Everything one acquisition-episode readout concluded, in one event-log line.
 ///
-/// Assembled inside this module so the numbers logged are the numbers computed, and so that a
-/// clamped window or a short one cannot be read as a verdict. It exists because the rule's claim is
-/// that it tracks the same segments the shipped estimators see, and that claim is only testable if
-/// every term is on the wire — which is how it was graded before it was allowed to decide anything
-/// (`docs/measurements/j3a-window-shadow.md`).
-///
-/// `have < n` is the ordinary state for the first `n` segments of a playback and is reported as
-/// such, with `admission: None`. It is not a failure and must not read as one.
+/// The wire shape is shared deliberately. [`AcquisitionWindow::observed_readout`], the live mode,
+/// uses the whole finite episode immediately: `want=have`, `eps=0`, no bound, and only an empty
+/// episode is `filling`. [`AcquisitionWindow::readout`] is the retired order-statistic/corpus mode:
+/// it can have `have < want`, a non-zero epsilon and a transferred bound. Keeping both generations
+/// explicit prevents an archived shadow trace from being mistaken for the live controller.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AdmissionReadout {
-    /// Samples the window actually holds.
+    /// Complete episode sample count live; samples held by the bounded ring in retired mode.
     pub(crate) have: usize,
-    /// `n = k/eps - 1`, the length the SLO asks for.
+    /// Samples used. Equal to the complete episode's `have` live; the requested order-stat length
+    /// in retired readouts.
     pub(crate) want: usize,
-    /// `k/(n+1)` at the length actually used, per-mille. Equals the requested eps unless clamped.
+    /// Zero live; the retired design ratio `k/(n+1)` in an order-statistic readout.
     pub(crate) effective_epsilon_pm: u32,
-    /// The requested `n` exceeded [`WINDOW_CAPACITY`], so the guarantee on offer is weaker than
-    /// the one asked for. Reported rather than silently absorbed.
+    /// Always false live; whether a retired order-statistic request exceeded storage.
     pub(crate) clamped: bool,
-    /// The k-th largest transferred acquisition, microseconds. `None` while `have < want`.
+    /// Always `None` live; the retired k-th-largest transferred acquisition otherwise.
     pub(crate) bound_us: Option<i64>,
-    /// Both conditions. `None` while `have < want`.
+    /// Both conservation conditions. `None` only for an empty live episode, or while a retired
+    /// order-statistic readout is filling.
     pub(crate) admission: Option<Admission>,
     /// Cumulative [`AcquisitionWindow::reset`] count. Monotone over a playback.
     pub(crate) resets: u32,
 }
 
 impl AdmissionReadout {
-    /// `Some(true)`/`Some(false)` once the window is long enough; `None` while it is filling.
+    /// `Some(true)`/`Some(false)` when terms exist; `None` for a live empty bag or retired fill.
     pub(crate) fn admitted(self) -> Option<bool> {
         self.admission.map(Admission::admitted)
     }
 
     /// **The event-log line, formatted here so the shape is testable beside the arithmetic.**
     ///
-    /// A line of its own rather than fields appended to `abr: sample`, for two reasons. The shipped
-    /// line is a parsed compatibility surface (`RE_ABR_SAMPLE` in `tests/run.py`) and the whole
-    /// value of this increment is that it is *comparable* against an unmodified baseline — the same
-    /// corpus has to be readable by the harness that graded the estimators this rule is meant to
-    /// replace. And the two lines answer different questions: `abr: sample` says what happened,
-    /// this says what a rule nobody is listening to would have concluded about it.
+    /// A line of its own rather than fields appended to `abr: sample`: the sample says what arrived
+    /// and whether it completed; this line publishes every conservation term derived from the
+    /// certified bag. The independent grader needs both and pairs them in log order.
     ///
-    /// * `have`/`want` — samples held against `n = k/eps - 1`. `have < want` is the ordinary state
-    ///   for the first `n` segments and prints `verdict=filling`, not a failure. `have` keeps
-    ///   climbing past `want` to [`WINDOW_CAPACITY`] — only the newest `want` are used, so the
-    ///   excess is not evidence being ignored but a reading of how long the window has gone
-    ///   without a reset, which is the context a verdict after a regime change has to be read in.
-    /// * `eps` — `k/(n+1)` at the length actually USED. It differs from the requested eps exactly
-    ///   when `clamp=1`, which is the only way the guarantee offered is weaker than the one asked.
-    /// * `bound` — the k-th largest transferred acquisition, milliseconds: the order statistic the design
-    ///   ratio names, and a bound on
-    ///   what the next one costs.
-    /// * `demand`/`supply` — condition (1), `sum T_i` against `n*D`, both in milliseconds so the
-    ///   comparison is readable without arithmetic.
-    /// * `excess` — condition (2)'s `sum (T_i - D)+`, the reserve the worst ordering of this window
-    ///   would consume. Graded against `buf` on the `abr: sample` line of the same segment.
+    /// * `have`/`want` — equal live and cover the complete current-operating-point episode. A retired
+    ///   readout may instead fill toward an order-statistic length.
+    /// * `eps`/`clamp`/`bound` — `0/0/-1` live; retained only to make old captures unambiguous.
+    /// * `demand`/`supply` — `sum A_i` against `sum D_i`, in milliseconds.
+    /// * `excess` — `sum (A_i-D_i)+`, the accumulated deficit component.
+    /// * `runway` — condition (2)'s complete reserve requirement, including the acquisition that
+    ///   must finish before its `D_i` is credited.
     ///
     /// Every unavailable number prints `-1` rather than `0`: while the window is filling those
     /// quantities are NOT COMPUTED, and a zero cannot say the difference — a zero `excess` is a
     /// perfectly ordinary healthy verdict.
     ///
-    /// `reset` is cumulative and monotone. Without it a regime-change reset shows up only as
-    /// `have` dropping back to 1 with nothing saying why, which is indistinguishable in a captured
-    /// trace from the window having lost its history for some other reason.
+    /// `reset` is cumulative and monotone within one controller. Every committed actuator change
+    /// resets the old operating-point bag and seeds the new one from candidate evidence; a new
+    /// `abr: seed` starts a fresh controller epoch at zero.
     ///
-    /// The `bytes` field is the query, which for this shadow is the segment's OWN size — so the
-    /// line records the current rung's sustainability, the one admission question needing no size
-    /// prediction and therefore no `sigma`.
+    /// `bytes` is retained for trace compatibility. Live conservation does not use it to decide
+    /// bag membership or project another request size; membership comes from `complete=` and every
+    /// stored observation keeps its own actual byte count.
     pub(crate) fn log_line(self, current_kbps: u32, bytes: u64, media_duration_ms: u32) -> String {
         let verdict = match self.admitted() {
             None => "filling",
@@ -351,13 +462,21 @@ impl AdmissionReadout {
             Some(false) => "refuse",
         };
         let ms = |us: i64| us / 1_000;
-        let (demand, supply, excess) = self
+        let (demand, supply, excess, runway) = self
             .admission
-            .map(|a| (ms(a.demand_us), ms(a.supply_us), ms(a.excess_us)))
-            .unwrap_or((-1, -1, -1));
+            .map(|a| {
+                (
+                    ms(a.demand_us),
+                    ms(a.supply_us),
+                    ms(a.excess_us),
+                    ms(a.runway_us),
+                )
+            })
+            .unwrap_or((-1, -1, -1, -1));
         format!(
             "abr: window current={current_kbps}kbps verdict={verdict} have={}/{} eps={}pm \
              clamp={} bound={}ms demand={demand}ms supply={supply}ms excess={excess}ms \
+             runway={runway}ms \
              sus={} sur={} reset={} bytes={bytes} dur={media_duration_ms}ms",
             self.have,
             self.want,
@@ -371,7 +490,7 @@ impl AdmissionReadout {
     }
 }
 
-/// **The bytes a candidate could demand for one segment, worst case** — the admission rule's query.
+/// **Retired/offline only:** the old admission rule's worst-case candidate byte query.
 ///
 /// ```text
 /// q = sigma * W_j * D / 8000            W in bit/s, D in ms, sigma per-mille
@@ -387,9 +506,10 @@ impl AdmissionReadout {
 /// first keeps every intermediate under 1e14 — at rung 22000 with D = 2000 the numerator is 3.6e13,
 /// five orders inside `u64`.
 ///
-/// A zero or missing declared rate returns 0, and **every caller must treat that as a refusal**: a
-/// zero query makes every transfer factor 1, which is the most PERMISSIVE the rule can be. That is
-/// the one input where "unknown" and "free" would look the same.
+/// A zero or missing declared rate returns 0. Any offline caller must treat that as an incompatible
+/// record rather than a free request: a zero query makes every transfer factor 1, the most
+/// permissive retired verdict.
+#[allow(dead_code)]
 pub(crate) fn candidate_worst_case_bytes(
     declared_bps: u64,
     media_duration_ms: i64,
@@ -404,25 +524,25 @@ pub(crate) fn candidate_worst_case_bytes(
     numerator.saturating_add(7_999_999) / 8_000_000
 }
 
-/// A ring of recent acquisitions. One per fetched segment, oldest evicted.
-///
-/// **The window is NOT reset on a rung commit**, and that is the property that makes the transfer
-/// form worth having: `T` transfers by BYTES, so a sample taken at the old rung is still evidence
-/// about the new one. It IS reset on a link regime change ([`Self::reset`]), because there the
-/// history describes a link that no longer exists — measured, and the failure it causes is real:
-/// on a deliberately swept link the bound runs about 2x anti-conservative.
+/// One operating-point episode plus a bounded diagnostics ring of its most recent acquisitions.
+/// The associative `summary` never evicts; only `ring` does. The live controller calls
+/// [`Self::reset`] on every rung commit and immediately seeds the new episode from the completed
+/// candidate, so evidence from a smaller or larger request never crosses that actuator boundary.
+/// The retired transferred-byte methods below still use the ring for historical corpus work, but
+/// the live controller does not.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AcquisitionWindow {
     ring: [Acquisition; WINDOW_CAPACITY],
     len: usize,
     next: usize,
+    summary: AdmissionSummary,
     /// How many times [`Self::reset`] has run, for the whole playback.
     ///
-    /// **It exists because a reset is otherwise invisible in the trace.** `have` simply drops back
-    /// to 1, with nothing saying why, and a reader — or a grader replaying the segment stream —
-    /// cannot tell a legitimate regime-change reset from the window having lost its history for
-    /// some other reason. Monotone, so a drop in `have` WITHOUT this moving is a real defect and
-    /// still reads as one.
+    /// A reset is otherwise visible only as a drop in `have`. Commit resets have a matching marker
+    /// and transaction seed triple, but the delivery estimator's collapse reset has no boundary
+    /// marker. The grader uses this exact increment to detect either case; an unmarked increment
+    /// makes the following span unattributable rather than pretending the old episode continued.
+    /// A new controller announces `abr: seed` and legitimately starts the counter at zero again.
     resets: u32,
 }
 
@@ -432,21 +552,37 @@ impl Default for AcquisitionWindow {
             ring: [Acquisition::default(); WINDOW_CAPACITY],
             len: 0,
             next: 0,
+            summary: AdmissionSummary::default(),
             resets: 0,
         }
     }
 }
 
 impl AcquisitionWindow {
-    pub(crate) fn observe(&mut self, bytes: u64, acquisition_us: u64) {
-        if bytes == 0 || acquisition_us == 0 {
+    /// `active_us` is the part that moved bytes; the rest of `acquisition_us` is fixed per-segment
+    /// cost that [`Self::transferred_us`] must not scale. See [`Acquisition::overhead_us`]. A
+    /// caller with no separate measurement passes `acquisition_us` for both, which reproduces the
+    /// old all-proportional behaviour exactly.
+    pub(crate) fn observe(
+        &mut self,
+        bytes: u64,
+        acquisition_us: u64,
+        active_us: u64,
+        media_duration_ms: i64,
+    ) {
+        if bytes == 0 || acquisition_us == 0 || media_duration_ms <= 0 {
             // A malformed observation must not enter the window: `bytes` is a divisor.
             return;
         }
-        self.ring[self.next] = Acquisition {
+        let overhead_us = acquisition_us.saturating_sub(active_us.min(acquisition_us));
+        let sample = Acquisition {
             bytes,
             acquisition_us,
+            media_duration_ms,
+            overhead_us,
         };
+        self.summary = self.summary.combine(AdmissionSummary::from_sample(sample));
+        self.ring[self.next] = sample;
         self.next = (self.next + 1) % WINDOW_CAPACITY;
         self.len = (self.len + 1).min(WINDOW_CAPACITY);
     }
@@ -465,6 +601,34 @@ impl AcquisitionWindow {
         self.len
     }
 
+    #[cfg(test)]
+    pub(crate) fn episode_len(&self) -> usize {
+        self.summary.n
+    }
+
+    /// **The largest fixed per-segment cost this episode has seen**, microseconds — connection,
+    /// request, the AVIO open, FFmpeg's probe. `0` on an empty window, which leaves any caller
+    /// adding it exactly where it was.
+    ///
+    /// The MAXIMUM rather than a mean, because the one caller is a DEADLINE: a budget built from
+    /// the average overhead is a coin flip on every segment whose overhead is above it, and
+    /// `predicted_transfer`'s own doc records the device measuring that coin landing wrong 53
+    /// times in a row.
+    ///
+    /// **The cost of that choice, stated rather than discovered later.** A max over the whole
+    /// finite operating-point episode lets ONE pathological open — a hiccup, a server reconnect —
+    /// inflate every warm-up deadline until the episode resets. Over-granting a downshift
+    /// deadline spends reserve while waiting for a candidate that is not coming, which is the
+    /// mirror of the failure this exists to fix. Max is chosen because the failure that was
+    /// actually MEASURED is the under-granting one (nineteen consecutive `warmup_deadline` with
+    /// `warmup=nonems`), and because the budget is a `max` with the reserve anyway, so on a healthy
+    /// playback the reserve dominates this term entirely. A k-th largest order statistic — the
+    /// idiom [`Self::bound_us`] already uses — is the obvious refinement, and there is no evidence
+    /// yet that says which `k`; do not add one without a trace that shows the inflation happening.
+    pub(crate) fn worst_overhead_us(&self) -> u64 {
+        self.summary.sample_overhead_max_us
+    }
+
     /// Most recent first.
     fn recent(&self, want: usize) -> impl Iterator<Item = Acquisition> + '_ {
         let take = want.min(self.len);
@@ -474,7 +638,18 @@ impl AcquisitionWindow {
         })
     }
 
-    /// `A_i * max(1, q / b_i)`, in microseconds, rounded UP.
+    /// `overhead_i + body_i * max(1, q / b_i)`, in microseconds, rounded UP.
+    ///
+    /// **Only the part that moves bytes is scaled**, and that is a correction rather than a
+    /// refinement: this read `A_i * q / b_i` over the WHOLE acquisition, which asserts that a
+    /// rendition four times the size also takes four times as long to open and four times as long
+    /// to probe. Neither is true of either. The device case is in [`Acquisition::overhead_us`];
+    /// its consequence was a playback that would not climb off 720 kbps with 68 seconds of reserve
+    /// and a link carrying the candidate twice over.
+    ///
+    /// The overhead is still CHARGED — once, as it is actually incurred. It is real dead time in
+    /// which playback receives no segment, which is what the sustainability condition is about, and
+    /// dropping it (by scaling `active_fetch_us` alone) would be the opposite error.
     ///
     /// Ceiling, not floor: this is a safety bound and flooring one is a bound in the wrong
     /// direction.
@@ -492,10 +667,15 @@ impl AcquisitionWindow {
         if query_bytes <= sample.bytes {
             return sample.acquisition_us.min(i64::MAX as u64) as i64;
         }
+        // Saturating, not a bare subtraction: `SegmentSample::new` requires
+        // `total_fetch_us >= active_fetch_us`, so this cannot go negative through that
+        // constructor — but the window is also fed by `observe` directly and an unsigned wrap here
+        // would be a bound in the unsafe direction, silently, once per segment.
+        let body = sample.acquisition_us.saturating_sub(sample.overhead_us);
         let bytes = u128::from(sample.bytes.max(1));
-        let scaled =
-            (u128::from(sample.acquisition_us) * u128::from(query_bytes) + bytes - 1) / bytes;
-        scaled.min(i64::MAX as u128) as i64
+        let scaled = (u128::from(body) * u128::from(query_bytes) + bytes - 1) / bytes;
+        let total = scaled.saturating_add(u128::from(sample.overhead_us));
+        total.min(i64::MAX as u128) as i64
     }
 
     /// The `k`-th largest transferred value — the order statistic `eps` names. A deterministic
@@ -504,6 +684,7 @@ impl AcquisitionWindow {
     ///
     /// `None` when the window is shorter than `n`: a bound from fewer samples than the SLO asks for
     /// does not carry the SLO, and returning a number anyway is how an unearned guarantee ships.
+    #[allow(dead_code)]
     pub(crate) fn bound_us(&self, query_bytes: u64, policy: AdmissionPolicy) -> Option<i64> {
         let n = policy.window_len();
         if self.len < n {
@@ -527,6 +708,7 @@ impl AcquisitionWindow {
     /// method's doc describes. No unsigned subtraction appears anywhere: the one difference taken
     /// (`transferred - duration`) is `i64` and is allowed to be negative, which is exactly the case
     /// condition (2) discards.
+    #[allow(dead_code)]
     pub(crate) fn admits(
         &self,
         query_bytes: u64,
@@ -534,27 +716,118 @@ impl AcquisitionWindow {
         reserve_ms: i64,
         policy: AdmissionPolicy,
     ) -> Option<Admission> {
-        let n = policy.window_len();
-        if self.len < n || media_duration_ms <= 0 {
+        if media_duration_ms <= 0 {
             return None;
         }
-        let duration_us = media_duration_ms.saturating_mul(1_000);
-        let mut demand_us: i64 = 0;
-        let mut excess_us: i64 = 0;
-        for sample in self.recent(n) {
-            let transferred = Self::transferred_us(sample, query_bytes);
-            demand_us = demand_us.saturating_add(transferred);
-            excess_us = excess_us.saturating_add((transferred - duration_us).max(0));
+        self.evaluate(reserve_ms, policy, |_| query_bytes)
+    }
+
+    /// The conservation certificate for one rendition, using each observation's own media
+    /// duration both to form that sample's candidate byte query and to credit its supply.
+    #[allow(dead_code)]
+    pub(crate) fn admits_candidate(
+        &self,
+        declared_bps: u64,
+        rung: Rung,
+        reserve_ms: i64,
+        policy: AdmissionPolicy,
+    ) -> Option<Admission> {
+        if declared_bps == 0 {
+            return None;
         }
-        let supply_us = duration_us.saturating_mul(n as i64);
-        Some(Admission {
+        self.evaluate(reserve_ms, policy, |sample| {
+            candidate_worst_case_bytes(
+                declared_bps,
+                sample.media_duration_ms,
+                rung.size_spread_pm(),
+            )
+        })
+    }
+
+    /// Exact conservation certificate for the complete finite episode already observed on the
+    /// CURRENT operating point, even while the statistical ring is filling or after it wraps. Every
+    /// sample enters at its actual acquisition cost: projecting a larger query here would turn a
+    /// demand-capped response into a false capacity ceiling. This makes no claim about an unseen
+    /// acquisition; it says only how much reserve the measured episode needs and whether it
+    /// replenished itself.
+    pub(crate) fn observed_admission(&self, reserve_ms: i64) -> Option<Admission> {
+        self.summary.admission(reserve_ms, false)
+    }
+
+    /// Replay the observed current-point order. With
+    /// `P_i = sum_{j<i}(A_j-D_j)`, acquisition `i` completes without starvation exactly when the
+    /// initial reserve covers `P_i+A_i`; the ordered runway is therefore `max_i(P_i+A_i)`.
+    /// [`Self::observed_admission`] remains the adversarial-permutation stress certificate.
+    pub(crate) fn observed_ordered_admission(&self, reserve_ms: i64) -> Option<Admission> {
+        self.summary.admission(reserve_ms, true)
+    }
+
+    pub(crate) fn observed_runway_us(&self) -> Option<i64> {
+        self.observed_admission(0)
+            .map(|admission| admission.runway_us)
+    }
+
+    /// Telemetry for the exact full finite episode that the controller actually uses. The legacy
+    /// order-statistic fields stay in the wire shape for compatibility, but are deliberately
+    /// unavailable (`eps=0`, `bound=None`): no transferred candidate query decides current-point
+    /// conservation any more.
+    pub(crate) fn observed_readout(&self, reserve_ms: i64) -> AdmissionReadout {
+        AdmissionReadout {
+            have: self.summary.n,
+            want: self.summary.n,
+            effective_epsilon_pm: 0,
+            clamped: false,
+            bound_us: None,
+            admission: self.observed_admission(reserve_ms),
+            resets: self.resets,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn evaluate(
+        &self,
+        reserve_ms: i64,
+        policy: AdmissionPolicy,
+        query_bytes: impl FnMut(Acquisition) -> u64,
+    ) -> Option<Admission> {
+        let n = policy.window_len();
+        if self.len < n {
+            return None;
+        }
+        Some(self.evaluate_recent(n, reserve_ms, query_bytes))
+    }
+
+    fn evaluate_recent(
+        &self,
+        n: usize,
+        reserve_ms: i64,
+        mut query_bytes: impl FnMut(Acquisition) -> u64,
+    ) -> Admission {
+        let mut demand_us: i64 = 0;
+        let mut supply_us: i64 = 0;
+        let mut excess_us: i64 = 0;
+        let mut terminal_us: i64 = 0;
+        for sample in self.recent(n) {
+            let duration_us = sample.media_duration_ms.saturating_mul(1_000);
+            let transferred = Self::transferred_us(sample, query_bytes(sample));
+            demand_us = demand_us.saturating_add(transferred);
+            supply_us = supply_us.saturating_add(duration_us);
+            excess_us = excess_us.saturating_add((transferred - duration_us).max(0));
+            terminal_us = terminal_us.max(transferred.min(duration_us));
+        }
+        // Before acquisition m completes, none of D_m is playable yet.  For an unknown future
+        // ordering the exact worst permutation places every positive deficit first, then the
+        // acquisition with the largest `min(T,D)` terminal cost.
+        let runway_us = excess_us.saturating_add(terminal_us);
+        Admission {
             sustainable: demand_us <= supply_us,
-            survivable: reserve_ms.saturating_mul(1_000) >= excess_us,
+            survivable: reserve_ms.saturating_mul(1_000) >= runway_us,
             demand_us,
             supply_us,
             excess_us,
+            runway_us,
             samples: n,
-        })
+        }
     }
 
     /// Both conditions plus every term they rest on, for telemetry.
@@ -562,6 +835,7 @@ impl AcquisitionWindow {
     /// One call, one `policy.window_len()`, so the reported `want`, `bound_us` and `admission`
     /// cannot describe three different window lengths — which they could if the log line assembled
     /// them from three separate calls at the call site.
+    #[allow(dead_code)]
     pub(crate) fn readout(
         &self,
         query_bytes: u64,
@@ -594,7 +868,10 @@ mod tests {
     fn window(samples: &[(u64, u64)]) -> AcquisitionWindow {
         let mut w = AcquisitionWindow::default();
         for &(bytes, us) in samples {
-            w.observe(bytes, us);
+            // These fixtures predate the fixed/body split and are about the ORDER STATISTIC,
+            // not the cost model: passing `us` for both keeps them all-proportional, which is
+            // exactly the behaviour their expected values were computed against.
+            w.observe(bytes, us, us, 2_000);
         }
         w
     }
@@ -603,6 +880,8 @@ mod tests {
         Acquisition {
             bytes,
             acquisition_us,
+            media_duration_ms: 2_000,
+            overhead_us: 0,
         }
     }
 
@@ -673,7 +952,7 @@ mod tests {
     fn recent_returns_the_newest_first_across_a_wraparound() {
         let mut w = AcquisitionWindow::default();
         for i in 1..=(WINDOW_CAPACITY as u64 + 3) {
-            w.observe(1_000, i);
+            w.observe(1_000, i, i, 2_000);
         }
         assert_eq!(
             w.len(),
@@ -686,10 +965,12 @@ mod tests {
     }
 
     #[test]
-    fn reset_empties_the_window_so_a_regime_change_cannot_be_bounded_by_the_old_link() {
+    fn an_explicit_reset_empties_the_bag() {
         let mut w = window(&[(1_000, 100), (1_000, 200)]);
         w.reset();
         assert_eq!(w.len(), 0);
+        assert!(w.observed_admission(10_000).is_none());
+        assert_eq!(w.worst_overhead_us(), 0);
         assert!(w.admits(1_000, 2_000, 10_000, policy(250, 1)).is_none());
     }
 
@@ -795,9 +1076,10 @@ mod tests {
 
     #[test]
     fn the_excess_sums_every_overrun_rather_than_taking_the_largest_one() {
-        // Differential against "max drawdown". Under exchangeability the ORDER of the window
-        // carries no information, so the worst ordering -- every hard segment consecutive -- is the
-        // only one that may be assumed. Two segments 500 ms over each: 1000 ms, not 500 ms.
+        // Differential against "max drawdown". This function's stated replay contract discards
+        // observed order and asks for the worst permutation -- every hard segment consecutive.
+        // It is deliberately robust retrospective arithmetic, not an exchangeability claim or a
+        // forecast. Two segments 500 ms over each therefore contribute 1000 ms, not 500 ms.
         let p = policy(250, 1);
         let w = window(&[(1_000, 2_500_000), (1_000, 2_500_000), (1_000, 1_000_000)]);
         let a = w.admits(1_000, 2_000, 10_000, p).unwrap();
@@ -805,11 +1087,202 @@ mod tests {
     }
 
     #[test]
-    fn a_reserve_exactly_covering_the_excess_survives_and_one_millisecond_less_does_not() {
+    fn a_reserve_exactly_covering_the_runway_survives_and_one_millisecond_less_does_not() {
         let p = policy(250, 1);
         let w = window(&[(1_000, 2_500_000), (1_000, 2_500_000), (1_000, 1_000_000)]);
-        assert!(w.admits(1_000, 2_000, 1_000, p).unwrap().survivable);
-        assert!(!w.admits(1_000, 2_000, 999, p).unwrap().survivable);
+        let a = w.admits(1_000, 2_000, 3_000, p).unwrap();
+        assert_eq!((a.excess_us, a.runway_us), (1_000_000, 3_000_000));
+        assert!(a.survivable);
+        assert!(!w.admits(1_000, 2_000, 2_999, p).unwrap().survivable);
+    }
+
+    #[test]
+    fn a_realtime_acquisition_still_needs_runway_until_its_media_is_credited() {
+        let p = policy(250, 1);
+        let w = window(&[(1_000, 2_000_000); 3]);
+        let a = w.admits(1_000, 2_000, 2_000, p).unwrap();
+        assert_eq!(a.excess_us, 0, "the long-run drift is exactly flat");
+        assert_eq!(
+            a.runway_us, 2_000_000,
+            "the first acquisition must still finish"
+        );
+        assert!(a.survivable);
+        assert!(!w.admits(1_000, 2_000, 1_999, p).unwrap().survivable);
+    }
+
+    #[test]
+    fn startup_runway_uses_the_finite_bag_before_the_admission_window_is_full() {
+        let p = policy(50, 1); // n=19; this bag deliberately has only two observations.
+        let mut w = AcquisitionWindow::default();
+        // Huge byte counts keep the candidate query below each observed object, so T is exactly
+        // the observed acquisition: 3s and 1s for two 2s media credits.
+        w.observe(10_000_000, 3_000_000, 3_000_000, 2_000);
+        w.observe(10_000_000, 1_000_000, 1_000_000, 2_000);
+        assert_eq!(
+            w.observed_runway_us(),
+            Some(3_000_000),
+            "1s accumulated excess + 2s terminal credit boundary",
+        );
+        assert!(w
+            .admits_candidate(8_000_000, Rung::P1080, 10_000, p)
+            .is_none());
+    }
+
+    #[test]
+    fn worst_permutation_replay_uses_every_observation_still_in_the_finite_bag() {
+        let p = policy(50, 1); // the old statistical window is 19 samples
+        assert_eq!(p.window_len(), 19);
+        let mut w = AcquisitionWindow::default();
+        // Put the expensive acquisition just outside that statistical suffix, but keep it inside
+        // the finite ring. The full-bag replay readout may not forget it merely because epsilon
+        // chose a different evidence length for a retired order-statistic diagnostic.
+        w.observe(1_000, 5_000_000, 5_000_000, 2_000);
+        for _ in 0..19 {
+            w.observe(1_000, 2_000_000, 2_000_000, 2_000);
+        }
+        assert_eq!(
+            w.observed_runway_us(),
+            Some(5_000_000),
+            "3s accumulated deficit plus the 2s completion boundary",
+        );
+    }
+
+    #[test]
+    fn live_episode_admission_retains_a_costly_first_acquisition_after_the_ring_wraps() {
+        let mut w = AcquisitionWindow::default();
+        // The first response costs 5 s for 2 s of media, including 4 s of fixed setup. Sixty-four
+        // cheap responses then wrap the diagnostic ring and used to erase every trace of that cost
+        // from the LIVE stress runway, reopening an upshift with only 1 s of rollback reserve.
+        w.observe(1_000, 5_000_000, 1_000_000, 2_000);
+        for _ in 0..WINDOW_CAPACITY {
+            w.observe(1_000, 1_000_000, 1_000_000, 2_000);
+        }
+
+        assert_eq!(
+            w.len(),
+            WINDOW_CAPACITY,
+            "the ordered-statistic ring stays bounded"
+        );
+        let admission = w
+            .observed_admission(i64::MAX / 1_000)
+            .expect("non-empty episode");
+        assert_eq!(admission.samples, WINDOW_CAPACITY + 1);
+        assert_eq!(
+            (admission.demand_us, admission.supply_us),
+            (69_000_000, 130_000_000)
+        );
+        assert_eq!(admission.excess_us, 3_000_000);
+        assert_eq!(admission.runway_us, 5_000_000);
+        assert_eq!(
+            (
+                w.observed_readout(5_000).have,
+                w.observed_readout(5_000).want
+            ),
+            (WINDOW_CAPACITY + 1, WINDOW_CAPACITY + 1),
+            "live telemetry reports the episode count, not the ring occupancy",
+        );
+        assert_eq!(
+            w.readout(1_000, 2_000, 5_000, policy(250, 1)).have,
+            WINDOW_CAPACITY,
+            "retired ordered statistics still report only their bounded ring",
+        );
+        assert_eq!(
+            w.observed_ordered_admission(i64::MAX / 1_000)
+                .unwrap()
+                .runway_us,
+            5_000_000,
+            "the chronological prefix certificate is episode-long too",
+        );
+        assert_eq!(w.worst_overhead_us(), 4_000_000);
+    }
+
+    #[test]
+    fn finite_episode_summaries_compose_associatively_with_every_admission_term() {
+        let summary = |acquisition_us, media_duration_ms, overhead_us| {
+            AdmissionSummary::from_sample(Acquisition {
+                bytes: 1,
+                acquisition_us,
+                media_duration_ms,
+                overhead_us,
+            })
+        };
+        let a = summary(3_000_000, 2_000, 1_000_000);
+        let b = summary(1_000_000, 2_000, 200_000);
+        let c = summary(4_000_000, 3_000, 2_000_000);
+
+        let left_grouped = a.combine(b).combine(c);
+        let right_grouped = a.combine(b.combine(c));
+        assert_eq!(left_grouped, right_grouped);
+        assert_eq!(left_grouped.n, 3);
+        assert_eq!(left_grouped.sum_acquisition_us, 8_000_000);
+        assert_eq!(left_grouped.sum_duration_us, 7_000_000);
+        assert_eq!(left_grouped.delta_us, 1_000_000);
+        assert_eq!(left_grouped.max_prefix_runway_us, 4_000_000);
+        assert_eq!(left_grouped.positive_slack_sum_us, 2_000_000);
+        assert_eq!(left_grouped.max_capped_delivery_us, 3_000_000);
+        assert_eq!(left_grouped.sample_overhead_max_us, 2_000_000);
+        assert_eq!(left_grouped.stress_runway_us(), Some(5_000_000));
+    }
+
+    #[test]
+    fn overflowing_equal_sums_cannot_silently_admit_an_upgrade() {
+        let mut w = AcquisitionWindow::default();
+        // Each sample is exactly real-time and individually representable. Their equal totals are
+        // not: independently saturating both sums at i64::MAX makes `demand <= supply` true and
+        // would admit with this reserve. The checked episode summary must poison that verdict.
+        let duration_ms = 4_700_000_000_000_000_i64;
+        let acquisition_us = u64::try_from(duration_ms.checked_mul(1_000).unwrap()).unwrap();
+        for _ in 0..2 {
+            w.observe(1, acquisition_us, acquisition_us, duration_ms);
+        }
+
+        assert!(w.summary.overflowed);
+        let stress = w.observed_admission(duration_ms).unwrap();
+        let ordered = w.observed_ordered_admission(duration_ms).unwrap();
+        assert!(!stress.admitted(), "overflow is not an upgrade certificate");
+        assert!(
+            !ordered.admitted(),
+            "overflow is not a stay certificate either"
+        );
+        assert!(!stress.sustainable && !stress.survivable);
+    }
+
+    #[test]
+    fn worst_permutation_replay_can_grow_while_the_observed_order_is_sustainable() {
+        let mut w = AcquisitionWindow::default();
+        for _ in 0..4 {
+            w.observe(1_000, 2_500_000, 2_500_000, 2_000);
+            w.observe(1_000, 500_000, 500_000, 2_000);
+        }
+        let admission = w
+            .observed_admission(i64::MAX / 1_000)
+            .expect("non-empty bag");
+        assert!(
+            admission.sustainable,
+            "each pair acquires 3s and credits 4s"
+        );
+        assert_eq!(
+            admission.runway_us, 4_000_000,
+            "the replay deliberately groups four 500ms deficits before a 2s terminal cost",
+        );
+        // The observed alternating order itself needs only 2.5s. This difference is the reason
+        // R_s is a stress certificate and must never be a static mid-acquisition pause arm.
+    }
+
+    #[test]
+    fn every_observation_contributes_its_own_media_duration() {
+        let p = policy(250, 1);
+        let mut w = AcquisitionWindow::default();
+        w.observe(1_000, 2_000_000, 2_000_000, 1_000);
+        w.observe(1_000, 2_000_000, 2_000_000, 2_000);
+        w.observe(1_000, 3_000_000, 3_000_000, 3_000);
+        let a = w.admits(1_000, 99_000, 10_000, p).unwrap();
+        assert_eq!(
+            a.supply_us, 6_000_000,
+            "1s + 2s + 3s, not n times the caller's D"
+        );
+        assert_eq!(a.demand_us, 7_000_000);
+        assert!(!a.sustainable);
     }
 
     #[test]
@@ -851,10 +1324,10 @@ mod tests {
     }
 
     #[test]
-    fn the_window_survives_a_rung_commit_because_the_bound_transfers_by_bytes() {
-        // The design claim the transfer form exists for: a sample taken at one rung is still
-        // evidence about another. Nothing here resets, and the verdict after a size change rests
-        // on all three samples rather than on however many arrived since the commit.
+    fn the_retired_transfer_form_can_evaluate_a_cross_size_counterfactual() {
+        // Historical/offline property only: the transferred-byte formula can ask how the same bag
+        // prices a larger query. The live controller resets at an actuator commit and never uses
+        // this result as new-rung evidence.
         let p = policy(250, 1);
         let w = window(&[(500, 500_000), (500, 500_000), (2_000, 1_900_000)]);
         let a = w.admits(2_000, 2_000, 10_000, p).unwrap();
@@ -866,9 +1339,9 @@ mod tests {
     }
 
     #[test]
-    fn the_readout_reports_a_filling_window_as_filling_rather_than_as_a_refusal() {
-        // `have < want` is the ordinary state for the first n segments of every playback. A
-        // read-out that renders it as `refuse` would make every startup look like a failure.
+    fn the_retired_order_stat_readout_reports_filling_rather_than_refusal() {
+        // `have < want` belongs to the retired fixed-length readout. It remains parseable for the
+        // historical corpus and must not masquerade as a physical refusal.
         let p = policy(250, 1);
         let r = window(&[(1_000, 100)]).readout(1_000, 2_000, 10_000, p);
         assert_eq!((r.have, r.want), (1, 3));
@@ -887,15 +1360,20 @@ mod tests {
     // this line on a television and the harness parses it on a Mac, and until this contract existed
     // a drift between them was a silent "no samples" — which reads exactly like a total regression.
 
-    /// Canonical full verdict. Read by `tests/test_harness.py`; keep the marker comment.
+    /// Canonical retired order-stat verdict. Read by `tests/test_harness.py`; keep the marker.
     const WIRE_ADMIT: &str = // wire-example
         "abr: window current=4000kbps verdict=admit have=3/3 eps=250pm clamp=0 bound=1000ms \
-         demand=2600ms supply=6000ms excess=0ms sus=1 sur=1 reset=0 bytes=1000 dur=2000ms";
+         demand=2600ms supply=6000ms excess=0ms runway=1000ms sus=1 sur=1 reset=0 bytes=1000 dur=2000ms";
 
-    /// Canonical filling verdict — every uncomputed number is `-1`, never `0`.
+    /// Canonical retired filling verdict — every uncomputed number is `-1`, never `0`.
     const WIRE_FILLING: &str = // wire-example
         "abr: window current=720kbps verdict=filling have=1/3 eps=250pm clamp=0 bound=-1ms \
-         demand=-1ms supply=-1ms excess=-1ms sus=0 sur=0 reset=2 bytes=500 dur=2000ms";
+         demand=-1ms supply=-1ms excess=-1ms runway=-1ms sus=0 sur=0 reset=2 bytes=500 dur=2000ms";
+
+    /// Canonical live exact finite-bag verdict.
+    const WIRE_LIVE_EXACT: &str = // wire-example
+        "abr: window current=4000kbps verdict=admit have=1/1 eps=0pm clamp=0 bound=-1ms \
+         demand=1000ms supply=2000ms excess=0ms runway=1000ms sus=1 sur=1 reset=0 bytes=1000 dur=2000ms";
 
     #[test]
     fn the_logged_line_is_the_one_the_harness_regex_was_written_against() {
@@ -905,6 +1383,15 @@ mod tests {
             w.readout(1_000, 2_000, 10_000, p)
                 .log_line(4_000, 1_000, 2_000),
             WIRE_ADMIT
+        );
+    }
+
+    #[test]
+    fn the_live_exact_line_is_pinned_beside_the_harness_regex() {
+        let w = window(&[(1_000, 1_000_000)]);
+        assert_eq!(
+            w.observed_readout(1_000).log_line(4_000, 1_000, 2_000),
+            WIRE_LIVE_EXACT,
         );
     }
 
@@ -920,7 +1407,7 @@ mod tests {
         let mut w = window(&[(500, 400_000), (500, 400_000)]);
         w.reset();
         w.reset();
-        w.observe(500, 400_000);
+        w.observe(500, 400_000, 400_000, 2_000);
         assert_eq!(
             w.readout(500, 2_000, 10_000, p).log_line(720, 500, 2_000),
             WIRE_FILLING
@@ -935,7 +1422,7 @@ mod tests {
         assert_eq!(w.readout(1_000, 2_000, 0, policy(250, 1)).resets, 0);
         w.reset();
         w.reset();
-        w.observe(1_000, 300);
+        w.observe(1_000, 300, 300, 2_000);
         let r = w.readout(1_000, 2_000, 0, policy(250, 1));
         assert_eq!(
             (r.resets, r.have),

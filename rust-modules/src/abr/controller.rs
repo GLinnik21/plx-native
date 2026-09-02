@@ -7,6 +7,7 @@ pub(crate) enum Direction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // retired reason codes remain in the diagnostics wire enum
 pub(crate) enum HlsReason {
     SafeBudgetIncrease,
     UnsafeCurrentState,
@@ -23,40 +24,27 @@ pub(crate) enum HlsReason {
     /// cross-referencing `current=` against the ladder floor by hand — on the one state where the
     /// controller has exhausted everything it can do and the picture is about to stop.
     LadderFloor,
-    /// **The starvation horizon fired.** `T = B*R/(R - C) <= starvation_fallback_secs`: at the
-    /// measured capacity, the reserve runs out inside the fallback window.
-    ///
-    /// It is a separate code from [`UnsafeCurrentState`](Self::UnsafeCurrentState) because the two
-    /// answer different questions and can disagree. That one is `immediate_network < requirement`
-    /// -- a rate comparison with no reserve in it, which fires on a 1% deficit against a full
-    /// buffer. This one is the deadline: how long the do-nothing path has left. A log carrying
-    /// only the first cannot tell a rung that is slightly too dear from one that is about to
-    /// stop.
+    /// Retired HLS reason retained in the diagnostics wire vocabulary. HLS eviction now uses the
+    /// exact finite-bag conservation/runway test; starvation horizons remain on the Original and
+    /// utility telemetry paths.
     StarvationHorizon,
-    /// **The evidence supported a climb and N11's backoff was still holding it.**
-    ///
-    /// The one guard state on the UP path that is worth a code of its own, because it is the only
-    /// one that says "yes, and not yet". `dwell=` on the same line reports the OTHER guard, which
-    /// needs no code: a dwell that is holding returns before any target is selected, so there is
-    /// no rung to name. This one has a rung, has selected it, and is refusing it.
+    /// Every feasible higher rung has a failure certificate that the current exact exploration
+    /// surplus and live delivery distribution cannot release, or one transaction exhausted the
+    /// common budget available to every quality excitation without producing an ordinal response
+    /// endpoint. No wall-clock dwell exists; only strictly more measured surplus, confidence-
+    /// separated service evidence, or a new controller can change the frontier.
     RejectBackoff,
-    /// **Nothing above the current rung is sustainable.** The two-constraint admission rule
-    /// (`best_sustainable`) found no candidate the network AND the server could both carry, or
-    /// found one at or below where we already are.
-    ///
-    /// Distinct from [`ProductionConstraint`](Self::ProductionConstraint), which is a verdict on
-    /// the CURRENT rung: this one says the search for a better rung came back empty, which on a
-    /// fast link with a full reserve is the interesting case rather than the boring one.
-    NoSustainableTarget,
-    /// **A target was selected and the EVIDENCE could not carry it** — `largest_admissible`
-    /// refused every rung above the current one, because the acquisition window cannot support an
-    /// upshift of that size at the confidence the rule requires.
-    ///
-    /// This is the exit that reads most like a stuck controller from outside: budget, reserve,
-    /// risk and production all look healthy and nothing moves. Naming it is the difference
-    /// between "the link is fine and the client is broken" and "the client has not yet earned the
-    /// climb."
+    /// The finite bag at the current operating point is not sustainable, or the playable reserve
+    /// contains no surplus above its exact rollback runway.  A smaller response can never veto a
+    /// larger request by pretending to measure unused path capacity; this reason says only that
+    /// there is currently no physically disposable reserve with which to perform that request.
     EvidenceWindow,
+    /// A fetch was abandoned at an observed terminal reserve boundary or at its transaction's
+    /// explicit deadline. Its prefix is censored: it says that this acquisition did not finish
+    /// before that boundary, not that the prefix rate is the path capacity. Roll back to the last
+    /// working actuator (or one rung when there is no transaction to undo) without feeding that
+    /// prefix to either estimator.
+    DeadlineRollback,
     /// **The reserve is not knowable on this sample**, so there is nothing to decide against —
     /// `buffered_ms()` is `None` for exactly one situation, an A/V session whose audio lane has
     /// produced no timestamp since the open or the seek.
@@ -65,10 +53,13 @@ pub(crate) enum HlsReason {
     /// it is worth a code because it is otherwise indistinguishable on the line from a healthy
     /// segment: the estimators have all taken the sample, so every other field looks normal.
     ReserveUnknown,
-    /// **Already on the best rung the budget admits.** Not a constraint and not a refusal — the
-    /// controller is doing the right thing and had no code for saying so, which made a healthy
-    /// ceiling indistinguishable from the two above.
+    /// No technically feasible rung exists above the current actuator.
     AtBestRung,
+    /// The current actuator is already the largest request, but PMS returned a response whose
+    /// decoded geometry is provably below that request/source.  It remains refreshable as the
+    /// same actuator after strictly stronger completed-service evidence; the request ceiling is
+    /// not promoted into a claim about delivered quality.
+    ResponseLimited,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,10 +67,30 @@ pub(crate) enum DecisionReason {
     Hls(HlsReason),
 }
 
-/// The whole basis of one steady-state decision, for the event log. Every field here was an input
-/// to the decision published beside it — which is the property that makes the line worth reading
-/// six weeks later, and the reason it is assembled by the controller rather than re-derived at the
-/// log site from whatever happened to be reachable.
+/// Classification of the next higher-rung HLS excitation at the *currently observable* disposable
+/// budget.
+///
+/// This is deliberately a state, rather than a boolean assembled independently by the HLS and
+/// Original controllers.  A failure without an ordinal response endpoint owns one common budget
+/// frontier: while it is active, every otherwise-untested higher request is blocked by the same
+/// physical experiment. Treating only the per-rung certificates as "exhausted" made the HLS
+/// controller correctly hold while the Original controller incorrectly waited for another HLS
+/// action which the common frontier forbade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsExplorationState {
+    /// At least one higher HLS request has no active certificate at this budget.
+    Open,
+    /// One censored/response-unchanged transaction blocks every higher HLS request until measured
+    /// disposable reserve grows strictly beyond the budget it consumed.
+    CommonBudgetBlocked,
+    /// No common block exists, but every feasible higher request is either absent or carries its
+    /// own unreleased certificate.  This includes the ordinary actuator ceiling.
+    PerRungExhausted,
+}
+
+/// One coherent controller snapshot for the event log. `window`, `pending` and `reason` carry the
+/// live finite-bag decision. Delivery/production/risk remain alongside them for Original-mode
+/// comparison, bootstrap carry-over and diagnostics; they are not passive HLS capacity ceilings.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ControllerTelemetry {
     pub(crate) current: Rung,
@@ -88,9 +99,9 @@ pub(crate) struct ControllerTelemetry {
     /// line. `risk.starvation_seconds` beside it is the same formula on the conservative rate and
     /// is a planning quantity; this is the one the downshift trigger reads.
     pub(crate) emergency_horizon_secs: Option<u32>,
-    /// What the model would pick for this link RIGHT NOW, ignoring the hysteresis that keeps the
-    /// current rung. `None` while nothing is sustainable (a cold start, or a link that cannot
-    /// carry the bottom of the ladder). The read-out's "current / optimal" pair.
+    /// Retained for the diagnostics ABI and always `None` in the exact controller. A demand-capped
+    /// response cannot publish a passive optimum above itself; the next real candidate is the
+    /// experiment that discovers another operating point.
     pub(crate) optimal: Option<HlsCandidate>,
     pub(crate) delivery: CapacityEstimate,
     pub(crate) production: ProductionEstimate,
@@ -98,27 +109,23 @@ pub(crate) struct ControllerTelemetry {
     pub(crate) risk: CandidateRisk,
     pub(crate) pending: Option<Proposal>,
     pub(crate) reason: Option<DecisionReason>,
-    /// **The §4 admission rule's shadow verdict on the current rung.** Decides nothing; it is here
-    /// so the rule can be graded against the estimators beside it on a device before anything is
-    /// moved onto it.
+    /// Exact finite-bag sustainability/runway readout for the current rung.
     pub(crate) window: AdmissionReadout,
-    /// **The two operational guards that can hold an upshift back** (N10, N11), and the two
-    /// estimator inputs that survived beside them. J5's three counters are gone; what replaced
-    /// them is wall clock and recorded evidence, and both are reported here for the same reason
-    /// the counters were: a log has to distinguish "the evidence did not support a climb" from
-    /// "the evidence supported it and a guard was still holding".
+    /// Compatibility fields for the diagnostic wire: `dwell_ms` is always zero, `blocked_kbps`
+    /// reports the active per-rung failure frontier, and the remaining values are observational.
     pub(crate) gates: GateCounters,
 }
 
 /// Guard state, for the log line only. **Nothing reads this to decide anything.**
 ///
-/// It replaced J5's `stable`/`cooldown`/`on_rung`/`draining` quartet when I6 replaced the counters
-/// those two reported. `on_rung` and `draining` survive unchanged — both are still real state,
-/// and neither was ever a policy counter — while the two that WERE policy are now reported as
-/// what they became: a wall-clock debt and a named refusal.
+/// `on_rung` and `draining` are observational state. `dwell_ms` stays zero for wire compatibility;
+/// `blocked_kbps` names the highest failure certificate that the current finite-bag surplus has
+/// not released.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GateCounters {
-    /// Wall milliseconds still owed before the UP path may propose again (N10). `0` is free.
+    /// Retained in the diagnostics wire format. Exploration has no wall-clock dwell, so this is
+    /// always zero; the observable surplus above the larger of the replay runway and rollback
+    /// media horizon is the only release clock.
     pub(crate) dwell_ms: u64,
     /// The rung the reject/backoff guard is currently refusing, in kbps (N11). `0` is nothing.
     pub(crate) blocked_kbps: u32,
@@ -146,61 +153,105 @@ pub(crate) struct GateCounters {
 /// about the SESSION, and the transaction that follows them starts from different facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RejectCause {
-    /// The RUNG itself failed — no playlist, no segment, a missed deadline, PMS refusing this
-    /// rung's ceiling (`route::PrimeRefusal::Rung`, and only that one of `prime`'s four exits), a
-    /// production ratio or acquisition window that would not admit it. Arms the backoff, because
-    /// re-proposing the same rung against the same evidence buys the same answer at the same price
-    /// — and arms it **only on an UP proposal**, because the block prices repeating a spend the
-    /// controller chose to make, which a downshift is not.
+    /// The transaction exhausted its absolute deadline before producing a complete candidate
+    /// media quantum. This is a common right-censored observation, not an ordinal response-size
+    /// endpoint: it proves only that the serial decision/start/playlist/body path did not finish
+    /// inside the actually executed budget. No quality actuator may retry at that budget or less.
+    /// After a larger budget releases that hard block, the failed actuator remains an operational
+    /// search endpoint so an epsilon of refill cannot buy the identical maximum again; this is a
+    /// scheduling fact, not a claim that a response size was observed.
+    Censored,
+    /// A complete candidate was observed but could not be funded from the post-transaction
+    /// reserve. Its output is known, so this remains actuator-specific ordinal evidence; a lower
+    /// response may still fit even when this one does not. The same actuator needs a strictly
+    /// larger exploration budget.
     Candidate,
+    /// A completed candidate acquired more slowly than it produced media (`A > D`). More reserve
+    /// can postpone the loss but cannot make this completed operating point sustainable in the
+    /// measured service regime. This is retained separately from a deadline certificate so a
+    /// larger buffer cannot release it. A confidence-separated current-rung delivery regime can:
+    /// that is new physical evidence about end-to-end service, not time or reserve pretending the
+    /// old observation changed.
+    CompletedUnsustainable,
+    /// A typed fact about this exact actuator that more reserve cannot change for this controller
+    /// scope, such as PMS refusing this ceiling. It remains excluded until a new controller is
+    /// built for a new route/session.
+    Structural,
+    /// A fresh session returned no Pareto quality gain over the response already playing. This is
+    /// not a structural or ordinal fact about the requested actuator: PMS answered with a
+    /// different, demand-capped response. The completed transaction gives an exact common budget
+    /// endpoint, so no quality request runs again until disposable reserve is strictly larger.
+    /// Requiring the small response to prove a higher hidden service rate would make a demand-
+    /// capped PMS response absorbing; trying lower request ceilings would merely churn encoders
+    /// without any response-size evidence that orders those requests.
+    ResponseUnchanged,
+    /// The decoded raster exceeded this actuator's bounding box. Every smaller box is at least as
+    /// restrictive, so this structural fact masks this rung and all rungs below it; a larger box
+    /// remains eligible.
+    StructuralAtOrBelow,
     /// The transaction was abandoned for a reason that says nothing about the rung: the origin
     /// moved, the reserve stopped being readable (a seek), or the session moved underneath the
-    /// prime (`route::PrimeRefusal::Session` — the encoder changed, the client is gone, or the
-    /// control-plane call never reached the server). Does not arm the backoff.
+    /// prime (`route::PrimeRefusal::Session` / `Control` — the encoder changed, the client is gone,
+    /// or the control-plane call never answered). Does not arm the backoff.
     Circumstance,
 }
 
-/// **What the last candidate reject cost, and the two independent things that release it** (N11).
-///
-/// Before this, `reject` recorded nothing at all: it set `cooldown = 1`, and the decrement runs
-/// *before* the check, so `K = 1` has never blocked a single segment. Any stateless cost therefore
-/// re-proposed on the very next sample, and each failed prime costs `E_tx` of unrefilled reserve —
-/// a self-inflicted drain that repeats until something else moves.
-///
-/// **It refuses every upshift, not only the rung that failed, and that is a correction to N11 as
-/// written.** N11 says "refuse to re-prime THAT rung", and the reason it gives is affordability:
-/// "each failed prime costs ~4.6 s of unrefilled reserve against ~3.6 s of refill". Those two do
-/// not match, and the test written to pin the guard is what exposed it — after a reject the
-/// controller does not re-propose the same rung at all; the budget has moved, so it proposes a
-/// NEIGHBOURING one, and a rung-keyed guard waves that through while the reserve pays for it just
-/// the same. `E_tx` is spent by the ATTEMPT. The rung is recorded because the log needs it and
-/// because the evidence test below is about it; it is not what the refusal is keyed on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RejectBlock {
-    rung: Rung,
-    /// **The clock release**, at `now + refill_time(E_tx)`: the wall time this link needs to earn
-    /// back what the failed attempt spent. `None` when the link had no surplus at reject time —
-    /// then no amount of waiting repays it and only new evidence may release the block, which is
-    /// [`crate::abr::plant::refill_time_ms`]'s `None` carried through rather than papered over.
-    release_at_ms: Option<u64>,
-    /// **The evidence release**, and it is not a chosen threshold. The failing budget was
-    /// `slow * (1000 - unc)/1000`; the estimate's own uncertainty band is `slow * unc/1000`; so a
-    /// budget that has moved past the whole band is a budget above `slow` — the raw rate the
-    /// failing estimate believed. "Materially" is therefore the estimator's own statement of what
-    /// it did not know, and no number is introduced to express it.
-    evidence_kbps: u32,
+/// Monotone failure memory for one actuator. Completed candidate evidence is ordered by response
+/// size: a later, cheaper failure must not erase the larger budget already spent on a higher rung.
+/// Transactions with no ordinal response endpoint have an additional common frontier on
+/// [`Controller`]: either no response completed, or PMS completed a no-gain object unrelated to
+/// the requested ceiling. The array is indexed by [`Rung::index`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FailureCertificate {
+    /// Largest end-to-end exploration budget under which this rung failed or completed unfunded.
+    /// Updates take `max`; the same rung is eligible again only at a strictly larger observable
+    /// surplus.
+    deadline_budget_ms: Option<i64>,
+    /// This actuator supplied an upper scheduling endpoint even after a larger reserve releases
+    /// its hard budget block.  A completed candidate does so directly; a deadline-censored
+    /// candidate does so operationally because repeating that same largest transaction on every
+    /// epsilon of refill is the observed livelock.  `ResponseUnchanged` deliberately does not:
+    /// PMS returned an unrelated demand-capped response which cannot order request actuators.
+    service_endpoint: bool,
+    /// Recent current-rung delivery estimate when a completed `A > D` observation was made. The
+    /// certificate blocks until the live distribution's conservative bound is strictly above
+    /// this old-regime estimate. A larger reserve or elapsed wall time cannot release it.
+    completed_unsustainable_hls_fast_kbps: Option<u32>,
+    /// A typed session-scoped refusal that reserve cannot cure.
+    structural: bool,
 }
 
-impl RejectBlock {
-    /// Is this block still refusing? **Both conditions must hold**, and either one alone releases
-    /// it, because they are two independent sufficient reasons to try again: the link has repaid
-    /// what the attempt spent, or the evidence has moved so far that the next attempt is not the
-    /// same attempt. `release_at_ms == None` is a link with no measured surplus at reject time —
-    /// nothing is ever repaid there, so only the evidence can release it, which is exactly what
-    /// this expression says without a special case.
-    fn holds(&self, now_ms: u64, safe_budget_kbps: u32) -> bool {
-        let unpaid = self.release_at_ms.is_none_or(|at| now_ms < at);
-        unpaid && safe_budget_kbps <= self.evidence_kbps
+impl FailureCertificate {
+    fn completed_unsustainable_blocks(self, delivery: &CapacityEstimate) -> bool {
+        self.completed_unsustainable_hls_fast_kbps
+            .is_some_and(|old_regime| delivery.conservative_kbps() <= old_regime)
+    }
+
+    fn blocks(self, exploration_budget_ms: Option<i64>, delivery: &CapacityEstimate) -> bool {
+        self.structural
+            || self.completed_unsustainable_blocks(delivery)
+            || self
+                .deadline_budget_ms
+                .is_some_and(|failed| exploration_budget_ms.is_none_or(|budget| budget <= failed))
+    }
+
+    /// Whether this response-size experiment supplies an upper endpoint for the next ordinal
+    /// search. Structural refusals deliberately do not: a codec/session refusal at one actuator
+    /// says nothing about a larger bounding box, whereas a service failure tells the scheduler
+    /// where splitting the still-unclassified response-size interval is useful.  Unlike
+    /// [`Self::blocks`], a deadline endpoint remains useful after a larger reserve releases the
+    /// hard retry block: the extra millisecond proves the experiment is affordable again, not
+    /// that repeating the same largest response is the most informative next experiment.
+    ///
+    /// This is a scheduling relation, not a theorem that every larger future response must fail.
+    /// Each rung remains independently eligible under [`Self::blocks`], and a strictly larger
+    /// physical budget releases a censored endpoint exactly as before.
+    fn service_blocks(
+        self,
+        _exploration_budget_ms: Option<i64>,
+        delivery: &CapacityEstimate,
+    ) -> bool {
+        self.completed_unsustainable_blocks(delivery) || self.service_endpoint
     }
 }
 
@@ -216,23 +267,46 @@ pub(crate) enum Decision {
     Prime(Proposal),
 }
 
-/// Integer-only estimator and transaction state. Current-session samples decide whether to
-/// propose. Candidate-session measurements decide whether that proposal may commit.
-/// **The budget the upshift arm selects against**, the safe budget less its named admission
-/// headroom.
+/// What the candidate transaction is required to preserve while it runs.
 ///
-/// One expression, because two readers must agree: `Controller::observe`'s upshift arm CHOOSES
-/// with it, and `Controller::telemetry`'s `optimal` REPORTS what that choice would be. The
-/// telemetry comment claims to make "the SAME selection", which was true only by transcription —
-/// so the panel could advertise an operating point the controller would not take, and the event
-/// log would not say so.
-fn upshift_admission_budget(safe_budget_kbps: u32, policy: &AbrPolicy) -> u32 {
-    safe_budget_kbps.saturating_mul(policy.upshift_admission_headroom_pm) / 1_000
+/// This is controller intent, not a reconstruction from diagnostics. `TerminalFloor` is issued
+/// only by the exact `B<R_o` / `!survivable` branch, together with `Down` to the feasible ladder
+/// floor. It does not predict that the next acquisition must fail; it records that the finite bag
+/// no longer supplies the rollback guarantee under which a reserve deadline is useful. The policy
+/// belongs to one pending proposal and is cleared with that proposal on commit, reject or session
+/// cancellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReservePolicy {
+    Preserve,
+    TerminalFloor,
 }
 
+/// Exact result of grading the candidate's own completed acquisition. Kept richer than a boolean
+/// so the transaction can retain only the kind of evidence the observation actually supplies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CandidateVerdict {
+    Ready,
+    /// The first complete object of a fresh encoder contains the one-time decision/session/JIT
+    /// setup leg.  It acquired slower than media time, but the post-object reserve still funds
+    /// that exact acquisition.  This is neither acceptance nor an `A>D` steady-state refusal: it
+    /// authorizes one ordinary object from the encoder that is now running.  Only the caller that
+    /// structurally knows it is holding the session-boundary object can produce this verdict.
+    SetupBearing,
+    Incomplete,
+    ReserveUnknown,
+    /// `A > D`: this operating point loses playable media on every such acquisition.
+    Unsustainable,
+    /// `A <= D`, but the post-transaction reserve is shorter than `A`; more measured surplus can
+    /// make the same experiment fundable.
+    Unfunded,
+}
+
+/// Integer-only estimator and transaction state. Current-session samples decide whether to
+/// propose. Candidate-session measurements decide whether that proposal may commit.
 pub(crate) struct Controller {
     pub(super) current: Rung,
     pending: Option<Proposal>,
+    pending_reserve_policy: Option<ReservePolicy>,
     delivery: CapacityEstimate,
     production: ProductionEstimate,
     buffer: BufferEstimate,
@@ -244,26 +318,42 @@ pub(crate) struct Controller {
     /// cycled, running slow exactly when the reserve is full and the byte cap is idling the demux
     /// worker, which is the substitution N13 identifies as a defect elsewhere.
     now_ms: u64,
-    /// **The instant the dwell guard EXPIRES, fixed when it is armed** (N10).
+    /// Wall-clock instant of the last readable reserve observation.  A reserve derivative is
+    /// `delta B / delta wall`; media duration is the credit delivered by a completed segment, not
+    /// an elapsed-time measurement.
+    last_buffer_observation_ms: Option<u64>,
+    /// Exact duration of the NEXT object on the still-live current cursor, whose completion must
+    /// remain funded if an experiment rolls back. This is deliberately not the duration of the
+    /// object which just completed: HLS permits variable EXTINF durations, so the previous `D`
+    /// cannot certify the next response. `None` means the cursor has no next object (end of
+    /// stream), which authorizes no new quality/source experiment.
+    rollback_media_ms: Option<u32>,
+    /// Per-rung, monotone failure frontier. A blocked top rung never masks an eligible lower one.
+    failures: [FailureCertificate; LADDER.len()],
+    /// Largest common refill frontier established by a quality transaction which did not produce
+    /// an ordinal response endpoint: `E_f`, the exact disposable budget armed for the attempt.
+    /// The transaction was either right-censored before
+    /// complete media or PMS completed a demand-capped response with no Pareto gain. Until the
+    /// live operating point exposes a strictly larger budget, *no other upshift actuator* is
+    /// eligible; changing the requested rung is not new evidence in either case.
     ///
-    /// It replaced `cooldown`, which counted SEGMENTS — and a segment is `bytes / C` of wall time,
-    /// so an eight-segment guard was an unbounded amount of wall clock that got longer exactly as
-    /// the link got worse. Any commit arms it, because any commit starts a PMS encoder session and
-    /// this is an encoder-lifecycle guard; only the UP path is blocked by it, because a downshift
-    /// is a recovery action and rate-limiting recovery is how a stall becomes a policy.
-    ///
-    /// It holds the deadline rather than the commit instant because `E_tx` is a function of the
-    /// segment's media duration, and a guard's length must be decided by the transaction that
-    /// armed it. Recomputing it each sample from the CURRENT `last_segment_ms` let a longer
-    /// segment retroactively extend a running dwell — and HLS segment durations come off
-    /// `#EXTINF`, i.e. a request PMS may answer differently at any point.
-    dwell_until_ms: Option<u64>,
-    /// The last observed segment's media duration, so `reject` can price `E_tx` without the sample
-    /// that is no longer in scope by then. Zero until the first `observe`, and a zero-duration
-    /// segment cannot arm a backoff, which is the correct reading of "no measurement".
-    last_segment_ms: i64,
-    /// **The reject/backoff guard's state** (N11). `None` is the ordinary case.
-    reject_block: Option<RejectBlock>,
+    /// This is separate from [`Self::failures`]. That array retains actuator-specific evidence
+    /// for search once a larger common budget exists; this frontier prevents untouched rungs from
+    /// laundering the same exhausted reserve into immediate PMS encoder churn.
+    common_budget_frontier_ms: Option<i64>,
+    /// Spendable reserve attached to the in-flight upshift. At rejection it becomes `E_f` in the
+    /// common refill frontier; the worker replaces the proposal-time value with the exact budget
+    /// it actually armed.
+    pending_exploration_budget_ms: i64,
+    /// The actuator displaced by the most recent upshift until the first ordinary live segment on
+    /// the new actuator completes.  An abandoned first live fetch rolls the transaction back here;
+    /// its censored prefix must not synthesize a fresh bitrate target.
+    rollback_rung: Option<Rung>,
+    /// Next actuator in an in-progress recovery descent. A failed rollback transaction is evidence
+    /// that the previously known-good actuator no longer repairs this service episode; the only
+    /// coefficient-free minimax target for time-to-picture is then the smallest feasible response.
+    /// A completed active segment ends the recovery episode.
+    recovery_target: Option<Rung>,
     last_reason: Option<DecisionReason>,
     last_safe_budget_kbps: u32,
     /// **The emergency deadline the last decision was taken against**, so the log carries the
@@ -280,19 +370,24 @@ pub(crate) struct Controller {
     last_emergency_horizon: Option<u32>,
     /// **Dev-only actuator pin — see [`Self::pinned_to`].** `None` in every production path.
     pin: Option<Rung>,
-    /// **The transferred acquisition window** (`abr/window.rs`, specification §2a/§4).
-    ///
-    /// **It DECIDES.** [`Self::candidate_ready`] admits an upshift only if this window admits the
-    /// candidate's worst-case byte count, and [`Self::largest_admissible`] will not propose one it
-    /// would refuse.
-    ///
-    /// It shipped observe-only and was graded that way first — 68 device lines, 0 disagreements
-    /// with the specification (`docs/measurements/j3a-window-shadow.md`) — before anything was
-    /// moved onto it. That ordering is the reason to trust it, not a description of what it does.
+    /// The finite episode of completed acquisitions at the current operating point. Its live
+    /// associative summary computes the replay boundaries and the surplus that may be spent on an
+    /// actual excitation; its bounded ring is diagnostic only. Neither is scaled into a claim
+    /// about the unused tail of a larger response.
     acquisitions: AcquisitionWindow,
     /// What the §4 rule WOULD have said about staying on the current rung, recomputed each sample.
     /// Read only by telemetry.
     last_window: AdmissionReadout,
+    /// The server response currently feeding the picture, separate from [`Self::current`], which
+    /// is only the actuator sent on the wire.  Conflating these two made a 22 Mbps request that
+    /// returned 979 kbps / 720p terminal at `AtBestRung`.
+    active_variant: Option<ObservedHlsVariant>,
+    /// Completed-service rate observed when this response first became active. It authorizes the
+    /// first fresh session at the same actuator only after the live conservative bound rises
+    /// strictly above the old response's evidence. If that fresh session completes unchanged,
+    /// the common disposable-budget frontier paces later retries; the demand-capped response is
+    /// not asked to identify dormant path capacity.
+    active_variant_evidence_kbps: Option<u32>,
 }
 
 impl Controller {
@@ -312,6 +407,7 @@ impl Controller {
         Self {
             current,
             pending: None,
+            pending_reserve_policy: None,
             delivery: prior.unwrap_or_default(),
             production: ProductionEstimate::default(),
             buffer: BufferEstimate::default(),
@@ -319,15 +415,21 @@ impl Controller {
             policy: AbrPolicy::measured(),
             samples_on_rung: 0,
             now_ms: 0,
-            dwell_until_ms: None,
-            last_segment_ms: 0,
-            reject_block: None,
+            last_buffer_observation_ms: None,
+            rollback_media_ms: None,
+            failures: [FailureCertificate::default(); LADDER.len()],
+            common_budget_frontier_ms: None,
+            pending_exploration_budget_ms: 0,
+            rollback_rung: None,
+            recovery_target: None,
             last_reason: None,
             last_safe_budget_kbps: 0,
             last_emergency_horizon: None,
             pin: None,
             acquisitions: AcquisitionWindow::default(),
             last_window: AdmissionReadout::default(),
+            active_variant: None,
+            active_variant_evidence_kbps: None,
         }
     }
 
@@ -352,6 +454,11 @@ impl Controller {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_pin(&mut self) {
+        self.pin = None;
+    }
+
     pub(crate) fn current(&self) -> Rung {
         self.current
     }
@@ -363,12 +470,9 @@ impl Controller {
 
     /// **Test-only: `observe` with the fixture wall clock advanced by one segment.**
     ///
-    /// `observe` takes absolute monotonic milliseconds (N10) and the fixtures in `tests.rs` are
-    /// written around one steady state: a stream that is keeping up delivers `d` of content every
-    /// `d` of wall clock. This advances the clock by exactly that and nothing else, so a test that
-    /// does not care about time does not have to invent a number — and, more importantly, cannot
-    /// silently leave the clock at zero, where the dwell deadline would never be reached and every
-    /// post-commit upshift would be blocked by a guard the test never meant to exercise.
+    /// `observe` takes absolute monotonic milliseconds and the fixtures in `tests.rs` are written
+    /// around one steady state: a stream that keeps up delivers `d` of content every `d` of wall
+    /// clock. This advances the clock by exactly that and nothing else.
     ///
     /// **A test about a wall-clock guard must call `observe` directly.** Those are the tests where
     /// the cadence IS the subject, and expressing it through this fixture would assert the fixture.
@@ -381,11 +485,8 @@ impl Controller {
     }
 
     /// The controller's own wall clock, for a test that must CONTINUE it rather than invent a
-    /// second origin. `observe_next` advances this by a segment per call, so by the time a fixture
-    /// has driven the acquisition window to its admitting length the clock is already tens of
-    /// seconds in; a test that then starts counting from 0 is not measuring the same timeline the
-    /// controller is, and `dwell_remaining_ms`' `saturating_sub` reads the difference as zero
-    /// elapsed until the second origin catches up.
+    /// second origin. `observe_next` advances this by a segment per call; a test that then starts
+    /// counting from zero would not be measuring the controller's timeline.
     #[cfg(test)]
     pub(crate) fn clock_ms(&self) -> u64 {
         self.now_ms
@@ -393,11 +494,45 @@ impl Controller {
 
     #[cfg(test)]
     pub(crate) fn window_len(&self) -> usize {
-        self.acquisitions.len()
+        self.acquisitions.episode_len()
     }
 
     pub(crate) fn catalog(&self) -> HlsActuatorCatalog {
         self.catalog
+    }
+
+    /// Attach the actual master/raster response to the request actuator that produced it. The
+    /// evidence value is the completed segment's body-service observation, not the requested or
+    /// declared bitrate. Repeated segments on the same response refine [`Self::delivery`] without
+    /// moving the release snapshot; only a new response starts a new evidence regime.
+    pub(crate) fn observe_active_variant(
+        &mut self,
+        variant: ObservedHlsVariant,
+        evidence_kbps: u32,
+    ) {
+        if self.active_variant == Some(variant) {
+            return;
+        }
+        self.active_variant = Some(variant);
+        self.active_variant_evidence_kbps = Some(evidence_kbps);
+    }
+
+    fn active_variant_needs_refresh(&self) -> bool {
+        self.active_variant.is_some_and(|variant| {
+            variant.definitively_underfills(self.current, self.catalog.source_raster())
+        })
+    }
+
+    fn active_variant_refresh_released(&self) -> bool {
+        self.active_variant_evidence_kbps
+            .is_some_and(|observed| self.delivery.conservative_kbps() > observed)
+    }
+
+    /// The worst fixed per-segment acquisition cost observed on this playback — see
+    /// [`AcquisitionWindow::worst_overhead_us`]. Read by the transaction that sets a candidate
+    /// warm-up deadline, which must cover it.
+    pub(crate) fn worst_overhead_us(&self) -> u64 {
+        self.acquisitions.worst_overhead_us()
     }
 
     pub(crate) fn delivery(&self) -> CapacityEstimate {
@@ -408,21 +543,181 @@ impl Controller {
         self.buffer
     }
 
+    /// Classify whether HLS has an informative higher-rung excitation at the physical exploration
+    /// budget available now.
+    ///
+    /// This is deliberately about the controller's measured failure frontier, not about whether
+    /// `current` happens to equal the catalog's largest request. PMS is free to map a larger
+    /// request to the same (or a worse) rendition. Such a completed transaction is correctly
+    /// rejected and can therefore never become `current`; requiring it to do so turns a valid
+    /// structural refusal into a permanent lock that also suppresses the independent direct-file
+    /// experiment.
+    pub(crate) fn hls_exploration_state(&self) -> HlsExplorationState {
+        let exploration_budget = self.exploration_budget_ms(self.buffer.buffered_ms);
+        if self.common_budget_blocks(exploration_budget) {
+            return HlsExplorationState::CommonBudgetBlocked;
+        }
+        if self
+            .catalog
+            .feasible()
+            .filter(|candidate| candidate.rung > self.current)
+            .any(|candidate| {
+                !self.failures[candidate.rung.index()].blocks(exploration_budget, &self.delivery)
+            })
+        {
+            HlsExplorationState::Open
+        } else {
+            HlsExplorationState::PerRungExhausted
+        }
+    }
+
+    /// Whether no informative higher-rung HLS excitation remains at the currently measured HLS
+    /// budget, leaving the source request eligible to be the remaining quality excitation. Kept
+    /// as the narrow predicate consumed by the independent Original utility gate; the higher-rung
+    /// classification lives in [`Self::hls_exploration_state`].
+    pub(crate) fn hls_frontier_exhausted(&self) -> bool {
+        self.hls_exploration_state() != HlsExplorationState::Open
+    }
+
+    /// Exact worst-permutation replay boundary for starting a paused HLS clock on the active
+    /// rendition. Unlike retired statistical admission this exists before `n` samples; it claims
+    /// only what the completed observations would cost to replay, not what an unseen draw will cost.
+    pub(crate) fn prime_runway_ms(&self) -> Option<i64> {
+        self.acquisitions
+            .observed_runway_us()
+            .map(|us| us / 1_000 + i64::from(us % 1_000 != 0))
+    }
+
+    /// Smallest feasible response below the active one, or the active one at the terminal point.
+    /// Recovery asks this by actuator order; it must never smuggle a demand-capped throughput
+    /// reading back into target selection.
+    fn recovery_floor(&self) -> Rung {
+        self.catalog
+            .feasible()
+            .filter(|candidate| candidate.rung < self.current)
+            .map(|candidate| candidate.rung)
+            .min()
+            .unwrap_or(self.current)
+    }
+
+    /// Highest lower actuator supported by the measurements this completed operating point made.
+    ///
+    /// The caller deliberately withholds this from both cases where another exploratory
+    /// transaction cannot be funded: an abandoned fetch has no completed media quantum or point
+    /// service observation, and a completed bag with `B` below its ordered runway cannot replay
+    /// even the chronology it observed. Their minimax answer remains
+    /// [`Self::recovery_floor`]. Here the current bag DID complete
+    /// and remains survivable, so conservative delivery and reserve refill are measured inputs.
+    /// Reusing their existing conjunction loses less picture without adding a threshold or
+    /// pretending the demand-capped sample measured unused capacity. The selected actuator is
+    /// still only a proposal; its own completed acquisition must validate before it can commit. If
+    /// the model supports no lower point, the floor remains the only bounded exit.
+    fn completed_recovery_target(&self, safe_budget_kbps: u32, buffered_ms: i64) -> Rung {
+        self.catalog
+            .feasible()
+            .filter(|candidate| candidate.rung < self.current)
+            .filter(|candidate| {
+                self.catalog.modeled_sustainable(
+                    *candidate,
+                    safe_budget_kbps,
+                    &self.policy,
+                    buffered_ms,
+                )
+            })
+            .max_by_key(|candidate| candidate.expected_wire_kbps)
+            .map(|candidate| candidate.rung)
+            .unwrap_or_else(|| self.recovery_floor())
+    }
+
+    /// Wall-clock budget an exploratory upshift may spend while the current picture keeps
+    /// running. After a failed experiment, let `L` be the reserve left for the ordinary current-
+    /// rung acquisition. Surviving any still-sustainable unseen response requires `L >= D`; after
+    /// it completes, `B' = L - A + D_next >= L`, so restoring the finite-bag stress boundary
+    /// requires `L >= R_s`. Both obligations are funded exactly by `L >= max(R_s,D_next)`, not by
+    /// adding them: they occur on opposite sides of the same media credit. `D_next` comes from the
+    /// rollback cursor's parsed playlist; no current-tier transfer rate predicts a larger response.
+    pub(crate) fn exploration_budget_ms(&self, reserve_ms: i64) -> Option<i64> {
+        self.exploration_budget_ms_for(reserve_ms, self.rollback_media_ms)
+    }
+
+    fn exploration_budget_ms_for(
+        &self,
+        reserve_ms: i64,
+        rollback_media_ms: Option<u32>,
+    ) -> Option<i64> {
+        let observed = self.acquisitions.observed_admission(reserve_ms)?;
+        if !observed.sustainable {
+            return None;
+        }
+        let runway_ms = observed.runway_us / 1_000 + i64::from(observed.runway_us % 1_000 != 0);
+        let rollback_media_ms = rollback_media_ms
+            .map(i64::from)
+            .filter(|duration| *duration > 0)?;
+        let rollback_reserve_ms = runway_ms.max(rollback_media_ms);
+        let budget = reserve_ms.saturating_sub(rollback_reserve_ms);
+        (budget > 0).then_some(budget)
+    }
+
+    /// Whether a transaction without an ordinal response endpoint still owns this common refill
+    /// frontier. Neither actuator order nor a different request ceiling can turn a budget which
+    /// has not restored the failed transaction's starting surplus into fresh physical evidence.
+    fn common_budget_blocks(&self, exploration_budget_ms: Option<i64>) -> bool {
+        self.common_budget_frontier_ms
+            .is_some_and(|failed| exploration_budget_ms.is_none_or(|budget| budget <= failed))
+    }
+
+    /// Replace the proposal-time surplus with the budget the worker actually armed after it
+    /// re-read the reserve. A rejection certificate must price the experiment that ran, not an
+    /// older, larger number observed before control-plane time elapsed.
+    pub(crate) fn set_executed_exploration_budget(
+        &mut self,
+        proposal: Proposal,
+        budget_ms: i64,
+    ) -> bool {
+        if self.pending != Some(proposal) || proposal.direction != Direction::Up || budget_ms <= 0 {
+            return false;
+        }
+        // The sample that selected the proposal and the worker's transaction re-read are
+        // separated by queue/feed and main-thread progress. A frontier released by the earlier
+        // reserve may be blocked again by the budget that can actually be armed. Authorizing it
+        // anyway buys the same failed rung with less reserve than it already exhausted — a
+        // time-of-check/time-of-use hole in the physical guard.
+        if self.common_budget_blocks(Some(budget_ms))
+            || self.failures[proposal.rung.index()].blocks(Some(budget_ms), &self.delivery)
+        {
+            self.pending = None;
+            self.pending_reserve_policy = None;
+            self.pending_exploration_budget_ms = 0;
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::RejectBackoff));
+            return false;
+        }
+        self.pending_exploration_budget_ms = budget_ms;
+        true
+    }
+
     /// A pause is wall-clock time with no measurement — the one gap where the estimate really has
     /// aged (backpressure is not: a full buffer stops the reader on purpose).
     pub(crate) fn on_resume(&mut self, paused_ms: u64) {
         self.delivery.age_ms(paused_ms, &self.policy);
         self.buffer = BufferEstimate::default();
+        self.last_buffer_observation_ms = None;
         // `samples_on_rung` describes uninterrupted time on this rung, and a pause ends that.
         self.samples_on_rung = 0;
-        // **The backoff block goes and the dwell instant stays, and the asymmetry is the whole
-        // argument for a wall clock.** The block's evidence release is keyed on the estimate
-        // `age_ms` has just widened, so the rate it recorded no longer describes anything; keeping
-        // it would refuse a rung on a comparison against a number that has been retracted. The
-        // dwell needs no such care — sixty seconds of pause really are sixty seconds during which
-        // no encoder was started, so the guard has genuinely expired, which is exactly what a
-        // segment counter could not represent.
-        self.reject_block = None;
+        // Keep candidate evidence. A pause opens an unmeasured era; it neither increases the
+        // exploration budget nor changes the requested operating point, so clearing a common
+        // failure here would make wall time alone retry the identical transaction.
+    }
+
+    /// Immutable reserve contract for this one in-flight proposal.
+    ///
+    /// `None` means the proposal is stale or belongs to another controller/session. The demux
+    /// worker captures the answer before it performs any control-plane I/O, so a later diagnostic
+    /// update, user pause or main-thread rebuffer transition cannot demote terminal recovery back
+    /// into a rollback experiment.
+    pub(crate) fn pending_reserve_policy(&self, proposal: Proposal) -> Option<ReservePolicy> {
+        (self.pending == Some(proposal))
+            .then_some(self.pending_reserve_policy)
+            .flatten()
     }
 
     /// Everything one decision was made on, in one struct, for one event-log line. Assembled here
@@ -433,32 +728,34 @@ impl Controller {
             current: self.current,
             safe_budget_kbps: self.last_safe_budget_kbps,
             emergency_horizon_secs: self.last_emergency_horizon,
-            // The SAME selection [`Self::observe`]'s upshift arm makes, including the named
-            // admission headroom — so the read-out cannot advertise an operating point the
-            // controller would not actually choose. It is the answer to "what is this link worth",
-            // which is a different question from "what is playing" and the one a viewer
-            // photographing the panel is usually asking.
-            optimal: self.catalog.best_sustainable(
-                upshift_admission_budget(self.last_safe_budget_kbps, &self.policy),
-                &self.production,
-                current,
-                &self.policy,
-                self.buffer.buffered_ms,
-            ),
+            // There is no passive "optimal" above a demand-capped response. Publishing one here
+            // was the diagnostic form of the same identification error that held playback at a
+            // low tier: the panel said "best available" for a ceiling the request itself imposed.
+            // The actual excitation target is published as `pending` and on the transaction line.
+            optimal: None,
             delivery: self.delivery,
             production: self.production,
             buffer: self.buffer,
             gates: GateCounters {
-                dwell_ms: self.dwell_remaining_ms(),
+                dwell_ms: 0,
                 // The guard's EFFECT, not its storage: `0` means nothing is being refused right
                 // now, which is the question a log line is asked. A block that has released is
                 // indistinguishable from no block at all, and reporting it would read as a stuck
                 // guard on exactly the segments where it had already got out of the way.
-                blocked_kbps: self
-                    .reject_block
-                    .filter(|b| b.holds(self.now_ms, self.last_safe_budget_kbps))
-                    .map(|b| b.rung.kbps())
-                    .unwrap_or(0),
+                blocked_kbps: {
+                    let budget = self.exploration_budget_ms(self.buffer.buffered_ms);
+                    self.catalog
+                        .feasible()
+                        .filter(|candidate| candidate.rung > self.current)
+                        .filter(|candidate| {
+                            self.common_budget_blocks(budget)
+                                || self.failures[candidate.rung.index()]
+                                    .blocks(budget, &self.delivery)
+                        })
+                        .map(|candidate| candidate.rung.kbps())
+                        .max()
+                        .unwrap_or(0)
+                },
                 on_rung: self.samples_on_rung,
                 draining: self.buffer.draining_samples,
             },
@@ -481,8 +778,47 @@ impl Controller {
     /// cadence, so a delta API would make every wall-clock guard depend on how often the caller
     /// happened to call — which is a property of the link, not of the guard. The production caller
     /// passes one `Instant`'s elapsed time for the whole playback (`ff.rs`).
+    #[cfg(test)]
     pub(crate) fn observe(&mut self, sample: SegmentSample, now_ms: u64) -> Decision {
+        self.observe_with_rollback(sample, Some(sample.media_duration_ms()), now_ms)
+    }
+
+    /// Observe a completed current object together with the exact media obligation which remains
+    /// on the rollback cursor. The cursor owns this fact: it comes from the next parsed EXTINF,
+    /// not from a bitrate estimate or from the duration of the preceding object.
+    pub(crate) fn observe_with_rollback(
+        &mut self,
+        sample: SegmentSample,
+        rollback_media_ms: Option<u32>,
+        now_ms: u64,
+    ) -> Decision {
+        self.observe_inner(sample, rollback_media_ms, now_ms, false)
+    }
+
+    /// Observe the first completed media object of a newly opened encoder without treating its
+    /// one-time encoder/session startup as a steady-state actuator failure. Delivery, production
+    /// and buffer measurements are retained; only the repeatable acquisition bag and its decision
+    /// are deferred until the next object. This is a structural boundary marker, not a sample
+    /// count or duration threshold: every fresh HLS cursor has exactly one structural boundary
+    /// object. Whether `A>D` later classifies a candidate as setup-bearing is a separate verdict.
+    pub(crate) fn observe_session_boundary(
+        &mut self,
+        sample: SegmentSample,
+        rollback_media_ms: Option<u32>,
+        now_ms: u64,
+    ) -> Decision {
+        self.observe_inner(sample, rollback_media_ms, now_ms, true)
+    }
+
+    fn observe_inner(
+        &mut self,
+        sample: SegmentSample,
+        rollback_media_ms: Option<u32>,
+        now_ms: u64,
+        session_boundary: bool,
+    ) -> Decision {
         self.now_ms = now_ms;
+        self.rollback_media_ms = rollback_media_ms.filter(|duration| *duration > 0);
         // **A reason describes THIS sample or there is none.** It was written on every path that
         // reached a conclusion and cleared on none, so any earlier return re-published the last
         // one that happened to be set. I6's dwell gate made that visible: it returns before a
@@ -506,29 +842,46 @@ impl Controller {
             completed: sample.completed(),
         }
         .clamped_to_evidence(current_candidate.expected_wire_kbps);
-        let network = observation.kbps;
-        if observation.is_collapse(&self.delivery) {
-            self.delivery.collapse(network);
-            // **The one place the acquisition window is cleared.** `window.rs` keeps history across
-            // a rung COMMIT on purpose — the transfer bound carries a sample from one rung to
-            // another by bytes — but a collapse is the other thing: the link this history describes
-            // has stopped existing, and a bound built from it runs about 2x anti-conservative on a
-            // swept link. This changes no decision today; the window is observed, not read.
-            self.acquisitions.reset();
+        let completed = sample.completed();
+        // An abandoned prefix is right-censored by the deadline that stopped it.  It contains no
+        // completed media quantum and therefore cannot be a point observation of capacity, a
+        // regime-change trigger, or the target of a downshift.  Keep the last completed service
+        // reading for the ordinary risk telemetry; the deadline branch below handles the event.
+        let network = if completed {
+            observation.kbps
+        } else {
+            self.delivery.fast_kbps
+        };
+        let regime_changed = completed && observation.is_collapse(&self.delivery);
+        if completed {
+            if regime_changed {
+                self.delivery.collapse(network);
+            }
+            self.delivery.update(observation);
         }
-        self.delivery.update(observation);
         let cold_start = self.samples_on_rung == 0;
-        self.production
-            .observe(ratio, current_candidate.production_load_pm, cold_start);
-        self.buffer.update(
-            sample.buffer.buffered_ms(),
-            i64::from(sample.media_duration_ms),
-        );
-        self.samples_on_rung = self.samples_on_rung.saturating_add(1);
+        if completed {
+            self.production
+                .observe(ratio, current_candidate.production_load_pm, cold_start);
+            self.samples_on_rung = self.samples_on_rung.saturating_add(1);
+            // The first ordinary completed segment after an upshift proves the new live cursor.
+            self.rollback_rung = None;
+            // Likewise, a completed active fetch ends any interrupted recovery descent. Its
+            // failure memory exists only to stop an abandoned active fetch and a failed Down
+            // candidate from replaying the same pair; fresh completed media is a new episode.
+            self.recovery_target = None;
+        }
+        let wall_delta = self
+            .last_buffer_observation_ms
+            .map(|last| now_ms.saturating_sub(last))
+            .and_then(|elapsed| i64::try_from(elapsed).ok())
+            .unwrap_or(0);
+        if sample.buffer.buffered_ms().is_some() {
+            self.buffer.update(sample.buffer.buffered_ms(), wall_delta);
+            self.last_buffer_observation_ms = Some(now_ms);
+        }
 
-        let draining = self.buffer.draining();
         let segment = i64::from(sample.media_duration_ms);
-        self.last_segment_ms = segment;
 
         // **Computed HERE, above every early return, and only read below.** The budget is the
         // delivery estimate's conservative network rate, so its value is identical wherever
@@ -536,51 +889,63 @@ impl Controller {
         // Where it was computed mattered anyway, because three paths
         // return before reaching the decision: a transaction in flight, and both arms of the dev
         // pin. On a pinned run that is EVERY sample after the pin is reached, and the measured
-        // consequence was that 397 of 527 `abr: steady` lines reported `safe=0kbps` — the central
-        // quantity of the admission rule, unobservable on three quarters of the corpus, on
-        // exactly the runs designed to characterise a rung.
+        // consequence was that 397 of 527 `abr: steady` lines reported `safe=0kbps` — then the
+        // central admission quantity, and still an input to bootstrap/Original comparison and a
+        // useful diagnostic — on exactly the runs designed to characterise a rung.
         let safe_budget = hls_safe_budget(&self.delivery);
         self.last_safe_budget_kbps = safe_budget;
-        // A block that has released is RETIRED, not merely re-tested every sample, and the reason
-        // is not monotonicity — only the clock half is monotone; the budget can rise past
-        // `evidence_kbps` and fall back under it. It is that the block describes ONE attempt and
-        // its debt. Once any sufficient reason to try again has occurred, that debt is discharged;
-        // a budget that falls afterwards is new information about the link, not the old refusal
-        // coming back. Keeping it would let a single failed prime refuse climbs indefinitely
-        // through a budget that merely wobbles.
-        if self
-            .reject_block
-            .is_some_and(|block| !block.holds(now_ms, safe_budget))
-        {
-            self.reject_block = None;
-        }
-
-        // **Observe the §4 window, and compute its verdict on the CURRENT rung for telemetry.**
-        // The decision this window drives is not taken here — it is taken at the proposal
-        // (`largest_admissible`) and at validation (`candidate_ready`), both of which query a
-        // CANDIDATE's byte count rather than this one.
+        // Observe the finite episode at the CURRENT operating point. Its current-query readout
+        // remains useful telemetry, while the decision consumes only its actual
+        // sustainability/runway; no larger candidate is projected through it.
         //
         // Placed above every early return for the same reason `safe_budget` is: a pinned run
         // returns before the decision on every sample after the pin lands, and a quantity that is
         // only computed on the path it does not take is unobservable on exactly the runs meant to
         // characterise it.
         //
-        // The query is the CURRENT rung's own byte count, so this answers "is what we are already
-        // playing sustainable" — the one admission question that needs no size prediction and no
-        // `sigma`. A candidate's query is `sigma * W_j * D / 8000`; that arrives with the decision.
-        // The reserve here is the ESTIMATOR's — the last one actually observed — and not this
-        // sample's, which may be `None`. The readout decides nothing and is graded offline, so a
-        // one-segment-stale reserve is the right input for it; refusing to emit the line on the
-        // samples where the audio lane is quiet would blind the grading to exactly the segments
-        // after an open or a seek.
-        self.acquisitions
-            .observe(sample.bytes, sample.total_fetch_us());
-        self.last_window = self.acquisitions.readout(
-            sample.bytes,
-            segment,
-            self.buffer.buffered_ms,
-            self.policy.admission,
-        );
+        // Every observation keeps its actual `(A_i,D_i)`; bytes are logged but do not scale a
+        // candidate query. This answers "is what we are already playing sustainable, and what
+        // rollback runway did its finite bag require?" The candidate is measured separately.
+        // The reserve here is the latest estimator value because this sample may have no readable
+        // A/V minimum. The same readout is consumed by the decision whenever reserve is readable
+        // and is independently graded from the wire line.
+        // **Only a fetch that RAN TO COMPLETION**, for the reason the capacity estimator already
+        // stops one: a prefix the stall guard cut short times the abort, not the link. This call
+        // used to be unconditional, so the same prefix the estimator refused to trust still
+        // entered the acquisition history as though it had delivered a media quantum.
+        //
+        // It poisons in both directions and that is the argument for excluding rather than for
+        // reading its sign. `SegmentSample::completed`'s doc has the optimistic case (1 448 bytes
+        // in 274 us, timing at 42 Mbit/s); the pessimistic one is device-measured 2026-08-30,
+        // where `stall abort ... bytes=212992 ... at 6197kbps` followed a sample that had just
+        // measured 56 660 kbps, and the ladder walked 22000 -> 4000 -> 2000 -> 720 behind it.
+        //
+        // The reserve and the production estimate above are deliberately still fed: those two
+        // describe what HAPPENED to this playback, and an abort happened. This one describes what
+        // the link can carry, and an abort is not evidence about that.
+        if sample.completed() && !session_boundary {
+            // `is_collapse` is the delivery estimator's explicit change-point declaration: its
+            // old slow state is demoted before this response is incorporated. The acquisition bag
+            // must use the same regime boundary. Letting pre-change fast segments subsidize this
+            // new ordered queue both contradicts that posterior transition and double-counts
+            // reserve they already filled before the collapse. Keep the completed response as
+            // observation zero of the new regime; no second change threshold is introduced here.
+            if regime_changed {
+                self.acquisitions.reset();
+            }
+            self.acquisitions.observe(
+                sample.bytes,
+                sample.total_fetch_us(),
+                sample.active_fetch_us(),
+                i64::from(sample.media_duration_ms),
+            );
+        }
+        self.last_window = self.acquisitions.observed_readout(self.buffer.buffered_ms);
+
+        if session_boundary && sample.completed() {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::EvidenceWindow));
+            return Decision::Stay;
+        }
 
         if self.pending.is_some() {
             return Decision::Stay;
@@ -600,6 +965,30 @@ impl Controller {
             self.last_reason = Some(DecisionReason::Hls(HlsReason::ReserveUnknown));
             return Decision::Stay;
         };
+        if !completed {
+            // An immediately displaced actuator is the only lower point known to have worked in
+            // this playback, so prefer it. Without such a certificate, trying adjacent responses
+            // minimizes quality loss but maximizes worst-case time-to-picture: every failed rung
+            // spends another bounded transaction before reaching the one response that is no
+            // larger than any other. The smallest feasible actuator is therefore the minimax
+            // recovery action. This is order alone -- no guessed link rate or tuned threshold.
+            let target = self
+                .recovery_target
+                .or(self.rollback_rung)
+                .unwrap_or_else(|| self.recovery_floor());
+            if target < self.current {
+                let proposal = Proposal {
+                    rung: target,
+                    direction: Direction::Down,
+                };
+                self.pending = Some(proposal);
+                self.pending_reserve_policy = Some(ReservePolicy::Preserve);
+                self.last_reason = Some(DecisionReason::Hls(HlsReason::DeadlineRollback));
+                return Decision::Prime(proposal);
+            }
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::LadderFloor));
+            return Decision::Stay;
+        }
         // The dev pin (`pinned_to`) short-circuits the decision and NOTHING above it: every
         // estimator has already taken this segment. Reaching the pinned rung goes through the
         // ordinary prime/validate/commit transaction, so a pinned run exercises the real transport
@@ -613,13 +1002,14 @@ impl Controller {
             } else {
                 Direction::Down
             };
-            // Wait for a reserve the transaction can be paid out of. The requirement is
-            // DIRECTIONAL: the six-segment figure is an upshift derivation (two deadline budgets
-            // plus `candidate_ready`'s residual), and neither of those budgets applies going down
-            // — there is no graded segment, and the warm-up is bounded by the reserve itself.
-            // Charging it downward is unsatisfiable at the top of the ladder — 12 000 ms against a
-            // `B_max(20000)` of ~5 421 ms — which silently cost the M4 census five of its seven
-            // points. See PIN_MIN_RESERVE_SEGMENTS and PIN_MIN_RESERVE_SEGMENTS_DOWN.
+            // Wait for the direction-specific DEV-HARNESS reserve floor. Six segments keeps a
+            // pinned upshift's inline initial transaction and possible staged repeatable phase
+            // out of the measured re-proposal livelock. A downshift has no repeatable candidate
+            // phase and its live media deadline is derived later from current reserve/transfer
+            // evidence, so it uses the smaller tool precondition. Charging the upshift gate downward
+            // is unsatisfiable at the top of the ladder — 12 000 ms against a `B_max(20000)` of
+            // ~5 421 ms — which silently cost the M4 census five of its seven points. See
+            // PIN_MIN_RESERVE_SEGMENTS and PIN_MIN_RESERVE_SEGMENTS_DOWN.
             let required = match direction {
                 Direction::Up => PIN_MIN_RESERVE_SEGMENTS,
                 Direction::Down => PIN_MIN_RESERVE_SEGMENTS_DOWN,
@@ -632,372 +1022,225 @@ impl Controller {
                 direction,
             };
             self.pending = Some(proposal);
+            self.pending_reserve_policy = Some(ReservePolicy::Preserve);
             return Decision::Prime(proposal);
         }
 
-        // Fast-down: either current-sustainability signal may fail. A JIT ratio around 1.0 is
-        // merely real-time production; it forces a move only when the content reserve is draining.
-        let immediate_network = network.min(self.delivery.fast_kbps);
-        let current_risk = candidate_risk(
-            current_candidate,
-            current_candidate,
-            &self.delivery,
-            &self.production,
-            &self.buffer,
-            &self.policy,
-        );
-        // **A bare rate comparison, and NO LONGER A TRIGGER** (N4). It is true of a rung that is 1%
-        // too dear against a completely full buffer, which is not an emergency — it is a reason not
-        // to CLIMB, and it already is one: the same deficit narrows `safe_budget` a few lines down.
-        // Keeping a state you are already buffered into and admitting a new one are different
-        // decisions, and a reserve that is deep relative to the deficit is safe for a long time.
+        // The current operating point is judged by conservation of the media already observed,
+        // and by nothing inferred from a demand-capped response. For the finite episode:
         //
-        // Its other two uses survive verbatim, which is why it keeps a name. It SELECTS the
-        // downshift target — a measured link collapse must not walk the ladder one oversized
-        // encoder at a time — and it names the reason, because "the link is measurably below this
-        // rung" is the actionable half of a downshift that fired for some other reason.
-        let collapse_target = immediate_network < current_candidate.expected_wire_kbps;
-        // **N21: a magnitude predicate, not a persistence count.** This required EIGHT consecutive
-        // draining segments — about sixteen seconds at the 2 s segment this pipeline requests —
-        // before a server falling behind could move the rung, while `starving()` two lines up
-        // treats two as enough. It is now `draining()`, whose derivation is the 2026-08-25 device
-        // finding recorded at `BufferEstimate::draining`: judge the travel, not the sign of it, and
-        // not the number of samples it took.
+        //   sustainable  <=>  sum A_i <= sum D_i
+        //   survivable   <=>  B >= max_i(sum_{j<i}(A_j-D_j) + A_i)
         //
-        // Stated as what it is rather than as a reconciliation: this drops the persistence
-        // requirement ENTIRELY — an 8x increase in sensitivity on an immediate-downshift arm. It is
-        // safe in the direction that matters because `production_risk` is itself a predicted-ratio
-        // test against `production_max_pm`, so the conjunction still needs the server to be behind
-        // AND the reserve to be measurably shrinking. If it proves too eager the recorded fallback
-        // is `draining_samples >= 2`, matching `starving()`.
-        let production_bad = current_risk.production_risk && self.buffer.draining();
-        let buffer_bad = buffered < segment || self.buffer.starving();
-        // **The deadline, and the one trigger cold start may not suppress.** `T = B*R/(R - C)`:
-        // at the rate this link is delivering, the reserve empties in `T` seconds. N4's opening
-        // complaint is that a horizon was computed and discarded unread; this is the reader.
-        //
-        // **`C` is the MEASURED rate here, not `conservative_kbps()`, and the difference is the
-        // whole correctness of the exemption below.** Conservatism belongs to ADMISSION -- a rung
-        // you have not tried might be dearer than you think, so plan against a lower bound. It
-        // does not belong to EVICTION, where the claim is that the link in front of you cannot
-        // carry what is already playing, and the evidence for that has to be observed rather than
-        // discounted into existence. `conservative_kbps()` subtracts `uncertainty_pm` capped at
-        // 500, and `uncertainty_pm` is exactly 500 on the first sample of every rung
-        // (`CapacityEstimate::reset_confidence` after each commit) -- a 50% haircut. Compute this
-        // horizon on that and a link delivering PRECISELY what the rung asks reads as a 2x deficit
-        // and fires an emergency on the healthiest possible playback.
-        //
-        // **Why it is then exempt from the cold-start gate, structurally rather than by
-        // preference.** `starvation_horizon` returns `None` whenever `C >= R`, so on a link that
-        // covers the rung it cannot fire at all, however small the reserve is. The cold-start
-        // artefact is a LEVEL -- the transaction just spent the reserve, so `B` is about one
-        // segment -- and `B` appears only in the numerator, multiplied by the drain fraction. A
-        // small `B` with no measured deficit is an INFINITE horizon. `buffered < segment` has no
-        // such protection, which is precisely why the gate below is right for that disjunct and
-        // wrong for this one.
-        //
-        // What the exemption costs, priced rather than asserted: at the cold-start floor of one
-        // 2 s segment the predicate fires at a measured deficit of 10% or more, because
-        // `2 s / 0.1 = 20 s`. A downshift transaction is ~0.7 s of that. At a full `B_max` it is
-        // far slacker -- 8.7 s of reserve at P1080High needs a 44% deficit, and I5's stated
-        // differential (5% at a full P1080High reserve) is 173 s of horizon, nowhere near.
-        let emergency_horizon = starvation_horizon(
-            buffered,
-            current_candidate.expected_wire_kbps,
-            immediate_network,
-        );
-        self.last_emergency_horizon = emergency_horizon.seconds;
-        let horizon_bad = emergency_horizon
-            .seconds
-            .is_some_and(|secs| secs <= self.policy.starvation_fallback_secs);
-        // The first sample on a rung is the encoder's cold start and the reserve contains only the
-        // segment that just arrived. It refines the estimators, but cannot establish a failing
-        // steady state: on the measured baseline every playback otherwise downshifted here even on
-        // a fast link, solely because `B <= D`. The second sample is live policy again, so a real
-        // collapse waits one segment rather than being hidden.
-        //
-        // **"Waits one segment" is not a bounded wait, and that is what this gate cost.** A
-        // segment is `bytes / C` of wall time, and `C` is precisely the quantity that has
-        // collapsed. `pipe_abr_down_collapse` (2026-08-27) fired the gate on the first sample of
-        // rung 14000 with `net=498kbps`, `buf=2210ms` and the controller's own `starve=2` on the
-        // same line; the next sample was 58.3 seconds later, and the picture was frozen for 47 of
-        // them. So the gate applies to the disjuncts whose evidence the cold start corrupts, and
-        // the deadline runs whether or not this is the first sample.
-        if horizon_bad || (!cold_start && (buffer_bad || production_bad)) {
-            // A measured link collapse must not walk the ladder one oversized encoder at a time.
-            // Select the best actuator that fits the new safe budget, still bounded below current.
-            let target = if collapse_target || buffered < segment / 2 {
-                self.catalog
-                    .best_for_budget(self.delivery.conservative_kbps())
-                    .map(|candidate| candidate.rung)
-                    .unwrap_or(Rung::P240)
-                    .min(self.current.below())
+        // A failed first condition says this completed finite episode did not replenish itself.
+        // While the second still holds, its conservative delivery and reserve evidence can order
+        // the LOWER responses: choose the highest one their existing model supports,
+        // then require that candidate's own exact acquisition before commit. A failed second
+        // condition cannot replay the chronology actually observed, so it goes straight to the
+        // smallest feasible time-to-picture response just like a censored prefix.
+        // There is no new rate multiplier, dwell, margin, buffer heuristic or guessed
+        // link-capacity target here.
+        self.last_emergency_horizon = None;
+        let current_physics = self
+            .acquisitions
+            .observed_ordered_admission(buffered)
+            .expect("a completed sample seeded the current acquisition bag");
+        if !current_physics.sustainable || !current_physics.survivable {
+            // `B < runway` is already a time-to-picture emergency: replaying this completed bag
+            // no longer guarantees its next media credit under the observed chronology, so
+            // spending another transaction on a quality-preserving guess weakens the exact
+            // guarantee. Only the sustainable-failure arm has enough runway to validate the
+            // model-ordered lower candidate first.
+            let target = if current_physics.survivable {
+                self.completed_recovery_target(safe_budget, buffered)
             } else {
-                self.current.below()
+                self.recovery_floor()
             };
-            if target != self.current {
-                let proposal = Proposal {
-                    rung: target,
-                    direction: Direction::Down,
-                };
-                self.pending = Some(proposal);
-                self.last_reason = Some(DecisionReason::Hls(if horizon_bad {
-                    HlsReason::StarvationHorizon
-                } else if collapse_target {
-                    HlsReason::UnsafeCurrentState
-                } else if production_bad {
-                    HlsReason::ProductionConstraint
-                } else {
-                    HlsReason::BufferConstraint
-                }));
-                return Decision::Prime(proposal);
+            if target == self.current {
+                self.last_reason = Some(DecisionReason::Hls(HlsReason::LadderFloor));
+                return Decision::Stay;
             }
-            // `target == self.current` here means EXACTLY the floor: `below()` is the identity
-            // at the bottom rung, and the `best_for_budget` branch is clamped by `.min(below())`,
-            // so at any other rung the target is strictly lower. See `HlsReason::LadderFloor`.
-            self.last_reason = Some(DecisionReason::Hls(HlsReason::LadderFloor));
-            return Decision::Stay;
+            let proposal = Proposal {
+                rung: target,
+                direction: Direction::Down,
+            };
+            self.pending = Some(proposal);
+            self.pending_reserve_policy = Some(if current_physics.survivable {
+                ReservePolicy::Preserve
+            } else {
+                ReservePolicy::TerminalFloor
+            });
+            self.last_reason = Some(DecisionReason::Hls(if !current_physics.survivable {
+                HlsReason::BufferConstraint
+            } else {
+                HlsReason::UnsafeCurrentState
+            }));
+            return Decision::Prime(proposal);
         }
 
-        // **N10's dwell, and N9's deleted gate.** What stood here was
-        // `self.cooldown > 0 || self.samples_on_rung < 2` — two sample counts, one of which
-        // ("wait three segments after an up commit, eight after a down") was an unbounded amount of
-        // wall time, and the other of which forbade any adaptation at all on the first two samples
-        // of a rung.
-        //
-        // `samples_on_rung` is gone from the decision and kept as an estimator input (N9). What
-        // replaces the cooldown is one wall-clock interval, `E_tx` — the sum of the two deadlines
-        // this transaction is already held to. Its meaning is exact and operational: do not start
-        // another encoder session before the last one could have finished paying for itself. It is
-        // NOT a quality preference and may never be made into one (N20).
-        if self.dwell_remaining_ms() > 0 {
-            return Decision::Stay;
-        }
-        // TWO independent constraints, deliberately not collapsed into one budget: the network has
-        // to carry the bits AND the server has to produce them ahead of real time. This is what
-        // refuses 4K on a fast link in front of a loaded PMS — the measured 4K point costs 4% more
-        // wire and 110% more server, so a bitrate-only budget would wave it through.
-        let Some(target_candidate) = self.catalog.best_sustainable(
-            upshift_admission_budget(safe_budget, &self.policy),
-            &self.production,
-            current_candidate,
-            &self.policy,
-            buffered,
-        ) else {
-            self.last_reason = Some(DecisionReason::Hls(HlsReason::NoSustainableTarget));
-            return Decision::Stay;
-        };
-        let target = target_candidate.rung;
-        if target == self.current {
-            self.last_reason = Some(DecisionReason::Hls(HlsReason::AtBestRung));
-            return Decision::Stay;
-        }
-        if target < self.current {
-            // The budget shrank without any current-state signal failing. Nothing is wrong with
-            // what is playing, so this is not a downshift trigger — it is a reason not to climb.
-            self.last_reason = Some(DecisionReason::Hls(HlsReason::NoSustainableTarget));
-            return Decision::Stay;
-        }
-
-        // **Selection must not propose what validation is certain to refuse.** Below `n` samples
-        // `candidate_ready` cannot admit an upshift at all, and above it only admits one the
-        // window can carry — so proposing outside that set is not merely wasted work, it is a
-        // livelock: each proposal costs a real PMS encoder session and `E_tx` of unrefilled
-        // playback, and nothing about the refusal was recorded, so the loop repeated forever. N11's
-        // backoff is the other half of closing that; this is the half that never proposes it.
-        //
-        // **The same rule on both sides, with the best input each side has.** Validation has the
-        // rendition's own declared rate; selection cannot — a rung's `BANDWIDTH` needs a PMS
-        // encoder session to exist first (§3) — so it evaluates against the catalog's
-        // `expected_wire_kbps`, which is approximate (+5.2% to +31.6%) and is why validation still
-        // decides. This is one rule read twice, not two thresholds stacked: no new number appears,
-        // `n` and `σ` are the rule's own.
-        let Some(target) = self.largest_admissible(target, segment, buffered) else {
-            self.last_reason = Some(DecisionReason::Hls(HlsReason::EvidenceWindow));
-            return Decision::Stay;
-        };
-        if target <= self.current {
+        // A finite response at the current rung is a lower bound on service, never an upper bound
+        // on what a larger response can obtain. The experiment is funded only from reserve above
+        // the current finite-bag runway; that conservation budget replaces both the former dwell
+        // timer and the scaled-current-response prefilter.
+        if self.exploration_budget_ms(buffered).is_none() {
             self.last_reason = Some(DecisionReason::Hls(HlsReason::EvidenceWindow));
             return Decision::Stay;
         }
-
-        // The network constraint already selected `target` from the stricter named admission
-        // budget above. The remaining independent resource guards must pass simultaneously.
-        // The target is selected directly from the actuator catalog, so 8 -> 14-class budgets
-        // skip intermediate encoders.
-        // **The upshift reserve gate, DERIVED from the reachable ceiling** — I3b(b), which the plan
-        // left as a ruling and which `b_max_est_ms` makes decidable.
-        //
-        // It was a flat `3 * segment` = 6 000 ms. `B_max` falls as `1/R`, and at the top of the
-        // ladder the byte caps top out at 5 852 ms with a SETTLED reserve well under that — so a
-        // constant six seconds is a gate the plant cannot satisfy at exactly the rungs it is
-        // guarding, which is R2's "the top of the ladder is unreachable for any guard of this
-        // shape" seen from the control side. Phase 0 fixed the plant half; this is the other.
-        //
-        // `min` of the two, so nothing is loosened where the old number was reachable: below about
-        // 14 000 kbps of video ES the ceiling term exceeds 6 000 ms and the constant still binds,
-        // unchanged. Above it the gate becomes what the queue can actually hold a fraction of.
-        // `alpha` is the same `buffer_reserve_fraction_pm` `B*` uses — one number for "how much of
-        // the reachable ceiling we are willing to ask for", not a second one wearing a new name.
-        //
-        // Evaluated at the TARGET's rate, not the current one: the question is whether the reserve
-        // will survive arriving there.
-        let target_video_es = target_candidate
-            .expected_wire_kbps
-            .saturating_sub(self.policy.assumed_audio_kbps);
-        let reachable_gate =
-            crate::abr::plant::b_max_est_ms(target_video_es, self.policy.assumed_audio_kbps)
-                .saturating_mul(i64::from(self.policy.buffer_reserve_fraction_pm))
-                / 1_000;
-        let reserve_gate = segment.saturating_mul(3).min(reachable_gate);
-        let all_good = self.production.ratio_pm <= self.policy.production_safe_pm
-            && buffered >= reserve_gate
-            && !draining;
-        if !all_good {
-            return Decision::Stay;
-        }
-        // **N11's backoff, checked against the rung selection actually made.** Placed here rather
-        // than earlier so a blocked rung still costs a full evaluation and a full log line: the
-        // question "would this climb have happened" stays answerable while the guard is holding.
-        //
-        // A blocked target is a STAY, not a walk down to the next rung. Dodging the block would be
-        // a rung-walking rule — the unexplained per-decision step the design directive forbids —
-        // and it would spend a transaction on a rung the evidence never selected.
-        if self.reject_blocks() {
+        // Scan the whole feasible ladder. With no failed response-size endpoint, the highest
+        // unknown point has the same bounded loss as an adjacent one: both stop at the same reserve
+        // floor. Once an endpoint has failed at this physical budget, linearly walking down from it
+        // maximizes the number of encoder transactions. Split the ordinal interval instead. This
+        // is minimax search over the finite actuator set, not a bitrate estimate; the candidate is
+        // still accepted only from its own completed acquisition below.
+        let exploration_budget = self
+            .exploration_budget_ms(buffered)
+            .expect("the surplus gate above admitted exploration");
+        // The common frontier covers the two results which cannot order untouched REQUEST
+        // actuators: a deadline-censored transaction with no complete media, and a completed PMS
+        // underfill with no Pareto gain over the live response. Starting another encoder merely
+        // by changing the request ceiling repeats the same failed experiment and, on a real PMS,
+        // leaves enough overlapping resource state to make later decisions under-grant. Only a
+        // physically observed surplus beyond the failed start budget releases quality
+        // exploration. Its drawdown already reduced the live surplus and is replaced on the way
+        // back to that start budget; adding it here would charge the same debt twice.
+        if self.common_budget_blocks(Some(exploration_budget)) {
             self.last_reason = Some(DecisionReason::Hls(HlsReason::RejectBackoff));
             return Decision::Stay;
         }
+        if !self
+            .catalog
+            .feasible()
+            .any(|candidate| candidate.rung > self.current)
+        {
+            if self.active_variant_needs_refresh() {
+                self.last_reason = Some(DecisionReason::Hls(HlsReason::ResponseLimited));
+                if self.active_variant_refresh_released()
+                    && !self.failures[self.current.index()]
+                        .blocks(Some(exploration_budget), &self.delivery)
+                {
+                    // A fresh encoder at the SAME request is the missing excitation. Mapping the
+                    // response back to a guessed lower rung would invent an inverse PMS does not
+                    // have; treating `current == target` as terminal repeats the original bug.
+                    let proposal = Proposal {
+                        rung: self.current,
+                        direction: Direction::Up,
+                    };
+                    self.pending_exploration_budget_ms = exploration_budget;
+                    self.pending = Some(proposal);
+                    self.pending_reserve_policy = Some(ReservePolicy::Preserve);
+                    return Decision::Prime(proposal);
+                }
+                return Decision::Stay;
+            }
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::AtBestRung));
+            return Decision::Stay;
+        }
+        let service_ceiling = self
+            .catalog
+            .feasible()
+            .filter(|candidate| candidate.rung > self.current)
+            .filter(|candidate| {
+                self.failures[candidate.rung.index()]
+                    .service_blocks(Some(exploration_budget), &self.delivery)
+            })
+            .map(|candidate| candidate.rung)
+            .min();
+        let eligible = || {
+            self.catalog
+                .feasible()
+                .filter(|candidate| candidate.rung > self.current)
+                .filter(|candidate| {
+                    !self.failures[candidate.rung.index()]
+                        .blocks(Some(exploration_budget), &self.delivery)
+                })
+                .map(|candidate| candidate.rung)
+        };
+        let eligible_below_ceiling =
+            || eligible().filter(|rung| service_ceiling.is_none_or(|ceiling| *rung < ceiling));
+        // Once an actual response-size experiment establishes a service endpoint, prefer the
+        // highest still-eligible actuator which the already-computed conservative delivery and
+        // refill model supports. This is experiment ORDERING, not evidence
+        // transferred from the demand-capped live response: the candidate below still has to
+        // complete and pass its own exact `A <= D && B_post >= A` verdict. Before any endpoint
+        // exists, retain the single maximum-information jump instead of manufacturing a staircase
+        // of encoder reloads from a capped response.
+        let modeled_target = service_ceiling.and_then(|_| {
+            eligible()
+                .filter(|rung| {
+                    self.catalog.modeled_sustainable(
+                        self.catalog.candidate(*rung),
+                        safe_budget,
+                        &self.policy,
+                        buffered,
+                    )
+                })
+                .max()
+        });
+        let ordinal_target = service_ceiling.and_then(|_| {
+            let count = eligible_below_ceiling().count();
+            (count > 0).then(|| {
+                eligible_below_ceiling()
+                    .nth((count - 1) / 2)
+                    .expect("the counted ordinal midpoint exists")
+            })
+        });
+        let target = if service_ceiling.is_some() {
+            // The midpoint minimizes the worst-case number of remaining finite experiments. A
+            // conservative modeled point may justify spending farther upward (including crossing
+            // an old endpoint after fresh service evidence), but a demand-capped estimate must
+            // not turn that minimax search into an adjacent-rung staircase.
+            modeled_target.max(ordinal_target)
+        } else {
+            eligible().max()
+        };
+        let Some(target) = target else {
+            self.last_reason = Some(DecisionReason::Hls(HlsReason::RejectBackoff));
+            return Decision::Stay;
+        };
         // **And there is no `stable_samples` here any more (N8).** Three consecutive samples on
         // which every conjunct above held was pure counting layered on a model that had already
-        // passed every risk, budget, buffer and production condition, reset at seven separate
+        // passed every risk, budget and buffer condition, reset at seven separate
         // sites, and it was the dominant term in the opening seconds: counter spacing was exactly
         // five segments between successive upshifts and ten after a downshift.
         let proposal = Proposal {
             rung: target,
             direction: Direction::Up,
         };
+        self.pending_exploration_budget_ms = exploration_budget;
         self.pending = Some(proposal);
+        self.pending_reserve_policy = Some(ReservePolicy::Preserve);
         self.last_reason = Some(DecisionReason::Hls(HlsReason::SafeBudgetIncrease));
         Decision::Prime(proposal)
     }
 
-    /// **The highest rung at or below `ceiling` that §4 would admit**, or `None` if none would.
-    ///
-    /// Walks DOWN from the proposed target because the admission conditions are monotone in the
-    /// query and the query is monotone in the rate, so the admissible set is a prefix of the ladder
-    /// and the first rung that passes is the best one. Thirteen entries; no search is warranted.
-    ///
-    /// **This is not a rung-walking rule.** It does not step the ladder one rung per decision — it
-    /// jumps straight to the largest rung the evidence supports, which on a fast link out of a low
-    /// rung is many rungs at once. What it refuses is a jump the window cannot justify, and the
-    /// refusal is the bound's, not a cap: `T_i(q) = A_i·max(1, q/b_i)` grows with the query, so a
-    /// large enough jump fails condition (1) on its own arithmetic. A per-decision cap on the
-    /// NUMBER of rungs would be the unexplained rule the design directive forbids; this is the
-    /// same inequality the validation side evaluates, and it disappears entirely as the window
-    /// accumulates evidence at larger byte counts.
-    ///
-    /// It uses the CATALOG rate, which is the only per-rung rate selection can see, and is
-    /// therefore an estimate. `candidate_ready` re-runs the same rule on the rendition's own
-    /// declared rate and is what actually decides.
-    /// **§4's admission rule, in ONE place.** Both sides of the design argument read it: selection
-    /// (`largest_admissible`, on the catalog rate) and validation (`candidate_ready`, on the
-    /// rendition's own declared rate). The difference between them is the ARGUMENT, never the
-    /// inequality — `largest_admissible`'s doc says "This is one rule read twice, not two
-    /// thresholds stacked", and until this function existed nothing made that true. The
-    /// no-livelock argument (propose only what validation will admit, so no encoder session is
-    /// bought and thrown away) rests on it exactly.
-    ///
-    /// The `query > 0` guard is part of the rule, not a caller's precaution: `AcquisitionWindow`
-    /// documents a zero query as making every transfer factor 1, which is the most PERMISSIVE the
-    /// rule can be, so an unreadable declared rate must REFUSE rather than fall through. Having it
-    /// at one site is the point — it was enforced at two.
-    fn window_admits(&self, declared_bps: u64, rung: Rung, segment: i64, buffered: i64) -> bool {
-        let query = candidate_worst_case_bytes(declared_bps, segment, rung.size_spread_pm());
-        query > 0
-            && self
-                .acquisitions
-                .admits(query, segment, buffered, self.policy.admission)
-                .is_some_and(Admission::admitted)
-    }
-
-    fn largest_admissible(&self, ceiling: Rung, segment: i64, buffered: i64) -> Option<Rung> {
-        LADDER
-            .iter()
-            .rev()
-            .copied()
-            .filter(|rung| *rung <= ceiling)
-            .find(|rung| {
-                let declared_bps = u64::from(self.catalog.candidate(*rung).expected_wire_kbps)
-                    .saturating_mul(1_000);
-                self.window_admits(declared_bps, *rung, segment, buffered)
-            })
-    }
-
-    /// **A candidate's GRADED segment is a link observation and enters the acquisition window.**
-    ///
-    /// The window is evidence about the LINK, not about a rung — that is the whole content of §2a's
-    /// transfer bound, which carries a sample from one byte count to another. Excluding a real
-    /// acquisition because of which rendition produced it would throw away the only direct
-    /// measurement the transaction buys.
-    ///
-    /// **Only the graded one, and the exclusion is derived rather than chosen.** PMS's FixedSession
-    /// HLS starts a fresh decoder and encoder for every candidate, so segment zero measures that
-    /// cold start — a property of the server's session lifecycle, not of the link. `ff.rs` already
-    /// says so where it fetches a second segment to grade. Feeding the warm-up would put a
-    /// server-side startup cost into a distribution the rule reads as network capacity, which is
-    /// the same category error as reading `control=` as a transfer.
-    ///
-    /// A downshift has no graded segment, so nothing enters from one. That is not a gap: a
-    /// downshift is not gated on the window (see [`Self::candidate_ready`]).
-    ///
-    /// It landed separately from the verdict that reads it, so that the change in what the window
-    /// CONTAINS could be measured on its own. Both are live now.
-    pub(crate) fn observe_candidate(&mut self, sample: SegmentSample) {
-        self.acquisitions
-            .observe(sample.bytes(), sample.total_fetch_us());
-    }
-
-    /// **Candidate-session acceptance, and this is where §4's admission rule DECIDES.**
-    ///
-    /// It is the only point in a playback where the rule can be evaluated at all: a rung's
-    /// `BANDWIDTH` cannot be read without first creating a PMS encoder session for it, so
-    /// `declared_bps` exists here and nowhere else (§3). That makes this the rule's proper home
-    /// rather than a compromise — the transaction has already fetched and graded a real segment at
-    /// the candidate, and that segment is already in the window ([`Self::observe_candidate`]).
-    ///
-    /// **What this replaced.** Three stacked tests, none of which survives its own evidence:
-    ///
-    /// * `network_kbps >= candidate.expected_wire_kbps` — the CATALOG rate, which the plan's R1
-    ///   killed: +5.2% to +31.6% error, item-dependent, and non-injective (rungs 18000 and 20000
-    ///   both declare 16 150). It is replaced by `declared_bps`, the rendition's own.
-    /// * `production_ratio_pm <= 800` — a bare 800, and structurally the SINGLE-OBSERVATION form
-    ///   `A <= 0.8 D`, which the device corpus refutes at ~37% violation. It is replaced by a
-    ///   window.
-    /// * `buffered >= 2 * segment` — a reserve floor in segments, replaced by condition (2), which
-    ///   asks the reserve to cover the excess this window actually contains.
-    ///
-    /// **A filling window refuses an upshift, and that needs no extra rule.** `admits` returns
-    /// `None` below `n` samples, and "no evidence" is not "safe to climb" — the default has to be
-    /// the conservative one, and it is the same answer the rule gives when it does have evidence
-    /// and the evidence is bad. It costs the first `n` segments of a playback, which is `n·D` of
-    /// media, and the alternative is committing an encoder on a guess.
-    ///
-    /// **A DOWNSHIFT is deliberately not gated on the rule** and keeps only the decodable-segment
-    /// and one-segment-reserve tests. Measured reason, not caution: `pipe_abr_down_collapse` graded
-    /// ZERO segments across 23, because a collapse resets the window and 19 samples at a 2 s segment
-    /// is 38 s of media — longer than a collapse takes to resolve. A rule that is silent through the
-    /// event is the wrong instrument for it, and §5 says so structurally: this is the trigger and
-    /// the target, and a DEADLINE fires from the current reserve alone.
-    ///
-    /// The controller still does not mutate until `commit`.
-    pub(crate) fn candidate_ready(
+    /// Candidate-session acceptance. The larger request is the excitation: only its own completed
+    /// steady segment can identify that operating point. For one observation the conservation
+    /// conditions reduce to `A <= D` and `B_post >= A`; neither contains a catalog-rate guess, a
+    /// safety multiplier, or evidence transferred from a smaller demand-capped response.
+    /// Downshifts remain recovery transactions and need only leave one decodable segment in hand.
+    /// A losing intermediate rung must keep descending. The ladder floor is the terminal exception:
+    /// rejecting it would retain an even more expensive current rung although no sustainable
+    /// actuator exists, so accepting the floor means "best available", not "stable".
+    pub(crate) fn candidate_verdict(
         &self,
         proposal: Proposal,
         sample: SegmentSample,
-        declared_bps: u64,
-    ) -> bool {
-        if self.pending != Some(proposal) {
-            return false;
+        _declared_bps: u64,
+    ) -> CandidateVerdict {
+        if self.pending != Some(proposal) || !sample.completed() {
+            return CandidateVerdict::Incomplete;
+        }
+        // `TerminalFloor` is an explicit no-rollback contract: the current cursor's ordered
+        // acquisition episode is no longer survivable and no cheaper actuator exists. Once the
+        // floor returns a complete media object, rejecting it can only feed/abandon those bytes,
+        // retain the more expensive old route, and request the same floor again. Completion is
+        // therefore the terminal best-available certificate; transport/decoder failures remain
+        // failures before this method is reached.
+        if proposal.direction == Direction::Down
+            && proposal.rung == self.recovery_floor()
+            && self.pending_reserve_policy == Some(ReservePolicy::TerminalFloor)
+        {
+            return CandidateVerdict::Ready;
         }
         // An unreadable reserve refuses. It is the same answer an empty reserve gets, and that is
         // not a coincidence to paper over: this test asks whether the transaction can be paid for,
@@ -1005,68 +1248,170 @@ impl Controller {
         // old zero in what it does NOT do — the controller no longer proposes on an unknown
         // reserve at all, so reaching here with `None` means the lane fell silent mid-transaction.
         let Some(buffered) = sample.buffer.buffered_ms() else {
-            return false;
+            return CandidateVerdict::ReserveUnknown;
         };
         let segment = i64::from(sample.media_duration_ms);
-        if buffered < segment {
-            return false;
-        }
+        let segment_obligation = i64::from(sample.media_obligation_ms());
+        let acquisition_us = i64::try_from(sample.total_fetch_us()).unwrap_or(i64::MAX);
+        let duration_us = segment.saturating_mul(1_000);
         match proposal.direction {
-            Direction::Down => true,
+            Direction::Down
+                if acquisition_us > duration_us && proposal.rung != self.recovery_floor() =>
+            {
+                CandidateVerdict::Unsustainable
+            }
+            Direction::Down if buffered >= segment_obligation => CandidateVerdict::Ready,
+            Direction::Down => CandidateVerdict::Unfunded,
             Direction::Up => {
-                // **Two INDEPENDENT constraints, not two margins.** The window answers "can the
-                // link carry this rendition"; this answers "can the SERVER produce it", which no
-                // amount of link evidence can, because every sample in the window was produced by
-                // a different encoder. Moving onto a JIT encoder already at or slower than real
-                // time is unconditionally wrong whatever the link does.
-                //
-                // `production_max_pm` is the policy's own named threshold for exactly that, with a
-                // stated product meaning. What it replaced was a bare `800` sitting unexplained
-                // between this and `production_safe_pm` -- and structurally that 800 was the
-                // SINGLE-OBSERVATION admission form `A <= 0.8 D`, which the device corpus refutes
-                // at ~37% violation. The margin question is the window's; this is the disqualifier.
-                //
-                // A zero query is the most PERMISSIVE the rule can be -- every transfer factor
-                // becomes 1 -- so an unreadable declared rate must refuse rather than fall through.
-                sample.production_ratio_pm() < self.policy.production_max_pm
-                    && self.window_admits(declared_bps, proposal.rung, segment, buffered)
+                // This is the operating point the transaction actually excited. Old, smaller HLS
+                // responses are rollback evidence but cannot identify this request's unused tail,
+                // so admission uses the candidate's completed acquisition directly. With one
+                // sample the two conservation conditions reduce exactly to `T <= D` and
+                // `B_post >= T`; neither contains a margin or a predicted capacity.
+                if acquisition_us > duration_us {
+                    CandidateVerdict::Unsustainable
+                } else if buffered.saturating_mul(1_000) < acquisition_us {
+                    CandidateVerdict::Unfunded
+                } else {
+                    CandidateVerdict::Ready
+                }
             }
         }
     }
 
-    /// `now_ms` is the caller's clock **at the commit**, and it is a parameter rather than
-    /// `self.now_ms` for a reason N10 depends on. `self.now_ms` is written only by `observe`, and
-    /// on device a transaction runs `control.prime`, two playlist fetches, a warm-up fetch, a
-    /// graded fetch and a feed between the `observe` that proposed and this call — so
-    /// `self.now_ms` is the instant of the PROPOSAL. Anchoring the dwell there sets it expiring at
-    /// `proposal + E_tx`, and `E_tx` is by construction the upper bound on the transaction's own
-    /// duration: the guard would elapse at about the moment the transaction was guaranteed to be
-    /// over, blocking roughly one sample instead of the interval N10 specifies. No host test could
-    /// see it, because every fixture commits from the proposing `observe` with no clock advance,
-    /// which reproduces exactly the anchor being corrected.
+    /// Grade the structurally unique first object of a newly-created candidate encoder.
+    ///
+    /// A boundary object which already satisfies the ordinary conservation rule is immediately
+    /// `Ready`.  If `A>D`, it cannot identify repeatable production because `A` contains the
+    /// one-time PMS decision/session/JIT setup.  It may fund one observation from the now-running
+    /// encoder only when the post-object reserve covers that exact measured `A`; otherwise the
+    /// experiment is simply unfunded.  No count, dwell, tolerance or catalog-rate estimate enters
+    /// this distinction.
+    pub(crate) fn candidate_boundary_verdict(
+        &self,
+        proposal: Proposal,
+        sample: SegmentSample,
+        declared_bps: u64,
+    ) -> CandidateVerdict {
+        let verdict = self.candidate_verdict(proposal, sample, declared_bps);
+        if verdict != CandidateVerdict::Unsustainable {
+            return verdict;
+        }
+        // A down candidate may feed this completed media object, but A>D proves the intermediate
+        // operating point still loses reserve. It must continue recovery rather than enter the
+        // upshift-only setup-bearing steady-state phase.
+        if proposal.direction == Direction::Down {
+            return CandidateVerdict::Unsustainable;
+        }
+        let Some(buffered_ms) = sample.buffer.buffered_ms() else {
+            return CandidateVerdict::ReserveUnknown;
+        };
+        let acquisition_us = i64::try_from(sample.total_fetch_us()).unwrap_or(i64::MAX);
+        if buffered_ms.saturating_mul(1_000) >= acquisition_us {
+            CandidateVerdict::SetupBearing
+        } else {
+            CandidateVerdict::Unfunded
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn candidate_ready(
+        &self,
+        proposal: Proposal,
+        sample: SegmentSample,
+        declared_bps: u64,
+    ) -> bool {
+        self.candidate_verdict(proposal, sample, declared_bps) == CandidateVerdict::Ready
+    }
+
+    /// Seed direct evidence from a committed candidate at the new operating point. [`Self::commit`]
+    /// already retired the old bag; this method appends the completed candidate and is called for
+    /// both directions. A rejected candidate never reaches either method, so the proven old bag is
+    /// preserved for rollback.
+    pub(crate) fn commit_candidate_evidence(&mut self, sample: SegmentSample) {
+        if !sample.completed() {
+            return;
+        }
+        self.acquisitions.observe(
+            sample.bytes(),
+            sample.total_fetch_us(),
+            sample.active_fetch_us(),
+            i64::from(sample.media_duration_ms()),
+        );
+        self.last_window = self
+            .acquisitions
+            .observed_readout(sample.buffer.buffered_ms().unwrap_or(0));
+    }
+
+    /// Validate, move the actuator and seed the new operating-point bag as one controller
+    /// transition. Production uses this door so no observer can see the new rung with the old bag
+    /// or with an empty bag between two calls.
+    pub(crate) fn commit_candidate(
+        &mut self,
+        proposal: Proposal,
+        sample: SegmentSample,
+        variant: ObservedHlsVariant,
+        now_ms: u64,
+    ) -> bool {
+        let response_improves = proposal.direction != Direction::Up
+            || self
+                .active_variant
+                .is_some_and(|active| variant.strictly_dominates(active));
+        if !response_improves
+            || self.candidate_verdict(proposal, sample, variant.declared_bps)
+                != CandidateVerdict::Ready
+            || !self.commit(proposal, now_ms)
+        {
+            return false;
+        }
+        self.commit_candidate_evidence(sample);
+        self.observe_active_variant(variant, sample.network_kbps());
+        true
+    }
+
+    /// `now_ms` is the caller's clock at commit, after the control plane and candidate transfers.
+    /// Failure release is reserve-based rather than time-based, but the controller still publishes
+    /// one monotonic transaction timeline for diagnostics and mode-switch history.
     pub(crate) fn commit(&mut self, proposal: Proposal, now_ms: u64) -> bool {
         if self.pending != Some(proposal) {
             return false;
         }
+        let previous = self.current;
         self.current = proposal.rung;
+        if proposal.rung != previous {
+            self.active_variant = None;
+            self.active_variant_evidence_kbps = None;
+        }
         self.pending = None;
+        self.pending_reserve_policy = None;
+        self.pending_exploration_budget_ms = 0;
+        // A committed candidate is direct counter-evidence to the common no-endpoint frontier:
+        // this serial path produced a Pareto-improving response. Future failures start a new
+        // budget frontier in the new operating-point coordinates.
+        self.common_budget_frontier_ms = None;
         self.samples_on_rung = 0;
+        // Acquisition costs belong to one operating point. Retire the previous bag for BOTH
+        // directions before any next observation can publish it as the new rung's runway; the
+        // completed candidate is seeded immediately by the production caller below this commit.
+        self.acquisitions.reset();
+        self.last_window = self.acquisitions.observed_readout(0);
         // **The ceiling moved, so the reserve's units did.** `B_max` is inversely proportional to
         // the rung, so the next `buffered_ms` is measured against a different maximum and the
         // delta across this commit is a coordinate change rather than a flow. See
         // `BufferEstimate::rebase` for the device trace where differencing it withheld Original
         // recovery for an entire playback.
         self.buffer.rebase();
+        self.last_buffer_observation_ms = None;
+        self.rollback_rung = if proposal.direction == Direction::Up && proposal.rung > previous {
+            Some(previous)
+        } else {
+            None
+        };
+        self.recovery_target = None;
         self.now_ms = self.now_ms.max(now_ms);
-        // Both directions arm it; only the UP path reads it. See the field. The length is fixed
-        // HERE, from the segment this transaction ran against.
-        self.dwell_until_ms = Some(self.now_ms.saturating_add(self.upshift_dwell_ms()));
-        // A rung that just committed is a rung that works. Whatever the last reject believed about
-        // it has been answered by a transaction that finished, so the block is retired by evidence
-        // of exactly the kind it was waiting for.
-        if self.reject_block.map(|block| block.rung) == Some(proposal.rung) {
-            self.reject_block = None;
-        }
+        // A completed commit is direct counter-evidence for this exact actuator. It says nothing
+        // about failures retained for any other rung.
+        self.failures[proposal.rung.index()] = FailureCertificate::default();
         true
     }
 
@@ -1081,62 +1426,85 @@ impl Controller {
             return false;
         }
         self.pending = None;
+        self.pending_reserve_policy = None;
         self.now_ms = self.now_ms.max(now_ms);
-        // **Only a DISCRETIONARY attempt arms the block, and a downshift is not one.** This guard
-        // prices repeating a spend the controller chose to make; `dwell_until_ms`' doc already
-        // draws the same line for the dwell — "a downshift is a recovery action and rate-limiting
-        // recovery is how a stall becomes a policy" — and the argument is identical here, with a
-        // sharper failure. `refill_time_ms` returns `None` whenever `safe_budget <= R_current`,
-        // which IS the state a collapse-driven downshift is in, so a failed downshift armed a
-        // block with no clock release at all; the only remaining exit is the budget exceeding the
-        // raw rate the failing estimate believed, i.e. the link having to beat its own
-        // pre-collapse reading. Between those, every upshift was refused indefinitely and playback
-        // sat on the floor with a link that could carry several rungs. On the up path this cannot
-        // arise: `best_sustainable` admits only `expected_wire <= 0.8 * safe`, so a surplus of at
-        // least `0.25 * R` exists by construction and the block is bounded by `4 * E_tx`.
-        //
-        // It also settles the pricing: the cost below is `upshift_transaction_cost`, which is the
-        // right ledger for the only direction that now reaches it. A downshift has no graded leg
-        // and an unbounded warm-up, so charging it that sum was wrong twice over.
-        if cause == RejectCause::Circumstance
-            || proposal.direction != Direction::Up
-            || self.last_segment_ms <= 0
-        {
+        if cause == RejectCause::Circumstance {
+            self.pending_exploration_budget_ms = 0;
             return true;
         }
-        // What the failed attempt spent: `E_tx`, the sum of the two deadlines it was held to —
-        // the same quantity the dwell is armed for, asked for once.
-        let cost_ms = i64::try_from(self.upshift_dwell_ms()).unwrap_or(i64::MAX);
-        // What it takes to earn that back: the CURRENT rung is what playback keeps consuming while
-        // the reserve refills, and the surplus is measured against the conservative budget rather
-        // than the raw rate — this guard decides whether another attempt is affordable, and an
-        // affordability question is answered on a lower bound.
-        let current = self.catalog.candidate(self.current);
-        let refill_ms = crate::abr::plant::refill_time_ms(
-            cost_ms,
-            current.expected_wire_kbps,
-            hls_safe_budget(&self.delivery),
-        );
-        self.reject_block = Some(RejectBlock {
-            rung: proposal.rung,
-            release_at_ms: refill_ms
-                .and_then(|ms| u64::try_from(ms).ok())
-                .map(|ms| self.now_ms.saturating_add(ms)),
-            evidence_kbps: self.delivery.slow_kbps,
-        });
+        if proposal.direction == Direction::Down {
+            // A recovery transaction that failed for a reason attached to the candidate must not
+            // be proposed unchanged after the active stream aborts again. If it was the known-good
+            // rollback point, the service episode has invalidated that knowledge; minimize the
+            // remaining worst-case time-to-picture by trying the smallest feasible response.
+            //
+            // `StructuralAtOrBelow` is deliberately excluded. That refusal says every smaller
+            // bounding box is at least as restrictive, so descending cannot repair it.
+            if matches!(
+                cause,
+                RejectCause::Censored
+                    | RejectCause::Candidate
+                    | RejectCause::CompletedUnsustainable
+                    | RejectCause::Structural
+                    | RejectCause::ResponseUnchanged
+            ) {
+                let floor = self.recovery_floor();
+                self.recovery_target = (floor < self.current).then_some(floor);
+            }
+            self.pending_exploration_budget_ms = 0;
+            return true;
+        }
+        match cause {
+            RejectCause::Censored | RejectCause::ResponseUnchanged => {
+                self.common_budget_frontier_ms = Some(
+                    self.common_budget_frontier_ms
+                        .unwrap_or(0)
+                        .max(self.pending_exploration_budget_ms),
+                );
+                let failure = &mut self.failures[proposal.rung.index()];
+                failure.deadline_budget_ms = Some(
+                    failure
+                        .deadline_budget_ms
+                        .unwrap_or(0)
+                        .max(self.pending_exploration_budget_ms),
+                );
+                if cause == RejectCause::Censored {
+                    failure.service_endpoint = true;
+                }
+            }
+            RejectCause::Candidate => {
+                let failure = &mut self.failures[proposal.rung.index()];
+                failure.deadline_budget_ms = Some(
+                    failure
+                        .deadline_budget_ms
+                        .unwrap_or(0)
+                        .max(self.pending_exploration_budget_ms),
+                );
+                failure.service_endpoint = true;
+            }
+            RejectCause::CompletedUnsustainable => {
+                let failure = &mut self.failures[proposal.rung.index()];
+                failure.completed_unsustainable_hls_fast_kbps = Some(
+                    failure
+                        .completed_unsustainable_hls_fast_kbps
+                        .unwrap_or(0)
+                        .max(self.delivery.fast_kbps),
+                );
+            }
+            RejectCause::Structural => {
+                self.failures[proposal.rung.index()].structural = true;
+            }
+            RejectCause::StructuralAtOrBelow => {
+                for rung in LADDER.iter().copied().filter(|rung| *rung <= proposal.rung) {
+                    self.failures[rung.index()].structural = true;
+                }
+            }
+            RejectCause::Circumstance => unreachable!("handled above"),
+        }
+        self.pending_exploration_budget_ms = 0;
         true
     }
 
-    /// `E_tx` for the segment currently in scope — the interval a commit arms the dwell for, and
-    /// the debt a failed upshift owes. Zero when no segment has been measured, which is the
-    /// correct reading of "no measurement" and cannot arm anything.
-    ///
-    /// **Saturate toward NOT blocking.** `upshift_transaction_cost` is bounded by `2.6 * d` today
-    /// and this conversion cannot fail, but the safe failure of a guard is to let the decision
-    /// through: `u64::MAX` here would be a dwell of 5.8e8 years, i.e. a permanent latch on every
-    /// climb for the life of the demux, and it is one refactor away — the moment this cost is
-    /// asked for a `Direction::Down`, `candidate_warmup_budget` returns `Duration::MAX` and
-    /// `saturating_add` keeps it.
     /// The reason attached to the LAST decision, for the invariant test that a `Stay` is never
     /// silent. `telemetry()` publishes the same value; this is the direct read, so a test does not
     /// have to build a whole telemetry snapshot to ask one question.
@@ -1145,44 +1513,11 @@ impl Controller {
         self.last_reason
     }
 
-    #[cfg(test)]
-    pub(crate) fn dwell_left_ms(&self) -> u64 {
-        self.dwell_remaining_ms()
-    }
-
     /// Is a transaction in flight. The steady line already reports this as `pending=<n>kbps`, so
-    /// like the dwell it needs no reason code — and like the dwell, the invariant test has to know
-    /// to skip it.
+    /// needs no reason code of its own; the invariant test skips it because the transaction has
+    /// not reached a verdict yet.
     #[cfg(test)]
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.is_some()
-    }
-
-    fn upshift_dwell_ms(&self) -> u64 {
-        if self.last_segment_ms <= 0 {
-            return 0;
-        }
-        u64::try_from(
-            crate::abr::viability::upshift_transaction_cost(
-                std::time::Duration::from_millis(u64::try_from(self.last_segment_ms).unwrap_or(0)),
-                &self.policy,
-            )
-            .as_millis(),
-        )
-        .unwrap_or(0)
-    }
-
-    /// Wall milliseconds still owed on the dwell guard (N10). `0` once the deadline has passed,
-    /// and `0` before any commit — a controller that has started no encoder owes nothing.
-    fn dwell_remaining_ms(&self) -> u64 {
-        self.dwell_until_ms
-            .map_or(0, |until| until.saturating_sub(self.now_ms))
-    }
-
-    /// Is a live reject block refusing this climb (N11)? See [`RejectBlock`] for why this takes no
-    /// rung: the reserve pays `E_tx` for the ATTEMPT, whichever rung it was aimed at.
-    fn reject_blocks(&self) -> bool {
-        self.reject_block
-            .is_some_and(|block| block.holds(self.now_ms, self.last_safe_budget_kbps))
     }
 }

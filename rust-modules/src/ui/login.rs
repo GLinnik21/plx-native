@@ -107,17 +107,21 @@ fn draw_deleted(p: Painter) {
         "Credentials, preferences, telemetry, and local diagnostics have been removed.",
         theme::size::LABEL,
     );
-    TextView::new("Press OK to sign in", theme::size::BODY, theme::TEXT_TERTIARY)
-        .h(HAlign::Center)
-        .draw(
-            p,
-            Rect::new(
-                layout.content.x,
-                layout.content.cy(),
-                layout.content.w,
-                50.0,
-            ),
-        );
+    TextView::new(
+        "Press OK to sign in",
+        theme::size::BODY,
+        theme::TEXT_TERTIARY,
+    )
+    .h(HAlign::Center)
+    .draw(
+        p,
+        Rect::new(
+            layout.content.x,
+            layout.content.cy(),
+            layout.content.w,
+            50.0,
+        ),
+    );
 }
 
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {

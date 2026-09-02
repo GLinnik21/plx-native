@@ -49,47 +49,30 @@ pub(crate) const LADDER: [Rung; 13] = [
 /// **How much reserve the dev rung pin waits for before it transacts UPWARD.** Six segments.
 ///
 /// A TOOL constant, not ABR policy: nothing outside [`Controller::pinned_to`] reads it and it
-/// takes no part in any decision an unpinned build makes. It exists because a candidate
-/// transaction runs inline on the demux worker and costs roughly 2.3 segments of unrefilled
-/// playback (`candidate_warmup_budget` + `candidate_prime_budget`), while `candidate_ready`
-/// requires two segments of reserve to still be there afterwards. Propose with less and the
-/// transaction drains the reserve below its own acceptance test, the candidate is rejected, and
-/// the pin re-proposes forever without ever landing — which is not a hypothetical: the closed-loop
-/// plant reproduced exactly that livelock the first time this was written without a gate.
+/// takes no part in any decision an unpinned build makes. It is a deliberately generous harness
+/// gate: a pinned upshift runs inline on the demux worker, spends its exact initial exploration
+/// reserve, and may conditionally use its remaining grant for one ordinary observation when the
+/// first object is setup-bearing. Proposing without disposable reserve made the pin reject and
+/// re-propose forever in the closed-loop plant; the six-segment tool gate keeps that measurement
+/// path out of the livelock without becoming a production ABR threshold.
 ///
-/// **Every clause of that derivation is an UPSHIFT argument, and applying it downward cost the M4
-/// census four of its seven points (five in the corpus before it, where `pin_4000` additionally
-/// ran at rung 6000 for a separate reason -- rungs 2000 and 4000 shared one clip).** A downshift
-/// has no PRIME budget at all (there is no graded segment to hold to an acceptance threshold) and
-/// its warm-up budget is the reserve itself rather than a multiple of the content duration
-/// (`abr/viability.rs`), so neither of the two figures this constant sums applies going down.
-/// The old note here said "pin UPWARD from the bootstrap rung, which is how measurement step
-/// M4 is written" — but on an unshaped LAN `startup_rung` picks the ladder TOP, so every pin in
-/// that census was a *downshift*, needing 12 000 ms of reserve at a rung whose reachable ceiling is
-/// `B_max(20000) ≈ 5 421 ms`. Unsatisfiable by construction. Device-measured 2026-08-26 and only
-/// noticed 2026-08-27: `pin_320`, `pin_2000`, `pin_10000` and `pin_16000` all ran at `rung=20000`
-/// with byte lists identical to `pin_20000`'s, so the census recorded the top rung five times and
-/// the corpus has three distinct clips of byte support rather than eleven.
+/// Applying this upshift-only harness gate downward cost the M4 census four of its seven points
+/// (five in the corpus before it, where `pin_4000` additionally ran at rung 6000 for a separate
+/// reason). On an unshaped LAN `startup_rung` picks the ladder top, so each lower pin was a
+/// downshift asked to accumulate 12 000 ms at a rung whose reachable ceiling was
+/// `B_max(20000) ≈ 5 421 ms`: unsatisfiable by construction. Device-measured 2026-08-26 and
+/// noticed 2026-08-27, the affected pins all remained at 20000 and duplicated its byte lists.
 ///
 /// See [`PIN_MIN_RESERVE_SEGMENTS_DOWN`] for what a downshift actually has to afford.
 pub(crate) const PIN_MIN_RESERVE_SEGMENTS: i64 = 6;
 
 /// **How much reserve the dev rung pin waits for before it transacts DOWNWARD.** Two segments.
 ///
-/// Derived from what the transaction costs rather than reused from the upshift figure:
-///
-/// * **One segment** for the candidate's warm-up fetch. The acquisition-transfer bound
-///   (`docs/adaptive-playback-spec.md` §2a) gives `A_j ≤ A_i` whenever the candidate's byte count
-///   is lower, which a downshift's is by definition — so the warm-up cannot cost more than a
-///   current-rung segment, and a rung being sustained costs at most `D`.
-/// * **One segment** for the control plane. Three requests (`ff.rs`), measured on a real PMS at a
-///   ~100 ms median with a 1 306 ms maximum (`docs/measurements/p2h-pms-ladder.md` §5), which one
-///   media duration covers at every `D` the ladder serves.
-///
-/// No third term: the two deadline budgets that make up the upshift's 2.3 segments do not apply
-/// in this direction — there is no graded segment, and the warm-up's budget is the reserve itself
-/// (J3b) rather than a multiple of `D` — and `candidate_ready`'s two-segment residual is an
-/// *upshift* acceptance test.
+/// This is another measurement-tool floor, not a claim that a downshift costs exactly `2D`. It lets
+/// the census begin with one nominal media horizon plus room for its control plane. The live media
+/// deadline is derived later from the then-current reserve and the measured whole-acquisition
+/// prediction; it can exceed this precondition, and terminal floor recovery removes the rollback
+/// deadline entirely. Production ABR does not read this constant.
 ///
 /// **The deadline makes this figure self-consistent rather than merely expected.** A downshift
 /// warm-up is now bounded by the reserve it is spending, so a pin that waits for two segments
@@ -120,12 +103,13 @@ impl Rung {
         }
     }
 
-    /// **`σ` — how far above its DECLARED rate a rendition's segments can actually run**, per-mille.
+    /// **Historical `sigma` calibration:** how far above its declared rate a rendition's segments
+    /// ran, per-mille. Retained for the offline transferred-byte comparator; the live actuator
+    /// never projects a candidate size from it.
     ///
-    /// The admission rule's candidate query is `σ · W_j · D / 8000` (specification §3), and `σ` is a
-    /// property of the encoder at that rung rather than a single constant. It is measured, not
-    /// chosen: `max_observed(delivered/declared) × cross-item spread`, both factors classification
-    /// (2) and the product (3), over 1 560 segments on three items in five windows.
+    /// The retired query was `sigma * W_j * D / 8000` (historical specification §3), with a
+    /// per-rung measurement rather than one global constant:
+    /// `max_observed(delivered/declared) * cross-item spread`, over 1 560 segments on three items.
     ///
     /// | rung | max observed | cross-item spread | `σ` |
     /// |---|---:|---:|---:|
@@ -152,6 +136,7 @@ impl Rung {
     /// **This is a seed, not a guarantee**, and §2a is why that is survivable: the rule re-decides
     /// every segment against a window of real acquisitions, and `bytes=` is logged for every
     /// fetched segment, so a wrong `σ` is visible rather than silent.
+    #[allow(dead_code)] // retained for the retired transfer-bound corpus tests
     pub(crate) const fn size_spread_pm(self) -> u32 {
         match self {
             Rung::P240 => 1_577,
@@ -196,7 +181,7 @@ impl Rung {
         }
     }
 
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         LADDER.iter().position(|r| *r == self).unwrap_or(0)
     }
 
@@ -223,6 +208,60 @@ impl Rung {
             .iter()
             .copied()
             .find(|rung| rung.ceiling() == ceiling)
+    }
+}
+
+/// What PMS actually attached to one fixed-HLS request.  This is deliberately not a [`Rung`]:
+/// the rung is the actuator sent on the decision request, while the master declaration and the
+/// decoded raster are the server's response.  PMS's mapping is item- and session-dependent and
+/// therefore has no honest inverse back to the request ladder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ObservedHlsVariant {
+    pub(crate) declared_bps: u64,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+}
+
+impl ObservedHlsVariant {
+    pub(crate) fn new(declared_bps: u64, width: i32, height: i32) -> Option<Self> {
+        let width = u16::try_from(width).ok().filter(|value| *value > 0)?;
+        let height = u16::try_from(height).ok().filter(|value| *value > 0)?;
+        (declared_bps > 0).then_some(Self {
+            declared_bps,
+            width,
+            height,
+        })
+    }
+
+    /// A coefficient-free quality comparison. More pixels at fewer declared bits is not ordered;
+    /// a response is strictly better only when neither independent axis regresses and at least one
+    /// improves.
+    pub(crate) fn strictly_dominates(self, other: Self) -> bool {
+        self.width >= other.width
+            && self.height >= other.height
+            && self.declared_bps >= other.declared_bps
+            && (self.width > other.width
+                || self.height > other.height
+                || self.declared_bps > other.declared_bps)
+    }
+
+    /// Whether this response is provably smaller than the picture the actuator can request.
+    ///
+    /// If the request box contains the source, an unscaled response must contain the source
+    /// raster. If the source is larger than the box, an aspect-preserving fit must reach at least
+    /// one edge of that box; falling short on both axes is strictly dominated by such a fit. This
+    /// is geometry, not a bitrate tolerance. Unknown source geometry proves nothing and therefore
+    /// fails open.
+    pub(crate) fn definitively_underfills(self, rung: Rung, source: (u16, u16)) -> bool {
+        if source.0 == 0 || source.1 == 0 {
+            return false;
+        }
+        let bounds = rung.raster();
+        if source.0 <= bounds.0 && source.1 <= bounds.1 {
+            self.width < source.0 || self.height < source.1
+        } else {
+            self.width < bounds.0 && self.height < bounds.1
+        }
     }
 }
 
@@ -268,15 +307,13 @@ pub(crate) struct HlsCandidate {
     ///    where they are used.
     /// 2. Where the index is wrong, it is wrong in the **inert** direction. On a source below the
     ///    rung's raster the real cost collapses to the source-raster cost, so the table
-    ///    OVERSTATES — and an overstated production cost can only make the gate more reluctant to
-    ///    climb, never less. There is no 4K work to refuse when the source is 1080p, so a gate
-    ///    that never fires there is correct rather than broken.
+    ///    OVERSTATES. That affects the calibrated recurring-work term in the Original/HLS utility
+    ///    comparison, not HLS admission: no independent production gate reads this field.
     ///
-    /// What that trades away is stated rather than hidden: on a small source the production
-    /// constraint contributes nothing, so the admission rule is effectively network-only there.
-    /// That is the status quo, it is safe, and it is not what the two-constraint rule exists for —
-    /// the rule exists to refuse 4K on a fast link in front of a loaded PMS, which is precisely
-    /// the case a 4K source produces and this table gets right.
+    /// What that trades away is stated rather than hidden: on a small source this production model
+    /// contributes little to the Original-versus-HLS counterfactual. Live HLS admission instead
+    /// observes the candidate's end-to-end acquisition, so an inaccurate class cannot commit an
+    /// encoder that produces slower than real time.
     ///
     /// **The alternative, if this ever needs to be exact:** index by the raster PMS actually
     /// produces, `min(rung box, source)`, which the census shows the cost tracks far better than
@@ -314,9 +351,9 @@ pub(crate) struct HlsCandidate {
 /// assumed. And **rungs 18000 and 20000 are the same encoder session** on a 1080p item — same
 /// declared 16,150, and 39 of 40 segments byte-identical by sha256 — so the controller carries
 /// two budgets and two production loads for one stream. All of it is over-estimation, hence
-/// conservative for admission and not a live bug; the fix belongs with the admission rule, since
-/// the transaction ALREADY fetches the true value and logs it (`ff.rs`'s
-/// `hls: master one-variant bandwidth=`) before it decides anything.
+/// conservative in the planning/utility paths. It is not a live HLS admission bug because the
+/// transaction fetches and grades the candidate's actual segment; the declared value remains
+/// telemetry (`ff.rs`'s `hls: master one-variant bandwidth=`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HlsActuatorCatalog {
     candidates: [HlsCandidate; 13],
@@ -480,49 +517,40 @@ impl HlsActuatorCatalog {
             })
     }
 
-    /// The best FEASIBLE actuator whose measured output fits the budget — chosen directly, so a
-    /// jump from 8 Mbps to a 15 Mbit/s budget primes the 14 Mbps encoder once instead of walking
-    /// 10, 12, 14 and paying three encoder creations for one move.
+    /// The best feasible planning actuator whose calibrated output fits a rate budget. Used for
+    /// bootstrap and Original fallback, where no candidate transaction has yet measured another
+    /// operating point. The live HLS upshift arm deliberately does not treat this as a capacity
+    /// ceiling.
     pub(crate) fn best_for_budget(&self, safe_budget_kbps: u32) -> Option<HlsCandidate> {
         self.feasible()
             .filter(|candidate| candidate.expected_wire_kbps <= safe_budget_kbps)
             .max_by_key(|candidate| candidate.expected_wire_kbps)
     }
 
-    /// The same selection with the PMS production estimate applied as a second, independent
-    /// constraint (see [`ProductionEstimate::predicted_ratio_pm`]). This is what stops a fast link
-    /// in front of a loaded server from committing 4K: the network says yes and the server's own
-    /// measured cadence says it would fall behind real time.
-    pub(crate) fn best_sustainable(
+    /// Whether one planning actuator fits the conservative delivery and reserve models. This orders
+    /// both the counterfactual HLS alternative in the Original/HLS mode
+    /// comparison and a live HLS experiment after a measured service endpoint. It is deliberately
+    /// not a live commit law:
+    /// a demand-capped response cannot prove unused path capacity, so the controller may still
+    /// excite an unmodelled higher rung after exhausting model-supported candidates, and every
+    /// candidate must still complete its own exact acquisition before commit.
+    pub(crate) fn modeled_sustainable(
         &self,
+        candidate: HlsCandidate,
         safe_budget_kbps: u32,
-        production: &ProductionEstimate,
-        current: HlsCandidate,
         policy: &AbrPolicy,
         buffered_ms: i64,
-    ) -> Option<HlsCandidate> {
-        self.feasible()
-            .filter(|candidate| candidate.expected_wire_kbps <= safe_budget_kbps)
-            .filter(|candidate| {
-                production
-                    .predicted_ratio_pm(*candidate, current, policy)
-                    .is_none_or(|ratio| ratio <= policy.production_safe_pm)
-            })
+    ) -> bool {
+        candidate.expected_wire_kbps <= safe_budget_kbps
             // **N3's refill filter — a THIRD independent constraint, in its own units.** The
-            // budget above is bits per second, production is a cadence, and this is a reserve: a
+            // budget above is bits per second and this is a reserve: a
             // candidate that would leave the buffer short of its own target has to leave room to
             // close that shortfall inside `H`, so the rate it may claim shrinks in proportion.
-            // Per candidate rather than as one scalar, because `R` appears on both sides of the
-            // algebra and a single budget compared against every rung is not well defined.
             //
-            // **The two rates handed to it are PLANNING rates and are labelled so here**, per N17.
-            // `expected_wire_kbps` is what the rendition was asked for, not what it delivered —
-            // the catalog's error is +5.2% to +31.6% — and the audio lane uses
-            // `assumed_audio_kbps` because no per-lane ES measurement exists for a rung that has
-            // not been played. Only `B_max_est`'s geometry is measured; the rates it is evaluated
-            // at are not, and the day `SegmentSample::media_kbps` is carried per rung this becomes
-            // a measurement.
-            .filter(|candidate| {
+            // The rates handed to it are PLANNING rates. `expected_wire_kbps` is calibrated PMS
+            // output, while the audio lane is still an assumption because no per-lane ES
+            // measurement exists for an actuator that has not run.
+            && {
                 let video_es = candidate
                     .expected_wire_kbps
                     .saturating_sub(policy.assumed_audio_kbps);
@@ -534,6 +562,19 @@ impl HlsActuatorCatalog {
                     safe_budget_kbps,
                     policy,
                 )
+            }
+    }
+
+    /// The highest feasible actuator admitted by [`Self::modeled_sustainable`].
+    pub(crate) fn best_sustainable(
+        &self,
+        safe_budget_kbps: u32,
+        policy: &AbrPolicy,
+        buffered_ms: i64,
+    ) -> Option<HlsCandidate> {
+        self.feasible()
+            .filter(|candidate| {
+                self.modeled_sustainable(*candidate, safe_budget_kbps, policy, buffered_ms)
             })
             .max_by_key(|candidate| candidate.expected_wire_kbps)
     }

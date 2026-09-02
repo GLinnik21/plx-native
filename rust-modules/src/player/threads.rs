@@ -12,10 +12,24 @@ unsafe impl<T> Send for SendPtr<T> {}
 
 /// media/load thread: construct + Load (uid=NULL). The library owns its own
 /// GMainContext + loop, so Load returns quickly and callbacks arrive on its thread.
-pub(crate) fn load_thread(payload: SendPtr<c_char>) {
+pub(crate) fn load_thread(
+    payload: SendPtr<c_char>,
+    native_epoch: u32,
+    route_start: Option<crate::route::RouteStartAttempt>,
+) {
     super::log("SMP: calling Load (uid=NULL)");
-    let ok = unsafe { super::ffi::sf_load(payload.0) };
+    let ok = unsafe { super::ffi::sf_load(payload.0, native_epoch) };
     super::log(&format!("SMP: Load returned ok={ok}"));
+    if let Some(ticket) = route_start {
+        crate::route::publish_route_start_result(
+            ticket,
+            if ok != 0 {
+                crate::route::RouteStartResult::Started
+            } else {
+                crate::route::RouteStartResult::StartFailed
+            },
+        );
+    }
     if ok == 0 {
         // Publish it. This used to be logged and discarded, so a refused payload was
         // indistinguishable from a slow one and the pump waited on a `loadCompleted` that could
@@ -94,17 +108,10 @@ impl ReportStop {
 
 /// The ~10 s `/:/timeline` progress reporter.
 ///
-/// `sid` rides beside `rk` for the same reason `rk` does: both are fixed for the session and both
-/// are captured BY VALUE at the spawn site. `rk` always was; the server was not, and the report
-/// resolved it per tick through `plex::client_opt()` — "whichever server is current *now*". A
-/// reporter for an item borrowed from a friend's share therefore wrote its resume point to whatever
-/// server the user had since navigated to, every ten seconds, invisibly: there is no host runtime to
-/// catch it, and the device harness grades progress from the app's own heartbeat rather than from
-/// the server it landed on. (`report_timeline` logs a report that fails to land now — but one that
-/// lands on the WRONG server does not fail, so that line would never have caught this.)
+/// The lease names one exact Engine. Route identity, server, PlayQueue and track projection are
+/// sampled together under `PlayerControl`; no field of the main-thread `Session` is touched here.
 pub(crate) fn timeline_thread(
-    sid: crate::plex::ServerId,
-    rk: String,
+    lease: crate::route::TimelineLease,
     stop: std::sync::Arc<ReportStop>,
 ) {
     use crate::plex::TimelineState;
@@ -113,7 +120,7 @@ pub(crate) fn timeline_thread(
             return;
         }
         let dur = SHARED.duration_ns.load(Ordering::Relaxed);
-        if dur <= 0 || rk.is_empty() {
+        if dur <= 0 {
             continue;
         }
         let t = SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000;
@@ -123,7 +130,9 @@ pub(crate) fn timeline_thread(
         } else {
             TimelineState::Playing
         };
-        crate::route::report_timeline(sid, &rk, state, t, d);
+        if !crate::route::report_timeline(&lease, state, t, d) {
+            return;
+        }
         super::log(&format!(
             "timeline {} t={}s/{}s",
             state.as_str(),

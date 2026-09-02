@@ -64,14 +64,19 @@ No account of its own, no server, no payment path, and no user-generated content
 
 **It does have telemetry, and that hedge used to say it did not.** A release binary carries a Sentry
 DSN and a PostHog project key — both **write-only ingest credentials**, publishable by design, which
-permit sending to a project and grant no read of anything in it. After an explicit opt-in (two
-switches, both off by default) it POSTs to `ingest.de.sentry.io` and `eu.i.posthog.com`. The Sentry
+permit sending to a project and grant no read of anything in it. First run asks about crash reports
+and product analytics separately. The first answer remains a draft; answering the second records
+both choices, and only a **Share** answer enables that category and permits its POSTs to
+`ingest.de.sentry.io` or `eu.i.posthog.com`. `BACK` navigates without recording a refusal. Later
+changes live under Account → Settings → Privacy & data, where **Done** commits and `BACK` discards.
+The Sentry
 **auth token** is the real secret in this system: it can read and delete the project, it never
 enters the binary, and it exists only as a GitHub Actions secret used by `sentry-cli` in the release
 workflow.
 
 In scope for a report, and worth naming since a "no telemetry endpoint" line told researchers not to
-look here: the consent gate failing open, an identifier existing before an opt-in or surviving a
-withdrawal, anything that gets a runtime string past `diag::schema`'s no-owned-strings guarantee,
+look here: the consent gate failing open, an identifier existing before product analytics is
+explicitly enabled or surviving its withdrawal, anything that gets a runtime string past
+`diag::schema`'s no-owned-strings guarantee,
 and the spool's file mode or its contents. [PRIVACY.md](PRIVACY.md) is the full account of what
 leaves the television.

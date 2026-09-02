@@ -26,9 +26,10 @@
 //!
 //! **"See exactly what's sent" renders every literal schema** — Syncthing's preview, and the reason
 //! the claim below it is checkable rather than reassuring. Usage examples go through the real
-//! serializer. Native and fallback examples replace runtime values with explicit placeholders;
-//! tests compare their object keys with the sanitizer allowlist, so an added field cannot bypass
-//! this screen.
+//! serializer. Native and fallback examples replace random/build-specific runtime values with
+//! explicit placeholders; handled playback and usage examples show representative members of
+//! their closed fixed domains. Tests compare object keys with the sanitizer/schema allowlists, so
+//! an added field cannot bypass this screen.
 //!
 //! # First-run BACK navigates; it never answers
 //!
@@ -138,9 +139,9 @@ fn row_ids() -> Vec<RowId> {
 
 static mut POP: Popover = Popover::new();
 static mut TABLE: TableView = TableView::new(); // main-thread only
-/// The answer being composed. Mirrored from the stored decision at [`open`] and committed on the
-/// way out — never written straight to `consent::CURRENT`, so a half-made choice cannot start
-/// letting events through while the screen is still up.
+/// The answer being composed. Settings mirrors the stored decision and commits it through Done;
+/// first run starts empty and commits both choices only after the second question. It is never
+/// written straight to `consent::CURRENT`, so a half-made choice cannot let events through.
 static mut DRAFT: (bool, bool) = (false, false);
 static mut BASE: (bool, bool) = (false, false);
 static mut MODE: Mode = Mode::FirstRun;
@@ -221,9 +222,6 @@ pub(crate) fn should_show(c: &Consent, automated: bool) -> bool {
     consent::should_ask(c, automated)
 }
 
-/// Open the question, seeded from whatever was stored. Seeded rather than always-off because a
-/// policy bump re-asks somebody who already said yes, and presenting their previous answer as "no"
-/// would be quietly asking them to opt in again.
 pub(crate) fn open(prev: &Consent) {
     unsafe {
         addr_of_mut!(MODE).write(Mode::FirstRun);
@@ -239,7 +237,7 @@ pub(crate) fn open(prev: &Consent) {
     }
     reader().reset();
     delete_alert().close();
-    rebuild(0);
+    rebuild_initial(0);
     pop().open();
     crate::ui::idle::invalidate();
 }
@@ -269,7 +267,7 @@ pub(crate) fn open_settings(prev: &Consent) {
     }
     reader().reset();
     delete_alert().close();
-    rebuild(0);
+    rebuild_initial(0);
     pop().open();
     crate::ui::idle::invalidate();
 }
@@ -290,6 +288,14 @@ pub(crate) fn freezes_host() -> bool {
 /// Rebuild the rows against the current draft. Called on every toggle, because a `TableView` holds
 /// its rows by value — the checkmark is state in the row, not a live read.
 fn rebuild(sel: i32) {
+    rebuild_with_motion(sel, true);
+}
+
+fn rebuild_initial(sel: i32) {
+    rebuild_with_motion(sel, false);
+}
+
+fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
     let (errors, usage) = draft();
     table().header_ink = theme::TEXT_READING;
     if mode() == Mode::FirstRun {
@@ -312,7 +318,7 @@ fn rebuild(sel: i32) {
                 )
                 .row(Row::new(ROW_POLICY).chevron(true))],
             sel,
-            false,
+            preserve_motion,
         );
     } else {
         let reporting = Section::new("Reporting")
@@ -334,31 +340,46 @@ fn rebuild(sel: i32) {
                 .detail("Sign out and remove PlxNative data from this TV.")
                 .chevron(true),
         );
-        table().set_sections(vec![reporting, info, local], sel, false);
+        table().set_sections(vec![reporting, info, local], sel, preserve_motion);
     }
     debug_assert_eq!(row_ids().len() as i32, table().n_rows());
 }
 
-/// Commit the completed first-run decisions or the explicit Settings action, then close.
-fn commit() {
-    let (errors, usage) = draft();
-    let prev = consent::current().unwrap_or_default();
-    let next = consent::apply(&prev, errors, usage, || {
-        crate::telemetry::mint_install_id().unwrap_or_default()
-    });
+fn apply_answer_with_mint(
+    prev: &Consent,
+    errors: bool,
+    usage: bool,
+    mint: impl FnOnce() -> Option<String>,
+) -> Consent {
+    let next = consent::apply(prev, errors, usage, || mint().unwrap_or_default());
     // Only usage analytics needs an install identity. Crash reports are deliberately anonymous,
     // so an errors-only answer must remain valid even if randomness is unavailable. A failed usage
     // mint, on the other hand, is not an identity: refuse that opt-in rather than inventing one
     // from a clock or a MAC.
     if next.usage && next.install_id.as_deref().unwrap_or("").is_empty() {
-        crate::log(
-            "consent: no /dev/urandom — recording the answer as a refusal rather than \
-                    inventing an identifier",
-        );
-        crate::telemetry::record(consent::apply(&prev, false, false, String::new));
+        consent::apply(prev, errors, false, String::new)
     } else {
-        crate::telemetry::record(next);
+        next
     }
+}
+
+/// Commit the completed first-run decisions or the explicit Settings action, then close.
+fn commit() {
+    let (errors, usage) = draft();
+    record_answer(errors, usage);
+}
+
+/// Record one explicit answer and close. BACK never reaches this function.
+fn record_answer(errors: bool, usage: bool) {
+    let prev = consent::current().unwrap_or_default();
+    let next = apply_answer_with_mint(&prev, errors, usage, crate::telemetry::mint_install_id);
+    if usage && !next.usage {
+        crate::log(
+            "consent: no /dev/urandom — keeping error reporting choice and refusing only usage \
+             analytics rather than inventing an identifier",
+        );
+    }
+    crate::telemetry::record(next);
     // A decision can only make sending MORE restricted or newly possible, and both want a flush:
     // an opt-in drains anything this session queued, and a withdrawal is the moment the spool's
     // now-unconsented records get dropped — `flush_now` treats a record whose category is off as
@@ -579,15 +600,17 @@ pub(crate) fn update(dt: f32) {
 /// tested against the native sanitizer's field allowlist. A schema change therefore appears here,
 /// in front of the person being asked to consent to it.
 ///
-/// The identifier shown is a placeholder: at the moment this screen is on display no identifier
-/// exists — minting one before the answer is exactly what `consent::apply` refuses to do.
+/// The identifier shown is always a placeholder, never the stored value. A new identifier is
+/// minted only when product analytics is enabled; error-only consent creates none.
 pub(crate) fn preview() -> String {
     use crate::diag::schema::DiagEvent;
     let mut out = String::from(
-        "Every schema this app can send, with dynamic values shown as placeholders. Nothing else \
-         is sent. The usage identifier is random and is created only if you say yes.\n\n",
+        "Every schema this app can send. Random and build-specific values are placeholders; \
+         fixed classes below are representative values from the closed domains in the Privacy \
+         notice. Nothing else is sent. The usage identifier is random and is created only when \
+         product analytics is enabled.\n\n",
     );
-    out.push_str("Native crash report (only when crash reporting is on):\n");
+    out.push_str("Native crash report (only when error reporting is on):\n");
     let crash = crate::telemetry::native::preview_event();
     let crash_text = serde_json::from_slice::<serde_json::Value>(&crash)
         .ok()
@@ -604,6 +627,15 @@ pub(crate) fn preview() -> String {
             .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
         out.push_str(&text);
     }
+    out.push_str("\n\nHandled playback error (only when error reporting is on):\n");
+    let handled = crate::telemetry::playback::preview_event();
+    let handled_text = serde_json::from_slice::<serde_json::Value>(&handled)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
+    out.push_str(&handled_text);
+    out.push_str("\n\n");
+    out.push_str(&crate::telemetry::playback::preview_domains());
     out.push_str("\n\nUsage events (only when usage reporting is on):\n");
     for e in [
         DiagEvent::AppLaunch,
@@ -817,10 +849,11 @@ mod tests {
         );
     }
 
-    /// An answered decision is not re-asked, whichever way it went. Re-asking a decided question is
-    /// the nagging pattern the whole design avoids.
+    /// An answer against the current policy is not re-asked, whichever way it went. Re-asking the
+    /// same decided question is the nagging pattern the whole design avoids; a schema expansion
+    /// deliberately has a different policy version.
     #[test]
-    fn an_answered_question_is_not_asked_again() {
+    fn a_current_policy_answer_is_not_asked_again() {
         for (e, u) in [(false, false), (true, false), (false, true), (true, true)] {
             let answered = consent::apply(&Consent::default(), e, u, || "id".into());
             assert!(
@@ -828,6 +861,78 @@ mod tests {
                 "re-asked after errors={e} usage={u}"
             );
         }
+    }
+
+    /// A material schema expansion must receive two new explicit answers. The previous choices
+    /// remain fail-closed while the first-run route asks the expanded questions again.
+    #[test]
+    fn a_policy_bump_reasks_without_reusing_the_old_answer() {
+        let old = Consent {
+            asked_version: consent::POLICY_VERSION - 1,
+            errors: true,
+            usage: true,
+            install_id: Some("old-id".into()),
+        };
+        assert!(should_show(&old, false));
+        let current = consent::apply(&Consent::default(), true, false, || "new-id".into());
+        assert!(!should_show(&current, false));
+    }
+
+    #[test]
+    fn unavailable_randomness_refuses_only_usage_and_keeps_error_reporting() {
+        let answer = apply_answer_with_mint(&Consent::default(), true, true, || None);
+        assert!(answer.answered());
+        assert!(
+            answer.errors,
+            "anonymous error reporting does not need an install id"
+        );
+        assert!(
+            !answer.usage,
+            "usage reporting cannot start without its random id"
+        );
+        assert!(answer.install_id.is_none());
+    }
+
+    /// Regression for the TV report: the row selection changed its ink, but this screen never
+    /// advanced the TableView springs, so the pill stayed behind until another action snapped it.
+    #[test]
+    fn the_consent_update_advances_the_shared_table_focus_pill() {
+        let _serial = crate::testlock::serial();
+        unsafe { addr_of_mut!(DRAFT).write((true, true)) };
+        rebuild_initial(0);
+        table().move_sel(1);
+        pop().open();
+        let before = table().highlight_motion();
+        update(1.0 / 60.0);
+        let after = table().highlight_motion();
+        close();
+        assert!(
+            after.0 > before.0,
+            "consent::update left the pill behind: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.1.abs() > 0.0,
+            "the screen must expose the running spring: {after:?}"
+        );
+    }
+
+    /// Rebuilding the rows after flipping On/Off changes only their values. It must not turn an
+    /// in-flight focus spring into a teleport.
+    #[test]
+    fn toggling_a_value_preserves_in_flight_focus_motion() {
+        let _serial = crate::testlock::serial();
+        unsafe { addr_of_mut!(DRAFT).write((true, true)) };
+        rebuild_initial(0);
+        table().move_sel(1);
+        let visible = table().measured_height();
+        table().update(1.0 / 60.0, visible);
+        let moving = table().highlight_motion();
+        rebuild(1);
+        assert_eq!(
+            table().highlight_motion(),
+            moving,
+            "a value-only rebuild snapped the pill"
+        );
     }
 
     /// **The preview is the real payload.** Every event the build can emit appears in it, built
@@ -884,6 +989,28 @@ mod tests {
                 "the fallback schema omits `{fallback_field}`"
             );
         }
+        for handled_field in [
+            "Handled playback error",
+            "handled",
+            "breadcrumbs",
+            "phase",
+            "outcome",
+            "requested_quality",
+            "declared_rate",
+            "media_rate",
+            "picture presented",
+            "seek requested",
+            "quality selected",
+            "delivery requested",
+            "HLS request committed",
+            "Original check phase",
+            "playback failed",
+        ] {
+            assert!(
+                text.contains(handled_field),
+                "the handled playback-error schema omits `{handled_field}`"
+            );
+        }
     }
 
     /// …and it shows the anonymity flag, which is the one property in the payload a reader could not
@@ -894,14 +1021,13 @@ mod tests {
         assert!(preview().contains("false"));
     }
 
-    /// **The preview carries no real identifier**, because at the moment it is on screen none
-    /// exists — minting one before the answer is what `consent::apply` refuses to do. A preview
-    /// that displayed a live id would be evidence of exactly the thing the screen denies.
+    /// **The preview carries no real identifier.** Settings may already hold one, while first run
+    /// cannot mint one before the usage answer; neither route may expose the stored value here.
     #[test]
     fn the_preview_cannot_contain_a_real_identifier() {
         let text = preview();
         assert!(
-            text.contains("created only if you say yes"),
+            text.contains("created only when product analytics is enabled"),
             "the intro explains the placeholder"
         );
         assert!(

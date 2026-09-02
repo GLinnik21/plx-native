@@ -1,14 +1,17 @@
-//! player::shared — the ONLY cross-thread state. Every field replaces a `volatile`
-//! global from playback.c and is an atomic or a Mutex (never a bare value). One
-//! long-lived `static SHARED` in mod.rs: it outlives every start/stop cycle and is
-//! *reset*, never freed — so a late library callback after teardown writes to a
-//! live object, exactly as the C static globals behaved.
+//! player::shared — the engine's cross-thread transport, callback and clock state. Every field
+//! replaces a `volatile` global from playback.c and is an atomic or a Mutex (never a bare value).
+//! Route ownership and route-changing intents live under the separate synchronized authority in
+//! `route::PLAYER_CONTROL`. One long-lived `static SHARED` in mod.rs outlives every start/stop
+//! cycle and is *reset*, never freed. Native callbacks additionally carry the exact `Load` epoch:
+//! retirement drains an event already inside that epoch and rejects every later event, so stable
+//! storage is not mistaken for permission to mutate the next playback.
 use crate::stream::HttpStream;
 use std::ffi::CString;
 use std::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU8, Ordering,
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 /// **The names the CONTAINER gives its audio and subtitle tracks**, each list in file order.
 ///
@@ -50,6 +53,303 @@ impl TrackNames {
             .map(String::as_str)
             .unwrap_or("")
     }
+}
+
+/// Exact conservation certificate accumulated while the native media clock is held.
+///
+/// For completed acquisitions `(A_i, D_i)`, `debt` is `Σ(A_i-D_i)` and `runway` is
+/// `max_i(P_{i-1}+A_i)`, where `P` is that running debt.  A recovery epoch may resume only after
+/// at least one complete segment, once the debt has closed and the playable reserve covers the
+/// largest prefix cost.  Unlike the ABR acquisition bag, this state starts at each actual pause
+/// and is discarded at Play, so an old slow segment can never raise the next pause's floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HlsRecoveryEpoch {
+    pub(crate) active: bool,
+    pub(crate) completed: u64,
+    pub(crate) debt_us: i64,
+    pub(crate) runway_us: i64,
+}
+
+impl HlsRecoveryEpoch {
+    const fn idle() -> Self {
+        Self {
+            active: false,
+            completed: 0,
+            debt_us: 0,
+            runway_us: 0,
+        }
+    }
+
+    fn begin(&mut self) {
+        *self = Self {
+            active: true,
+            ..Self::idle()
+        };
+    }
+
+    fn observe(&mut self, acquisition_us: u64, media: std::time::Duration) {
+        if !self.active {
+            return;
+        }
+        let acquisition_us = i64::try_from(acquisition_us).unwrap_or(i64::MAX);
+        let media_us = i64::try_from(media.as_micros()).unwrap_or(i64::MAX);
+        self.runway_us = self
+            .runway_us
+            .max(self.debt_us.saturating_add(acquisition_us));
+        self.debt_us = self
+            .debt_us
+            .saturating_add(acquisition_us)
+            .saturating_sub(media_us);
+        self.completed = self.completed.saturating_add(1);
+    }
+
+    pub(crate) fn ready(self, playable_ns: i64) -> bool {
+        self.active
+            && self.completed > 0
+            && self.debt_us <= 0
+            && playable_ns.max(0) / 1_000 >= self.runway_us
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClockHold {
+    /// A freshly loaded pipeline has not been started yet.
+    Initial,
+    /// An in-place seek paused the old timeline and is priming the new one.
+    Seek,
+    /// ABR stopped the clock at a measured starvation boundary.
+    Rebuffer,
+    /// The viewer explicitly paused a running clock.
+    User,
+    /// The viewer resumed a queued stream; feeding is open, but the physical clock remains held
+    /// until both decoder lanes and the measured runway are ready.
+    ResumePrime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsPrimeKind {
+    Fresh,
+    Rebuffer,
+    Resume,
+}
+
+impl ClockHold {
+    fn prime_kind(self) -> Option<HlsPrimeKind> {
+        match self {
+            Self::Initial | Self::Seek => Some(HlsPrimeKind::Fresh),
+            Self::Rebuffer => Some(HlsPrimeKind::Rebuffer),
+            Self::ResumePrime => Some(HlsPrimeKind::Resume),
+            Self::User => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HlsClockPhase {
+    Running,
+    PauseIssuing {
+        token: u64,
+        hold: ClockHold,
+    },
+    Held {
+        hold: ClockHold,
+    },
+    PlayIssuing {
+        token: u64,
+        hold: ClockHold,
+        resume_acb: bool,
+    },
+    Stopping,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HlsClockState {
+    phase: HlsClockPhase,
+    next_token: u64,
+    recovery: HlsRecoveryEpoch,
+    /// Accepted user Pause ownership. This is intentionally inside the actuator mutex: the
+    /// transport atomic is a hot-path mirror, not a second authority over whether Play may issue.
+    user_held: bool,
+    /// Monotone identity of accepted user clock transitions.  `Running` is not sufficient state:
+    /// a complete Pause -> Resume may occur while a worker is blocked and return to the same
+    /// shape.  Every automatic lease names the sequence it observed and the mutex validates that
+    /// exact boundary before granting ownership.
+    user_sequence: u64,
+    /// User Resume was accepted while an internal/candidate hold still owned the native clock.
+    /// The eventual Play must also resume ACB; losing that second half produces video/audio drift.
+    resume_acb_pending: bool,
+    /// Exactly one automatic actuator may own the boundary. Network/native I/O runs outside the
+    /// mutex, but its lease token stays here through commit/rollback so another actuator cannot
+    /// pass the same precondition concurrently.
+    automatic: Option<HlsAutomaticOwner>,
+}
+
+impl HlsClockState {
+    const fn new() -> Self {
+        Self {
+            phase: HlsClockPhase::Running,
+            next_token: 0,
+            recovery: HlsRecoveryEpoch::idle(),
+            user_held: false,
+            user_sequence: 0,
+            resume_acb_pending: false,
+            automatic: None,
+        }
+    }
+
+    fn token(&mut self) -> u64 {
+        self.next_token = self
+            .next_token
+            .checked_add(1)
+            .expect("HLS clock transition token space exhausted");
+        self.next_token
+    }
+
+    fn advance_user_sequence(&mut self) {
+        self.user_sequence = self
+            .user_sequence
+            .checked_add(1)
+            .expect("HLS user clock sequence exhausted");
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsClockFenceError {
+    Stopping,
+    Overlap,
+    Exhausted,
+    Superseded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsAutomaticTransition {
+    QualityUp,
+    QualityDown,
+    Original,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HlsAutomaticPhase {
+    Working,
+    CommitAuthorized,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HlsAutomaticOwner {
+    token: u64,
+    kind: HlsAutomaticTransition,
+    phase: HlsAutomaticPhase,
+    user_sequence: u64,
+}
+
+/// Ownership of the callback function installed in one native Starfish `Load`.
+///
+/// [`Shared`] survives reloads, while the library may deliver an event on its own thread after
+/// teardown has started. Each Starfish object address is now session-unique, but Rust still needs
+/// a generation check and drain before resetting this process-long state. A check without this mutex
+/// still has a check/use race against [`Shared::reset_session`]: a callback could validate the
+/// old generation, get descheduled, and then write into the freshly reset next session. Holding
+/// this lock for the complete callback makes retirement a drain barrier as well as a token check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeSessionPhase {
+    Idle,
+    Active {
+        epoch: u32,
+        /// Type-0 presentation callbacks are admitted only for the current media timeline. An
+        /// in-place seek closes this while old decoded frames are flushed, then the first real
+        /// post-seek keyframe reopens it.
+        presentation_gate: NativePresentationGate,
+    },
+    /// Firmware's synchronous UNLOADCOMPLETED callback was observed. This is independent lifecycle
+    /// evidence, not a producer barrier: native callback admission is closed and drained in the C
+    /// interposer before the main thread retires this phase and considers D1.
+    Unloaded {
+        epoch: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativePresentationGate {
+    Armed,
+    Disarmed,
+    /// The first post-discontinuity AU is inside `sf_feed`. Firmware can publish the buffer to a
+    /// GStreamer worker before Feed returns, so retain the newest position callback until the
+    /// caller learns whether that exact AU was accepted.
+    PendingArm {
+        latched: Option<i64>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NativeSessionState {
+    next_epoch: u32,
+    phase: NativeSessionPhase,
+}
+
+impl NativeSessionState {
+    const fn new() -> Self {
+        Self {
+            next_epoch: 0,
+            phase: NativeSessionPhase::Idle,
+        }
+    }
+
+    fn next(&mut self) -> u32 {
+        self.next_epoch = self.next_epoch.wrapping_add(1);
+        if self.next_epoch == 0 {
+            self.next_epoch = 1;
+        }
+        self.next_epoch
+    }
+}
+
+/// What provenance/lifecycle effect one native callback carries. Keeping this typed here makes
+/// `UNLOADCOMPLETED` a reducer transition rather than a magic event number interpreted by the
+/// teardown code after the fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeEventClass {
+    Presentation,
+    UnloadCompleted,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsPauseCompletion {
+    Accepted,
+    Refused,
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsSeekPause {
+    Issue(u64),
+    AlreadyHeld,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsUserPause {
+    Issue(u64),
+    AlreadyHeld,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsUserResume {
+    Issue(u64),
+    Deferred,
+    Prime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HlsPlayCompletion {
+    Accepted { resume_acb: bool },
+    Refused,
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AbrSeed {
+    estimate: crate::abr::CapacityEstimate,
+    observed_at: Instant,
 }
 
 /// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
@@ -164,6 +464,8 @@ impl PlaybackState {
 }
 
 pub(crate) struct Shared {
+    /// Synchronized lifecycle/provenance for callbacks from the current native `Load`.
+    native_session: Mutex<NativeSessionState>,
     // library callback thread (K) -> main (M)
     pub playpos_ns: AtomicI64, // g_playpos_ns
     // the presented frame's fed PTS (0-based, raw `num` from the type=0 callback). The feed
@@ -205,18 +507,12 @@ pub(crate) struct Shared {
     // wobble through the seek/rebase. -1 display = not loading.
     pub seeking: AtomicBool,
     pub seek_display_ns: AtomicI64,
-    // pending audio-track switch: the Plex audioStreamID to switch to (-1 = none). The
-    // pump forces a fresh transcode with that source audio at the current position.
-    pub pending_audio_sid: AtomicI64,
     // NATIVE audio-track switch (direct-play, no transcode): the 0-based audio stream index
-    // to feed. `pending` (-1 = none) is consumed by the pump to trigger a reload; `desired`
-    // (-1 = av_find_best_stream) is read by the demuxer to pick the Nth audio stream and
-    // PERSISTS across seeks/reloads (reset only on a new item, not in reset_session).
-    pub pending_audio_idx: AtomicI32,
+    // to feed. `desired` (-1 = av_find_best_stream) is read by the demuxer to pick the Nth audio
+    // stream and PERSISTS across seeks/reloads (reset only on a new item, not in reset_session).
+    // The synchronized route controller owns whether a reload is pending; keeping a second atomic
+    // mailbox here used to let reset_session erase the request halfway through that reload.
     pub desired_audio_idx: AtomicI32,
-    // pending "re-transcode at the current position with the current audio + subtitle" —
-    // set when a subtitle is (de)selected while transcoding, so Plex re-burns (or drops) it.
-    pub pending_retranscode: AtomicBool,
     // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
     // the HUD. Written only on the main thread; atomic because it is read from the draw path.
     pub pb_state: AtomicU8,
@@ -228,14 +524,6 @@ pub(crate) struct Shared {
     /// Unlike `demux_failed`, this is not gated on a zero-frame start: a truncated live transfer
     /// is an error rather than a successful early EOF.
     pub demux_io_failed: AtomicBool,
-    /// A sustained progressive Auto/Original starvation measurement (kbps), published by the
-    /// demux worker and consumed once by the main-thread pump. `0` means no transition pending.
-    /// One atomic carries both signal and evidence, so a reset cannot leave a stale companion
-    /// value behind for the next playback.
-    pub auto_fallback_kbps: AtomicI64,
-    /// Sustained HLS evidence says the actual source is safe again. Consumed by the main-thread
-    /// pump exactly like `auto_fallback_kbps`; zero means no recovery transaction is pending.
-    pub auto_recover_kbps: AtomicI64,
     /// WHY the demuxer found nothing to feed, when the answer is "the stream itself": the server
     /// delivered audio streams and no video stream. Issue #22's whole shape — a transcode target
     /// the server cannot honour makes PMS drop the video track, and `ff: no video stream` alone
@@ -252,6 +540,10 @@ pub(crate) struct Shared {
     /// shape of a webOS-5-specific failure (a key the newer pipeline will not accept), which makes
     /// this exactly the case that must be visible.
     pub load_failed: AtomicBool,
+    /// Sparse, typed playback transitions retained only for an opted-in handled-error report.
+    /// Unlike the engine fields around it this spans reloads and seeks; `report::requested` owns
+    /// the attempt boundary and clears it for a genuinely new Play.
+    pub playback_trace: Mutex<super::report::PlaybackTrace>,
 
     // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
     // demux (D) pushes cues; main (M) reads the active one for the current playpos.
@@ -284,6 +576,13 @@ pub(crate) struct Shared {
     /// 0 until the demuxer has opened the stream; readers must treat 0 as "not known yet".
     pub video_w: AtomicI32,
     pub video_h: AtomicI32,
+    /// Coherent `{w,h}` publication for actuator consumers. The individual fields above remain
+    /// diagnostic mirrors; reading them independently can manufacture a raster no stream owned.
+    video_raster: AtomicU64,
+    /// Decoder-reported source frame rate in thousandths of a frame per second. 0 means the
+    /// sourceInfo callback has not supplied one; unlike `FRAMEREADY`, this is stream metadata and
+    /// therefore does not mistake the firmware's ~5 Hz position tick for video cadence.
+    pub video_fps_milli: AtomicI64,
     pub duration_ns: AtomicI64, // was g_mkv.duration_ns (published)
     /// Latest normalized timestamps successfully enqueued for each elementary stream. HLS writes
     /// its segment-normalized zero-based timeline; progressive Original writes absolute movie
@@ -291,6 +590,46 @@ pub(crate) struct Shared {
     /// (not queue byte counts); `-1` means the lane has not produced an AU in this session/seek.
     pub hls_video_tail_ns: AtomicI64,
     pub hls_audio_tail_ns: AtomicI64,
+    /// Whether the active HLS segment declared an audio stream that this session feeds. The prime
+    /// gate must not reinterpret a temporarily empty audio lane as a genuinely video-only file.
+    pub hls_audio_expected: AtomicBool,
+    /// Retrospective replay reserve used at a fresh HLS Load/seek boundary and when a viewer
+    /// resumes a queue-backed stream. Automatic runtime rebuffer uses the pause-local
+    /// `hls_recovery` certificate below; carrying this history into every controller-created hold
+    /// was the source of repeated freeze/catch-up on an otherwise stable stream. Zero leaves the
+    /// decoder's ordinary prime threshold in charge.
+    pub hls_prime_runway_ms: AtomicI64,
+    /// Demux -> main request to stop the internal media clock before a projected fetch overrun
+    /// turns into freeze/catch-up. This is not the user's pause state; feeding continues.
+    pub hls_rebuffer_requested: AtomicBool,
+    /// Video-tail generation captured when `hls_rebuffer_requested` was raised. If a completed
+    /// segment advances the tail before the main thread consumes the request, the condition it
+    /// described has already cleared and the request is stale.
+    pub hls_rebuffer_request_tail_ns: AtomicI64,
+    /// Derived hot-path mirror of the synchronized clock state below: Starfish is internally
+    /// paused and waiting for measured runway. Production transitions write it only while holding
+    /// `hls_clock`; workers which merely need a deadline predicate can read the atomic cheaply.
+    pub hls_rebuffering: AtomicBool,
+    /// Monotone proof that an internal hold happened, even if Pause→Play completes entirely while
+    /// a network operation is blocked and both of its boolean snapshots therefore read false.
+    pub hls_internal_hold_epoch: AtomicU64,
+    /// One synchronized authority for native Pause/Play issuance, the pause-local conservation
+    /// certificate and candidate/trial exclusion. FFI is called outside this mutex through a
+    /// reserve/complete token protocol; `Condvar` lets the demux worker linearize after a very
+    /// short in-flight Play instead of treating that ordinary ordering as a fatal overlap.
+    hls_clock: Mutex<HlsClockState>,
+    hls_clock_changed: Condvar,
+    /// Retrospective reserve retained by an exploratory candidate's own deadline. Its non-negative
+    /// presence also prevents an already-held clock from restarting mid-transaction; it is not a
+    /// continuously armed pause threshold. `-1` means no trial.
+    pub hls_trial_reserve_ms: AtomicI64,
+    /// Seqlock generation for candidate media/ownership publication. Even values are stable; a
+    /// worker CASes even->odd before its first candidate AU, then either publishes new ownership or
+    /// realigns the old cursor. It publishes the matching recovery state before advancing
+    /// odd->next even. The main-thread prime gate accepts only an unchanged even value around its
+    /// whole tails+epoch snapshot, preventing false->true->false ABA from mixing candidate media
+    /// with the previous rung's certificate. This is not a timer or threshold.
+    pub hls_candidate_generation: AtomicU64,
     // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
     // has been presented). app.rs polls player::ended() to tear the player down at the credits.
     pub ended: AtomicBool,
@@ -301,14 +640,16 @@ pub(crate) struct Shared {
     pub hs_ptr: AtomicPtr<HttpStream>,
 
     // ---- diagnostics mirror (`ui::stats`) -------------------------------------------------
-    // Values the RENDER path needs that live on the Engine, republished once per pump tick.
+    // Values the render path (and the opted-in handled-error snapshot) need that live on the
+    // Engine, republished from the pump.
     // The render path may not call `engine(&MainThread)` — that hands out a `&'static mut` to a
     // `static mut`, and a second live borrow is instant UB — so it reads these instead.
     //
-    // STRICTLY ONE-WAY: written by the pump and the seam, read only by the read-out. Nothing in
-    // the playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
-    // One frame stale by construction, which no reader cares about at a 2 Hz sample.
-    /// `Stage` as u8 — where the bind/play sequence has got to.
+    // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
+    // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
+    /// `Stage` as u8 — where the bind/play sequence has got to. Unlike the expensive queue
+    /// mirrors below, this scalar is always current enough for a terminal error report even when
+    /// Stats for Nerds is closed.
     pub dg_stage: AtomicU8,
     /// Starfish callbacks seen this session. A count of 0 with a completed Load is the pipeline
     /// never speaking to us — the sharpest single symptom there is. The TYPE of the last callback
@@ -386,16 +727,28 @@ pub(crate) struct Shared {
     pub dg_abr_mode: AtomicU8,
     /// Current Original source requirement or active HLS rung, in kbit/s.
     pub dg_abr_kbps: AtomicI64,
+    /// The current HLS master declaration and the last completed segment's measured media rate.
+    /// Both are observations of what PMS actually emitted; `dg_abr_kbps` is the requested ceiling
+    /// and must never be presented as either of these.
+    pub dg_abr_declared_kbps: AtomicI64,
+    pub dg_abr_media_kbps: AtomicI64,
     /// Latest measured body throughput and normalized content reserve. `-1` means no complete
     /// measurement exists yet. Production ratio is total segment acquisition / media duration in
     /// per-mille; it is meaningful for HLS only.
     pub dg_abr_net_kbps: AtomicI64,
     pub dg_abr_buffer_ms: AtomicI64,
     pub dg_abr_ratio_pm: AtomicI64,
-    /// Last controller action plus its candidate rung. The action is intentionally sticky so a
-    /// photograph taken after a swap still explains why the current rendition changed.
+    /// Current controller action plus its candidate rung. A discrete transaction remains visible
+    /// until the next completed segment publishes its steady decision; keeping it beyond that made
+    /// `Action` describe an old commit beside `Reason` from the current model state.
     pub dg_abr_action: AtomicU8,
     pub dg_abr_target_kbps: AtomicI64,
+    /// Last Original source failure, as `player::ABR_FAILURE_*` plus its HTTP status when one was
+    /// observed. These are playback-scoped rather than engine-scoped: HLS→Original failure tears
+    /// the Engine down while restoring HLS, and clearing them in `reset_session` would make the
+    /// successful rollback erase its own cause before the diagnostics panel could photograph it.
+    pub abr_failure_kind: AtomicU8,
+    pub abr_failure_status: AtomicI32,
     /// Consecutive Original windows whose starvation horizon sat inside the unsafe band.
     /// Wall milliseconds an unsafe Original deficit has held (N13). Was a COUNT of
     /// 750 ms active-read windows, on a clock that stops under backpressure.
@@ -411,19 +764,19 @@ pub(crate) struct Shared {
     /// the buffer's slope, its starvation horizon in seconds (`-1` = no deficit, so no horizon),
     /// the predicted production cost of the current candidate, and the risk score.
     /// **The live link estimate, carried ACROSS A SEEK** (I8) — and deliberately not a `dg_`
-    /// field, because these four decide something. An HLS seek tears the engine down and builds a
-    /// fresh `Controller`, so before this the only survivor was `session().auto_prior_kbps`, whose
+    /// field, because this coherent posterior decides something. An HLS seek tears the engine
+    /// down and builds a fresh `Controller`, so before this the only survivor was
+    /// `session().auto_prior_kbps`, whose
     /// writer on the fallback path is the rate measured at the moment Original FAILED. Every seek
     /// therefore re-seeded from the worst rate the playback had ever measured, at maximum
     /// uncertainty with one sample, and the ladder re-ramped for five to ten segments: ten to
     /// twenty seconds of visibly softer picture after every skip.
     ///
-    /// `abr_seed_samples < 0` means "no seed". Cleared by [`Shared::clear_abr_seed`] and
-    /// **deliberately NOT by [`Shared::reset_session`]** — see that method.
-    pub abr_seed_slow_kbps: AtomicI64,
-    pub abr_seed_fast_kbps: AtomicI64,
-    pub abr_seed_unc_pm: AtomicI64,
-    pub abr_seed_samples: AtomicI64,
+    /// One coherent estimate plus the wall instant it was last observed. Cleared by
+    /// [`Shared::clear_abr_seed`] and **deliberately NOT by [`Shared::reset_session`]**. The time
+    /// is load-bearing: a pause, app background or reload gap with no segment observations must
+    /// age the carried evidence before a new controller may use it.
+    abr_seed: Mutex<Option<AbrSeed>>,
     pub dg_abr_safe_kbps: AtomicI64,
     pub dg_abr_optimal_kbps: AtomicI64,
     pub dg_abr_unc_pm: AtomicI64,
@@ -445,6 +798,7 @@ pub(crate) struct Shared {
 impl Shared {
     pub const fn new() -> Self {
         Shared {
+            native_session: Mutex::new(NativeSessionState::new()),
             dg_stage: AtomicU8::new(0),
             dg_cb_count: AtomicU32::new(0),
             dg_feed_state: AtomicU8::new(0),
@@ -465,16 +819,17 @@ impl Shared {
             dg_load_a: AtomicU8::new(0),
             dg_abr_mode: AtomicU8::new(0),
             dg_abr_kbps: AtomicI64::new(0),
+            dg_abr_declared_kbps: AtomicI64::new(-1),
+            dg_abr_media_kbps: AtomicI64::new(-1),
             dg_abr_net_kbps: AtomicI64::new(-1),
             dg_abr_buffer_ms: AtomicI64::new(-1),
             dg_abr_ratio_pm: AtomicI64::new(-1),
             dg_abr_action: AtomicU8::new(0),
             dg_abr_target_kbps: AtomicI64::new(0),
+            abr_failure_kind: AtomicU8::new(0),
+            abr_failure_status: AtomicI32::new(0),
             dg_abr_unsafe_deficit_ms: AtomicI64::new(0),
-            abr_seed_slow_kbps: AtomicI64::new(0),
-            abr_seed_fast_kbps: AtomicI64::new(0),
-            abr_seed_unc_pm: AtomicI64::new(0),
-            abr_seed_samples: AtomicI64::new(-1),
+            abr_seed: Mutex::new(None),
             dg_abr_safe_kbps: AtomicI64::new(-1),
             dg_abr_optimal_kbps: AtomicI64::new(-1),
             dg_abr_unc_pm: AtomicI64::new(-1),
@@ -500,17 +855,13 @@ impl Shared {
             seek_target_ns: AtomicI64::new(-1),
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
-            pending_audio_sid: AtomicI64::new(-1),
-            pending_audio_idx: AtomicI32::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
-            pending_retranscode: AtomicBool::new(false),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
-            auto_fallback_kbps: AtomicI64::new(0),
-            auto_recover_kbps: AtomicI64::new(0),
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
+            playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
             sub_cues: Mutex::new(Vec::new()),
@@ -518,12 +869,230 @@ impl Shared {
             file_size: AtomicI64::new(0),
             video_w: AtomicI32::new(0),
             video_h: AtomicI32::new(0),
+            video_raster: AtomicU64::new(0),
+            video_fps_milli: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             hls_video_tail_ns: AtomicI64::new(-1),
             hls_audio_tail_ns: AtomicI64::new(-1),
+            hls_audio_expected: AtomicBool::new(false),
+            hls_prime_runway_ms: AtomicI64::new(0),
+            hls_rebuffer_requested: AtomicBool::new(false),
+            hls_rebuffer_request_tail_ns: AtomicI64::new(-1),
+            hls_rebuffering: AtomicBool::new(false),
+            hls_internal_hold_epoch: AtomicU64::new(0),
+            hls_clock: Mutex::new(HlsClockState::new()),
+            hls_clock_changed: Condvar::new(),
+            hls_trial_reserve_ms: AtomicI64::new(-1),
+            hls_candidate_generation: AtomicU64::new(0),
             ended: AtomicBool::new(false),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
         }
+    }
+
+    /// Enter the only state in which a Starfish `Load` may publish callbacks.
+    ///
+    /// `None` rejects an overlapping native session instead of silently retagging two live
+    /// objects with one process-global owner.
+    pub(crate) fn begin_native_session(&self) -> Option<u32> {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.phase != NativeSessionPhase::Idle {
+            return None;
+        }
+        let epoch = state.next();
+        state.phase = NativeSessionPhase::Active {
+            epoch,
+            presentation_gate: NativePresentationGate::Armed,
+        };
+        Some(epoch)
+    }
+
+    /// Retire one exact native session and wait for every callback which already entered it.
+    ///
+    /// Ready-object teardown calls this after `Unload` has returned and the C interposer gate has
+    /// closed and drained. Startup failure paths also retire the Rust epoch here: either no native
+    /// object was constructed, or construction succeeded but arming the C gate failed, cleared
+    /// dispatch readiness and retained the object in process-long quarantine. That latter path
+    /// admitted no native callbacks and does not claim an Unload or native-gate drain. The Active
+    /// arm also keeps this primitive independently testable without fabricating firmware callbacks.
+    pub(crate) fn retire_native_session(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let owns = matches!(
+            state.phase,
+            NativeSessionPhase::Active { epoch: active, .. }
+                | NativeSessionPhase::Unloaded { epoch: active }
+                if epoch != 0 && active == epoch
+        );
+        if !owns {
+            return false;
+        }
+        state.phase = NativeSessionPhase::Idle;
+        true
+    }
+
+    /// Whether this exact object crossed firmware's synchronous unload-complete callback path.
+    /// This is one mandatory lifecycle assertion, separate from the native interposer's admission
+    /// and in-flight proof. A missing/renumbered callback quarantines the object rather than D1.
+    pub(crate) fn native_unload_completed(&self, epoch: u32) -> bool {
+        self.native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .phase
+            == NativeSessionPhase::Unloaded { epoch }
+    }
+
+    /// Fence pre-seek presentations while retaining non-frame Load/error callbacks. Locking is a
+    /// drain barrier for a type-0 callback already inside the old timeline.
+    pub(crate) fn begin_native_media_discontinuity(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                presentation_gate,
+            } if epoch != 0 && *active == epoch => {
+                *presentation_gate = NativePresentationGate::Disarmed;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Admit presentation callbacks again after the new timeline's first keyframe is identified.
+    #[cfg(test)]
+    pub(crate) fn arm_native_presentations(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                presentation_gate,
+            } if epoch != 0 && *active == epoch => {
+                *presentation_gate = NativePresentationGate::Armed;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Start a two-phase callback admission around the exact post-seek keyframe Feed. No lock is
+    /// held across FFI: firmware may re-enter synchronously on another release even though the
+    /// audited 4.10.2 path currently dispatches through a GStreamer worker.
+    pub(crate) fn begin_native_presentation_probe(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                presentation_gate,
+            } if epoch != 0 && *active == epoch => {
+                *presentation_gate = NativePresentationGate::PendingArm { latched: None };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Commit an accepted Feed and replay at most the newest presentation which raced its return.
+    pub(crate) fn commit_native_presentation_probe(
+        &self,
+        epoch: u32,
+        replay: impl FnOnce(i64),
+    ) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let NativeSessionPhase::Active {
+            epoch: active,
+            presentation_gate,
+        } = &mut state.phase
+        else {
+            return false;
+        };
+        if epoch == 0 || *active != epoch {
+            return false;
+        }
+        let NativePresentationGate::PendingArm { latched } = *presentation_gate else {
+            return false;
+        };
+        *presentation_gate = NativePresentationGate::Armed;
+        if let Some(num) = latched {
+            replay(num);
+        }
+        true
+    }
+
+    /// Discard callbacks observed while a BufferFull/error Feed was outstanding and keep the old
+    /// timeline fenced. The retained AU will open a fresh probe on its next attempt.
+    pub(crate) fn reject_native_presentation_probe(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                presentation_gate,
+            } if epoch != 0
+                && *active == epoch
+                && matches!(presentation_gate, NativePresentationGate::PendingArm { .. }) =>
+            {
+                *presentation_gate = NativePresentationGate::Disarmed;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Run an event only while its firmware-provided callback context owns this session.
+    pub(crate) fn with_native_session<R>(
+        &self,
+        epoch: u32,
+        class: NativeEventClass,
+        num: i64,
+        event: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let NativeSessionPhase::Active {
+            epoch: active,
+            presentation_gate,
+        } = &mut state.phase
+        else {
+            return None;
+        };
+        if epoch == 0 || *active != epoch {
+            return None;
+        }
+        if class == NativeEventClass::Presentation {
+            match presentation_gate {
+                NativePresentationGate::Armed => {}
+                NativePresentationGate::Disarmed => return None,
+                NativePresentationGate::PendingArm { latched } => {
+                    *latched = Some(num);
+                    return None;
+                }
+            }
+        }
+        let result = event();
+        if class == NativeEventClass::UnloadCompleted {
+            state.phase = NativeSessionPhase::Unloaded { epoch };
+        }
+        Some(result)
     }
     /// reset per-file state on stop (mirrors the tail of stop_bufferfeed).
     /// **Drop the carried link estimate.** Called from `engine::teardown` on a real STOP only —
@@ -532,15 +1101,63 @@ impl Shared {
     /// making `reset_session` caller-conditional keeps "clear everything about this session" a
     /// method with no exceptions in it.
     pub fn clear_abr_seed(&self) {
-        self.abr_seed_samples.store(-1, Ordering::Relaxed);
-        self.abr_seed_slow_kbps.store(0, Ordering::Relaxed);
-        self.abr_seed_fast_kbps.store(0, Ordering::Relaxed);
-        self.abr_seed_unc_pm.store(0, Ordering::Relaxed);
+        *self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    /// **NB: this does NOT clear the ABR seed** — see [`Shared::clear_abr_seed`]. Everything else
-    /// here describes one engine's session and must not outlive it.
+    pub(crate) fn publish_abr_seed(&self, estimate: crate::abr::CapacityEstimate) {
+        self.publish_abr_seed_at(estimate, Instant::now());
+    }
+
+    fn publish_abr_seed_at(&self, estimate: crate::abr::CapacityEstimate, observed_at: Instant) {
+        let mut seed = self.abr_seed.lock().unwrap_or_else(|e| e.into_inner());
+        *seed = (estimate.samples > 0).then_some(AbrSeed {
+            estimate,
+            observed_at,
+        });
+    }
+
+    /// Delivery evidence carried across an engine reload, aged by every wall interval for which
+    /// no segment could refresh it. This includes accepted Pause, app background and teardown —
+    /// all three are the same epistemic fact: the old link observation was not repeated.
+    pub(crate) fn abr_seed(&self) -> Option<crate::abr::CapacityEstimate> {
+        let seed = (*self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()))?;
+        let mut estimate = seed.estimate;
+        let elapsed_ms = u64::try_from(seed.observed_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        estimate.age_ms(elapsed_ms, &crate::abr::AbrPolicy::measured());
+        Some(estimate)
+    }
+
+    /// Clear a playback's sticky Original failure. Kept separate from [`Shared::reset_session`]
+    /// for the same lifetime reason as the ABR seed: an engine reload is not a new playback.
+    pub fn clear_abr_failure(&self) {
+        self.abr_failure_kind.store(0, Ordering::Relaxed);
+        self.abr_failure_status.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn publish_video_raster(&self, width: i32, height: i32) {
+        let packed = (u64::from(width as u32) << 32) | u64::from(height as u32);
+        self.video_w.store(width, Ordering::Relaxed);
+        self.video_h.store(height, Ordering::Relaxed);
+        self.video_raster.store(packed, Ordering::Release);
+    }
+
+    pub(crate) fn video_raster(&self) -> (i32, i32) {
+        let packed = self.video_raster.load(Ordering::Acquire);
+        ((packed >> 32) as u32 as i32, packed as u32 as i32)
+    }
+
+    /// **NB: this does NOT clear the ABR seed OR Original failure** — see
+    /// [`Shared::clear_abr_seed`] and [`Shared::clear_abr_failure`]. Everything else here describes
+    /// one engine's session and must not outlive it.
     pub fn reset_session(&self) {
+        // This lock is held through the whole reset. A callback that entered before retirement
+        // finishes first; one arriving afterwards sees no owner. It can therefore never validate
+        // session A and then publish into the zeroed/reused storage of session B.
+        let mut native = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        native.phase = NativeSessionPhase::Idle;
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);
@@ -565,6 +1182,8 @@ impl Shared {
         self.dg_load_a.store(0, Ordering::Relaxed);
         self.dg_abr_mode.store(0, Ordering::Relaxed);
         self.dg_abr_kbps.store(0, Ordering::Relaxed);
+        self.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
+        self.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
         self.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
         self.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
         self.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
@@ -599,17 +1218,12 @@ impl Shared {
         self.seek_target_ns.store(-1, Ordering::Relaxed);
         self.seeking.store(false, Ordering::Relaxed);
         self.seek_display_ns.store(-1, Ordering::Relaxed);
-        self.pending_audio_sid.store(-1, Ordering::Relaxed);
-        self.pending_audio_idx.store(-1, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
-        self.pending_retranscode.store(false, Ordering::Relaxed);
         self.pb_state
             .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
         self.demux_io_failed.store(false, Ordering::Relaxed);
-        self.auto_fallback_kbps.store(0, Ordering::Relaxed);
-        self.auto_recover_kbps.store(0, Ordering::Relaxed);
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
@@ -624,11 +1238,708 @@ impl Shared {
         // names sitting under the server's own track list.
         *self.track_names.lock().unwrap() = TrackNames::new();
         self.file_size.store(0, Ordering::Relaxed);
+        self.video_w.store(0, Ordering::Relaxed);
+        self.video_h.store(0, Ordering::Relaxed);
+        self.video_raster.store(0, Ordering::Release);
+        self.video_fps_milli.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hls_video_tail_ns.store(-1, Ordering::Relaxed);
         self.hls_audio_tail_ns.store(-1, Ordering::Relaxed);
+        self.hls_audio_expected.store(false, Ordering::Relaxed);
+        self.hls_prime_runway_ms.store(0, Ordering::Relaxed);
+        self.hls_rebuffer_requested.store(false, Ordering::Relaxed);
+        self.hls_rebuffer_request_tail_ns
+            .store(-1, Ordering::Relaxed);
+        self.reset_hls_clock();
         self.ended.store(false, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
+    }
+
+    /// Start (or restart after a rung commit) the proof for the media that will release this hold.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn begin_hls_recovery(&self) {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        clock.recovery.begin();
+        // Compatibility for the existing direct state-machine tests: production enters Held via
+        // `complete_hls_rebuffer_pause`, while those tests construct the same boundary explicitly.
+        if matches!(
+            clock.phase,
+            HlsClockPhase::Running
+                | HlsClockPhase::Held {
+                    hold: ClockHold::Initial,
+                }
+        ) {
+            clock.phase = HlsClockPhase::Held {
+                hold: ClockHold::Rebuffer,
+            };
+        }
+    }
+
+    /// Credit exactly one fully downloaded, validated and enqueued segment from the active rung.
+    pub(crate) fn observe_hls_recovery(&self, acquisition_us: u64, media: std::time::Duration) {
+        self.hls_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recovery
+            .observe(acquisition_us, media);
+    }
+
+    pub(crate) fn hls_recovery(&self) -> HlsRecoveryEpoch {
+        self.hls_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recovery
+    }
+
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn finish_hls_recovery(&self) {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        clock.recovery = HlsRecoveryEpoch::idle();
+        // The older focused tests construct an internal hold by publishing the mirrors directly.
+        // Restore the synchronized half as well, otherwise a refused-Play case leaves `Held` behind
+        // and whichever serial test happens to run next cannot issue its initial Play.
+        if !self.hls_rebuffering.load(Ordering::Acquire)
+            && !matches!(
+                clock.phase,
+                HlsClockPhase::PlayIssuing { .. } | HlsClockPhase::Stopping
+            )
+        {
+            clock.phase = HlsClockPhase::Running;
+            self.hls_clock_changed.notify_all();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_hls_clock_for_test(&self) {
+        self.reset_hls_clock();
+    }
+
+    /// Put a newly constructed native pipeline into its real pre-Play state. This happens before
+    /// either worker is spawned, so neither an ABR trial nor a user command can mistake "loaded but
+    /// not started" for a running clock. `user_held` is the durable viewer intent carried across an
+    /// engine reload; `seek_preroll` means that intent is temporarily allowed to decode one frame.
+    pub(crate) fn arm_initial_clock_hold(&self, user_held: bool, seek_preroll: bool) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase != HlsClockPhase::Running
+            || self.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+            || self.hls_candidate_generation.load(Ordering::Acquire) & 1 != 0
+        {
+            return false;
+        }
+        clock.phase = HlsClockPhase::Held {
+            hold: ClockHold::Initial,
+        };
+        clock.user_held = user_held && !seek_preroll;
+        clock.resume_acb_pending = user_held && seek_preroll;
+        true
+    }
+
+    /// A start that armed the initial hold but failed before installing an Engine owns no native
+    /// clock. Invalidate every candidate/trial fence and return to the no-session state so retrying
+    /// the same item cannot inherit `Held` forever.
+    pub(crate) fn cancel_clock_session_start(&self) {
+        self.reset_hls_clock();
+    }
+
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn ensure_initial_clock_hold_for_test(&self) {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase == HlsClockPhase::Running {
+            clock.phase = HlsClockPhase::Held {
+                hold: ClockHold::Initial,
+            };
+        }
+    }
+
+    /// Reserve an internal Pause and start accepting recovery segments BEFORE the FFI call. A
+    /// segment committed in the call window is retained if Pause succeeds and discarded if it is
+    /// refused, so the first useful recovery object can no longer disappear between two flags.
+    pub(crate) fn prepare_hls_rebuffer_pause(&self) -> Option<u64> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        // Trial and Pause spend the same reserve. Whichever reserves this mutex first owns it; the
+        // loser retries after the transaction settles instead of creating two physical clocks.
+        if clock.phase != HlsClockPhase::Running
+            || self.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+        {
+            return None;
+        }
+        let token = clock.token();
+        clock.recovery.begin();
+        clock.phase = HlsClockPhase::PauseIssuing {
+            token,
+            hold: ClockHold::Rebuffer,
+        };
+        Some(token)
+    }
+
+    pub(crate) fn complete_hls_rebuffer_pause(
+        &self,
+        token: u64,
+        accepted: bool,
+    ) -> HlsPauseCompletion {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase
+            != (HlsClockPhase::PauseIssuing {
+                token,
+                hold: ClockHold::Rebuffer,
+            })
+        {
+            return HlsPauseCompletion::Stale;
+        }
+        if accepted {
+            clock.phase = HlsClockPhase::Held {
+                hold: ClockHold::Rebuffer,
+            };
+            self.hls_rebuffering.store(true, Ordering::Release);
+            self.hls_internal_hold_epoch.fetch_add(1, Ordering::AcqRel);
+        } else {
+            clock.phase = HlsClockPhase::Running;
+            clock.recovery = HlsRecoveryEpoch::idle();
+        }
+        self.hls_clock_changed.notify_all();
+        if accepted {
+            HlsPauseCompletion::Accepted
+        } else {
+            HlsPauseCompletion::Refused
+        }
+    }
+
+    /// Reserve a viewer Pause through the same actuator protocol as automatic rebuffering. If the
+    /// internal controller already owns a physical hold, only the orthogonal user hold is added and
+    /// no redundant native Pause is issued.
+    pub(crate) fn prepare_hls_user_pause(&self) -> Option<HlsUserPause> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase == HlsClockPhase::Stopping {
+            return None;
+        }
+        if clock.user_held {
+            return Some(HlsUserPause::AlreadyHeld);
+        }
+        if matches!(clock.phase, HlsClockPhase::Held { .. }) {
+            clock.user_held = true;
+            clock.resume_acb_pending = false;
+            clock.advance_user_sequence();
+            return Some(HlsUserPause::AlreadyHeld);
+        }
+        if clock.phase != HlsClockPhase::Running {
+            return None;
+        }
+        let token = clock.token();
+        clock.phase = HlsClockPhase::PauseIssuing {
+            token,
+            hold: ClockHold::User,
+        };
+        Some(HlsUserPause::Issue(token))
+    }
+
+    pub(crate) fn complete_hls_user_pause(&self, token: u64, accepted: bool) -> HlsPauseCompletion {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase
+            != (HlsClockPhase::PauseIssuing {
+                token,
+                hold: ClockHold::User,
+            })
+        {
+            return HlsPauseCompletion::Stale;
+        }
+        if accepted {
+            clock.phase = HlsClockPhase::Held {
+                hold: ClockHold::User,
+            };
+            clock.user_held = true;
+            clock.resume_acb_pending = false;
+            clock.advance_user_sequence();
+        } else {
+            clock.phase = HlsClockPhase::Running;
+        }
+        self.hls_clock_changed.notify_all();
+        if accepted {
+            HlsPauseCompletion::Accepted
+        } else {
+            HlsPauseCompletion::Refused
+        }
+    }
+
+    /// Reserve the native Pause that makes an in-place seek safe. A seek requested from an
+    /// existing user hold reuses that physical Pause, but temporarily transfers ownership to the
+    /// seek prime so exactly one landed frame may be decoded before the user hold is restored.
+    pub(crate) fn prepare_seek_pause(&self) -> Option<HlsSeekPause> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        match clock.phase {
+            HlsClockPhase::Running => {
+                let token = clock.token();
+                clock.phase = HlsClockPhase::PauseIssuing {
+                    token,
+                    hold: ClockHold::Seek,
+                };
+                Some(HlsSeekPause::Issue(token))
+            }
+            HlsClockPhase::Held {
+                hold:
+                    ClockHold::User | ClockHold::Initial | ClockHold::Seek | ClockHold::ResumePrime,
+            } => {
+                if clock.user_held {
+                    clock.user_held = false;
+                    clock.resume_acb_pending = true;
+                }
+                clock.phase = HlsClockPhase::Held {
+                    hold: ClockHold::Seek,
+                };
+                Some(HlsSeekPause::AlreadyHeld)
+            }
+            HlsClockPhase::Held {
+                hold: ClockHold::Rebuffer,
+            }
+            | HlsClockPhase::PauseIssuing { .. }
+            | HlsClockPhase::PlayIssuing { .. }
+            | HlsClockPhase::Stopping => None,
+        }
+    }
+
+    pub(crate) fn complete_seek_pause(&self, token: u64, accepted: bool) -> HlsPauseCompletion {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase
+            != (HlsClockPhase::PauseIssuing {
+                token,
+                hold: ClockHold::Seek,
+            })
+        {
+            return HlsPauseCompletion::Stale;
+        }
+        clock.phase = if accepted {
+            HlsClockPhase::Held {
+                hold: ClockHold::Seek,
+            }
+        } else {
+            HlsClockPhase::Running
+        };
+        self.hls_clock_changed.notify_all();
+        if accepted {
+            HlsPauseCompletion::Accepted
+        } else {
+            HlsPauseCompletion::Refused
+        }
+    }
+
+    /// Accept the viewer's Resume intent. Queued streams transfer an ordinary user hold to an
+    /// explicit resume-prime hold: the caller opens feeding, while `try_prime` remains the sole
+    /// owner of the eventual Play + ACB Resume. A candidate publication, seek or internal recovery
+    /// already holding the clock keeps its own certificate and only records the deferred ACB half.
+    pub(crate) fn prepare_hls_user_resume(&self, queued_stream: bool) -> Option<HlsUserResume> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase == HlsClockPhase::Stopping || !clock.user_held {
+            return None;
+        }
+        let HlsClockPhase::Held { hold } = clock.phase else {
+            return None;
+        };
+        if hold != ClockHold::User {
+            clock.user_held = false;
+            clock.resume_acb_pending = true;
+            clock.advance_user_sequence();
+            return Some(HlsUserResume::Deferred);
+        }
+        if queued_stream {
+            clock.phase = HlsClockPhase::Held {
+                hold: ClockHold::ResumePrime,
+            };
+            clock.user_held = false;
+            clock.resume_acb_pending = true;
+            clock.advance_user_sequence();
+            return Some(HlsUserResume::Prime);
+        }
+        let token = clock.token();
+        clock.phase = HlsClockPhase::PlayIssuing {
+            token,
+            hold,
+            resume_acb: true,
+        };
+        Some(HlsUserResume::Issue(token))
+    }
+
+    /// Snapshot which media certificate currently owns a held clock. The mutex phase is the
+    /// authority; `hls_rebuffering` remains only a worker/diagnostics mirror and cannot classify a
+    /// ResumePrime without racing a user transition.
+    pub(crate) fn hls_prime_kind(&self) -> Option<HlsPrimeKind> {
+        let clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let HlsClockPhase::Held { hold } = clock.phase else {
+            return None;
+        };
+        hold.prime_kind()
+    }
+
+    /// Final check-and-reserve for `sf_play`. Candidate/trial arm uses the same mutex, eliminating
+    /// the old check/use gap between the last seqlock read and the native Play call.
+    pub(crate) fn reserve_hls_prime_play(
+        &self,
+        expected_kind: HlsPrimeKind,
+        expected_candidate: u64,
+        expected_recovery: HlsRecoveryEpoch,
+    ) -> Option<(u64, HlsRecoveryEpoch)> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+            || clock.automatic.is_some()
+            || self.hls_candidate_generation.load(Ordering::Acquire) != expected_candidate
+            || expected_candidate & 1 != 0
+            || (expected_kind == HlsPrimeKind::Rebuffer && clock.recovery != expected_recovery)
+            || clock.user_held
+        {
+            return None;
+        }
+        let HlsClockPhase::Held { hold } = clock.phase else {
+            return None;
+        };
+        if hold.prime_kind() != Some(expected_kind) {
+            return None;
+        }
+        let token = clock.token();
+        let recovery = clock.recovery;
+        let resume_acb = clock.resume_acb_pending;
+        clock.phase = HlsClockPhase::PlayIssuing {
+            token,
+            hold,
+            resume_acb,
+        };
+        Some((token, recovery))
+    }
+
+    pub(crate) fn complete_hls_prime_play(&self, token: u64, accepted: bool) -> HlsPlayCompletion {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let HlsClockPhase::PlayIssuing {
+            token: active,
+            hold,
+            resume_acb,
+        } = clock.phase
+        else {
+            return HlsPlayCompletion::Stale;
+        };
+        if active != token {
+            return HlsPlayCompletion::Stale;
+        }
+        if accepted {
+            clock.phase = HlsClockPhase::Running;
+            clock.recovery = HlsRecoveryEpoch::idle();
+            clock.user_held = false;
+            clock.resume_acb_pending = false;
+            if hold == ClockHold::User {
+                clock.advance_user_sequence();
+            }
+            if hold == ClockHold::Rebuffer {
+                self.hls_rebuffering.store(false, Ordering::Release);
+            }
+        } else {
+            clock.phase = HlsClockPhase::Held { hold };
+            if hold == ClockHold::User {
+                clock.user_held = true;
+            };
+        }
+        self.hls_clock_changed.notify_all();
+        if accepted {
+            HlsPlayCompletion::Accepted { resume_acb }
+        } else {
+            HlsPlayCompletion::Refused
+        }
+    }
+
+    pub(crate) fn begin_hls_candidate_transition(
+        &self,
+        expected_automatic: Option<u64>,
+    ) -> Result<u64, HlsClockFenceError> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        while matches!(clock.phase, HlsClockPhase::PlayIssuing { .. }) {
+            clock = self
+                .hls_clock_changed
+                .wait(clock)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        if clock.phase == HlsClockPhase::Stopping {
+            return Err(HlsClockFenceError::Stopping);
+        }
+        if let Some(expected) = expected_automatic {
+            let Some(owner) = clock.automatic else {
+                return Err(HlsClockFenceError::Superseded);
+            };
+            let phase_ok = match owner.kind {
+                HlsAutomaticTransition::QualityUp | HlsAutomaticTransition::Original => {
+                    clock.phase == HlsClockPhase::Running
+                        && !self.hls_rebuffer_requested.load(Ordering::Acquire)
+                }
+                HlsAutomaticTransition::QualityDown => matches!(
+                    clock.phase,
+                    HlsClockPhase::Running
+                        | HlsClockPhase::PauseIssuing {
+                            hold: ClockHold::Rebuffer,
+                            ..
+                        }
+                        | HlsClockPhase::Held {
+                            hold: ClockHold::Rebuffer,
+                        }
+                ),
+            };
+            if owner.token != expected
+                || owner.phase != HlsAutomaticPhase::Working
+                || owner.user_sequence != clock.user_sequence
+                || clock.user_held
+                || !phase_ok
+            {
+                return Err(HlsClockFenceError::Superseded);
+            }
+            clock
+                .automatic
+                .as_mut()
+                .expect("the validated automatic owner remains present")
+                .phase = HlsAutomaticPhase::CommitAuthorized;
+        }
+        let stable = self.hls_candidate_generation.load(Ordering::Acquire);
+        if stable & 1 != 0 {
+            return Err(HlsClockFenceError::Overlap);
+        }
+        let generation = stable.checked_add(1).ok_or(HlsClockFenceError::Exhausted)?;
+        self.hls_candidate_generation
+            .compare_exchange(stable, generation, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| generation)
+            .map_err(|_| HlsClockFenceError::Overlap)
+    }
+
+    pub(crate) fn settle_hls_candidate_transition(&self, generation: u64) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        // The mutex phase is authoritative. During PauseIssuing the diagnostics mirror is still
+        // false, but the recovery epoch already exists and a rung publication must rebase it.
+        if matches!(
+            clock.phase,
+            HlsClockPhase::PauseIssuing {
+                hold: ClockHold::Rebuffer,
+                ..
+            } | HlsClockPhase::Held {
+                hold: ClockHold::Rebuffer,
+            }
+        ) {
+            clock.recovery.begin();
+        }
+        let Some(settled) = generation.checked_add(1) else {
+            // Remain odd/fenced forever rather than letting an ancient generation become current.
+            return false;
+        };
+        let accepted = self
+            .hls_candidate_generation
+            .compare_exchange(generation, settled, Ordering::Release, Ordering::Acquire)
+            .is_ok();
+        if accepted {
+            self.hls_clock_changed.notify_all();
+        }
+        accepted
+    }
+
+    pub(crate) fn hls_user_sequence(&self) -> u64 {
+        self.hls_clock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .user_sequence
+    }
+
+    pub(crate) fn arm_hls_trial_at(
+        &self,
+        runway_ms: i64,
+        expected_user_sequence: u64,
+    ) -> Option<u64> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.phase != HlsClockPhase::Running
+            || clock.user_held
+            || clock.user_sequence != expected_user_sequence
+            || clock.automatic.is_some()
+            || self.hls_rebuffer_requested.load(Ordering::Acquire)
+            || self.hls_candidate_generation.load(Ordering::Acquire) & 1 != 0
+        {
+            return None;
+        }
+        let token = clock.token();
+        clock.automatic = Some(HlsAutomaticOwner {
+            token,
+            kind: HlsAutomaticTransition::QualityUp,
+            phase: HlsAutomaticPhase::Working,
+            user_sequence: clock.user_sequence,
+        });
+        self.hls_trial_reserve_ms
+            .store(runway_ms.max(0), Ordering::Release);
+        Some(token)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_hls_trial(&self, runway_ms: i64) -> Option<u64> {
+        let sequence = self.hls_user_sequence();
+        self.arm_hls_trial_at(runway_ms, sequence)
+    }
+
+    pub(crate) fn finish_hls_trial(&self, token: u64) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(
+            clock.automatic,
+            Some(HlsAutomaticOwner {
+                token: active,
+                kind: HlsAutomaticTransition::QualityUp,
+                ..
+            }) if active == token
+        ) {
+            return false;
+        }
+        clock.automatic = None;
+        self.hls_trial_reserve_ms.store(-1, Ordering::Release);
+        self.hls_clock_changed.notify_all();
+        true
+    }
+
+    pub(crate) fn begin_hls_automatic_transition_at(
+        &self,
+        kind: HlsAutomaticTransition,
+        expected_user_sequence: u64,
+    ) -> Option<u64> {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.automatic.is_some()
+            || clock.user_held
+            || clock.user_sequence != expected_user_sequence
+            || self.hls_candidate_generation.load(Ordering::Acquire) & 1 != 0
+            || self.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+        {
+            return None;
+        }
+        let phase_ok = match kind {
+            HlsAutomaticTransition::QualityUp | HlsAutomaticTransition::Original => {
+                clock.phase == HlsClockPhase::Running
+                    && !self.hls_rebuffer_requested.load(Ordering::Acquire)
+            }
+            HlsAutomaticTransition::QualityDown => matches!(
+                clock.phase,
+                HlsClockPhase::Running
+                    | HlsClockPhase::PauseIssuing {
+                        hold: ClockHold::Rebuffer,
+                        ..
+                    }
+                    | HlsClockPhase::Held {
+                        hold: ClockHold::Rebuffer,
+                    }
+            ),
+        };
+        if !phase_ok {
+            return None;
+        }
+        let token = clock.token();
+        clock.automatic = Some(HlsAutomaticOwner {
+            token,
+            kind,
+            phase: HlsAutomaticPhase::Working,
+            user_sequence: clock.user_sequence,
+        });
+        Some(token)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_hls_automatic_transition(
+        &self,
+        kind: HlsAutomaticTransition,
+    ) -> Option<u64> {
+        let sequence = self.hls_user_sequence();
+        self.begin_hls_automatic_transition_at(kind, sequence)
+    }
+
+    pub(crate) fn authorize_hls_automatic_transition_commit(&self, token: u64) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.user_held || clock.phase != HlsClockPhase::Running {
+            return false;
+        }
+        let user_sequence = clock.user_sequence;
+        let Some(owner) = clock.automatic.as_mut() else {
+            return false;
+        };
+        if owner.token != token
+            || owner.phase != HlsAutomaticPhase::Working
+            || owner.user_sequence != user_sequence
+        {
+            return false;
+        }
+        owner.phase = HlsAutomaticPhase::CommitAuthorized;
+        true
+    }
+
+    pub(crate) fn finish_hls_automatic_transition(&self, token: u64) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(clock.automatic, Some(HlsAutomaticOwner { token: active, .. }) if active == token)
+        {
+            return false;
+        }
+        clock.automatic = None;
+        self.hls_clock_changed.notify_all();
+        true
+    }
+
+    /// One synchronized authority check for every automatic actuator. Diagnostics atomics are
+    /// mirrors; they cannot decide whether a user hold, native clock transition, candidate
+    /// publication, or another private trial owns the boundary.
+    pub(crate) fn hls_automatic_transition_permitted(&self, kind: HlsAutomaticTransition) -> bool {
+        let clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.user_held
+            || clock.automatic.is_some()
+            || self.hls_candidate_generation.load(Ordering::Acquire) & 1 != 0
+            || self.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+        {
+            return false;
+        }
+        match kind {
+            HlsAutomaticTransition::QualityUp | HlsAutomaticTransition::Original => {
+                clock.phase == HlsClockPhase::Running
+                    && !self.hls_rebuffer_requested.load(Ordering::Acquire)
+            }
+            HlsAutomaticTransition::QualityDown => matches!(
+                clock.phase,
+                HlsClockPhase::Running
+                    | HlsClockPhase::PauseIssuing {
+                        hold: ClockHold::Rebuffer,
+                        ..
+                    }
+                    | HlsClockPhase::Held {
+                        hold: ClockHold::Rebuffer,
+                    }
+            ),
+        }
+    }
+
+    pub(crate) fn stop_hls_clock(&self) {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        clock.phase = HlsClockPhase::Stopping;
+        clock.recovery = HlsRecoveryEpoch::idle();
+        clock.user_held = false;
+        clock.resume_acb_pending = false;
+        clock.automatic = None;
+        self.hls_rebuffering.store(false, Ordering::Release);
+        self.hls_clock_changed.notify_all();
+    }
+
+    fn reset_hls_clock(&self) {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        // Session identity changes, token identity does not restart. A worker from the retired
+        // session may still drop its RAII lease after reset; preserving this counter makes that
+        // completion stale instead of letting token 1 clear the next session's token 1.
+        let next_token = clock.next_token;
+        let user_sequence = clock.user_sequence;
+        *clock = HlsClockState::new();
+        clock.next_token = next_token;
+        clock.user_sequence = user_sequence;
+        self.hls_rebuffering.store(false, Ordering::Relaxed);
+        self.hls_internal_hold_epoch.fetch_add(1, Ordering::AcqRel);
+        self.hls_trial_reserve_ms.store(-1, Ordering::Relaxed);
+        // Session reset itself invalidates every prime snapshot. Preserve monotonicity rather than
+        // writing zero: a reader spanning teardown must observe a different even generation.
+        let _ = self.hls_candidate_generation.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |generation| {
+                Some(if generation & 1 == 0 {
+                    generation.checked_add(2).unwrap_or(u64::MAX)
+                } else {
+                    generation.checked_add(1).unwrap_or(u64::MAX)
+                })
+            },
+        );
+        self.hls_clock_changed.notify_all();
     }
 }
 
@@ -636,34 +1947,190 @@ impl Shared {
 /// player_hud all run on M), but exposed as atomics so app.rs / player_hud.rs read
 /// it with plain .load()/.store(). Replaces the #[no_mangle] transport globals.
 pub(crate) struct Transport {
-    pub started: AtomicBool,     // bf_started
-    pub paused: AtomicBool,      // pl_paused
+    pub started: AtomicBool, // bf_started
+    pub paused: AtomicBool,  // pl_paused
+    /// Monotone duration of native-accepted user Pause. The bool alone loses a Pause->Resume
+    /// interval that begins and ends while the demuxer is blocked, so bounded recovery work uses
+    /// this synchronized clock to subtract exactly those intervals from elapsed time.
+    pause_clock: Mutex<UserPauseClock>,
     pub resume_pend: AtomicBool, // resumePausePending
-    pub hud_until: AtomicU32,    // pl_hud_until (SDL ticks)
-    pub scrub_ns: AtomicI64,     // pl_scrub_ns (-1 = not scrubbing)
-    pub seek_to_ns: AtomicI64,   // g_seek_to_ns (UI seek request, -1 = none)
+    /// The viewer remains logically paused while a seek is allowed to feed, Play one landed frame,
+    /// then re-pause. Keeping this separate prevents the UI/user intent from lying during preroll.
+    seek_preroll: AtomicBool,
+    pub hud_until: AtomicU32,  // pl_hud_until (SDL ticks)
+    pub scrub_ns: AtomicI64,   // pl_scrub_ns (-1 = not scrubbing)
+    pub seek_to_ns: AtomicI64, // g_seek_to_ns (UI seek request, -1 = none)
     // Seek requests received since the pump last APPLIED one. seek_to_ns only ever holds the
     // newest target, so without this counter a coalesced burst is indistinguishable from a
     // single tap after the fact — the pump reports `coalesced=` from it (see pump.rs).
     pub seek_reqs: AtomicU32,
 }
+
+#[derive(Clone, Copy)]
+struct UserPauseClock {
+    completed: Duration,
+    active_since: Option<Instant>,
+    sequence: u64,
+}
+
+impl UserPauseClock {
+    const fn new() -> Self {
+        Self {
+            completed: Duration::ZERO,
+            active_since: None,
+            sequence: 0,
+        }
+    }
+
+    fn elapsed_at(self, now: Instant) -> Duration {
+        self.completed.saturating_add(
+            self.active_since
+                .map_or(Duration::ZERO, |since| now.saturating_duration_since(since)),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UserPauseSnapshot {
+    pub(crate) now: Instant,
+    pub(crate) elapsed: Duration,
+    pub(crate) paused: bool,
+    pub(crate) sequence: u64,
+}
+
+/// Per-worker cursor over accepted transport events. A complete Pause→Resume may happen while a
+/// worker is blocked in native queue/network I/O; consuming the monotone sequence plus cumulative
+/// duration makes that interval observable even when both surrounding boolean samples are false.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UserPauseCursor {
+    sequence: u64,
+    elapsed: Duration,
+}
+
+impl UserPauseCursor {
+    pub(crate) fn new(snapshot: UserPauseSnapshot) -> Self {
+        Self {
+            sequence: snapshot.sequence,
+            elapsed: snapshot.elapsed,
+        }
+    }
+
+    pub(crate) fn consume_completed(&mut self, snapshot: UserPauseSnapshot) -> Option<Duration> {
+        if snapshot.paused || snapshot.sequence == self.sequence {
+            return None;
+        }
+        let elapsed = snapshot.elapsed.saturating_sub(self.elapsed);
+        self.sequence = snapshot.sequence;
+        self.elapsed = snapshot.elapsed;
+        (!elapsed.is_zero()).then_some(elapsed)
+    }
+}
+
 impl Transport {
     pub const fn new() -> Self {
         Transport {
             started: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            pause_clock: Mutex::new(UserPauseClock::new()),
             resume_pend: AtomicBool::new(false),
+            seek_preroll: AtomicBool::new(false),
             hud_until: AtomicU32::new(0),
             scrub_ns: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
             seek_reqs: AtomicU32::new(0),
         }
     }
+
+    /// Publish a native-accepted user transport transition to both the feed gate and the exact
+    /// pause clock. Every production writer goes through this method; refused native transitions
+    /// never enter either state.
+    pub(crate) fn commit_paused(&self, paused: bool) {
+        let mut clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
+        // The timestamp belongs to the mutex-order transition. Sampling it before `lock` lets a
+        // concurrent clock snapshot linearize first while this transition carries an earlier
+        // time, manufacturing paused duration before the transaction's own W0.
+        let now = Instant::now();
+        match (clock.active_since, paused) {
+            (None, true) => {
+                clock.active_since = Some(now);
+                clock.sequence = clock
+                    .sequence
+                    .checked_add(1)
+                    .expect("accepted Pause sequence exhausted");
+            }
+            (Some(since), false) => {
+                clock.completed = clock
+                    .completed
+                    .saturating_add(now.saturating_duration_since(since));
+                clock.active_since = None;
+                clock.sequence = clock
+                    .sequence
+                    .checked_add(1)
+                    .expect("accepted Pause sequence exhausted");
+            }
+            _ => {}
+        }
+        self.paused.store(paused, Ordering::Release);
+    }
+
+    /// One synchronized sample for an unpaused-elapsed transaction clock. `Instant` and the
+    /// cumulative accepted-Pause duration are observed under the transition mutex, so a complete
+    /// Pause->Resume inside a blocked network call can never disappear between two bool reads.
+    pub(crate) fn pause_clock_sample(&self) -> (Instant, Duration) {
+        let sample = self.pause_state_sample();
+        (sample.now, sample.elapsed)
+    }
+
+    pub(crate) fn pause_state_sample(&self) -> UserPauseSnapshot {
+        let clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        UserPauseSnapshot {
+            now,
+            elapsed: clock.elapsed_at(now),
+            paused: clock.active_since.is_some(),
+            sequence: clock.sequence,
+        }
+    }
+
+    pub(crate) fn begin_paused_seek(&self) -> bool {
+        if !self.paused.load(Ordering::Acquire) {
+            return false;
+        }
+        self.seek_preroll.store(true, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn seek_preroll_active(&self) -> bool {
+        self.seek_preroll.load(Ordering::Acquire)
+    }
+
+    /// Feeding is an actuator concern, not the user-visible pause intent. A paused seek is the one
+    /// bounded exception: it must decode a landed frame while the transport still says Paused.
+    pub(crate) fn feed_allowed(&self) -> bool {
+        !self.paused.load(Ordering::Acquire) || self.seek_preroll_active()
+    }
+
+    pub(crate) fn finish_seek_preroll(&self) {
+        self.seek_preroll.store(false, Ordering::Release);
+        self.resume_pend.store(false, Ordering::Release);
+    }
+
+    /// An engine reload is not a new playback and must not erase viewer Pause or the paused-seek
+    /// handoff. It only retires engine-local transport mailboxes.
+    pub(crate) fn reset_for_reload(&self) {
+        self.started.store(false, Ordering::Relaxed);
+        self.scrub_ns.store(-1, Ordering::Relaxed);
+        self.seek_to_ns.store(-1, Ordering::Relaxed);
+        self.seek_reqs.store(0, Ordering::Relaxed);
+    }
+
     /// reset on stop (mirrors the transport tail of stop_bufferfeed).
     pub fn reset(&self) {
         self.started.store(false, Ordering::Relaxed);
-        self.paused.store(false, Ordering::Relaxed);
+        *self.pause_clock.lock().unwrap_or_else(|e| e.into_inner()) = UserPauseClock::new();
+        self.paused.store(false, Ordering::Release);
         self.resume_pend.store(false, Ordering::Relaxed);
+        self.seek_preroll.store(false, Ordering::Relaxed);
         self.scrub_ns.store(-1, Ordering::Relaxed);
         self.seek_to_ns.store(-1, Ordering::Relaxed);
         self.seek_reqs.store(0, Ordering::Relaxed);
@@ -686,6 +2153,666 @@ pub(crate) enum Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_consumes_a_complete_hidden_pause_cycle_as_one_event() {
+        let transport = Transport::new();
+        let mut cursor = UserPauseCursor::new(transport.pause_state_sample());
+        transport.commit_paused(true);
+        std::thread::sleep(Duration::from_millis(2));
+        transport.commit_paused(false);
+
+        let after = transport.pause_state_sample();
+        assert!(
+            !after.paused,
+            "the surrounding boolean samples are both false"
+        );
+        assert_eq!(after.sequence, 2);
+        assert!(
+            cursor
+                .consume_completed(after)
+                .is_some_and(|elapsed| elapsed >= Duration::from_millis(1)),
+            "the accepted interval must survive a blocked worker",
+        );
+        assert_eq!(
+            cursor.consume_completed(after),
+            None,
+            "an event is consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn user_hold_is_inside_the_automatic_transition_authority() {
+        let shared = Shared::new();
+        assert!(shared.hls_automatic_transition_permitted(HlsAutomaticTransition::Original));
+        let HlsUserPause::Issue(token) = shared.prepare_hls_user_pause().unwrap() else {
+            panic!("running clock must issue the user Pause");
+        };
+        assert_eq!(
+            shared.complete_hls_user_pause(token, true),
+            HlsPauseCompletion::Accepted,
+        );
+        assert!(!shared.hls_automatic_transition_permitted(HlsAutomaticTransition::Original));
+        assert!(!shared.hls_automatic_transition_permitted(HlsAutomaticTransition::QualityDown));
+    }
+
+    #[test]
+    fn exactly_one_automatic_actuator_owns_a_boundary() {
+        let shared = Shared::new();
+        let original = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::Original)
+            .expect("running playback grants the first automatic lease");
+        assert!(
+            shared
+                .begin_hls_automatic_transition(HlsAutomaticTransition::QualityDown)
+                .is_none(),
+            "a second actuator cannot pass the same boundary while Original owns it",
+        );
+        assert!(shared.authorize_hls_automatic_transition_commit(original));
+        assert!(
+            !shared.authorize_hls_automatic_transition_commit(original),
+            "commit authorization is one explicit edge, not a repeatable predicate",
+        );
+        assert!(shared.finish_hls_automatic_transition(original));
+        let down = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::QualityDown)
+            .expect("dropping the former owner releases the next explicit transition");
+        assert!(shared.finish_hls_automatic_transition(down));
+    }
+
+    #[test]
+    fn a_complete_pause_resume_cycle_invalidates_an_earlier_automatic_boundary() {
+        let shared = Shared::new();
+        let observed_user_sequence = shared.hls_user_sequence();
+        let HlsUserPause::Issue(pause) = shared.prepare_hls_user_pause().unwrap() else {
+            panic!("running clock must issue Pause");
+        };
+        assert_eq!(
+            shared.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted,
+        );
+        let HlsUserResume::Issue(play) = shared.prepare_hls_user_resume(false).unwrap() else {
+            panic!("a held non-queued clock must issue Play");
+        };
+        assert!(matches!(
+            shared.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { .. }
+        ));
+
+        assert!(
+            shared
+                .begin_hls_automatic_transition_at(
+                    HlsAutomaticTransition::Original,
+                    observed_user_sequence,
+                )
+                .is_none(),
+            "the same Running/!held shape is a different boundary after Pause->Resume",
+        );
+    }
+
+    #[test]
+    fn a_retired_trial_cannot_release_the_next_sessions_lease() {
+        let shared = Shared::new();
+        let retired = shared
+            .arm_hls_trial(1_000)
+            .expect("first session grants its trial");
+        shared.reset_hls_clock_for_test();
+        let current = shared
+            .arm_hls_trial(2_000)
+            .expect("next session grants an independent trial");
+        assert_ne!(retired, current);
+        assert!(
+            !shared.finish_hls_trial(retired),
+            "the retired RAII drop has no authority in the new session",
+        );
+        assert_eq!(shared.hls_trial_reserve_ms.load(Ordering::Acquire), 2_000);
+        assert!(shared.finish_hls_trial(current));
+    }
+
+    #[test]
+    fn a_retired_actuator_cannot_publish_candidate_media_into_the_next_session() {
+        let shared = Shared::new();
+        let retired = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::QualityDown)
+            .expect("first session grants its downshift");
+        shared.reset_hls_clock_for_test();
+        let current = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::QualityDown)
+            .expect("next session grants its own downshift");
+        assert_eq!(
+            shared.begin_hls_candidate_transition(Some(retired)),
+            Err(HlsClockFenceError::Superseded),
+        );
+        let candidate = shared
+            .begin_hls_candidate_transition(Some(current))
+            .expect("only the current actuator may enter publication");
+        assert!(shared.settle_hls_candidate_transition(candidate));
+        assert!(shared.finish_hls_automatic_transition(current));
+    }
+
+    #[test]
+    fn internal_reprime_waits_for_the_recovery_actuator_transaction() {
+        let shared = Shared::new();
+        let down = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::QualityDown)
+            .expect("running clock grants the recovery actuator");
+        let pause = shared
+            .prepare_hls_rebuffer_pause()
+            .expect("the internal clock can enter its recovery hold");
+        assert_eq!(
+            shared.complete_hls_rebuffer_pause(pause, true),
+            HlsPauseCompletion::Accepted,
+        );
+        shared.observe_hls_recovery(500_000, Duration::from_secs(2));
+        let generation = shared.hls_candidate_generation.load(Ordering::Acquire);
+        assert!(
+            shared
+                .reserve_hls_prime_play(HlsPrimeKind::Rebuffer, generation, shared.hls_recovery())
+                .is_none(),
+            "the old actuator may not restart while its replacement owns the boundary",
+        );
+        assert!(shared.finish_hls_automatic_transition(down));
+        assert!(shared
+            .reserve_hls_prime_play(HlsPrimeKind::Rebuffer, generation, shared.hls_recovery())
+            .is_some());
+    }
+
+    #[test]
+    fn a_user_pause_wins_over_an_inflight_original_completion() {
+        let shared = Shared::new();
+        let original = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::Original)
+            .expect("running playback grants an Original lease");
+        let HlsUserPause::Issue(pause) = shared.prepare_hls_user_pause().unwrap() else {
+            panic!("the orthogonal user transition must remain available");
+        };
+        assert_eq!(
+            shared.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted,
+        );
+        assert!(
+            !shared.authorize_hls_automatic_transition_commit(original),
+            "a late network result is evidence only after the viewer owns the clock",
+        );
+        assert!(shared.finish_hls_automatic_transition(original));
+    }
+
+    #[test]
+    fn a_user_clock_transition_revokes_inflight_quality_publication() {
+        let shared = Shared::new();
+        let up = shared
+            .begin_hls_automatic_transition(HlsAutomaticTransition::QualityUp)
+            .expect("running playback grants the upshift lease");
+        let HlsUserPause::Issue(pause) = shared.prepare_hls_user_pause().unwrap() else {
+            panic!("the user Pause remains orthogonal while candidate I/O runs");
+        };
+        assert_eq!(
+            shared.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted,
+        );
+        assert_eq!(
+            shared.begin_hls_candidate_transition(Some(up)),
+            Err(HlsClockFenceError::Superseded),
+            "private candidate bytes may not publish after the viewer changed the clock",
+        );
+        assert!(shared.finish_hls_automatic_transition(up));
+    }
+
+    #[test]
+    fn raster_readers_never_observe_a_pair_no_stream_published() {
+        let shared = Shared::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..20_000 {
+                    shared.publish_video_raster(1_280, 720);
+                    shared.publish_video_raster(1_920, 1_080);
+                }
+            });
+            for _ in 0..20_000 {
+                assert!(matches!(
+                    shared.video_raster(),
+                    (0, 0) | (1_280, 720) | (1_920, 1_080)
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn recovery_closes_the_actual_pause_epoch_not_a_permutation_of_history() {
+        let mut epoch = HlsRecoveryEpoch::idle();
+        epoch.begin();
+        epoch.observe(2_500_000, std::time::Duration::from_secs(2));
+        assert_eq!(epoch.debt_us, 500_000);
+        assert!(
+            !epoch.ready(20_000_000_000),
+            "reserve alone cannot erase an open acquisition debt"
+        );
+
+        epoch.observe(1_500_000, std::time::Duration::from_secs(2));
+        assert_eq!(epoch.debt_us, 0);
+        assert_eq!(epoch.runway_us, 2_500_000);
+        assert!(
+            !epoch.ready(2_499_999_999),
+            "one nanosecond below the measured prefix is not enough"
+        );
+        assert!(epoch.ready(2_500_000_000));
+    }
+
+    #[test]
+    fn a_new_hold_carries_no_debt_from_an_old_slow_segment() {
+        let mut epoch = HlsRecoveryEpoch::idle();
+        epoch.begin();
+        epoch.observe(9_000_000, std::time::Duration::from_secs(2));
+        assert_eq!(epoch.debt_us, 7_000_000);
+
+        epoch.begin();
+        epoch.observe(500_000, std::time::Duration::from_secs(2));
+        assert_eq!(epoch.completed, 1);
+        assert_eq!(epoch.debt_us, -1_500_000);
+        assert_eq!(epoch.runway_us, 500_000);
+        assert!(epoch.ready(500_000_000));
+    }
+
+    #[test]
+    fn initial_prime_is_an_explicit_hold_that_rejects_trials_and_fences_user_resume() {
+        let s = Shared::new();
+        assert!(s.arm_initial_clock_hold(false, false));
+        assert!(
+            s.arm_hls_trial(1_000).is_none(),
+            "an up-trial cannot spend reserve before the first native Play"
+        );
+        assert_eq!(s.prepare_hls_user_pause(), Some(HlsUserPause::AlreadyHeld));
+        assert_eq!(
+            s.prepare_hls_user_resume(true),
+            Some(HlsUserResume::Deferred)
+        );
+
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        let (play, _) = s
+            .reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, s.hls_recovery())
+            .expect("the media-prime lane, not user Resume, owns the first Play");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true }
+        );
+        assert!(
+            s.arm_hls_trial(1_000).is_some(),
+            "trials are admitted once the clock is Running"
+        );
+    }
+
+    #[test]
+    fn foreground_play_releases_both_the_pause_mirror_and_initial_user_hold() {
+        let s = Shared::new();
+        assert!(s.arm_initial_clock_hold(true, false));
+        assert_eq!(
+            s.prepare_hls_user_resume(true),
+            Some(HlsUserResume::Deferred),
+        );
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, s.hls_recovery())
+                .is_some(),
+            "the foreground Play event must clear the clock reducer's user hold, not only TX",
+        );
+    }
+
+    #[test]
+    fn a_user_pause_before_progressive_load_completed_fences_the_initial_play() {
+        let s = Shared::new();
+        assert!(s.arm_initial_clock_hold(false, false));
+        assert_eq!(s.prepare_hls_user_pause(), Some(HlsUserPause::AlreadyHeld));
+
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, s.hls_recovery())
+                .is_none(),
+            "the progressive load-complete fast path must not Play through viewer Pause",
+        );
+
+        assert_eq!(
+            s.prepare_hls_user_resume(true),
+            Some(HlsUserResume::Deferred)
+        );
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, s.hls_recovery())
+                .is_some(),
+            "the same initial hold must become playable after the viewer resumes",
+        );
+    }
+
+    #[test]
+    fn a_stream_resume_does_not_issue_play_before_feed_reopens() {
+        let s = Shared::new();
+        let pause = match s.prepare_hls_user_pause() {
+            Some(HlsUserPause::Issue(token)) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            s.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+
+        assert_eq!(
+            s.prepare_hls_user_resume(true),
+            Some(HlsUserResume::Prime),
+            "a queued stream must reopen feeding and earn a balanced prime before native Play",
+        );
+        assert_eq!(s.hls_prime_kind(), Some(HlsPrimeKind::Resume));
+    }
+
+    #[test]
+    fn a_second_pause_during_resume_prime_fences_play_until_the_second_resume() {
+        let s = Shared::new();
+        let pause = match s.prepare_hls_user_pause() {
+            Some(HlsUserPause::Issue(token)) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            s.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        assert_eq!(s.prepare_hls_user_resume(true), Some(HlsUserResume::Prime));
+        assert_eq!(s.prepare_hls_user_pause(), Some(HlsUserPause::AlreadyHeld));
+
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Resume, generation, s.hls_recovery())
+                .is_none(),
+            "the second viewer Pause must fence a ready ResumePrime",
+        );
+        assert_eq!(
+            s.prepare_hls_user_resume(true),
+            Some(HlsUserResume::Deferred),
+            "the existing ResumePrime certificate survives the second viewer Resume",
+        );
+        let (play, _) = s
+            .reserve_hls_prime_play(HlsPrimeKind::Resume, generation, s.hls_recovery())
+            .expect("the second Resume releases the same prime once its media is ready");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true }
+        );
+    }
+
+    #[test]
+    fn a_local_sample_without_stream_queues_keeps_immediate_resume() {
+        let s = Shared::new();
+        let pause = match s.prepare_hls_user_pause() {
+            Some(HlsUserPause::Issue(token)) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            s.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        assert!(matches!(
+            s.prepare_hls_user_resume(false),
+            Some(HlsUserResume::Issue(_))
+        ));
+    }
+
+    #[test]
+    fn a_seek_transfers_resume_prime_to_the_fresh_timeline_certificate() {
+        let s = Shared::new();
+        let pause = match s.prepare_hls_user_pause() {
+            Some(HlsUserPause::Issue(token)) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            s.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        assert_eq!(s.prepare_hls_user_resume(true), Some(HlsUserResume::Prime));
+        assert_eq!(s.prepare_seek_pause(), Some(HlsSeekPause::AlreadyHeld));
+        assert_eq!(s.hls_prime_kind(), Some(HlsPrimeKind::Fresh));
+
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Resume, generation, s.hls_recovery())
+                .is_none(),
+            "a stale ResumePrime snapshot cannot Play through a newer seek",
+        );
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, s.hls_recovery())
+                .is_some(),
+            "the seek's fresh-timeline certificate now owns Play",
+        );
+    }
+
+    #[test]
+    fn a_paused_non_seek_reload_stays_held_but_a_seek_preroll_may_decode_its_still() {
+        let ordinary_reload = Shared::new();
+        assert!(ordinary_reload.arm_initial_clock_hold(true, false));
+        let ordinary_generation = ordinary_reload
+            .hls_candidate_generation
+            .load(Ordering::Acquire);
+        assert!(
+            ordinary_reload
+                .reserve_hls_prime_play(
+                    HlsPrimeKind::Fresh,
+                    ordinary_generation,
+                    ordinary_reload.hls_recovery(),
+                )
+                .is_none(),
+            "preserving Pause across a non-seek reload must not authorize native Play",
+        );
+
+        let seek_reload = Shared::new();
+        assert!(seek_reload.arm_initial_clock_hold(true, true));
+        let seek_generation = seek_reload.hls_candidate_generation.load(Ordering::Acquire);
+        let (play, _) = seek_reload
+            .reserve_hls_prime_play(
+                HlsPrimeKind::Fresh,
+                seek_generation,
+                seek_reload.hls_recovery(),
+            )
+            .expect("the explicit one-frame seek preroll owns this Play");
+        assert_eq!(
+            seek_reload.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true },
+            "the preroll Play must carry the deferred ACB resume",
+        );
+    }
+
+    #[test]
+    fn trial_and_rebuffer_pause_linearize_under_one_mutex() {
+        let trial_first = Shared::new();
+        let trial = trial_first
+            .arm_hls_trial(1_000)
+            .expect("running clock grants the trial");
+        assert!(
+            trial_first.prepare_hls_rebuffer_pause().is_none(),
+            "a reserved trial makes Pause retry"
+        );
+        assert!(trial_first.finish_hls_trial(trial));
+        assert!(trial_first.prepare_hls_rebuffer_pause().is_some());
+
+        let pause_first = Shared::new();
+        let _pause = pause_first
+            .prepare_hls_rebuffer_pause()
+            .expect("Pause wins the reservation");
+        assert!(
+            pause_first.arm_hls_trial(1_000).is_none(),
+            "a reserved Pause makes the up-trial reject"
+        );
+    }
+
+    #[test]
+    fn candidate_settlement_rebases_recovery_while_pause_is_still_issuing() {
+        let s = Shared::new();
+        let pause = s.prepare_hls_rebuffer_pause().expect("reserve Pause");
+        s.observe_hls_recovery(500_000, Duration::from_secs(2));
+        assert_eq!(s.hls_recovery().completed, 1);
+
+        let candidate = s
+            .begin_hls_candidate_transition(None)
+            .expect("arm down candidate");
+        assert!(s.settle_hls_candidate_transition(candidate));
+        assert_eq!(
+            s.hls_recovery().completed,
+            0,
+            "new-rung media needs a fresh recovery certificate even before Pause returns"
+        );
+        assert_eq!(
+            s.complete_hls_rebuffer_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+    }
+
+    #[test]
+    fn a_paused_seek_reuses_the_physical_hold_and_resumes_acb_only_at_prime() {
+        let s = Shared::new();
+        let pause = match s.prepare_hls_user_pause() {
+            Some(HlsUserPause::Issue(token)) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            s.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        assert_eq!(s.prepare_seek_pause(), Some(HlsSeekPause::AlreadyHeld));
+
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        let (play, _) = s
+            .reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, s.hls_recovery())
+            .expect("seek prime owns the reused hold");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true }
+        );
+    }
+
+    /// The segment completion callback can win the tiny race after Starfish has accepted Pause but
+    /// before the main thread has returned from the FFI call. Recovery must therefore be armed by
+    /// the reservation, not by the completion half of that call.
+    #[test]
+    fn a_segment_completed_while_pause_is_issuing_belongs_to_that_hold() {
+        let s = Shared::new();
+        let token = s
+            .prepare_hls_rebuffer_pause()
+            .expect("the stable clock reserves Pause");
+
+        s.observe_hls_recovery(500_000, Duration::from_secs(2));
+        assert_eq!(
+            s.complete_hls_rebuffer_pause(token, true),
+            HlsPauseCompletion::Accepted
+        );
+
+        let recovery = s.hls_recovery();
+        assert_eq!(recovery.completed, 1);
+        assert!(recovery.ready(500_000_000));
+    }
+
+    #[test]
+    fn a_segment_seen_during_a_refused_pause_is_discarded() {
+        let s = Shared::new();
+        let token = s
+            .prepare_hls_rebuffer_pause()
+            .expect("the stable clock reserves Pause");
+
+        s.observe_hls_recovery(500_000, Duration::from_secs(2));
+        assert_eq!(
+            s.complete_hls_rebuffer_pause(token, false),
+            HlsPauseCompletion::Refused
+        );
+
+        assert_eq!(s.hls_recovery(), HlsRecoveryEpoch::idle());
+        assert!(!s.hls_rebuffering.load(Ordering::Acquire));
+    }
+
+    /// A bool snapshot loses a complete Pause -> Play cycle inside a blocked network read. The
+    /// monotone epoch is the durable observation used by the deadline transaction instead.
+    #[test]
+    fn an_accepted_internal_hold_remains_observable_after_play() {
+        let s = Shared::new();
+        let before = s.hls_internal_hold_epoch.load(Ordering::Acquire);
+        let pause = s.prepare_hls_rebuffer_pause().expect("reserve Pause");
+        assert_eq!(
+            s.complete_hls_rebuffer_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        let held = s.hls_internal_hold_epoch.load(Ordering::Acquire);
+        assert_ne!(held, before);
+
+        s.observe_hls_recovery(500_000, Duration::from_secs(2));
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        let recovery = s.hls_recovery();
+        let (play, _) = s
+            .reserve_hls_prime_play(HlsPrimeKind::Rebuffer, generation, recovery)
+            .expect("the ready held clock reserves Play");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: false }
+        );
+
+        assert!(!s.hls_rebuffering.load(Ordering::Acquire));
+        assert_eq!(s.hls_internal_hold_epoch.load(Ordering::Acquire), held);
+    }
+
+    #[test]
+    fn user_pause_and_internal_rebuffer_are_orthogonal_holds() {
+        let s = Shared::new();
+        let pause = s
+            .prepare_hls_rebuffer_pause()
+            .expect("reserve internal Pause");
+        assert_eq!(
+            s.complete_hls_rebuffer_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+
+        assert_eq!(s.prepare_hls_user_pause(), Some(HlsUserPause::AlreadyHeld));
+        assert_eq!(
+            s.prepare_hls_user_resume(true),
+            Some(HlsUserResume::Deferred)
+        );
+
+        s.observe_hls_recovery(500_000, Duration::from_secs(2));
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        let recovery = s.hls_recovery();
+        let (play, _) = s
+            .reserve_hls_prime_play(HlsPrimeKind::Rebuffer, generation, recovery)
+            .expect("the internal certificate owns eventual Play");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true },
+            "the eventual internal Play must also finish the viewer's deferred ACB Resume",
+        );
+    }
+
+    #[test]
+    fn candidate_publication_defers_user_resume_until_it_settles() {
+        let s = Shared::new();
+        let pause = match s.prepare_hls_user_pause() {
+            Some(HlsUserPause::Issue(token)) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            s.complete_hls_user_pause(pause, true),
+            HlsPauseCompletion::Accepted
+        );
+        let candidate = s
+            .begin_hls_candidate_transition(None)
+            .expect("arm candidate");
+
+        assert_eq!(s.prepare_hls_user_resume(true), Some(HlsUserResume::Prime));
+        let recovery = s.hls_recovery();
+        assert!(
+            s.reserve_hls_prime_play(HlsPrimeKind::Resume, candidate, recovery)
+                .is_none(),
+            "an active candidate generation must fence ResumePrime",
+        );
+        assert!(s.settle_hls_candidate_transition(candidate));
+
+        let generation = s.hls_candidate_generation.load(Ordering::Acquire);
+        let (play, _) = s
+            .reserve_hls_prime_play(HlsPrimeKind::Resume, generation, recovery)
+            .expect("settlement releases the pending user Play");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true }
+        );
+    }
 
     /// **Every `dg_*` mirror field must have a real writer.**
     ///
@@ -723,11 +2850,12 @@ mod tests {
             "found only {} dg_ fields — the parse broke",
             declared.len()
         );
+        // rustfmt may wrap `SHARED.dg_field.store(...)` between either dot.  Whitespace carries no
+        // source-level meaning here, so remove it before looking for the writer expression.
         let writers: Vec<String> = WRITERS
             .iter()
             .map(|src| src.chars().filter(|c| !c.is_whitespace()).collect())
             .collect();
-
         for f in declared {
             let written = writers.iter().any(|src| {
                 src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
@@ -747,26 +2875,61 @@ mod tests {
     #[test]
     fn the_carried_link_estimate_survives_a_reload_and_not_a_stop() {
         let s = Shared::new();
-        s.abr_seed_slow_kbps.store(40_000, Ordering::Relaxed);
-        s.abr_seed_fast_kbps.store(41_000, Ordering::Relaxed);
-        s.abr_seed_unc_pm.store(200, Ordering::Relaxed);
-        s.abr_seed_samples.store(19, Ordering::Relaxed);
+        let estimate = crate::abr::CapacityEstimate::from_snapshot(40_000, 41_000, 200, 19)
+            .expect("valid measured estimate");
+        s.publish_abr_seed(estimate);
+
+        s.reset_session();
+        let carried = s
+            .abr_seed()
+            .expect("a reload tears the engine down and keeps the link; this is the seek path");
+        assert_eq!(carried.samples, 19);
+        assert_eq!(carried.slow_kbps, 40_000);
+
+        s.clear_abr_seed();
+        assert!(
+            s.abr_seed().is_none(),
+            "a real stop ends the playback, and the next one measures its own link",
+        );
+    }
+
+    #[test]
+    fn a_carried_link_estimate_ages_across_an_unobserved_reload_gap() {
+        let s = Shared::new();
+        let estimate = crate::abr::CapacityEstimate::from_snapshot(40_000, 42_000, 100, 19)
+            .expect("valid measured estimate");
+        let half_life = crate::abr::AbrPolicy::measured().stale_half_life_ms;
+        let observed_at = Instant::now()
+            .checked_sub(Duration::from_millis(u64::from(half_life) * 2))
+            .expect("test instant");
+        s.publish_abr_seed_at(estimate, observed_at);
+
+        let aged = s.abr_seed().expect("a reload carries the estimate");
+        assert!(
+            aged.uncertainty_pm > estimate.uncertainty_pm,
+            "pause/background/reload wall time must widen carried evidence",
+        );
+    }
+
+    /// A failed HLS→Original transaction immediately tears down the failed Engine and reloads
+    /// the retained HLS one. The HTTP cause must survive that reset, then die with the playback.
+    #[test]
+    fn original_failure_survives_rollback_reload_and_not_the_playback() {
+        let s = Shared::new();
+        s.abr_failure_kind
+            .store(crate::player::ABR_FAILURE_ORIGINAL_HTTP, Ordering::Relaxed);
+        s.abr_failure_status.store(503, Ordering::Relaxed);
 
         s.reset_session();
         assert_eq!(
-            s.abr_seed_samples.load(Ordering::Relaxed),
-            19,
-            "a reload tears the engine down and keeps the link; this is the seek path",
+            s.abr_failure_kind.load(Ordering::Relaxed),
+            crate::player::ABR_FAILURE_ORIGINAL_HTTP
         );
-        assert_eq!(s.abr_seed_slow_kbps.load(Ordering::Relaxed), 40_000);
+        assert_eq!(s.abr_failure_status.load(Ordering::Relaxed), 503);
 
-        s.clear_abr_seed();
-        assert_eq!(
-            s.abr_seed_samples.load(Ordering::Relaxed),
-            -1,
-            "a real stop ends the playback, and the next one measures its own link",
-        );
-        assert_eq!(s.abr_seed_slow_kbps.load(Ordering::Relaxed), 0);
+        s.clear_abr_failure();
+        assert_eq!(s.abr_failure_kind.load(Ordering::Relaxed), 0);
+        assert_eq!(s.abr_failure_status.load(Ordering::Relaxed), 0);
     }
 
     /// The one invariant that cannot be recovered from if it breaks, and breaks SILENTLY: a session
@@ -785,10 +2948,14 @@ mod tests {
         s.seen_frame.store(true, Ordering::Relaxed);
         s.frames.store(9, Ordering::Relaxed);
         s.demux_io_failed.store(true, Ordering::Relaxed);
-        s.auto_fallback_kbps.store(4_000, Ordering::Relaxed);
-        s.auto_recover_kbps.store(60_000, Ordering::Relaxed);
+        s.playback_trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .seed_for_reset_test();
         s.dg_abr_mode.store(2, Ordering::Relaxed);
         s.dg_abr_kbps.store(2_000, Ordering::Relaxed);
+        s.dg_abr_declared_kbps.store(1_459, Ordering::Relaxed);
+        s.dg_abr_media_kbps.store(1_051, Ordering::Relaxed);
         s.dg_abr_net_kbps.store(4_000, Ordering::Relaxed);
         s.dg_abr_buffer_ms.store(2_800, Ordering::Relaxed);
         s.dg_abr_ratio_pm.store(500, Ordering::Relaxed);
@@ -810,17 +2977,17 @@ mod tests {
             "a new session must not inherit an I/O failure"
         );
         assert_eq!(
-            s.auto_fallback_kbps.load(Ordering::Relaxed),
-            0,
-            "a new session must not inherit an Auto fallback"
-        );
-        assert_eq!(
-            s.auto_recover_kbps.load(Ordering::Relaxed),
-            0,
-            "a new session must not inherit an Auto recovery"
+            s.playback_trace
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .step_count_for_test(),
+            1,
+            "an engine reload must preserve the playback attempt's causal trace",
         );
         assert_eq!(s.dg_abr_mode.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_kbps.load(Ordering::Relaxed), 0);
+        assert_eq!(s.dg_abr_declared_kbps.load(Ordering::Relaxed), -1);
+        assert_eq!(s.dg_abr_media_kbps.load(Ordering::Relaxed), -1);
         assert_eq!(s.dg_abr_net_kbps.load(Ordering::Relaxed), -1);
         assert_eq!(s.dg_abr_buffer_ms.load(Ordering::Relaxed), -1);
         assert_eq!(s.dg_abr_ratio_pm.load(Ordering::Relaxed), -1);

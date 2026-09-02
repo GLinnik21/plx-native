@@ -3,6 +3,24 @@
 **Device, `pipe_abr_down_outrun`, 2026-08-28.** Synthetic fixture tier: no PMS, no library, no
 account. Every number below is off the app's own event log.
 
+## Correction — the prefix projection was superseded after a real-PMS run
+
+The trace below remains a valid measurement of the synthetic fixture and of the cost of spending
+the whole candidate deadline. Its proposed early-abort rule is not valid for a real PMS and is no
+longer shipped. A remote-PMS run on 2026-08-30 showed a sustainable 4K response repeatedly being
+abandoned after a slow opening prefix. The supplied PMS SessionReports contain `segmentWait`
+pauses, and a Ghidra audit of PMS 1.43.4 proved the stronger fact: the server can snapshot
+`Content-Length` while the current segment file is still growing, return would-block in the middle
+of that body, then resume it on an encoder notification. A prefix is therefore a right-censored
+end-to-end production/delivery sample, not a forecast of its unseen remainder.
+
+Candidate warm-up now has only its existing absolute transaction deadline while reserve remains.
+After observed `B = 0`, a downshift to the ladder floor keeps the only candidate response alive:
+there is no reserve left to protect and aborting cannot buy a cheaper response. The active cursor
+may abandon a known-incomplete response only after `B = 0` and when a cheaper rung exists; no
+prefix rate enters either decision or estimator. The historical proposal below is retained to
+explain the fixture result, not to describe current code.
+
 ## What was reported, and why no test had caught it
 
 A user described playback that "stalls for a sec, then quickly plays what stalled for a sec, then
@@ -77,7 +95,7 @@ on, one level down.
 
 A deadline says WHEN to give up. It cannot say that giving up now is already certain.
 
-## The change
+## The historical change (superseded)
 
 `candidate_warmup_is_guarded(proposal)` — `Direction::Down` and not at the ladder floor — arms the
 existing `StallGuard` on the warm-up, with the budget it already had:

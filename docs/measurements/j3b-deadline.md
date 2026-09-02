@@ -202,16 +202,17 @@ unbounded for 76 seconds. Stated plainly: the deadline closed the smaller of the
 collapsing link the dominant cost is not the transaction — it is the app's refusal to abandon a
 segment it has already started, on a rung the link can no longer carry.
 
-The remedy is the plan's R16 abort rule, and this is the first measurement that prices it: rung 320
-was 1.6 s away. Abandoning the in-flight 18000 segment would have turned a 76-second stall into
-about two seconds. R16 is currently blocked on the in-segment rate quantile it wants for the
-projection — but note that this case needs no quantile at all to see the problem, because
-`Content-Length` and the delivered rate are both known at the first byte.
+The historical proposed remedy was the plan's R16 prefix-rate abort rule, and this was the first
+measurement that priced it: rung 320 was 1.6 s away. Later real-PMS evidence invalidated the last
+sentence's premise. PMS can snapshot `Content-Length` for a still-growing segment and wait for its
+encoder inside that body, so the delivered prefix rate does not identify the unseen remainder even
+when both values appear known. Current code turns only observed `B = 0` into a decision point.
 
-**The acceptance test for that increment already exists and is deliberately absent today:**
-`pipe_abr_down_outrun` carries no `max_stall_s`. Adding one now would assert a result nobody has
-measured; adding one when R16 lands makes this case differential, because 76 s cannot pass any
-bound a two-second escape justifies.
+`pipe_abr_down_outrun` remains differential for the behavior the replacement rule actually
+claims: after an observed terminal reserve boundary, the HLS pipeline stays alive and settles on a
+cheaper actuator without treating the abandoned prefix as capacity. It deliberately carries no
+`max_stall_s`; `B = 0` is an observed rebuffer boundary, not a promise that a severe collapse is
+invisible, and the removed prefix forecast cannot justify such a bound.
 
 ---
 

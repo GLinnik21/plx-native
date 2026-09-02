@@ -184,6 +184,45 @@ pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
 
+/// Parse `/tmp/plxnative-server=<slot>`, the optional server half of a direct-screen trigger.
+///
+/// A Plex `ratingKey` is only unique together with its server.  The original `plxnative-play`
+/// trigger predated the multi-server registry and therefore meant "that key on the current
+/// server".  Keeping the slot in a separate trigger preserves that wire format for the regression
+/// harness while allowing `tv-session --server N` to name the other half explicitly.
+///
+/// Bounds are checked here rather than left to `ServerId::from_raw`: that constructor also exists
+/// for compact stores and deliberately accepts any `u16`; a hand-written dev trigger must not turn
+/// an arbitrary number into a plausible identity and then silently fall back elsewhere.
+#[cfg(any(feature = "devtriggers", test))]
+fn parse_server_slot(s: &str) -> Result<u16, String> {
+    let slot = s
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| format!("{s:?} is not a server slot"))?;
+    if (slot as usize) >= crate::plex::MAX_SERVERS {
+        return Err(format!(
+            "server slot {slot} is outside 0..{}",
+            crate::plex::MAX_SERVERS
+        ));
+    }
+    Ok(slot)
+}
+
+/// The optional registry slot selected for direct screen automation.
+///
+/// `None` means the old/current-server behaviour.  `Some(Err)` is intentionally distinct: a bad
+/// explicit identity must fail closed rather than play the same numeric rating key from whichever
+/// server happens to be current.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn server_slot() -> Option<Result<u16, String>> {
+    read("server").map(|s| parse_server_slot(&s))
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn server_slot() -> Option<Result<u16, String>> {
+    None
+}
+
 /// **Crash the app on purpose** — `plxnative-crashtest=<segv|abrt|bus|ill|trap>`.
 ///
 /// Not a feature. An INSTRUMENT for the instrument, and it exists because of the rule this repo
@@ -341,6 +380,61 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<crate::plex::session::
     parse_quality_switch_script(&read("qualityswitch")?)
 }
 
+/// One synchronized user Pause, optionally followed by Resume —
+/// `plxnative-autopause=[delay=<ms>,][hold=<ms>]`.
+///
+/// An empty file preserves the original paused-HUD capture contract: pause at the player's
+/// ordinary six-second dev gate and stay paused. A non-empty script may delay that edge and name a
+/// finite accepted hold. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
+/// substituting a duration would exercise a different interleaving from the manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PauseScript {
+    pub(crate) delay_ms: u32,
+    pub(crate) hold_ms: Option<u32>,
+}
+
+fn parse_pause_script(raw: &str) -> Option<PauseScript> {
+    if raw.trim().is_empty() {
+        return Some(PauseScript {
+            delay_ms: 0,
+            hold_ms: None,
+        });
+    }
+    let mut delay_ms = None;
+    let mut hold_ms = None;
+    for field in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+    {
+        if let Some(value) = field.strip_prefix("delay=") {
+            if delay_ms.is_some() {
+                return None;
+            }
+            delay_ms = Some(value.parse().ok()?);
+        } else if let Some(value) = field.strip_prefix("hold=") {
+            if hold_ms.is_some() {
+                return None;
+            }
+            let value: u32 = value.parse().ok()?;
+            if value == 0 {
+                return None;
+            }
+            hold_ms = Some(value);
+        } else {
+            return None;
+        }
+    }
+    Some(PauseScript {
+        delay_ms: delay_ms.unwrap_or(0),
+        hold_ms,
+    })
+}
+
+pub(crate) fn pause_script() -> Option<PauseScript> {
+    parse_pause_script(&read("autopause")?)
+}
+
 /// **Pin Auto's HLS ladder to one actuator, by request rate** — `plxnative-abrpin=<kbps>`.
 ///
 /// Measurement-only, for step M4 of `docs/adaptive-playback-plan.md`: reading a settled reserve at
@@ -417,6 +511,14 @@ pub(crate) struct DevServer {
     /// was armed to test as working.
     #[serde(default)]
     pub(crate) scheme: crate::plex::Scheme,
+    /// Proven connection class for a conditioned test origin.
+    ///
+    /// A LAN proxy can stand in front of a remote PMS so the harness can shape the whole media
+    /// link.  Its private address is not evidence that the PMS became local, while dropping the
+    /// original `remote` classification disables the cold source probe the experiment exists to
+    /// exercise.  Omitted stays `None`: naming an address is never enough to invent a tier.
+    #[serde(default)]
+    pub(crate) tier: Option<crate::plex::probe::Location>,
     /// This identity's per-(user,server) access token **for this server**. A shared server is a
     /// separate authority: the account token gets a 401 from it, which is the whole reason one
     /// `plxnative-token` cannot express two servers. A SECRET — never logged.
@@ -570,11 +672,12 @@ pub(crate) fn servers() -> Result<Vec<DevServer>, String> {
 /// pump's `Feed()`, the ACB bind — is byte-identical to a real playback. What it CANNOT do is say
 /// what the stream *is*: the Starfish `Load` payload takes its codecs from `route::stream_vcodec`
 /// / `stream_acodec`, and its Dolby nodes from `stream_dovi` / `stream_immersive`, all five of
-/// which are written only by `route::apply_plan` from a PMS decision. So a URL-fed 4K HEVC file
-/// was declared to the television as whatever the route happened to hold — in a fresh boot, the
-/// empty string, which falls through [`crate::player::engine`]'s `_ =>` arm to `"AC3"` and an
-/// H264 payload. The declaration is precisely what governs HEVC-vs-H264 payload selection, the
-/// `"AC3 PLUS"` naming trap, and both Dolby nodes, so a tier that cannot set it cannot test them.
+/// which are normally installed together by `route::apply_plan` from a PMS decision and replaced
+/// together by later route transitions. So a URL-fed 4K HEVC file was declared to the television
+/// as whatever the route happened to hold — in a fresh boot, the empty string, which falls through
+/// [`crate::player::engine`]'s `_ =>` arm to `"AC3"` and an H264 payload. The declaration is
+/// precisely what governs HEVC-vs-H264 payload selection, the `"AC3 PLUS"` naming trap, and both
+/// Dolby nodes, so a tier that cannot set it cannot test them.
 ///
 /// JSON, whole-file, one object. Chosen over a `key=value` line for three reasons: the DV node is
 /// nested, `serde_json` is already a dependency and [`DevServer`] is the established precedent for
@@ -774,6 +877,18 @@ fn path(name: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn server_slot_trigger_accepts_only_a_registry_slot() {
+        assert_eq!(super::parse_server_slot("0"), Ok(0));
+        assert_eq!(super::parse_server_slot("15"), Ok(15));
+        for invalid in ["", "-1", "16", "1.0", "server-1"] {
+            assert!(
+                super::parse_server_slot(invalid).is_err(),
+                "{invalid:?} must not silently target another server"
+            );
+        }
+    }
+
+    #[test]
     fn quality_trigger_accepts_only_persisted_policy_spellings() {
         use crate::plex::session::PlaybackQuality;
 
@@ -915,6 +1030,28 @@ mod tests {
         assert!(
             wrapped.origin().is_none() && !wrapped.usable(),
             "32400 is what that number wraps to"
+        );
+    }
+
+    /// A conditioned WAN run terminates at a LAN proxy, so the endpoint's address cannot recover
+    /// the server tier.  The harness must be able to preserve the discovery result explicitly,
+    /// while old payloads remain unknown rather than silently becoming remote.
+    #[test]
+    fn a_dev_server_tier_is_explicit_and_defaults_to_unknown() {
+        let one = |json: &str| {
+            super::parse_servers(json)
+                .expect("parses")
+                .pop()
+                .expect("one server")
+        };
+        assert_eq!(one(r#"{"host":"10.0.0.2","token":"t"}"#).tier, None);
+        assert_eq!(
+            one(r#"{"host":"10.0.0.2","token":"t","tier":"remote"}"#).tier,
+            Some(crate::plex::probe::Location::Remote)
+        );
+        assert!(
+            super::parse_servers(r#"{"host":"10.0.0.2","token":"t","tier":"wan"}"#).is_err(),
+            "an unknown spelling must not silently change the experiment"
         );
     }
 
@@ -1303,5 +1440,29 @@ mod tests {
             None,
             "one invalid rung must not leave a valid subset running",
         );
+    }
+
+    #[test]
+    fn a_pause_script_preserves_the_legacy_hold_and_fails_closed() {
+        let parse = super::parse_pause_script;
+        assert_eq!(
+            parse(""),
+            Some(super::PauseScript {
+                delay_ms: 0,
+                hold_ms: None,
+            }),
+            "the empty screenshot trigger remains a permanent Pause",
+        );
+        assert_eq!(
+            parse("delay=25000,hold=6000"),
+            Some(super::PauseScript {
+                delay_ms: 25_000,
+                hold_ms: Some(6_000),
+            }),
+        );
+        assert_eq!(parse("hold=0"), None);
+        assert_eq!(parse("delay=10,delay=20"), None);
+        assert_eq!(parse("hold=oops"), None);
+        assert_eq!(parse("resume=6000"), None);
     }
 }

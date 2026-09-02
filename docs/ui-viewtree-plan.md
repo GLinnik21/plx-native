@@ -83,9 +83,13 @@ while `!playing`; the three menu/info/chapters overlays are only meaningful whil
 `Player{overlay}` rather than four peer variants. `plex_run` stays immediate-mode: it is the loop
 that ticks/draws the View tree, never itself a View.
 
-**Suspend/restore is NOT encoded in Route.** Background (0x103/0x104) sets `Route::Home` but keeps
-the separate `bg_was_playing/bg_was_paused/bg_pos` guard driving the single-`Load` foreground restore
-(app.rs:360-401) — losing that session = black-plane UAF on foreground.
+**Suspend/restore is NOT encoded in Route.** Background (0x103/0x104) snapshots intended position
+and viewer clock in the separate `ForegroundLifecycle` reducer, suspends the Engine, cancels any
+unlanded play resolve and temporarily sets `Route::Home`. On DID foreground (0x106), that reducer
+prepares the saved route once, launches a tracked native Load and enters `LoadPending`; the main
+loop polls that exact attempt, and only `Started` may apply the saved clock intent. Exact `Failed`
+returns to `Prepared`, `Superseded(next)` keeps `LoadPending` on the replacement attempt, and `Stale`
+releases lifecycle ownership to `Idle`.
 
 ### A.4 Focus (Step 7b, OPTIONAL) — one FocusPath
 
@@ -160,8 +164,11 @@ migration must keep them as thin wrappers.
     selected/section=0/col=0 → `scroll.jump(0.0)` → `load_detail` (blocking). `open_rk`/`open_rk_season`
     reset selected/section=0/col=0 + `scroll.jump(0.0)` then load (detail.rs:725-745). `close`:
     `metadata::clear()` → selected=-1.
-16. **Background suspend keeps the session** (`suspend_bufferfeed` + bg_was_playing/bg_was_paused/
-    bg_pos), 0x106 restores via `resume_at` + `start_bufferfeed` (guards a double-start UAF).
+16. **Background suspend keeps the playback route data, not the native Engine.**
+    `ForegroundLifecycle` owns the saved intended position/clock and serializes prepare → tracked
+    Load launch → exact-attempt settlement. DID foreground may launch once and enter
+    `LoadPending`; only a `Started` settlement advances the clock, while failure returns to
+    `Prepared` for a Play-key retry without repeating `resume_at`.
 17. **All ~12 `plxnative-*` headless dev-triggers** (app.rs:886-1053) poke route state directly — every
     set-site migrates atomically with the enum or headless capture/regression silently breaks.
 18. **No per-frame perf regression** on weak ARM: `Painter`/`Env` are `Copy`; no per-cell boxed
@@ -309,10 +316,14 @@ early-continue :1194, scrub gating :413/:705-765/:1082-1118, lifecycle :362-395)
 `matches!(route, Route::Player{overlay:Overlay::Menu|Info|Chapters})`. Set-sites: start_bufferfeed
 successes → `Route::Player{overlay:Overlay::None}`; Stop/BACK → `Route::Home`; detail opens →
 `Route::Detail`; overlay opens → `Route::Player{overlay:..}`; overlay closes →
-`Route::Player{overlay:Overlay::None}`. **Lifecycle:** 0x103 sets `route=Home` **and keeps**
-`suspend_bufferfeed` + bg_was_playing/bg_was_paused/bg_pos (#16); 0x106 restores
-`route=Player{None}` via `resume_at`+`start_bufferfeed` — the separate `bg_was_playing` flag carries
-suspended-ness, do NOT encode it in Route. `home_update(dt)` STAYS unconditional (#6). Migrate ALL
+`Route::Player{overlay:Overlay::None}`. **Lifecycle:** 0x103 snapshots intended position and clock
+into `ForegroundLifecycle`, suspends the Engine, cancels an unlanded resolve and sets `route=Home`.
+On 0x106 the reducer claims preparation and a tracked Load launch, then enters `LoadPending`; the
+route becomes `Player{None}` when that launch is accepted, but the viewer clock changes only after
+the main-loop poll settles the exact attempt as `Started`. Exact `Failed` returns to `Prepared`,
+`Superseded(next)` keeps `LoadPending` on the replacement attempt, and `Stale` releases lifecycle
+ownership to `Idle`. Keep this reducer SEPARATE from Route. `home_update(dt)` STAYS unconditional
+(#6). Migrate ALL
 ~12 `plxnative-*` set-sites in lockstep (#17). Preserve the snap edge-trigger (#8), LG key decode (#2),
 `plex_run` C-ABI. Keep `g_fr/g_fc/g_snap/set_fr/set_snap` + home `fr/fc` + detail `section/col` as
 SEPARATE focus owners (no unification yet).
@@ -320,7 +331,8 @@ SEPARATE focus owners (no unification yet).
 - **Checkpoint:** `make` green; on-TV capture through the full route graph home→detail→play→
   menu/info/chapters→back; run `plxnative-detail*`/`plxnative-menu`/`plxnative-info`/`plxnative-chapters`/`plxnative-play`/
   `plxnative-autoplay`/`plxnative-autoseek`/`plxnative-autopause`/`plxnative-grid` — each reaches the same route + capture;
-  verify background→foreground resume single-`Load`s (bg_was_playing path, no double-start UAF).
+  verify background→foreground enters one exact `LoadPending` attempt, starts the saved clock only
+  after `Started`, and retries a failed Load from `Prepared` without repeating `resume_at`.
 - **Invariants:** #2, #6, #7, #8, #16, #17, #18.
 
 **7b (OPTIONAL — behind the stop valve) — unified FocusPath.**
@@ -360,8 +372,10 @@ and is the correct thing to sacrifice.
   ring under neighbor cards. → keep Grid's two-phase draw; Shelf never owns a self-contained draw.
 - **1.055/0.055 vs strip 1.07** (#9): mixing shifts the ring glow. → move constants verbatim,
   capture-compare.
-- **Route lifecycle** (#16): `playing=false` on background while keeping the session — mapping to
-  Route must NOT lose bg_was_playing/suspend-restore. → keep bg_was_playing SEPARATE, not in Route.
+- **Route lifecycle** (#16): background temporarily maps Player to Home while
+  `ForegroundLifecycle` retains saved intent and exact-attempt ownership. Route consolidation must
+  not bypass its claimed preparation/launch, exact `LoadPending` settlement, or `Prepared` retry
+  state. → keep the lifecycle reducer SEPARATE, not in Route.
 - **~12 `plxnative-*` dev-triggers** (#17): a missed set-site silently breaks headless capture, not the
   build. → migrate them in the SAME commit as the bool deletion; rerun the full trigger matrix at 7a.
 - **Backdrop carve-outs** (#4): folding self-managed alphas into `p.alpha()` visibly breaks the hero

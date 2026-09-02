@@ -107,6 +107,7 @@ const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_NOSIGNAL: c_int = 99;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLOPT_TIMEOUT: c_int = 13;
+const CURLOPT_TIMEOUT_MS: c_int = 155;
 /// The numeric protocol allow-list options are the compatibility surface for this project's curl
 /// floor. Their `_STR` replacements arrived in 7.85; the television has 7.53.1. Both numeric
 /// options have existed since 7.19.4.
@@ -486,6 +487,15 @@ impl Resp {
     }
 }
 
+/// The failure fact libcurl exposes at the request boundary. `TimedOut` is intentionally not yet
+/// called a caller deadline: curl uses code 28 for both its connect ceiling and its whole-request
+/// ceiling, so the layer which selected those clocks decides whether that timer was the caller's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestError {
+    TimedOut,
+    Transport,
+}
+
 /// **How long one call may take.** The values are a PER-CALL argument rather than constants
 /// because the right policy depends entirely on what is being fetched.
 ///
@@ -507,6 +517,10 @@ impl Resp {
 pub struct Timeouts {
     pub connect_s: c_long,
     pub total_s: c_long,
+    /// Millisecond whole-request deadline when non-zero. It takes precedence over `total_s` and
+    /// lets an ABR transaction spend its exact remaining reserve rather than rounding it up to a
+    /// whole generic API second.
+    pub total_ms: c_long,
     pub low_speed_bps: c_long,
     pub low_speed_s: c_long,
 }
@@ -517,6 +531,7 @@ pub struct Timeouts {
 pub const API: Timeouts = Timeouts {
     connect_s: 8,
     total_s: 25,
+    total_ms: 0,
     low_speed_bps: 0,
     low_speed_s: 0,
 };
@@ -528,6 +543,7 @@ pub const API: Timeouts = Timeouts {
 pub const BULK: Timeouts = Timeouts {
     connect_s: 8,
     total_s: 0,
+    total_ms: 0,
     low_speed_bps: 1,
     low_speed_s: 30,
 };
@@ -569,7 +585,21 @@ pub(crate) fn request(
     follow_redirects: bool,
     max_body: Option<usize>,
 ) -> Option<Resp> {
-    request_tls(
+    request_result(url, headers, verb, body, t, follow_redirects, max_body).ok()
+}
+
+/// Typed twin used by a caller which must keep curl's timeout distinct from every other transport
+/// failure. Ordinary clients retain [`request`]'s compatibility `Option`.
+pub(crate) fn request_result(
+    url: &str,
+    headers: &[String],
+    verb: &str,
+    body: Option<&[u8]>,
+    t: Timeouts,
+    follow_redirects: bool,
+    max_body: Option<usize>,
+) -> Result<Resp, RequestError> {
+    request_tls_result(
         url,
         headers,
         verb,
@@ -626,27 +656,42 @@ pub(crate) fn request_tls(
     max_body: Option<usize>,
     tls: Tls<'_>,
 ) -> Option<Resp> {
+    request_tls_result(url, headers, verb, body, t, follow_redirects, max_body, tls).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_tls_result(
+    url: &str,
+    headers: &[String],
+    verb: &str,
+    body: Option<&[u8]>,
+    t: Timeouts,
+    follow_redirects: bool,
+    max_body: Option<usize>,
+    tls: Tls<'_>,
+) -> Result<Resp, RequestError> {
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
     // enters curl with a half-configured request.
-    let verb_c = CString::new(verb).ok()?;
-    let url_c = CString::new(url).ok()?;
-    let ua = CString::new(crate::plex::identity::user_agent()).ok()?;
+    let verb_c = CString::new(verb).map_err(|_| RequestError::Transport)?;
+    let url_c = CString::new(url).map_err(|_| RequestError::Transport)?;
+    let ua =
+        CString::new(crate::plex::identity::user_agent()).map_err(|_| RequestError::Transport)?;
     let tls_c = match tls {
         Tls::Ca => TlsCfg::Ca,
-        Tls::CaBundle(p) => TlsCfg::CaBundle(CString::new(p).ok()?),
-        Tls::Pinned(p) => TlsCfg::Pinned(CString::new(p).ok()?),
+        Tls::CaBundle(p) => TlsCfg::CaBundle(CString::new(p).map_err(|_| RequestError::Transport)?),
+        Tls::Pinned(p) => TlsCfg::Pinned(CString::new(p).map_err(|_| RequestError::Transport)?),
     };
     let hdr_owned: Vec<CString> = headers
         .iter()
         .map(|line| CString::new(line.as_str()))
         .collect::<Result<_, _>>()
-        .ok()?;
+        .map_err(|_| RequestError::Transport)?;
     // The guard `CURL_OK` exists for. Without it, a device with no libcurl this app can bind
     // reaches `curl_easy_init`'s wrapper and takes `dynlib::missing_symbol`, which panics — an
     // account lookup failing should return None and let the caller fall back, not kill a thread.
     if !available() {
-        return None;
+        return Err(RequestError::Transport);
     }
     // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
     // but only one easy request at a time. The normal installed/existing-callback path never takes
@@ -669,13 +714,13 @@ pub(crate) fn request_tls(
                         "net: libcurl refused security option {} (rc={rc}); request cancelled",
                         $name
                     ));
-                    return None;
+                    return Err(RequestError::Transport);
                 }
             }};
         }
         let h = curl_easy_init();
         if h.is_null() {
-            return None;
+            return Err(RequestError::Transport);
         }
         let easy = Easy(h);
         curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
@@ -746,7 +791,7 @@ pub(crate) fn request_tls(
                 let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
                 if rc != 0 {
                     crate::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
-                    return None;
+                    return Err(RequestError::Transport);
                 }
             }
             TlsCfg::Pinned(p) => {
@@ -757,7 +802,7 @@ pub(crate) fn request_tls(
                 );
                 if rc != 0 {
                     crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
-                    return None;
+                    return Err(RequestError::Transport);
                 }
                 require_setopt!(
                     curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long),
@@ -771,7 +816,11 @@ pub(crate) fn request_tls(
         }
         curl_easy_setopt_long(easy.0, CURLOPT_NOSIGNAL, 1 as c_long);
         curl_easy_setopt_long(easy.0, CURLOPT_CONNECTTIMEOUT, t.connect_s);
-        curl_easy_setopt_long(easy.0, CURLOPT_TIMEOUT, t.total_s);
+        if t.total_ms > 0 {
+            curl_easy_setopt_long(easy.0, CURLOPT_TIMEOUT_MS, t.total_ms);
+        } else {
+            curl_easy_setopt_long(easy.0, CURLOPT_TIMEOUT, t.total_s);
+        }
         curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_LIMIT, t.low_speed_bps);
         curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_TIME, t.low_speed_s);
         curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
@@ -781,7 +830,7 @@ pub(crate) fn request_tls(
         for c in &hdr_owned {
             let next = curl_slist_append(slist.0, c.as_ptr());
             if next.is_null() {
-                return None;
+                return Err(RequestError::Transport);
             }
             slist.0 = next;
         }
@@ -824,7 +873,7 @@ pub(crate) fn request_tls(
                 "net: response exceeded {} byte body limit",
                 max_body.unwrap_or(0)
             ));
-            return None;
+            return Err(RequestError::Transport);
         }
         if rc != 0 {
             // NAMED, not just counted. Everything here rides the TELEVISION's curl and therefore
@@ -843,9 +892,13 @@ pub(crate) fn request_tls(
                 _ => "transport error",
             };
             crate::log(&format!("net: curl rc={rc} — {why}"));
-            return None;
+            return Err(if rc == 28 {
+                RequestError::TimedOut
+            } else {
+                RequestError::Transport
+            });
         }
-        Some(Resp {
+        Ok(Resp {
             status: code as u16,
             body: sink.body,
         })
@@ -988,8 +1041,9 @@ mod request_tests {
             Timeouts {
                 connect_s: 8,
                 total_s: 25,
+                total_ms: 0,
                 low_speed_bps: 0,
-                low_speed_s: 0
+                low_speed_s: 0,
             }
         );
         assert_eq!(
@@ -997,8 +1051,9 @@ mod request_tests {
             Timeouts {
                 connect_s: 8,
                 total_s: 0,
+                total_ms: 0,
                 low_speed_bps: 1,
-                low_speed_s: 30
+                low_speed_s: 30,
             }
         );
     }

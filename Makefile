@@ -565,8 +565,15 @@ $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust
 # binutils build, so pinning it here is what keeps two different NDK installs producing the same
 # id for the same input — which the reproducible-package guarantee (`ci/mkipk.py`, and the sha256
 # every user's television verifies) depends on.
+# libplayerAPIs' libpf callback thunk reaches callbackFunctionHook through a preemptible JUMP_SLOT.
+# Export exactly our C interposer from the executable's .dynsym so that relocation binds here; the
+# interposer resolves the firmware implementation with RTLD_NEXT before every Load. Do not widen
+# this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
+SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
+SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) Makefile
-	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
+	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(SMP_INTERPOSER_LDFLAG) \
+	  $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
 
 # --- NDK bootstrap -----------------------------------------------------------
@@ -892,6 +899,17 @@ check: lint
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) test --lib
+	@# The SAME suite again under `hostsim`, which is not a duplicate run: the host feed seam
+	@# (`player/ffi_host.rs`) only exists in that configuration, so every test that drives an AU
+	@# through `sf_feed` is COMPILED OUT of the line above and cannot fail it. The prime-livelock
+	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
+	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
+	@# Cargo keys fingerprints by feature set, so the two configurations coexist in one target/ and
+	@# this costs a few seconds warm rather than a rebuild.
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" \
+	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
+	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
+	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
 	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
 	@# released .ipk, whose sha256 every user's television verifies at install. That property is
@@ -923,6 +941,10 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	@# The direct-screen TV command's own host-only contract: `--server N` must suppress the
+	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
+	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
+	tools/tv-session.sh selftest
 	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
 	@# target until 2026-08-26, which meant the guard that decides whether a private value may
 	@# leave this machine was covered by a test nobody ran on a normal check -- the same shape as

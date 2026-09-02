@@ -30,6 +30,18 @@ use std::sync::RwLock;
 /// without the CRLF the raw socket used to want (each transport frames its own headers now).
 use crate::http::ACCEPT_JSON;
 
+/// A deadline-bearing JSON request after the client has applied the HTTP-success and parser
+/// contract. The completed response remains attached even when it is non-2xx or malformed; the
+/// route can therefore classify it without consulting a clock after the fact.
+pub(crate) enum JsonDeadlineOutcome {
+    Response {
+        reply: http::Reply,
+        parsed: Option<MediaContainer>,
+    },
+    Deadline,
+    Transport,
+}
+
 /// The headers shared by EVERY PMS operation, over either transport. `X-Plex-Language` belongs
 /// here rather than in [`Client::playback_identity`]: it selects server-returned metadata for
 /// browse/search reads too, not only playback protocol calls. Owned strings keep the optional
@@ -361,6 +373,28 @@ impl Client {
         )
     }
 
+    /// [`Self::send`] under a caller-owned absolute transaction deadline. This is for small PMS
+    /// control requests which are only one phase of a reserve-funded media transaction; letting
+    /// each phase start the ordinary API timeout would make the sum unbounded even though the
+    /// controller had admitted a finite spend.
+    fn send_until(
+        &self,
+        path_no_token: &str,
+        method: Method,
+        headers: &[&str],
+        deadline: std::time::Instant,
+    ) -> http::RequestOutcome {
+        let owned = pms_headers(headers);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        http::request_until_outcome(
+            &self.origin,
+            &self.with_token(path_no_token),
+            method,
+            &headers,
+            deadline,
+        )
+    }
+
     /// A 2xx response body, or `None` — the fold the raw socket used to apply for every caller,
     /// written once here now that the transport no longer does it. Every read below wants exactly
     /// this: a non-2xx PMS answer is not a container, and `http_open` has already logged the
@@ -426,6 +460,42 @@ impl Client {
         }
     }
 
+    /// The deadline-bearing twin used only by an in-flight ABR candidate registration. Parsing
+    /// and endpoint-safe diagnostics are identical to the ordinary path; only transport policy
+    /// differs.
+    pub(super) fn get_json_with_headers_until(
+        &self,
+        path_no_token: &str,
+        headers: &[&str],
+        deadline: std::time::Instant,
+    ) -> JsonDeadlineOutcome {
+        let mut request_headers = Vec::with_capacity(headers.len() + 1);
+        request_headers.push(ACCEPT_JSON);
+        request_headers.extend_from_slice(headers);
+        match self.send_until(path_no_token, Method::Get, &request_headers, deadline) {
+            http::RequestOutcome::Response(reply) => {
+                let parsed = if reply.ok() {
+                    match serde_json::from_slice::<Envelope>(&reply.body) {
+                        Ok(envelope) => Some(envelope.media_container),
+                        Err(error) => {
+                            crate::log(&format!(
+                                "pms: GET {} answered {} bytes that will not parse — {error}",
+                                path_no_token.split('?').next().unwrap_or(path_no_token),
+                                reply.body.len()
+                            ));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                JsonDeadlineOutcome::Response { reply, parsed }
+            }
+            http::RequestOutcome::Deadline => JsonDeadlineOutcome::Deadline,
+            http::RequestOutcome::Transport => JsonDeadlineOutcome::Transport,
+        }
+    }
+
     /// GET raw bytes (image transcode / sidecar sub) — caller decodes.
     pub(super) fn get_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
         self.body_2xx_bulk(path_no_token, &[])
@@ -465,6 +535,49 @@ impl Client {
     /// a share that is asleep answers nothing at all.
     pub(super) fn get_ok(&self, path_no_token: &str) -> bool {
         self.body_2xx(path_no_token, Method::Get, &[]).is_some()
+    }
+
+    /// GET whose HTTP status is itself the protocol result. Unlike [`Self::get_ok`], this keeps
+    /// a 404 distinct from transport failure. The universal-transcoder ping uses that exact
+    /// distinction as its physical-session lookup: 200 means present, 404 means absent, while a
+    /// timeout/401/5xx proves neither state. The built path is still private to the Plex layer and
+    /// the token remains behind [`Self::with_token`].
+    pub(super) fn get_status(&self, path_no_token: &str) -> Option<i32> {
+        self.send(path_no_token, Method::Get, &[])
+            .map(|reply| reply.status)
+    }
+
+    /// POST whose HTTP status is the protocol result. The synchronous PMS Streaming Resource
+    /// close uses 200 for "terminated now" and 404 for the idempotent "already absent" case, so
+    /// folding both through [`Self::post_ok`] would lose the exact cleanup certificate its caller
+    /// needs while still confusing transport failure with a server answer.
+    pub(super) fn post_status(&self, path_no_token: &str) -> Option<i32> {
+        self.send(path_no_token, Method::Post, &[])
+            .map(|reply| reply.status)
+    }
+
+    /// Deadline-bearing GET status for one phase of a larger media transaction.
+    pub(super) fn get_status_until(
+        &self,
+        path_no_token: &str,
+        deadline: std::time::Instant,
+    ) -> Option<i32> {
+        match self.send_until(path_no_token, Method::Get, &[], deadline) {
+            http::RequestOutcome::Response(reply) => Some(reply.status),
+            http::RequestOutcome::Deadline | http::RequestOutcome::Transport => None,
+        }
+    }
+
+    /// Deadline-bearing POST status for one phase of a larger media transaction.
+    pub(super) fn post_status_until(
+        &self,
+        path_no_token: &str,
+        deadline: std::time::Instant,
+    ) -> Option<i32> {
+        match self.send_until(path_no_token, Method::Post, &[], deadline) {
+            http::RequestOutcome::Response(reply) => Some(reply.status),
+            http::RequestOutcome::Deadline | http::RequestOutcome::Transport => None,
+        }
     }
 
     /// PUT (no body) — returns the HTTP status (all `select_streams` reads), or `-1` when the
@@ -638,6 +751,46 @@ mod tests {
             token,
             "cid-42",
         )
+    }
+
+    #[test]
+    fn malformed_2xx_remains_a_response_after_its_deadline_passes() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).expect("request");
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot-json",
+                )
+                .expect("response");
+        });
+        let client = Client::new(
+            ServerId::UNSET,
+            "fixture",
+            Origin::http("127.0.0.1", port as i32),
+            "tok",
+            "cid",
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+
+        let outcome = client.get_json_with_headers_until("/decision", &[], deadline);
+        server.join().unwrap();
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if !left.is_zero() {
+            std::thread::sleep(left + std::time::Duration::from_millis(10));
+        }
+
+        assert!(matches!(
+            outcome,
+            JsonDeadlineOutcome::Response {
+                reply: http::Reply { status: 200, ref body },
+                parsed: None,
+            } if body == b"not-json"
+        ));
     }
 
     /// A `Client` is one server's identity plus its token, and every piece of it now arrives

@@ -36,6 +36,18 @@ internal component labels, app and webOS versions, television model and hardware
 details needed to reproduce and symbolicate the failure. Crash reports do not use the product
 analytics identifier.
 
+The same independent choice also covers a handled playback-error report when playback reaches its
+explicit terminal error screen. That report contains a fixed failure kind, delivery and quality
+classes, coarse raster, rate, HTTP and buffer classes, whether a first picture appeared, and at
+most 32 typed playback transitions with bucketed elapsed times. It contains no title, ratingKey,
+URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
+and is not joined to the product analytics identifier or `playback_id`. Buffering, seeking, holding
+a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
+The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
+`original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and
+Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
+`inconclusive`, `server_state` and `refused`.
+
 ## Optional product analytics
 
 Product analytics is a separate choice and is off until you choose to share it. If enabled,
@@ -73,7 +85,7 @@ Every product analytics event also carries this bounded compatibility and connec
 | `feature.used` | `feature` — one of a fixed list of feature names |
 | `playback.requested` | `playback_id` — a random number minted per attempt, never stored and never reused |
 | `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
-| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `kind` — `decision_refused` / `no_video_transcode_target` / `no_video_track` / `unspecified` |
+| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode`; `kind` — `decision_refused` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `unspecified` |
 | `playback.cancelled` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode` |
 | `playback.abandoned` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` or `transcode` |
 | `playback.quality` | `playback_id` — a random number minted per attempt, never stored and never reused; `rebuffers` — `0` / `1` / `2-3` / `4+`; `buffering` — `none` / `<2s` / `2-10s` / `10s+` — never the interval |

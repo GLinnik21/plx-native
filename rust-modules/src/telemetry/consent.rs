@@ -12,7 +12,7 @@
 //! the transition into usage consent, never for errors-only consent, never at boot or "just in case", and
 //! [`no_identifier_exists_before_anyone_says_yes`] is the test that keeps it that way.
 //!
-//! **Two switches, because they are two questions.** Crash reports and usage statistics are judged
+//! **Two switches, because they are two questions.** Error reports and usage statistics are judged
 //! differently by the people who care — when Audacity retreated it dropped usage analytics and kept
 //! error reporting — and bundling them into one "analytics?" toggle is the shape that reads as a
 //! trick. Two `bool`s, both defaulting to false, and consenting to one says nothing about the other.
@@ -40,6 +40,7 @@
 //! attributes were deleted by the commit that added it rather than left behind — which was the
 //! stated plan and is worth having actually happened, because a stale allowance is how a genuinely
 //! dead function later hides in plain sight.
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
 
 /// The version of *what is collected and why*. Bumping it re-asks.
@@ -49,10 +50,10 @@ use std::sync::RwLock;
 /// declared.** A raster added beside an existing width and height does not; a new event does. The
 /// incentive gradient runs towards never bumping — every bump costs consent — which is exactly why
 /// the rule lives here rather than in a reviewer's head.
-// Version 3 adds webOS/model/SoC/hardware compatibility dimensions to both channels and coarse
-// local/remote/relay plus IPv4/IPv6 classes to usage. Existing answers were given against a schema
-// without them, so they must be asked again rather than silently expanded.
-pub(crate) const POLICY_VERSION: u32 = 3;
+// Version 4 combines the compatibility/network dimensions introduced by version 3 with handled
+// playback-error events and their bounded typed breadcrumb sequence. Existing version-3 answers
+// covered the former but not the latter, so they must be asked again rather than silently expanded.
+pub(crate) const POLICY_VERSION: u32 = 4;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.
@@ -139,12 +140,21 @@ pub(crate) fn apply(
 
 /// What [`allows_usage`] reads. Published by [`install`]; never a disk read on the event path.
 static CURRENT: RwLock<Option<Consent>> = RwLock::new(None);
+/// Monotone process-local decision revision. A sender captures it before reading the spool and
+/// abandons that batch if *any* decision changes, so records from an old opt-in cannot become
+/// eligible again after a quick off→on cycle. It is never stored or sent.
+static REVISION: AtomicU32 = AtomicU32::new(0);
 
 /// Make `c` the decision every later [`allows_usage`] sees. Called after a load or a save.
 pub(crate) fn install(c: Consent) {
     if let Ok(mut g) = CURRENT.write() {
         *g = Some(c);
+        REVISION.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+pub(crate) fn revision() -> u32 {
+    REVISION.load(Ordering::SeqCst)
 }
 
 /// The decision as last published, if one has been. `None` means nothing has been loaded yet —
@@ -167,9 +177,9 @@ pub(crate) fn allows_usage() -> bool {
 }
 
 /// May an ERROR report be sent? The crash channel's twin of [`allows_usage`], failing closed for
-/// the same reason and read at the same one place — `crashreport::report_pending`, which is the
-/// only thing that opens the crash log at all. Consent gates the READ, not just the send: a
-/// television whose owner said no is not scanned for faults.
+/// the same reason. It gates both `crashreport::report_pending` (the only thing that opens the
+/// crash log at all) and the sparse in-memory playback-error trace. Consent gates collection, not
+/// just the send: a television whose owner said no is neither scanned for faults nor traced.
 pub(crate) fn allows_errors() -> bool {
     CURRENT
         .read()
@@ -328,6 +338,26 @@ mod tests {
             "consenting to ERRORS does not consent to usage"
         );
 
+        if let Ok(mut g) = CURRENT.write() {
+            *g = saved;
+        }
+    }
+
+    #[test]
+    fn every_published_decision_invalidates_an_in_flight_sender_batch() {
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let before = revision();
+        install(Consent {
+            asked_version: POLICY_VERSION,
+            errors: true,
+            ..Default::default()
+        });
+        assert_ne!(
+            revision(),
+            before,
+            "the sender would keep using its stale decision"
+        );
         if let Ok(mut g) = CURRENT.write() {
             *g = saved;
         }

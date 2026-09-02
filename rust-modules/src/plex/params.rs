@@ -21,6 +21,38 @@ pub enum TranscodeDelivery {
     FixedHls { seconds_per_segment: u8 },
 }
 
+/// Exact content boundary for a universal-transcoder start.
+///
+/// PMS declares this query parameter as a number of seconds, not an integer. Keeping the value in
+/// microseconds matches the six-decimal `EXTINF`/`EXT-X-START` contract and prevents an adaptive
+/// encoder handoff at 2.002 s from being rounded back into the segment which already played.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TranscodeOffset {
+    Fresh,
+    AtMicros(i64),
+}
+
+impl TranscodeOffset {
+    pub fn from_seconds(seconds: i64) -> Self {
+        if seconds < 0 {
+            Self::Fresh
+        } else {
+            Self::AtMicros(seconds.saturating_mul(1_000_000))
+        }
+    }
+
+    pub fn from_micros(micros: i64) -> Self {
+        Self::AtMicros(micros.max(0))
+    }
+
+    pub(crate) fn wire_seconds(self) -> Option<String> {
+        let Self::AtMicros(micros) = self else {
+            return None;
+        };
+        Some(format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000))
+    }
+}
+
 /// One universal-transcoder request (decision registration + the delivery's start endpoint). Mirrors
 /// `route::universal_base`: the CURRENT audio/subtitle selection rides every transcode of the
 /// item. `session` is the PMS playback/timeline wire id; `encoder_session` owns the physical
@@ -96,8 +128,8 @@ pub struct TranscodeSpec<'a> {
     /// Subtitle stream id to BURN (0 = none). Burn is Plex's decision for our profile —
     /// it advertises no soft-sub support (direct-play subs are client-rendered instead).
     pub subtitle_stream_id: i64,
-    /// Restart the encode at this offset (seconds); < 0 = fresh start (no `&offset=`).
-    pub offset_secs: i64,
+    /// Restart at this exact content boundary, or omit `offset` for a fresh start.
+    pub offset: TranscodeOffset,
     /// The bound this playback's RE-ENCODE may not exceed — the user's pick off the quality
     /// ladder or Auto controller's current rung. `None` = Original/unrestricted and resolves to
     /// the historical [`Ceiling::NATIVE_4K`] query values.

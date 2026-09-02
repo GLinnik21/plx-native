@@ -149,8 +149,9 @@ pub mod size {
     pub const BODY: c_int = 28;
     /// Secondary labels — card / episode / chapter titles, cast names, list detail, meta chips.
     pub const LABEL: c_int = 26;
-    /// Couch legibility **FLOOR** for reading text — kickers, timecodes, cast roles, badges, field
-    /// labels. Nothing that must be *read* renders smaller.
+    /// Couch legibility **FLOOR** for ordinary product text — kickers, timecodes, cast roles,
+    /// badges and field labels. The deliberately opened diagnostics instrument is the sole
+    /// exception; it has its own dense [`DIAGNOSTIC`] rung rather than weakening this product rule.
     pub const CAPTION: c_int = 24;
     /// Fine print — deliberately below the couch floor (explicit design direction, 2026-07-12,
     /// re-tuned on-device 16 → 20 → 22: "bigger, but smaller than the meta line"). De-emphasis is
@@ -167,6 +168,11 @@ pub mod size {
     /// episode row's air date, the rating-row provider captions, the Library's note line, the
     /// player HUD's key capsule and the Source chip's handle — one-line labels, every one of them.
     pub const MICRO: c_int = 22;
+    /// Dense engineering read-outs whose primary job is comparing many bounded numeric fields in
+    /// one photograph.  This is deliberately below [`MICRO`]: diagnostics are opened on purpose
+    /// and read as an instrument, not as ordinary couch copy.  It must never migrate into product
+    /// chrome or prose; `ui::stats` is its sole owner.
+    pub const DIAGNOSTIC: c_int = 20;
 }
 
 /// The **spacing scale** — the vertical/horizontal *gap* axis of the design system, the sibling of
@@ -778,6 +784,21 @@ pub const CONTROL_DANGER_IDLE_INK: [f32; 4] = DANGER;
 /// so motion is visible instead of red/green frames blending into yellow at panel refresh rate.
 pub const DIAG_FLIP_A: [f32; 4] = GREEN_400;
 pub const DIAG_FLIP_B: [f32; 4] = RED_400;
+/// Stats-for-Nerds delivery budget that covers the current media demand. This is not a generic
+/// success colour: the diagnostic plot uses it only for the literal `budget >= demand` state.
+pub const DIAG_LINK_SUSTAINS: [f32; 4] = GREEN_400;
+/// The same plot when its conservative delivery budget is below current media demand.
+pub const DIAG_LINK_DEFICIT: [f32; 4] = RED_400;
+/// Bytes delivered during one diagnostics sampling cell. Kept independent of the budget colour:
+/// activity can be high while the probabilistic budget still does not cover demand.
+pub const DIAG_NETWORK_ACTIVITY: [f32; 4] = COOL_150;
+/// Arithmetic mean across the diagnostics plot's visible network-activity window. Amber separates
+/// the statistic from the cool instantaneous bars; the adjacent `mean` label prevents it being
+/// mistaken for an independent connection-speed test.
+pub const DIAG_NETWORK_MEAN: [f32; 4] = AMBER_300;
+/// The fixed-slot plot's overwrite cursor. Near-white survives every state colour and a phone
+/// camera's chroma subsampling, which is the output format of this surface.
+pub const DIAG_SWEEP_CURSOR: [f32; 4] = COOL_0;
 /// Section divider hairline.
 pub const HAIRLINE: [f32; 4] = with_a(WHITE, 0.10);
 /// A glass container's **perimeter line** — the design system's `--glass-rim`, one notch under the

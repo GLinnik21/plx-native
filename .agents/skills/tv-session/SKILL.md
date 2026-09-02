@@ -38,7 +38,7 @@ read from the gitignored `src/config.local.h` at runtime and never printed.
 ## The driver
 
 ```bash
-tools/tv-session.sh up [--flavor <f>] [--screen <name>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
+tools/tv-session.sh up [--flavor <f>] [--screen <name>] [--server <slot>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
 tools/tv-session.sh status [--flavor <f>]   # re-assert without disturbing the session
 tools/tv-session.sh key down down ok        # key tokens through the real handlers
 tools/tv-session.sh click 960 540           # authored 1920x1080 coords
@@ -68,6 +68,16 @@ on the screen you asked for → the remote FIFO exists. A live view is one flag 
 `--screen` accepts: `home` (default), `profiles`, `login`, `account`, `library[=N]`,
 `detail=<ratingKey>`, `person=<MOVIE ratingKey>`, `player=<ratingKey>`, `itemmenu`.
 (That is the script's whole `case`; `tools/tv-session.sh --help` is the other copy.)
+
+For a multi-server boot, `--server <slot>` supplies the server half of a `detail=` or `player=`
+item identity. Use it instead of navigating through Search/Sources with key presses: for example,
+`--screen player=5469 --server 1` arms `plxnative-play` and `plxnative-server` together. The app
+refuses an invalid or unregistered explicit slot rather than falling back to the current server,
+because the same numeric rating key normally names a different item on each PMS. The option also
+selects the signed-in stored-session boot automatically: that is the credential source which
+restores the persisted multi-server roster. After launch the command requires both the requested
+route and the exact `ratingKey + server slot` success marker; a missing slot exits nonzero instead
+of printing a misleading `session up`.
 
 `itemmenu` is the press-and-hold card context menu, and it is the only boot path to it. The
 interactive gesture is a real ≥500 ms hold (`press::LONG_MS`), which no boot trigger can express,

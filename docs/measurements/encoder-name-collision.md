@@ -10,9 +10,9 @@ Plex Media Server. None of them was the server.
 A candidate encoder is named `<logical_session>-abr-<n>`. The two halves had **different
 lifetimes**:
 
-* `logical_session` is `sess()`, and it **survives a seek**. `route::transcode_seek` reuses the
-  session id deliberately, and says so where it does it — stopping it would cut the stream the
-  demux worker is still reading out from under it.
+* `logical_session` is `sess()`, and it **survives a seek**. At the time of this incident,
+  `route::transcode_seek` also reused the physical session id deliberately — stopping it before a
+  replacement existed would have cut the stream the demux worker was still reading.
 * `n` was a `u64` **local to the demux worker**, initialised at the `abr.map(...)` that builds the
   adaptive tuple. Every `Load` — and a seek is a `Load` — reset it to zero.
 
@@ -85,6 +85,14 @@ would also work, but it would leave the namespace able to express the bug.
 `route.rs`'s regression test drives the naming through the fixture path, which shares the line that
 formats the name, and fails as `sess-42-abr-1` against `sess-42-abr-1` when the counter is made to
 restart.
+
+**Lifecycle follow-up, 2026-08-31.** The maintainer's PMS archive showed the same physical
+`abr-N` registered twice, about two minutes apart, with stale Streaming Resource state surviving
+between starts. Ghidra confirmed that the exact opaque `session` is the encoder-map key; a seek is
+not an operation on that encoder, it is another Universal Transcoder decision/start. The seek path
+now allocates a fresh process-global name too, publishes it only after the replacement decision is
+accepted, and retires the previous exact key after publication. A loopback PMS regression grades
+all three wire/state facts: fresh decision id, new active id, and `/stop` on the old id.
 
 ## 4b. On the television
 
@@ -166,9 +174,10 @@ own by-hand scenario — full link, drop, hold, release to full — with a budge
   the fixed build was run, so the device evidence is "the regression case passes", not "it failed
   before and passes now". The before half is a deliberate omission — reproducing it needs a
   knowingly broken binary deployed to a set someone watches.
-* **`transcode_seek` vs `retranscode_as` in the original incident.** The excerpt of the live log
-  cannot distinguish them, and only the first collides. The mechanism is proven and reproduced; that
-  it is what killed *that* playback is strong inference, not a measurement.
+* **`transcode_seek` vs `retranscode_as` in the original incident.** The original excerpt could
+  not distinguish them. The later PMS archive and binary audit close the lifecycle ambiguity for
+  seeks in general (a repeated exact key is unsafe), but cannot retroactively prove which UI action
+  produced that first excerpt.
 * **The seek re-seed**, which is a different defect in the same sequence: `cur_ceiling` is frozen at
   plan time and re-entered after a seek on the stalest link evidence in the system, while the
   estimator carries the freshest. Not fixed here.

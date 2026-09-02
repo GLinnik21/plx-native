@@ -123,10 +123,26 @@ const UNKNOWN: usize = usize::MAX;
 ///
 /// It used to be a read-modify-write of the whole spool, per event, on that same thread.
 pub(crate) fn append(r: &Record) -> bool {
+    let _g = lock();
+    append_locked(r)
+}
+
+/// Add a record only if `allowed` is still true while the spool is exclusively owned. `None`
+/// means consent refused the append; `Some(false)` is an actual spool failure. Withdrawal first
+/// publishes the new decision and then takes this same lock to purge, so every race has one of two
+/// safe orders: the record is refused, or it is appended first and the purge removes it.
+pub(crate) fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bool> {
+    let _g = lock();
+    if !allowed() {
+        return None;
+    }
+    Some(append_locked(r))
+}
+
+fn append_locked(r: &Record) -> bool {
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-    let _g = lock();
     let Some(p) = path() else { return false };
     let Some(frame) = queue::encode(r) else {
         // Dropped where there is a caller to blame, rather than becoming a frame no reader accepts.
@@ -305,6 +321,20 @@ mod tests {
 
     fn ids() -> Vec<String> {
         read().into_iter().map(|r| r.event_id).collect()
+    }
+
+    #[test]
+    fn conditional_append_rechecks_permission_before_the_record_exists() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("conditional");
+
+        assert_eq!(append_if(&rec("withdrawn"), || false), None);
+        assert!(
+            ids().is_empty(),
+            "a withdrawn event reached the durable spool"
+        );
+        assert_eq!(append_if(&rec("allowed"), || true), Some(true));
+        assert_eq!(ids(), vec!["allowed".to_string()]);
     }
 
     /// **The record queued while a flush was on the network must survive that flush's commit.**

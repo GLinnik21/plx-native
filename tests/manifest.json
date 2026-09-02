@@ -502,7 +502,7 @@
         "no_playing_error": true,
         "require_video_bound": true
       },
-      "_quality_note": "What it does that no other server case can: it plays a REAL item off a REAL PMS over a link this harness owns, so an Auto assertion here grades the controller rather than the afternoon. The item is the AV1/no-direct-play-audio shape, so Original is infeasible and Auto must run Fixed HLS whatever the link classification says. The squeeze is 2.5 Mbps, which is below the 4000 rung and above the 2000 one, so a controller that adapts has somewhere to go and one that does not is visible as `prod` above 1000 with the rung unchanged. 50 s of unshaped link first, because the admission window needs 19 samples before it decides anything. `min_play_rate_pm` is the same product choice `auto_original_squeeze` states — 1000·(10−3)/10, one reload inside a 10-heartbeat window — and it is the assertion that would notice the controller riding an unaffordable rung instead of leaving it: measured 900 pm here, against 111 pm for the unsupervised Original path this case is the control for."
+      "_quality_note": "What it does that no other server case can: it plays a REAL item off a REAL PMS over a link this harness owns, so an Auto assertion here grades the controller rather than the afternoon. The item is the AV1/no-direct-play-audio shape, so Original is infeasible and Auto must run Fixed HLS whatever the link classification says. The squeeze is 2.5 Mbps, which is below the 4000 rung and above the 2000 one, so a controller that adapts has somewhere to go and one that does not is visible as end-to-end acquisition slower than media with the rung unchanged. The first 50 s establish ordinary playback and let any initial bounded excitation settle before the squeeze; they are not a sample-count gate. `min_play_rate_pm` is the same product choice `auto_original_squeeze` states — 1000·(10−3)/10, one reload inside a 10-heartbeat window — and it is the assertion that would notice the controller riding an unaffordable rung instead of leaving it: measured 900 pm here, against 111 pm for the unsupervised Original path this case is the control for."
     },
     {
       "name": "auto_seek_after_switch",
@@ -552,7 +552,7 @@
         "no_playing_error": true,
         "require_video_bound": true
       },
-      "_quality_note": "The state no other case in this suite reaches: a seek that happens AFTER the ABR controller has already committed a rung switch. It is a distinct state because `route::transcode_seek` REUSES the encoder session id deliberately — stopping it would cut the stream the demux worker is still reading — while the reload builds a fresh demux worker underneath it. So the transactions either side of a seek are the only ones whose candidate names can collide with the live session, and a client that stops its own encoder presents as a server fault: a run of 404s and `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry budget cannot tell a stopped session from a slow one. The item is the AV1/no-direct-play-audio shape, as in `auto_link_squeeze`, so Original is infeasible and Auto MUST run Fixed HLS — which is what guarantees there are transactions to collide at all. The legs are ordered to produce exactly the sequence: 40 s of unshaped link so the admission window fills, a squeeze at 40 s that forces a DOWN commit, the seek at ~87 s (12 s of route entry plus `delay_ms`), and a release at 100 s so the post-seek controller has a reason to transact again. `delay_ms` exists for this case: the app fires the first seek step at a fixed ~12 s, which on any ABR case is before the controller has ever switched. The assertion is deliberately ordinary — a dead pipeline cannot climb a timeline, and `pos=` is gated on `is_playing()`, so `min_timeline_climb_s` past the seek is what a stopped session fails."
+      "_quality_note": "The state no other case in this suite reaches: a seek that happens AFTER the ABR controller has already committed a rung switch. It is a distinct lifecycle boundary: `route::transcode_seek` must register a fresh physical encoder, atomically publish it, retire the old exact key, and then the reload builds a fresh demux worker whose first ABR transaction must also use a unique key. Reusing or stopping the wrong encoder presents as a server fault: a run of 404s and `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry budget cannot tell a stopped session from a slow one. The item is the AV1/no-direct-play-audio shape, as in `auto_link_squeeze`, so Original is infeasible and Auto MUST run Fixed HLS. The legs are ordered to produce the sequence: an initial unshaped period in which a real bounded UP transaction can commit, a squeeze at 40 s that makes the live finite bag force a DOWN commit, the seek at ~87 s (12 s of route entry plus `delay_ms`), and a release at 100 s so the post-seek controller has a reason to transact again. No fixed number of samples is assumed; the transaction markers in the same run establish that the precondition occurred. A dead pipeline cannot climb a timeline, and `pos=` is gated on `is_playing()`, so `min_timeline_climb_s` past the seek is what a stopped session fails."
     },
     {
       "name": "auto_original_squeeze",
@@ -625,13 +625,51 @@
         }
       ],
       "expect": {
+        "min_reloads": 2,
         "max_reloads": 2,
+        "no_demux_failure": true,
         "min_timeline_climb_s": 30,
         "min_play_rate_pm": 700,
         "no_playing_error": true,
         "require_video_bound": true
       },
-      "_quality_note": "The maintainer's own by-hand check, which is why it is here: play at full speed, drop the link, wait, put it back to maximum. `auto_original_squeeze` deliberately never lifts its squeeze — its question is whether Auto ever LEAVES Original — and `auto_link_squeeze` lifts one but plays the AV1/no-direct-play-audio item, where Original is infeasible and so the return can never be observed. Neither can see what a viewer reported on 2026-08-29: Auto came back to Original, left again seconds later, and the picture blinked twice on a link that was carrying the film. `max_reloads` is the assertion that exists for it, and 2 is the whole budget — one Load to leave Original when the link stops covering the source, one to come back when it recovers. Anything beyond that is a flap, and every OTHER assertion here is blind to it: a reload is brief, so climb, play rate and no-error are all satisfied throughout a flapping session. The item is a 4K DoVi direct-play source, the same shape as the reported one, so Original is genuinely reachable at the head of the run. NB the squeeze must be held long enough for the mode controller to act and the release must be to full: the band between 1.0x and 1.6875x the source is where the entry gate refuses a link that carries the film, and a release into it would grade the entry gate rather than the flap."
+      "_quality_note": "The maintainer's own by-hand check, which is why it is here: play at full speed, drop the link, wait, put it back to maximum. `auto_original_squeeze` deliberately never lifts its squeeze — its question is whether Auto ever LEAVES Original — and `auto_link_squeeze` lifts one but plays the AV1/no-direct-play-audio item, where Original is infeasible and so the return can never be observed. Neither can see the complete round trip. `min_reloads=2` requires it — one Load to leave Original when the link stops covering the source, one to come back when it recovers — because the old ceiling-only assertion accepted the reproduced one-way fallback as a false PASS. `max_reloads=2` makes the same number the whole UX budget and catches the 2026-08-29 report where Auto came back to Original, left again seconds later, and the picture blinked twice on a link that was carrying the film. Every other assertion here is blind to either defect: a reload is brief, so climb, play rate and no-error remain satisfied, while a client stranded forever in low HLS still plays perfectly. The item is a 4K DoVi direct-play source, the same shape as the report, so Original is genuinely reachable at the head of the run. NB the squeeze must be held long enough for the mode controller to act and the release must be to full: the band between 1.0x and 1.6875x the source is where the entry gate refuses a link that carries the film, and a release into it would grade the entry gate rather than the flap."
+    },
+    {
+      "name": "auto_original_seek_stays_original",
+      "item": "movie_hevc_4k_dovi_p8",
+      "kind": "movie",
+      "title": "Auto Original on a healthy 4K source stays Original after an in-place seek",
+      "covers": [
+        "auto-quality",
+        "auto-original",
+        "seek-inplace",
+        "abr-controller-lifecycle",
+        "e2e"
+      ],
+      "quality": "auto",
+      "run_secs": 120,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "seek",
+          "target_s": 300,
+          "delay_ms": 15000,
+          "min_climb_after_s": 60,
+          "mode": "inplace"
+        }
+      ],
+      "expect": {
+        "max_reloads": 0,
+        "no_demux_failure": true,
+        "min_timeline_climb_s": 30,
+        "min_play_rate_pm": 900,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_quality_note": "The 2026-08-30 report this case reproduces was not an HLS seek: Auto had admitted a healthy 4K Original, the viewer sought in place, playback then held 0.98–1.00x with the video queue near its cap, and only fifty seconds later the Original watchdog paid for a visible HLS reload on 2 406 ms of a modest drain. The unit trace pins the exact controller inputs; this case pins the integration state that produced them. `mode: inplace` makes Original at the seek a precondition rather than silently grading a transcode rebuild. `min_climb_after_s=60` prevents early success before the reported fifty-second failure window. A healthy in-place seek needs no fresh `Load`, so `max_reloads=0` is the user-visible assertion: the old build emits `reload_transcode` and fails it even though timeline climb, play rate and no-error all remain green."
     },
     {
       "name": "original_then_auto",
@@ -657,6 +695,89 @@
         "require_video_bound": true
       },
       "_quality_note": "The other direction, and the one with a different failure mode: a viewer whose Original playback is struggling hands it to Auto. It starts from the tier's ordinary default rather than from Auto, so the switch has to build a controller where there was none -- the mirror of `auto_pin_and_back`, which has to tear one down. One step, so no `gap_ms`: with a single switch there is no cadence to state and the trigger asks for none. The resume half of the assertion is self-calibrating here too and will typically NOT be graded, because a playback that started as Original produced no `abr: sample` before the switch -- which is correct and is reported rather than hidden."
+    },
+    {
+      "name": "auto_pin_then_original_and_seek",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Auto, PINNED to a transcode rung, then to ORIGINAL, then a seek on the restored source",
+      "covers": [
+        "auto-quality",
+        "quality-switch",
+        "original-restore",
+        "seek-after-switch",
+        "abr-controller-lifecycle",
+        "e2e"
+      ],
+      "quality": "auto",
+      "run_secs": 150,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "quality_switch",
+          "to": [
+            "720p_4_mbps",
+            "original"
+          ],
+          "gap_ms": 40000,
+          "_route_note": "The two steps are two DIFFERENT routes, not two points on one ladder, and that distinction is the whole case. `720p_4_mbps` is a JIT ENCODER: PMS transcodes, the app reads HLS segments, an ABR controller may run. `original` is the SOURCE FILE direct-played -- no encoder at all -- so arriving there RETIRES the encoder the previous step started and reloads onto a different transport. `auto_pin_and_back` pins to a transcode rung and hands back to Auto, so the encoder-retire edge has never been graded by anything. Pinning first is what makes the edge deterministic: it puts the playback on an encoder without needing a conditioned link to talk Auto into one."
+        },
+        {
+          "op": "seek",
+          "target_s": 300,
+          "delay_ms": 95000,
+          "min_climb_after_s": 25,
+          "_mode_note": "No `mode`: after the switch this is a direct-played source, so the seek is an in-place `av_seek`, but the default arm grades either shape and will not assert a `seek(in-place)` line the transport cannot emit. `delay_ms` puts the seek ~20 s after the second switch lands (12 s observation + 40 s gap = ~52 s, plus the reload), which is the point of the step: a seek on a stream that was RELOADED by a quality change, not on the one the session opened with."
+        }
+      ],
+      "expect": {
+        "no_demux_failure": true,
+        "min_timeline_climb_s": 30,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_gap_note": "GRADED BY `quality_switch`: every requested rung must produce its `quality: switch` line IN ORDER, so a build that ignored the second request would fail here rather than quietly staying on the encoder. `min_climb_after_s` on the seek is the half that would catch a playback which reloaded but never resumed -- the failure this family is most exposed to, since every quality change is a fresh Load and a fresh prime."
+    },
+    {
+      "name": "original_then_auto_and_seek",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Original, handed to Auto mid-playback, then a seek on what Auto chose",
+      "covers": [
+        "auto-quality",
+        "quality-switch",
+        "seek-after-switch",
+        "abr-controller-lifecycle",
+        "e2e"
+      ],
+      "quality": "original",
+      "run_secs": 150,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "quality_switch",
+          "to": "auto"
+        },
+        {
+          "op": "seek",
+          "target_s": 300,
+          "delay_ms": 70000,
+          "min_climb_after_s": 25,
+          "mode": "inplace",
+          "_mode_note": "`inplace` STATES AN ASSUMPTION rather than discovering one, and the assumption is about this ITEM: a 1080p h264/ac3 file that direct-plays, so when Auto re-asks the routing question after the handover it answers Original again and the seek is an `av_seek`, not a rebuild. The first run of this case left the mode off and failed `seek_transcode` with 'no transcode-seek signal' -- correctly, because there was no reload to find. Naming the mode makes the case fail LOUDLY if Auto ever routes this item somewhere else on somebody's link, which is worth knowing; the sibling `auto_pin_then_original_and_seek` deliberately leaves the mode off because a pinned transcode rung is a rebuild and the default arm grades that."
+        }
+      ],
+      "expect": {
+        "no_demux_failure": true,
+        "min_timeline_climb_s": 30,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "_note": "`original_then_auto` already grades the HANDOVER. What it does not do is touch the result afterwards, and a seek is the operation most likely to expose a half-installed route: Auto re-asks the routing question, and on a direct-playable item it may legitimately answer Original again, so this asserts progress after the seek rather than a particular transport. The pair with `auto_pin_then_original_and_seek` covers the direction both ways."
     },
     {
       "name": "dp_h264_ac3_1080p",
@@ -1883,9 +2004,9 @@
         "abr_recovery_min_kbps": 20000,
         "server_opens_min": 8
       },
-      "_network_note": "The fixture server starts its phase clock on the first response body, not app launch: 40 Mbps permits Original to establish, 4 Mbps drains an 8 Mbps source until the starvation horizon closes and the risk model replaces it, then 40 Mbps gives the real HLS controller enough segment/network/production headroom to climb while a bounded source probe re-measures the actual file. Recovery is decided by the probe's uncertainty-discounted rate against the source's VBR-adjusted requirement, NOT by reaching a particular rung first, so the rung the ladder happens to be on when the probe fires is not graded. The four pipe_abr_* two-second files are independently decodable candidate segments; no Plex token, library item, decision endpoint or transcoder participates.",
-      "_window_note": "run_secs is 140 rather than 80 because the recovery this case GRADES provably cannot complete in 80 s, which made the bound unfalsifiable rather than strict. Device-measured 2026-08-28: the collapse phase drains the reserve for real, and `BufferEstimate::slope_ms_per_s` is a 3:1 EWMA, so once the link returns the reserve sits pinned at B_max(6000) (flat at ~15.5 s) while the slope decays -1822 -> -88 -> -66 -> -49 against `DRAIN_EPS_MS_PER_S` of 50. `OriginalRecovery::probe_due` resets its spacing timer on every `!refilling` reading, so no probe can be due until that clears, and then `probe_spacing_ms` still has to accumulate. At 80 s the run ended ONE sample short: `load_count` saw 2 of 3 and the log's last line was `abr: probe withheld reason=draining ... slope=-66`. At 140 s the same binary recovers Original and `load_count` passes. This is NOT slack for a flaky case -- `run_secs` is a cap and this case declares no `abr_shape`, so early exit applies and a passing run costs what it needs. Raising it makes the window long enough to OBSERVE the graded event; it does not make the assertion weaker.",
-      "_recovery_link_note": "The recovery leg is 44000, and it is DERIVED rather than chosen. The probe reads the source CONCURRENTLY with the HLS stream (`probe_due` demands a deep reserve precisely because the probe spends the link the segments need) and `serve_fixtures.py`'s bucket is SHARED, so two concurrent transfers get half each. The probe's ceiling is therefore link/2, and asserting `abr_recovery_min_kbps: 20000` requires link > 40000 -- AT exactly 40000 the ceiling equals the bound and the probe can only measure the scheduling loss below it (device 19917, host 19856, i.e. 0.4-0.7%). 44000 gives the probe 22000, a 10% margin, more than ten times the measured loss. The BOUND is untouched: the link was the wrong parameter, not the assertion. NB raising the link was tried once before and appeared to fail -- at 48000 the ladder climbs to rung 20000 and the recovery gate reported `shallow_reserve` -- but that was the un-derived `deep_reserve = 3 * segment` (6000 ms) exceeding B_max at the top rung. With the gate derived from the probe's own budget (4000 ms, under the sweep's 5293 ms floor at that rung) the top of the ladder recovers normally; measured `source probe 23895kbps; recovered direct play` at 48000 and 21969 at 44000."
+      "_network_note": "The fixture server starts its phase clock on the first response body, not app launch: 40 Mbps permits Original to establish, 4 Mbps drains an 8 Mbps source until the starvation horizon closes and the risk model replaces it, then 40 Mbps lets the HLS controller accumulate finite-bag exploration surplus and test actual candidates while a bounded source probe re-measures the file between segment acquisitions. Recovery is decided by the completed probe's lower bound against the source requirement and by the mode utility, not by an HLS rate estimate pretending to measure the source. The four pipe_abr_* two-second files are independently decodable candidate segments; no Plex token, library item, decision endpoint or transcoder participates.",
+      "_window_note": "run_secs is 140 rather than 80 because the recovery this case grades did not fit its former 80 s observation window. The collapse phase drains the reserve for real; after the link returns, the measured reserve slope must first stop draining, useful HLS exploration must exhaust, and the serial source transaction must be affordable. No timer or probe count releases it. `run_secs` is only a cap and this case declares no `abr_shape`, so early exit still ends a passing run as soon as the ordered Original -> HLS -> Original evidence is complete.",
+      "_recovery_link_note": "The 44000 recovery leg is retained from the measured scenario, but its old link/2 derivation is historical: the source body now runs synchronously between HLS acquisitions, so it no longer competes with an active segment request. The assertion remains `abr_recovery_min_kbps: 20000`; no tighter link value is inferred from the shaped fixture. The finite probe object represents one second of source media (clamped only by transport size limits), so its useful deadline P is derived from target_bytes*8/source_kbps and cannot exceed the 4000 ms operational cap. Production PMS adds exact HLS stop/reconcile before the source request, then exact-closes the probe's own resource and registers the same-rung rollback. Admission keeps the physical floor B >= P_stop + P_setup + P_body + P_control + max(R,D), while one absolute B-max(R,D) reserve horizon covers the whole serial transaction instead of pretending every control request completes within the source body's P. The fixture has no PMS lifecycle, but uses the same reserve gate; after the probe, the remaining balance survives the next sustainable HLS acquisition and restores the completed-bag replay boundary when that acquisition credits its media."
     },
     {
       "name": "pipe_abr_slow_start_then_fast",
@@ -1930,11 +2051,12 @@
         "no_playing_error": true,
         "abr_shape": {
           "floor_kbps": 10000,
+          "decoded_width_floor": 1900,
           "max_commits": 5
         }
       },
-      "_run_secs_note": "150 rather than 90, DERIVED from the plant this case grades rather than fitted to the number that came back. `floor_kbps: 10000` needs three commits from the 720 seed (720 -> 2000 -> 8000 -> above 10000), and each one needs the acquisition window to reach n_min = k/eps - 1 = 19 samples at 2 s of media per segment -- about 38 s per step plus the transaction, so roughly 120 s for three. A 90 s cap could not admit the third, which means the bound was only ever satisfiable through an estimate no measurement supported: until `CapacityObservation::quality` applied its interval floor to every tier, one large-but-brief transfer read as tens of millions of kbps and the ladder jumped on it. With that fixed the same 90 s window settles at 8000 with max_stall_s=0 and play_rate_pm=1000 -- healthy, and short of the bound. `run_secs` is a CAP and a passing case exits at its last assertion, so raising it costs nothing when the case passes.",
-      "_network_note": "The plan's rung-SKIPPING requirement, graded directly. A 60 Mbit/s source can never be Original here, so Auto is in HLS from the first segment; the link then opens by a factor of twenty. The 13-point catalog means walking it would cost eight or nine encoder transactions, each a visible quality change and each a separately named PMS session -- so `max_commits: 5` is the assertion, and `floor_kbps` is what stops a controller that simply refuses to climb from passing it. Both bounds are needed: either alone is satisfiable by doing nothing."
+      "_run_secs_note": "150 s is a conservative cap inherited from the earlier order-statistic controller, not a live 19-sample derivation. The current controller may jump from the 720 seed to the highest feasible unknown rung as soon as exact rollback surplus can fund the bounded candidate, and that candidate's own acquisition decides the commit. `floor_kbps: 10000` proves the request actuator climbed, `decoded_width_floor: 1900` separately proves the completed candidate actually carried a 1080-class picture, and `max_commits: 5` prevents walking the whole ladder. The separation is required because PMS has returned 720p for a 22 Mbps / 4K request. Early exit means the larger cap costs nothing after the assertions pass. Device timing must be re-recorded before this cap is described as tight.",
+      "_network_note": "The plan's rung-SKIPPING requirement, graded directly. A 60 Mbit/s source can never be Original here, so Auto is in HLS from the first segment; the link then opens by a factor of twenty. The 13-point catalog means walking it would cost eight or nine encoder transactions, each a visible quality change and each a separately named PMS session. Three independent bounds close three different false passes: `max_commits: 5` prevents walking the ladder, `floor_kbps` rejects doing nothing at the bootstrap actuator, and `decoded_width_floor` rejects reaching a large request that PMS answered with the same small picture."
     },
     {
       "name": "pipe_abr_steady_modest_link",
@@ -2024,12 +2146,75 @@
         "no_playing_error": true,
         "abr_shape": {
           "floor_kbps": 22000,
+          "decoded_width_floor": 3800,
           "settle_min_kbps": 20000
         }
       },
-      "_uhd_note": "The ONE case that can reach the Uhd actuator, and the plan's I9 blocker made runnable. Every other auto_network case declares a 1080p source, so `HlsActuatorCatalog::limited_to` deletes Uhd before anything is scored -- which meant the two `production_load_pm` entries the table calls EMPIRICAL (the 1080p anchor at 1000 and Uhd at 2100) were the two no case on any tier could exercise. Three things had to change together and none is a policy: `tests/serve_fixtures.py` now answers rung 22000 with a real 3840x2160 clip (it served none, so a candidate 404'd and read as a rejected encoder); `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p (the literal was there BECAUSE of the 404); and a case can declare it. `floor_kbps: 22000` is the assertion that matters and it is the Uhd rung ITSELF -- `floor_kbps` means some rung at or above this was ACTIVE, so nothing below 4K satisfies it. A `settle_min_kbps: 20000` alone would have been a false pass: settling on P1080High (20000) clears it while proving nothing about Uhd, which is the exact hole this case exists to close. The pair says reached-and-stayed-high. This is the half no existing case grades: every other abr_shape here bounds the controller from ABOVE. The 60 Mbit/s leg is well above the 22 Mbit/s rung so the link is not the binding constraint -- if this fails, the catalog or the acceptance test is.",
+      "_uhd_note": "This fast-link control reaches the Uhd actuator that the plan's I9 blocker made runnable. Most auto_network cases declare a 1080p source, so `HlsActuatorCatalog::limited_to` deletes Uhd before scoring. Three plumbing changes made the point reachable: `tests/serve_fixtures.py` answers rung 22000 with a real 3840x2160 clip, `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p, and a case can declare it. Three assertions are intentionally separate: `floor_kbps: 22000` proves the request actuator became Uhd, `decoded_width_floor: 3800` proves the completed candidate actually carried a 4K-class picture rather than a smaller PMS response, and `settle_min_kbps: 20000` proves the run did not finish low. The 60 Mbit/s leg is above the 22 Mbit/s rung so the link is not binding; if this fails, the catalog, response mapping or acceptance path is.",
       "_declare_note": "The fixture is the ABR ladder's OWN 4K clip, and that is the point rather than a convenience. The harness checks a case's `declare` against the streams the fixture really carries, and it must ALSO match what is actually decoded — which under `start_hls` is the ladder, never the Original. A 4K source with AC-3 audio (`pipe_h264_ac3_2160p.mkv`, the resolution matrix's clip) satisfies neither reading at once: declaring `ac3` makes the engine describe a stream it is not playing, and declaring `aac` is refused by the fixture check. `pipe_h264_aac_2160p.mkv` is 3840x2160 H.264 + AAC at full length, so the source raster, the fixture's own streams and the ladder all agree. It is NOT `pipe_abr_4k_22m.ts`, which was tried and skipped: that is a LADDER clip whose unsuffixed file is segment 0 alone, two seconds, and a source has to outlast the case's own `min_pos_climb_s`. This case had it as the matrix clip for one run and skipped. Historic note: AAC, not the AC3 and the mismatch is correct rather than sloppy. With `start_hls` the app never plays the Original at all -- the fixture is there to be the 4K SOURCE, which is what makes the Uhd rung feasible, and every byte actually decoded comes from the ABR ladder, which is AAC at every rung. The Load declaration describes the stream being played. This case had it as `ac3` for one run and the engine correctly logged `a=\"AAC\"`; the expectation was wrong, not the app.",
       "_raster_note": "`hls_raster_within` grades the decoded picture against the rung's BOX, not against equality, so a 22000 rung serving a 1080p clip would be admitted and would prove nothing. The fixture is generated at 3840x2160 for that reason and the server asserts the raster alongside it."
+    },
+    {
+      "name": "pipe_abr_underfilled_top_refresh",
+      "fixture": "pipe_h264_aac_2160p.mkv",
+      "title": "no-Plex Auto: 22 Mbps request returns 720p twice, then a fresh session returns real 4K",
+      "covers": [
+        "abr-upshift",
+        "response-underfill",
+        "same-actuator-refresh",
+        "decoded-raster",
+        "mid-transfer-network-profile"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "auto_network": {
+        "source_kbps": 90000,
+        "start_hls": true,
+        "source_raster": [
+          3840,
+          2160
+        ]
+      },
+      "network_profile": [
+        {
+          "until_s": 12.0,
+          "kbps": 5000
+        },
+        {
+          "until_s": 120.0,
+          "kbps": 60000
+        }
+      ],
+      "abr_response_profile": {
+        "22000": [
+          2000,
+          2000,
+          22000
+        ]
+      },
+      "run_secs": 90,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 20,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "floor_kbps": 22000,
+          "decoded_width_floor": 3800
+        }
+      },
+      "_response_note": "The first fresh `/__abr/22000` master deliberately declares and serves the 2000 actuator's 1280x720 response while the request path remains 22000. The controller must keep those as two state variables: it may commit the visible improvement over the 480p bootstrap, but top-request state is not proof of top output. After the link opens from 5 to 60 Mbit/s, completed live segments establish strictly stronger service evidence and authorize one fresh session at the SAME 22000 request. Generation 2 deliberately returns the same 720p response: this completed no-quality-gain transaction must be paced by its exact disposable-reserve cost, because the small demand-capped response cannot identify hidden link capacity. Only a strictly larger E authorizes generation 3, which declares and serves the real 3840x2160 fixture. `floor_kbps` alone false-passes after generation 1; only `decoded_width_floor` proves generation 3 landed.",
+      "_identity_note": "`fixtureGeneration` rides only in the synthetic child playlist and segment URIs. It is not an app/session parameter. The server needs it because the old underfilled stream and both candidate refreshes use `/__abr/22000` concurrently; a single global mapping would silently change the old stream underneath a candidate and fail to reproduce PMS's separate encoder sessions."
     },
     {
       "name": "pipe_abr_brief_dropout",
@@ -2082,6 +2267,62 @@
         }
       },
       "_network_note": "A transient, which is the shape an EWMA gets wrong in both directions: too much memory and the 200 Kbps window is ignored until the buffer is gone, too little and the link is written off for the rest of the film. The assertion is the RECOVERY (`settle_min_kbps`), because the downshift itself is easy and correct -- what the regime-change reset in `CapacityEstimate::update` exists for is making sure one 200 Kbps observation does not stay blended into the estimate afterwards. Verified in the same run by `no_playing_error`: the reserve is supposed to absorb three seconds."
+    },
+    {
+      "name": "pipe_abr_stall_after_join",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: the segment AFTER the join is starved — the picture must still start",
+      "covers": [
+        "abr-join",
+        "prime-after-reload",
+        "starved-segment",
+        "no-Plex"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "auto_network": {
+        "source_kbps": 60000,
+        "start_hls": true
+      },
+      "network_profile": [
+        {
+          "until_s": 600.0,
+          "kbps": 40000
+        }
+      ],
+      "run_secs": 120,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 20,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {
+          "settle_min_kbps": 720
+        }
+      },
+      "_stall_note": "THE SHAPE THE 2026-08-29 FREEZE HAD, positioned by segment INDEX rather than by the clock. A segmented demux delivers a whole segment's access units almost together -- the device log's `first_au_ms=3164 total_ms=3263` is 48 video AUs landing in the last ~100 ms of a 3.2 s fetch -- so right after a join the video lane can drain a full segment in ONE pump tick while the audio lane, which runs second, has fed nothing. Playback then waits for the next video AU. Withhold the next segment and the picture never starts. On the device that withholding came from an ABR abort/retry loop; here segments 2 and 3 are served at 90 kbps (~9 s each) and 4 onward run normally. A FIRST ATTEMPT USED `network_profile` AND GRADED NOTHING, which is why this one does not: a wall-clock cliff at 6 s let the fast run-up pre-buffer roughly twenty seconds of media, so the run rode straight through the stall -- `max_stall=0s rate=1000pm switches=0`, 66 segments fetched clean. `set_segment_profile`'s own doc makes the general point (a wall-clock cliff is a phase relationship, and `pipe_abr_down_collapse` hit its intended state once in three runs); this case is that lesson applied to the join.",
+      "_discrimination_note": "WHAT THIS CASE HAS AND HAS NOT BEEN SHOWN TO DO. Coverage for the starved-segment-after-join path. Whether it goes RED against a build with `engine::try_prime`'s per-tick call removed is recorded beside this note once measured; until then do not describe it as a regression test for the prime livelock. The livelock's proven regression test is the host one, `player::engine::prime_livelock_tests`, which drives `feed_both_lanes` directly and was watched red.",
+      "_shape_note": "SET FROM THE MEASUREMENT, not before it. First run: seed rung 720, the starve drove `d320` and the recovery `u720` -- two changes, settled 720, max_stall_s=13, play_rate_pm=883. The bound therefore says the controller must come BACK to the rung it seeded at after dipping off it, which is the property the 2026-08-29 session complained about (Auto downshifted and would not return). A build that stayed collapsed on 320 fails here while `pos_climb` still passes, which is the point of requiring a shape bound at all. The first version of this case asserted >= 2000 kbps, guessed before any run, and failed for that reason alone.",
+      "segment_profile": [
+        {
+          "from_segment": 2,
+          "kbps": 90
+        },
+        {
+          "from_segment": 4,
+          "kbps": 40000
+        }
+      ]
     },
     {
       "name": "pipe_abr_oscillating_link",
@@ -2622,7 +2863,7 @@
           "settle_max_kbps": 720
         }
       },
-      "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because it is where the descent is priced. It was written when DOWNSHIFTS HAD NO DEADLINE AT ALL (`candidate_prime_budget` and `candidate_warmup_budget` both returned None for Direction::Down), and it is the case that produced the evidence: one warm-up fetch of 36 156 ms against a 5 793 ms reserve, which is 6.2x the reserve it was spending. Since J3b (2026-08-27) a candidate transfer is bounded by that reserve in both directions, so this case now measures the descent WITH the bound in place -- and `warmup_dl=` on each `abr: tx` line says what the bound was, which is the field that lets a captured log state whether it held rather than only how long the fetch took. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
+      "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because it is where the descent is priced. It was written when DOWNSHIFTS HAD NO DEADLINE AT ALL (`candidate_prime_budget` and `candidate_warmup_budget` both returned None for Direction::Down), and it is the case that produced the evidence: one warm-up fetch of 36 156 ms against a 5 793 ms reserve, which is 6.2x the reserve it was spending. Since J3b (2026-08-27) a candidate transfer is bounded by that reserve in both directions while a picture remains; after observed B=0, a floor downshift keeps the only available response instead of re-requesting it. The case therefore measures descent with the reserve bound in place, and `warmup_dl=` on each ordinary `abr: tx` line states that bound. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
     },
     {
       "name": "pipe_abr_down_staircase",
@@ -2722,8 +2963,50 @@
           "settle_max_kbps": 720
         }
       },
-      "_outrun_index_note": "The INDICES were re-derived on 2026-08-28; the note below still describes the mechanism correctly but no longer the arithmetic, and two of its premises were stale. (1) It opens \"segment 0 is the seed rung 10000\" — the seed comes from `route::cur_ceiling()` and is P720Low, which a case cannot pin, so ten segments in the controller is still on 720 and has climbed nothing. (2) It wants a reserve near 9 s so the warm-up deadline can bind, and `candidate_warmup_budget(Down, ..)` IS the reserve — but ten segments in the reserve is tens of seconds deep and any fetch fits inside it. Both were measured off a real request stream, which is what the note itself asks for: on a 720 seed the acquisition window admits a commit every ~19 media responses (observed at global segments 22, 40 and 59 of `pipe_abr_slow_start_then_fast`), and the reserve is THIN only just after a climb — 58751 ms at the second commit against 12046 ms at the third. The condition this case needs therefore sits shortly after the third commit. Device-verified 2026-08-28: segment 61 served at 6000 triggers `Down 18000->2000`, and segment 62 — that candidate's warm-up, served at 500 against a 2168 ms reserve — returns `outcome=warmup_deadline`, which is the event this case exists for and which no run had ever produced. `run_secs` is 200 rather than 150 because the deadline landed on the LAST media response of a 150 s window: the graded behaviour is the descent COMPLETING after it, so the window has to outlast the event it triggers. **THIS CASE IS EXPECTED TO FAIL TODAY, and that is why it is kept.** With the shaper armed and the indices right it reproduces, deterministically and for the first time, the defect the whole Auto effort exists for: at rung 18000 against a 500 kbps link one segment is ~4.5 MB = 36 Mbit, i.e. 72 s of fetch — and the controller observes only on segment COMPLETION, so for those 72 s it receives no sample and can decide nothing. Measured 2026-08-28: max_stall_s=72, play_rate_pm=620, settled 18000. The warm-up deadline DOES fire and abandons the candidate correctly; what is missing is any action on the CURRENT rung's own fetch, which is the one taking 72 s. That is the plan's abort rule (R16's `t_remaining` projection) and `must_downshift`'s missing terminal case (R12), neither of which is built. Do not weaken the bound to make this green — a settled 18000 with the picture at 62% of real time is the exact behaviour the owner reported as unacceptable. None of it mattered before 2026-08-28, because `tests/run.py` never called `set_segment_profile`: the shaper was implemented in `serve_fixtures.py` and covered by `test_harness.py`, and the runner armed only its wall-clock sibling — so this case streamed over an unshaped link and could not pass by construction.",
-      "_outrun_note": "The ONLY case that can make a candidate transfer deadline fire, and it needs the REQUEST-INDEXED shaper (`segment_profile`) rather than the wall-clock one. The reason is structural rather than a matter of tuning: the controller chooses its downshift target from the rate it just measured, and admits a rung only if its expected_wire_kbps fits that budget -- so on any steady link one segment of the target fetches in about one segment of time and no deadline can bind. A transfer only becomes unaffordable when the rate underneath it drops AFTER the choice was made. With a wall-clock cliff that is a PHASE relationship (the cliff must land near the end of a segment fetch, so the measurement stays high and the next fetch runs slow), which is why `pipe_abr_down_collapse` produced it exactly once in three runs of the same case and why `pipe_abr_down_staircase` did not produce it at all. Keyed to the segment COUNT the same event is exact. Every index is read off a real request stream rather than guessed: segment 0 is the seed rung 10000, the controller downshifts to 8000 at segment 1 and holds it through segment 15 while the S4 admission window fills (19 samples), and the reserve is full from segment 4. So segment 10 sits mid-stretch at rung 8000 with ~10 s of reserve: served at 6000 it is below what rung 8000 needs, which triggers a downshift, and the budget it leaves selects rung 4000. Segment 11 IS that candidate's warm-up, served at 500 -- and rung 4000 carries 4386 kbps of media, so 2 s of it is 8772 kbit, which at 500 kbps is 17.5 s against a deadline of roughly the 9.2 s reserve. The arithmetic is the case. 500 is the same floor `pipe_abr_down_collapse` uses and is not chosen against the threshold: it is low enough that rung 4000 cannot be fetched and high enough that rung 320 can (752 kbit in 1.5 s), so the descent still has somewhere to land. What is GRADED stays the behaviour -- the descent completes, nothing errors -- because asserting `warmup_deadline` would pin a mechanism; the deadline is read from `warmup_dl=` and the outcome on the `abr: tx` line. No `max_stall_s`: at 500 kbps the CURRENT rung cannot be fetched either, so a stall here is the link, not the controller."
+      "_outrun_index_note": "The segment 61/62 placement is a historical 2026-08-28 measurement from the retired 19-sample controller. The current controller can excite the highest unknown rung immediately from finite-bag surplus, selects the highest modeled lower response after a completed survivable deficit, falls back to the floor for a runway emergency or censored fetch, and aborts an unaffordable CURRENT fetch before waiting its full 72 s; those changes invalidate the old cadence and its expected-failure claim. Keep the request-indexed cliff because it is the only deterministic way to place a collapse between two acquisitions, but re-record the actual transaction indices on the television before calling this case calibrated. Its active assertion is the outcome the old build failed — the descent reaches at most 720 without a playing error — not a particular internal deadline count.",
+      "_outrun_note": "A request-indexed profile makes the cliff deterministic instead of relying on wall-clock phase. Once the current fetch has actually consumed its measured reserve, StallGuard turns that still-incomplete response into a censored event; no prefix enters either the capacity estimate or finite bag, and the controller can select a cheaper actuator. Candidate warm-up remains bounded by its absolute physical-reserve deadline except in the exact terminal case: after observed B=0, a floor downshift has no cheaper response to buy and runs to an actual transport result instead of re-requesting the same bytes. `start_hls` also removes the synthetic Original candidate, so a fast loopback source probe cannot bypass this HLS-only cliff. The profile values 6000 then 500 preserve the original discrimination — the first reveals that the current high rung is unsustainable and the second makes the replacement transaction difficult — but their segment indices are awaiting remeasurement under the exact finite-bag controller. The graded contract stays external: descent completes, the pipeline remains alive, and the run settles no higher than 720."
+    },
+    {
+      "name": "pipe_auto_pause_fill_resume",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "no-Plex Auto: a user Pause fills the pipeline and Resume keeps one synchronized clock",
+      "covers": [
+        "abr-pause-resume",
+        "user-clock-authority",
+        "buffer-fill",
+        "audio-video-recovery"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "auto_network": {
+        "source_kbps": 900000,
+        "start_hls": true
+      },
+      "run_secs": 100,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "pause_resume",
+          "delay_ms": 25000,
+          "hold_ms": 6000,
+          "min_climb_after_s": 20
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 45,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "abr_shape": {}
+      },
+      "_pause_note": "The reported failure is specifically a hidden Pause -> Resume interval while the demux worker may be blocked: after enough media accumulates, video initially moves, audio trails, then both become intermittent. This case expresses the two user edges as one app-owned script, so SSH timing cannot create a different race. The operation requires both synchronized transitions to be accepted, observes a stationary integer playhead during the authored hold, and then requires at least 20 s of post-Resume climb. `abr_shape: {}` records stall/rate/lumpiness for the post-change device baseline without inventing a threshold before that run; visual A/V synchrony still requires the television tier."
     },
     {
       "name": "pipe_abr_seek_flat",

@@ -468,7 +468,13 @@ data-only and never plays. `plxnative-play` fetches the item's metadata fresh (`
 works for **any** rk) and drives the same field-based play path the detail Play button uses
 (`route::play_episode` — generic over movie/episode — + `player::resume_at` + `start_bufferfeed`),
 bypassing the catalog lookup entirely. It honors the server `viewOffset` for resume and logs
-`plxnative-play: rk=<rk> start` so the harness can confirm the trigger fired.
+`plxnative-play: rk=<rk> server=<slot> start` so the harness can confirm both halves of the item
+identity that fired. A bare `plxnative-play` keeps the historical current-server behaviour;
+`plxnative-server=<slot>` makes a by-hand/direct-screen run target a registered secondary PMS and
+fails closed when that slot does not exist. `tools/tv-session.sh up --screen player=<rk> --server
+<slot>` writes the pair without navigating the UI, boots from the signed-in stored roster (rather
+than the singular injected-token server), and exits nonzero unless the log confirms the exact
+`ratingKey + server slot` that started.
 
 ## Coverage — the 8 matrix item shapes + operations
 
@@ -577,6 +583,8 @@ Append an entry to `manifest.json` → `cases`:
     // or: {"op":"audio_switch","tab":0,"row":1,"mode":"native"|"transcode"}
     // or: {"op":"subtitle","tab":1,"row":1}
     // or: {"op":"resume","mode":"directplay"|"transcode","offset_s":600}
+    // or: {"op":"pause_resume","delay_ms":25000,"hold_ms":6000,
+    //      "min_climb_after_s":20}
   ],
   "expect": {
     "decision": "directplay",       // or "transcode"
@@ -592,6 +600,7 @@ Append an entry to `manifest.json` → `cases`:
 `run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`
 — for `"mode":"rapid"` the op's `script` becomes the trigger content: optional `gap=<ms>` +
 comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per gap;
+`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script;
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
@@ -631,10 +640,11 @@ byte for byte; only the *choosing* is bypassed.
 
 **Why the declaration is carried separately, and why it is the interesting half.** The Starfish
 `Load` payload takes its codecs from `route::stream_vcodec`/`stream_acodec` and its Dolby nodes from
-`stream_dovi`/`stream_immersive` — five fields written only by `route::apply_plan`, from a PMS
-decision. The older `plxnative-url` trigger hands over a URL and nothing else, so a URL-fed 4K HEVC
-file was declared to the television as whatever the route happened to hold: on a fresh boot, the
-empty string, which falls through the engine's `_ =>` arm to an H264 payload with `"AC3"` audio.
+`stream_dovi`/`stream_immersive` — five fields normally installed together by `route::apply_plan`
+from a PMS decision and replaced together by later route transitions. The older `plxnative-url`
+trigger hands over a URL and nothing else, so a URL-fed 4K HEVC file was declared to the television
+as whatever the route happened to hold: on a fresh boot, the empty string, which falls through the
+engine's `_ =>` arm to an H264 payload with `"AC3"` audio.
 The declaration is precisely what governs HEVC-vs-H264 payload selection, LG's `"AC3 PLUS"`
 renaming of E-AC-3, and both Dolby nodes — so a tier that cannot set it cannot test any of them.
 `plxnative-playurl` sets all five in one write (`route::set_stream_declaration`).
@@ -660,20 +670,48 @@ while a movie is already playing. One fixture-server response follows a wall-clo
 clock begins on its first body byte: 40 Mbit/s, then 4 Mbit/s, then 40 Mbit/s again. The app starts
 an 8 Mbit/s Original, must decide that the shortfall will outlast its content reserve, replace it
 with the best HLS rung its measured capacity sustains, and later — once the link recovers and a
-bounded probe of the actual Original fixture clears the source's VBR-adjusted requirement with
+bounded probe of the actual Original fixture clears the source's declared average bitrate with
 enough confidence — perform a third fresh Load back onto Original and re-arm the progressive
 controller. The assertion requires that ORDER: a fallback without recovery, a probe logged before
 the collapse, a probe that does not clear the bar, or a requested transition the route never
 committed all fail.
 
+The probe gives connection/header setup and body measurement separate bounded windows. That keeps
+one-off DNS/TLS/header latency from shortening the interval which measures the uncapped Original
+body. On PMS, the bounded raw Part GET exact-reuses the active HLS resource identity without a
+client-side stop, close or replacement of the working encoder. This prevents the known second
+AdHoc admission path, but does not prove that PMS preserves the prior HLS cursor while serving the
+raw Part. A successful recovery therefore publishes its handoff on the same completed media
+boundary and performs no subsequent HLS GET. The reserve gate still funds the two separately
+bounded probe phases plus HLS continuity when the result retains HLS:
+
+```text
+B >= 2P + max(R, D)
+```
+
+The synthetic fixture has no PMS resources, so it exercises the source setup/body and controller
+half; the exact-identity lifecycle is pinned by the loopback protocol test and the server/device
+tier.
+
+The remote-device acceptance run on 2026-08-31 exercised the complete physical sequence with the
+panel off and hardware audio muted. A 4 Mbit/s whole-link cap drove Auto from Original to 2 Mbit/s
+HLS. Releasing the cap produced a setup-bearing 4K object in 2.504 s, the next ordinary object in
+1.407 s, and a commit to the response actually delivered: 20.895 Mbit/s at 3840x2160. Sixteen
+successive complete active objects then arrived in 1.197–1.449 s without a false terminal abort.
+Once the exact reserve funded the serial source transaction, its finite body measured 49.6 Mbit/s
+against a 25.264 Mbit/s source requirement; Auto selected Original and continued Dolby
+Vision/Atmos playback for more than 40 s without a playing error. This is device evidence for the
+slow→HLS→4K HLS→Original arc; the private server log and item identity are intentionally not
+committed.
+
 **What it deliberately does not grade is the rung the ladder happened to be on when the probe
 fired.** It used to require the 20 Mbit/s top rung plus two spaced probes, and that measured the
 wrong resource: PMS producing 20 Mbit/s of H.264 says the SERVER can encode and says nothing about
-whether the link can carry the remux (`docs/adaptive-playback.md` §7). On this fixture the probe
-gate (`probe_spacing_ms`, 6 s of healthy WALL clock since N13) and the upshift dwell (`E_tx`,
-~5.2 s at the 2 s segment since I6) race too closely to order reliably, so requiring an upshift
-first would grade a race rather than the recovery. Both were segment counts until 2026-08-28 —
-"three healthy segments" against "the ladder's five" — and neither number exists now.
+whether the link can carry the remux (`docs/adaptive-playback.md` §7). The current gate has no
+spacing timer or fixed upshift dwell: HLS frontier exhaustion, a non-draining reserve and exact
+serial affordability can become true in either order. Requiring a particular current rung first
+would therefore grade incidental ordering rather than the recovery. The old "three healthy
+segments" and "ladder's five" counts are historical; neither number exists now.
 
 The HLS master/media playlists are generated by `serve_fixtures.py`, and their independent
 two-second H.264/AAC MPEG-TS segments come from **one rate-targeted clip per rung, each cut into

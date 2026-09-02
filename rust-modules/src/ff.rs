@@ -1596,50 +1596,45 @@ enum Src {
     Curl(Box<crate::curlio::CurlSource>),
 }
 
-/// **The abort rule** (plan R16/R12): stop a fetch that is going to outlive the reserve, while
-/// there is still a cheaper rung to run to.
+/// **The live-transfer terminal rule.** A partial response is right-censored evidence.  PMS may
+/// open a sized HLS response, deliver a prefix, wait for its JIT encoder (`segmentWait` in the
+/// server's own SessionReport), then burst the remainder.  Consequently neither
+/// `prefix_bytes / prefix_time` nor `Content-Length - prefix_bytes` identifies the unseen
+/// acquisition time.  The former attained-rate projection falsely abandoned sustainable 4K
+/// responses on the remote PMS.
 ///
-/// The controller can only decide between segments — `observe` runs when a fetch COMPLETES — so a
-/// fetch that takes longer than the reserve is a decision the controller never gets to make.
-/// Device-measured 2026-08-28 (`pipe_abr_down_outrun`): on rung 18000 against a 500 kbps link one
-/// segment is ~4.5 MB = 36 Mbit, i.e. **72 s**, and the picture was frozen for 72 of them while
-/// the controller sat holding a rung it would have abandoned instantly had it been asked. No
-/// guard elsewhere can see this: the warm-up deadline bounds a CANDIDATE's fetch, and the current
-/// rung's own fetch had no bound at all.
-///
-/// **The rule, and it introduces no constant.** At each read, project the remaining fetch from the
-/// rate this fetch has actually sustained and compare it against the reserve that will still be
-/// there when it lands:
-///
-/// ```text
-/// t_remaining_ms = 8 * bytes_remaining / C_kbps        (bits / (bits per ms))
-/// reserve_left   = reserve_at_start - elapsed          (the reserve drains at real time)
-/// abort  iff  t_remaining_ms > reserve_left  AND  a cheaper rung exists
-/// ```
-///
-/// **The 8 is load-bearing and was the plan's R16 defect.** `C` is kbps, i.e. bits per
-/// millisecond, and `bytes_remaining` is bytes; the plan's original expression divided bytes by a
-/// bit rate and under-reported the remaining fetch by exactly a factor of eight — so the abort
-/// rule would have continued a segment that stalls, on the emergency path, which is the one place
-/// it exists to act.
-///
-/// **"A cheaper rung exists" is the whole of R12's terminal case.** At the ladder floor there is
-/// nowhere to run to, so aborting re-fetches the same bytes and buys a loop instead of a picture;
-/// the guard is simply not armed there. Everywhere else the escape is real, because a lower rung's
-/// segment carries strictly fewer bytes over the same link.
+/// There is one coefficient-free fact available before completion: the playable reserve has
+/// actually reached zero.  The main thread observes that physical boundary and holds Starfish's
+/// clock; this guard observes the same hold (or the equivalent playhead spend) at the next AVIO
+/// callback.  Above the ladder floor it abandons the still-incomplete object so the controller can
+/// fetch a smaller one.  At the floor it leaves the only useful response alive.  No prefix becomes
+/// a capacity sample in either direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StallGuard {
     /// The playable reserve when this fetch began, in ms of media. `None` is never stored — an
     /// unknowable reserve (`BufferSnapshot::buffered_ms`'s `None`, the audio lane silent after an
     /// open or a seek) arms no guard at all, because the comparison has no left-hand side.
     reserve_ms_at_start: i64,
-    started: std::time::Instant,
+    /// Playhead at the fetch boundary.  Wall time is deliberately absent: queued media is spent
+    /// by presentation, not by a blocked request, pause, seek or server wait.
+    playhead_at_start_ns: i64,
+    action: StallAction,
+}
+
+/// What happens after the same in-flight conservation inequality is crossed. Above the floor a
+/// smaller object exists, so abandoning the response releases the controller to fetch it. At the
+/// floor abandoning can only re-request the same bytes; keep that response alive and hold the A/V
+/// clock instead.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StallAction {
+    AbortFetch,
+    HoldClock,
 }
 
 impl StallGuard {
     /// **Arm the guard, or decline to.** A reserve of zero AT THE START of a fetch is not an
     /// emergency — it is what every session looks like before its first segment has been
-    /// delivered, and the rule's premise is that continuing guarantees a stall the abort could
+    /// delivered, and the rule's premise is that continuing projects a stall the abort could
     /// avoid. With no picture yet there is nothing to stall and the abort has nothing to buy: it
     /// simply abandons the fetch, pushes the segment back, and abandons it again.
     ///
@@ -1655,61 +1650,422 @@ impl StallGuard {
     fn arm(reserve_ms_at_start: i64) -> Option<Self> {
         (reserve_ms_at_start > 0).then(|| Self {
             reserve_ms_at_start,
-            started: std::time::Instant::now(),
+            playhead_at_start_ns: crate::player::playpos_ns(),
+            action: StallAction::AbortFetch,
         })
     }
 
-    /// Does continuing guarantee a stall this fetch could avoid? Pure given the three measured
-    /// inputs, so the arithmetic is host-testable without a transport.
-    fn expired(reserve_ms_at_start: i64, elapsed_ms: i64, bytes_remaining: i64, kbps: i64) -> bool {
-        if bytes_remaining <= 0 || kbps <= 0 {
-            return false;
-        }
-        // The reserve has been draining at real time for the whole of this fetch.
-        let reserve_left = reserve_ms_at_start.saturating_sub(elapsed_ms);
-        if reserve_left <= 0 {
-            // Already out of reserve with bytes still to come: the picture has stopped and every
-            // further millisecond is stall. Nothing to project.
-            return true;
-        }
-        // **Ceiling, not truncation.** The plan's rounding audit: every term on the left of an
-        // admission test rounds toward +inf, because a projection that truncates UNDER-reports the
-        // remaining fetch and a guard that under-reports is one that lets the stall happen. At
-        // 500 kbps a truncating divide loses up to a millisecond per evaluation, which is
-        // negligible in magnitude and wrong in direction.
-        let bits = bytes_remaining.saturating_mul(8);
-        let t_remaining_ms = bits.saturating_add(kbps - 1) / kbps;
-        t_remaining_ms > reserve_left
+    /// At the terminal actuator the same observed boundary may stop presentation, but it must not
+    /// discard the only response capable of producing more media.
+    fn arm_clock_hold(reserve_ms_at_start: i64) -> Option<Self> {
+        Self::arm(reserve_ms_at_start).map(|mut guard| {
+            guard.action = StallAction::HoldClock;
+            guard
+        })
     }
 
-    /// **An abort may not fire before the fetch it abandons is MEASURABLE.**
-    ///
-    /// Not a grace period and not politeness: an abort that carries no measurement makes the
-    /// controller blind, and the device showed the whole failure. Once the reserve is below what
-    /// any fetch needs, the projection fails on the very first read — measured
-    /// `prod=2pm`, i.e. the fetch was abandoned **4 ms** in — so no segment ever completed, no
-    /// sample ever reached the estimator, and the capacity estimate froze at its pre-collapse
-    /// value. The controller then chose the same unaffordable target 36 times in a row. Refusing
-    /// to learn is the same failure as learning wrongly, one level further back.
-    ///
-    /// The threshold is `MEASURABLE_OBSERVATION_US` — already measured, already used by
-    /// `CapacityObservation::quality`, and already meaning exactly this: below it a transfer
-    /// reports latency rather than capacity. Reusing it is what makes this a rule instead of a
-    /// number, and it bounds the cost of an abort at one quarter second of an already-stalled
-    /// picture. Above it the sample is `Weak` at worst, which is a real observation the estimator
-    /// can act on — and on a collapsed link it will be SLOWER than history, which is the one
-    /// direction an abandoned sample is allowed to move the estimate.
-    fn should_abort(&self, bytes_remaining: i64, body_bytes: u64, body_active_us: u64) -> bool {
-        if body_active_us == 0 || body_bytes == 0 {
-            return false; // no rate measured yet — a projection from nothing is not a projection
-        }
-        if body_active_us < crate::abr::MEASURABLE_OBSERVATION_US {
+    fn aborts_fetch(self) -> bool {
+        self.action == StallAction::AbortFetch
+    }
+
+    /// Has the fetch crossed an OBSERVED terminal boundary while bytes are known to remain?
+    /// `terminal_hold_started` is the main thread's exact `B=0` observation.  The playhead form is
+    /// the same fact sampled by this worker and lets the worker act even before the next main-loop
+    /// tick.  Neither branch predicts an unseen byte.
+    fn should_abort(&self, bytes_remaining: i64, terminal_hold_started: bool) -> bool {
+        if bytes_remaining <= 0 {
             return false;
         }
-        let kbps = crate::abr::kbps_from(body_bytes, body_active_us).min(i64::MAX as u64) as i64;
-        let elapsed_ms = self.started.elapsed().as_millis().min(i64::MAX as u128) as i64;
-        Self::expired(self.reserve_ms_at_start, elapsed_ms, bytes_remaining, kbps)
+        let spent_ms = crate::player::playpos_ns()
+            .saturating_sub(self.playhead_at_start_ns)
+            .max(0)
+            / 1_000_000;
+        terminal_hold_started || spent_ms >= self.reserve_ms_at_start
     }
+}
+
+/// An already-held clock is a recovery state: the active response is rebuilding reserve and may
+/// not be abandoned by the boundary that has already fired. Kept pure at the call boundary so a
+/// regression cannot silently turn B=0 into an abort loop again.
+fn arm_active_stall_guard(
+    reserve_ms: Option<i64>,
+    at_floor: bool,
+    already_held: bool,
+) -> Option<StallGuard> {
+    if already_held {
+        return None;
+    }
+    reserve_ms.and_then(|reserve_ms| {
+        if at_floor {
+            StallGuard::arm_clock_hold(reserve_ms)
+        } else {
+            StallGuard::arm(reserve_ms)
+        }
+    })
+}
+
+/// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
+/// actual internal rebuffer may stop protecting the old cursor, but a later user Resume cannot
+/// make that already-spent reserve exist again. One instance follows the whole segment transaction
+/// through open, wait, probe, body and final validation; promotion is latched as an unarmed clock.
+#[derive(Clone, Copy, Debug)]
+struct ReserveDeadlineState {
+    clock: ReserveDeadlineClock,
+    yields_to_rebuffer: bool,
+    hold_epoch_at_start: u64,
+    expired: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReserveDeadlineClock {
+    Wall(Option<std::time::Instant>),
+    Playhead {
+        started_ns: i64,
+        budget: std::time::Duration,
+    },
+    /// A bounded recovery transfer spends every elapsed interval except native-accepted user
+    /// Pause. Unlike a playhead clock it therefore continues through involuntary starvation and
+    /// the internal rebuffer hold; unlike a wall deadline it preserves Pause exactly, including a
+    /// complete Pause->Resume cycle hidden inside one blocked network call.
+    UnpausedElapsed {
+        started_at: std::time::Instant,
+        paused_at_start: std::time::Duration,
+        budget: std::time::Duration,
+    },
+}
+
+impl ReserveDeadlineState {
+    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool) -> Self {
+        Self {
+            clock: ReserveDeadlineClock::Wall(at),
+            yields_to_rebuffer,
+            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            expired: false,
+        }
+    }
+
+    /// A media-reserve deadline spends presentation time, not wall time. User Pause, an internal
+    /// rebuffer hold and a genuinely starved native clock all freeze the same physical balance.
+    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
+        Self::from_playhead_at(
+            crate::player::playpos_ns().max(0),
+            budget,
+            yields_to_rebuffer,
+        )
+    }
+
+    fn from_playhead_at(
+        started_ns: i64,
+        budget: std::time::Duration,
+        yields_to_rebuffer: bool,
+    ) -> Self {
+        Self {
+            clock: ReserveDeadlineClock::Playhead {
+                started_ns: started_ns.max(0),
+                budget,
+            },
+            yields_to_rebuffer,
+            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            expired: false,
+        }
+    }
+
+    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
+        let (started_at, paused_at_start) = crate::player::TX.pause_clock_sample();
+        Self {
+            clock: ReserveDeadlineClock::UnpausedElapsed {
+                started_at,
+                paused_at_start,
+                budget,
+            },
+            yields_to_rebuffer,
+            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            expired: false,
+        }
+    }
+
+    /// Remaining reserve in the clock's own units. Unlike [`Self::active`], this deliberately
+    /// still returns the balance while the user is paused: callers use it to carry one fixed
+    /// end-to-end exploration budget from the control plane into the media leg without turning a
+    /// pause into either spent reserve or a newly granted budget.
+    fn remaining(&self) -> Option<std::time::Duration> {
+        match self.clock {
+            ReserveDeadlineClock::Wall(at) => {
+                at.map(|at| at.saturating_duration_since(std::time::Instant::now()))
+            }
+            ReserveDeadlineClock::Playhead { started_ns, budget } => {
+                let spent_ns = crate::player::playpos_ns()
+                    .max(0)
+                    .saturating_sub(started_ns);
+                let spent =
+                    std::time::Duration::from_nanos(u64::try_from(spent_ns).unwrap_or(u64::MAX));
+                Some(budget.saturating_sub(spent))
+            }
+            ReserveDeadlineClock::UnpausedElapsed {
+                started_at,
+                paused_at_start,
+                budget,
+            } => {
+                let (now, paused_now) = crate::player::TX.pause_clock_sample();
+                let elapsed = now.saturating_duration_since(started_at);
+                let paused = paused_now.saturating_sub(paused_at_start);
+                Some(budget.saturating_sub(elapsed.saturating_sub(paused)))
+            }
+        }
+    }
+
+    fn release_to_rebuffer(&mut self, rebuffering: bool) {
+        let hold_happened =
+            SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) != self.hold_epoch_at_start;
+        if self.yields_to_rebuffer && (rebuffering || hold_happened) {
+            self.clock = ReserveDeadlineClock::Wall(None);
+        }
+    }
+
+    /// Whether the conservation clock itself is spent. A wall projection returned by `active`
+    /// is only a wake-up mechanism; it is never evidence for a playhead-funded budget, because
+    /// wall time may pass while the native presentation clock is stopped.
+    fn clock_is_spent(&self) -> bool {
+        match self.clock {
+            ReserveDeadlineClock::Wall(at) => at.is_some_and(|at| std::time::Instant::now() >= at),
+            ReserveDeadlineClock::Playhead { started_ns, budget } => {
+                let spent_ns = crate::player::playpos_ns()
+                    .max(0)
+                    .saturating_sub(started_ns);
+                let spent =
+                    std::time::Duration::from_nanos(u64::try_from(spent_ns).unwrap_or(u64::MAX));
+                spent >= budget
+            }
+            ReserveDeadlineClock::UnpausedElapsed { .. } => {
+                self.remaining() == Some(std::time::Duration::ZERO)
+            }
+        }
+    }
+
+    fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
+        self.release_to_rebuffer(rebuffering);
+        match self.clock {
+            ReserveDeadlineClock::Wall(at) => at,
+            ReserveDeadlineClock::Playhead { .. }
+            | ReserveDeadlineClock::UnpausedElapsed { .. } => {
+                let mut left = self.remaining().unwrap_or(std::time::Duration::ZERO);
+                if crate::player::TX.paused.load(Ordering::Acquire) {
+                    // Pause is published only after the native call succeeds, but the final
+                    // playhead sample can land between our first read and that flag. Re-read once
+                    // after observing Pause so equality cannot be hidden by the state change.
+                    left = self.remaining().unwrap_or(std::time::Duration::ZERO);
+                }
+                // This wall instant schedules a re-check; it never spends presentation reserve.
+                // Keeping that wake armed while paused closes Pause-at-issue -> Resume-in-flight:
+                // if the playhead starts moving again, the existing wait still wakes no later
+                // than the remaining one-speed balance. If Pause remains, retrospective
+                // classification sees an unchanged playhead and retries without renewing the
+                // independent transport watchdog.
+                if left.is_zero() {
+                    return Some(std::time::Instant::now());
+                }
+                std::time::Instant::now().checked_add(left)
+            }
+        }
+    }
+
+    fn expire_if_due(&mut self, rebuffering: bool) -> bool {
+        self.release_to_rebuffer(rebuffering);
+        if self.expired || self.clock_is_spent() {
+            self.expired = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record the result of a read started with `attempted_deadline`. `false` means that wall wake
+    /// did not spend the clock which owns the reserve. Pause or a naturally stopped playhead may
+    /// have made the projection stale; a floor rebuffer hold may instead have released that clock.
+    /// The caller retries with whatever reserve remains armed, composed with the unchanged
+    /// transport-liveness epoch.
+    fn note_transport_deadline(
+        &mut self,
+        _attempted_deadline: Option<std::time::Instant>,
+        rebuffering: bool,
+    ) -> bool {
+        self.release_to_rebuffer(rebuffering);
+        // The transport waited on a wall projection. Classify the result only from the clock that
+        // owns the budget: Δplayhead >= E for a media reserve, or the actual wall boundary for a
+        // legacy wall state. Nanoseconds spent between two `Instant::now()` calls cannot turn a
+        // positive presentation balance into censored evidence.
+        if self.expired || self.clock_is_spent() {
+            self.expired = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Independent transport liveness for one blocking HTTP leg. Reserve is presentation-funded and
+/// can freeze; liveness is wall-clock inactivity and cannot. The effective wake is their minimum,
+/// but only the clock that actually reached its own boundary classifies the result. Progress
+/// resets liveness exactly as `SO_RCVTIMEO`/curl low-speed do; an obsolete reserve retry does not.
+#[derive(Clone, Copy, Debug)]
+struct TransportWatchdog {
+    inactivity: std::time::Duration,
+    deadline: std::time::Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockingDeadlineOwner {
+    /// Reserve wins equality: when both clocks name the same instant and presentation really
+    /// spends its balance, the completed observation is exactly reserve-censored.
+    Reserve,
+    Transport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlockingDeadline {
+    at: std::time::Instant,
+    owner: BlockingDeadlineOwner,
+}
+
+impl TransportWatchdog {
+    fn for_origin(origin: &crate::plex::Origin) -> Self {
+        let inactivity = if origin.is_tls() {
+            crate::curlio::media_stall_budget()
+        } else {
+            crate::stream::media_stall_budget()
+        };
+        Self::with_inactivity(inactivity)
+    }
+
+    fn with_inactivity(inactivity: std::time::Duration) -> Self {
+        Self {
+            inactivity,
+            deadline: std::time::Instant::now()
+                .checked_add(inactivity)
+                .unwrap_or_else(std::time::Instant::now),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.deadline = std::time::Instant::now()
+            .checked_add(self.inactivity)
+            .unwrap_or_else(std::time::Instant::now);
+    }
+
+    fn effective(&self, reserve: Option<std::time::Instant>) -> BlockingDeadline {
+        match reserve {
+            Some(at) if at <= self.deadline => BlockingDeadline {
+                at,
+                owner: BlockingDeadlineOwner::Reserve,
+            },
+            _ => BlockingDeadline {
+                at: self.deadline,
+                owner: BlockingDeadlineOwner::Transport,
+            },
+        }
+    }
+
+    fn expired(&self) -> bool {
+        std::time::Instant::now() >= self.deadline
+    }
+}
+
+/// Facts captured immediately when a typed deadline sentinel returns. Keeping the observation
+/// separate from its later use prevents scheduler delay, AQ locking or native-clock catch-up from
+/// relabelling the boundary which actually ended this I/O operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlockingWake {
+    owner: BlockingDeadlineOwner,
+    reserve_spent: bool,
+    transport_due: bool,
+}
+
+fn observe_hls_deadline(
+    reserve: Option<&mut ReserveDeadlineState>,
+    attempted: BlockingDeadline,
+    watchdog: &TransportWatchdog,
+    rebuffering: bool,
+) -> BlockingWake {
+    let reserve_spent = attempted.owner == BlockingDeadlineOwner::Reserve
+        && reserve.is_some_and(|reserve| {
+            reserve.note_transport_deadline(Some(attempted.at), rebuffering)
+        });
+    BlockingWake {
+        owner: attempted.owner,
+        reserve_spent,
+        transport_due: watchdog.expired(),
+    }
+}
+
+/// Classify only the captured boundary cause. A transport-owned wake stays a circumstance even
+/// if reserve is spent later; that later fact can gate the next I/O but cannot turn an RST/stall
+/// into censored rung evidence. Reserve wins an issued equality, but only when its owning clock
+/// was actually spent at wake; a stale reserve projection then yields to due liveness.
+fn classify_hls_deadline(wake: BlockingWake) -> Option<HlsExit> {
+    match wake.owner {
+        BlockingDeadlineOwner::Transport if wake.transport_due => {
+            Some(HlsExit::Failed("HLS transport stalled"))
+        }
+        BlockingDeadlineOwner::Reserve if wake.reserve_spent => Some(HlsExit::PrimeExpired),
+        BlockingDeadlineOwner::Reserve if wake.transport_due => {
+            Some(HlsExit::Failed("HLS transport stalled"))
+        }
+        _ => None,
+    }
+}
+
+/// Preserve the one exploration clock across its media leg. An upshift starts its playhead clock
+/// before PMS registration and the playlist requests; replacing it here with their last wall
+/// snapshot made a user Pause expire unspent playable reserve. A downshift's formula is known only
+/// after its actual candidate EXTINF and fresh reserve are known, so its media-only clock starts at
+/// this boundary and spends unpaused elapsed time: internal starvation is recovery cost, accepted
+/// user Pause is not.
+fn candidate_reserve_deadline(
+    exploration: Option<ReserveDeadlineState>,
+    media_budget: Option<std::time::Duration>,
+    yields_to_rebuffer: bool,
+    started_ns: i64,
+    direction: crate::abr::Direction,
+) -> ReserveDeadlineState {
+    exploration.unwrap_or_else(|| {
+        media_budget.map_or_else(
+            || ReserveDeadlineState::new(None, yields_to_rebuffer),
+            |budget| match direction {
+                crate::abr::Direction::Up => {
+                    ReserveDeadlineState::from_playhead_at(started_ns, budget, yields_to_rebuffer)
+                }
+                crate::abr::Direction::Down => {
+                    ReserveDeadlineState::from_unpaused_elapsed(budget, yields_to_rebuffer)
+                }
+            },
+        )
+    })
+}
+
+fn exploration_snapshot(
+    exploration: &mut Option<ReserveDeadlineState>,
+) -> Option<std::time::Instant> {
+    exploration
+        .as_mut()
+        .and_then(|reserve| reserve.active(false))
+}
+
+fn exploration_expired(exploration: &mut Option<ReserveDeadlineState>) -> bool {
+    exploration
+        .as_mut()
+        .is_some_and(|reserve| reserve.expire_if_due(false))
+}
+
+/// Whether a blocking leg really consumed its playhead-funded exploration reserve. `false` means
+/// the leg returned on an obsolete wall-clock snapshot after Pause or a naturally stopped native
+/// clock moved the physical boundary; idempotent HTTP legs may retry with a fresh snapshot.
+fn exploration_timeout_is_final(
+    exploration: &mut Option<ReserveDeadlineState>,
+    attempted: Option<std::time::Instant>,
+) -> bool {
+    exploration.as_mut().map_or(true, |reserve| {
+        reserve.note_transport_deadline(attempted, false)
+    })
 }
 
 /// AVIO backing state: wraps the demux transport so libavformat reads through it and can seek by
@@ -1733,19 +2089,20 @@ struct AvioState {
     /// just-in-time production as its own term: for a JIT encoder the wait before the first byte
     /// IS the production cost, and it is otherwise indistinguishable from a slow link.
     first_byte_at: Option<std::time::Instant>,
-    /// Only ABR candidate segments carry a wall-clock deadline. The active movie and every
-    /// progressive stream retain their transport's normal stall budgets.
-    deadline: Option<std::time::Instant>,
-    deadline_expired: bool,
-    /// Armed for the ACTIVE cursor when the reserve is knowable and a cheaper rung exists, and —
-    /// since 2026-08-28 — for a DOWNSHIFT candidate's warm-up, bounded by the warm-up budget
-    /// rather than by the reserve. This said "armed only for the ACTIVE cursor" and that a
-    /// candidate "carries `deadline` instead: its bound is what the transaction can afford, not
-    /// what the picture can survive". The bound half is still right; the picture half assumed the
-    /// current rung keeps feeding throughout, which is true of an upshift and is the exact
-    /// opposite of a downshift's trigger. `candidate_warmup_is_guarded` is the predicate and
-    /// `docs/measurements/j3c-warmup-abort.md` is the device trace — a warm-up that spent a
-    /// 5918 ms reserve, all of it, proving a rung unaffordable.
+    /// Only ABR candidate segments carry a reserve deadline. The active movie and every progressive
+    /// stream retain their transport's normal stall budgets. A floor downshift may promote to
+    /// unbounded-by-reserve while it is in flight; the state latches that transition.
+    reserve_deadline: ReserveDeadlineState,
+    /// Independent wall-clock inactivity for HLS media. Its deadline is composed with the
+    /// reserve projection on every blocking read, but only actual bytes reset it. Progressive
+    /// sources keep `None` and use their transport's native liveness directly.
+    transport_watchdog: Option<TransportWatchdog>,
+    /// Armed for the ACTIVE cursor whenever its reserve is knowable and the internal clock is not
+    /// already held. Its action distinguishes an abort above the ladder floor from a clock-only
+    /// hold at the terminal actuator. Candidate transactions use `reserve_deadline` instead: an
+    /// ordinary candidate owns a playhead-funded clock projected onto each blocking wait, while a
+    /// terminal-floor recovery may omit that reserve clock. A partial PMS response remains
+    /// right-censored and cannot prove an earlier completion time from its prefix rate.
     stall: Option<StallGuard>,
     stall_aborted: bool,
 }
@@ -1770,6 +2127,54 @@ impl AvioState {
     }
 }
 
+/// Settle one enclosing FFmpeg operation against the exact callback state it accumulated.
+///
+/// Abort is checked by the caller immediately after the native call and therefore has priority
+/// outside this helper. Of the remaining transaction terminals, deliberate active-stream stall
+/// and a spent reserve outrank generic I/O; callback I/O is published only when FFmpeg itself did
+/// not recover the operation. Using this one classifier for open, stream discovery and frame read
+/// prevents the same callback event from changing meaning with the FFmpeg phase it happened in.
+fn classify_hls_avio_operation(
+    state: &AvioState,
+    operation_failed: bool,
+    request_started: std::time::Instant,
+    audio_expected: bool,
+) -> Option<HlsExit> {
+    let stall = state.stall_aborted.then(|| SegmentTransfer {
+        bytes: state.body_bytes,
+        active_us: state.body_active_us,
+        total_us: request_started.elapsed().as_micros().max(1) as u64,
+        audio_expected,
+    });
+    classify_hls_avio_facts(
+        stall,
+        state.reserve_deadline.expired,
+        state.io_failed,
+        operation_failed,
+    )
+}
+
+/// Pure terminal reduction for one completed native operation. The callback records facts while
+/// libavformat owns the thread; this reducer is the state-machine edge taken when control returns.
+/// Keeping the priority here makes `open`, `find_stream_info` and `read_frame` observe the same
+/// transition table, and lets the table be tested without constructing an FFmpeg AVIO context.
+fn classify_hls_avio_facts(
+    stall: Option<SegmentTransfer>,
+    reserve_expired: bool,
+    io_failed: bool,
+    operation_failed: bool,
+) -> Option<HlsExit> {
+    if let Some(transfer) = stall {
+        Some(HlsExit::StallAbort(transfer))
+    } else if reserve_expired {
+        Some(HlsExit::PrimeExpired)
+    } else if operation_failed && io_failed {
+        Some(HlsExit::Failed("segment body transport failed"))
+    } else {
+        None
+    }
+}
+
 /// AVIOContext leading fields, so we can free avio->buffer manually (FFmpeg 3.3 has no
 /// avio_context_free). `buffer` sits at +4, right after `av_class`.
 #[repr(C)]
@@ -1781,71 +2186,128 @@ struct AVIOCtxHead {
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
-        // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
-        // interrupt the read — the demux thread services it itself between two av_read_frame
-        // calls (see the read loop), so there is nothing to unblock and nothing to race.
-        if crate::aq::aq_is_aborted(s.aq) {
-            s.latch_abort();
-            return AVERROR_EOF;
-        }
-        if s.deadline.is_some_and(|at| std::time::Instant::now() >= at) {
-            s.deadline_expired = true;
-            return AVERROR_EOF;
-        }
-        // The abort rule, evaluated where the numbers are. See `StallGuard`.
-        if let Some(guard) = s.stall {
-            if guard.should_abort(s.size - s.off, s.body_bytes, s.body_active_us) {
-                s.stall_aborted = true;
+        loop {
+            // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
+            // interrupt the read — the demux thread services it itself between two av_read_frame
+            // calls (see the read loop), so there is nothing to unblock and nothing to race.
+            if crate::aq::aq_is_aborted(s.aq) {
+                s.latch_abort();
                 return AVERROR_EOF;
             }
-        }
-        // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so the
-        // EOF decision below stays one branch rather than one per transport.
-        let read_started = std::time::Instant::now();
-        let r = match &mut s.src {
-            Src::Socket { hs, .. } => {
-                crate::stream::http_read_until(*hs, dst as *mut c_uchar, n, s.deadline)
+            let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+            if s.reserve_deadline.expire_if_due(rebuffering) {
+                return AVERROR_EOF;
             }
-            // The null/length guard `stream::http_read` does for itself. `from_raw_parts_mut`
-            // requires a non-null pointer even for a zero-length slice, and libavformat is not
-            // contractually barred from asking for nothing.
-            Src::Curl(_) if dst.is_null() || n <= 0 => 0,
-            Src::Curl(cs) => {
-                cs.read_until(std::slice::from_raw_parts_mut(dst, n as usize), s.deadline)
+            let reserve_snapshot = s.reserve_deadline.active(rebuffering);
+            let blocking_deadline = s
+                .transport_watchdog
+                .map(|watchdog| watchdog.effective(reserve_snapshot))
+                .or_else(|| {
+                    reserve_snapshot.map(|at| BlockingDeadline {
+                        at,
+                        owner: BlockingDeadlineOwner::Reserve,
+                    })
+                });
+            let live_deadline = blocking_deadline.map(|deadline| deadline.at);
+            // The abort rule, evaluated where the numbers are. See `StallGuard`.
+            if let Some(guard) = s.stall {
+                if guard.should_abort(s.size - s.off, rebuffering) {
+                    // The playable reserve has actually reached its terminal boundary. Always ask
+                    // the main thread to hold Starfish's A/V clock (it may already have done so on
+                    // its exact B=0 sample). Above the ladder floor, abandon this still-incomplete
+                    // object so the controller can fetch a smaller one; at the floor leave the
+                    // only useful response alive and disarm only the one-shot notification.
+                    SHARED.hls_rebuffer_request_tail_ns.store(
+                        SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+                        Ordering::Release,
+                    );
+                    SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
+                    if guard.aborts_fetch() {
+                        s.stall_aborted = true;
+                        return AVERROR_EOF;
+                    }
+                    s.stall = None;
+                }
             }
-        };
-        if r == crate::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
-            s.deadline_expired = true;
-            return AVERROR_EOF;
-        }
-        if r < 0 {
-            // Teardown was handled above through the AU flag and remains EOF. A curl source's
-            // negative result here is therefore a real transport/range failure. Keep it distinct
-            // through FFmpeg, but only pending here: libavformat may recover through `seek_cb`
-            // inside this same operation.
-            if matches!(&s.src, Src::Curl(_)) {
+            // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
+            // the EOF decision below stays one branch rather than one per transport.
+            let read_started = std::time::Instant::now();
+            let r = match &mut s.src {
+                Src::Socket { hs, .. } => {
+                    crate::stream::http_read_until(*hs, dst as *mut c_uchar, n, live_deadline)
+                }
+                // The null/length guard `stream::http_read` does for itself.
+                Src::Curl(_) if dst.is_null() || n <= 0 => 0,
+                Src::Curl(cs) => cs.read_until(
+                    std::slice::from_raw_parts_mut(dst, n as usize),
+                    live_deadline,
+                ),
+            };
+            let wake =
+                if r == crate::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
+                    let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                    match (blocking_deadline, s.transport_watchdog.as_ref()) {
+                        (Some(attempted), Some(watchdog)) => Some(observe_hls_deadline(
+                            Some(&mut s.reserve_deadline),
+                            attempted,
+                            watchdog,
+                            current_rebuffering,
+                        )),
+                        (Some(attempted), None) => Some(BlockingWake {
+                            owner: attempted.owner,
+                            reserve_spent: s
+                                .reserve_deadline
+                                .note_transport_deadline(Some(attempted.at), current_rebuffering),
+                            transport_due: false,
+                        }),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+            // Teardown may have arrived while the transport was blocked. Its wake commonly
+            // surfaces as socket EOF or curl failure; classify from the owning AU abort flag
+            // before either transport result can become an active-stream error.
+            if crate::aq::aq_is_aborted(s.aq) {
+                s.latch_abort();
+                return AVERROR_EOF;
+            }
+            if let Some(wake) = wake {
+                match classify_hls_deadline(wake) {
+                    Some(HlsExit::PrimeExpired) => return AVERROR_EOF,
+                    Some(_) => {
+                        s.io_failed = true;
+                        return AVERROR_IO;
+                    }
+                    None => {}
+                }
+                // A stale reserve projection is neither evidence nor progress. Retry in this
+                // frame (not recursively) with the same inactivity epoch and a fresh projection.
+                continue;
+            }
+            if r < 0 {
+                // Teardown was handled above through the AU flag and remains EOF. A negative
+                // result here is therefore a real transport/range failure.
                 s.io_failed = true;
                 return AVERROR_IO;
             }
-            return AVERROR_EOF;
+            if r == 0 {
+                return AVERROR_EOF;
+            }
+            if let Some(watchdog) = &mut s.transport_watchdog {
+                watchdog.reset();
+            }
+            s.body_active_us = s
+                .body_active_us
+                .saturating_add(read_started.elapsed().as_micros().max(1) as u64);
+            if s.first_byte_at.is_none() {
+                s.first_byte_at = Some(std::time::Instant::now());
+            }
+            s.body_bytes = s.body_bytes.saturating_add(r as u64);
+            s.off += r as i64;
+            SHARED.dg_net_rx.fetch_add(r as i64, Ordering::Relaxed);
+            return r;
         }
-        if r == 0 {
-            return AVERROR_EOF;
-        }
-        s.body_active_us = s
-            .body_active_us
-            .saturating_add(read_started.elapsed().as_micros().max(1) as u64);
-        if s.first_byte_at.is_none() {
-            s.first_byte_at = Some(std::time::Instant::now());
-        }
-        s.body_bytes = s.body_bytes.saturating_add(r as u64);
-        s.off += r as i64;
-        // Bytes actually delivered to the demuxer, for the diagnostics read-out. Counted HERE
-        // rather than from the socket so it means "what libavformat received": a connection that
-        // answered 200 and then delivered nothing is a different fault from one that never
-        // answered, and no other field on the panel can tell them apart.
-        SHARED.dg_net_rx.fetch_add(r as i64, Ordering::Relaxed);
-        r
     }
 }
 
@@ -2374,17 +2836,28 @@ enum HlsExit {
     Aborted,
     NotReady,
     PrimeExpired,
-    /// The abort rule fired on the ACTIVE stream: this fetch was projected to outlive the reserve
-    /// while a cheaper rung was still available. Not a failure — the segment is abandoned on
-    /// purpose so the controller gets a decision it would otherwise never be asked for. See
-    /// [`StallGuard`].
+    /// The terminal rule fired on the ACTIVE stream: the playable reserve reached zero while this
+    /// sized response still had bytes outstanding and a cheaper rung remained. Not a failure —
+    /// the segment is abandoned on purpose after the reserve actually reaches its terminal
+    /// boundary, so the controller gets a recovery decision it would otherwise never be asked
+    /// for. See [`StallGuard`].
     ///
-    /// **It carries the transfer, because an abandoned fetch is still a MEASUREMENT** — bytes over
-    /// the time they took, on the link as it is now. That is precisely the evidence the controller
-    /// was being starved of: without it the abort would abandon a segment and tell the estimator
-    /// nothing, and the next fetch would be chosen on the same stale rate that led here.
+    /// It carries the transfer for diagnostics and censored-event accounting. Its prefix is not a
+    /// capacity or acquisition observation: PMS production, response pacing and network service
+    /// are not identifiable separately before the response completes.
     StallAbort(SegmentTransfer),
     Failed(&'static str),
+}
+
+fn classify_plaintext_open_failure(error: crate::stream::HttpOpenError) -> HlsExit {
+    match error {
+        crate::stream::HttpOpenError::Deadline => HlsExit::PrimeExpired,
+        crate::stream::HttpOpenError::Status(404) => HlsExit::NotReady,
+        crate::stream::HttpOpenError::Aborted => HlsExit::Aborted,
+        crate::stream::HttpOpenError::Status(_) | crate::stream::HttpOpenError::Transport => {
+            HlsExit::Failed("HTTP request failed")
+        }
+    }
 }
 
 fn hls_open_source(
@@ -2392,6 +2865,7 @@ fn hls_open_source(
     request_path: &str,
     aq: *mut AuQueue,
     hs: *mut HttpStream,
+    deadline: Option<std::time::Instant>,
 ) -> Result<(Src, i64), HlsExit> {
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         return Err(HlsExit::Aborted);
@@ -2409,7 +2883,21 @@ fn hls_open_source(
             return Err(HlsExit::Aborted);
         }
         let url = format!("{}{}", origin.base(), request_path);
-        let cs = crate::curlio::CurlSource::open_reserved(&url, 0, reservation).map_err(|e| {
+        let opened = match deadline {
+            Some(at) => crate::curlio::CurlSource::open_reserved_until(&url, 0, reservation, at),
+            None => crate::curlio::CurlSource::open_reserved(&url, 0, reservation),
+        };
+        // AQ abort is teardown's cross-transport linearization point. curl has its own wake latch,
+        // but teardown sets AQ first; therefore an open result racing that interval must be
+        // classified from AQ before a curl deadline/status can become ABR evidence.
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            drop(opened);
+            return Err(HlsExit::Aborted);
+        }
+        let cs = opened.map_err(|e| {
+            if e == crate::curlio::OpenErr::Deadline {
+                return HlsExit::PrimeExpired;
+            }
             if let crate::curlio::OpenErr::Status(status) = e {
                 SHARED.dg_http_status.store(status, Ordering::Relaxed);
                 if status == 404 {
@@ -2430,46 +2918,73 @@ fn hls_open_source(
         let host = CString::new(origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
         let path =
             CString::new(request_path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
-        unsafe {
-            crate::stream::http_close(hs);
-            if crate::stream::http_open(
+        crate::stream::http_close(hs);
+        let opened = if let Some(at) = deadline {
+            if std::time::Instant::now() >= at {
+                return Err(HlsExit::PrimeExpired);
+            }
+            crate::stream::http_open_until_result(
                 hs,
                 host.as_ptr(),
                 origin.port() as c_int,
                 path.as_ptr(),
                 std::ptr::null(),
                 "GET",
-            ) != 0
-            {
-                SHARED
-                    .dg_http_status
-                    .store(crate::stream::hs_status(hs), Ordering::Relaxed);
-                return if crate::aq::aq_is_aborted(aq) {
-                    Err(HlsExit::Aborted)
-                } else if crate::stream::hs_status(hs) == 404 {
-                    Err(HlsExit::NotReady)
+                at,
+            )
+        } else {
+            let result = crate::stream::http_open(
+                hs,
+                host.as_ptr(),
+                origin.port() as c_int,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            );
+            if result == 0 {
+                Ok(())
+            } else {
+                let status = crate::stream::hs_status(hs);
+                Err(if status > 0 {
+                    crate::stream::HttpOpenError::Status(status)
                 } else {
-                    Err(HlsExit::Failed("HTTP request failed"))
-                };
+                    crate::stream::HttpOpenError::Transport
+                })
             }
-            let status = crate::stream::hs_status(hs);
-            let size = crate::stream::hs_content_length(hs);
-            SHARED.dg_http_status.store(status, Ordering::Relaxed);
-            SHARED.file_size.store(size, Ordering::Release);
-            Ok((
-                Src::Socket {
-                    hs,
-                    host,
-                    port: origin.port() as c_int,
-                    path,
-                },
-                size,
-            ))
+        };
+        // Symmetric with curl above: AQ is teardown's cross-transport winner, and must be
+        // observed before a typed transport result becomes playback/ABR evidence.
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
         }
+        if let Err(error) = opened {
+            SHARED
+                .dg_http_status
+                .store(crate::stream::hs_status(hs), Ordering::Relaxed);
+            return Err(classify_plaintext_open_failure(error));
+        }
+        let status = crate::stream::hs_status(hs);
+        let size = crate::stream::hs_content_length(hs);
+        SHARED.dg_http_status.store(status, Ordering::Relaxed);
+        SHARED.file_size.store(size, Ordering::Release);
+        Ok((
+            Src::Socket {
+                hs,
+                host,
+                port: origin.port() as c_int,
+                path,
+            },
+            size,
+        ))
     }
 }
 
-fn hls_source_read(src: &mut Src, aq: *mut AuQueue, dst: &mut [u8]) -> Result<usize, HlsExit> {
+fn hls_source_read(
+    src: &mut Src,
+    aq: *mut AuQueue,
+    dst: &mut [u8],
+    deadline: Option<std::time::Instant>,
+) -> Result<usize, HlsExit> {
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         if let Src::Curl(cs) = src {
             cs.abort();
@@ -2478,13 +2993,31 @@ fn hls_source_read(src: &mut Src, aq: *mut AuQueue, dst: &mut [u8]) -> Result<us
     }
     let read = match src {
         Src::Socket { hs, .. } => {
-            crate::stream::http_read(*hs, dst.as_mut_ptr(), dst.len() as c_int)
+            crate::stream::http_read_until(*hs, dst.as_mut_ptr(), dst.len() as c_int, deadline)
         }
-        Src::Curl(cs) => cs.read(dst),
+        Src::Curl(cs) => cs.read_until(dst, deadline),
     };
-    if read < 0 {
+    // The wake used to interrupt a blocked body read is deliberately transport-shaped (EOF for
+    // shutdown(2), negative for curl). Re-read the lane flag before interpreting that shape so a
+    // user teardown can never become failed/censored playback evidence.
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        if let Src::Curl(cs) = src {
+            cs.abort();
+        }
+        return Err(HlsExit::Aborted);
+    }
+    if read == crate::stream::HTTP_READ_DEADLINE || read == crate::curlio::READ_DEADLINE {
+        Err(HlsExit::PrimeExpired)
+    } else if read < 0 {
         Err(HlsExit::Failed("HLS response body failed"))
     } else {
+        // The progressive AVIO path increments this counter in `read_cb`; segmented HLS bypasses
+        // that callback and used to leave Stats for Nerds' Network Activity lane flat at zero
+        // while visibly downloading playlists and segments. Count at the shared source seam so
+        // socket and curl HLS mean the same thing: bytes actually handed to the demux fetcher.
+        if read > 0 {
+            SHARED.dg_net_rx.fetch_add(read as i64, Ordering::Relaxed);
+        }
         Ok(read as usize)
     }
 }
@@ -2494,27 +3027,91 @@ fn hls_fetch_text(
     auth: &crate::hls::InheritedAuth,
     aq: *mut AuQueue,
     hs: *mut HttpStream,
+    mut reserve: Option<&mut ReserveDeadlineState>,
 ) -> Result<(String, u128), HlsExit> {
     const MAX_PLAYLIST_BYTES: usize = 1024 * 1024;
     let request_path = auth
         .request_path(resource)
         .map_err(|_| HlsExit::Failed("playlist credential rejected"))?;
     let started = std::time::Instant::now();
-    let (mut src, size) = hls_open_source(resource, &request_path, aq, hs)?;
+    let mut watchdog = TransportWatchdog::for_origin(&resource.origin);
+    let (mut src, size) = loop {
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
+        }
+        if reserve
+            .as_deref_mut()
+            .is_some_and(|reserve| reserve.expire_if_due(false))
+        {
+            return Err(HlsExit::PrimeExpired);
+        }
+        let reserve_snapshot = reserve
+            .as_deref_mut()
+            .and_then(|reserve| reserve.active(false));
+        let effective = watchdog.effective(reserve_snapshot);
+        match hls_open_source(resource, &request_path, aq, hs, Some(effective.at)) {
+            Ok(opened) => {
+                // A complete response head is transport progress and begins a fresh inactivity
+                // epoch for the body. Neither a stale reserve wake nor a reconnect attempt does.
+                watchdog.reset();
+                break opened;
+            }
+            Err(HlsExit::PrimeExpired) => {
+                let wake =
+                    observe_hls_deadline(reserve.as_deref_mut(), effective, &watchdog, false);
+                if let Some(error) = classify_hls_deadline(wake) {
+                    return Err(error);
+                }
+                // The wall projection fired while its playhead clock remained unspent. GET is
+                // idempotent, so retry it with the same liveness epoch and a fresh projection.
+            }
+            Err(error) => return Err(error),
+        }
+    };
     if size > MAX_PLAYLIST_BYTES as i64 {
         return Err(HlsExit::Failed("playlist exceeds size cap"));
     }
     let mut body = Vec::with_capacity(if size > 0 { size as usize } else { 4096 });
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        let n = hls_source_read(&mut src, aq, &mut chunk)?;
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
+        }
+        if reserve
+            .as_deref_mut()
+            .is_some_and(|reserve| reserve.expire_if_due(false))
+        {
+            return Err(HlsExit::PrimeExpired);
+        }
+        let reserve_snapshot = reserve
+            .as_deref_mut()
+            .and_then(|reserve| reserve.active(false));
+        let effective = watchdog.effective(reserve_snapshot);
+        let n = match hls_source_read(&mut src, aq, &mut chunk, Some(effective.at)) {
+            Ok(n) => n,
+            Err(HlsExit::PrimeExpired) => {
+                let wake =
+                    observe_hls_deadline(reserve.as_deref_mut(), effective, &watchdog, false);
+                if let Some(error) = classify_hls_deadline(wake) {
+                    return Err(error);
+                }
+                // The source stays open across a body wake. Retrying here avoids both a new GET
+                // and a renewed liveness lease.
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if n == 0 {
             break;
         }
+        watchdog.reset();
         if body.len().saturating_add(n) > MAX_PLAYLIST_BYTES {
             return Err(HlsExit::Failed("playlist exceeds size cap"));
         }
         body.extend_from_slice(&chunk[..n]);
+    }
+    if !hls_body_complete(size, body.len() as i64) {
+        return Err(HlsExit::Failed("playlist body ended before Content-Length"));
     }
     let elapsed = started.elapsed().as_millis();
     String::from_utf8(body)
@@ -2522,16 +3119,27 @@ fn hls_fetch_text(
         .map_err(|_| HlsExit::Failed("playlist is not UTF-8"))
 }
 
-fn hls_wait(aq: *mut AuQueue, duration: std::time::Duration) -> Result<(), HlsExit> {
-    let deadline = std::time::Instant::now() + duration;
-    while std::time::Instant::now() < deadline {
+fn hls_wait(
+    aq: *mut AuQueue,
+    duration: std::time::Duration,
+    absolute_deadline: Option<std::time::Instant>,
+) -> Result<(), HlsExit> {
+    let nominal_end = std::time::Instant::now() + duration;
+    let wait_until = absolute_deadline.map_or(nominal_end, |at| at.min(nominal_end));
+    while std::time::Instant::now() < wait_until {
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let left = wait_until.saturating_duration_since(std::time::Instant::now());
         std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
     }
-    Ok(())
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        Err(HlsExit::Aborted)
+    } else if absolute_deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+        Err(HlsExit::PrimeExpired)
+    } else {
+        Ok(())
+    }
 }
 
 /// One MPEG-TS segment's entirely private FFmpeg state. PMS HLS segments are independent decode
@@ -2607,8 +3215,10 @@ unsafe fn hls_input(
     src: Src,
     size: i64,
     aq: *mut AuQueue,
-    deadline: Option<std::time::Instant>,
+    reserve_deadline: ReserveDeadlineState,
+    transport_watchdog: TransportWatchdog,
     stall: Option<StallGuard>,
+    request_started: std::time::Instant,
 ) -> Result<HlsInput, HlsExit> {
     let mut input = HlsInput {
         state: Box::new(AvioState {
@@ -2620,8 +3230,8 @@ unsafe fn hls_input(
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            deadline,
-            deadline_expired: false,
+            reserve_deadline,
+            transport_watchdog: Some(transport_watchdog),
             stall,
             stall_aborted: false,
         }),
@@ -2653,24 +3263,45 @@ unsafe fn hls_input(
         return Err(HlsExit::Failed("segment format allocation failed"));
     }
     (*input.fmt).pb = input.avio;
+    input.state.io_failed = false;
     let opened = avformat_open_input(
         &mut input.fmt,
         std::ptr::null(),
         std::ptr::null_mut(),
         std::ptr::null_mut(),
     );
+    if crate::aq::aq_is_aborted(aq) {
+        return Err(HlsExit::Aborted);
+    }
+    if let Some(exit) = classify_hls_avio_operation(
+        &input.state,
+        opened < 0 || input.fmt.is_null(),
+        request_started,
+        SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed),
+    ) {
+        return Err(exit);
+    }
     if opened < 0 || input.fmt.is_null() {
-        if input.state.deadline_expired {
-            return Err(HlsExit::PrimeExpired);
-        }
         return Err(HlsExit::Failed("segment open/probe failed"));
     }
-    if avformat_find_stream_info(input.fmt, std::ptr::null_mut()) < 0 {
-        if input.state.deadline_expired {
-            return Err(HlsExit::PrimeExpired);
-        }
+    // A successful enclosing FFmpeg operation healed any callback-level read retry.
+    input.state.io_failed = false;
+    let discovered = avformat_find_stream_info(input.fmt, std::ptr::null_mut());
+    if crate::aq::aq_is_aborted(aq) {
+        return Err(HlsExit::Aborted);
+    }
+    if let Some(exit) = classify_hls_avio_operation(
+        &input.state,
+        discovered < 0,
+        request_started,
+        SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed),
+    ) {
+        return Err(exit);
+    }
+    if discovered < 0 {
         return Err(HlsExit::Failed("segment stream discovery failed"));
     }
+    input.state.io_failed = false;
     log_hls_video_change(input.fmt);
     input.pkt = av_packet_alloc();
     if input.pkt.is_null() {
@@ -2763,6 +3394,14 @@ struct HlsSegmentOutput {
     audio_tail_ns: Option<i64>,
 }
 
+/// A body with a declared length is complete only after every declared byte reached AVIO.  FFmpeg
+/// finding some packets is not a substitute: a socket timeout used to look like EOF, after which
+/// the caller credited the segment's full EXTINF and manufactured playable reserve that was never
+/// downloaded.
+fn hls_body_complete(declared_size: i64, delivered: i64) -> bool {
+    declared_size < 0 || delivered >= declared_size
+}
+
 unsafe fn hls_demux_segment(
     segment: &crate::hls::Segment,
     auth: &crate::hls::InheritedAuth,
@@ -2770,7 +3409,7 @@ unsafe fn hls_demux_segment(
     aq: *mut AuQueue,
     hs: *mut HttpStream,
     acodec: &str,
-    deadline: Option<std::time::Instant>,
+    mut reserve_deadline: ReserveDeadlineState,
     stall: Option<StallGuard>,
 ) -> Result<HlsSegmentOutput, HlsExit> {
     if crate::aq::aq_is_aborted(aq) {
@@ -2789,16 +3428,43 @@ unsafe fn hls_demux_segment(
             std::time::Duration::from_secs(15),
         );
     let mut not_ready_retries = 0u32;
+    let mut transport_watchdog = TransportWatchdog::for_origin(&segment.resource.origin);
     // The SUCCESSFUL attempt only. A `NotReady` retry is the server saying the segment does not
     // exist yet, which is production latency of a different kind and is already counted by
     // `not_ready=`; folding it in here would make one number mean two things.
     let open_us;
     let (src, size) = loop {
+        if crate::aq::aq_is_aborted(aq) {
+            return Err(HlsExit::Aborted);
+        }
+        if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
+            return Err(HlsExit::PrimeExpired);
+        }
         let attempt = std::time::Instant::now();
-        match hls_open_source(&segment.resource, &path, aq, hs) {
+        let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+        let reserve_snapshot = reserve_deadline.active(rebuffering);
+        let effective = transport_watchdog.effective(reserve_snapshot);
+        match hls_open_source(&segment.resource, &path, aq, hs, Some(effective.at)) {
             Ok(opened) => {
+                transport_watchdog.reset();
                 open_us = attempt.elapsed().as_micros() as u64;
                 break opened;
+            }
+            // The blocking open may have returned on the old reserve deadline in the same pump
+            // tick that established the internal hold. Re-open under the promoted policy; the
+            // ordinary transport liveness bound remains, only the rollback deadline disappears.
+            Err(HlsExit::PrimeExpired) => {
+                let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                let wake = observe_hls_deadline(
+                    Some(&mut reserve_deadline),
+                    effective,
+                    &transport_watchdog,
+                    current_rebuffering,
+                );
+                if let Some(error) = classify_hls_deadline(wake) {
+                    return Err(error);
+                }
+                continue;
             }
             // **The retry is INSIDE the caller's deadline, and it was not.** `retry_budget` runs
             // to 15 s and was the only bound here, while `deadline` reached only as far as
@@ -2807,21 +3473,42 @@ unsafe fn hls_demux_segment(
             // deadline had any effect at all, which is R19's "the `NotReady` retry has no leg of
             // its own" seen from the enforcement side rather than the accounting side. A retry
             // budget that can outlive the reserve it is spending is not a budget.
-            Err(HlsExit::NotReady)
-                if deadline.is_some_and(|at| std::time::Instant::now() >= at) =>
-            {
-                return Err(HlsExit::PrimeExpired)
-            }
             Err(HlsExit::NotReady) if request_started.elapsed() < retry_budget => {
                 not_ready_retries = not_ready_retries.saturating_add(1);
+                transport_watchdog.reset();
+                if crate::aq::aq_is_aborted(aq) {
+                    return Err(HlsExit::Aborted);
+                }
+                if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
+                    return Err(HlsExit::PrimeExpired);
+                }
                 // Never sleep past the deadline. A fixed 250 ms wait against a deadline 40 ms away
                 // overshoots by 210 ms of reserve, every time, for no information — the poll after
                 // it can only be discarded.
                 let mut wait = std::time::Duration::from_millis(250);
-                if let Some(at) = deadline {
-                    wait = wait.min(at.saturating_duration_since(std::time::Instant::now()));
+                let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                let reserve_snapshot = reserve_deadline.active(rebuffering);
+                let effective = transport_watchdog.effective(reserve_snapshot);
+                wait = wait.min(
+                    effective
+                        .at
+                        .saturating_duration_since(std::time::Instant::now()),
+                );
+                match hls_wait(aq, wait, Some(effective.at)) {
+                    Err(HlsExit::PrimeExpired) => {
+                        let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                        let wake = observe_hls_deadline(
+                            Some(&mut reserve_deadline),
+                            effective,
+                            &transport_watchdog,
+                            current_rebuffering,
+                        );
+                        if let Some(error) = classify_hls_deadline(wake) {
+                            return Err(error);
+                        }
+                    }
+                    result => result?,
                 }
-                hls_wait(aq, wait)?;
             }
             Err(HlsExit::NotReady) => {
                 return Err(HlsExit::Failed("HLS segment was not produced in time"))
@@ -2830,7 +3517,15 @@ unsafe fn hls_demux_segment(
         }
     };
     let body_started = std::time::Instant::now();
-    let mut input = hls_input(src, size, aq, deadline, stall)?;
+    let mut input = hls_input(
+        src,
+        size,
+        aq,
+        reserve_deadline,
+        transport_watchdog,
+        stall,
+        request_started,
+    )?;
     let probe_done = std::time::Instant::now();
     let streams = (*input.fmt).streams;
     let vi = av_find_best_stream(
@@ -2887,24 +3582,18 @@ unsafe fn hls_demux_segment(
     loop {
         input.state.io_failed = false;
         let read = av_read_frame(input.fmt, input.pkt);
+        if crate::aq::aq_is_aborted(aq) {
+            return Err(HlsExit::Aborted);
+        }
+        if let Some(exit) = classify_hls_avio_operation(
+            &input.state,
+            read < 0,
+            request_started,
+            ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
+        ) {
+            return Err(exit);
+        }
         if read < 0 {
-            // The abort rule, raised beside the transaction deadline because they are the same
-            // kind of event — an in-flight bound the read callback tripped — and differ only in
-            // what they are protecting. See `StallGuard`.
-            if input.state.stall_aborted {
-                return Err(HlsExit::StallAbort(SegmentTransfer {
-                    bytes: input.state.body_bytes,
-                    active_us: input.state.body_active_us,
-                    total_us: request_started.elapsed().as_micros().max(1) as u64,
-                    audio_expected: ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
-                }));
-            }
-            if input.state.deadline_expired {
-                return Err(HlsExit::PrimeExpired);
-            }
-            if input.state.io_failed {
-                return Err(HlsExit::Failed("segment body transport failed"));
-            }
             break;
         }
         let si = (*input.pkt).stream_index;
@@ -2986,8 +3675,23 @@ unsafe fn hls_demux_segment(
             return Err(HlsExit::Aborted);
         }
     }
-    if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+    if crate::aq::aq_is_aborted(aq) {
+        return Err(HlsExit::Aborted);
+    }
+    if input
+        .state
+        .reserve_deadline
+        .expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire))
+    {
         return Err(HlsExit::PrimeExpired);
+    }
+
+    if !hls_body_complete(input.state.size, input.state.off) {
+        crate::player::log(&format!(
+            "hls: short-body segment={} got={} want={}",
+            segment.sequence, input.state.off, input.state.size,
+        ));
+        return Err(HlsExit::Failed("segment body ended before Content-Length"));
     }
 
     if video_packets == 0 {
@@ -3058,11 +3762,26 @@ fn hls_feed_segment(
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
 ) -> Result<(), HlsExit> {
-    // A candidate is demuxed before it owns the playback session. Publish the decoded raster only
-    // when these AUs actually cross the commit/feed boundary; otherwise a rejected off-screen
-    // candidate lies to diagnostics and to every consumer of the active stream dimensions.
-    SHARED.video_w.store(output.video_width, Ordering::Relaxed);
-    SHARED.video_h.store(output.video_height, Ordering::Relaxed);
+    SHARED
+        .hls_audio_expected
+        .store(output.transfer.audio_expected, Ordering::Release);
+    // Close the race with the main-thread pump: before the first AU can satisfy the decoder prime,
+    // publish how long this acquisition actually cost.  The pump then requires at least that much
+    // playable media.  Do NOT lower the published value at the end of this function: the AUs are
+    // then in our queues, not necessarily accepted by Starfish yet, and the controller has not yet
+    // replaced the previous finite-bag runway with the window that includes this acquisition.  A
+    // store here opened a small but real interval in which the pump could start against only the
+    // latest (cheaper) sample.  `Controller::prime_runway_ms` publishes the new complete value
+    // immediately after `observe` below.
+    let acquisition_ms =
+        i64::try_from(output.transfer.total_us.saturating_add(999) / 1_000).unwrap_or(i64::MAX);
+    SHARED
+        .hls_prime_runway_ms
+        .fetch_max(acquisition_ms, Ordering::AcqRel);
+    // A candidate is demuxed before it owns playback. Publish one coherent raster only after its
+    // first video AU is accepted by the active queue; a rejected candidate and a failed first push
+    // must remain invisible to the video-plane actuator.
+    let mut raster_published = false;
     for au in &output.aus {
         let queue = if au.es == 1 { aq } else { aqa };
         if crate::aq::aq_push(
@@ -3077,6 +3796,10 @@ fn hls_feed_segment(
             return Err(HlsExit::Aborted);
         }
         if au.es == 1 {
+            if !raster_published {
+                SHARED.publish_video_raster(output.video_width, output.video_height);
+                raster_published = true;
+            }
             PUSHED_ANY.store(true, Ordering::Relaxed);
             SHARED.hls_video_tail_ns.store(au.pts_ns, Ordering::Release);
         } else {
@@ -3089,6 +3812,29 @@ fn hls_feed_segment(
 fn hls_raster_within(width: i32, height: i32, rung: crate::abr::Rung) -> bool {
     let (max_width, max_height) = rung.raster();
     width > 0 && height > 0 && width <= i32::from(max_width) && height <= i32::from(max_height)
+}
+
+/// A larger request is a quality transition only when its OBSERVED output strictly dominates the
+/// stream it would replace.  Raster and the master playlist's declared bandwidth are independent
+/// axes: more bits at the same raster can improve an encode, and more pixels at a lower declared
+/// rate is not orderable without inventing a subjective weight.  Pareto dominance is therefore
+/// the strongest statement the measurements alone support — no resolution target, ratio or
+/// tolerance is introduced.
+fn hls_upshift_strictly_improves(
+    current_width: i32,
+    current_height: i32,
+    current_declared_bps: u64,
+    candidate_width: i32,
+    candidate_height: i32,
+    candidate_declared_bps: u64,
+) -> bool {
+    let Some(current) =
+        crate::abr::ObservedHlsVariant::new(current_declared_bps, current_width, current_height)
+    else {
+        return false;
+    };
+    crate::abr::ObservedHlsVariant::new(candidate_declared_bps, candidate_width, candidate_height)
+        .is_some_and(|candidate| candidate.strictly_dominates(current))
 }
 
 struct HlsCursor {
@@ -3104,11 +3850,11 @@ struct HlsCursor {
     /// **The rate this rendition's master playlist DECLARED**, bit/s, `#EXT-X-STREAM-INF:BANDWIDTH`.
     ///
     /// Retained rather than logged and dropped, which is what happened to it until now. It is the
-    /// only per-rung rate this app can obtain that is not the catalog's `expected_wire_kbps` — the
-    /// input the plan's R1 killed, measured at +5.2% to +31.6% error, item-dependent, and
-    /// non-injective (rungs 18000 and 20000 both declare 16 150). The admission rule's candidate
-    /// query is `sigma * W_j * D / 8000` and `W_j` is exactly this, so a rule evaluated on the
-    /// catalog rate would be answering about a rendition that does not exist.
+    /// only per-rung rate this app can obtain that is not the catalog's `expected_wire_kbps`, whose
+    /// error is +5.2% to +31.6%, item-dependent and non-injective (rungs 18000 and 20000 both
+    /// declare 16 150). Live candidate acceptance uses measured `(A,D,B_post)`, not this declaration;
+    /// keeping it attached to the cursor makes the transaction trace describe the actual PMS
+    /// variant and preserves the historical corpus comparator.
     ///
     /// Available at VALIDATION and nowhere else: a rung's `BANDWIDTH` cannot be read without first
     /// creating a PMS encoder session for it, so selection over the ladder still has no per-rung
@@ -3129,12 +3875,13 @@ fn hls_cursor_open(
     aq: *mut AuQueue,
     hs: *mut HttpStream,
     publishes_duration: bool,
+    reserve: Option<&mut ReserveDeadlineState>,
 ) -> Result<HlsCursor, HlsExit> {
     let master_resource = crate::hls::Resource::new(origin.clone(), path)
         .map_err(|_| HlsExit::Failed("invalid HLS master URL"))?;
     let auth = crate::hls::InheritedAuth::capture(&master_resource)
         .map_err(|_| HlsExit::Failed("HLS master has no unique credential"))?;
-    let (master_text, master_ms) = hls_fetch_text(&master_resource, &auth, aq, hs)?;
+    let (master_text, master_ms) = hls_fetch_text(&master_resource, &auth, aq, hs, reserve)?;
     let master = crate::hls::parse_master(&master_resource, &master_text).map_err(|e| {
         crate::player::log(&format!("hls: master rejected: {e}"));
         HlsExit::Failed("HLS master rejected")
@@ -3160,6 +3907,7 @@ fn hls_cursor_next(
     cursor: &mut HlsCursor,
     aq: *mut AuQueue,
     hs: *mut HttpStream,
+    mut reserve: Option<&mut ReserveDeadlineState>,
 ) -> Result<Option<crate::hls::Segment>, HlsExit> {
     loop {
         if let Some(segment) = cursor.pending.pop_front() {
@@ -3168,7 +3916,8 @@ fn hls_cursor_next(
         if cursor.ended {
             return Ok(None);
         }
-        let (media_text, media_ms) = hls_fetch_text(&cursor.media, &cursor.auth, aq, hs)?;
+        let (media_text, media_ms) =
+            hls_fetch_text(&cursor.media, &cursor.auth, aq, hs, reserve.as_deref_mut())?;
         let media = crate::hls::parse_media(&cursor.media, &media_text).map_err(|e| {
             crate::player::log(&format!("hls: media rejected: {e}"));
             HlsExit::Failed("HLS media playlist rejected")
@@ -3225,12 +3974,64 @@ fn hls_cursor_next(
                     .saturating_mul(500)
                     .clamp(250, 1_000),
             );
-            hls_wait(aq, poll)?;
+            let reserve_snapshot = reserve
+                .as_deref_mut()
+                .and_then(|reserve| reserve.active(false));
+            match hls_wait(aq, poll, reserve_snapshot) {
+                Err(HlsExit::PrimeExpired) => {
+                    if reserve.as_deref_mut().map_or(true, |reserve| {
+                        reserve.note_transport_deadline(reserve_snapshot, false)
+                    }) {
+                        return Err(HlsExit::PrimeExpired);
+                    }
+                }
+                result => result?,
+            }
         }
     }
 }
 
-fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferSnapshot {
+/// Make the rollback cursor's next media obligation explicit without consuming it.
+///
+/// An ABR/source experiment runs between current-stream objects. If it fails, the response that
+/// must survive is therefore the NEXT parsed EXTINF, not the duration of the object which just
+/// completed. Variable-duration HLS makes those different physical facts. When the next object is
+/// not already queued, perform the playlist refresh the outer loop would otherwise perform on its
+/// next iteration, then put the object back at the front unchanged.
+fn hls_duration_obligation_ms(duration: std::time::Duration) -> Option<u32> {
+    // BufferSnapshot lives on a whole-millisecond lattice and floors the playable reserve.  A
+    // media obligation must therefore round in the opposite direction: flooring both B and an
+    // EXTINF such as 1999.9 ms can manufacture almost one millisecond of exploration reserve.
+    // The parser's nanoseconds remain exact; this is the conservative projection onto the
+    // controller's current unit, not a re-parse of the playlist decimal.
+    let nanos = duration.as_nanos();
+    let millis = nanos.checked_add(999_999)?.checked_div(1_000_000)?;
+    u32::try_from(millis).ok()
+}
+
+fn hls_cursor_next_duration_ms(
+    cursor: &mut HlsCursor,
+    aq: *mut AuQueue,
+    hs: *mut HttpStream,
+) -> Result<Option<u32>, HlsExit> {
+    if let Some(segment) = cursor.pending.front() {
+        return hls_duration_obligation_ms(segment.duration)
+            .map(Some)
+            .ok_or(HlsExit::Failed("HLS rollback duration overflow"));
+    }
+    let Some(segment) = hls_cursor_next(cursor, aq, hs, None)? else {
+        return Ok(None);
+    };
+    let duration_ms = hls_duration_obligation_ms(segment.duration)
+        .ok_or(HlsExit::Failed("HLS rollback duration overflow"))?;
+    cursor.pending.push_front(segment);
+    Ok(Some(duration_ms))
+}
+
+fn hls_buffer_snapshot_at(
+    output: Option<&HlsSegmentOutput>,
+    playhead_ns: i64,
+) -> crate::abr::BufferSnapshot {
     let mut video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
     let mut audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
     let mut audio_expected = audio >= 0;
@@ -3246,15 +4047,24 @@ fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferS
     // before the controller compares them; raw FFmpeg PTS still never cross this boundary.
     let display_base = SHARED.disp_base.load(Ordering::Relaxed).max(0);
     crate::abr::BufferSnapshot {
-        playback: crate::abr::MediaTimeMs(
-            SHARED.playpos_ns.load(Ordering::Relaxed).max(0) / 1_000_000,
-        ),
+        playback: crate::abr::MediaTimeMs(playhead_ns.max(0) / 1_000_000),
         video_tail: crate::abr::MediaTimeMs(video.max(0).saturating_add(display_base) / 1_000_000),
         audio_tail: (audio >= 0).then_some(crate::abr::MediaTimeMs(
             audio.max(0).saturating_add(display_base) / 1_000_000,
         )),
         audio_expected,
     }
+}
+
+fn hls_buffer_snapshot_with_playhead(
+    output: Option<&HlsSegmentOutput>,
+) -> (crate::abr::BufferSnapshot, i64) {
+    let playhead_ns = SHARED.playpos_ns.load(Ordering::Relaxed).max(0);
+    (hls_buffer_snapshot_at(output, playhead_ns), playhead_ns)
+}
+
+fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferSnapshot {
+    hls_buffer_snapshot_with_playhead(output).0
 }
 
 /// Progressive Original uses absolute movie PTS, unlike offset-zero HLS, so no display-base
@@ -3287,27 +4097,82 @@ fn hls_segment_sample(
     duration: std::time::Duration,
 ) -> Option<crate::abr::SegmentSample> {
     let duration_ms = u32::try_from(duration.as_millis()).ok()?;
-    crate::abr::SegmentSample::new(
+    let duration_obligation_ms = hls_duration_obligation_ms(duration)?;
+    crate::abr::SegmentSample::new_with_obligation(
         output.transfer.bytes,
         output.transfer.active_us,
         output.transfer.total_us,
         duration_ms,
+        duration_obligation_ms,
         hls_buffer_snapshot(Some(output)),
     )
 }
 
+fn hls_abr_rate_readout(sample: crate::abr::SegmentSample) -> (i64, i64, i64) {
+    // The compact panel has no `complete=` column. Publishing an abandoned prefix here would
+    // present its mixed PMS-production/network rate as a normal sample even though the controller
+    // correctly discarded it. Keep the forensic prefix on the `abr: sample ... complete=0` log
+    // line and make the unqualified panel values explicitly unknown.
+    if sample.completed() {
+        (
+            i64::from(sample.network_kbps()),
+            i64::from(sample.media_kbps()),
+            i64::from(sample.production_ratio_pm()),
+        )
+    } else {
+        (-1, -1, -1)
+    }
+}
+
 fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
+    let (net_kbps, media_kbps, ratio_pm) = hls_abr_rate_readout(sample);
+    SHARED.dg_abr_net_kbps.store(net_kbps, Ordering::Relaxed);
     SHARED
-        .dg_abr_net_kbps
-        .store(i64::from(sample.network_kbps()), Ordering::Relaxed);
+        .dg_abr_media_kbps
+        .store(media_kbps, Ordering::Relaxed);
     // `-1` is "not knowable this segment", which the gauge has no other way to say. It is a
     // dev read-out with one i64 slot; the decision paths take the `Option` itself.
     SHARED
         .dg_abr_buffer_ms
         .store(sample.buffer.buffered_ms().unwrap_or(-1), Ordering::Relaxed);
-    SHARED
-        .dg_abr_ratio_pm
-        .store(i64::from(sample.production_ratio_pm()), Ordering::Relaxed);
+    SHARED.dg_abr_ratio_pm.store(ratio_pm, Ordering::Relaxed);
+}
+
+fn publish_original_probe_failure(failure: crate::route::OriginalProbeFailure) {
+    use crate::route::OriginalProbeFailure as F;
+    let (kind, status) = match failure {
+        F::HttpStatus(status) => (crate::player::ABR_FAILURE_ORIGINAL_HTTP, status),
+        F::Deadline => (crate::player::ABR_FAILURE_ORIGINAL_DEADLINE, 0),
+        F::Transport => (crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT, 0),
+        F::NoBody => (crate::player::ABR_FAILURE_ORIGINAL_NO_BODY, 0),
+        F::Other => (crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0),
+    };
+    crate::player::note_original_failure(kind, status);
+}
+
+fn log_original_mode_comparison(cmp: crate::abr::ModeComparison) {
+    let loser = cmp.loser.unwrap_or_default();
+    crate::player::log(&format!(
+        "abr: mode chose={:?} why={:?} vs_hls={}kbps scale={}pm \
+         win[q={} f={} r={} s={} t={} tot={}] \
+         lose[q={} f={} r={} s={} t={} tot={}]",
+        cmp.chosen,
+        cmp.reason,
+        cmp.hls_rung.kbps(),
+        cmp.scale_pm,
+        cmp.winner.quality,
+        cmp.winner.features,
+        cmp.winner.risk,
+        cmp.winner.server,
+        cmp.winner.transition,
+        cmp.winner.total,
+        loser.quality,
+        loser.features,
+        loser.risk,
+        loser.server,
+        loser.transition,
+        loser.total,
+    ));
 }
 
 /// One line per steady-state decision, carrying everything the decision was made ON. Nothing here
@@ -3320,7 +4185,8 @@ fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
 /// to be one function called only on `Decision::Stay` — so the panel's safe budget, uncertainty,
 /// buffer slope, starvation horizon, risk score and reason code were refreshed **only on segments
 /// where the controller decided to do nothing**. Every segment where those numbers were
-/// interesting — a short horizon, a server behind real time, a reserve about to run out — is by
+/// interesting — a short horizon, end-to-end acquisition behind real time, a reserve about to run
+/// out — is by
 /// definition a segment that returned `Prime`, and skipped the publish.
 ///
 /// The visible symptom was `risk 0` essentially always, which reads as "the model never sees any
@@ -3355,19 +4221,9 @@ fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
     // **The seed that survives a seek** (I8). Published every segment rather than at teardown,
     // because a teardown has several paths and one of them (a crash of the demux worker) reaches
     // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
-    // field: these four are read to DECIDE, by `route::auto_prior` when the next control is built.
-    SHARED
-        .abr_seed_slow_kbps
-        .store(i64::from(t.delivery.slow_kbps), rel);
-    SHARED
-        .abr_seed_fast_kbps
-        .store(i64::from(t.delivery.fast_kbps), rel);
-    SHARED
-        .abr_seed_unc_pm
-        .store(i64::from(t.delivery.uncertainty_pm), rel);
-    SHARED
-        .abr_seed_samples
-        .store(i64::from(t.delivery.samples), rel);
+    // field: this coherent estimate is read to DECIDE, by `route::auto_prior` when the next
+    // control is built.
+    SHARED.publish_abr_seed(t.delivery);
 }
 
 /// The once-a-segment event-log line, on the do-nothing path only. Its counterpart is
@@ -3403,12 +4259,9 @@ fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "none".to_string()),
         remaining_ms / 1_000,
-        // The two operational guards and the two estimator inputs that survived beside them. The
-        // first pair replaced J5's `stable=`/`cool=` when I6 replaced the counters those reported:
-        // `dwell=` is wall milliseconds still owed before another encoder session may be started,
-        // and `block=` is the rung N11's backoff is refusing. Both are read the same way the
-        // counters were — a `stay` with every conjunct holding and a non-zero guard here is a climb
-        // the evidence supported and a guard declined.
+        // `dwell=` is retained in the diagnostics wire shape and is always zero: exploration has
+        // no elapsed-time release. `block=` is the highest rung the per-rung failure frontier is
+        // currently refusing at this exact measured surplus.
         t.gates.dwell_ms,
         t.gates.blocked_kbps,
         t.gates.on_rung,
@@ -3452,13 +4305,16 @@ fn log_hls_abr_sample(
 ) {
     use crate::abr::{Decision::Prime, Direction};
     let (action, target) = match decision {
+        Prime(p) if p.direction == Direction::Up && p.rung == t.current => {
+            ("refresh", p.rung.kbps())
+        }
         Prime(p) if p.direction == Direction::Up => ("prime_up", p.rung.kbps()),
         Prime(p) => ("prime_down", p.rung.kbps()),
         _ => ("stay", 0),
     };
     crate::player::log(&format!(
         "abr: sample current={}kbps media={}kbps net={}kbps buf={} vbuf={}ms abuf={} \
-         dur={}ms prod={}pm n={} decision={} target={}kbps reason={:?}",
+         dur={}ms prod={}pm n={} decision={} target={}kbps complete={} reason={:?}",
         t.current.kbps(),
         sample.media_kbps(),
         sample.network_kbps(),
@@ -3478,16 +4334,16 @@ fn log_hls_abr_sample(
         t.delivery.samples,
         action,
         target,
+        u8::from(sample.completed()),
         t.reason,
     ));
 }
 
-/// **One line per segment for the §4 admission rule, on the CURRENT rung.**
+/// **One line per segment for exact finite-bag conservation on the current rung.**
 ///
-/// The rule decides — at the proposal and at validation, both against a CANDIDATE's byte count.
-/// This line is the same arithmetic asked about what is already playing, which is the question
-/// that needs no size prediction, and it is what made the rule gradeable against the estimators it
-/// replaced before it was allowed to replace them.
+/// It is the arithmetic the controller just used: the full current operating-point bag at actual
+/// response sizes. Candidate validation is logged separately from the candidate's own completed
+/// `(A,D,B_post)` evidence; no current response is rescaled into that candidate.
 ///
 /// The formatting itself lives on [`crate::abr::AdmissionReadout::log_line`], beside the numbers
 /// it prints and beside the test that pins the exact wire form — this function is only the
@@ -3514,10 +4370,11 @@ fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
         Some(Hls(R::LadderFloor)) => crate::player::ABR_WHY_LADDER_FLOOR,
         Some(Hls(R::RejectBackoff)) => crate::player::ABR_WHY_REJECT_BACKOFF,
         Some(Hls(R::StarvationHorizon)) => crate::player::ABR_WHY_STARVATION,
-        Some(Hls(R::NoSustainableTarget)) => crate::player::ABR_WHY_NO_TARGET,
         Some(Hls(R::EvidenceWindow)) => crate::player::ABR_WHY_EVIDENCE,
         Some(Hls(R::AtBestRung)) => crate::player::ABR_WHY_AT_BEST,
         Some(Hls(R::ReserveUnknown)) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
+        Some(Hls(R::DeadlineRollback)) => crate::player::ABR_WHY_DEADLINE_ROLLBACK,
+        Some(Hls(R::ResponseLimited)) => crate::player::ABR_WHY_RESPONSE_LIMITED,
     }
 }
 
@@ -3532,15 +4389,27 @@ fn remaining_playback_ms() -> i64 {
     (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
 }
 
-fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool>) {
+fn publish_hls_abr_action(
+    proposal: crate::abr::Proposal,
+    refreshing_same_request: bool,
+    committed: Option<bool>,
+) {
     use crate::abr::Direction::{Down, Up};
-    let action = match (proposal.direction, committed) {
-        (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
-        (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
-        (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
-        (Up, Some(true)) => crate::player::ABR_ACTION_COMMIT_UP,
-        (Down, Some(false)) => crate::player::ABR_ACTION_REJECT_DOWN,
-        (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
+    let action = if refreshing_same_request {
+        match committed {
+            None => crate::player::ABR_ACTION_PRIME_REFRESH,
+            Some(true) => crate::player::ABR_ACTION_COMMIT_REFRESH,
+            Some(false) => crate::player::ABR_ACTION_REJECT_REFRESH,
+        }
+    } else {
+        match (proposal.direction, committed) {
+            (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
+            (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
+            (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
+            (Up, Some(true)) => crate::player::ABR_ACTION_COMMIT_UP,
+            (Down, Some(false)) => crate::player::ABR_ACTION_REJECT_DOWN,
+            (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
+        }
     };
     SHARED.dg_abr_action.store(action, Ordering::Relaxed);
     SHARED
@@ -3556,13 +4425,14 @@ fn publish_hls_abr_action(proposal: crate::abr::Proposal, committed: Option<bool
 /// media playlist, two demux legs, the timeline, acceptance, the raster check) and a thirteenth
 /// added later would silently stop being measured. Drop cannot be forgotten.
 ///
-/// **What it is for.** The claim that a transaction's budget can be derived from the reserve
-/// (`T = B - A_i`) rests on the transaction's real cost, and this project has never measured it:
-/// the only figure anywhere is a *derived* 4600 ms in the host plant, which is a sum of two
-/// UPSHIFT deadlines and describes a two-segment shape a downshift does not have. Worse, neither
-/// deadline covers the control plane — `control.prime`, the master playlist and both
-/// `hls_cursor_next` calls sit outside every budget (`ff.rs`'s own note above the warm-up
-/// deadline says so) — so the leg most likely to dominate is the one nothing bounds.
+/// **What it was introduced for.** The claim that a transaction's budget can be derived from the
+/// reserve (`T = B - A_i`) rests on the transaction's real cost. Before this trace and the current
+/// end-to-end reserve clock, the only figure was a *derived* 4600 ms in the host plant: a sum of two
+/// upshift deadlines describing a two-segment shape a downshift did not have. Those old deadlines
+/// excluded `control.prime`, the master playlist and both `hls_cursor_next` calls. The live upshift
+/// now carries one playhead-funded reserve through those control legs and the first candidate-media
+/// phase, while this trace records their separate wall costs on every exit. A setup-bearing object
+/// and its optional ordinary continuation remain staged under that same grant until one verdict.
 ///
 /// **Why the drawdown is otherwise invisible.** The prime arm runs INLINE inside the loop that
 /// emits one `abr: sample` per iteration, so no sample is emitted between proposal and commit. A
@@ -3579,7 +4449,10 @@ struct TxTrace {
     prime_done_ms: Option<i64>,
     master_done_ms: Option<i64>,
     control_plane_ms: Option<i64>,
+    /// Acquisition of the structurally unique first object in the candidate session.
     warmup_acq_ms: Option<i64>,
+    /// Acquisition of the first ordinary object from that same already-running encoder. Present
+    /// only when the boundary object was funded but did not itself satisfy the steady law.
     graded_acq_ms: Option<i64>,
     buf_start_ms: Option<i64>,
     /// **The deadline the warm-up leg was actually granted, ms.** Without it a captured log cannot
@@ -3587,8 +4460,8 @@ struct TxTrace {
     /// not a statement the corpus can make about itself. `None` on every exit path that never
     /// reached the media fetch.
     warmup_dl_ms: Option<i64>,
-    /// Acquisition of the CURRENT stream's segment immediately before the transaction — the
-    /// `resume_cost` the viability claim's admission rule would divide the reserve against.
+    /// Acquisition of the current stream's segment immediately before the transaction. Retained
+    /// as transaction context; the live exploration budget itself comes from the full bag runway.
     cur_acq_before_ms: i64,
     net_kbps: u32,
     fast_kbps: u32,
@@ -3598,31 +4471,253 @@ struct TxTrace {
     from_kbps: u32,
     to_kbps: u32,
     outcome: &'static str,
-    /// Elapsed at the moment the commit/reject was DECIDED, which is where the unrefilled cost
-    /// ends. `total` below runs to scope end and so also contains the post-commit feed of the
-    /// staged candidate segments — that blocks on `aq_push` against a full queue, so it is
-    /// backpressure, not transaction cost, and charging it as one over-states the cost by
-    /// several seconds. The two are logged separately for exactly that reason.
+    /// Elapsed at the moment the commit/reject was DECIDED. `total` below runs to scope end and so
+    /// can also contain the single post-decision feed of every staged candidate object.
     decided_ms: Option<i64>,
-    /// The reserve at the decision, before any candidate segment is fed.
+    /// The reserve at the decision. This precedes every candidate feed.
     buf_decided_ms: Option<i64>,
-    /// The post-commit feed of the staged candidate segments, which blocks on `aq_push` against a
-    /// full queue. This is BACKPRESSURE, not transaction cost: it is time the reserve is being
-    /// spent down at exactly the rate playback consumes it, and the segments being pushed are
-    /// already in hand. It used to be inside `decided_ms` — which is why the first published
-    /// figure for an upshift was 9563 ms against a true 3065 ms.
+    /// Sum of every candidate feed phase. Feeding can block on `aq_push` against a full queue;
+    /// this is BACKPRESSURE, not acquisition cost: the media is already in hand and replenishes
+    /// the reserve as it lands. It used to be folded into `decided_ms` — which is why the first
+    /// published figure for an upshift was 9563 ms against a true 3065 ms.
     feed_ms: Option<i64>,
     /// The reserve after the feed, so the pre/post pair brackets what the staged segments added.
     buf_fed_ms: Option<i64>,
-    /// The graded candidate segment's byte count. Pairs with `graded=` (its acquisition) to make
-    /// the ONE observation a transaction adds to the controller's window replayable from the log.
-    /// Without it a trace cannot reconstruct the window at all: `abr: window` lines come from
-    /// current-stream segments, and `observe_candidate` adds a sample none of them describes.
+    /// The optional ordinary candidate acquisition after a setup-bearing boundary. It remains
+    /// absent when the boundary object itself satisfies the steady conservation law.
     graded_bytes: Option<u64>,
+    /// The completed acquisition on which the final candidate verdict rests: the boundary object
+    /// when it is directly admissible, otherwise the staged ordinary object. The offline
+    /// conservation grader needs all three facts because a reset otherwise hides that `(A_i,D_i)`
+    /// observation.
+    candidate_acq_ms: Option<i64>,
+    candidate_bytes: Option<u64>,
+    candidate_dur_ms: Option<i64>,
     /// The candidate rendition's DECLARED rate, kbit/s, from its own master playlist. `None`
     /// (logged `-1`) on every exit path that never got that far -- which is not zero and must not
     /// read as a rendition that declares nothing.
     declared_kbps: Option<u32>,
+}
+
+/// Lifetime marker for one exploratory upshift. The transaction's own deadline limits its spend
+/// to `B-max(R_s,D_next)`; the published retained reserve is diagnostic and prevents an already-held
+/// clock from restarting mid-transaction. It is not a second main-thread pause threshold.
+struct HlsTrialReserve {
+    token: u64,
+}
+
+impl HlsTrialReserve {
+    fn arm(runway_ms: i64, expected_user_sequence: u64) -> Option<Self> {
+        SHARED
+            .arm_hls_trial_at(runway_ms, expected_user_sequence)
+            .map(|token| Self { token })
+    }
+
+    fn token(&self) -> u64 {
+        self.token
+    }
+}
+
+impl Drop for HlsTrialReserve {
+    fn drop(&mut self) {
+        // A teardown may already have revoked this generation. A stale drop must never clear a
+        // newer session's trial reserve, which is why finish is token-checked.
+        let _ = SHARED.finish_hls_trial(self.token);
+    }
+}
+
+/// Exclusive ownership of one automatic actuator while its blocking PMS/native work runs outside
+/// the playback-clock mutex.  Acquisition and commit authorization are synchronized state-machine
+/// transitions; dropping the lease is the single rollback/finish edge on every return path.
+struct HlsAutomaticLease {
+    token: u64,
+}
+
+impl HlsAutomaticLease {
+    fn begin(
+        kind: crate::player::HlsAutomaticTransition,
+        expected_user_sequence: u64,
+    ) -> Option<Self> {
+        SHARED
+            .begin_hls_automatic_transition_at(kind, expected_user_sequence)
+            .map(|token| Self { token })
+    }
+
+    /// Linearization point for a route-changing Original result.  A user hold or native-clock
+    /// transition which won the mutex first makes the result retainable evidence, not an action.
+    fn authorize_commit(&self) -> bool {
+        SHARED.authorize_hls_automatic_transition_commit(self.token)
+    }
+
+    fn token(&self) -> u64 {
+        self.token
+    }
+}
+
+impl Drop for HlsAutomaticLease {
+    fn drop(&mut self) {
+        // Session teardown revokes every outstanding token before joining the worker; in that
+        // ordering `false` is the expected proof that this stale completion owns nothing.
+        let _ = SHARED.finish_hls_automatic_transition(self.token);
+    }
+}
+
+/// Fence the irreversible half of a candidate transition: arm immediately before the first
+/// candidate AU may be queued, then hold until controller/route ownership has committed or the old
+/// cursor has been realigned after a recoverable rejection. While armed, the main-thread pump
+/// cannot resume an internal clock from candidate tails combined with the previous actuator's
+/// recovery epoch.
+///
+/// Armed is deliberately fail-closed: an ordinary drop, including unwinding, leaves the generation
+/// odd until queue teardown resets it. Only [`Self::settle`] may release the fence, and callers do
+/// that only after the candidate commits or the old cursor is proven realigned with every published
+/// candidate AU.
+struct HlsCandidateTransition {
+    generation: u64,
+}
+
+impl HlsCandidateTransition {
+    fn arm(automatic_token: u64) -> Result<Self, HlsExit> {
+        Self::arm_for(Some(automatic_token))
+    }
+
+    #[cfg(test)]
+    fn arm_unowned_for_test() -> Result<Self, HlsExit> {
+        Self::arm_for(None)
+    }
+
+    fn arm_for(automatic_token: Option<u64>) -> Result<Self, HlsExit> {
+        match SHARED.begin_hls_candidate_transition(automatic_token) {
+            Ok(generation) => Ok(Self { generation }),
+            Err(crate::player::HlsClockFenceError::Stopping) => Err(HlsExit::Aborted),
+            Err(crate::player::HlsClockFenceError::Overlap) => {
+                Err(HlsExit::Failed("overlapping HLS candidate publication"))
+            }
+            Err(crate::player::HlsClockFenceError::Exhausted) => {
+                Err(HlsExit::Failed("HLS candidate generation exhausted"))
+            }
+            Err(crate::player::HlsClockFenceError::Superseded) => Err(HlsExit::Failed(
+                "HLS candidate automatic lease was superseded",
+            )),
+        }
+    }
+
+    fn settle(self) {
+        let settled = SHARED.settle_hls_candidate_transition(self.generation);
+        debug_assert!(
+            settled,
+            "candidate generation changed inside its sole writer"
+        );
+    }
+}
+
+fn settle_candidate_transition(transition: &mut Option<HlsCandidateTransition>) {
+    if let Some(transition) = transition.take() {
+        transition.settle();
+    }
+}
+
+/// A recovery downshift restores the picture; an upshift only explores quality.  Starting the
+/// latter while the native clock is already held makes its private transaction latency part of
+/// the visible rebuffer even though the recovery media is already in hand.  Order those two
+/// operations by what they do: finish the active recovery edge first, then let ordinary measured
+/// exploration run.  No duration or reserve threshold is involved.
+fn hls_quality_trial_may_start(
+    direction: crate::abr::Direction,
+    rebuffer_requested: bool,
+    rebuffering: bool,
+    user_paused: bool,
+) -> bool {
+    !user_paused
+        && (direction == crate::abr::Direction::Down || !(rebuffer_requested || rebuffering))
+}
+
+/// A source-mode recovery verdict is a higher-level actuator decision than an HLS rung proposal.
+/// Once latched, it takes the next quiescent media boundary regardless of whether the rung
+/// controller happened to answer `Stay` or `Prime` there. Returning the pending proposal makes
+/// its cancellation explicit; otherwise it would survive into a source reload or, worse, let a
+/// stale Original verdict cross a successful change of HLS operating point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LatchedOriginalRecovery {
+    Wait,
+    Switch {
+        kbps: u32,
+        cancel: Option<crate::abr::Proposal>,
+    },
+}
+
+fn latched_original_recovery(
+    recover_kbps: u32,
+    fresh_probe_kbps: Option<u32>,
+    decision: crate::abr::Decision,
+    encoder_cleanup_ready: bool,
+    buffered_ms: Option<i64>,
+    media_duration_ms: u32,
+) -> LatchedOriginalRecovery {
+    // A fresh successful source observation is already sitting on a completed/fed HLS boundary.
+    // It must be eligible on THIS call, not copied into a local latch which can only be consumed
+    // after another HLS GET.  PMS may rebind the shared Streaming Resource to the raw Part as a
+    // side effect of that probe; requiring one more old-session segment then makes the transition
+    // depend on a resource the probe itself may have invalidated.
+    let recover_kbps = fresh_probe_kbps.unwrap_or(recover_kbps);
+    if recover_kbps == 0
+        || !encoder_cleanup_ready
+        || !buffered_ms.is_some_and(|ms| ms >= i64::from(media_duration_ms))
+    {
+        return LatchedOriginalRecovery::Wait;
+    }
+    LatchedOriginalRecovery::Switch {
+        kbps: recover_kbps,
+        cancel: match decision {
+            crate::abr::Decision::Stay => None,
+            crate::abr::Decision::Prime(proposal) => Some(proposal),
+        },
+    }
+}
+
+/// Publish the worker -> main-thread source handoff only while this worker still owns both the AU
+/// queue and the active PMS route.  This is the source-mode twin of [`publish_hls_candidate`]:
+/// teardown and publication linearize on AQ, then route identity is checked under ACTIVE.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OriginalRecoveryPublication {
+    Published,
+    Busy,
+    Aborted,
+    RouteMoved,
+    ClockMoved,
+}
+
+fn publish_original_recovery(
+    aq: *mut AuQueue,
+    control: &crate::route::HlsAbrControl,
+    active_route: &crate::route::WorkerTicket,
+    recover_kbps: u32,
+    lease: &HlsAutomaticLease,
+) -> OriginalRecoveryPublication {
+    // This mutex decision is the source-transition linearization point. The route publication
+    // below has its own ticket/serial state machine; a later user Pause is ordered after this
+    // authorization and is therefore carried as viewer intent across the resulting reload.
+    if !lease.authorize_commit() {
+        return OriginalRecoveryPublication::ClockMoved;
+    }
+    crate::aq::aq_if_not_aborted(aq, || {
+        match control.request_original_recovery(
+            active_route,
+            recover_kbps,
+            SHARED.playpos_ns.load(Ordering::Relaxed).max(0),
+        ) {
+            crate::route::AutomaticIntentResult::Accepted => {
+                SHARED.dg_abr_action.store(
+                    crate::player::ABR_ACTION_RECOVER_ORIGINAL,
+                    Ordering::Relaxed,
+                );
+                OriginalRecoveryPublication::Published
+            }
+            crate::route::AutomaticIntentResult::Busy => OriginalRecoveryPublication::Busy,
+            crate::route::AutomaticIntentResult::Stale => OriginalRecoveryPublication::RouteMoved,
+        }
+    })
+    .unwrap_or(OriginalRecoveryPublication::Aborted)
 }
 
 impl TxTrace {
@@ -3661,6 +4756,9 @@ impl TxTrace {
             feed_ms: None,
             buf_fed_ms: None,
             graded_bytes: None,
+            candidate_acq_ms: None,
+            candidate_bytes: None,
+            candidate_dur_ms: None,
             declared_kbps: None,
         }
     }
@@ -3686,10 +4784,11 @@ impl TxTrace {
         self.warmup_dl_ms = Some(i64::try_from(budget.as_millis()).unwrap_or(i64::MAX));
     }
 
-    /// The post-commit feed, measured from its own start so it is never confused with the
-    /// decision that preceded it.
+    /// Add the post-decision feed phase, measured from its own start. All staged candidate objects
+    /// cross into playback together under the committed media owner.
     fn mark_feed(&mut self, started: std::time::Instant) {
-        self.feed_ms = Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX));
+        let elapsed = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        self.feed_ms = Some(self.feed_ms.unwrap_or(0).saturating_add(elapsed));
         self.buf_fed_ms = hls_buffer_snapshot(None).buffered_ms();
     }
 
@@ -3705,10 +4804,34 @@ impl TxTrace {
         }
     }
 
+    fn mark_candidate_evidence(
+        &mut self,
+        output: &HlsSegmentOutput,
+        duration: std::time::Duration,
+    ) {
+        self.candidate_acq_ms =
+            Some(i64::try_from(output.transfer.total_us / 1_000).unwrap_or(i64::MAX));
+        self.candidate_bytes = Some(output.transfer.bytes);
+        self.candidate_dur_ms = Some(i64::try_from(duration.as_millis()).unwrap_or(i64::MAX));
+    }
+
+    /// Freeze the user-visible decision cost before any post-decision queue backpressure.  This
+    /// deliberately does NOT label the transaction committed: feeding the staged media and the
+    /// controller's atomic reset+seed are still fallible after this point.
+    fn mark_decided(&mut self) {
+        if self.decided_ms.is_none() {
+            self.decided_ms = Some(self.elapsed_ms());
+            self.buf_decided_ms = hls_buffer_snapshot(None).buffered_ms();
+        }
+    }
+
+    /// Label the path only when the outcome named here has really happened.  Rejection paths call
+    /// this at their decision point; a commit first calls `mark_decided`, performs the fallible
+    /// feed and atomic controller transition, and reaches this method only after the new finite
+    /// bag has actually been seeded.
     fn finish(&mut self, outcome: &'static str) {
+        self.mark_decided();
         self.outcome = outcome;
-        self.decided_ms = Some(self.elapsed_ms());
-        self.buf_decided_ms = hls_buffer_snapshot(None).buffered_ms();
     }
 
     fn elapsed_ms(&self) -> i64 {
@@ -3734,7 +4857,7 @@ impl Drop for TxTrace {
              graded={}ms warmup_dl={}ms buf_start={}ms buf_decided={}ms feed={}ms buf_fed={}ms \
              buf_end={}ms \
              cur_acq_before={}ms net={}kbps fast={}kbps slow={}kbps unc={}pm declared={}kbps \
-             graded_bytes={}",
+             graded_bytes={} candidate_acq={}ms candidate_bytes={} candidate_dur={}ms",
             self.direction,
             self.from_kbps,
             self.to_kbps,
@@ -3760,6 +4883,9 @@ impl Drop for TxTrace {
             self.unc_pm,
             self.declared_kbps.map(i64::from).unwrap_or(-1),
             self.graded_bytes.map(|b| b as i64).unwrap_or(-1),
+            opt(self.candidate_acq_ms),
+            self.candidate_bytes.map(|b| b as i64).unwrap_or(-1),
+            self.candidate_dur_ms.unwrap_or(-1),
         ));
     }
 }
@@ -3767,13 +4893,15 @@ impl Drop for TxTrace {
 /// **`cause` is a judgement each call site makes about its own failure, and it is load-bearing.**
 ///
 /// N11's backoff refuses to re-prime a rung that just failed. That is right when the failure was
-/// ABOUT the rung — no playlist, a missed deadline, PMS refusing this rung's ceiling
+/// ABOUT the rung — a completed-but-unfunded response, PMS refusing this rung's ceiling
 /// (`route::PrimeRefusal::Rung`), an acceptance test the candidate did not pass — and wrong when it
 /// was about the session: `reserve_unreadable` is the audio lane falling silent at a seek,
 /// `origin_changed` is the route moving underneath, and `prime_session_moved` is either of those
 /// caught one branch earlier, before a round trip was spent. **"A refused prime" is about the rung
 /// only when the server actually refused it**, which is why `prime` reports which of its four exits
 /// it took rather than handing back a bare failure for this function to guess at.
+/// A missed absolute deadline is a third class: it is common censored budget evidence, because no
+/// complete response exists whose size could order this rung against another.
 /// Blocking a good rung for either would be the guard doing harm in the one direction that has no
 /// recovery path, so the classification lives here, beside the `tx.finish` string that already
 /// names the same event for the transaction log.
@@ -3783,42 +4911,190 @@ fn reject_hls_abr(
     cause: crate::abr::RejectCause,
     now_ms: u64,
 ) {
+    let refreshing_same_request = proposal.rung == controller.current();
     controller.reject(proposal, cause, now_ms);
-    publish_hls_abr_action(proposal, Some(false));
+    publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
 }
 
-/// Sample the actual source file off-thread. The whole observation crosses the channel — bytes and
-/// active duration as well as the rate — because the estimator weights a measurement by how much
-/// of the link it actually exercised, and a rate alone cannot say.
-fn start_original_probe(
+/// Candidate rejection after a transaction has actually run. Freeze the transaction's decision
+/// snapshot before publishing the controller result so the tx diagnostic and action describe the
+/// same instant.
+fn reject_hls_abr_after_transaction(
+    controller: &mut crate::abr::Controller,
+    proposal: crate::abr::Proposal,
+    cause: crate::abr::RejectCause,
+    tx: &mut TxTrace,
+    now_ms: u64,
+) {
+    // Freeze one reserve snapshot and use it for both the controller certificate and the tx log.
+    // Two adjacent live reads can differ while playback advances and would make the diagnostic
+    // line disagree with the quantity that actually released the next experiment.
+    tx.mark_decided();
+    let refreshing_same_request = proposal.rung == controller.current();
+    controller.reject(proposal, cause, now_ms);
+    publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
+}
+
+/// Every ownership transition a fully-fed candidate can take.
+///
+/// This is synchronized with teardown by the video AU queue's abort mutex, not merely sampled
+/// before publication. `Active` transfers the candidate to the route and hands the previous
+/// encoder back to the caller as an explicit cleanup obligation. No losing arm changes controller,
+/// route or worker-local encoder, so the transaction still owns and must abandon its candidate.
+#[derive(Debug, PartialEq, Eq)]
+enum CandidatePublication {
+    Aborted,
+    SessionEnded,
+    RouteMoved,
+    ControllerRejected,
+    Active { previous: String },
+}
+
+fn publish_hls_candidate(
+    aq: *mut AuQueue,
     control: &crate::route::HlsAbrControl,
-    tx: std::sync::mpsc::Sender<crate::abr::CapacityObservation>,
-) -> bool {
-    let control = control.clone();
-    crate::task::spawn_small("abr-original-probe", move || {
-        let probe = control.probe_original();
-        let observation = probe
-            .map(|p| crate::abr::CapacityObservation {
-                kbps: u32::try_from(p.kbps()).unwrap_or(u32::MAX),
-                bytes: u64::try_from(p.bytes).unwrap_or(0),
-                active_us: u64::try_from(p.elapsed.as_micros()).unwrap_or(u64::MAX),
-                completed: p.target_reached,
-            })
-            .unwrap_or(crate::abr::CapacityObservation {
-                kbps: 0,
-                bytes: 0,
-                active_us: 0,
-                completed: false,
-            });
-        let _ = tx.send(observation);
+    controller: &mut crate::abr::Controller,
+    active_route: &mut crate::route::WorkerTicket,
+    candidate: &crate::route::PrimedHls,
+    proposal: crate::abr::Proposal,
+    sample: crate::abr::SegmentSample,
+    variant: crate::abr::ObservedHlsVariant,
+    commit_now_ms: u64,
+) -> CandidatePublication {
+    // The route comparison and the worker-local replacement describe the same transition, but
+    // borrowing the live lease for both would also make Rust model them as overlapping reads and
+    // writes. Freeze the expected owner before entering either serialization boundary; the route
+    // still validates it while holding ACTIVE, and only the accepted callback mutates the local
+    // owner.
+    let expected_route = active_route.clone();
+    crate::aq::aq_if_not_aborted(aq, || {
+        match control.commit_transition(
+            &expected_route,
+            candidate,
+            proposal,
+            (variant, sample.network_kbps()),
+            || {
+                controller
+                    .commit_candidate(proposal, sample, variant, commit_now_ms)
+                    .then(|| expected_route.encoder().to_owned())
+            },
+        ) {
+            Ok((previous, replacement_route)) => {
+                *active_route = replacement_route;
+                CandidatePublication::Active { previous }
+            }
+            Err(crate::route::HlsCommitRefusal::Session) => CandidatePublication::SessionEnded,
+            Err(crate::route::HlsCommitRefusal::RouteMoved) => CandidatePublication::RouteMoved,
+            Err(crate::route::HlsCommitRefusal::TransitionRejected) => {
+                CandidatePublication::ControllerRejected
+            }
+        }
     })
+    .unwrap_or(CandidatePublication::Aborted)
+}
+
+/// Translate a transport exit without pretending every failed request says something about the
+/// rendition. Only an exhausted physical deadline is censored candidate evidence. Abort, parse,
+/// HTTP and session failures are circumstances; replaying them may be undesirable operationally,
+/// but a larger reserve does not logically validate or invalidate the actuator.
+fn abr_reject_for_hls_exit(exit: HlsExit) -> crate::abr::RejectCause {
+    match exit {
+        HlsExit::PrimeExpired | HlsExit::StallAbort(_) => crate::abr::RejectCause::Censored,
+        HlsExit::Aborted | HlsExit::NotReady | HlsExit::Failed(_) => {
+            crate::abr::RejectCause::Circumstance
+        }
+    }
+}
+
+/// Classify a completed candidate from what its RESPONSE proved, never from the request label.
+/// A no-gain response is PMS underfill: even when the request actuator differs, its smaller output
+/// does not order that actuator against lower request ceilings. Treating it as structural walked
+/// the whole ladder and allocated one physical encoder per rung on the remote PMS.
+fn abr_reject_for_candidate_result(
+    raster_ready: bool,
+    quality_improves: bool,
+    verdict: crate::abr::CandidateVerdict,
+) -> crate::abr::RejectCause {
+    if !raster_ready {
+        return crate::abr::RejectCause::StructuralAtOrBelow;
+    }
+    if !quality_improves {
+        return crate::abr::RejectCause::ResponseUnchanged;
+    }
+    match verdict {
+        // A setup-bearing verdict is consumed by the serial continuation path before rejection.
+        // If a future caller leaks it here, retain only an actuator-specific funding frontier;
+        // it is explicitly not steady `A>D` evidence.
+        crate::abr::CandidateVerdict::SetupBearing => crate::abr::RejectCause::Candidate,
+        crate::abr::CandidateVerdict::Unsustainable => {
+            crate::abr::RejectCause::CompletedUnsustainable
+        }
+        crate::abr::CandidateVerdict::Unfunded => crate::abr::RejectCause::Candidate,
+        crate::abr::CandidateVerdict::Incomplete | crate::abr::CandidateVerdict::ReserveUnknown => {
+            crate::abr::RejectCause::Circumstance
+        }
+        crate::abr::CandidateVerdict::Ready => {
+            unreachable!("a ready candidate can only be rejected by response geometry")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HlsCandidateDisposition {
+    Commit,
+    Discard {
+        cause: crate::abr::RejectCause,
+        outcome: &'static str,
+    },
+}
+
+fn hls_candidate_requires_rung_box(
+    proposal: crate::abr::Proposal,
+    reserve_policy: crate::abr::ReservePolicy,
+) -> bool {
+    !(proposal.direction == crate::abr::Direction::Down
+        && proposal.rung.at_floor()
+        && reserve_policy == crate::abr::ReservePolicy::TerminalFloor)
+}
+
+fn hls_candidate_disposition(
+    raster_ready: bool,
+    quality_improves: bool,
+    verdict: crate::abr::CandidateVerdict,
+) -> HlsCandidateDisposition {
+    if raster_ready && quality_improves && verdict == crate::abr::CandidateVerdict::Ready {
+        HlsCandidateDisposition::Commit
+    } else {
+        let outcome = if !raster_ready {
+            "raster_refused"
+        } else if !quality_improves {
+            "no_quality_gain"
+        } else {
+            "not_ready_discarded"
+        };
+        HlsCandidateDisposition::Discard {
+            cause: abr_reject_for_candidate_result(raster_ready, quality_improves, verdict),
+            outcome,
+        }
+    }
+}
+
+fn original_probe_observation(
+    probe: crate::curlio::ThroughputSample,
+) -> crate::abr::CapacityObservation {
+    crate::abr::CapacityObservation {
+        kbps: u32::try_from(probe.kbps()).unwrap_or(u32::MAX),
+        bytes: u64::try_from(probe.bytes).unwrap_or(0),
+        active_us: u64::try_from(probe.elapsed.as_micros()).unwrap_or(u64::MAX),
+        completed: probe.target_reached,
+    }
 }
 
 fn hls_demux(
     origin: &crate::plex::Origin,
     path: &str,
     acodec: &str,
-    abr: Option<(crate::route::HlsAbrControl, String)>,
+    abr: Option<(crate::route::HlsAbrControl, crate::route::WorkerTicket)>,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
@@ -3834,6 +5110,8 @@ fn hls_demux(
         SHARED
             .dg_abr_kbps
             .store(i64::from(control.initial_rung.kbps()), Ordering::Relaxed);
+        SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
+        SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
@@ -3843,19 +5121,22 @@ fn hls_demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
-    let mut cursor = hls_cursor_open(origin, path, aq, hs, true)?;
+    let mut cursor = hls_cursor_open(origin, path, aq, hs, true, None)?;
+    if abr.is_some() {
+        SHARED.dg_abr_declared_kbps.store(
+            i64::try_from(cursor.declared_bps / 1_000).unwrap_or(i64::MAX),
+            Ordering::Relaxed,
+        );
+    }
     let mut timeline = crate::hls::SegmentTimeline::default();
-    let (probe_tx, probe_rx) = std::sync::mpsc::channel::<crate::abr::CapacityObservation>();
     // The origin of the visible-switch decay clock: the main thread's `since_last_ms` capture
     // is a value AS OF NOW, and this is now. `OriginalRecovery::advance_to` in the segment loop
     // moves it forward from here.
     let history_since = std::time::Instant::now();
-    // **The controller's ONE clock, named once.** `Controller::observe`/`commit`/`reject` each
-    // take the caller's wall time, and they must all be the same reading of the same origin: the
-    // dwell interval is `commit_instant - previous_commit_instant`, and the reject block's clock
-    // release is `reject_instant + refill`. A transaction runs a control-plane round trip and two
-    // fetches between the `observe` that proposed and the `commit` or `reject` that closes it, so
-    // reusing the proposal's reading for either would date the guard to before the work it prices.
+    // **The controller's ONE clock, named once.** `Controller::observe`/`commit`/`reject` share a
+    // monotonic origin so logs and switch-history decay describe the same transaction. Failure
+    // release is not time-based: it reads the newly observed surplus, and waiting alone changes
+    // no certificate.
     let now_ms = || history_since.elapsed().as_millis() as u64;
     let mut adaptive = abr.map(|(control, encoder)| {
         let initial = control.initial_rung;
@@ -3878,6 +5159,20 @@ fn hls_demux(
                 .unwrap_or_else(|| "none".to_string()),
             advanced_ms,
         ));
+        // **Say it when the recovery does not exist at all.** `abr: probe withheld` is emitted
+        // from inside `probe_due`, which lives inside the gate — so a gate that was never built
+        // produces a log byte-identical to a healthy playback that simply never needed Original,
+        // and there is no third state to tell them apart. Device, 2026-08-30: ~1 600 lines with
+        // no probe, no reason and no `abr: mode`, and the only way anyone found it was by
+        // noticing what was ABSENT. One line at construction is the whole fix for that.
+        if !control.can_recover_original() {
+            crate::player::log(&format!(
+                "abr: no Original recovery for this playback (candidate={} source={}kbps) — \
+                 HLS is the ceiling until the next resolve",
+                u8::from(control.has_original_candidate()),
+                control.original_source_kbps(),
+            ));
+        }
         let recovery = control
             .can_recover_original()
             .then(|| {
@@ -3902,8 +5197,11 @@ fn hls_demux(
         // before/after a device run can show. `abr: steady` on either side of the seek carries the
         // matching slow/fast/unc/n. Nothing is repaired here; that is increment I8.
         let pin = crate::dev::abr_pin();
-        let controller =
+        let mut controller =
             crate::abr::Controller::starting_at(initial, prior, catalog).pinned_to(pin);
+        if let Some((variant, evidence_kbps)) = control.initial_observed {
+            controller.observe_active_variant(variant, evidence_kbps);
+        }
         let seeded = controller.telemetry();
         crate::player::log(&format!(
             "abr: seed rung={}kbps prior={} slow={}kbps fast={}kbps unc={}pm n={} pin={}",
@@ -3919,52 +5217,58 @@ fn hls_demux(
                 .unwrap_or_else(|| "none".to_string()),
         ));
         (
-            control, encoder, controller, recovery, false,
+            control, encoder, controller, recovery,
             // A latched `Recover` verdict, waiting for a quiescent segment to act on.
             0u32,
         )
     });
-    // A pause is the one gap where wall-clock time passes with nothing measured, so it is the one
-    // place an estimate really goes stale — backpressure with a full buffer is the healthy case and
-    // must not be aged. Tracked here because the demux worker sees the flag but not the event.
-    let mut paused_since: Option<std::time::Instant> = None;
+    // Consume native-accepted pause EVENTS, not a sampled bool. The worker can spend a complete
+    // Pause→Resume cycle blocked in aq_push/network I/O and must still age the first post-resume
+    // estimate by the exact cumulative interval.
+    let mut pause_cursor =
+        crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
     // Last-logged recovery refusal, so a steady one costs one line instead of one per segment.
     // Lives here rather than on `OriginalRecovery` because it is a property of the LOG, not of the
     // gate — and the gate is rebuilt on a seek while this loop is not.
     let mut last_probe_block: Option<crate::abr::ProbeBlock> = None;
+    // PMS acknowledges a transcode stop before its worker finishes either half of the lifecycle.
+    // The route ledger drives physical ping then exact logical-resource close; this latch keeps a
+    // potentially long server cleanup to one waiting line and one release line.
+    let mut cleanup_wait_logged = false;
+    // Exactly one completed object in a fresh cursor carries PMS encoder/session startup. It is
+    // buffered and measured, but the repeatable acquisition window begins with the next object;
+    // see `Controller::observe_session_boundary`.
+    let mut session_boundary_pending = adaptive.is_some();
 
-    while let Some(segment) = hls_cursor_next(&mut cursor, aq, hs)? {
+    'segments: while let Some(segment) = hls_cursor_next(&mut cursor, aq, hs, None)? {
         let mut clock = timeline
             .begin(segment.duration)
             .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
-        // **Arm the abort rule for the segment that is feeding the picture.** Both conditions are
-        // the guard's own preconditions rather than policy: a reserve that is not knowable has no
-        // left-hand side to compare against (`BufferSnapshot::buffered_ms`'s `None` — the audio
-        // lane silent after an open or a seek), and at the ladder floor there is no cheaper rung
-        // to run to, so an abort would re-fetch the same bytes and buy a loop instead of a
-        // picture. That second one is R12's terminal case, stated where it is enforced.
+        // **Arm the terminal guard only while the clock is running.** During an existing internal
+        // hold the response is rebuilding reserve, not spending it, and abandoning that response
+        // would make the depleted state absorbing. An unreadable reserve has no boundary to arm.
+        // Above the floor, a later physical B=0 hold abandons the oversized object; at the floor
+        // the same event keeps reading because no cheaper response exists.
         let stall_guard = adaptive.as_ref().and_then(|state| {
-            let controller = &state.2;
-            if controller.current().at_floor() {
-                return None;
-            }
-            hls_buffer_snapshot(None)
-                .buffered_ms()
-                .and_then(StallGuard::arm)
+            arm_active_stall_guard(
+                hls_buffer_snapshot(None).buffered_ms(),
+                state.2.current().at_floor(),
+                SHARED.hls_rebuffering.load(Ordering::Acquire),
+            )
         });
-        // **An abort is not a failure and not a delivery — it is a MEASUREMENT that arrives
-        // instead of a segment.** The segment goes back on the cursor unconsumed, nothing is fed
-        // and the content timeline does not advance (we delivered no media); what continues is the
-        // ordinary sample -> observe -> transact path below, which is the entire point. The
-        // controller only ever decides between segments, so the fetch that would have stalled for
-        // 72 s is converted into the one thing it was withholding: a decision.
+        // **An abort is not a failure and not a delivery — it is the observed terminal boundary
+        // arriving instead of a segment.** The segment goes back on the cursor unconsumed,
+        // nothing is fed and the content timeline does not advance (we delivered no media); what
+        // continues is the ordinary censored-event -> transact path below. The controller only
+        // ever decides between segments, so the fetch that already exhausted the picture's
+        // reserve is converted into the one thing it was withholding: a recovery decision.
         //
-        // **What it must NOT do is enter the capacity estimate as a completed transfer.** An abort
-        // fires early by construction, so its bytes are the receive buffer draining rather than the
-        // link — device-measured `bytes=1448 ... at 42277kbps` while the shaper held the link at
-        // 500 kbps. Entered as complete it kept `conservative_kbps` near 16 Mbit/s, so every
-        // downshift the controller correctly decided to make picked a target 30x too dear. See
-        // `SegmentSample::abandoned`.
+        // **What it must NOT do is enter the capacity estimate as a completed transfer.** The
+        // response is incomplete by construction, so its bytes may be a receive-buffer burst or
+        // a PMS JIT production interval rather than path service — device-measured
+        // `bytes=1448 ... at 42277kbps` while the shaper held the link at 500 kbps. Entered as
+        // complete it kept `conservative_kbps` near 16 Mbit/s, so every correct downshift picked a
+        // target 30x too dear. See `SegmentSample::abandoned`.
         let mut fetch_abandoned = false;
         let output = match unsafe {
             hls_demux_segment(
@@ -3974,27 +5278,20 @@ fn hls_demux(
                 aq,
                 hs,
                 acodec,
-                None,
+                ReserveDeadlineState::new(None, false),
                 stall_guard,
             )
         } {
             Ok(output) => output,
             Err(HlsExit::StallAbort(transfer)) => {
                 crate::player::log(&format!(
-                    "abr: stall abort seq={} bytes={} of {}ms reserve at {}kbps — abandoning the \
-                     fetch so the rung can be decided",
+                    "abr: stall abort seq={} bytes={} active={}ms reserve={}ms censored=1 \
+                     cause=terminal_reserve — abandoning the incomplete fetch so a cheaper rung \
+                     can be decided",
                     segment.sequence,
                     transfer.bytes,
+                    transfer.active_us / 1_000,
                     stall_guard.map(|g| g.reserve_ms_at_start).unwrap_or(-1),
-                    crate::abr::SegmentSample::new(
-                        transfer.bytes,
-                        transfer.active_us,
-                        transfer.total_us,
-                        1,
-                        hls_buffer_snapshot(None),
-                    )
-                    .map(|s| i64::from(s.network_kbps()))
-                    .unwrap_or(-1),
                 ));
                 cursor.pending.push_front(segment.clone());
                 fetch_abandoned = true;
@@ -4012,11 +5309,14 @@ fn hls_demux(
         let delivered = !output.aus.is_empty();
         if delivered {
             hls_feed_segment(&output, aq, aqa)?;
+            // A recovery epoch accepts only complete media from the stream that owns playback.
+            // Candidate acquisitions are deliberately excluded below: until commit they are not
+            // the process that will have to sustain the resumed clock.
+            SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
             timeline.commit(clock);
         }
 
-        let Some((control, active_encoder, controller, recovery, probe_inflight, recover_kbps)) =
-            adaptive.as_mut()
+        let Some((control, active_encoder, controller, recovery, recover_kbps)) = adaptive.as_mut()
         else {
             continue;
         };
@@ -4024,7 +5324,7 @@ fn hls_demux(
         if let Some(gate) = recovery.as_mut() {
             gate.advance_to(now_ms());
         }
-        let Some(sample) = hls_segment_sample(&output, segment.duration).map(|s| {
+        let Some(mut sample) = hls_segment_sample(&output, segment.duration).map(|s| {
             if fetch_abandoned {
                 s.abandoned()
             } else {
@@ -4034,24 +5334,97 @@ fn hls_demux(
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
+        if delivered {
+            if let Some(variant) = crate::abr::ObservedHlsVariant::new(
+                cursor.declared_bps,
+                output.video_width,
+                output.video_height,
+            ) {
+                controller.observe_active_variant(variant, sample.network_kbps());
+                control.observe_active_variant(active_encoder, variant, sample.network_kbps());
+            }
+        }
+        // One state-driven cleanup observation per completed HLS quantum at most. It performs no
+        // network I/O on this demux thread: the route coalesces a background physical ping and
+        // exact logical-resource close, and releases only after both are reconciled. The snapshot
+        // governs all quality/source experiments decided from THIS sample; an asynchronous release
+        // is consumed next segment.
+        let encoder_cleanup_ready = if delivered && sample.completed() {
+            control.observe_encoder_cleanup()
+        } else {
+            control.encoder_cleanup_ready()
+        };
+        if !encoder_cleanup_ready && !cleanup_wait_logged {
+            cleanup_wait_logged = true;
+            crate::player::log(
+                "abr: waiting for PMS to release the stopped encoder before another experiment",
+            );
+        } else if encoder_cleanup_ready && cleanup_wait_logged {
+            cleanup_wait_logged = false;
+            crate::player::log("abr: PMS encoder release observed; exploration may resume");
+        }
         // A pause between two segments really is unmeasured wall-clock time. Age the estimate by
         // it rather than letting a rate measured before the interruption decide what happens after.
-        let paused_now = crate::player::TX.paused.load(Ordering::Relaxed);
-        match (paused_now, paused_since) {
-            (true, None) => paused_since = Some(std::time::Instant::now()),
-            (false, Some(since)) => {
-                paused_since = None;
-                let elapsed = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
-                controller.on_resume(elapsed);
-                crate::player::log(&format!(
-                    "abr: resumed after {elapsed}ms paused; delivery estimate aged"
-                ));
-            }
-            _ => {}
+        let pause_before_lookup = crate::player::TX.pause_state_sample();
+        if let Some(elapsed) = pause_cursor.consume_completed(pause_before_lookup) {
+            let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+            controller.on_resume(elapsed_ms);
+            crate::player::log(&format!(
+                "abr: consumed accepted pause sequence={} elapsed={}ms; delivery estimate aged",
+                pause_before_lookup.sequence, elapsed_ms,
+            ));
         }
+        // The rollback law protects the NEXT object on the old cursor. Parse that exact EXTINF
+        // before the controller grants any private quality/source transaction; substituting the
+        // object which just completed is unsound for variable-duration HLS. A user-held playback
+        // starts no automatic experiment, so it needs no speculative playlist refresh here.
+        let rollback_media_ms = if pause_before_lookup.paused {
+            None
+        } else {
+            hls_cursor_next_duration_ms(&mut cursor, aq, hs)?
+        };
+        // The exact next-object lookup above may refresh a live playlist and wait.  Its `D_next`
+        // still belongs to the rollback cursor, and this sample's A/D/bytes still belong to the
+        // completed object, but the reserve is a decision-time fact.  Re-read it after the wait so
+        // neither the rung controller nor Original admission spends buffer which elapsed while
+        // discovering the obligation.  Include `output`: its exact segment-end tail is newer than
+        // the last AU PTS stored in SHARED and must not be rounded back merely by refreshing B.
+        sample = sample.with_buffer(hls_buffer_snapshot(Some(&output)));
+        // A complete Pause -> Resume may have occurred wholly inside the playlist refresh above.
+        // Consume it before this sample can act, and name the synchronized HLS user sequence that
+        // every later lease must still match.  Returning to `Running` is not the same boundary.
+        let pause_state = crate::player::TX.pause_state_sample();
+        if let Some(elapsed) = pause_cursor.consume_completed(pause_state) {
+            let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+            controller.on_resume(elapsed_ms);
+            crate::player::log(&format!(
+                "abr: consumed accepted pause sequence={} elapsed={}ms after rollback lookup; delivery estimate aged",
+                pause_state.sequence, elapsed_ms,
+            ));
+        }
+        let paused_now = pause_state.paused;
+        let expected_user_sequence = SHARED.hls_user_sequence();
         publish_hls_abr_sample(sample);
         let remaining_ms = remaining_playback_ms();
-        let decision = controller.observe(sample, now_ms());
+        let boundary = session_boundary_pending && delivered && sample.completed();
+        let decision = if boundary {
+            session_boundary_pending = false;
+            crate::player::log(
+                "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
+            );
+            controller.observe_session_boundary(sample, rollback_media_ms, now_ms())
+        } else {
+            controller.observe_with_rollback(sample, rollback_media_ms, now_ms())
+        };
+        if let Some(runway_ms) = controller.prime_runway_ms() {
+            // The finite-bag replay boundary supersedes the single latest acquisition after its
+            // media has been credited to the queues. It is available from the first completion
+            // and uses the whole current bag: this controls when a paused clock may start, never
+            // acts as a static mid-fetch stop threshold, and predicts no unseen draw.
+            SHARED
+                .hls_prime_runway_ms
+                .store(runway_ms, Ordering::Release);
+        }
         // ONE telemetry read for both: the panel must never show a safe budget from this segment
         // beside a risk score from the next. The MODEL is published whatever was decided — the
         // segments worth looking at are the ones that decided to move — while the `abr: steady`
@@ -4060,26 +5433,214 @@ fn hls_demux(
         publish_hls_abr_model(&telemetry);
         log_hls_abr_sample(&telemetry, sample, decision);
         log_hls_abr_window(&telemetry, sample);
+        // An upward candidate commit invalidates the HLS half of a terminal Original comparison,
+        // not the completed source measurement. The first ordinary completed object from the new
+        // live stream is the linearization boundary at which both sides are observable again.
+        // Re-score here before either an HLS proposal or the source latch is acted on; no source
+        // request and no probe counter are spent. From the same terminal state, a downward commit
+        // clears its old-regime source evidence instead and therefore never enters this branch.
+        if delivered && sample.completed() {
+            let current_candidate = controller.catalog().candidate(controller.current());
+            let reconsidered = recovery.as_mut().and_then(|gate| {
+                gate.reconsider_after_hls_commit(
+                    current_candidate,
+                    &telemetry.production,
+                    telemetry.buffer,
+                    &telemetry.delivery,
+                    remaining_ms,
+                )
+            });
+            if let Some(reconsidered) = reconsidered {
+                *recover_kbps = if reconsidered.verdict == crate::abr::RecoveryVerdict::Recover {
+                    reconsidered.measured_kbps.max(1)
+                } else {
+                    0
+                };
+                last_probe_block = None;
+                if let Some(cmp) = recovery.as_ref().and_then(|gate| gate.comparison()) {
+                    log_original_mode_comparison(cmp);
+                }
+                crate::player::log(&format!(
+                    "abr: retained Original probe reconsidered after HLS commit measured={}kbps \
+                     verdict={:?}",
+                    reconsidered.measured_kbps, reconsidered.verdict,
+                ));
+            }
+        }
         if matches!(decision, crate::abr::Decision::Stay) {
+            // Action and Reason are one current decision in the diagnostics panel. Leaving the
+            // previous commit sticky while publishing this segment's RejectBackoff reason produced
+            // the impossible photographed pair "changed up to 20 Mbps · retrying shortly". A
+            // discrete probe/prime below may replace this again in the same iteration.
+            SHARED
+                .dg_abr_action
+                .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+            SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
             log_hls_abr_steady(&telemetry, remaining_ms);
         }
 
-        // **A verdict and a moment are two different things**, and conflating them cost a device
-        // run: the probe's `completed` flag describes the TRANSFER, while "is this a good moment to
-        // tear the pipeline down" describes the HLS session. Feeding the session's state in as the
-        // transfer's completeness threw away a 32 Mbit/s measurement of the source because the HLS
-        // controller happened to propose a rung change on the same segment — and with the estimate
-        // never learning it, Auto stayed on HLS for the rest of the film. So the observation goes
-        // in as measured, and a `Recover` verdict WAITS for a quiescent segment.
-        if *probe_inflight {
-            if let Ok(probe) = probe_rx.try_recv() {
-                *probe_inflight = false;
-                let delivery = controller.delivery();
-                // Every input the comparison needs is already on this stack — `telemetry` was
-                // taken above and carries the live production estimate, and the current candidate
-                // is one catalog lookup. Nothing here crosses a thread (N14).
-                let current_candidate = controller.catalog().candidate(controller.current());
-                let verdict = recovery.as_mut().map(|gate| {
+        // The switch itself needs a quiescent session and one media quantum to tear down against.
+        // A `Prime` answer here has not started its transaction yet; the already-latched source
+        // decision therefore cancels that pending rung explicitly instead of becoming stale
+        // across a new operating point.
+        if !paused_now {
+            if let LatchedOriginalRecovery::Switch { kbps, cancel } = latched_original_recovery(
+                *recover_kbps,
+                None,
+                decision,
+                encoder_cleanup_ready,
+                sample.buffer.buffered_ms(),
+                sample.media_duration_ms(),
+            ) {
+                if let Some(lease) = HlsAutomaticLease::begin(
+                    crate::player::HlsAutomaticTransition::Original,
+                    expected_user_sequence,
+                ) {
+                    if let Some(proposal) = cancel {
+                        reject_hls_abr(
+                            controller,
+                            proposal,
+                            crate::abr::RejectCause::Circumstance,
+                            now_ms(),
+                        );
+                    }
+                    match publish_original_recovery(aq, control, active_encoder, kbps, &lease) {
+                        OriginalRecoveryPublication::Published => {
+                            crate::player::log(&format!(
+                                "abr: source sustainable again at {kbps}kbps; requesting Original",
+                            ));
+                            break;
+                        }
+                        OriginalRecoveryPublication::Busy => {
+                            crate::player::log(
+                                "abr: Original recovery retained behind another route transition",
+                            );
+                        }
+                        OriginalRecoveryPublication::ClockMoved => {
+                            crate::player::log(
+                                "abr: Original recovery retained after playback clock moved",
+                            );
+                        }
+                        OriginalRecoveryPublication::Aborted
+                        | OriginalRecoveryPublication::RouteMoved => return Err(HlsExit::Aborted),
+                    }
+                }
+            }
+        }
+
+        if decision == crate::abr::Decision::Stay && !paused_now {
+            let current_candidate = controller.catalog().candidate(controller.current());
+            let buffer = controller.buffer();
+            let delivery = controller.delivery();
+            let verdict = recovery.as_mut().map(|gate| {
+                gate.probe_due_with_rollback(
+                    current_candidate,
+                    controller.hls_frontier_exhausted(),
+                    &telemetry.production,
+                    sample,
+                    rollback_media_ms,
+                    controller.prime_runway_ms(),
+                    buffer,
+                    &delivery,
+                    remaining_ms,
+                    now_ms(),
+                )
+            });
+            // **Say why NOT, once per distinct reason.** `abr: mode` is only ever emitted on a
+            // probe RESULT, so a recovery gate that never opens produces a log identical to one
+            // that was never constructed — and on the host that is exactly what happens
+            // (`pipe_auto_original_slow_recover`, 180 s on a 40 Mbit/s link: zero `abr: mode`,
+            // Original never re-requested, no way to tell which of four conditions withheld it).
+            // Rate-limited to CHANGES so a steady refusal costs one line rather than one a
+            // segment; the reason is a name, not a number, so a repeat carries no new information.
+            //
+            // **A fired probe clears the latch, and that is a fix rather than a nicety.** The
+            // reason used to live on the gate as `last_block` and the latch here, two copies of
+            // one fact across a module boundary — and they went out of sync exactly when a probe
+            // succeeded: the gate reset its copy, this one kept the old reason, and the next
+            // refusal FOR THE SAME REASON printed nothing. `probe_due` now returns the reason
+            // instead of publishing it, so there is one answer and one channel.
+            let permit = match verdict {
+                Some(Err(block)) if last_probe_block != Some(block) => {
+                    last_probe_block = Some(block);
+                    crate::player::log(&format!(
+                        "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
+                        block.as_str(),
+                        current_candidate.expected_wire_kbps,
+                        sample.buffer.buffered_ms().unwrap_or(-1),
+                        delivery.conservative_kbps(),
+                    ));
+                    None
+                }
+                Some(Ok(permit)) => {
+                    last_probe_block = None;
+                    Some(permit)
+                }
+                _ => None,
+            };
+            if let Some(permit) = permit {
+                if !encoder_cleanup_ready {
+                    // Keep discretionary source traffic behind the same exact-cleanup barrier as
+                    // HLS exploration. The probe itself reuses the ACTIVE resource and creates no
+                    // allocation; this gate only keeps its evidence in a reconciled server epoch.
+                    continue;
+                }
+                let Some(lease) = HlsAutomaticLease::begin(
+                    crate::player::HlsAutomaticTransition::Original,
+                    expected_user_sequence,
+                ) else {
+                    crate::player::log(
+                        "abr: Original probe deferred behind a playback-clock transition",
+                    );
+                    continue;
+                };
+                SHARED
+                    .dg_abr_action
+                    .store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
+                SHARED
+                    .dg_abr_target_kbps
+                    .store(i64::from(control.original_source_kbps()), Ordering::Relaxed);
+                // A fresh experiment supersedes the last failure. If this one fails it republishes
+                // an exact typed cause below; if it succeeds the stale HTTP code stays gone.
+                crate::player::clear_original_failure();
+                crate::player::log(
+                    "abr: checking finite actual Original range on the live HLS resource",
+                );
+                let raw_probe = match control.probe_original_while_hls_cancellable(
+                    active_encoder,
+                    permit.plan,
+                    || unsafe { crate::aq::aq_is_aborted(aq) },
+                ) {
+                    crate::route::OriginalProbeResult::Measured(sample) => sample,
+                    crate::route::OriginalProbeResult::Stale => {
+                        crate::player::log(
+                            "abr: discarded Original probe from a superseded HLS resource",
+                        );
+                        continue;
+                    }
+                    crate::route::OriginalProbeResult::Failed { outcome, failure } => {
+                        publish_original_probe_failure(failure);
+                        let probe_verdict = recovery
+                            .as_mut()
+                            .map(|gate| gate.observe_probe_failed(&delivery));
+                        SHARED.dg_abr_action.store(
+                            crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED,
+                            Ordering::Relaxed,
+                        );
+                        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                        crate::player::log(&format!(
+                            "abr: Original probe #{} produced no body outcome={}; retaining best HLS \
+                             request left={}s verdict={:?}",
+                            recovery.as_ref().map(|gate| gate.probes()).unwrap_or(0),
+                            outcome.code(),
+                            remaining_ms / 1_000,
+                            probe_verdict,
+                        ));
+                        continue;
+                    }
+                };
+                let probe = original_probe_observation(raw_probe);
+                let probe_verdict = recovery.as_mut().map(|gate| {
                     gate.observe_probe(
                         probe,
                         current_candidate,
@@ -4089,44 +5650,9 @@ fn hls_demux(
                         remaining_ms,
                     )
                 });
-                // **The comparison, whole** (§7.H). `ModeUtility` has always been kept as its
-                // component terms "because the event log prints them"; until this it printed none
-                // of them, so "Original lost" was the entire record of a decision that tears down
-                // an encoder session. Emitted only when a comparison was actually made — the two
-                // earlier exits in `observe_probe` never reach one.
                 if let Some(cmp) = recovery.as_ref().and_then(|gate| gate.comparison()) {
-                    let loser = cmp.loser.unwrap_or_default();
-                    crate::player::log(&format!(
-                        "abr: mode chose={:?} why={:?} vs_hls={}kbps scale={}pm \
-                         win[q={} f={} r={} s={} t={} tot={}] \
-                         lose[q={} f={} r={} s={} t={} tot={}]",
-                        cmp.chosen,
-                        cmp.reason,
-                        cmp.hls_rung.kbps(),
-                        cmp.scale_pm,
-                        cmp.winner.quality,
-                        cmp.winner.features,
-                        cmp.winner.risk,
-                        cmp.winner.server,
-                        cmp.winner.transition,
-                        cmp.winner.total,
-                        loser.quality,
-                        loser.features,
-                        loser.risk,
-                        loser.server,
-                        loser.transition,
-                        loser.total,
-                    ));
+                    log_original_mode_comparison(cmp);
                 }
-                // **`slow=/unc=/n=/cons=/need=` are the comparison the verdict was TAKEN on, and
-                // without them this line is not merely terse — it reads as absurd.** `measured=42012kbps
-                // ... verdict=Insufficient` against a 25 Mbit/s film invites exactly one reading, and
-                // it is the wrong one: nothing judged 42 Mbit/s too slow for a 25 Mbit/s file. What
-                // happened is `conservative_kbps` = 29 689 against `need` = 34 106, i.e. the estimator's
-                // own discount against the VBR allowance, neither of which appeared anywhere in the log.
-                // Seven consecutive refusals were recorded on a healthy link on 2026-08-29 with no way
-                // to tell from the log which quantity was short, or that the gate was converging to a
-                // value it could never clear. `[[silent-instrument-trap]]`.
                 let (slow, unc, n, cons, need) = recovery
                     .as_ref()
                     .map(|gate| gate.basis())
@@ -4145,111 +5671,82 @@ fn hls_demux(
                     n,
                     cons,
                     need,
-                    verdict,
+                    probe_verdict,
                 ));
-                if verdict == Some(crate::abr::RecoveryVerdict::Recover) {
-                    *recover_kbps = probe.kbps.max(1);
-                }
-                if *recover_kbps == 0 {
-                    SHARED
-                        .dg_abr_action
-                        .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-                    SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                }
-            }
-        }
-
-        // The switch itself needs a quiescent session: no candidate transaction in flight and a
-        // reserve to tear down against. The verdict is latched, so waiting for that moment costs
-        // nothing and discards no evidence.
-        if *recover_kbps > 0
-            && decision == crate::abr::Decision::Stay
-            && sample
-                .buffer
-                .buffered_ms()
-                .is_some_and(|ms| ms >= i64::from(sample.media_duration_ms()))
-        {
-            SHARED.dg_abr_action.store(
-                crate::player::ABR_ACTION_RECOVER_ORIGINAL,
-                Ordering::Relaxed,
-            );
-            SHARED
-                .auto_recover_kbps
-                .store(i64::from(*recover_kbps), Ordering::Release);
-            crate::player::log(&format!(
-                "abr: source sustainable again at {}kbps; requesting Original",
-                recover_kbps,
-            ));
-            break;
-        }
-
-        if decision == crate::abr::Decision::Stay {
-            let current_candidate = controller.catalog().candidate(controller.current());
-            let buffer = controller.buffer();
-            let delivery = controller.delivery();
-            let verdict = if *probe_inflight {
-                None
-            } else {
-                recovery.as_mut().map(|gate| {
-                    gate.probe_due(
-                        current_candidate,
-                        &telemetry.production,
-                        sample,
-                        buffer,
-                        &delivery,
-                        remaining_ms,
-                        // The same monotonic clock the switch-penalty decay uses; probe spacing is
-                        // wall time now, not a count of segments the server may size as it likes.
-                        now_ms(),
-                    )
-                })
-            };
-            // **Say why NOT, once per distinct reason.** `abr: mode` is only ever emitted on a
-            // probe RESULT, so a recovery gate that never opens produces a log identical to one
-            // that was never constructed — and on the host that is exactly what happens
-            // (`pipe_auto_original_slow_recover`, 180 s on a 40 Mbit/s link: zero `abr: mode`,
-            // Original never re-requested, no way to tell which of four conditions withheld it).
-            // Rate-limited to CHANGES so a steady refusal costs one line rather than one a
-            // segment; the reason is a name, not a number, so a repeat carries no new information.
-            //
-            // **A fired probe clears the latch, and that is a fix rather than a nicety.** The
-            // reason used to live on the gate as `last_block` and the latch here, two copies of
-            // one fact across a module boundary — and they went out of sync exactly when a probe
-            // succeeded: the gate reset its copy, this one kept the old reason, and the next
-            // refusal FOR THE SAME REASON printed nothing. `probe_due` now returns the reason
-            // instead of publishing it, so there is one answer and one channel.
-            match verdict {
-                Some(Err(block)) if last_probe_block != Some(block) => {
-                    last_probe_block = Some(block);
-                    crate::player::log(&format!(
-                        "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
-                        block.as_str(),
-                        current_candidate.expected_wire_kbps,
-                        sample.buffer.buffered_ms().unwrap_or(-1),
-                        delivery.conservative_kbps(),
-                    ));
-                }
-                Some(Ok(())) => last_probe_block = None,
-                _ => {}
-            }
-            if matches!(verdict, Some(Ok(()))) {
-                SHARED
-                    .dg_abr_action
-                    .store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
-                SHARED
-                    .dg_abr_target_kbps
-                    .store(i64::from(control.original_source_kbps()), Ordering::Relaxed);
-                if start_original_probe(control, probe_tx.clone()) {
-                    *probe_inflight = true;
-                    crate::player::log("abr: checking actual Original in parallel with HLS");
+                if probe_verdict == Some(crate::abr::RecoveryVerdict::Recover) {
+                    let measured_kbps = probe.kbps.max(1);
+                    // User Pause is an orthogonal accepted event. A probe which was already in
+                    // flight may finish and retain evidence, but it may not promote a route while
+                    // the viewer owns the clock. Consume a complete hidden pause cycle before
+                    // using the result; an active one leaves the verdict latched for Resume.
+                    let commit_pause = crate::player::TX.pause_state_sample();
+                    if let Some(elapsed) = pause_cursor.consume_completed(commit_pause) {
+                        controller
+                            .on_resume(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                    }
+                    if commit_pause.paused {
+                        *recover_kbps = measured_kbps;
+                        crate::player::log(
+                            "abr: Original recovery measured during a user hold; retained until Resume",
+                        );
+                        continue;
+                    }
+                    match latched_original_recovery(
+                        *recover_kbps,
+                        Some(measured_kbps),
+                        decision,
+                        encoder_cleanup_ready,
+                        sample.buffer.buffered_ms(),
+                        sample.media_duration_ms(),
+                    ) {
+                        LatchedOriginalRecovery::Switch { kbps, cancel } => {
+                            debug_assert!(
+                                cancel.is_none(),
+                                "a source probe is issued only from a Stay boundary",
+                            );
+                            match publish_original_recovery(
+                                aq,
+                                control,
+                                active_encoder,
+                                kbps,
+                                &lease,
+                            ) {
+                                OriginalRecoveryPublication::Published => {
+                                    crate::player::log(&format!(
+                                        "abr: source sustainable again at {kbps}kbps; requesting Original on the probe boundary",
+                                    ));
+                                    break;
+                                }
+                                OriginalRecoveryPublication::Busy => {
+                                    *recover_kbps = measured_kbps;
+                                    crate::player::log(
+                                        "abr: Original recovery retained behind another route transition",
+                                    );
+                                }
+                                OriginalRecoveryPublication::ClockMoved => {
+                                    *recover_kbps = measured_kbps;
+                                    crate::player::log(
+                                        "abr: Original recovery retained after playback clock moved",
+                                    );
+                                }
+                                OriginalRecoveryPublication::Aborted
+                                | OriginalRecoveryPublication::RouteMoved => {
+                                    return Err(HlsExit::Aborted);
+                                }
+                            }
+                        }
+                        LatchedOriginalRecovery::Wait => {
+                            // Conservation currently makes this unreachable for a permitted
+                            // probe, but retaining the typed state is safer than dropping a valid
+                            // verdict if a future probe contract deliberately changes its runway.
+                            *recover_kbps = measured_kbps;
+                        }
+                    }
                 } else {
-                    // The probe thread was refused. That is an ABSENT measurement, so nothing
-                    // enters the estimate — recording a zero would be inventing a dead link.
                     SHARED
                         .dg_abr_action
                         .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
                     SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                    crate::player::log("abr: Original probe thread refused; no measurement taken");
                 }
             }
             continue;
@@ -4257,105 +5754,382 @@ fn hls_demux(
         let crate::abr::Decision::Prime(proposal) = decision else {
             continue;
         };
-        // Records the whole transaction on every exit path, including the twelve rejects. Drop
-        // emits it; nothing below has to remember to.
-        let mut tx = TxTrace::open(
-            proposal,
-            controller.current(),
-            sample,
-            &controller.delivery(),
-        );
-        publish_hls_abr_action(proposal, None);
-        let offset_secs = SHARED
-            .disp_base
-            .load(Ordering::Relaxed)
-            .max(0)
-            .saturating_add(timeline.end().0.saturating_mul(1_000_000))
-            / 1_000_000_000;
-        let primed = match control.prime(active_encoder, proposal, offset_secs) {
-            Ok(primed) => primed,
-            Err(refusal) => {
-                // **The cause is the SERVER's answer, not a guess at this call site.** `prime`
-                // has four exits and only one — a PMS refusal of this rung's ceiling — says
-                // anything about the candidate. Reading a bare failure as `Candidate` charged the
-                // other three a full `E_tx` refill debt (up to ~4x `E_tx` of blocked climbing) for
-                // an encoder that moved underneath, a missing client or a control-plane call that
-                // never reached the server; two of those spend no round trip at all.
-                let (cause, why) = match refusal {
-                    crate::route::PrimeRefusal::Rung => {
-                        (crate::abr::RejectCause::Candidate, "prime_refused")
-                    }
-                    crate::route::PrimeRefusal::Session => {
-                        (crate::abr::RejectCause::Circumstance, "prime_session_moved")
-                    }
-                };
-                reject_hls_abr(controller, proposal, cause, now_ms());
-                tx.finish(why);
-                crate::player::log("abr: candidate registration rejected; staying on current rung");
-                continue;
-            }
-        };
-        tx.mark_prime();
-        let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
-        if candidate_url.origin != *origin {
-            control.abandon(&primed.encoder_session);
+        let reserve_policy = controller
+            .pending_reserve_policy(proposal)
+            .expect("a Prime decision owns one pending reserve policy");
+        if proposal.direction == crate::abr::Direction::Up && !encoder_cleanup_ready {
             reject_hls_abr(
                 controller,
                 proposal,
                 crate::abr::RejectCause::Circumstance,
                 now_ms(),
             );
+            crate::player::log(
+                "abr: quality exploration deferred until PMS confirms prior encoder cleanup",
+            );
+            continue;
+        }
+        // The current segment has already been credited to the recovery certificate. Do not put
+        // a private quality experiment in front of the main thread's next `Play`: on device that
+        // turned a completed 320 kbps recovery into a 4.4 s visible hold while a 22 Mbps warm-up
+        // spent its deadline. A downshift remains allowed because it is the recovery operation;
+        // an upshift is refused as a circumstance, so it retains no false claim about the rung and
+        // is naturally reconsidered after the clock resumes.
+        let automatic_kind = match proposal.direction {
+            crate::abr::Direction::Up => crate::player::HlsAutomaticTransition::QualityUp,
+            crate::abr::Direction::Down => crate::player::HlsAutomaticTransition::QualityDown,
+        };
+        if !SHARED.hls_automatic_transition_permitted(automatic_kind)
+            || !hls_quality_trial_may_start(
+                proposal.direction,
+                SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+                SHARED.hls_rebuffering.load(Ordering::Acquire),
+                paused_now,
+            )
+        {
+            reject_hls_abr(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Circumstance,
+                now_ms(),
+            );
+            crate::player::log(
+                "abr: quality transaction deferred until playback clock is running and recovery completes",
+            );
+            continue;
+        }
+        // A recovery downshift may legitimately span an internally-held rebuffer clock, so it
+        // does not use the upward trial-reserve certificate below. It still owns the same single
+        // automatic-actuator slot for the whole PMS/candidate transaction: source recovery and a
+        // second rung transaction cannot both pass an earlier snapshot and publish independently.
+        let _automatic_lease = if proposal.direction == crate::abr::Direction::Down {
+            let Some(lease) = HlsAutomaticLease::begin(automatic_kind, expected_user_sequence)
+            else {
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
+                crate::player::log(
+                    "abr: recovery transaction superseded before its actuator lease could arm",
+                );
+                continue;
+            };
+            Some(lease)
+        } else {
+            None
+        };
+        // Upshift is an experiment, not a capacity prediction. Spend only the observable reserve
+        // above max(replay boundary, rollback media horizon), and publish the retained replay
+        // balance while the transaction is live. One playhead-funded clock follows the initial
+        // transaction through its first candidate object. Every blocking control/playlist leg
+        // receives a current wall-clock snapshot of that clock, while the media AVIO owns the state
+        // itself. A setup-bearing object and its optional ordinary observation share this same
+        // clock while both remain staged. A user Pause therefore moves an already-issued snapshot
+        // instead of consuming playable reserve. Publish the retained balance BEFORE the control
+        // plane: PMS session creation and playlist requests consume it while the native clock
+        // advances, even though they move no media bytes.
+        let mut _trial_reserve = None;
+        let mut exploration_reserve = None;
+        if proposal.direction == crate::abr::Direction::Up {
+            let (buffer_snapshot, exploration_started_ns) = hls_buffer_snapshot_with_playhead(None);
+            let Some(buffered_ms) = buffer_snapshot.buffered_ms() else {
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
+                crate::player::log(
+                    "abr: candidate reserve unreadable before exploration; staying on current rung",
+                );
+                continue;
+            };
+            let Some(runway_ms) = controller.prime_runway_ms() else {
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
+                crate::player::log(
+                    "abr: candidate has no completed current acquisition to preserve; staying",
+                );
+                continue;
+            };
+            let Some(budget_ms) = controller.exploration_budget_ms(buffered_ms) else {
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
+                crate::player::log(
+                    "abr: candidate has no reserve above rollback boundary; staying on current rung",
+                );
+                continue;
+            };
+            // The proposal captured an earlier reserve. This re-read is the budget that is
+            // actually armed end to end, so it is the only value a failed experiment may retain
+            // in its per-rung certificate.
+            if !controller.set_executed_exploration_budget(proposal, budget_ms) {
+                crate::player::log(&format!(
+                    "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
+                    budget_ms,
+                    proposal.rung.kbps(),
+                ));
+                continue;
+            }
+            let Some(trial_reserve) = HlsTrialReserve::arm(runway_ms, expected_user_sequence)
+            else {
+                reject_hls_abr(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Circumstance,
+                    now_ms(),
+                );
+                crate::player::log(
+                    "abr: clock transition superseded exploration before its trial could arm",
+                );
+                continue;
+            };
+            _trial_reserve = Some(trial_reserve);
+            exploration_reserve = Some(ReserveDeadlineState::from_playhead_at(
+                exploration_started_ns,
+                std::time::Duration::from_millis(u64::try_from(budget_ms).unwrap_or(u64::MAX)),
+                false,
+            ));
+            crate::player::log(&format!(
+                "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
+                proposal.rung.kbps(),
+                buffered_ms,
+                runway_ms,
+                budget_ms,
+            ));
+        }
+        // Records the whole transaction on every exit path, including the twelve rejects. Drop
+        // emits it; nothing below has to remember to.
+        let refreshing_same_request = proposal.rung == controller.current();
+        let mut tx = TxTrace::open(
+            proposal,
+            controller.current(),
+            sample,
+            &controller.delivery(),
+        );
+        publish_hls_abr_action(proposal, refreshing_same_request, None);
+        let offset_ns = SHARED
+            .disp_base
+            .load(Ordering::Relaxed)
+            .max(0)
+            .checked_add(timeline.end_ns())
+            .ok_or(HlsExit::Failed("HLS candidate content offset overflow"))?;
+        let offset_micros = offset_ns / 1_000;
+        let prime_deadline = exploration_snapshot(&mut exploration_reserve);
+        let primed = match control.prime(active_encoder, proposal, offset_micros, prime_deadline) {
+            Ok(primed) => primed,
+            Err(refusal) => {
+                if unsafe { crate::aq::aq_is_aborted(aq) } {
+                    tx.finish("aborted");
+                    return Err(HlsExit::Aborted);
+                }
+                // **The cause is the SERVER's answer, not a guess at this call site.** `prime`
+                // has four exits and only one — a PMS refusal of this rung's ceiling — says
+                // anything about the candidate. Reading a bare failure as `Candidate` charged the
+                // other three a full `E_tx` refill debt (up to ~4x `E_tx` of blocked climbing) for
+                // an encoder that moved underneath, a missing client or an unresolved
+                // control-plane result. None is ordinal evidence about the requested rung.
+                let (cause, why) = match refusal {
+                    crate::route::PrimeRefusal::Rung => {
+                        (crate::abr::RejectCause::Structural, "prime_refused")
+                    }
+                    crate::route::PrimeRefusal::Deadline
+                        if !exploration_timeout_is_final(
+                            &mut exploration_reserve,
+                            prime_deadline,
+                        ) =>
+                    {
+                        // A decision request is not safe to replay blindly: PMS may have
+                        // registered it before the old snapshot fired. `prime` has already
+                        // queued exact cleanup, so retire this attempt without teaching the
+                        // frontier that the rung exhausted a reserve the playhead did not
+                        // spend. Resume can propose it again from fresh completed evidence.
+                        (crate::abr::RejectCause::Circumstance, "control_clock_moved")
+                    }
+                    crate::route::PrimeRefusal::Deadline => {
+                        (crate::abr::RejectCause::Censored, "control_deadline")
+                    }
+                    crate::route::PrimeRefusal::Control => {
+                        (crate::abr::RejectCause::Circumstance, "control_unresolved")
+                    }
+                    crate::route::PrimeRefusal::Session => {
+                        (crate::abr::RejectCause::Circumstance, "prime_session_moved")
+                    }
+                };
+                reject_hls_abr_after_transaction(controller, proposal, cause, &mut tx, now_ms());
+                tx.finish(why);
+                crate::player::log("abr: candidate registration rejected; staying on current rung");
+                continue;
+            }
+        };
+        tx.mark_prime();
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            control.abandon(&primed.encoder_session);
+            tx.finish("aborted");
+            return Err(HlsExit::Aborted);
+        }
+        if exploration_expired(&mut exploration_reserve) {
+            control.abandon(&primed.encoder_session);
+            reject_hls_abr_after_transaction(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Censored,
+                &mut tx,
+                now_ms(),
+            );
+            tx.finish("control_deadline");
+            crate::player::log("abr: candidate spent its exploration reserve in the control plane");
+            continue;
+        }
+        let candidate_url = crate::plex::StreamUrl::parse(&primed.url);
+        if candidate_url.origin != *origin {
+            control.abandon(&primed.encoder_session);
+            reject_hls_abr_after_transaction(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Circumstance,
+                &mut tx,
+                now_ms(),
+            );
             tx.finish("origin_changed");
             crate::player::log("abr: candidate changed origin; rejected");
             continue;
         }
-        let mut candidate =
-            match hls_cursor_open(&candidate_url.origin, &candidate_url.path, aq, hs, false) {
-                Ok(candidate) => candidate,
-                Err(_) => {
-                    control.abandon(&primed.encoder_session);
-                    reject_hls_abr(
-                        controller,
-                        proposal,
-                        crate::abr::RejectCause::Candidate,
-                        now_ms(),
-                    );
-                    tx.finish("no_master_playlist");
-                    crate::player::log("abr: candidate master failed; staying on current rung");
-                    continue;
-                }
-            };
-        tx.mark_master(candidate.declared_bps);
-        let candidate_segment = match hls_cursor_next(&mut candidate, aq, hs) {
-            Ok(Some(segment)) => segment,
-            _ => {
+        let mut candidate = match hls_cursor_open(
+            &candidate_url.origin,
+            &candidate_url.path,
+            aq,
+            hs,
+            false,
+            exploration_reserve.as_mut(),
+        ) {
+            Ok(candidate) => candidate,
+            Err(HlsExit::Aborted) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(
+                tx.finish("aborted");
+                return Err(HlsExit::Aborted);
+            }
+            Err(error) => {
+                control.abandon(&primed.encoder_session);
+                reject_hls_abr_after_transaction(
                     controller,
                     proposal,
-                    crate::abr::RejectCause::Candidate,
+                    abr_reject_for_hls_exit(error),
+                    &mut tx,
                     now_ms(),
                 );
-                tx.finish("no_media_playlist");
-                crate::player::log("abr: candidate produced no segment; staying on current rung");
-                continue;
+                tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                    "master_deadline"
+                } else {
+                    "no_master_playlist"
+                });
+                crate::player::log("abr: candidate master failed; staying on current rung");
+                continue 'segments;
             }
         };
-        // Everything up to here is CONTROL PLANE — `control.prime`, the master playlist and the
-        // media playlist — and no deadline in this function covers any of it.
+        tx.mark_master(candidate.declared_bps);
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            control.abandon(&primed.encoder_session);
+            tx.finish("aborted");
+            return Err(HlsExit::Aborted);
+        }
+        if exploration_expired(&mut exploration_reserve) {
+            control.abandon(&primed.encoder_session);
+            reject_hls_abr_after_transaction(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Censored,
+                &mut tx,
+                now_ms(),
+            );
+            tx.finish("master_deadline");
+            crate::player::log("abr: candidate spent its exploration reserve before media");
+            continue;
+        }
+        let candidate_segment =
+            match hls_cursor_next(&mut candidate, aq, hs, exploration_reserve.as_mut()) {
+                Ok(Some(segment)) => segment,
+                Err(HlsExit::Aborted) => {
+                    control.abandon(&primed.encoder_session);
+                    tx.finish("aborted");
+                    return Err(HlsExit::Aborted);
+                }
+                Err(error) => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr_after_transaction(
+                        controller,
+                        proposal,
+                        abr_reject_for_hls_exit(error),
+                        &mut tx,
+                        now_ms(),
+                    );
+                    tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                        "playlist_deadline"
+                    } else {
+                        "no_media_playlist"
+                    });
+                    crate::player::log(
+                        "abr: candidate produced no segment; staying on current rung",
+                    );
+                    continue 'segments;
+                }
+                Ok(None) => {
+                    control.abandon(&primed.encoder_session);
+                    reject_hls_abr_after_transaction(
+                        controller,
+                        proposal,
+                        crate::abr::RejectCause::Circumstance,
+                        &mut tx,
+                        now_ms(),
+                    );
+                    tx.finish("candidate_ended");
+                    crate::player::log("abr: candidate stream ended before media; staying");
+                    continue 'segments;
+                }
+            };
+        // The whole control plane shares one playhead-funded exploration reserve. Each blocking
+        // layer receives a fresh absolute snapshot, so a timeout retains the budget actually
+        // executed while a Pause or native hold moves the boundary instead of spending it.
         tx.mark_control_plane();
-        // Candidate transport deadlines belong to media SEGMENTS, not PMS session creation. A
-        // remote PMS may spend a second registering the encoder and returning its master/media
-        // playlists before the first media byte is requested. Charging that setup against a
-        // two-second segment's budget made every healthy upshift time out. The cold first segment
-        // gets the bounded warm-up budget; the immediately following segment gets the strict
-        // production budget below. Neither includes control-plane or playlist latency.
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            control.abandon(&primed.encoder_session);
+            tx.finish("aborted");
+            return Err(HlsExit::Aborted);
+        }
+        if exploration_expired(&mut exploration_reserve) {
+            control.abandon(&primed.encoder_session);
+            reject_hls_abr_after_transaction(
+                controller,
+                proposal,
+                crate::abr::RejectCause::Censored,
+                &mut tx,
+                now_ms(),
+            );
+            tx.finish("playlist_deadline");
+            crate::player::log("abr: candidate spent its exploration reserve before media");
+            continue;
+        }
+        // The remaining candidate media budget is whatever is left of the same end-to-end
+        // exploration surplus after session creation and both playlists. A remote PMS may spend a
+        // material fraction of it registering the encoder; that time consumes the viewer's
+        // reserve even though it transfers no media, so excluding it would over-grant the trial.
         //
-        // **The reserve is read HERE and not at the transaction's start.** The control plane above
-        // has already spent some of it, and the deadline is about what is left to spend, not what
-        // there was. Reading it once at the top would hand the fetch a budget the buffer no longer
-        // holds — the exact over-grant this deadline exists to close.
-        let Some(reserve_ms) = hls_buffer_snapshot(None).buffered_ms() else {
+        // **The buffer is read HERE for recovery.** Upward exploration instead carries the same
+        // fixed clock it armed before the control plane, whose remaining value already subtracts
+        // exactly Δplayhead. Reading a fresh buffer as a new exploration grant would let segments
+        // arriving on some future concurrent implementation silently enlarge `E` mid-transaction.
+        let (reserve_snapshot, reserve_started_ns) = hls_buffer_snapshot_with_playhead(None);
+        let Some(reserve_ms) = reserve_snapshot.buffered_ms() else {
             // No readable reserve means nothing can be said about what this transaction can
             // afford, and a transaction with no affordability bound is the unbounded case being
             // removed. **Refusing costs nothing**, which is what `RejectCause::Circumstance` on the
@@ -4366,10 +6140,11 @@ fn hls_demux(
             // that never blocked a segment even before it was deleted: the decrement ran before
             // the check, so `K = 1` was a no-op.)
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(
+            reject_hls_abr_after_transaction(
                 controller,
                 proposal,
                 crate::abr::RejectCause::Circumstance,
+                &mut tx,
                 now_ms(),
             );
             tx.finish("reserve_unreadable");
@@ -4378,7 +6153,10 @@ fn hls_demux(
             );
             continue;
         };
-        let reserve = crate::abr::reserve_as_budget(reserve_ms);
+        let reserve = exploration_reserve
+            .as_ref()
+            .and_then(ReserveDeadlineState::remaining)
+            .unwrap_or_else(|| crate::abr::reserve_as_budget(reserve_ms));
         // The floor is a DOWNSHIFT's only protection against the reserve it is trying to refill:
         // see `candidate_warmup_budget`. Both terms are read here, at the transaction, so the
         // prediction describes the rung actually being primed against the capacity actually
@@ -4399,20 +6177,47 @@ fn hls_demux(
             candidate_segment.duration,
             reserve,
             predicted,
+            // What a segment on this playback costs BEFORE any of its bytes move. `predicted` is
+            // `bits / rate` and pays for the body read only; a warm-up also has to open, request
+            // and probe, and on a fresh candidate session those are dearer than the steady-state
+            // figure this reports.
+            std::time::Duration::from_micros(controller.worst_overhead_us()),
         );
-        tx.mark_warmup_deadline(warmup_budget);
-        let candidate_deadline = std::time::Instant::now().checked_add(warmup_budget);
+        let media_budget = crate::abr::candidate_media_reserve_deadline(
+            proposal,
+            reserve_policy,
+            SHARED.hls_rebuffering.load(Ordering::Acquire),
+            warmup_budget,
+        );
+        if let Some(media_budget) = media_budget {
+            tx.mark_warmup_deadline(media_budget);
+        } else {
+            crate::player::log(
+                "abr: terminal floor recovery keeps the only candidate response alive",
+            );
+        }
+        let deadline_yields_to_rebuffer =
+            proposal.direction == crate::abr::Direction::Down && proposal.rung.at_floor();
+        let candidate_deadline = candidate_reserve_deadline(
+            exploration_reserve,
+            media_budget,
+            deadline_yields_to_rebuffer,
+            reserve_started_ns,
+            proposal.direction,
+        );
         let mut staged_timeline = timeline;
         let mut candidate_clock = match staged_timeline.begin(candidate_segment.duration) {
             Ok(clock) => clock,
             Err(_) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(
+                reject_hls_abr_after_transaction(
                     controller,
                     proposal,
                     crate::abr::RejectCause::Circumstance,
+                    &mut tx,
                     now_ms(),
                 );
+                tx.finish("timeline_overflow");
                 return Err(HlsExit::Failed("HLS candidate timeline overflow"));
             }
         };
@@ -4425,47 +6230,29 @@ fn hls_demux(
                 hs,
                 acodec,
                 candidate_deadline,
-                // **An upshift candidate carries no abort rule; a DOWNSHIFT candidate does.**
-                //
-                // This argued `None` for both, on the grounds that "a candidate's bound is what
-                // the transaction can afford, which `candidate_deadline` already is", and that
-                // "the picture is being fed by the current rung throughout". The first half is
-                // still true. The second half is true of an UPSHIFT — where the current rung is
-                // affordable by construction, which is why a better one was proposed — and FALSE
-                // of a downshift, where the current rung being unaffordable IS the trigger. It is
-                // the same asymmetry `candidate_warmup_budget` already turns on, one level down.
-                //
-                // Device-measured (`pipe_abr_down_outrun`, 2026-08-28) with this `None` in place:
-                // `tx Down 18000->2000 outcome=warmup_deadline decided=5948ms warmup_dl=5918ms
-                // buf_start=5918ms buf_decided=168ms net=5798kbps`. The deadline was the whole
-                // reserve, the transfer spent all of it against a link 17x slower than the
-                // estimate that sized it, and the picture it was supposedly protected by lost
-                // 5750 ms of reserve while nothing was watching. The two attempts that followed
-                // then ran on 168 ms, the second missing its own deadline by **8 ms**, and
-                // playback spent ~30 s advancing one 2 s segment at a time because the queue was
-                // empty. A wall-clock deadline says WHEN to give up; it cannot say that giving up
-                // now is already certain.
-                //
-                // So the bound is the same `warmup_budget` the deadline is built from — no new
-                // constant and no new threshold — and the guard's own question is unchanged:
-                // project the remaining fetch from the rate this fetch has sustained and stop iff
-                // it provably cannot land inside the budget it was already granted. R12 applies
-                // as it does everywhere: at the ladder floor there is nowhere cheaper to run to,
-                // so aborting re-fetches the same bytes and buys a loop instead of a picture.
-                if crate::abr::candidate_warmup_is_guarded(proposal) {
-                    StallGuard::arm(warmup_budget.as_millis().min(i64::MAX as u128) as i64)
-                } else {
-                    None
-                },
+                // Candidate responses never carry a prefix `StallGuard`. PMS may pause a sized
+                // response while its JIT encoder catches up, so a prefix-rate extrapolation is
+                // not proof that the unseen remainder will miss `candidate_deadline` above. When
+                // that reserve clock exists, each `read_until` gets its current wall projection and
+                // the callback classifies the wake against the owning playhead clock. Terminal-floor
+                // recovery has no reserve deadline because the robust rollback guarantee is already
+                // absent (even if a positive remnant remains) and no cheaper response exists.
+                None,
             )
         } {
             Ok(output) => output,
+            Err(HlsExit::Aborted) => {
+                control.abandon(&primed.encoder_session);
+                tx.finish("aborted");
+                return Err(HlsExit::Aborted);
+            }
             Err(HlsExit::PrimeExpired) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(
+                reject_hls_abr_after_transaction(
                     controller,
                     proposal,
-                    crate::abr::RejectCause::Candidate,
+                    crate::abr::RejectCause::Censored,
+                    &mut tx,
                     now_ms(),
                 );
                 tx.finish("warmup_deadline");
@@ -4475,40 +6262,13 @@ fn hls_demux(
                 ));
                 continue;
             }
-            // Same disposition as the deadline above — the proposal is rejected and the current
-            // rung is kept — under its own outcome name, because the two differ in exactly the
-            // thing worth reading off a log: `warmup_deadline` spent the whole budget to learn
-            // the rung was unaffordable, and `warmup_unreachable` proved it early and handed the
-            // rest of the budget back to the picture.
-            Err(HlsExit::StallAbort(transfer)) => {
+            Err(error) => {
                 control.abandon(&primed.encoder_session);
-                reject_hls_abr(
+                reject_hls_abr_after_transaction(
                     controller,
                     proposal,
-                    crate::abr::RejectCause::Candidate,
-                    now_ms(),
-                );
-                tx.finish("warmup_unreachable");
-                crate::player::log(&format!(
-                    "abr: {:?} candidate warm-up cannot land inside {}ms (got {} bytes at \
-                     {}kbps); staying on current rung",
-                    proposal.direction,
-                    warmup_budget.as_millis(),
-                    transfer.bytes,
-                    // The guard's own rate, through the same conversion `should_abort` calls, so
-                    // a log line and the decision behind it cannot drift apart. This asked for
-                    // that in a comment while open-coding the arithmetic; `abr::kbps_from` is the
-                    // one door and enforces it.
-                    crate::abr::kbps_from(transfer.bytes, transfer.active_us),
-                ));
-                continue;
-            }
-            Err(_) => {
-                control.abandon(&primed.encoder_session);
-                reject_hls_abr(
-                    controller,
-                    proposal,
-                    crate::abr::RejectCause::Candidate,
+                    abr_reject_for_hls_exit(error),
+                    &mut tx,
                     now_ms(),
                 );
                 tx.finish("warmup_failed");
@@ -4523,242 +6283,361 @@ fn hls_demux(
             candidate_clock,
             candidate_segment.duration,
         )];
+        let mut candidate_transition: Option<HlsCandidateTransition> = None;
 
-        // PMS's measured FixedSession HLS starts a fresh decoder+encoder for every candidate.
-        // Segment zero therefore measures cold start, not the production cadence the replacement
-        // will sustain. Retain it as the first decodable content after the switch, but grade an
-        // immediately following segment with the strict 80%-of-duration budget. Both remain
-        // private until the encoder identity is atomically committed below.
-        if proposal.direction == crate::abr::Direction::Up {
-            let graded_segment = match hls_cursor_next(&mut candidate, aq, hs) {
-                Ok(Some(segment)) => segment,
-                _ => {
-                    control.abandon(&primed.encoder_session);
-                    reject_hls_abr(
-                        controller,
-                        proposal,
-                        crate::abr::RejectCause::Candidate,
-                        now_ms(),
-                    );
-                    tx.finish("no_graded_segment");
-                    crate::player::log(
-                        "abr: upshift candidate produced no graded segment; staying on current rung",
-                    );
-                    continue;
-                }
-            };
-            let mut graded_clock = match staged_timeline.begin(graded_segment.duration) {
+        // The boundary object is still direct evidence whenever it satisfies `A<=D && B_post>=A`:
+        // commit it immediately. An `A>D` boundary contains one-time PMS/session/JIT setup and may
+        // need one ordinary object to identify repeatable cadence. Both objects remain STAGED:
+        // the original exploration clock must fund the whole observation without media credit.
+        // Publishing the setup object first and later rejecting the candidate mixed two encoder
+        // owners on one decoder timeline, forced cursor-by-count repair, and produced the observed
+        // raster/A-V excursion. A candidate now has exactly two outcomes: commit then feed every
+        // staged object, or discard all of them while the old cursor remains untouched.
+        let first_raster_ready = hls_raster_within(
+            candidate_outputs[0].0.video_width,
+            candidate_outputs[0].0.video_height,
+            proposal.rung,
+        );
+        let first_quality_improves = proposal.direction != crate::abr::Direction::Up
+            || hls_upshift_strictly_improves(
+                output.video_width,
+                output.video_height,
+                cursor.declared_bps,
+                candidate_outputs[0].0.video_width,
+                candidate_outputs[0].0.video_height,
+                candidate.declared_bps,
+            );
+        let first_sample = hls_segment_sample(&candidate_outputs[0].0, candidate_outputs[0].2);
+        let mut verdict = first_sample.map_or(crate::abr::CandidateVerdict::Incomplete, |sample| {
+            if proposal.direction == crate::abr::Direction::Up {
+                controller.candidate_boundary_verdict(proposal, sample, candidate.declared_bps)
+            } else {
+                controller.candidate_verdict(proposal, sample, candidate.declared_bps)
+            }
+        });
+
+        if first_raster_ready
+            && first_quality_improves
+            && verdict == crate::abr::CandidateVerdict::SetupBearing
+        {
+            if exploration_reserve.is_none() || exploration_expired(&mut exploration_reserve) {
+                control.abandon(&primed.encoder_session);
+                reject_hls_abr_after_transaction(
+                    controller,
+                    proposal,
+                    crate::abr::RejectCause::Censored,
+                    &mut tx,
+                    now_ms(),
+                );
+                tx.finish("repeatable_unfunded");
+                crate::player::log(
+                    "abr: setup-bearing candidate exhausted its original exploration budget",
+                );
+                continue;
+            }
+            crate::player::log(&format!(
+                "abr: setup-bearing candidate retains one staged observation budget={}ms",
+                exploration_reserve
+                    .as_ref()
+                    .and_then(ReserveDeadlineState::remaining)
+                    .map_or(0, |left| left.as_millis()),
+            ));
+            let repeatable_segment =
+                match hls_cursor_next(&mut candidate, aq, hs, exploration_reserve.as_mut()) {
+                    Ok(Some(segment)) => segment,
+                    Ok(None) => {
+                        control.abandon(&primed.encoder_session);
+                        reject_hls_abr_after_transaction(
+                            controller,
+                            proposal,
+                            crate::abr::RejectCause::Circumstance,
+                            &mut tx,
+                            now_ms(),
+                        );
+                        tx.finish("candidate_ended_after_setup");
+                        continue;
+                    }
+                    Err(HlsExit::Aborted) => {
+                        control.abandon(&primed.encoder_session);
+                        tx.finish("aborted");
+                        return Err(HlsExit::Aborted);
+                    }
+                    Err(error) => {
+                        control.abandon(&primed.encoder_session);
+                        reject_hls_abr_after_transaction(
+                            controller,
+                            proposal,
+                            abr_reject_for_hls_exit(error),
+                            &mut tx,
+                            now_ms(),
+                        );
+                        tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                            "repeatable_playlist_deadline"
+                        } else {
+                            "repeatable_playlist_failed"
+                        });
+                        continue;
+                    }
+                };
+            let mut repeatable_clock = match staged_timeline.begin(repeatable_segment.duration) {
                 Ok(clock) => clock,
                 Err(_) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(
+                    reject_hls_abr_after_transaction(
                         controller,
                         proposal,
                         crate::abr::RejectCause::Circumstance,
+                        &mut tx,
                         now_ms(),
                     );
+                    tx.finish("repeatable_timeline_overflow");
                     return Err(HlsExit::Failed("HLS candidate timeline overflow"));
                 }
             };
-            // The deadline is the ACCEPTANCE threshold, read from the same policy
-            // `Controller::candidate_ready` reads. Passing a different number here aborts
-            // candidates the rule would have admitted, invisibly, in the transport. It is capped
-            // by what is left of the reserve, re-read because the warm-up above has just spent
-            // some of it.
-            let Some(graded_reserve_ms) = hls_buffer_snapshot(None).buffered_ms() else {
-                // Same rule as the warm-up above, and stated separately so the outcome names the
-                // leg it happened on. A zero here would abort as `graded_deadline`, attributing a
-                // missing measurement to a slow server.
-                control.abandon(&primed.encoder_session);
-                reject_hls_abr(
-                    controller,
-                    proposal,
-                    crate::abr::RejectCause::Circumstance,
-                    now_ms(),
-                );
-                tx.finish("reserve_unreadable");
-                crate::player::log(
-                    "abr: candidate reserve unreadable before grading; staying on current rung",
-                );
-                continue;
-            };
-            let graded_reserve = crate::abr::reserve_as_budget(graded_reserve_ms);
-            let graded_deadline =
-                std::time::Instant::now().checked_add(crate::abr::candidate_prime_budget(
-                    graded_segment.duration,
-                    &crate::abr::AbrPolicy::measured(),
-                    graded_reserve,
-                ));
-            let graded_output = match unsafe {
+            let repeatable_deadline = exploration_reserve
+                .expect("an upward setup-bearing observation owns its original reserve clock");
+            let repeatable_output = match unsafe {
                 hls_demux_segment(
-                    &graded_segment,
+                    &repeatable_segment,
                     &candidate.auth,
-                    &mut graded_clock,
+                    &mut repeatable_clock,
                     aq,
                     hs,
                     acodec,
-                    graded_deadline,
+                    repeatable_deadline,
                     None,
                 )
             } {
                 Ok(output) => output,
-                Err(HlsExit::PrimeExpired) => {
+                Err(HlsExit::Aborted) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(
-                        controller,
-                        proposal,
-                        crate::abr::RejectCause::Candidate,
-                        now_ms(),
-                    );
-                    tx.finish("graded_deadline");
-                    crate::player::log(
-                        "abr: upshift candidate lacked steady production headroom; staying on current rung",
-                    );
-                    continue;
+                    tx.finish("aborted");
+                    return Err(HlsExit::Aborted);
                 }
-                Err(_) => {
+                Err(error) => {
                     control.abandon(&primed.encoder_session);
-                    reject_hls_abr(
+                    reject_hls_abr_after_transaction(
                         controller,
                         proposal,
-                        crate::abr::RejectCause::Candidate,
+                        abr_reject_for_hls_exit(error),
+                        &mut tx,
                         now_ms(),
                     );
-                    tx.finish("graded_failed");
+                    tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                        "repeatable_deadline"
+                    } else {
+                        "repeatable_failed"
+                    });
                     crate::player::log(
-                        "abr: candidate graded segment failed; staying on current rung",
+                        "abr: candidate produced no complete repeatable object; staying current",
                     );
                     continue;
                 }
             };
-            tx.mark_media(&graded_output, true);
-            staged_timeline.commit(graded_clock);
-            // The graded segment is a real acquisition on this link, so it joins the controller's
-            // window whatever the verdict turns out to be -- a rejected candidate still measured
-            // the link. The WARM-UP above deliberately does not: PMS starts a fresh encoder per
-            // candidate, so segment zero carries that cold start, which is a server property and
-            // not a network one. See `Controller::observe_candidate`.
-            if let Some(graded_sample) = hls_segment_sample(&graded_output, graded_segment.duration)
-            {
-                controller.observe_candidate(graded_sample);
-            }
-            candidate_outputs.push((graded_output, graded_clock, graded_segment.duration));
+            tx.mark_media(&repeatable_output, true);
+            staged_timeline.commit(repeatable_clock);
+            candidate_outputs.push((
+                repeatable_output,
+                repeatable_clock,
+                repeatable_segment.duration,
+            ));
+            verdict = hls_segment_sample(&candidate_outputs[1].0, candidate_outputs[1].2)
+                .map_or(crate::abr::CandidateVerdict::Incomplete, |sample| {
+                    controller.candidate_verdict(proposal, sample, candidate.declared_bps)
+                });
         }
 
-        let raster_ready = candidate_outputs.iter().all(|(output, _, _)| {
-            hls_raster_within(output.video_width, output.video_height, proposal.rung)
-        });
-        let (graded_output, _, graded_duration) =
+        let raster_ready = !hls_candidate_requires_rung_box(proposal, reserve_policy)
+            || candidate_outputs.iter().all(|(output, _, _)| {
+                hls_raster_within(output.video_width, output.video_height, proposal.rung)
+            });
+        let (candidate_output, _, candidate_duration) =
             candidate_outputs.last().expect("candidate output");
-        let ready = raster_ready
-            && hls_segment_sample(graded_output, *graded_duration).is_some_and(
-                |candidate_sample| {
-                    // The candidate's OWN declared rate, off the master this transaction fetched.
-                    // Not `proposal.rung.kbps()` and not the catalog's `expected_wire_kbps`: those
-                    // are what the rendition was ASKED for, and the two differ by up to 31.6%.
-                    controller.candidate_ready(proposal, candidate_sample, candidate.declared_bps)
-                },
+        let quality_improves = proposal.direction != crate::abr::Direction::Up
+            || hls_upshift_strictly_improves(
+                output.video_width,
+                output.video_height,
+                cursor.declared_bps,
+                candidate_output.video_width,
+                candidate_output.video_height,
+                candidate.declared_bps,
             );
-        if !ready {
+        tx.mark_candidate_evidence(candidate_output, *candidate_duration);
+        let candidate_sample = hls_segment_sample(candidate_output, *candidate_duration);
+        let disposition = hls_candidate_disposition(raster_ready, quality_improves, verdict);
+        if let HlsCandidateDisposition::Discard { cause, outcome } = disposition {
             control.abandon(&primed.encoder_session);
-            reject_hls_abr(
-                controller,
-                proposal,
-                crate::abr::RejectCause::Candidate,
-                now_ms(),
-            );
-            if raster_ready {
-                // **A REJECT NO LONGER DELIVERS NOTHING** — Phase 0, lever 1 of
-                // `docs/measurements/p0-plant-sizing.md`.
-                //
-                // These segments are already fetched, already demuxed, and already graded as
-                // within the proposal's raster bound. Discarding them made a rejected transaction
-                // cost its whole wall time with ZERO fill, which is why the up-guard is `Omega(D)`
-                // and why R2 could show the top of the ladder unreachable for any guard of that
-                // shape. Feeding them turns the post-reject reserve from `B - E_tx_max` into
-                // `B - E_tx_max + D`. The sweep prices the change at +555 ms of climbable ceiling
-                // against a measured 167 ms noise floor, and neither this nor the queue enlargement
-                // clears that floor alone.
-                //
-                // **Only in the `raster_ready` arm.** The other branch rejected these very AUs for
-                // having a raster outside the rung's bound; feeding a segment we just refused
-                // would be acting on a check we performed and then ignored.
-                //
-                // **The timeline and the cursor must BOTH advance, or the same media plays twice.**
-                // `staged_timeline` is what these AUs were stamped against, and the current
-                // cursor still points at the same media interval the candidate covered — PMS cuts
-                // both playlists at the same boundaries, which is the property the COMMIT path
-                // already relies on when it swaps cursors outright. Feeding without stepping the
-                // cursor would re-fetch and re-feed those seconds from the current rung.
-                //
-                // **What is proven and what is owed.** The host half — queues, backpressure, the
-                // PTS timeline, the cursor step, the reserve the controller then reads — runs in
-                // the simulator (`make sim` + `plxnative-clocksink`). The DEVICE half is not
-                // proven and cannot be from here: this is a one-segment raster excursion followed
-                // by a return, and LG's decoder's reaction to that is unknown. A commit changes
-                // raster too and is fine, so the new thing is only the change BACK.
-                for (output, _, _) in &candidate_outputs {
-                    hls_feed_segment(output, aq, aqa)?;
-                }
-                timeline = staged_timeline;
-                let mut stepped = 0usize;
-                while stepped < candidate_outputs.len() {
-                    match hls_cursor_next(&mut cursor, aq, hs)? {
-                        Some(_) => stepped += 1,
-                        // The current rung's playlist ran out where the candidate's did not. Stop
-                        // rather than continue: the two are no longer describing the same media,
-                        // and the outer loop's own `None` arm is the right place to end a stream.
-                        None => break,
-                    }
-                }
-                tx.finish("not_ready_fed");
-                crate::player::log(&format!(
-                    "abr: candidate lacked measured headroom; fed {} graded segment(s) and                      stayed on current rung",
-                    stepped,
-                ));
-            } else {
-                tx.finish("raster_refused");
+            reject_hls_abr_after_transaction(controller, proposal, cause, &mut tx, now_ms());
+            if !raster_ready {
                 crate::player::log(&format!(
                     "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
-                    graded_output.video_width,
-                    graded_output.video_height,
+                    candidate_output.video_width,
+                    candidate_output.video_height,
                     proposal.rung.raster().0,
                     proposal.rung.raster().1,
                 ));
+            } else if !quality_improves {
+                crate::player::log(&format!(
+                    "abr: candidate request {}kbps produced {}x{} @ {}kbps versus current {}x{} @ \
+                     {}kbps; no measured quality gain, staying on current rung",
+                    proposal.rung.kbps(),
+                    candidate_output.video_width,
+                    candidate_output.video_height,
+                    candidate.declared_bps / 1_000,
+                    output.video_width,
+                    output.video_height,
+                    cursor.declared_bps / 1_000,
+                ));
+            } else {
+                crate::player::log(&format!(
+                    "abr: candidate verdict={verdict:?}; discarded {} staged segment(s) without \
+                     changing the active media owner",
+                    candidate_outputs.len(),
+                ));
             }
+            tx.finish(outcome);
             continue;
         }
-        if !control.commit(active_encoder, &primed.encoder_session) {
-            reject_hls_abr(
-                controller,
-                proposal,
-                crate::abr::RejectCause::Circumstance,
-                now_ms(),
-            );
-            return Err(HlsExit::Aborted);
+        let sample = candidate_sample.expect("a ready candidate has a completed segment sample");
+        let Some(candidate_variant) = crate::abr::ObservedHlsVariant::new(
+            candidate.declared_bps,
+            candidate_output.video_width,
+            candidate_output.video_height,
+        ) else {
+            control.abandon(&primed.encoder_session);
+            return Err(HlsExit::Failed(
+                "ABR candidate committed invalid output geometry",
+            ));
+        };
+        // Validation ends here. Freeze the decision timestamp before the feed loop, which can
+        // block on `aq_push` against a full queue; `feed=` records that backpressure separately.
+        // The route must remain old until every candidate AU which precedes the switch is safely
+        // queued. Otherwise teardown can abort a blocked feed after publication and leave a live
+        // route naming media the playback pipeline never received.
+        tx.mark_decided();
+        if candidate_transition.is_none() {
+            let automatic_token = _trial_reserve
+                .as_ref()
+                .map(HlsTrialReserve::token)
+                .or_else(|| _automatic_lease.as_ref().map(HlsAutomaticLease::token))
+                .expect("every HLS candidate transaction owns one automatic actuator lease");
+            candidate_transition = match HlsCandidateTransition::arm(automatic_token) {
+                Ok(transition) => Some(transition),
+                Err(error) => {
+                    control.abandon(&primed.encoder_session);
+                    tx.finish("publication_overlap");
+                    return Err(error);
+                }
+            };
         }
-        // The decision is MADE here. `finish` is taken before the feed loop below, because that
-        // loop blocks on `aq_push` against a full queue: charging it to the transaction conflates
-        // the cost of deciding with the cost of having decided, and over-states an upshift by
-        // several seconds. `feed=` records it separately.
-        tx.finish("committed");
         let feed_started = std::time::Instant::now();
         for (output, _, _) in &candidate_outputs {
-            hls_feed_segment(output, aq, aqa)?;
+            if let Err(error) = hls_feed_segment(output, aq, aqa) {
+                control.abandon(&primed.encoder_session);
+                tx.finish(if matches!(error, HlsExit::Aborted) {
+                    "aborted"
+                } else {
+                    "commit_feed_failed"
+                });
+                return Err(error);
+            }
         }
         tx.mark_feed(feed_started);
         timeline = staged_timeline;
-        let previous = std::mem::replace(active_encoder, primed.encoder_session);
-        control.retire(previous);
-        controller.commit(proposal, now_ms());
+
+        // The queue abort is teardown's actual linearization point. Publish both copies of the
+        // live encoder while holding that SAME mutex, so exactly one side wins: either teardown
+        // prevents the route change, or publication captures the old encoder before teardown can
+        // join this worker. No cleanup/network work is allowed inside the closure.
+        let publication = publish_hls_candidate(
+            aq,
+            control,
+            controller,
+            active_encoder,
+            &primed,
+            proposal,
+            sample,
+            candidate_variant,
+            now_ms(),
+        );
+        let previous = match publication {
+            CandidatePublication::Aborted => {
+                control.abandon(&primed.encoder_session);
+                tx.finish("aborted");
+                return Err(HlsExit::Aborted);
+            }
+            CandidatePublication::SessionEnded => {
+                control.abandon(&primed.encoder_session);
+                tx.finish("commit_session_ended");
+                return Err(HlsExit::Aborted);
+            }
+            CandidatePublication::RouteMoved => {
+                // The route changed independently while this candidate was in flight. The
+                // callback never ran, so controller and worker-local encoder also remain old.
+                // The transaction still owns the candidate cleanup.
+                control.abandon(&primed.encoder_session);
+                tx.finish("commit_route_moved");
+                return Err(HlsExit::Aborted);
+            }
+            CandidatePublication::ControllerRejected => {
+                control.abandon(&primed.encoder_session);
+                tx.finish("commit_controller_rejected");
+                return Err(HlsExit::Failed(
+                    "ABR candidate commit lost its validated evidence",
+                ));
+            }
+            CandidatePublication::Active { previous } => previous,
+        };
+        // The committed candidate is already the first completed acquisition at the new
+        // operating point. Publish its exact replay boundary before the trial lifetime marker and
+        // explicit candidate-generation settlement. Leaving the old rung's value here would authorize
+        // a restart against evidence from an actuator that no longer owns the media stream. During
+        // an internal hold, settling the fence starts a fresh recovery epoch immediately before its
+        // release store; the next ordinary active segment, not this setup-bearing candidate object,
+        // certifies resume.
+        if let Some(runway_ms) = controller.prime_runway_ms() {
+            SHARED
+                .hls_prime_runway_ms
+                .store(runway_ms, Ordering::Release);
+        }
+        // Only now is `outcome=committed` an exact certificate: the staged media was fed and the
+        // controller has atomically moved the rung, reset the old bag and seeded the new one.
+        tx.finish("committed");
         SHARED
             .dg_abr_kbps
             .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
-        publish_hls_abr_action(proposal, Some(true));
+        SHARED.dg_abr_declared_kbps.store(
+            i64::try_from(candidate.declared_bps / 1_000).unwrap_or(i64::MAX),
+            Ordering::Relaxed,
+        );
+        publish_hls_abr_action(proposal, refreshing_same_request, Some(true));
+        crate::player::report::note_hls_committed_for(
+            control.trace_generation(),
+            proposal.direction,
+            proposal.rung,
+            refreshing_same_request,
+        );
         // Promoted: from here this cursor IS the playback, so its playlist is the one that may
         // speak for the film's duration.
         candidate.publishes_duration = true;
         cursor = candidate;
+        // Any terminal source-mode verdict was computed against the previous HLS operating point.
+        // Invalidate it explicitly: an Up keeps the completed source evidence for re-scoring on the
+        // next ordinary segment, while a safety Down retires evidence from the failed service
+        // regime and returns the source gate to a fresh bounded experiment. Non-terminal probe
+        // states remain unchanged, and no stale source switch stays actionable.
+        if let Some(gate) = recovery.as_mut() {
+            gate.on_hls_commit(proposal.direction);
+        }
+        *recover_kbps = 0;
+        last_probe_block = None;
+
+        // All behavioral projections now name the candidate: controller, global route,
+        // worker-local encoder/cursor, runway and recovery policy. Release both main-thread gates
+        // before encoder cleanup, whose task-spawn fallback may perform synchronous network I/O.
+        settle_candidate_transition(&mut candidate_transition);
+        drop(_trial_reserve.take());
+        control.retire(previous);
         // **`out=` is what was DECODED; the pair before it is the rung's bounding box.** They are
         // routinely different and the difference is the point: M3 (2026-08-28) measured PMS
         // producing 1280x720 for BOTH `P720` and `P1080M6` against a 4K source, and 1918x802 for
@@ -4800,7 +6679,7 @@ pub(crate) fn demux(
     origin: crate::plex::Origin,
     path: String,
     acodec: String,
-    abr: Option<(crate::route::HlsAbrControl, String)>,
+    abr: Option<(crate::route::HlsAbrControl, crate::route::WorkerTicket)>,
     auto_original: Option<crate::route::AutoOriginalWatch>,
     aq: SendPtr<AuQueue>,
     aqa: SendPtr<AuQueue>,
@@ -4891,7 +6770,7 @@ pub(crate) fn demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
-    let mut original_watch = auto_original.and_then(|watch| {
+    let make_original_watch = |watch: &crate::route::AutoOriginalWatch| {
         crate::abr::OriginalModeController::new(
             watch.source_kbps,
             crate::abr::AbrPolicy::measured(),
@@ -4899,15 +6778,18 @@ pub(crate) fn demux(
             watch.history,
             watch.features,
         )
-    });
-    // Same pause rule as the HLS worker: only a real pause is unmeasured time, and only that ages
-    // the estimate. Backpressure with a healthy reserve is the system working.
-    let mut original_paused_since: Option<std::time::Instant> = None;
+    };
+    let mut original_context = auto_original;
+    let mut original_watch = original_context.as_ref().and_then(make_original_watch);
+    // Same accepted-event cursor as HLS. Progressive reads and queue pushes can hide an entire
+    // pause cycle, so a local `paused_since` sampled around packets is not a valid clock.
+    let mut original_pause_cursor =
+        crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
     // **The Original watchdog's WALL clock** (N13). Its persistence rule used to count 750 ms
     // windows of ACTIVE BODY-READ time, which under backpressure — the healthy full-buffer case —
     // spans unbounded wall clock, so "six windows" was not a duration at all. One `Instant` for the
     // whole progressive session, read absolutely, for the reason `advance_to` documents.
-    let original_since = std::time::Instant::now();
+    let mut original_since = std::time::Instant::now();
     let port = origin.port() as c_int;
     // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
     // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
@@ -5039,8 +6921,8 @@ pub(crate) fn demux(
                     body_active_us: 0,
                     body_bytes: 0,
                     first_byte_at: None,
-                    deadline: None,
-                    deadline_expired: false,
+                    reserve_deadline: ReserveDeadlineState::new(None, false),
+                    transport_watchdog: None,
                     // A progressive part is not on a ladder, so there is no cheaper rung to run to
                     // and the abort rule's escape does not exist. R12's terminal case, structurally.
                     stall: None,
@@ -5192,8 +7074,7 @@ pub(crate) fn demux(
                 // Publish the coded size: the webOS 5+ exported window needs the frame it is being
                 // fed, and this is the only place that knows it for certain — a transcode's declared
                 // dimensions and its actual output need not agree.
-                SHARED.video_w.store((*vcp).width, Ordering::Relaxed);
-                SHARED.video_h.store((*vcp).height, Ordering::Relaxed);
+                SHARED.publish_video_raster((*vcp).width, (*vcp).height);
                 let cname =
                     std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
                 // WHAT THE STREAM ACTUALLY IS, not just what it is called. `codec=hevc` is the same
@@ -5329,7 +7210,13 @@ pub(crate) fn demux(
                         // a seek cannot splice old reserve into a new low-rate observation.
                         SHARED.hls_video_tail_ns.store(-1, Ordering::Release);
                         SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
-                        if let Some(watch) = original_watch.as_mut() {
+                        let ticket_refreshed = original_context.as_mut().is_some_and(
+                            crate::route::AutoOriginalWatch::refresh_ticket_after_seek,
+                        );
+                        if ticket_refreshed {
+                            let watch = original_watch
+                                .as_mut()
+                                .expect("an Auto Original context has its controller");
                             // A PARTIAL reset, and the split is the point: the link did not change
                             // because the viewer jumped, so the delivery estimate survives — while the
                             // buffer, the deficit history and the byte counters all describe a position
@@ -5338,6 +7225,11 @@ pub(crate) fn demux(
                             SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
                             SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
                             SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+                            original_since = std::time::Instant::now();
+                        } else {
+                            // The route/engine moved, not merely the playhead. This worker cannot
+                            // adopt that ownership; teardown will replace it.
+                            original_watch = None;
                         }
                         let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
@@ -5491,59 +7383,56 @@ pub(crate) fn demux(
                     }
                     if !SHARED.seeking.load(Ordering::Relaxed) {
                         if let Some(watch) = original_watch.as_mut() {
-                            let paused_now = crate::player::TX.paused.load(Ordering::Relaxed);
-                            match (paused_now, original_paused_since) {
-                                (true, None) => {
-                                    original_paused_since = Some(std::time::Instant::now())
-                                }
-                                (false, Some(since)) => {
-                                    original_paused_since = None;
-                                    watch.on_resume(
-                                        u64::try_from(since.elapsed().as_millis())
-                                            .unwrap_or(u64::MAX),
-                                    );
-                                }
-                                _ => {}
+                            let pause_state = crate::player::TX.pause_state_sample();
+                            if let Some(elapsed) =
+                                original_pause_cursor.consume_completed(pause_state)
+                            {
+                                watch.on_resume(
+                                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                                );
                             }
-                            let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
-                            if let Some(observation) = watch.observe(
-                                state.body_bytes,
-                                state.body_active_us,
-                                progressive_buffered_ms(audio_expected),
-                                remaining_playback_ms(),
-                                original_since.elapsed().as_millis() as u64,
-                            ) {
-                                SHARED
-                                    .dg_abr_net_kbps
-                                    .store(i64::from(observation.measured_kbps), Ordering::Relaxed);
-                                SHARED
-                                    .dg_abr_buffer_ms
-                                    .store(observation.buffered_ms, Ordering::Relaxed);
-                                SHARED
-                                    .dg_abr_unsafe_deficit_ms
-                                    .store(observation.unsafe_deficit_ms, Ordering::Relaxed);
-                                // The rest of the model, on ONE line each — `shared.rs`'s writer guard
-                                // greps `dg_<field>.store(` and a rustfmt-split call reads to it as a
-                                // field nothing writes.
-                                //
-                                // Without these, Original mode published a buffer LEVEL and left the
-                                // slope and the horizon at their reset values, so the panel drew
-                                // `+0.0 s/s · no deficit` — two sentinels, rendered as measurements,
-                                // beside a level that was real. Device-observed 2026-08-26.
-                                let rel = Ordering::Relaxed;
-                                let horizon = observation.horizon_secs.map(i64::from).unwrap_or(-1);
-                                SHARED
-                                    .dg_abr_slope_ms_per_s
-                                    .store(observation.slope_ms_per_s, rel);
-                                SHARED.dg_abr_starve_secs.store(horizon, rel);
-                                SHARED
-                                    .dg_abr_safe_kbps
-                                    .store(i64::from(observation.conservative_kbps), rel);
-                                if let Some(reason) = observation.fallback {
-                                    // The whole basis of a VISIBLE switch, in one line: the rate, the
-                                    // requirement it was measured against, the reserve, its direction,
-                                    // how many seconds that reserve survives, and which rule fired.
-                                    crate::player::log(&format!(
+                            if !pause_state.paused {
+                                let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
+                                if let Some(observation) = watch.observe(
+                                    state.body_bytes,
+                                    state.body_active_us,
+                                    progressive_buffered_ms(audio_expected),
+                                    remaining_playback_ms(),
+                                    original_since.elapsed().as_millis() as u64,
+                                ) {
+                                    SHARED.dg_abr_net_kbps.store(
+                                        i64::from(observation.measured_kbps),
+                                        Ordering::Relaxed,
+                                    );
+                                    SHARED
+                                        .dg_abr_buffer_ms
+                                        .store(observation.buffered_ms, Ordering::Relaxed);
+                                    SHARED
+                                        .dg_abr_unsafe_deficit_ms
+                                        .store(observation.unsafe_deficit_ms, Ordering::Relaxed);
+                                    // The rest of the model, on ONE line each — `shared.rs`'s writer guard
+                                    // greps `dg_<field>.store(` and a rustfmt-split call reads to it as a
+                                    // field nothing writes.
+                                    //
+                                    // Without these, Original mode published a buffer LEVEL and left the
+                                    // slope and the horizon at their reset values, so the panel drew
+                                    // `+0.0 s/s · no deficit` — two sentinels, rendered as measurements,
+                                    // beside a level that was real. Device-observed 2026-08-26.
+                                    let rel = Ordering::Relaxed;
+                                    let horizon =
+                                        observation.horizon_secs.map(i64::from).unwrap_or(-1);
+                                    SHARED
+                                        .dg_abr_slope_ms_per_s
+                                        .store(observation.slope_ms_per_s, rel);
+                                    SHARED.dg_abr_starve_secs.store(horizon, rel);
+                                    SHARED
+                                        .dg_abr_safe_kbps
+                                        .store(i64::from(observation.conservative_kbps), rel);
+                                    if let Some(reason) = observation.fallback {
+                                        // The whole basis of a VISIBLE switch, in one line: the rate, the
+                                        // requirement it was measured against, the reserve, its direction,
+                                        // how many seconds that reserve survives, and which rule fired.
+                                        crate::player::log(&format!(
                                     // **`held=` and NOT `windows=`.** The value is wall
                                     // milliseconds now (N13); reusing the old label would make an
                                     // old log's `windows=2` and a new log's `windows=2` two
@@ -5562,14 +7451,38 @@ pub(crate) fn demux(
                                     observation.unsafe_deficit_ms,
                                     observation.target.map(|r| r.kbps()).unwrap_or(0),
                                 ));
-                                    // Hand over the CONSERVATIVE estimate, not the last window's raw
-                                    // rate: the main thread picks the replacement rung from it, and one
-                                    // sample of a noisy distribution is the wrong basis for that.
-                                    SHARED.auto_fallback_kbps.store(
-                                        i64::from(observation.conservative_kbps.max(1)),
-                                        Ordering::Release,
-                                    );
-                                    break;
+                                        // Hand over the CONSERVATIVE estimate, not the last window's raw
+                                        // rate. The synchronized ticket also binds it to this exact engine,
+                                        // route, media epoch and user contract; stale evidence is discarded
+                                        // without stopping the stream or manufacturing a playback error.
+                                        let publication =
+                                            original_context.as_ref().map(|context| {
+                                                context.request_hls_fallback(
+                                                    observation.conservative_kbps.max(1),
+                                                    SHARED
+                                                        .playpos_ns
+                                                        .load(Ordering::Relaxed)
+                                                        .max(0),
+                                                )
+                                            });
+                                        match publication {
+                                            Some(crate::route::AutomaticIntentResult::Accepted) => {
+                                                break
+                                            }
+                                            Some(crate::route::AutomaticIntentResult::Busy) => {
+                                                crate::player::log(
+                                            "auto: Original fallback retained behind another route transition",
+                                );
+                                            }
+                                            Some(crate::route::AutomaticIntentResult::Stale)
+                                            | None => {
+                                                crate::player::log(
+                                            "auto: discarded Original fallback from a superseded worker intent",
+                                        );
+                                                original_watch = None;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -5644,11 +7557,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_expired_candidate_is_a_common_censored_budget_not_an_ordinal_rung_failure() {
+        assert_eq!(
+            abr_reject_for_hls_exit(HlsExit::PrimeExpired),
+            crate::abr::RejectCause::Censored,
+        );
+        assert_eq!(
+            abr_reject_for_hls_exit(HlsExit::NotReady),
+            crate::abr::RejectCause::Circumstance,
+            "an ordinary PMS not-ready reply has no exhausted deadline and says nothing about a rung",
+        );
+    }
+
+    #[test]
+    fn a_completed_underfilled_response_is_common_evidence_not_a_structural_rung_failure() {
+        assert_eq!(
+            abr_reject_for_candidate_result(true, false, crate::abr::CandidateVerdict::Ready,),
+            crate::abr::RejectCause::ResponseUnchanged,
+            "PMS response geometry, not the different requested actuator, determines the evidence",
+        );
+    }
+
+    #[test]
+    fn an_incomplete_prefix_is_unknown_on_the_unqualified_debug_panel() {
+        let sample = crate::abr::SegmentSample::new(
+            212_992,
+            258_000,
+            300_000,
+            2_000,
+            crate::abr::BufferSnapshot {
+                playback: crate::abr::MediaTimeMs(10_000),
+                video_tail: crate::abr::MediaTimeMs(16_000),
+                audio_tail: Some(crate::abr::MediaTimeMs(16_000)),
+                audio_expected: true,
+            },
+        )
+        .expect("valid transfer")
+        .abandoned();
+        assert_eq!(
+            hls_abr_rate_readout(sample),
+            (-1, -1, -1),
+            "without a complete= column, a right-censored prefix must not look measured",
+        );
+    }
+
+    #[test]
     fn an_abr_candidate_must_decode_within_the_proposed_raster() {
         assert!(hls_raster_within(1_280, 536, crate::abr::Rung::P720));
         assert!(hls_raster_within(1_280, 720, crate::abr::Rung::P720));
         assert!(!hls_raster_within(1_920, 804, crate::abr::Rung::P720));
         assert!(!hls_raster_within(0, 720, crate::abr::Rung::P720));
+    }
+
+    #[test]
+    fn an_upshift_commits_only_an_observed_quality_improvement() {
+        assert!(hls_upshift_strictly_improves(
+            720, 404, 896_000, 720, 404, 992_000
+        ));
+        assert!(hls_upshift_strictly_improves(
+            720, 404, 896_000, 1_920, 1_080, 16_150_000
+        ));
+        assert!(!hls_upshift_strictly_improves(
+            720, 404, 896_000, 720, 404, 896_000
+        ));
+        assert!(
+            !hls_upshift_strictly_improves(720, 404, 992_000, 720, 404, 923_000),
+            "the live trace's 12→16 Mbps request returned the same raster at a lower declaration",
+        );
+        assert!(
+            !hls_upshift_strictly_improves(720, 404, 992_000, 3_840, 2_160, 896_000),
+            "pixels traded for fewer declared bits are not objectively ordered without a heuristic",
+        );
+        assert!(!hls_upshift_strictly_improves(
+            0, 0, 0, 3_840, 2_160, 20_895_000
+        ));
+    }
+
+    #[test]
+    fn a_short_http_body_is_not_a_completed_hls_segment() {
+        assert!(!hls_body_complete(400_000, 212_992));
+        assert!(hls_body_complete(400_000, 400_000));
+        assert!(
+            hls_body_complete(-1, 212_992),
+            "a close-delimited response has no byte total to compare; transport errors are separate",
+        );
     }
 
     /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
@@ -6162,8 +8154,8 @@ mod tests {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                deadline: None,
-                deadline_expired: false,
+                reserve_deadline: ReserveDeadlineState::new(None, false),
+                transport_watchdog: None,
                 stall: None,
                 stall_aborted: false,
             };
@@ -6216,8 +8208,8 @@ mod tests {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                deadline: None,
-                deadline_expired: false,
+                reserve_deadline: ReserveDeadlineState::new(None, false),
+                transport_watchdog: None,
                 stall: None,
                 stall_aborted: false,
             };
@@ -6266,8 +8258,8 @@ mod tests {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            deadline: Some(std::time::Instant::now()),
-            deadline_expired: false,
+            reserve_deadline: ReserveDeadlineState::new(Some(std::time::Instant::now()), false),
+            transport_watchdog: None,
             stall: None,
             stall_aborted: false,
         };
@@ -6278,12 +8270,177 @@ mod tests {
             dst.len() as c_int,
         );
         assert_eq!(result, AVERROR_EOF);
-        assert!(st.deadline_expired);
+        assert!(st.reserve_deadline.expired);
         assert!(
             !st.io_failed,
             "a rejected prime is not an active-stream transport failure"
         );
         crate::aq::aq_destroy(&mut *aq);
+    }
+
+    #[test]
+    fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_retries() {
+        use std::io::{Read, Write};
+
+        let _guard = crate::testlock::serial();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stall server");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let _ = socket.set_read_timeout(Some(std::time::Duration::from_secs(1)));
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).expect("read request");
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..n]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n")
+                .expect("headers");
+            socket.flush().expect("flush headers");
+            std::thread::sleep(std::time::Duration::from_millis(160));
+        });
+
+        let host = CString::new("127.0.0.1").unwrap();
+        let path = CString::new("/segment.ts").unwrap();
+        let mut hs = crate::stream::http_stream_boxed();
+        assert_eq!(
+            crate::stream::http_open(
+                &mut *hs,
+                host.as_ptr(),
+                port as c_int,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            ),
+            0,
+        );
+        let start_ns = 80_000_000_000;
+        let old_playpos = SHARED.playpos_ns.swap(start_ns, Ordering::AcqRel);
+        let old_paused = crate::player::TX.paused.swap(false, Ordering::AcqRel);
+        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut state = AvioState {
+            src: Src::Socket {
+                hs: &mut *hs,
+                host,
+                port: port as c_int,
+                path,
+            },
+            aq: &mut *aq,
+            off: 0,
+            size: 8,
+            io_failed: false,
+            body_active_us: 0,
+            body_bytes: 0,
+            first_byte_at: None,
+            reserve_deadline: ReserveDeadlineState::from_playhead_at(
+                start_ns,
+                std::time::Duration::from_millis(2),
+                false,
+            ),
+            transport_watchdog: Some(TransportWatchdog::with_inactivity(
+                std::time::Duration::from_millis(35),
+            )),
+            stall: None,
+            stall_aborted: false,
+        };
+        let started = std::time::Instant::now();
+        let mut dst = [0u8; 8];
+        let result = read_cb(
+            &mut state as *mut AvioState as *mut c_void,
+            dst.as_mut_ptr(),
+            dst.len() as c_int,
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(result, AVERROR_IO);
+        assert!(state.io_failed);
+        assert!(!state.reserve_deadline.expired);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(20)
+                && elapsed < std::time::Duration::from_millis(140),
+            "one no-progress epoch should bound every stale reserve wake: {elapsed:?}",
+        );
+
+        SHARED.playpos_ns.store(old_playpos, Ordering::Release);
+        crate::player::TX
+            .paused
+            .store(old_paused, Ordering::Release);
+        crate::stream::http_close(&mut *hs);
+        crate::aq::aq_destroy(&mut *aq);
+        server.join().expect("stall server");
+    }
+
+    #[test]
+    fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
+        use std::io::{Read, Write};
+
+        let _guard = crate::testlock::serial();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stall server");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).expect("read request");
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..n]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n")
+                .expect("headers");
+            socket.flush().expect("flush headers");
+            std::thread::sleep(std::time::Duration::from_millis(160));
+        });
+
+        let host = CString::new("127.0.0.1").unwrap();
+        let path = CString::new("/playlist.m3u8").unwrap();
+        let mut hs = crate::stream::http_stream_boxed();
+        assert_eq!(
+            crate::stream::http_open(
+                &mut *hs,
+                host.as_ptr(),
+                port as c_int,
+                path.as_ptr(),
+                std::ptr::null(),
+                "GET",
+            ),
+            0,
+        );
+        let mut aq = crate::aq::aq_new(1 << 20);
+        let aq_addr = (&mut *aq) as *mut AuQueue as usize;
+        let hs_addr = (&mut *hs) as *mut HttpStream as usize;
+        let mut src = Src::Socket {
+            hs: &mut *hs,
+            host,
+            port: port as c_int,
+            path,
+        };
+        let mut dst = [0u8; 8];
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                crate::aq::aq_abort(aq_addr as *mut AuQueue);
+                crate::stream::http_shutdown(hs_addr as *mut HttpStream);
+            });
+            hls_source_read(
+                &mut src,
+                &mut *aq,
+                &mut dst,
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+            )
+        });
+
+        assert!(matches!(outcome, Err(HlsExit::Aborted)), "got {outcome:?}");
+        crate::stream::http_close(&mut *hs);
+        crate::aq::aq_destroy(&mut *aq);
+        server.join().expect("stall server");
     }
 
     // -- the same two invariants, with libcurl under the AVIO instead of a socket ------------
@@ -6342,8 +8499,8 @@ mod tests {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                deadline: None,
-                deadline_expired: false,
+                reserve_deadline: ReserveDeadlineState::new(None, false),
+                transport_watchdog: None,
                 stall: None,
                 stall_aborted: false,
             };
@@ -6389,8 +8546,8 @@ mod tests {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                deadline: None,
-                deadline_expired: false,
+                reserve_deadline: ReserveDeadlineState::new(None, false),
+                transport_watchdog: None,
                 stall: None,
                 stall_aborted: false,
             };
@@ -6455,8 +8612,8 @@ mod tests {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                deadline: None,
-                deadline_expired: false,
+                reserve_deadline: ReserveDeadlineState::new(None, false),
+                transport_watchdog: None,
                 stall: None,
                 stall_aborted: false,
             };
@@ -6508,97 +8665,901 @@ mod tests {
 }
 
 #[cfg(test)]
+mod hls_recovery_priority_tests {
+    use super::{
+        candidate_reserve_deadline, classify_hls_avio_facts, classify_hls_deadline,
+        classify_plaintext_open_failure, exploration_snapshot, exploration_timeout_is_final,
+        hls_candidate_disposition, hls_candidate_requires_rung_box, hls_duration_obligation_ms,
+        hls_quality_trial_may_start, hls_wait, latched_original_recovery, observe_hls_deadline,
+        HlsCandidateDisposition, HlsCandidateTransition, HlsExit, LatchedOriginalRecovery,
+        ReserveDeadlineState, SegmentTransfer, TransportWatchdog, SHARED,
+    };
+
+    #[test]
+    fn fractional_hls_duration_is_rounded_up_as_a_reserve_obligation() {
+        assert_eq!(
+            hls_duration_obligation_ms(std::time::Duration::from_micros(551_044)),
+            Some(552),
+        );
+        assert_eq!(
+            hls_duration_obligation_ms(std::time::Duration::from_millis(2_000)),
+            Some(2_000),
+        );
+    }
+    use crate::abr::Direction;
+
+    #[test]
+    fn a_terminal_floor_response_cannot_loop_only_because_pms_exceeded_its_box() {
+        let floor = crate::abr::Proposal {
+            rung: crate::abr::Rung::P240,
+            direction: Direction::Down,
+        };
+        assert!(!hls_candidate_requires_rung_box(
+            floor,
+            crate::abr::ReservePolicy::TerminalFloor,
+        ));
+        assert!(hls_candidate_requires_rung_box(
+            floor,
+            crate::abr::ReservePolicy::Preserve,
+        ));
+    }
+
+    #[test]
+    fn a_quality_trial_never_extends_an_active_rebuffer_hold() {
+        assert!(hls_quality_trial_may_start(
+            Direction::Up,
+            false,
+            false,
+            false
+        ));
+        assert!(!hls_quality_trial_may_start(
+            Direction::Up,
+            true,
+            false,
+            false
+        ));
+        assert!(!hls_quality_trial_may_start(
+            Direction::Up,
+            false,
+            true,
+            false
+        ));
+        assert!(!hls_quality_trial_may_start(
+            Direction::Up,
+            true,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
+        let mut aq = crate::aq::aq_new(1 << 20);
+        crate::aq::aq_abort(&mut *aq);
+        let result = hls_wait(
+            &mut *aq,
+            std::time::Duration::ZERO,
+            Some(std::time::Instant::now()),
+        );
+        assert!(matches!(result, Err(HlsExit::Aborted)));
+        crate::aq::aq_destroy(&mut *aq);
+    }
+
+    #[test]
+    fn a_downshift_remains_available_because_it_is_the_recovery_edge() {
+        assert!(hls_quality_trial_may_start(
+            Direction::Down,
+            true,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn teardown_wins_over_an_expired_plaintext_open_snapshot() {
+        assert!(matches!(
+            classify_plaintext_open_failure(crate::stream::HttpOpenError::Aborted),
+            HlsExit::Aborted
+        ));
+    }
+
+    #[test]
+    fn every_ffmpeg_phase_reduces_callback_facts_with_one_priority_table() {
+        let transfer = SegmentTransfer {
+            bytes: 123,
+            active_us: 456,
+            total_us: 789,
+            audio_expected: true,
+        };
+        assert!(matches!(
+            classify_hls_avio_facts(Some(transfer), true, true, true),
+            Some(HlsExit::StallAbort(observed)) if observed == transfer
+        ));
+        assert!(matches!(
+            classify_hls_avio_facts(None, true, true, true),
+            Some(HlsExit::PrimeExpired)
+        ));
+        assert!(matches!(
+            classify_hls_avio_facts(None, false, true, true),
+            Some(HlsExit::Failed("segment body transport failed"))
+        ));
+        assert!(
+            classify_hls_avio_facts(None, false, true, false).is_none(),
+            "libavformat recovery clears a callback error instead of inventing a terminal",
+        );
+    }
+
+    #[test]
+    fn rejected_candidate_media_has_only_the_discard_transition() {
+        assert_eq!(
+            hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Unfunded,),
+            HlsCandidateDisposition::Discard {
+                cause: crate::abr::RejectCause::Candidate,
+                outcome: "not_ready_discarded",
+            },
+        );
+        assert_eq!(
+            hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Ready),
+            HlsCandidateDisposition::Commit,
+        );
+    }
+
+    #[test]
+    fn a_user_pause_fills_the_active_queues_without_starting_a_private_trial() {
+        assert!(!hls_quality_trial_may_start(
+            Direction::Up,
+            false,
+            false,
+            true
+        ));
+        assert!(!hls_quality_trial_may_start(
+            Direction::Down,
+            false,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
+        let proposal = crate::abr::Proposal {
+            rung: crate::abr::Rung::P1080M12,
+            direction: Direction::Up,
+        };
+        assert_eq!(
+            latched_original_recovery(
+                24_000,
+                None,
+                crate::abr::Decision::Prime(proposal),
+                true,
+                Some(2_000),
+                2_000,
+            ),
+            LatchedOriginalRecovery::Switch {
+                kbps: 24_000,
+                cancel: Some(proposal),
+            },
+        );
+        assert_eq!(
+            latched_original_recovery(
+                24_000,
+                None,
+                crate::abr::Decision::Prime(proposal),
+                false,
+                Some(2_000),
+                2_000,
+            ),
+            LatchedOriginalRecovery::Wait,
+            "a live cleanup obligation still keeps both actuator transitions quiescent",
+        );
+    }
+
+    /// Device regression, 2026-09-01: the raw-Part source probe completed with `Recover`, then
+    /// PMS returned 404 for every later segment under the shared Streaming Resource.  The old
+    /// loop copied the result into `recover_kbps`, continued, and could publish it only after one
+    /// more successful HLS object — an impossible transition on that server.  A fresh verdict is
+    /// already on the completed media boundary and must therefore produce `Switch` immediately.
+    #[test]
+    fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
+        assert_eq!(
+            latched_original_recovery(
+                0,
+                Some(49_041),
+                crate::abr::Decision::Stay,
+                true,
+                Some(4_000),
+                2_000,
+            ),
+            LatchedOriginalRecovery::Switch {
+                kbps: 49_041,
+                cancel: None,
+            },
+        );
+    }
+
+    #[test]
+    fn a_post_feed_transition_defaults_to_fenced_until_teardown() {
+        let _guard = crate::testlock::serial();
+        let stable = SHARED
+            .hls_candidate_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(stable & 1, 0, "test starts outside a transition");
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .hls_candidate_generation
+                    .store(self.0, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore(stable.wrapping_add(2));
+
+        drop(HlsCandidateTransition::arm_unowned_for_test().expect("single transition"));
+        assert!(
+            SHARED
+                .hls_candidate_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+                & 1
+                != 0,
+            "dropping a fatal partial transition reopened Play before queue teardown",
+        );
+    }
+
+    #[test]
+    fn proven_candidate_transition_settlement_reopens_generation() {
+        let _guard = crate::testlock::serial();
+        let stable = SHARED
+            .hls_candidate_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(stable & 1, 0, "test starts outside a transition");
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .hls_candidate_generation
+                    .store(self.0, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore(stable.wrapping_add(2));
+
+        HlsCandidateTransition::arm_unowned_for_test()
+            .expect("single transition")
+            .settle();
+        assert_eq!(
+            SHARED
+                .hls_candidate_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            stable.wrapping_add(2),
+            "explicit settlement did not publish the next stable generation",
+        );
+    }
+
+    #[test]
+    fn unwind_after_candidate_media_publication_stays_fenced_until_teardown() {
+        let _guard = crate::testlock::serial();
+        let stable = SHARED
+            .hls_candidate_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert_eq!(stable & 1, 0, "test starts outside a transition");
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .hls_candidate_generation
+                    .store(self.0, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore(stable.wrapping_add(2));
+
+        let unwind = std::panic::catch_unwind(|| {
+            let _transition =
+                HlsCandidateTransition::arm_unowned_for_test().expect("single transition");
+            panic!("candidate publication unwound before commit or cursor realignment");
+        });
+        assert!(unwind.is_err());
+        assert!(
+            SHARED
+                .hls_candidate_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+                & 1
+                != 0,
+            "unwind made a partially-published candidate generation look stable",
+        );
+    }
+
+    #[test]
+    fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut floor = ReserveDeadlineState::new(Some(deadline), true);
+        assert_eq!(
+            floor.active(false),
+            Some(deadline),
+            "a bounded floor rollback starts with its proved reserve deadline",
+        );
+        assert_eq!(
+            floor.active(true),
+            None,
+            "once the internal clock is held, the already-spent rollback deadline disappears",
+        );
+        assert_eq!(
+            floor.active(false),
+            None,
+            "a later Resume cannot resurrect reserve already released by this transaction",
+        );
+
+        let mut ordinary = ReserveDeadlineState::new(Some(deadline), false);
+        assert_eq!(
+            ordinary.active(true),
+            Some(deadline),
+            "an upshift or a non-floor downshift cannot inherit the floor exception",
+        );
+    }
+
+    #[test]
+    fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut floor = ReserveDeadlineState::new(Some(deadline), true);
+        let attempted_deadline = floor.active(false);
+
+        assert!(attempted_deadline.is_some());
+        assert!(
+            !floor.note_transport_deadline(attempted_deadline, true),
+            "the timeout belongs to the superseded rollback deadline, not transport liveness",
+        );
+        assert!(!floor.expired);
+        assert_eq!(
+            floor.active(false),
+            None,
+            "promotion is monotone even after the main-thread hold later clears",
+        );
+
+        let expired_at = std::time::Instant::now();
+        let mut ordinary = ReserveDeadlineState::new(Some(expired_at), false);
+        assert!(ordinary.note_transport_deadline(Some(expired_at), true));
+        assert!(
+            ordinary.expired,
+            "ordinary candidates retain the deadline result"
+        );
+    }
+
+    #[test]
+    fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 40_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old,
+            paused: old_paused,
+        };
+        let mut reserve = candidate_reserve_deadline(
+            None,
+            Some(std::time::Duration::from_millis(1)),
+            false,
+            start_ns,
+            Direction::Up,
+        );
+        let attempted_deadline = reserve.active(false).expect("one millisecond reserve");
+
+        crate::player::TX
+            .paused
+            .store(true, std::sync::atomic::Ordering::Release);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(
+            !reserve.note_transport_deadline(Some(attempted_deadline), false),
+            "elapsed wall time cannot spend reserve while the presentation clock is frozen",
+        );
+        assert!(!reserve.expired);
+        crate::player::TX
+            .paused
+            .store(false, std::sync::atomic::Ordering::Release);
+        assert!(
+            reserve.active(false).is_some(),
+            "Resume restores the same unspent playhead balance",
+        );
+
+        SHARED
+            .playpos_ns
+            .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
+        assert!(
+            reserve.expire_if_due(false),
+            "advancing the playhead by exactly B must spend exactly B",
+        );
+    }
+
+    #[test]
+    fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 50_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old,
+            paused: old_paused,
+        };
+
+        let budget = std::time::Duration::from_millis(1);
+        let mut polled = ReserveDeadlineState::from_playhead(budget, false);
+        let mut blocked = ReserveDeadlineState::from_playhead(budget, false);
+        let attempted_deadline = blocked.active(false).expect("running reserve snapshot");
+
+        SHARED
+            .playpos_ns
+            .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
+        crate::player::TX
+            .paused
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        assert!(
+            polled.expire_if_due(false),
+            "Pause freezes only a positive balance; equality is already terminal",
+        );
+        assert!(
+            blocked.note_transport_deadline(Some(attempted_deadline), false),
+            "an in-flight snapshot remains final when the playhead spent the budget before Pause",
+        );
+        assert!(polled.expired && blocked.expired);
+    }
+
+    #[test]
+    fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 60_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old,
+            paused: old_paused,
+        };
+
+        let mut reserve =
+            ReserveDeadlineState::from_playhead(std::time::Duration::from_nanos(1), false);
+        let attempted_deadline = reserve
+            .active(false)
+            .expect("positive balance projects a wake");
+        std::thread::yield_now();
+        assert!(
+            !reserve.note_transport_deadline(Some(attempted_deadline), false),
+            "an expired wall projection is obsolete while Δplayhead remains strictly below E",
+        );
+        assert!(!reserve.expired);
+    }
+
+    #[test]
+    fn stale_reserve_wakes_cannot_renew_transport_liveness() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 65_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old,
+            paused: old_paused,
+        };
+
+        let mut reserve = ReserveDeadlineState::from_playhead_at(
+            start_ns,
+            std::time::Duration::from_millis(2),
+            false,
+        );
+        let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(18));
+        for _ in 0..2 {
+            let snapshot = reserve.active(false).expect("running projection");
+            let attempted = watchdog.effective(Some(snapshot));
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
+            assert!(
+                classify_hls_deadline(wake).is_none(),
+                "a stale reserve wake is retryable before independent liveness expires",
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        let attempted = watchdog.effective(reserve.active(false));
+        let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
+        let outcome = classify_hls_deadline(wake);
+        assert!(matches!(outcome, Some(HlsExit::Failed(_))));
+        assert!(
+            !reserve.expired,
+            "transport failure is not censored rung evidence"
+        );
+    }
+
+    #[test]
+    fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 66_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        struct Restore(i64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.0, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore(old);
+        let mut reserve = ReserveDeadlineState::from_playhead_at(
+            start_ns,
+            std::time::Duration::from_millis(1),
+            false,
+        );
+        let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_secs(1));
+        let attempted = watchdog.effective(reserve.active(false));
+        SHARED
+            .playpos_ns
+            .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
+        let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
+        assert!(matches!(
+            classify_hls_deadline(wake),
+            Some(HlsExit::PrimeExpired)
+        ));
+        assert!(reserve.expired);
+        assert!(!watchdog.expired());
+    }
+
+    #[test]
+    fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_classification() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 67_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        struct Restore(i64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.0, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore(old);
+        let mut reserve = ReserveDeadlineState::from_playhead_at(
+            start_ns,
+            std::time::Duration::from_millis(20),
+            false,
+        );
+        let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(1));
+        let attempted = watchdog.effective(reserve.active(false));
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
+        SHARED
+            .playpos_ns
+            .store(start_ns + 20_000_000, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            classify_hls_deadline(wake),
+            Some(HlsExit::Failed(_))
+        ));
+        assert!(
+            !reserve.expired,
+            "a later reserve observation cannot relabel the earlier transport boundary",
+        );
+    }
+
+    #[test]
+    fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle() {
+        let _guard = crate::testlock::serial();
+        let old_paused = crate::player::TX
+            .paused
+            .load(std::sync::atomic::Ordering::Acquire);
+        crate::player::TX.commit_paused(false);
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::player::TX.commit_paused(self.0);
+            }
+        }
+        let _restore = Restore(old_paused);
+
+        let mut reserve = ReserveDeadlineState::from_unpaused_elapsed(
+            std::time::Duration::from_millis(80),
+            false,
+        );
+        let attempted = reserve.active(false).expect("bounded recovery deadline");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        crate::player::TX.commit_paused(true);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        crate::player::TX.commit_paused(false);
+
+        assert!(
+            !reserve.note_transport_deadline(Some(attempted), true),
+            "a complete accepted Pause->Resume inside one blocked call spends no recovery budget",
+        );
+        assert!(!reserve.expired);
+
+        // `rebuffering=true` models B=0 with the native clock held. A non-floor recovery remains
+        // bounded and therefore spends this involuntary stall even though Δplayhead is zero.
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        assert!(reserve.expire_if_due(true));
+        assert!(reserve.expired);
+    }
+
+    /// Device regression, 2026-09-01. A 16→18 Mbps exploration armed 3.251 s, spent 1.421 s in
+    /// control, then the viewer paused during media warm-up. The old code replaced the transaction
+    /// clock with the remaining wall instant and emitted `warmup_deadline` after 3.337 s while the
+    /// buffer moved only 5.251→4.834 s. The SAME playhead clock must cross control and media.
+    #[test]
+    fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 70_000_000_000;
+        let old = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old,
+            paused: old_paused,
+        };
+
+        let mut exploration = Some(ReserveDeadlineState::from_playhead(
+            std::time::Duration::from_millis(1),
+            false,
+        ));
+        let control_snapshot = exploration_snapshot(&mut exploration).expect("running clock");
+        crate::player::TX
+            .paused
+            .store(true, std::sync::atomic::Ordering::Release);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(
+            !exploration_timeout_is_final(&mut exploration, Some(control_snapshot)),
+            "the expired wall snapshot cannot censor an unspent playhead budget",
+        );
+
+        let mut media = candidate_reserve_deadline(
+            exploration,
+            // A fresh media-only clock would expire immediately; carrying the exploration state
+            // is therefore the differential, not merely another direct test of `from_playhead`.
+            Some(std::time::Duration::ZERO),
+            false,
+            start_ns,
+            Direction::Up,
+        );
+        assert!(!media.expired);
+        assert!(
+            media.active(false).is_some(),
+            "Pause retains a scheduled re-check for a Resume that races the blocked read"
+        );
+        crate::player::TX
+            .paused
+            .store(false, std::sync::atomic::Ordering::Release);
+        assert!(
+            media.active(false).is_some(),
+            "Resume restores the original balance"
+        );
+        SHARED
+            .playpos_ns
+            .store(start_ns + 1_000_000, std::sync::atomic::Ordering::Release);
+        assert!(
+            media.expire_if_due(false),
+            "only Δplayhead spends the exploration"
+        );
+    }
+
+    #[test]
+    fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 71_000_000_000;
+        let old_pos = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old_pos,
+            paused: old_paused,
+        };
+
+        let mut reserve = ReserveDeadlineState::from_playhead_at(
+            start_ns,
+            std::time::Duration::from_millis(100),
+            false,
+        );
+        let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_secs(1));
+        let attempted = reserve
+            .active(false)
+            .expect("a paused issue still schedules the unchanged reserve boundary");
+        let attempted = watchdog.effective(Some(attempted));
+
+        crate::player::TX
+            .paused
+            .store(false, std::sync::atomic::Ordering::Release);
+        SHARED
+            .playpos_ns
+            .store(start_ns + 100_000_000, std::sync::atomic::Ordering::Release);
+        let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
+        assert!(matches!(
+            classify_hls_deadline(wake),
+            Some(HlsExit::PrimeExpired)
+        ));
+        assert!(!watchdog.expired());
+    }
+
+    #[test]
+    fn a_pause_projection_spends_neither_reserve_nor_transport_liveness() {
+        let _guard = crate::testlock::serial();
+        let start_ns = 72_000_000_000;
+        let old_pos = SHARED
+            .playpos_ns
+            .swap(start_ns, std::sync::atomic::Ordering::AcqRel);
+        let old_paused = crate::player::TX
+            .paused
+            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        struct Restore {
+            playpos_ns: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .playpos_ns
+                    .store(self.playpos_ns, std::sync::atomic::Ordering::Release);
+                crate::player::TX
+                    .paused
+                    .store(self.paused, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _restore = Restore {
+            playpos_ns: old_pos,
+            paused: old_paused,
+        };
+
+        let mut reserve = ReserveDeadlineState::from_playhead_at(
+            start_ns,
+            std::time::Duration::from_millis(1),
+            false,
+        );
+        let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(50));
+        let liveness_deadline = watchdog.deadline;
+        let attempted = reserve.active(false).expect("paused reserve projection");
+        let attempted = watchdog.effective(Some(attempted));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let wake = observe_hls_deadline(Some(&mut reserve), attempted, &watchdog, false);
+        assert!(classify_hls_deadline(wake).is_none());
+        assert!(!reserve.expired);
+        assert_eq!(watchdog.deadline, liveness_deadline);
+    }
+}
+
+#[cfg(test)]
 mod stall_guard_tests {
-    use super::StallGuard;
+    use super::{arm_active_stall_guard, StallGuard};
 
-    /// **An abort may not fire before the fetch is measurable, because an abort that carries no
-    /// measurement makes the controller blind.** Device-measured: once the reserve fell below what
-    /// any fetch needs, the projection failed on the first read (`prod=2pm` — abandoned 4 ms in),
-    /// so nothing ever completed, no sample reached the estimator, and the same unaffordable
-    /// target was chosen 36 times in a row. Refusing to learn is the same failure as learning
-    /// wrongly, one level further back.
+    /// A completed PMS HLS object is not necessarily delivered at a stationary rate.  The server
+    /// reports `segmentWait` inside downloads while its JIT encoder catches up, then sends the
+    /// already-sized remainder as a burst.  On the television the first 214 440-byte prefix of a
+    /// roughly 6 MB 4K object took about 258 ms, while the adjacent complete objects landed in
+    /// 1.2--1.4 s.  Extrapolating that prefix over the unseen remainder predicts more than the
+    /// available 6.4 s reserve and aborts a stream whose complete acquisitions are sustainable.
     ///
-    /// Differential: the projection ALONE says abort in every leg below, so these assertions can
-    /// only pass against the measurability gate.
+    /// The prefix is right-censored evidence: without a model of PMS's future production it can
+    /// prove only what has already been spent, not how long unseen bytes will take.  Keeping the
+    /// playhead fixed makes this differential: the broken attained-rate forecast fires; the
+    /// physical reserve has spent nothing and therefore cannot.
     #[test]
-    fn an_abort_waits_until_its_own_fetch_is_measurable() {
-        let guard = StallGuard::arm(168).expect("a live reserve arms");
-        // 1448 bytes in 274 us: the device's own prefix.
+    fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
+        let _serial = crate::testlock::serial();
+        let pos = 5_000_000_000i64;
+        crate::player::SHARED
+            .playpos_ns
+            .store(pos, std::sync::atomic::Ordering::Relaxed);
+        let guard = StallGuard::arm(6_376).expect("a live reserve arms");
         assert!(
-            StallGuard::expired(168, 0, 4_500_000, 42_277),
-            "the projection alone would abort",
+            !guard.should_abort(5_785_560, false),
+            "a censored JIT prefix cannot prove that the complete response will miss the reserve",
         );
-        assert!(
-            !guard.should_abort(4_500_000, 1_448, 274),
-            "but 274us is below MEASURABLE_OBSERVATION_US, so it carries no observation",
-        );
-        assert!(
-            !guard.should_abort(4_500_000, 1_448, crate::abr::MEASURABLE_OBSERVATION_US - 1),
-            "and the gate is the threshold itself, not a rounding of it",
-        );
-        assert!(
-            guard.should_abort(4_500_000, 1_448, crate::abr::MEASURABLE_OBSERVATION_US),
-            "at the threshold it may fire, because now the sample says something",
-        );
-    }
-
-    /// **R16: the projection is `8 * bytes / kbps`, and the 8 is the whole rule.**
-    ///
-    /// `C` is kilobits per second, i.e. BITS per millisecond; `bytes_remaining` is bytes. The
-    /// plan's original expression divided bytes by a bit rate and under-reported the remaining
-    /// fetch by exactly a factor of eight — so the guard would have let a segment run that was
-    /// certain to stall, on the one path it exists to act on. Differential by construction: the
-    /// case below is chosen so the two forms disagree about the ANSWER, not merely the number.
-    #[test]
-    fn the_projection_converts_bytes_to_bits_before_dividing_by_a_bit_rate() {
-        // 500 kbps, 500 000 bytes still to come, 8 000 ms of reserve, nothing elapsed.
-        // Correct: 8 * 500_000 / 500 = 8 000 ms — exactly at the reserve, so not yet OVER it.
-        assert!(!StallGuard::expired(8_000, 0, 500_000, 500));
-        // A megabyte at the same rate is 16 000 ms and must abort. The un-multiplied form reads
-        // 2 000 ms — comfortably inside an 8 000 ms reserve — so it gives the opposite ANSWER, not
-        // merely a different number. That is the whole of R16.
-        assert!(StallGuard::expired(8_000, 0, 1_000_000, 500));
-        // ...and it would keep saying "comfortable" until the segment was eight times larger.
-        assert!(!StallGuard::expired(8_000, 0, 1_000_000 / 8, 500));
-    }
-
-    /// The device case this was built from, in numbers: rung 18000 against a 500 kbps link is
-    /// ~4.5 MB of segment, i.e. 36 Mbit, i.e. 72 s of fetch — against a reserve measured at
-    /// 2 168 ms when the warm-up deadline fired. Continuing is a 70-second stall.
-    #[test]
-    fn the_measured_device_stall_is_refused() {
-        assert!(StallGuard::expired(2_168, 0, 4_500_000, 500));
-    }
-
-    /// **The reserve drains at real time while the fetch runs**, so the comparison is against what
-    /// will still be there, not against what there was. Same fetch, same link, later in the wait.
-    #[test]
-    fn the_reserve_is_discounted_by_the_time_already_spent_waiting() {
-        // 1 000 kbps, 100 000 bytes left = 800 ms of fetch, against 1 000 ms of reserve: fine.
-        assert!(!StallGuard::expired(1_000, 0, 100_000, 1_000));
-        // 500 ms into the wait the same fetch is projected against 500 ms of reserve: not fine.
-        assert!(StallGuard::expired(1_000, 500, 100_000, 1_000));
-    }
-
-    /// A reserve spent DURING the fetch is not a projection question — the picture has stopped and
-    /// every further millisecond is stall, whatever the link does next.
-    #[test]
-    fn a_reserve_exhausted_during_the_fetch_aborts_without_projecting() {
-        assert!(StallGuard::expired(1_000, 1_000, 1, 1_000_000));
     }
 
     /// **But a reserve that was empty when the fetch STARTED never arms the guard at all**, which
     /// is a different question and is the one that matters: that is every session's first segment,
     /// and arming there aborts the fetch that would have created the picture. Device-measured
     /// without this gate: `stall abort seq=0 ... of 0ms reserve`, playback never started, the video
-    /// plane never bound. Differential by construction — `expired` answers `true` for the same
-    /// numbers, so only the arming decision can make this pass.
+    /// plane never bound.
     #[test]
     fn an_empty_reserve_at_the_start_of_a_fetch_arms_nothing() {
-        assert!(
-            StallGuard::expired(0, 0, 1, u32::MAX as i64),
-            "the projection alone would abort"
-        );
         assert!(
             StallGuard::arm(0).is_none(),
             "so the guard must refuse to be armed"
@@ -6610,41 +9571,102 @@ mod stall_guard_tests {
         );
     }
 
-    /// **Absence of evidence never fires the guard.** No bytes left to fetch, no measured rate, or
-    /// a nonsense rate all mean the projection has no inputs — and a guard that aborts on missing
-    /// information would abandon healthy segments for the same reason `buffered_ms()` returning
-    /// `0` for "unknown" once turned a full reserve into a downshift trigger.
     #[test]
-    fn a_projection_with_no_inputs_does_not_abort() {
+    fn the_floor_guard_holds_the_clock_without_abandoning_the_only_rung() {
+        let hold = StallGuard::arm_clock_hold(2_000).expect("a live floor reserve arms");
         assert!(
-            !StallGuard::expired(1_000, 0, 0, 500),
-            "nothing left to fetch"
+            !hold.aborts_fetch(),
+            "the floor has no cheaper object to re-fetch"
         );
         assert!(
-            !StallGuard::expired(1_000, 0, -5, 500),
-            "already past the declared size"
-        );
-        assert!(
-            !StallGuard::expired(1_000, 0, 500_000, 0),
-            "no rate measured"
-        );
-        assert!(
-            !StallGuard::expired(1_000, 0, 500_000, -1),
-            "a negative rate is not a rate"
+            StallGuard::arm(2_000)
+                .expect("a live non-floor reserve arms")
+                .aborts_fetch(),
+            "above the floor the same signal must still release the controller to downshift",
         );
     }
 
-    /// It cannot panic or wrap on the extremes the estimator is known to produce — this project
-    /// has measured an 865 Gbit/s reading, and `i64::MAX` bytes is what a corrupt declared size
-    /// looks like.
     #[test]
-    fn the_arithmetic_survives_the_extremes_this_project_has_actually_seen() {
-        assert!(!StallGuard::expired(1_000, 0, 500_000, 865_000_000));
-        assert!(StallGuard::expired(1_000, 0, i64::MAX, 1));
-        assert!(!StallGuard::expired(i64::MAX, 0, 1, 1));
+    fn an_existing_terminal_hold_arms_no_second_abort() {
         assert!(
-            StallGuard::expired(i64::MIN, 0, 1, 1),
-            "a nonsense reserve is an empty one"
+            arm_active_stall_guard(Some(2_000), false, true).is_none(),
+            "the response rebuilding an empty reserve must be allowed to complete",
+        );
+        assert!(
+            arm_active_stall_guard(Some(2_000), false, false).is_some(),
+            "a running clock still needs its terminal boundary",
+        );
+    }
+
+    /// The reserve is spent by the PLAYHEAD, not by wall time. A server may wait arbitrarily while
+    /// playback is paused or re-priming without consuming one millisecond of queued media.
+    #[test]
+    fn a_fetch_the_playhead_is_not_consuming_never_aborts() {
+        let _serial = crate::testlock::serial();
+        let pos = 5_000_000_000i64;
+        crate::player::SHARED
+            .playpos_ns
+            .store(pos, std::sync::atomic::Ordering::Relaxed);
+        let guard = StallGuard {
+            reserve_ms_at_start: 2_000,
+            playhead_at_start_ns: pos,
+            action: super::StallAction::AbortFetch,
+        };
+        assert!(
+            !guard.should_abort(400_000, false),
+            "the guard abandoned a fetch while the picture was not consuming its reserve"
+        );
+    }
+
+    /// The other half, so the fix cannot be "never abort": a playhead that IS advancing spends the
+    /// reserve exactly as before, and a fetch that provably cannot land still aborts.
+    #[test]
+    fn a_fetch_the_playhead_is_consuming_still_aborts() {
+        let _serial = crate::testlock::serial();
+        let pos = 5_000_000_000i64;
+        let guard = StallGuard {
+            reserve_ms_at_start: 2_000,
+            playhead_at_start_ns: pos,
+            action: super::StallAction::AbortFetch,
+        };
+        crate::player::SHARED
+            .playpos_ns
+            .store(pos + 1_999_000_000, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            !guard.should_abort(400_000, false),
+            "one millisecond of reserve remains"
+        );
+        // Exactly the two seconds of media present at the boundary have now been consumed.
+        crate::player::SHARED
+            .playpos_ns
+            .store(pos + 2_000_000_000, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            guard.should_abort(400_000, false),
+            "a genuinely exhausted reserve must still abort"
+        );
+    }
+
+    /// The main thread's B=0 hold and the worker's playhead sample are the same physical boundary.
+    /// The explicit signal covers millisecond quantisation and a callback that resumes just after
+    /// Starfish was paused.
+    #[test]
+    fn a_terminal_hold_aborts_only_an_incomplete_response() {
+        let _serial = crate::testlock::serial();
+        crate::player::SHARED
+            .playpos_ns
+            .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
+        let guard = StallGuard::arm(6_000).expect("a live reserve arms");
+        assert!(
+            guard.should_abort(1, true),
+            "B=0 with bytes remaining is terminal"
+        );
+        assert!(
+            !guard.should_abort(0, true),
+            "a complete sized response must be credited"
+        );
+        assert!(
+            !guard.should_abort(-1, true),
+            "past the declared end is complete too"
         );
     }
 }

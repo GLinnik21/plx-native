@@ -4,6 +4,13 @@
 --no-early`, panel off, lock held. Both logs are beside this file, scrubbed:
 `j3b-downshift-floor-logs/before-absorbing.log` and `after-floor.log`.
 
+**Later correction (2026-08-30):** the measurement below still proves that an unbounded active
+fetch can hide the next controller decision for tens of seconds. Its prefix-rate projection is no
+longer the remedy: real PMS can pause inside an advertised body while producing the segment, so
+the prefix cannot identify the remaining completion time. Current `StallGuard` converts only the
+observed terminal reserve boundary `B = 0` into a decision point; incomplete prefixes are
+right-censored and excluded from both estimators.
+
 ## What was being looked for, and what was actually there
 
 The session was verifying the **abort rule** (the plan's R16 + R12) — `ff::StallGuard`, which
@@ -194,7 +201,8 @@ So all FOUR are load-bearing — both A/Bs were taken and both fail — and the 
 redundant in a passing run is that they act at different points: the ratchet and the gate keep the reserve from collapsing in the first
 place, and the floor is what makes the collapse survivable when it happens anyway.
 
-- ~~The abort rule's own contribution is unmeasured.~~ **ANSWERED, and it stays too.** One leg
+- ~~The historical prefix abort rule's own contribution is unmeasured.~~ **ANSWERED for this
+  synthetic fixture, but superseded for PMS.** One leg
   with `StallGuard::arm` returning `None` and everything else identical: the case FAILS, by a
   DIFFERENT mechanism from the no-floor leg. With no abort the active fetch at 18000 kbps simply
   runs against a 500 kbps link, so no segment ever completes, no sample ever enters, and the

@@ -10,9 +10,10 @@
 //!     The caller MUST read the OUTPUT codecs off the returned body (Part.Stream[].codec):
 //!     the Load payload has to describe what the server will actually send, not the source
 //!     (see route::apply_decision_codecs and [[audio-payload-codecs]]).
-//! Both return the parsed MediaContainer; a `?`/None degrades exactly like the old raw-body
-//! scan (caller falls back to the local codec heuristic / skips the codec override).
-use super::client::{Client, QueryBuilder, StreamUrl};
+//! The ordinary calls return the parsed MediaContainer; a `?`/None degrades exactly like the old
+//! raw-body scan (caller falls back to the local codec heuristic / skips the codec override). The
+//! ABR deadline-bearing twin retains HTTP, deadline and transport causes for route policy.
+use super::client::{Client, JsonDeadlineOutcome, QueryBuilder, StreamUrl};
 use super::models::MediaContainer;
 use super::params::{Ceiling, TranscodeDelivery, TranscodeSpec};
 use super::probe::Location;
@@ -318,8 +319,8 @@ impl Client {
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
             .str("X-Plex-Client-Profile-Extra", &profile_extra(s.delivery));
-        if s.offset_secs >= 0 {
-            q = q.int("offset", s.offset_secs);
+        if let Some(offset) = s.offset.wire_seconds() {
+            q = q.str("offset", &offset);
         }
         q.query()
     }
@@ -365,6 +366,22 @@ impl Client {
         self.get_json_with_headers(&path, &[&session_header])
     }
 
+    /// Register the same candidate, but as one leg of a caller-owned absolute transaction
+    /// deadline. Ordinary playback decisions keep their API timeout; only Auto exploration uses
+    /// this path.
+    pub(crate) fn transcode_decision_until(
+        &self,
+        spec: &TranscodeSpec,
+        deadline: std::time::Instant,
+    ) -> JsonDeadlineOutcome {
+        let path = format!(
+            "/video/:/transcode/universal/decision?{}",
+            self.transcode_query(spec)
+        );
+        let session_header = format!("X-Plex-Session-Identifier: {}", spec.session);
+        self.get_json_with_headers_until(&path, &[&session_header], deadline)
+    }
+
     /// The delivery-matched stream target for `spec` — same params as the registering decision.
     pub fn transcode_start_url(&self, spec: &TranscodeSpec) -> StreamUrl {
         let endpoint = match spec.delivery {
@@ -381,7 +398,8 @@ impl Client {
         }
     }
 
-    /// GET /video/:/transcode/universal/stop — free the server-side encoder for `session`.
+    /// GET /video/:/transcode/universal/stop — free both the physical encoder and the Streaming
+    /// Resource bandwidth allocation owned by `session`.
     /// Returns whether the request reached the server and came back accepted.
     ///
     /// Reported rather than discarded, for the reason [`Client::get_ok`] exists: this is a
@@ -392,10 +410,60 @@ impl Client {
     /// [`super::library::Client::scrobble`], it does not tell a 200 from a 404: `get_ok` is
     /// `http_get`'s own success, which is the honest limit of a GET whose body carries nothing.
     pub fn transcode_stop(&self, session: &str) -> bool {
-        let q = QueryBuilder::new("/video/:/transcode/universal/stop")
+        self.get_ok(&self.transcode_stop_query(session, true))
+    }
+
+    /// Stop the physical encoder while deliberately preserving its Streaming Resource. Runtime
+    /// HLS→direct recovery uses this after decoded source frames: that raw Part is exact-borrowing
+    /// the same resource, and terminating it here would make the next Range/seek return 503.
+    pub(crate) fn transcode_stop_physical(&self, session: &str) -> bool {
+        self.get_ok(&self.transcode_stop_query(session, false))
+    }
+
+    fn transcode_stop_query(&self, session: &str, close_resource: bool) -> String {
+        QueryBuilder::new("/video/:/transcode/universal/stop")
             .str("session", session)
-            .str("X-Plex-Client-Identifier", &self.client_id);
-        self.get_ok(&q.build())
+            // PMS accounts the physical transcode and its Streaming Resource separately. A bare
+            // stop can remove the former while leaving the latter's WAN allocation charged. The
+            // close flag makes the asynchronous stop worker terminate the normalized resource
+            // identity after stopping the encoder; every production TranscodeSpec deliberately
+            // couples that identity to this exact physical key.
+            .int("closeResourceSession", i64::from(close_resource))
+            .str("X-Plex-Session-Identifier", session)
+            .str("X-Plex-Client-Identifier", &self.client_id)
+            .build()
+    }
+
+    /// Synchronize the logical half of a completed transcode cleanup.
+    ///
+    /// PMS's stop worker erases the physical map entry before its trailing Streaming Resource
+    /// reconciliation, so physical ping=404 has a small but real race. This POST exact-looks up
+    /// the normalized resource identity and terminates its WAN/slot accounting synchronously.
+    /// For the same authenticated owner, 404 is the idempotent already-closed answer; every other
+    /// non-2xx status and transport failure remains inconclusive.
+    pub fn transcode_resource_reconciled(&self, session: &str) -> Option<bool> {
+        let q =
+            QueryBuilder::new("/status/sessions/close").str("X-Plex-Session-Identifier", session);
+        match self.post_status(&q.build())? {
+            200..=299 | 404 => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Whether PMS still owns the exact physical `session=` entry.
+    ///
+    /// PMS 1.43.4 answers `/stop` before its asynchronous cleanup worker removes this physical-map
+    /// entry. Its matching `/ping` exact-lookups that map: 200 while present, 404 after removal.
+    /// The separately-owned Streaming Resource can outlive it, so `Some(false)` certifies only the
+    /// physical half; callers must follow it with [`Client::transcode_resource_reconciled`]. Every
+    /// other response remains unknown.
+    pub fn transcode_session_present(&self, session: &str) -> Option<bool> {
+        let q = QueryBuilder::new("/video/:/transcode/universal/ping").str("session", session);
+        match self.get_status(&q.build())? {
+            200..=299 => Some(true),
+            404 => Some(false),
+            _ => None,
+        }
     }
 }
 
@@ -429,9 +497,152 @@ mod tests {
             no_video_copy,
             audio_stream_id: 0,
             subtitle_stream_id: 0,
-            offset_secs: -1,
+            offset: crate::plex::TranscodeOffset::Fresh,
             ceiling: None,
         }
+    }
+
+    /// PMS acknowledges `/stop` before its cleanup worker erases the physical session. The
+    /// matching ping exact-looks up that half of the lifecycle: 200 while the physical map entry
+    /// exists, 404 after it is gone. Other statuses prove neither state and must fail closed; the
+    /// logical Streaming Resource has its own close method and is deliberately not inferred here.
+    #[test]
+    fn transcode_ping_distinguishes_present_absent_and_unknown_cleanup_state() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port() as i32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for status in ["200 OK", "404 Not Found", "500 Internal Server Error"] {
+                let (mut socket, _) = listener.accept().expect("accept ping");
+                let mut line = String::new();
+                BufReader::new(&socket)
+                    .read_line(&mut line)
+                    .expect("request line");
+                tx.send(line).expect("publish request");
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("response");
+            }
+        });
+
+        let client = Client::new(
+            ServerId::from_raw(1),
+            "mach",
+            Origin::http("127.0.0.1", port),
+            "tok",
+            "cid",
+        );
+        assert_eq!(client.transcode_session_present("encoder-one"), Some(true));
+        assert_eq!(client.transcode_session_present("encoder-two"), Some(false));
+        assert_eq!(client.transcode_session_present("encoder-three"), None);
+
+        for expected in ["encoder-one", "encoder-two", "encoder-three"] {
+            let line = rx.recv().expect("captured ping");
+            assert!(
+                line.contains(&format!(
+                    "/video/:/transcode/universal/ping?session={expected}&X-Plex-Token=tok"
+                )),
+                "{line}",
+            );
+        }
+        server.join().unwrap();
+    }
+
+    /// A physical `/stop` is not enough to return the bandwidth PMS charged to this playback.
+    /// PMS 1.43.4 keeps the Streaming Resource independently and closes it only when the stop
+    /// carries both `closeResourceSession=1` and the exact resource identity. Without these two
+    /// fields each successful ABR experiment leaves less WAN budget for the next one even after
+    /// `/ping` says the physical encoder is gone.
+    #[test]
+    fn transcode_stop_closes_its_exact_streaming_resource() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port() as i32;
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept stop");
+            let mut line = String::new();
+            BufReader::new(&socket)
+                .read_line(&mut line)
+                .expect("request line");
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .expect("response");
+            line
+        });
+
+        let client = Client::new(
+            ServerId::from_raw(1),
+            "mach",
+            Origin::http("127.0.0.1", port),
+            "tok",
+            "cid",
+        );
+        assert!(client.transcode_stop("encoder-one"));
+        let line = server.join().unwrap();
+        assert!(line.contains("session=encoder-one"), "{line}");
+        assert!(line.contains("closeResourceSession=1"), "{line}");
+        assert!(
+            line.contains("X-Plex-Session-Identifier=encoder-one"),
+            "{line}",
+        );
+    }
+
+    #[test]
+    fn resource_close_is_posted_and_accepts_only_terminated_or_absent() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port() as i32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for status in ["200 OK", "404 Not Found", "500 Internal Server Error"] {
+                let (mut socket, _) = listener.accept().expect("accept close");
+                let mut line = String::new();
+                BufReader::new(&socket)
+                    .read_line(&mut line)
+                    .expect("request line");
+                tx.send(line).expect("publish request");
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("response");
+            }
+        });
+
+        let client = Client::new(
+            ServerId::from_raw(1),
+            "mach",
+            Origin::http("127.0.0.1", port),
+            "tok",
+            "cid",
+        );
+        assert_eq!(
+            client.transcode_resource_reconciled("resource-one"),
+            Some(true)
+        );
+        assert_eq!(
+            client.transcode_resource_reconciled("resource-two"),
+            Some(true)
+        );
+        assert_eq!(client.transcode_resource_reconciled("resource-three"), None);
+
+        for expected in ["resource-one", "resource-two", "resource-three"] {
+            let line = rx.recv().expect("captured close");
+            assert!(line.starts_with("POST /status/sessions/close?"), "{line}");
+            assert!(
+                line.contains(&format!("X-Plex-Session-Identifier={expected}")),
+                "{line}",
+            );
+        }
+        server.join().unwrap();
     }
 
     /// **`directStream` is the server's permission to copy the video track, and the ordinary
@@ -632,6 +843,18 @@ mod tests {
     }
 
     #[test]
+    fn an_hls_replacement_keeps_the_exact_fractional_content_boundary() {
+        let mut s = spec(false, false);
+        s.delivery = TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        s.offset = crate::plex::TranscodeOffset::from_micros(2_002_000);
+        let q = a_client().transcode_query(&s);
+        assert!(q.contains("offset=2.002000"), "{q}");
+        assert_eq!(q.matches("offset=").count(), 1, "{q}");
+    }
+
+    #[test]
     fn the_probe_builder_keeps_the_two_session_wires_explicit() {
         let mut s = spec(false, false);
         s.delivery = TranscodeDelivery::FixedHls {
@@ -778,9 +1001,9 @@ mod tests {
     }
 
     /// PIN: the transcode target's FIRST entry is `Caps::encode_vcodec` — the one definition
-    /// route.rs's Load-payload guess and retranscode's `set_stream_codecs` also read. Before the
-    /// accessor existed the head was spelled three times by hand (`if caps().hevc { "hevc" } else
-    /// { "h264" }`), and drift meant a Load payload naming a codec the profile never asked the
+    /// route.rs's Load-payload guess and retranscode declaration also read. Before the accessor
+    /// existed the head was spelled three times by hand (`if caps().hevc { "hevc" } else {
+    /// "h264" }`), and drift meant a Load payload naming a codec the profile never asked the
     /// server to produce — the payload/output mismatch of docs/plex-pass-audit.md row 1.
     #[test]
     fn the_target_head_is_the_shared_encode_vcodec_definition() {

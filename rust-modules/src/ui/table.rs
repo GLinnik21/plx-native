@@ -481,6 +481,19 @@ impl TableView {
         self.scroll.step(sc, 300.0, dt);
     }
 
+    /// The highlight springs as `(top position, top velocity, bottom position, bottom velocity)`.
+    /// Test-only: screens need to prove they actually advance the shared table motion without
+    /// exposing its implementation as product API.
+    #[cfg(test)]
+    pub(crate) fn highlight_motion(&self) -> (f32, f32, f32, f32) {
+        (
+            self.hl_top.pos,
+            self.hl_top.vel,
+            self.hl_bot.pos,
+            self.hl_bot.vel,
+        )
+    }
+
     pub fn draw(&self, p: Painter, frame: Rect) {
         if self.n_rows() == 0 {
             Label::new(
@@ -860,19 +873,43 @@ mod tests {
         assert_eq!(Row::new("Chapters").readout(), None);
     }
 
+    /// The shared table promises a travelling focus pill. A caller that changes `sel` but forgets
+    /// to call `update` gets exactly the reported failure: new-row ink with the old pill, followed
+    /// by a later jump. Pin both halves of the motion contract here — moving and genuinely resting.
     #[test]
-    fn selection_plate_moves_toward_the_new_row_when_updated() {
-        let mut table = TableView::new();
-        table.set_sections(
-            vec![Section::new("")
-                .row(Row::new("First").detail("one"))
-                .row(Row::new("Second").detail("two"))],
+    fn the_focus_pill_runs_between_rows_and_goes_quiet_at_rest() {
+        let _serial = crate::testlock::serial();
+        let mut t = TableView::new();
+        t.set_sections(
+            vec![Section::new("").row(Row::new("One")).row(Row::new("Two"))],
             0,
             false,
         );
-        let before = table.hl_top.pos;
-        table.move_sel(1);
-        table.update(1.0 / 60.0, 600.0);
-        assert!(table.hl_top.pos > before, "the focus plate must follow sel");
+        let start = t.highlight_motion();
+        t.move_sel(1);
+        t.update(1.0 / 60.0, t.measured_height());
+        let running = t.highlight_motion();
+        assert!(
+            running.0 > start.0,
+            "the pill did not leave its old row: {running:?}"
+        );
+        assert!(
+            running.1.abs() > 0.0,
+            "a travelling edge must carry velocity: {running:?}"
+        );
+
+        for _ in 0..240 {
+            t.update(1.0 / 60.0, t.measured_height());
+        }
+        let resting = t.highlight_motion();
+        let target = t.row_top(1) + PILL_INSET;
+        assert!(
+            (resting.0 - target).abs() < 0.01,
+            "pill stopped away from row 1: {resting:?}"
+        );
+        assert!(
+            resting.1.abs() < 0.01,
+            "settled pill still reports motion: {resting:?}"
+        );
     }
 }

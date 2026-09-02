@@ -11,7 +11,8 @@ the table is now generated, its provenance is printed beside every number, and a
 
 **Two things are calibrated here and the second is the one that blocks the simulator.**
 
-1. **Operating points** — `ts_kbps`, `audio_es_kbps`, `overhead_ms` per rung, from the M4 pin
+1. **Operating points** — `ts_kbps`, `audio_es_kbps`, `overhead_ms` plus the master declaration
+   and decoded raster per rung, from the M4 pin
    census. `sim.rs` refuses to run an uncalibrated rung rather than interpolating, so a
    three-point table confines every closed-loop experiment to three rungs of a thirteen-rung ladder.
 
@@ -74,6 +75,8 @@ RE_TX = re.compile(
     r"control=(-?\d+|none)ms prime=(-?\d+|none)ms master=(-?\d+|none)ms media=(-?\d+|none)ms "
     r"warmup=(-?\d+|none)ms graded=(-?\d+|none)ms"
 )
+RE_MASTER = re.compile(r"hls: master one-variant bandwidth=(\d+)")
+RE_RASTER = re.compile(r"hls: segment=\d+ bytes=\d+ raster=(\d+)x(\d+)")
 
 # `sim.rs`'s own documented assumption: the AU queues hold demuxed ELEMENTARY bytes while `media=`
 # is measured off the TS wire. 1.04 is an assumed transport-stream overhead -- an assumption, not a
@@ -224,11 +227,16 @@ def operating_points(fixtures: pathlib.Path):
             # not a rule, it is the `provenance` column, which names the capture behind every row.
             # Read it before trusting a table: rows from different captures are legitimate only
             # while the fixture pack is unchanged between them.
-            best = (d.name, rows)
+            text = p.read_text(errors="replace")
+            masters = [int(value) for value in RE_MASTER.findall(text)]
+            rasters = [(int(w), int(h)) for w, h in RE_RASTER.findall(text)]
+            if not masters or not rasters:
+                continue
+            best = (d.name, rows, masters[-1], rasters[-1])
             break
         if best is None:
             continue
-        source, rows = best
+        source, rows, declared_bps, raster = best
         durs = {r["dur"] for r in rows}
         ts = round(statistics.median(r["media"] for r in rows))
         audio = audio_es_kbps(fixtures / fixture[str(rung)])
@@ -241,6 +249,9 @@ def operating_points(fixtures: pathlib.Path):
             "video_es_kbps": round((ts - audio) / TS_OVERHEAD) if audio else None,
             "overhead_ms": round(statistics.median(r["overhead"] for r in rows)),
             "buf_median_ms": round(statistics.median(r["buf"] for r in rows)),
+            "declared_kbps": declared_bps // 1_000,
+            "decoded_width": raster[0],
+            "decoded_height": raster[1],
             "fixture": fixture[str(rung)],
         }
     return out
@@ -308,17 +319,18 @@ def main(argv=None):
     legs = {k: leg_summary(v) for k, v in transaction_legs().items()}
 
     if args.rust:
-        print("        let (ts, audio, overhead) = match rung_request_kbps {")
+        print("        let (ts, audio, overhead, declared, width, height) = match rung_request_kbps {")
         first = True
         for rung, p in sorted(points.items()):
             if p["audio_es_kbps"] is None:
                 continue
             # Type suffixes ride the FIRST arm only, which is how the tuple's types are fixed and
             # how the existing file is written.
-            sfx = ("u32", "u32", "i64") if first else ("", "", "")
+            sfx = ("u32", "u32", "i64", "u32", "u16", "u16") if first else ("", "", "", "", "", "")
             first = False
             print(f"            {rung:_} => ({p['ts_kbps']:_}{sfx[0]}, {p['audio_es_kbps']}{sfx[1]}, "
-                  f"{p['overhead_ms']}{sfx[2]}),")
+                  f"{p['overhead_ms']}{sfx[2]}, {p['declared_kbps']:_}{sfx[3]}, "
+                  f"{p['decoded_width']}{sfx[4]}, {p['decoded_height']}{sfx[5]}),")
         print("            _ => return None,")
         print("        };")
         return 0

@@ -63,13 +63,18 @@ interface drawn on top of it. That's the thing a browser-based client can't do.
 **Your library never leaves your network.** The app talks to your own Plex Media Server, to
 `plex.tv` to sign in, and to `discover.provider.plex.tv` for cast biographies.
 
-**Crash reports and usage are OFF, and stay off unless you turn them on.** Two separate switches,
-both off by default, both reversible, and the screen that asks shows every exact schema with
-runtime values replaced by placeholders before you answer. Turning both off deletes the random identifier that television
-used. No title, search term, subtitle line, server name or address can appear in any of them. Usage
-events structurally cannot carry runtime text; native crash envelopes pass a separate fixed
-allowlist that rejects user/request scopes and removes directory names. [`PRIVACY.md`](PRIVACY.md)
-is the whole statement, including the mechanically checked schemas.
+**Error reports and usage stay off until you answer two separate first-run questions.** Each offers
+**Share** and **Don’t Share** for one purpose. The crash-report answer remains a draft until the
+product-analytics question is answered; only then are both choices recorded. `BACK` navigates
+without recording a refusal. The choices remain reversible under Account → Settings → Privacy &
+data, where **Done** saves changed switches and `BACK` discards them. The same route shows every
+exact schema with placeholders for random/build-specific values and representative fixed classes.
+Turning product analytics off deletes the random identifier that television used. No title, search
+term, subtitle line, server name or address can appear in any report. Usage events structurally
+cannot carry runtime text; native crash envelopes pass a separate fixed allowlist that rejects
+user/request scopes and removes directory names; handled playback failures carry only fixed classes
+and a bounded typed trace.
+[`PRIVACY.md`](PRIVACY.md) is the whole statement, including the mechanically checked schemas.
 
 ## Before you install
 
