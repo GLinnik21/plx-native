@@ -2634,7 +2634,13 @@ def op_seek_inplace(lines, target_s):
     if not seg_ok:
         ln = find(lines, "in-place seek:")
         return False, f"in-place seek lacked sendSegment=1 :: {ln.strip() if ln else 'no in-place seek: line'}"
-    if find(lines, "reload_at: fresh Load"):
+    # Only a reload AFTER the seek fired is the seek falling back to one. A reload before it is
+    # some other transition's -- handing playback to Auto restarts the source
+    # (`route transition: adaptive direct reload` -> `reload_at: fresh Load`) a minute before
+    # `original_then_auto_and_seek`'s seek, and grepping the whole log failed that case with the
+    # seek in place and landed (2026-09-02).
+    after_seek = lines[lines.index(started) + 1:]
+    if find(after_seek, "reload_at: fresh Load"):
         return False, "in-place seek fell back to a reload (`reload_at: fresh Load` present)"
     reached, err = _reached_target(lines, target_s)
     if err:
@@ -2932,10 +2938,26 @@ def a_no_demux_failure(lines):
                          f"the demuxer gave up :: {bad.strip()}")
 
 
+# The route reducer (2026-09) renamed both audio-switch lines; each new spelling is written
+# immediately before the same call the old one preceded (`engine::switch_audio_native`,
+# `engine::reload_transcode`), so either spelling is the switch. Both are kept so an older log
+# still grades.
+AUDIO_NATIVE_SWITCH_LINES = ("route transition: native audio idx=", "audio switch (native)")
+AUDIO_RETRANSCODE_LINES = ("route transition: user retranscode", "re-transcode:")
+
+
+def _find_any(lines, needles):
+    for needle in needles:
+        hit = find(lines, needle)
+        if hit is not None:
+            return hit
+    return None
+
+
 def op_audio_native(lines):
-    hit = find(lines, "audio switch (native)")
+    hit = _find_any(lines, AUDIO_NATIVE_SWITCH_LINES)
     if hit is None:
-        return False, "no `audio switch (native)` line (switch was not native)"
+        return False, "no `route transition: native audio` line (switch was not native)"
     cs = codec_ids(lines)
     if not cs:
         return False, "no ff codec line after switch"
@@ -2952,10 +2974,10 @@ def op_audio_native(lines):
 
 
 def op_audio_transcode(lines):
-    re_t = find(lines, "re-transcode:")
+    re_t = _find_any(lines, AUDIO_RETRANSCODE_LINES)
     rl_t = find(lines, "reload_transcode:")
     if re_t is None or rl_t is None:
-        return False, f"missing transcode-switch logs (re-transcode={bool(re_t)} reload_transcode={bool(rl_t)})"
+        return False, f"missing transcode-switch logs (retranscode={bool(re_t)} reload_transcode={bool(rl_t)})"
     cs = codec_ids(lines)
     # The audio-forced re-transcode must not cost the VIDEO anything: since the transcode
     # target became a chain (hevc,h264 — issue #22, 2026-08-11), the server direct-streams

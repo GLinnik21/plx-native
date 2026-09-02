@@ -1656,6 +1656,56 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertFalse(run.a_abr_shape(base, {"min_rejected_upshifts": 1})[0],
                          "no transaction at all is not a refusal")
 
+    def test_audio_switch_ops_read_the_route_transition_lines(self):
+        """The 2026-09 route reducer renamed the two audio-switch log lines and the harness kept
+        grepping the old ones, so both switch cases failed on the television with the switch
+        demonstrably done (`audio_switch_native` / `audio_switch_transcode`, 2026-09-02).
+
+        Old:  `audio switch (native): idx=0 at 5s -> reload` / `re-transcode: asid=... -> reload`
+        New:  `route transition: native audio idx=0 at 5s` / `route transition: user retranscode at 5s`
+        Each is written immediately before the same call the old line preceded
+        (`engine::switch_audio_native`, `engine::reload_transcode`), so either spelling is the
+        switch. A log carrying neither is still not a switch.
+        """
+        codec = "ff: v=#0 codec=hevc codec_id=173 3840x2160 trc=16 pri=9 spc=9 a=#1 dur_ns=1"
+        native_new = [codec, "route transition: native audio idx=0 at 5s",
+                      "switch_audio_native: audio_idx=0 at 5s", "reload_at: fresh Load at 5s", codec]
+        ok, why = run.op_audio_native(native_new)
+        self.assertTrue(ok, why)
+        native_old = [codec, "audio switch (native): idx=0 at 5s -> reload", codec]
+        self.assertTrue(run.op_audio_native(native_old)[0], "the old spelling still grades")
+        self.assertFalse(run.op_audio_native([codec, "reload_at: fresh Load at 5s", codec])[0],
+                         "a reload with no switch line is not a native switch")
+        h264 = "ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
+        tr_new = [h264, "retranscode rk=3 audio=2669 sub=0 offset=5 -> transcode start",
+                  "route transition: user retranscode at 5s",
+                  "reload_transcode: fresh Load at offset 5s", h264]
+        ok, why = run.op_audio_transcode(tr_new)
+        self.assertTrue(ok, why)
+        tr_old = [h264, "re-transcode: asid=2669 refresh=0 offset=5s -> reload",
+                  "reload_transcode: fresh Load at offset 5s", h264]
+        self.assertTrue(run.op_audio_transcode(tr_old)[0], "the old spelling still grades")
+        self.assertFalse(run.op_audio_transcode([h264, "reload_transcode: fresh Load at offset 5s"])[0],
+                         "a transcode reload with no switch line is not an audio switch")
+
+    def test_seek_inplace_ignores_a_reload_that_preceded_the_seek(self):
+        """`original_then_auto_and_seek`, 2026-09-02: handing playback to Auto now restarts the
+        source (`route transition: adaptive direct reload` -> `reload_at: fresh Load at 12s`), and
+        the seek 60 s later was in place and landed -- yet `op_seek_inplace` failed it, because it
+        grepped the whole log for `reload_at: fresh Load`. Only a reload AFTER the seek fired is
+        the seek falling back to one.
+        """
+        pos = lambda t: f"loop=60 route=player overlay=none pos={t}s play=1000pm fps=60"
+        before = ["route transition: adaptive direct reload at 12s", "reload_at: fresh Load at 12s",
+                  pos(70), "seek(in-place): av_seek t=300000000000 coalesced=0",
+                  "in-place seek: setTimeToDecode(296917000000) rv=0 setContentInfo=1 sendSegment=1",
+                  pos(300), pos(310)]
+        ok, why = run.op_seek_inplace(before, 300)
+        self.assertTrue(ok, why)
+        after = before[:-1] + ["reload_at: fresh Load at 300s", pos(310)]
+        self.assertFalse(run.op_seek_inplace(after, 300)[0],
+                         "a reload after the seek is the seek falling back to a reload")
+
     def test_raster_changes_count_transitions_not_commits(self):
         """MATHEMATICAL INVARIANT: eight rungs share 1920x1080 and are eventless to a viewer."""
         lines = [
