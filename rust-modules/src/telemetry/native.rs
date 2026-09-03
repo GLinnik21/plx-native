@@ -9,10 +9,20 @@
 //!
 //! A later healthy boot calls [`import_pending`]. It discards the SDK's envelope header (including
 //! its DSN), accepts exactly one bounded event item, strips local directory names from module
-//! paths, and appends the JSON body to the application's existing consent-aware durable spool.
+//! paths, keeps the crash-report identifier the SDK scope carried as `user.id` (and nothing else
+//! of `user`), and appends the JSON body to the application's existing consent-aware durable spool.
 //! The ordinary sender remains the only code that opens a Sentry connection. This division is
 //! load-bearing: signal capture needs native code, while consent, retry and data minimisation must
 //! keep one implementation.
+//!
+//! **The identifier is captured BEFORE the crash, by the SDK, not added afterwards.** `sdk::start`
+//! sets it on the scope right after `sentry_init`, and every scope change makes the native backend
+//! rewrite the daemon's base-event file (`native_backend_flush_scope`, which copies `scope->user`
+//! beside release, dist and the three contexts). The fatal-signal handler on this target runs no
+//! SDK hook at all — the webOS patch removed them after they reproduced a recursive SIGSEGV — so
+//! whatever is not in that file at the moment of the fault is not in the report. Injecting the id
+//! at import time would attribute a crash to whatever consent said on the NEXT boot; reading it
+//! out of the envelope attributes it to the consent in force when the process died.
 
 use std::path::{Path, PathBuf};
 
@@ -53,11 +63,16 @@ pub(crate) fn sync(c: &super::consent::Consent) -> Guard {
 }
 
 /// Apply a consent change without manufacturing a second lifetime guard.
+///
+/// A change that leaves the backend running (say, product analytics toggled while crash reports
+/// stay on) still re-applies the crash-report id to the scope: `start` returns early once active,
+/// and the id it set at init is the one the daemon would otherwise keep.
 pub(crate) fn sync_change(c: &super::consent::Consent) {
     let wanted = c.answered() && c.errors && super::sender::sentry_dsn().is_some();
     if wanted {
         let _ = import_pending();
         start();
+        set_user(c.errors_id.as_deref());
     } else {
         stop();
         purge_all();
@@ -244,11 +259,18 @@ const TOP_FIELDS: &[&str] = &[
     "environment",
     "dist",
     "sdk",
+    "user",
     "contexts",
     "exception",
     "threads",
     "debug_meta",
 ];
+/// `user` survives with exactly its `id`, and only when that id has the shape this app mints
+/// (`telemetry::is_minted_id`): the crash-report identifier `sdk::start` put on the scope. Email,
+/// username, name and `ip_address` are the four other fields Relay reads as identity, and any of
+/// them — or an id of another shape, which can only be a future SDK putting its own value there —
+/// drops the whole object rather than passing a partial one.
+const USER_FIELDS: &[&str] = &["id"];
 const SDK_FIELDS: &[&str] = &["name", "version"];
 const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
 const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
@@ -366,6 +388,7 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
     {
         retain_fields(sdk, SDK_FIELDS);
     }
+    sanitise_user(event);
     if let Some(exception) = event
         .get_mut("exception")
         .and_then(serde_json::Value::as_object_mut)
@@ -450,6 +473,30 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
     }
 }
 
+/// Keep `user` only as `{"id": <our crash-report id>}`; anything else about it goes.
+fn sanitise_user(event: &mut serde_json::Value) {
+    let keep = event
+        .get_mut("user")
+        .and_then(serde_json::Value::as_object_mut)
+        .map(|user| {
+            retain_fields(user, USER_FIELDS);
+            user.get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| super::is_minted_id(id) || id == PREVIEW_USER_ID)
+        })
+        .unwrap_or(false);
+    if !keep {
+        if let Some(o) = event.as_object_mut() {
+            o.remove("user");
+        }
+    }
+}
+
+/// The placeholder the consent preview shows where a real report carries the crash-report id.
+/// Named here so the sanitizer can let it through the shape check the preview otherwise shares
+/// with a real envelope.
+pub(crate) const PREVIEW_USER_ID: &str = "<crash report id>";
+
 /// A representative native crash built through the same path sanitizer as a real envelope.
 ///
 /// Dynamic values are explicit placeholders: the preview is shown before consent, so it may not
@@ -464,6 +511,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
         "environment": super::sender::ENVIRONMENT,
         "dist": "<ELF build id>",
         "sdk": {"name": "plxnative", "version": "0.16.5"},
+        "user": {"id": PREVIEW_USER_ID},
         "contexts": {
             "os": {"type": "os", "name": "Linux", "version": "<kernel release>",
                 "build": "<kernel build suffix>", "kernel_version": "<kernel release>"},
@@ -669,6 +717,20 @@ mod sdk {
             soc: *const c_char,
             hardware_revision: *const c_char,
         );
+        fn plx_sentry_set_user_id(id: *const c_char);
+    }
+
+    /// Put the crash-report identifier on the SDK scope as `user.id`, or clear it. Each call makes
+    /// the native backend rewrite the daemon's base-event file, so the value is on disk before any
+    /// fault can happen. No-op while the backend is not running.
+    pub(super) fn set_user(id: Option<&str>) {
+        if !ACTIVE.load(Ordering::Acquire) {
+            return;
+        }
+        let id = id.filter(|id| !id.is_empty()).and_then(cstring);
+        unsafe {
+            plx_sentry_set_user_id(id.as_ref().map_or(std::ptr::null(), |id| id.as_ptr()));
+        }
     }
 
     fn cstring(value: impl Into<Vec<u8>>) -> Option<CString> {
@@ -752,6 +814,9 @@ mod sdk {
                     ptr(&hardware_revision),
                 );
                 ACTIVE.store(true, Ordering::Release);
+                // After ACTIVE, because `set_user` refuses to touch a backend that is not running;
+                // still inside `start`, so no caller can observe an active backend with no id.
+                set_user(super::super::consent::errors_id().as_deref());
                 crate::log("telemetry: native ARM crash capture active");
             } else {
                 // `sentry_init` takes ownership even when backend startup fails.
@@ -786,6 +851,14 @@ fn stop() {
 
 #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
 fn stop() {}
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+fn set_user(id: Option<&str>) {
+    sdk::set_user(id);
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+fn set_user(_id: Option<&str>) {}
 
 #[cfg(test)]
 mod tests {
@@ -842,6 +915,8 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&preview_event()).unwrap();
         assert_keys(&value, "", TOP_FIELDS);
         assert_keys(&value, "/sdk", SDK_FIELDS);
+        assert_keys(&value, "/user", USER_FIELDS);
+        assert_eq!(value["user"]["id"], PREVIEW_USER_ID);
         assert_keys(&value, "/contexts/os", OS_FIELDS);
         assert_keys(&value, "/contexts/webos", WEBOS_FIELDS);
         assert_keys(&value, "/contexts/hardware", HARDWARE_FIELDS);
@@ -918,7 +993,9 @@ mod tests {
                 "platform": "native",
                 "level": "fatal",
                 "dist": "11223344556677889900aabbccddeeff00112233",
-                "user": {"id": "must-not-pass"},
+                "user": {"id": "0123456789abcdef0123456789abcdef", "email": "must-not-pass",
+                    "username": "must-not-pass", "ip_address": "must-not-pass",
+                    "name": "must-not-pass"},
                 "request": {"url": "must-not-pass"},
                 "extra": {"future_sdk_field": "must-not-pass"},
                 "arbitrary": "must-not-pass",
@@ -971,6 +1048,11 @@ mod tests {
         );
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
+            v["user"],
+            serde_json::json!({"id": "0123456789abcdef0123456789abcdef"}),
+            "the crash-report id the scope carried survives, and only it"
+        );
+        assert_eq!(
             v["exception"]["values"][0]["stacktrace"]["registers"]["sp"],
             "0xbeef"
         );
@@ -984,6 +1066,36 @@ mod tests {
         assert!(v["contexts"]["webos"].get("model").is_none());
         assert_eq!(v["contexts"]["hardware"]["soc"], "M19_DVB");
         assert!(v["contexts"]["hardware"].get("serial").is_none());
+    }
+
+    /// **A `user.id` that is not our crash-report id is not an id we send.** A future SDK could
+    /// put its own value there (a username, an IP-derived id, an empty string); the only thing
+    /// that passes is the 32-hex shape this app mints, and a miss drops the whole object rather
+    /// than leaving `{"user": {}}`, which Relay still reads as a user.
+    #[test]
+    fn a_user_id_of_another_shape_drops_the_whole_user_object() {
+        let id = "91ad1844535b4dac89d95384165d703c";
+        for bad in [
+            serde_json::json!({"id": "someone@example.invalid"}),
+            serde_json::json!({"id": ""}),
+            serde_json::json!({"id": "0123456789ABCDEF0123456789ABCDEF"}),
+            serde_json::json!({"id": 42}),
+            serde_json::json!({"email": "must-not-pass"}),
+            serde_json::json!("must-not-pass"),
+            serde_json::json!({}),
+        ] {
+            let bytes = envelope(id, serde_json::json!({"platform": "native", "user": bad}));
+            let (_, body, _) = event_from_envelope(&bytes).expect("valid envelope");
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(v.get("user").is_none(), "kept {bad:?}");
+        }
+        let none = envelope(id, serde_json::json!({"platform": "native"}));
+        let (_, body, _) = event_from_envelope(&none).expect("valid envelope");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            v.get("user").is_none(),
+            "nothing is INVENTED for an envelope whose scope carried no id"
+        );
     }
 
     #[test]

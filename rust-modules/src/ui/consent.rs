@@ -103,7 +103,7 @@ const PRODUCT_TITLE: &str = "Share product analytics?";
 /// carry runtime strings and native envelopes must pass a fixed allowlist that rejects content and
 /// identity scopes. Usage action fields remain fixed typed values; the only runtime strings are
 /// the separately allowlisted and bounded compatibility/network dimensions shown in the preview.
-const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
+const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, plus a random crash report identifier created on this television so that one set’s crashes are counted once rather than once per crash. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
 const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports use a random installation identifier and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.";
 
 const ROW_ERRORS: &str = "Crash reports";
@@ -143,6 +143,11 @@ use crate::ui::legal::CONTACT_EMAIL;
 /// person can actually follow: the identifier is the only handle those events have, and before this
 /// row it was minted, persisted and sent while being visible nowhere in the application.
 const DOC_TITLE_ANALYTICS_ID: &str = "Analytics ID";
+/// The crash channel's twin: the Sentry `user.id`, shown for the same reason and with the same
+/// deletion instruction. Two rows rather than one document listing both, because they are two
+/// consents with two lifetimes, and a person who turned only one of them on should find exactly
+/// one identifier here.
+const DOC_TITLE_ERRORS_ID: &str = "Crash report ID";
 const ROW_DELETE: &str = "Delete all local data";
 /// What the confirmation says under its question. The verb is accurate about what it removes and
 /// says nothing about what it cannot reach, and this is the last moment that difference can be
@@ -182,6 +187,8 @@ enum RowId {
     /// Item 14: the usage/analytics channel's own preview — see `DOC_TITLE_USAGE`.
     PreviewUsage,
     Policy,
+    /// The Sentry identifier and how to have those reports deleted — see [`DOC_TITLE_ERRORS_ID`].
+    ErrorsId,
     /// The PostHog identifier and how to have those events deleted — see [`DOC_TITLE_ANALYTICS_ID`].
     AnalyticsId,
     Delete,
@@ -205,6 +212,7 @@ enum PreviewKind {
     Crash,
     Usage,
     Policy,
+    ErrorsId,
     AnalyticsId,
 }
 
@@ -228,6 +236,7 @@ fn row_ids() -> Vec<RowId> {
         RowId::PreviewCrash,
         RowId::PreviewUsage,
         RowId::Policy,
+        RowId::ErrorsId,
         RowId::AnalyticsId,
         RowId::Delete,
     ]
@@ -558,6 +567,11 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
                 .chevron(true),
         )
         .row(
+            Row::new(DOC_TITLE_ERRORS_ID)
+                .detail("The identifier on your crash reports, and how to have them deleted.")
+                .chevron(true),
+        )
+        .row(
             Row::new(DOC_TITLE_ANALYTICS_ID)
                 .detail("The identifier on your analytics, and how to have it deleted.")
                 .chevron(true),
@@ -574,24 +588,6 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
     debug_assert_eq!(row_ids().len() as i32, table().n_rows());
 }
 
-fn apply_answer_with_mint(
-    prev: &Consent,
-    errors: bool,
-    usage: bool,
-    mint: impl FnOnce() -> Option<String>,
-) -> Consent {
-    let next = consent::apply(prev, errors, usage, || mint().unwrap_or_default());
-    // Only usage analytics needs an install identity. Crash reports are deliberately anonymous,
-    // so an errors-only answer must remain valid even if randomness is unavailable. A failed usage
-    // mint, on the other hand, is not an identity: refuse that opt-in rather than inventing one
-    // from a clock or a MAC.
-    if next.usage && next.install_id.as_deref().unwrap_or("").is_empty() {
-        consent::apply(prev, errors, false, String::new)
-    } else {
-        next
-    }
-}
-
 /// Commit the completed first-run decisions or the explicit Settings action, then close.
 fn commit() {
     let (errors, usage) = draft();
@@ -599,14 +595,22 @@ fn commit() {
 }
 
 /// Record one explicit answer and close. BACK never reaches this function.
+///
+/// `consent::apply` owns the whole transition, including the refusal of a channel whose identifier
+/// could not be minted; what is left here is saying so in the log, per channel, because the
+/// person's answer and the recorded decision differ at that moment and nothing on screen says why.
 fn record_answer(errors: bool, usage: bool) {
     let prev = consent::current().unwrap_or_default();
-    let next = apply_answer_with_mint(&prev, errors, usage, crate::telemetry::mint_install_id);
-    if usage && !next.usage {
-        crate::log(
-            "consent: no /dev/urandom — keeping error reporting choice and refusing only usage \
-             analytics rather than inventing an identifier",
-        );
+    let next = consent::apply(&prev, errors, usage, crate::telemetry::mint_id);
+    for (asked, got, channel) in [
+        (errors, next.errors, "crash reports"),
+        (usage, next.usage, "usage analytics"),
+    ] {
+        if asked && !got {
+            crate::log(&format!(
+                "consent: no /dev/urandom — refusing {channel} rather than inventing an identifier"
+            ));
+        }
     }
     crate::telemetry::record(next);
     // A decision can only make sending MORE restricted or newly possible, and both want a flush:
@@ -742,6 +746,14 @@ pub(crate) fn on_ok() -> bool {
             reader().reset();
             crate::ui::idle::invalidate();
         }
+        RowId::ErrorsId => {
+            unsafe {
+                PREVIEW_KIND = PreviewKind::ErrorsId;
+                DOCUMENT_OPEN = true;
+            }
+            reader().reset();
+            crate::ui::idle::invalidate();
+        }
         RowId::AnalyticsId => {
             unsafe {
                 PREVIEW_KIND = PreviewKind::AnalyticsId;
@@ -869,7 +881,8 @@ pub(crate) fn preview_crash() -> String {
         "Crashes / Errors — what is actually sent to Sentry in Germany, and only when error \
          reporting is on. Random and build-specific values are placeholders; fixed classes below \
          are representative values from the closed domains in the Privacy notice. Nothing else is \
-         sent.\n\n",
+         sent. The crash report identifier is random, is created only when crash reports are \
+         enabled, and is shown here as a placeholder.\n\n",
     );
     out.push_str("Native crash report (only when error reporting is on):\n");
     let crash = crate::telemetry::native::preview_event();
@@ -1030,10 +1043,30 @@ fn preview() -> String {
 fn analytics_id_document() -> String {
     match consent::current().and_then(|c| c.install_id).as_deref() {
         Some(id) => format!(
-            "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one installation. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Delete all local data removes it as well. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion."
+            "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one installation. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports, which carry a separate Crash report ID of their own.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Delete all local data removes it as well. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion."
         ),
         None => format!(
-            "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports carry no installation or analytics identifier. (Each report has its own event id, and some carry a fingerprint grouping like reports together, but neither is tied to this installation or to you.)"
+            "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports do not use this identifier. They carry a separate Crash report ID, shown on its own row while crash reports are on."
+        ),
+    }
+}
+
+/// The Crash report ID document — the crash channel's twin of [`analytics_id_document`], reading
+/// the STORED decision for the same reason: the identifier that has actually gone out on reports
+/// is the one in `consent::current`, not whatever the toggles currently show.
+///
+/// The one sentence that differs in kind from the analytics document is what the identifier is
+/// FOR: it lets Sentry count how many televisions an issue reached instead of how many times it
+/// fired, which is the number that decides what gets fixed first. That is said plainly because it
+/// is the reason the identifier exists, and a person deciding whether to leave the switch on is
+/// owed the reason.
+fn errors_id_document() -> String {
+    match consent::current().and_then(|c| c.errors_id).as_deref() {
+        Some(id) => format!(
+            "YOUR CRASH REPORT ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned crash reports on. It is attached to every crash and error report so that one television’s reports are counted once, which is what tells a problem that hit many sets apart from one set that hit it many times. It is not derived from your Plex account, your television or anything about you, and it is never sent with product analytics, which has a separate Analytics ID of its own.\n\nHOW TO HAVE THESE REPORTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these reports carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning crash reports off deletes this identifier, and turning them on again creates a different one. Delete all local data removes it as well. Reports already sent keep the old identifier, which is why it is worth copying down before you turn crash reports off if you intend to ask for their deletion."
+        ),
+        None => format!(
+            "NO CRASH REPORT ID\n\nCrash reports are off, so this installation has no crash report identifier and is sending no crash or error reports.\n\nAn identifier is created only when you turn crash reports on, and deleting it is what turning them off does. If you had crash reports on before and want reports from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when crash reports were turned off, so it can no longer be looked up from this television."
         ),
     }
 }
@@ -1228,6 +1261,10 @@ fn draw_question() {
         // channel's own preview, and the policy — each with its own title and subtitle so the
         // reader can never mistake which document (or which channel) it is looking at.
         let (doc_title, subtitle): (&str, &str) = match kind {
+            PreviewKind::ErrorsId => (
+                DOC_TITLE_ERRORS_ID,
+                "The random identifier attached to crash and error reports from this installation, and how to have those reports deleted.",
+            ),
             PreviewKind::AnalyticsId => (
                 DOC_TITLE_ANALYTICS_ID,
                 "The random identifier attached to product analytics from this installation, and how to have those events deleted.",
@@ -1263,6 +1300,7 @@ fn draw_question() {
             theme::size::LABEL,
         );
         let text = match kind {
+            PreviewKind::ErrorsId => errors_id_document(),
             PreviewKind::AnalyticsId => analytics_id_document(),
             PreviewKind::Policy => privacy_policy().to_string(),
             PreviewKind::Crash => preview_crash(),
@@ -1310,7 +1348,7 @@ mod tests {
     #[test]
     fn a_current_policy_answer_is_not_asked_again() {
         for (e, u) in [(false, false), (true, false), (false, true), (true, true)] {
-            let answered = consent::apply(&Consent::default(), e, u, || "id".into());
+            let answered = consent::apply(&Consent::default(), e, u, || Some("id".into()));
             assert!(
                 !should_show(&answered, false),
                 "re-asked after errors={e} usage={u}"
@@ -1327,25 +1365,24 @@ mod tests {
             errors: true,
             usage: true,
             install_id: Some("old-id".into()),
+            errors_id: Some("old-errors-id".into()),
         };
         assert!(should_show(&old, false));
-        let current = consent::apply(&Consent::default(), true, false, || "new-id".into());
+        let current = consent::apply(&Consent::default(), true, false, || Some("new-id".into()));
         assert!(!should_show(&current, false));
     }
 
+    /// **Each channel carries its own identifier now, so each is refused on its own mint.** This
+    /// used to assert that crash reporting survived a failed mint because it was anonymous; it is
+    /// not anonymous any more, and an opt-in that could not be given an identifier is recorded as
+    /// off rather than sent bare. The transition itself is `consent::apply`'s and tested there;
+    /// this pins that the screen goes through it with no second path.
     #[test]
-    fn unavailable_randomness_refuses_only_usage_and_keeps_error_reporting() {
-        let answer = apply_answer_with_mint(&Consent::default(), true, true, || None);
-        assert!(answer.answered());
-        assert!(
-            answer.errors,
-            "anonymous error reporting does not need an install id"
-        );
-        assert!(
-            !answer.usage,
-            "usage reporting cannot start without its random id"
-        );
-        assert!(answer.install_id.is_none());
+    fn unavailable_randomness_refuses_the_channel_it_failed_for() {
+        let answer = consent::apply(&Consent::default(), true, true, || None);
+        assert!(answer.answered(), "the person is not asked again");
+        assert!(!answer.errors && !answer.usage);
+        assert!(answer.install_id.is_none() && answer.errors_id.is_none());
     }
 
     /// Regression for the TV report: the row selection changed its ink, but this screen never
@@ -1473,6 +1510,39 @@ mod tests {
         }
     }
 
+    /// **The two identifier documents each name only their own channel's identifier.** The
+    /// documents read the stored decision, so this installs one with both ids and checks that
+    /// neither page prints the other's value — the cross-linking the two-id design exists to
+    /// prevent, checked at the one place a person actually reads the values.
+    #[test]
+    fn each_identifier_document_shows_only_its_own_identifier() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        let errors_id = "e".repeat(32);
+        let analytics_id = "a".repeat(32);
+        let mut draws = 0;
+        consent::install(consent::apply(&Consent::default(), true, true, || {
+            draws += 1;
+            Some(if draws == 1 {
+                errors_id.clone()
+            } else {
+                analytics_id.clone()
+            })
+        }));
+        let errors_doc = errors_id_document();
+        let analytics_doc = analytics_id_document();
+        assert!(errors_doc.contains(&errors_id) && !errors_doc.contains(&analytics_id));
+        assert!(analytics_doc.contains(&analytics_id) && !analytics_doc.contains(&errors_id));
+        assert!(errors_doc.contains(CONTACT_EMAIL) && analytics_doc.contains(CONTACT_EMAIL));
+
+        consent::install(consent::apply(&Consent::default(), false, false, || None));
+        assert!(errors_id_document().starts_with("NO CRASH REPORT ID"));
+        assert!(analytics_id_document().starts_with("NO ANALYTICS ID"));
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
     /// **Item 14's whole point: the crash document carries nothing from the usage channel.** A
     /// person reading "what crash reports send" must never see a PostHog identifier or event
     /// field — that would make the split cosmetic rather than a real separation of what goes
@@ -1548,6 +1618,14 @@ mod tests {
             text.contains("<random id>"),
             "and the field itself is a placeholder"
         );
+        assert!(
+            text.contains("created only when crash reports are enabled"),
+            "the crash intro explains its placeholder"
+        );
+        assert!(
+            text.contains(crate::telemetry::native::PREVIEW_USER_ID),
+            "and the crash-report id is shown as a placeholder"
+        );
         // 32 lowercase hex in a row is what a minted id looks like; nothing here may match it.
         let bytes: Vec<char> = text.chars().collect();
         let run = bytes.windows(32).any(|w| {
@@ -1599,6 +1677,7 @@ mod tests {
                 RowId::PreviewCrash,
                 RowId::PreviewUsage,
                 RowId::Policy,
+                RowId::ErrorsId,
                 RowId::AnalyticsId,
                 RowId::Delete,
             ],
@@ -1830,6 +1909,10 @@ mod tests {
     fn first_run_separates_crash_and_product_consent() {
         assert!(CRASH_BODY.contains("signal"));
         assert!(CRASH_BODY.contains("product analytics identifier"));
+        assert!(
+            CRASH_BODY.contains("crash report identifier"),
+            "the crash question must disclose the identifier it now carries"
+        );
         assert!(PRODUCT_BODY.contains("random installation identifier"));
         assert!(PRODUCT_BODY.contains("exact viewing history"));
         assert_ne!(CRASH_TITLE, PRODUCT_TITLE);

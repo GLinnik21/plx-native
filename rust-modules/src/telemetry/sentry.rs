@@ -501,6 +501,23 @@ fn load_span(buf: &[u8]) -> Option<u64> {
                     // mistake this constant exists to have already made once.
 pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
 
+/// Attach the crash-report identifier to an event body as Sentry's `user.id` — **the one shape
+/// every Sentry-bound producer shares**, so the three of them (the native envelope via the SDK
+/// scope, both fallback bodies, the handled playback error) cannot drift into three spellings.
+///
+/// `user.id` and not a tag or a context, because Sentry's "users affected" count is defined as the
+/// distinct values of the promoted `sentry:user` tag, which Relay derives from `user.id` (then
+/// username, email, IP) and from nothing else. A custom tag would count in a hand-written query
+/// and nowhere in the product. And ONLY `id`: no email, username, name or address, which are the
+/// other four fields Relay treats as identity and this channel has no business carrying.
+///
+/// `None` attaches nothing — the body is left exactly as built, with no `user` key at all.
+pub(crate) fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>) {
+    if let Some(id) = errors_id.filter(|id| !id.is_empty()) {
+        body["user"] = serde_json::json!({ "id": id });
+    }
+}
+
 /// Frame one item into an envelope: an envelope header line, an item header line, then the payload.
 ///
 /// Newline-delimited, and the item header's `length` is the payload's byte length — the field this
@@ -526,6 +543,21 @@ mod tests {
     use super::*;
 
     const GOOD: &str = "https://abc123def456@o4507.ingest.de.sentry.io/1234567";
+
+    /// `user` is `{"id": …}` and nothing else, and its absence is the absence of the key — not an
+    /// empty object, which Relay would still read as a user with no identity.
+    #[test]
+    fn the_user_object_carries_exactly_the_id_or_is_absent() {
+        let mut body = serde_json::json!({"event_id": "e"});
+        attach_user(&mut body, None);
+        assert!(body.get("user").is_none());
+        attach_user(&mut body, Some(""));
+        assert!(body.get("user").is_none(), "an empty id is no id");
+        attach_user(&mut body, Some("abc"));
+        assert_eq!(body["user"], serde_json::json!({"id": "abc"}));
+        let keys: Vec<&String> = body["user"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, vec!["id"]);
+    }
 
     #[test]
     fn a_well_formed_dsn_parses_into_its_three_parts() {

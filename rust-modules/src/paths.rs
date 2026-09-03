@@ -488,8 +488,9 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
 ///
 /// **So it outlives an uninstall, and it outlives a change of owner short of a factory reset.**
 /// webOS gives a native app no uninstall hook, so nothing can clear this on the way out. That is
-/// why the file holds a DECISION and, only after opt-in, one random identifier — and why
-/// withdrawing consent DELETES that identifier rather than merely disabling it. Recorded in
+/// why the file holds a DECISION and, only after opt-in, one random identifier PER CHANNEL (the
+/// crash-report id and the analytics id, each owned by its own switch) — and why withdrawing a
+/// channel DELETES its identifier rather than merely disabling it. Recorded in
 /// `PRIVACY.md`, because a user cannot audit a file they cannot reach.
 ///
 /// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root

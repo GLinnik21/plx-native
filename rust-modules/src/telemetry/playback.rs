@@ -89,11 +89,14 @@ fn breadcrumb(step: TraceStep) -> Value {
     })
 }
 
-/// Pure body builder. `dist` is passed in so the consent preview can exercise this exact
-/// serialiser without reading `/proc/self/exe` or minting an id before consent.
+/// Pure body builder. `dist` and `errors_id` are passed in so the consent preview can exercise this
+/// exact serialiser without reading `/proc/self/exe` or minting an id before consent. `errors_id`
+/// is the crash-report identifier, attached as `user.id` through the one shared
+/// [`super::sentry::attach_user`]; the SDK scope does not reach a body this module builds by hand.
 pub(crate) fn event_body(
     event_id: &str,
     dist: &str,
+    errors_id: Option<&str>,
     kind: FailureKind,
     context: PlaybackErrorContext,
     trace: &[TraceStep],
@@ -142,6 +145,7 @@ pub(crate) fn event_body(
     if !dist.is_empty() {
         body["dist"] = Value::String(dist.to_string());
     }
+    super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
@@ -155,7 +159,14 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
         crate::log("telemetry: no /dev/urandom — handled playback error was not queued");
         return;
     };
-    let body = event_body(&event_id, super::sentry::build_id(), kind, context, trace);
+    let body = event_body(
+        &event_id,
+        super::sentry::build_id(),
+        super::consent::errors_id().as_deref(),
+        kind,
+        context,
+        trace,
+    );
     let record = super::queue::Record {
         category: super::queue::Category::Errors,
         dest: super::queue::Dest::Sentry,
@@ -237,6 +248,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
     event_body(
         "<random per-error event id>",
         "<running ELF build id>",
+        Some(super::native::PREVIEW_USER_ID),
         FailureKind::PlaybackInterrupted,
         PlaybackErrorContext {
             delivery: DeliveryClass::Hls,
@@ -466,6 +478,7 @@ mod tests {
         let v: Value = serde_json::from_slice(&event_body(
             &"a".repeat(32),
             "0123456789abcdef",
+            Some(&"e".repeat(32)),
             FailureKind::OriginalRollback,
             context(),
             &trace,
@@ -513,7 +526,9 @@ mod tests {
             "host",
             "address",
             "token",
-            "user",
+            "email",
+            "username",
+            "ip_address",
             "request",
         ] {
             assert!(
@@ -521,6 +536,26 @@ mod tests {
                 "forbidden key {forbidden}: {all:?}"
             );
         }
+        // The one identity slot is the crash-report id, as `user.id` and nothing beside it.
+        let user = v["user"].as_object().expect("user object");
+        assert_eq!(user.keys().collect::<Vec<_>>(), vec!["id"]);
+        assert_eq!(v["user"]["id"], super::super::native::PREVIEW_USER_ID);
+    }
+
+    /// With no crash-report id there is no `user` key at all — never an empty object, which
+    /// Relay would still count as a user.
+    #[test]
+    fn no_errors_id_means_no_user_key() {
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            None,
+            FailureKind::OriginalRollback,
+            context(),
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert!(v.get("user").is_none());
     }
 
     #[test]
@@ -576,6 +611,7 @@ mod tests {
         let v: Value = serde_json::from_slice(&event_body(
             &"a".repeat(32),
             "0123456789abcdef",
+            Some(&"e".repeat(32)),
             FailureKind::OriginalRollback,
             context(),
             &trace,
@@ -600,6 +636,7 @@ mod tests {
                 "sdk",
                 "tags",
                 "transaction",
+                "user",
             ]
         );
         assert_eq!(keys(&v["sdk"]), ["name", "version"]);

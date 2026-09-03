@@ -548,6 +548,7 @@ mod tests {
             errors: true,
             usage: false,
             install_id: None,
+            errors_id: Some("e".repeat(32)),
         };
         assert!(allowed(&rec(Category::Errors, Dest::Sentry), &errors_only));
         assert!(!allowed(&rec(Category::Usage, Dest::PostHog), &errors_only));

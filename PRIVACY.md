@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.5.0. Last updated 1 September 2026.
+Applies to PlxNative 0.5.0. Last updated 3 September 2026.
 
 ## Who is responsible for PlxNative data
 
@@ -27,15 +27,16 @@ PlxNative stores your Plex account token and a separate token for each server yo
 addresses and identifiers of those servers, the profile you selected together with the profile
 names and pictures on your account, your Home library choices, your recent searches, your playback
 quality preference, and a small rotating local log. It also stores your answers to the two
-optional-reporting questions, the random Analytics ID if you turned product analytics on, any
-report waiting to be sent, and a marker recording how much of the crash log has already been read.
+optional-reporting questions, the random Crash report ID if you turned crash reports on, the
+random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
+marker recording how much of the crash log has already been read.
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
 
 Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
-tokens. Your optional-reporting answers and the Analytics ID are kept apart from the sign-in and
-are **not** removed by signing out, so that a decision you have already made is not put to you
-again. A queued report is deleted once sent, or at the moment you switch its category off. The log
+tokens. Your optional-reporting answers and the two identifiers are kept apart from the sign-in
+and are **not** removed by signing out, so that a decision you have already made is not put to
+you again. A queued report is deleted once sent, or at the moment you switch its category off. The log
 rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
 sign-in and the reporting answers can survive an uninstall — use Delete all local data before
 uninstalling if you want nothing of PlxNative left on the television.
@@ -45,15 +46,25 @@ uninstalling if you want nothing of PlxNative left on the television.
 Crash reporting is off until you choose to share it. If enabled, PlxNative sends technical crash
 details to Sentry in Germany. A report may include the signal, code addresses, thread information,
 internal component labels, app and webOS versions, television model and hardware compatibility
-details needed to reproduce and symbolicate the failure. Crash reports do not use the product
-analytics identifier.
+details needed to reproduce and symbolicate the failure.
+
+Every crash and error report carries a **Crash report ID**: a random identifier created on this
+television when you turn crash reports on, sent as the report's `user.id`. It exists so that
+reports from one television are counted once rather than once per crash — Sentry's "users
+affected" figure is the number of distinct Crash report IDs an issue has reached — which is what
+tells a problem that hit many televisions apart from one television that hit it many times. It is
+not derived from your Plex account, your television or anything about you, and it is never sent
+with product analytics. Settings shows it while crash reports are on. Turning crash reports off
+deletes the local identifier; enabling them later creates a new one. Reports already sent keep
+the old identifier, so copy it down first if you intend to ask for their deletion.
 
 The same independent choice also covers a handled playback-error report when playback reaches its
 explicit terminal error screen. That report contains a fixed failure kind, delivery and quality
 classes, coarse raster, rate, HTTP and buffer classes, whether a first picture appeared, and at
 most 32 typed playback transitions with bucketed elapsed times. It contains no title, ratingKey,
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
-and is not joined to the product analytics identifier or `playback_id`. Buffering, seeking, holding
+and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
+report ID as a crash report. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
 `original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and
@@ -112,7 +123,13 @@ names or addresses, access tokens, subtitle text, or exact viewing history.
 
 Crash reports and product analytics are independent. You can enable either, both or neither during
 setup, and change either choice later in Settings → Privacy & data. Withdrawing a choice stops new
-reports of that category and removes queued records that are no longer permitted.
+reports of that category, removes queued records that are no longer permitted, and deletes that
+category's identifier from this television.
+
+To ask what a category holds for your installation, or to have it deleted, write to the contact
+below and quote the identifier Settings shows for that category — the Crash report ID for crash
+and error reports, the Analytics ID for product analytics. Each identifier is the only handle its
+reports carry, so a request without it cannot be matched to anything.
 
 ## Contact and non-affiliation
 

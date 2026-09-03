@@ -35,16 +35,14 @@ pub(crate) fn boot() -> native::Guard {
     // Logged because the alternative is a silent behavioural difference between two televisions.
     // No identifier in the line: it is the one field here worth not putting in a log that gets
     // pasted into issue threads, and its PRESENCE is the only fact worth stating anyway.
+    let presence = |id: &Option<String>| if id.is_some() { "yes" } else { "none" };
     crate::log(&format!(
-        "telemetry: answered={} errors={} usage={} id={}",
+        "telemetry: answered={} errors={} usage={} id={} errors_id={}",
         c.answered(),
         c.errors,
         c.usage,
-        if c.install_id.is_some() {
-            "yes"
-        } else {
-            "none"
-        }
+        presence(&c.install_id),
+        presence(&c.errors_id)
     ));
     consent::install(c.clone());
     if !c.errors {
@@ -282,14 +280,15 @@ fn process_records(
     (retired, retry)
 }
 
-/// 16 bytes of `/dev/urandom` as lowercase hex — the ONLY way an `install_id` is ever produced.
+/// 16 bytes of `/dev/urandom` as lowercase hex — the ONLY way a consent identifier (the analytics
+/// `install_id` or the crash-report `errors_id`) is ever produced.
 ///
 /// Reads the device directly rather than taking a dependency: this crate has no RNG, and the one
 /// property that matters is that the value is not derived from anything about this television or
-/// this account. A read failure yields `None`, and [`consent::apply`]'s caller must then treat the
-/// opt-in as not yet complete rather than inventing a fallback — a "random" identifier built from a
-/// clock or a MAC is exactly the identifier this design refuses.
-pub(crate) fn mint_install_id() -> Option<String> {
+/// this account. A read failure yields `None`, and [`consent::apply`] then records that channel as
+/// off rather than inventing a fallback — a "random" identifier built from a clock or a MAC is
+/// exactly the identifier this design refuses.
+pub(crate) fn mint_id() -> Option<String> {
     let mut buf = [0u8; 16];
     use std::io::Read;
     std::fs::File::open("/dev/urandom")
@@ -297,6 +296,17 @@ pub(crate) fn mint_install_id() -> Option<String> {
         .read_exact(&mut buf)
         .ok()?;
     Some(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Does `s` have the shape [`mint_id`] produces — 32 lowercase hex characters, nothing else?
+///
+/// The native importer uses it to decide whether a `user.id` the crash daemon captured is OUR
+/// crash-report id or something a future SDK scope put there: anything that is not this shape is
+/// dropped with the rest of the user object.
+pub(crate) fn is_minted_id(s: &str) -> bool {
+    s.len() == 32
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[cfg(test)]
@@ -310,6 +320,7 @@ mod tests {
             errors,
             usage: false,
             install_id: None,
+            errors_id: None,
         };
         assert!(newly_enables_errors(None, &state(true)));
         assert!(newly_enables_errors(Some(&state(false)), &state(true)));
@@ -321,6 +332,7 @@ mod tests {
             errors: true,
             usage: false,
             install_id: None,
+            errors_id: None,
         };
         assert!(
             newly_enables_errors(Some(&stale_yes), &state(true)),
@@ -345,6 +357,7 @@ mod tests {
             errors: true,
             usage: true,
             install_id: Some("id".into()),
+            errors_id: Some("eid".into()),
         };
         let mut attempted = Vec::new();
         let (retired, retry) = process_records(
@@ -370,13 +383,54 @@ mod tests {
     /// every install share one id and nobody notice.
     #[test]
     fn a_minted_identifier_is_random_hex() {
-        let Some(a) = mint_install_id() else { return }; // no /dev/urandom: nothing to assert
+        let Some(a) = mint_id() else { return }; // no /dev/urandom: nothing to assert
         assert_eq!(a.len(), 32, "16 bytes as hex");
         assert!(a
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-        let b = mint_install_id().expect("second read");
+        assert!(is_minted_id(&a), "the shape check rejects what the mint produces");
+        let b = mint_id().expect("second read");
         assert_ne!(a, b, "two mints produced the same identifier");
+    }
+
+    /// The shape check is exact: length, case and alphabet. It is what stands between a future SDK
+    /// scope value and the wire, so a near miss must not pass.
+    #[test]
+    fn the_id_shape_check_is_exact() {
+        assert!(is_minted_id(&"0".repeat(32)));
+        assert!(is_minted_id("0123456789abcdef0123456789abcdef"));
+        for bad in [
+            "",
+            "0123456789ABCDEF0123456789abcdef",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789abcdef0123456789abcdeg",
+            "0123456789abcdef-0123456789abcde",
+            "id:0123456789abcdef0123456789abcd",
+        ] {
+            assert!(!is_minted_id(bad), "accepted {bad:?}");
+        }
+    }
+
+    /// **Delete all local data leaves neither identifier in the snapshot.** `app.rs` removes the
+    /// consent file itself; this is the in-memory half, and it is the half a producer on the
+    /// render thread reads, so a report queued after the deletion must find nothing to attach.
+    #[test]
+    fn forgetting_local_data_clears_both_identifiers_from_the_snapshot() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        consent::install(consent::apply(&Consent::default(), true, true, || {
+            Some("f".repeat(32))
+        }));
+        assert!(consent::errors_id().is_some() && consent::allows_usage());
+        forget_local();
+        let after = consent::current().expect("a default decision is published, not none");
+        assert!(!after.any() && !after.answered());
+        assert!(after.install_id.is_none() && after.errors_id.is_none());
+        assert!(consent::errors_id().is_none() && !consent::allows_errors());
+        if let Some(c) = saved {
+            consent::install(c);
+        }
     }
 
     /// An unreadable or corrupt file is the DEFAULT decision, never a partial one — a file we

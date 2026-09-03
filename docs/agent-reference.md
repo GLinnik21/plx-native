@@ -724,8 +724,14 @@ which the linking section explains is load-bearing rather than tidy.
   no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
   The SDK has **no HTTP transport and writes no minidump**: it launches the
   same `plxnative` binary in spool-only mode, which moves the bounded envelope into the install's
-  runtime root. A healthy launch rejects user/request scope, strips path prefixes and queues the
-  event through the existing consent-aware sender. `-fno-omit-frame-pointer` / Rust
+  runtime root. A healthy launch strips path prefixes, rejects request scope and every `user`
+  field but `id` — which it keeps ONLY when it has the 32-hex shape of the app's own crash-report
+  identifier, the `errors_id` that `sdk::start` puts on the SDK scope as `user.id` right after
+  init so the daemon's base event carries it — and queues the event through the existing
+  consent-aware sender. That id is what makes Sentry's "users affected" a count of opted-in
+  televisions rather than of events; it is minted on crash-report opt-in, destroyed on withdrawal,
+  and never the PostHog analytics id (`docs/../PRIVACY.md`, and the two-identifier note in
+  `telemetry/consent.rs`). `-fno-omit-frame-pointer` / Rust
   `force-frame-pointers=yes` are therefore crash-reporting ABI, not optional debug flags.
 
   The patched ARM handler waits up to 30 seconds for that walk. The upstream 10-second budget was

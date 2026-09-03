@@ -1,23 +1,32 @@
-//! **The decision, and the identity that only exists because of it.**
+//! **The decision, and the identities that only exist because of it.**
 //!
-//! Two independent switches — errors and usage — both off until somebody turns them on, plus the
-//! random identifier that is minted by usage opt-in and destroyed by usage withdrawal.
-//! Everything in this file is either a pure transition over a [`Consent`] value or the storage
-//! under it, so the compliance-critical half is host-tested and needs no television and no vendor.
+//! Two independent switches — errors and usage — both off until somebody turns them on, plus ONE
+//! random identifier PER SWITCH, each minted by that switch's opt-in and destroyed by that switch's
+//! withdrawal. Everything in this file is either a pure transition over a [`Consent`] value or the
+//! storage under it, so the compliance-critical half is host-tested and needs no television and no
+//! vendor.
 //!
 //! # The three rules that shape it
 //!
 //! **Nothing is stored to enable telemetry before consent.** Only the decision itself and the
-//! policy version it was given against. In particular no usage identifier: [`apply`] mints one on
-//! the transition into usage consent, never for errors-only consent, never at boot or "just in case", and
-//! [`no_identifier_exists_before_anyone_says_yes`] is the test that keeps it that way.
+//! policy version it was given against. In particular no identifier: [`apply`] mints one on the
+//! transition into a channel's consent, never for the other channel, never at boot or "just in
+//! case", and [`no_identifier_exists_before_anyone_says_yes`] is the test that keeps it that way.
+//!
+//! **Two identifiers, because they are two channels.** The crash-report id (`errors_id`) exists so
+//! that Sentry can count how many opted-in televisions an issue reached rather than how many times
+//! it fired — its built-in "users affected" reads exactly `user.id` and nothing else. The
+//! analytics id (`install_id`) is PostHog's `distinct_id`. They are never the same value and never
+//! travel together: a person who consented to two purposes did not consent to having them joined,
+//! and one shared handle is precisely the join. Withdrawing one channel destroys ITS id and leaves
+//! the other untouched.
 //!
 //! **Two switches, because they are two questions.** Error reports and usage statistics are judged
 //! differently by the people who care — when Audacity retreated it dropped usage analytics and kept
 //! error reporting — and bundling them into one "analytics?" toggle is the shape that reads as a
 //! trick. Two `bool`s, both defaulting to false, and consenting to one says nothing about the other.
 //!
-//! **Usage withdrawal DELETES the identifier**, and that is a change from the plan this was built to,
+//! **Withdrawal DELETES the identifier**, and that is a change from the plan this was built to,
 //! forced by a measurement. The plan said keep the id, request deletion from the vendor, and rotate
 //! only once that succeeded. Neither vendor can delete anonymous data belonging to no account
 //! (`PRIVACY.md` term 7 records why), so "keep it pending a deletion" would be keeping it forever.
@@ -53,6 +62,12 @@ use std::sync::RwLock;
 // Version 4 combines the compatibility/network dimensions introduced by version 3 with handled
 // playback-error events and their bounded typed breadcrumb sequence. Existing version-3 answers
 // covered the former but not the latter, so they must be asked again rather than silently expanded.
+//
+// The crash-report identifier (`errors_id`, 2026-09-04) is a new collected field and did NOT bump
+// this, by decision: no shipped build has ever carried telemetry (v0.5.0 predates the module), so
+// there is no version-4 answer in the world to expand — only the maintainer's own debug installs,
+// which are re-answered by hand. The first release that ships the question ships it with the
+// identifier already in it. The rule above stands for every bump after that one.
 pub(crate) const POLICY_VERSION: u32 = 4;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
@@ -70,14 +85,24 @@ pub(crate) struct Consent {
     /// which screens and features get used
     #[serde(default)]
     pub usage: bool,
-    /// 16 random bytes as lowercase hex, minted when usage analytics is enabled and dropped when
-    /// usage analytics is withdrawn. **Never derived from anything**: not the serial, not the MAC,
-    /// not LG's `LGUDID`,
+    /// The ANALYTICS id: 16 random bytes as lowercase hex, minted when usage analytics is enabled
+    /// and dropped when usage analytics is withdrawn. PostHog's `distinct_id`, and nothing else's.
+    /// **Never derived from anything**: not the serial, not the MAC, not LG's `LGUDID`,
     /// not the Plex account id, not `X-Plex-Client-Identifier`, not the server's
     /// `machineIdentifier`. A derived identifier would survive this file being deleted, which is
     /// the property that makes it an identifier rather than a preference.
+    ///
+    /// The name predates the second identifier below and is kept because it is the stored key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_id: Option<String>,
+    /// The CRASH-REPORT id: same shape and same source, minted when crash reports are enabled and
+    /// dropped when they are withdrawn. Sent as Sentry's `user.id` on every report of that
+    /// channel — the native envelope, both fallback shapes and the handled playback error — and
+    /// never to PostHog. It is what makes "users affected" a count of televisions instead of a
+    /// count of events. Independent of [`Self::install_id`] in both directions: minted, kept and
+    /// destroyed by its own switch alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errors_id: Option<String>,
 }
 
 impl Consent {
@@ -106,33 +131,47 @@ pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
 ///
 /// `mint` is only called when an identifier is actually needed, which is what makes "nothing is
 /// stored before consent" checkable rather than asserted: the randomness source is a parameter, so
-/// a test can prove the mint was never reached.
+/// a test can prove the mint was never reached. It is called at most once PER CHANNEL, and the two
+/// channels never share a result.
 ///
-/// Four behaviours, and each is a test below:
-/// * enabling usage, with no identifier yet, mints one;
-/// * enabling usage again does NOT re-mint;
-/// * disabling usage DROPS the identifier, independently of crash consent;
+/// **A channel whose mint fails is recorded as OFF.** `None` from `mint` means there was no
+/// randomness to draw on, and an opt-in with no identifier is not something this design can
+/// honour: inventing one from a clock or a MAC is exactly the derived identifier the field docs
+/// refuse, and sending reports with no identifier would make the channel silently mean something
+/// different on that one television. The other channel is unaffected — each is judged on its own
+/// mint. `/dev/urandom` does not fail on this platform; the branch exists so that the behaviour is
+/// a decision rather than an accident.
+///
+/// Five behaviours, and each is a test below:
+/// * enabling a channel, with no identifier yet, mints one for THAT channel;
+/// * enabling it again does NOT re-mint;
+/// * disabling a channel DROPS its identifier, independently of the other channel;
+/// * a channel whose mint returns `None` is recorded as off, and the other channel still counts;
 /// * the answer is recorded against the current [`POLICY_VERSION`] either way, so a "no" is a real
 ///   answer and is not re-asked until the policy itself changes.
 pub(crate) fn apply(
     prev: &Consent,
     errors: bool,
     usage: bool,
-    mint: impl FnOnce() -> String,
+    mut mint: impl FnMut() -> Option<String>,
 ) -> Consent {
-    let next = Consent {
-        asked_version: POLICY_VERSION,
-        errors,
-        usage,
-        install_id: None,
+    let mut keep_or_mint = |on: bool, prev_id: &Option<String>| -> Option<String> {
+        if !on {
+            return None;
+        }
+        match prev_id {
+            Some(id) if !id.is_empty() => Some(id.clone()),
+            _ => mint().filter(|id| !id.is_empty()),
+        }
     };
+    let errors_id = keep_or_mint(errors, &prev.errors_id);
+    let install_id = keep_or_mint(usage, &prev.install_id);
     Consent {
-        install_id: match (&prev.install_id, usage) {
-            (_, false) => None,
-            (Some(id), true) => Some(id.clone()),
-            (None, true) => Some(mint()),
-        },
-        ..next
+        asked_version: POLICY_VERSION,
+        errors: errors && errors_id.is_some(),
+        usage: usage && install_id.is_some(),
+        install_id,
+        errors_id,
     }
 }
 
@@ -187,6 +226,19 @@ pub(crate) fn allows_errors() -> bool {
         .unwrap_or(false)
 }
 
+/// The crash-report identifier every Sentry-bound report carries, or `None` when the channel is
+/// off — read from the snapshot, like the two gates, so a producer on the render thread never
+/// touches the disk for it. `None` while [`allows_errors`] is true cannot happen through [`apply`],
+/// but a producer must READ it rather than assume it: the failure would be a report carrying a
+/// fabricated or empty id, which is the one outcome this field exists to make impossible.
+pub(crate) fn errors_id() -> Option<String> {
+    CURRENT.read().ok().and_then(|g| {
+        g.as_ref()
+            .filter(|c| c.answered() && c.errors)
+            .and_then(|c| c.errors_id.clone())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,17 +253,17 @@ mod tests {
         assert!(should_ask(&c, false));
     }
 
-    /// **Nothing is stored to enable telemetry before consent** — the identifier included. Proven
-    /// by the mint never being reached, not by inspecting the result: a test that only checked
-    /// `install_id.is_none()` would pass a version that minted one and threw it away.
+    /// **Nothing is stored to enable telemetry before consent** — both identifiers included.
+    /// Proven by the mint never being reached, not by inspecting the result: a test that only
+    /// checked `is_none()` would pass a version that minted one and threw it away.
     #[test]
     fn no_identifier_exists_before_anyone_says_yes() {
         let fresh = Consent::default();
-        assert!(fresh.install_id.is_none());
+        assert!(fresh.install_id.is_none() && fresh.errors_id.is_none());
         let after_no = apply(&fresh, false, false, || {
             panic!("minted an identifier for a refusal")
         });
-        assert!(after_no.install_id.is_none());
+        assert!(after_no.install_id.is_none() && after_no.errors_id.is_none());
         assert!(
             after_no.answered(),
             "a refusal IS an answer and is not re-asked"
@@ -219,25 +271,53 @@ mod tests {
         assert!(!should_ask(&after_no, false));
     }
 
-    /// Only usage analytics needs a stable identifier. Crash reports use independent event ids.
-    #[test]
-    fn the_first_yes_mints_one_identifier() {
-        for (errors, usage) in [(false, true), (true, true)] {
-            let c = apply(&Consent::default(), errors, usage, || "abc123".into());
-            assert_eq!(
-                c.install_id.as_deref(),
-                Some("abc123"),
-                "errors={errors} usage={usage}"
-            );
+    /// A counting mint: hands out `m1`, `m2`, … so a test can see HOW MANY identifiers were drawn
+    /// and which channel each landed in.
+    fn counting_mint() -> impl FnMut() -> Option<String> {
+        let mut n = 0;
+        move || {
+            n += 1;
+            Some(format!("m{n}"))
         }
     }
 
+    /// Each channel's first yes mints exactly one identifier, for that channel alone.
+    #[test]
+    fn the_first_yes_mints_one_identifier_per_channel() {
+        let usage = apply(&Consent::default(), false, true, counting_mint());
+        assert_eq!(usage.install_id.as_deref(), Some("m1"));
+        assert!(
+            usage.errors_id.is_none(),
+            "usage-only minted a crash-report id"
+        );
+
+        let errors = apply(&Consent::default(), true, false, counting_mint());
+        assert_eq!(errors.errors_id.as_deref(), Some("m1"));
+        assert!(
+            errors.install_id.is_none(),
+            "errors-only minted an analytics id"
+        );
+
+        let both = apply(&Consent::default(), true, true, counting_mint());
+        assert!(both.errors && both.usage);
+        assert_ne!(
+            both.errors_id, both.install_id,
+            "the two channels were handed ONE identifier — that is the join the design refuses"
+        );
+        assert!(both.errors_id.is_some() && both.install_id.is_some());
+    }
+
+    /// Errors-only consent draws no usage identifier: PostHog's `distinct_id` must not exist on a
+    /// television whose owner never said yes to product analytics.
     #[test]
     fn errors_only_never_mints_a_usage_identifier() {
-        let c = apply(&Consent::default(), true, false, || {
-            panic!("minted a usage identifier for crash reporting")
-        });
+        let c = apply(&Consent::default(), true, false, counting_mint());
         assert!(c.errors && !c.usage && c.install_id.is_none());
+        assert_eq!(
+            c.errors_id.as_deref(),
+            Some("m1"),
+            "exactly one draw, for errors"
+        );
     }
 
     /// …and a SECOND yes does not re-mint. Turning the other switch on later is the same install
@@ -245,40 +325,124 @@ mod tests {
     /// reports in two and make every count wrong.
     #[test]
     fn a_second_yes_keeps_the_identifier_it_already_had() {
-        let first = apply(&Consent::default(), false, true, || "abc123".into());
-        let second = apply(&first, true, true, || {
-            panic!("re-minted on a second opt-in")
+        let first = apply(&Consent::default(), false, true, || Some("abc123".into()));
+        let second = apply(&first, true, true, || Some("def456".into()));
+        assert_eq!(
+            second.install_id.as_deref(),
+            Some("abc123"),
+            "re-minted the analytics id"
+        );
+        assert_eq!(second.errors_id.as_deref(), Some("def456"));
+        let third = apply(&second, true, true, || {
+            panic!("re-minted on an unchanged answer")
         });
-        assert_eq!(second.install_id.as_deref(), Some("abc123"));
+        assert_eq!(third, second);
     }
 
     /// **Withdrawal drops the identifier.** Neither vendor can delete data belonging to no account,
     /// so severing the link locally is the only thing this app controls: a later opt-in is a new
     /// install rather than a resumed profile.
     #[test]
-    fn withdrawing_everything_destroys_the_identifier() {
-        let on = apply(&Consent::default(), true, true, || "abc123".into());
+    fn withdrawing_everything_destroys_both_identifiers() {
+        let on = apply(&Consent::default(), true, true, counting_mint());
         let off = apply(&on, false, false, || panic!("minted on a withdrawal"));
         assert!(
-            off.install_id.is_none(),
-            "the identifier did not survive the withdrawal"
+            off.install_id.is_none() && off.errors_id.is_none(),
+            "an identifier survived the withdrawal"
         );
         assert!(off.answered(), "and it is still an answered question");
 
         // …and coming back later is a genuinely fresh identity, not the old one resumed.
-        let again = apply(&off, false, true, || "def456".into());
-        assert_eq!(again.install_id.as_deref(), Some("def456"));
+        let again = apply(&off, true, true, || Some("fresh".into()));
+        assert_eq!(again.install_id.as_deref(), Some("fresh"));
+        assert_eq!(again.errors_id.as_deref(), Some("fresh"));
     }
 
-    /// Withdrawing usage destroys its identity even while independent crash consent remains on.
+    /// Withdrawing usage destroys its identity even while independent crash consent remains on —
+    /// and leaves the crash-report id exactly where it was.
     #[test]
-    fn withdrawing_usage_while_errors_remain_destroys_the_identifier() {
-        let both = apply(&Consent::default(), true, true, || "abc123".into());
+    fn withdrawing_usage_while_errors_remain_destroys_only_the_usage_identifier() {
+        let both = apply(&Consent::default(), true, true, counting_mint());
         let errors = apply(&both, true, false, || panic!("re-minted on a withdrawal"));
         assert!(errors.errors && !errors.usage);
         assert!(errors.install_id.is_none());
-        let again = apply(&errors, true, true, || "def456".into());
+        assert_eq!(
+            errors.errors_id, both.errors_id,
+            "the crash-report id was disturbed"
+        );
+        let again = apply(&errors, true, true, || Some("def456".into()));
         assert_eq!(again.install_id.as_deref(), Some("def456"));
+        assert_eq!(again.errors_id, both.errors_id);
+    }
+
+    /// The mirror image: withdrawing crash reports destroys the crash-report id and leaves the
+    /// analytics id alone.
+    #[test]
+    fn withdrawing_errors_while_usage_remains_destroys_only_the_errors_identifier() {
+        let both = apply(&Consent::default(), true, true, counting_mint());
+        let usage = apply(&both, false, true, || panic!("re-minted on a withdrawal"));
+        assert!(!usage.errors && usage.usage);
+        assert!(usage.errors_id.is_none());
+        assert_eq!(usage.install_id, both.install_id);
+        let again = apply(&usage, true, true, || Some("def456".into()));
+        assert_eq!(again.errors_id.as_deref(), Some("def456"));
+        assert_eq!(again.install_id, both.install_id);
+    }
+
+    /// **A channel whose mint fails is off, and the other channel still counts.** The answer is
+    /// still recorded, so the person is not asked again for a decision they made.
+    #[test]
+    fn a_failed_mint_refuses_only_the_channel_it_failed_for() {
+        let neither = apply(&Consent::default(), true, true, || None);
+        assert!(neither.answered());
+        assert!(!neither.errors && !neither.usage);
+        assert!(neither.errors_id.is_none() && neither.install_id.is_none());
+
+        // The FIRST draw is the crash-report id; failing only the second refuses only usage.
+        let mut draws = 0;
+        let errors_only = apply(&Consent::default(), true, true, || {
+            draws += 1;
+            (draws == 1).then(|| "e".repeat(32))
+        });
+        assert!(errors_only.errors && !errors_only.usage);
+        assert!(errors_only.errors_id.is_some() && errors_only.install_id.is_none());
+
+        // An empty string is not an identifier either.
+        let empty = apply(&Consent::default(), true, false, || Some(String::new()));
+        assert!(!empty.errors && empty.errors_id.is_none());
+    }
+
+    /// The crash-report id accessor reads the SNAPSHOT and fails closed exactly like the gates: a
+    /// stale-policy yes, or an unanswered decision, yields no id however the field is set.
+    #[test]
+    fn the_errors_id_accessor_fails_closed_with_the_gate() {
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        install(Consent {
+            asked_version: POLICY_VERSION - 1,
+            errors: true,
+            errors_id: Some("stale".into()),
+            ..Default::default()
+        });
+        assert!(!allows_errors());
+        assert!(
+            errors_id().is_none(),
+            "a stale-policy id must not be reported"
+        );
+        install(apply(&Consent::default(), true, false, || {
+            Some("live".into())
+        }));
+        assert_eq!(errors_id().as_deref(), Some("live"));
+        install(apply(&Consent::default(), false, true, || {
+            Some("usage".into())
+        }));
+        assert!(
+            errors_id().is_none(),
+            "the analytics id is not the crash-report id"
+        );
+        if let Ok(mut g) = CURRENT.write() {
+            *g = saved;
+        }
     }
 
     /// A policy bump re-asks, and does NOT silently carry the old answer forward as consent.

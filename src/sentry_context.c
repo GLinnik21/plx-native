@@ -7,6 +7,8 @@
  *
  * Firmware and hardware compatibility classes are separate contexts. Neither
  * accepts a serial number, LG device identifier, address or account value.
+ * The only identity the scope ever carries is the random crash-report id
+ * below, and only as `user.id`.
  */
 void
 plx_sentry_set_webos_context(const char *name, const char *release,
@@ -50,4 +52,22 @@ plx_sentry_set_webos_context(const char *name, const char *release,
             sentry_value_new_string(hardware_revision));
     }
     sentry_set_context("hardware", hardware);
+}
+
+/*
+ * The crash-report identifier, as Sentry's `user.id` and nothing else of
+ * `user`. A NULL or empty id clears it. Each call makes the native backend
+ * rewrite the daemon's base-event file, which is how the value reaches a
+ * report for a fault this process never gets to handle.
+ */
+void
+plx_sentry_set_user_id(const char *id)
+{
+    if (!id || !id[0]) {
+        sentry_remove_user();
+        return;
+    }
+    sentry_value_t user = sentry_value_new_object();
+    sentry_value_set_by_key(user, "id", sentry_value_new_string(id));
+    sentry_set_user(user);
 }

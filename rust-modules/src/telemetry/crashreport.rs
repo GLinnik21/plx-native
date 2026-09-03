@@ -361,11 +361,17 @@ fn registers_json(r: &Registers) -> serde_json::Value {
 ///
 /// `image_addr` comes from [`super::sentry::image_addr`] — the running binary's own lowest
 /// `PT_LOAD`, not zero. Its doc carries the measured A/B that settled why zero is the trap.
+///
+/// `errors_id` is the crash-report identifier in force when the report is QUEUED (the fault itself
+/// left no such record — the tracer is async-signal-safe and writes numbers), attached as
+/// `user.id` through the one shared [`super::sentry::attach_user`]. Passed in rather than read
+/// here so the preview can build this exact body with a placeholder.
 pub(crate) fn sentry_body(
     f: &Fault,
     event_id: &str,
     build_id: &str,
     debug_id: Option<&str>,
+    errors_id: Option<&str>,
 ) -> Vec<u8> {
     let name = signal_name(f.signal);
     let effective_build_id = f
@@ -424,6 +430,7 @@ pub(crate) fn sentry_body(
             "code_file": CODE_FILE,
         }]});
     }
+    super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
@@ -435,7 +442,11 @@ pub(crate) fn sentry_body(
 /// here is a hash and would put every distinct panic message in its own issue while telling you
 /// nothing about which. Grouping on `(location, hash)` says "this panic, at this line", which is
 /// what the message would have been used for.
-pub(crate) fn panic_sentry_body(p: &PanicReport, event_id: &str) -> Vec<u8> {
+pub(crate) fn panic_sentry_body(
+    p: &PanicReport,
+    event_id: &str,
+    errors_id: Option<&str>,
+) -> Vec<u8> {
     let mut body = serde_json::json!({
         "event_id": event_id,
         "platform": "native",
@@ -456,6 +467,7 @@ pub(crate) fn panic_sentry_body(p: &PanicReport, event_id: &str) -> Vec<u8> {
     if let Some(image) = &p.image {
         body["dist"] = serde_json::Value::String(image.build_id.clone());
     }
+    super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
@@ -500,6 +512,7 @@ pub(crate) fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         &"0".repeat(32),
         &image.build_id,
         Some("00000000-0000-0000-0000-000000000000"),
+        Some(super::native::PREVIEW_USER_ID),
     ))
     .unwrap_or_default();
     fault_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
@@ -541,8 +554,12 @@ pub(crate) fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         message_hash: 0,
         image: Some(image),
     };
-    let mut panic_json: serde_json::Value =
-        serde_json::from_slice(&panic_sentry_body(&panic, &"0".repeat(32))).unwrap_or_default();
+    let mut panic_json: serde_json::Value = serde_json::from_slice(&panic_sentry_body(
+        &panic,
+        &"0".repeat(32),
+        Some(super::native::PREVIEW_USER_ID),
+    ))
+    .unwrap_or_default();
     let source = "<validated compile-time source:line>";
     panic_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     panic_json["dist"] = serde_json::json!("<crashed ELF build id>");
@@ -673,6 +690,9 @@ pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
         return;
     }
     let current_build_id = super::sentry::build_id();
+    // Read once: every report of this pass belongs to the same decision, and a toggle racing this
+    // loop must not split one crash log between two identities.
+    let errors_id = super::consent::errors_id();
     let mut native_crashes = native_crashes.to_vec();
     let mut queued = 0usize;
     let mut native_wins = 0usize;
@@ -696,8 +716,10 @@ pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
         let did = super::sentry::debug_id(bid);
         let event_id = event_id_for(bid, from + i, r);
         let body = match r {
-            Report::Fault(f) => sentry_body(f, &event_id, bid, did.as_deref()),
-            Report::Panic(p) => panic_sentry_body(p, &event_id),
+            Report::Fault(f) => {
+                sentry_body(f, &event_id, bid, did.as_deref(), errors_id.as_deref())
+            }
+            Report::Panic(p) => panic_sentry_body(p, &event_id, errors_id.as_deref()),
         };
         let ok = super::spool::append(&super::queue::Record {
             category: super::queue::Category::Errors,
@@ -867,8 +889,14 @@ mod tests {
     #[test]
     fn no_text_from_the_crash_log_reaches_the_wire() {
         let f = only_fault(REC);
-        let body = String::from_utf8(sentry_body(&f, "e".repeat(32).as_str(), "bid", Some("did")))
-            .expect("utf-8");
+        let body = String::from_utf8(sentry_body(
+            &f,
+            "e".repeat(32).as_str(),
+            "bid",
+            Some("did"),
+            None,
+        ))
+        .expect("utf-8");
         for leaked in [
             "/lib/libc.so.6",
             "/media/developer",
@@ -895,6 +923,37 @@ mod tests {
             "fixed key + numeric value survive"
         );
         assert!(body.contains(super::super::sentry::image_addr()));
+    }
+
+    /// **Both fallback shapes carry the crash-report id the same way, and carry nothing when there
+    /// is none.** The panic body is the one most likely to be edited without the fault body, and
+    /// this is what keeps the two from drifting apart.
+    #[test]
+    fn both_fallback_bodies_carry_exactly_the_crash_report_id_or_no_user_at_all() {
+        let f = only_fault(REC);
+        let p = PanicReport {
+            location: "src/example.rs:42".into(),
+            message_hash: 7,
+            image: None,
+        };
+        let id = "0123456789abcdef0123456789abcdef";
+        for body in [
+            sentry_body(&f, "e", "bid", Some("did"), Some(id)),
+            panic_sentry_body(&p, "e", Some(id)),
+        ] {
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(v["user"], serde_json::json!({"id": id}));
+        }
+        for body in [
+            sentry_body(&f, "e", "bid", Some("did"), None),
+            panic_sentry_body(&p, "e", None),
+        ] {
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(
+                v.get("user").is_none(),
+                "an absent id must leave no user key"
+            );
+        }
     }
 
     /// The report belongs to the binary that CRASHED, not to whichever binary happens to read the
@@ -926,8 +985,14 @@ mod tests {
             &"e".repeat(32),
             "11223344556677889900aabbccddeeff00112233",
             Some("44332211-6655-8877-9900-aabbccddeeff"),
+            Some("0123456789abcdef0123456789abcdef"),
         );
         let v: serde_json::Value = serde_json::from_slice(&body).expect("event json");
+        assert_eq!(
+            v["user"],
+            serde_json::json!({"id": "0123456789abcdef0123456789abcdef"}),
+            "the crash-report id rides as user.id and nothing else"
+        );
         assert_eq!(v["environment"], super::super::sender::ENVIRONMENT);
         assert_eq!(
             v["release"],
@@ -944,7 +1009,8 @@ mod tests {
     /// this person used — a fact about them rather than about the crash.
     #[test]
     fn the_reported_image_path_says_nothing_about_the_install() {
-        let body = String::from_utf8(sentry_body(&only_fault(REC), "e", "b", Some("d"))).unwrap();
+        let body =
+            String::from_utf8(sentry_body(&only_fault(REC), "e", "b", Some("d"), None)).unwrap();
         assert!(body.contains("plxnative"));
         assert!(
             !body.contains("/media/"),
@@ -1067,7 +1133,7 @@ mod tests {
         let Report::Panic(p) = &parse(PANIC_LINE)[0] else {
             panic!("expected a panic")
         };
-        let body = String::from_utf8(panic_sentry_body(p, &"e".repeat(32))).expect("utf-8");
+        let body = String::from_utf8(panic_sentry_body(p, &"e".repeat(32), None)).expect("utf-8");
         assert!(!body.contains("Dune"), "a title reached the wire");
         assert!(!body.contains("/media/"), "a path reached the wire");
         assert!(!body.contains("unwrap"), "the message reached the wire");
@@ -1161,10 +1227,10 @@ mod tests {
     #[test]
     fn no_debug_image_is_better_than_one_that_matches_nothing() {
         let f = only_fault(REC);
-        let with = String::from_utf8(sentry_body(&f, "e", "bid", Some("did"))).unwrap();
+        let with = String::from_utf8(sentry_body(&f, "e", "bid", Some("did"), None)).unwrap();
         assert!(with.contains("debug_meta") && with.contains("\"debug_id\":\"did\""));
 
-        let without = String::from_utf8(sentry_body(&f, "e", "bid", None)).unwrap();
+        let without = String::from_utf8(sentry_body(&f, "e", "bid", None, None)).unwrap();
         assert!(
             !without.contains("debug_meta"),
             "an image was claimed with no id to pair it"
@@ -1173,7 +1239,8 @@ mod tests {
         assert!(without.contains("0x88ef8") && without.contains("0x4bccd0"));
 
         let no_identity = Fault { image: None, ..f };
-        let no_build = String::from_utf8(sentry_body(&no_identity, "e", "", Some("did"))).unwrap();
+        let no_build =
+            String::from_utf8(sentry_body(&no_identity, "e", "", Some("did"), None)).unwrap();
         assert!(!no_build.contains("debug_meta"));
     }
 
