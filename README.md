@@ -1,34 +1,22 @@
 # PlxNative
 
-An unofficial native [Plex](https://www.plex.tv/) client for LG webOS 4.x televisions.
+A fast, unofficial [Plex](https://www.plex.tv/) client for LG webOS televisions. Native, not a web
+page — the interface is drawn straight on the GPU at 60 fps, and video plays on the TV's own decoder.
 
-*In daily use on a webOS 4.5 set. The
-[latest release](https://github.com/GLinnik21/plx-native/releases/latest) plays on webOS 4.x; the
-Homebrew Channel listing is
-[submitted](https://github.com/webosbrew/apps-repo/pull/224).*
+*In daily use on a 2019 LG set. Get it from the
+[latest release](https://github.com/GLinnik21/plx-native/releases/latest).*
 
 ## Why this exists
 
 The official Plex app on my old LG is slow. Scrolling a shelf stutters, opening a poster takes a
-beat too long. It behaves like a web page, and when I went looking, that turned out to be exactly
-what it is: a web app running in the TV's Chromium.
+beat too long. It behaves like a web page because it is one: a web app running in the television's
+Chromium. Patching it doesn't help — the ceiling isn't the code, it's the browser.
 
-Writing a whole client was not my first idea. I tried the obvious things first, and this project is
-what was left after both failed:
+So I threw the browser away.
 
-- **Patching and optimising the web app.** You can get at it and change it, and I did. The ceiling
-  isn't in the code, though — it's the browser itself on hardware this old.
-- **Kodi with a Plex plugin.** There isn't enough free memory on this TV to run it. Most of the RAM
-  is already spoken for by webOS.
-
-What kept nagging at me was the Apple TV app: it isn't a web view, and its interface simply moves. The
-answer turned out to be unglamorous — it's a native app. No browser, no JavaScript, no web view. It
-just draws.
-
-So I wrote one. PlxNative is an Apple-TV-inspired Plex client that draws its interface directly on the GPU
-and hands video to the TV's own hardware decoder. Almost all of it is Rust.
-
-I use it myself, every day, to watch things off my server in the next room.
+PlxNative draws straight on the GPU and hands video to the same silicon the built-in apps use. No
+Chromium, no JavaScript, no web view. It just draws. Almost all of it is Rust, and I use it every
+day to watch things off my server in the next room.
 
 ## What it looks like
 
@@ -36,211 +24,105 @@ Real screenshots off the television, not mockups.
 
 ![Home](docs/screenshots/home.jpg)
 
-**Home** — a hero for whatever you're partway through, shelves underneath.
-
-![Detail](docs/screenshots/detail.jpg)
-
-**Detail** — ratings, cast, and where to carry on.
+**Home** — a rotating hero from what you're partway through and what's just landed, shelves under it.
 
 ![Library](docs/screenshots/library.jpg)
 
-**Library** — sort, filter, unwatched-only, and an A–Z rail down the side.
+**Library** — sort, filter (including unwatched-only), and an A–Z rail down the side.
+
+![Search](docs/screenshots/search.jpg)
+
+**Search** — one query across every server you can reach, results grouped by kind.
 
 ![Player](docs/screenshots/player.jpg)
 
-**Player** — the transport over hardware-decoded 4K. This one is the whole point of the project:
-the picture is on the TV's video plane, decoded by the same silicon the built-in apps use, with the
-interface drawn on top of it. That's the thing a browser-based client can't do.
+**Player** — the transport with chapters and track menus, drawn on top of video the
+television is decoding itself.
 
 ## What it does
 
-- Sign in on the TV with an on-screen QR code, pick a Plex Home profile, browse, and play.
-- **Direct play wherever the TV can decode it** — HEVC, 4K, 10-bit — and ask the server to
-  transcode only when it truly can't.
-- Resume, seek and scrub, chapters, audio and subtitle track switching (including image subtitles),
-  Skip Intro / Skip Credits, Up Next with auto-advance, and progress reported back to your server.
+- **An interface that keeps up with the remote.** 60 fps on the 2019 set I develop on, with
+  frame-rate regression scenes that measure it on the television rather than trusting it.
+- **Sign in on the TV** with an on-screen QR code and pick a Plex Home profile.
+- **Browse and search your libraries** — on your own servers and on ones shared with you. Your
+  servers' libraries, that is, not Plex's catalogue or Watchlist.
+- **Direct play** H.264 and HEVC — 4K, 10-bit, Dolby Vision profiles 5 and 8, E-AC-3 Atmos —
+  decided against your television's own codec table where it publishes one. Anything else the
+  server transcodes, and you can switch a playback to Auto to follow a link whose speed changes.
+- **Everything you expect while watching**: resume, seek and scrub, chapters, audio and subtitle
+  tracks (including image subtitles), Skip Intro, Skip Credits, Up Next with auto-advance, and
+  progress reported back to your server.
 
-**Your library never leaves your network.** The app talks to your own Plex Media Server, to
-`plex.tv` to sign in, and to `discover.provider.plex.tv` for cast biographies.
+## Will it work on my television?
 
-**Error reports and usage stay off until you answer two separate first-run questions.** Each offers
-**Share** and **Don’t Share** for one purpose. The crash-report answer remains a draft until the
-product-analytics question is answered; only then are both choices recorded. The questions are
-asked once for the television, right after sign-in and before the profile picker — the answer
-applies to the whole set, so it is not put to whoever happens to be watching. `BACK` steps back
-from the product question to the crash one and records nothing either way; on the first question
-there is nothing behind it, so the way through is one of the two answers, both a single press. The choices remain reversible under Account → Settings → Privacy &
-data, where **Done** saves changed switches and `BACK` discards them. The same route shows every
-exact schema with placeholders for random/build-specific values and representative fixed classes.
-Turning product analytics off deletes the random identifier that television used. No title, search
-term, subtitle line, server name or address can appear in any report. Usage events structurally
-cannot carry runtime text; native crash envelopes pass a separate fixed allowlist that rejects
-user/request scopes and removes directory names; handled playback failures carry only fixed classes
-and a bounded typed trace.
-[`PRIVACY.md`](PRIVACY.md) is the whole statement, including the mechanically checked schemas.
+Video has been watched on two sets in the world, so this is deliberately specific about which:
 
-## Before you install
+| Your set | What's known |
+|---|---|
+| **webOS 4.5** — LG 49SM9000PLA | Plays video. My own television; tested before every release. |
+| **webOS 6.5.2** — one LG 65UP7560AUD | Plays video, [reported by someone else](https://github.com/GLinnik21/plx-native/issues/22) — six of eight attempts. |
+| **webOS 10.3.1** — one rented set | The pipeline accepted HEVC direct play, though nobody watched the picture. Every server transcode is refused, so a file this app can't direct-play won't play at all. |
+| **Anything else from webOS 4.0 up** | Starts — the binary resolves cleanly against nine real firmware images. Nothing further is known. |
+| **webOS 3.9 and older** | Won't start — you'd get a tile that does nothing. |
 
-**What you need.** An LG TV on **webOS 4.x** (why it stops there is below), a Plex Media Server, a
-Plex account, and a way to install unsigned apps — the
-[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel), which installs any `.ipk`
-you point it at whether or not it's in the catalogue, or LG Developer Mode. You do **not** need a
-rooted TV — the app runs in LG's normal sandbox like anything else on the set, unprivileged and
-with no special permissions. Root only matters for the development loop below.
-
-**The honest scope.** I built this for how *I* watch, so it's narrower than Plex's:
-
-- **Movies and TV shows.** No music, no photos, no live TV or DVR.
-- **Servers granted to your Plex account.** The app discovers owned and shared servers through
-  plex.tv and requires an authenticated HTTPS origin for browse and playback in stable builds.
-  Plaintext hostname/IPv4/IPv6 origins are available only in explicit developer-trigger builds for
-  local lab work. There is deliberately nowhere to type an address on the TV: configure servers on a
-  phone or PC, then choose per profile from the account's available libraries. Remote/relay
-  browse-and-play is implemented but still needs broader firmware/device acceptance.
-- **webOS 4.x is what's tested.** It runs on 6 and 10 — the UI works and the library browses — but
-  playback doesn't start there yet: 5.0 replaced the LG library that puts decoded video on the
-  hardware plane, and getting the replacement right is in progress.
-  [#224](https://github.com/webosbrew/apps-repo/pull/224) has the report from a real set.
-- **One panel.** The app *tells* your server it can handle HEVC, 4K and 10-bit; it doesn't ask the
-  television, because that's what mine does. On a lower-end webOS 4.x set that will be wrong, and
-  so will the fallback.
-- **One person's spare time.** There will be bugs I haven't hit because I don't watch the way you do.
-
-If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
+If your set is in the middle, [tell me what happened](https://github.com/GLinnik21/plx-native/issues)
+— it working is as useful a report as it failing.
 
 ## Installing
 
-> **Not in the Homebrew Channel's app list yet** — the submission is
-> [open](https://github.com/webosbrew/apps-repo/pull/224). Until it lands, point the Channel at the
-> `.ipk` below yourself, or use dev-manager-desktop.
-
-If you install through **Developer Mode** rather than the Homebrew Channel, know that LG expires a
-Dev Mode session after 1000 hours and *uninstalls your apps* when it does — dev-manager-desktop can
-renew it for you before that happens. The Homebrew Channel has no expiry.
+You need a Plex account and server, and a way to install unsigned apps: the
+[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) or LG Developer Mode. You do
+**not** need a rooted TV — the app runs in LG's normal sandbox like anything else on the set.
 
 Grab the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases) and
 install it with the Homebrew Channel or
 [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
-[docs/install-and-verify.md](docs/install-and-verify.md) is the longer version: which of the five
-assets is which, how to check the download's sha256 (nothing in this chain is signed), and what the
-app writes, reads and reaches once it is on your set.
 
-Every release will also publish a `sha256`, and it's worth checking. Nothing in this distribution chain
-is code-signed, so that hash is the only thing standing between you and a tampered package. Builds
-are reproducible: the same commit, toolchain and configuration give a byte-identical `.ipk`, so you
-can rebuild and compare. Use `make FLAVOR=stable RELEASE=1 ipk` if you do — both halves matter. A
-plain `make ipk` is a *development* build of a *second, developer* app id, and differs on purpose on
-both counts, so its hash won't match and that isn't tampering.
+> **Not in the Homebrew Channel's app list yet** — the submission is
+> [open](https://github.com/webosbrew/apps-repo/pull/224). Until it lands, point the Channel at the
+> `.ipk` yourself.
 
-## Building it yourself
+**Check the download against `ipk.sha256` before you sideload it.** Nothing in this chain is
+code-signed, and pointing the Channel at a bare `.ipk` skips the hash check it would otherwise do
+for you. [docs/install-and-verify.md](docs/install-and-verify.md) has the commands, which release
+asset is which, and what the app writes, reads and reaches once it's on your set.
 
-Cross-compiled to 32-bit ARM from macOS or **arm64** Linux. (There is no x86_64 build of the
-webOS NDK, so an x86_64 Linux host can't build this at all — that's also why CI runs on arm64.)
-From a clean clone:
+Installing through **Developer Mode** also means LG expires the session after 1000 hours and
+*uninstalls your apps* when it does; dev-manager-desktop can renew it. The Homebrew Channel has no
+expiry.
 
-```sh
-make setup-env        # one-time: fetches the webOS NDK into ~/webos-ndk (~140 MB down, ~700 MB on disk)
-rustup toolchain install nightly --component rust-src --component clippy   # build-std + the lint gate
-make                  # builds pkg/plxnative — a developer build
-make ipk              # packages it as pkg/com.beb.plxnative.debug_<version>_arm.ipk
-```
+## Privacy
 
-`make check` runs the lint gate and the host unit suite — seconds once warm, and no TV involved.
-Run it first; it's the only signal you get without waking a television.
+**Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,
+and to `discover.provider.plex.tv` for cast biographies.
 
-**Two flavours, and the default is the developer one** — which is why that filename says `.debug`.
-The app can be installed twice on one television: `com.beb.plxnative`, the id in every release and
-what users install, and `com.beb.plxnative.debug` beside it, with its own launcher tile, sign-in
-and log. `FLAVOR` chooses which one every TV-facing target talks to, and the checked-in default is
-`debug`. That asymmetry is deliberate rather than an oversight: `stable` is the install somebody may
-be watching a film on, and no command you type from muscle memory should be able to overwrite it.
-So the shippable artifact has to be asked for by name:
+**Crash reports and usage analytics are off until you turn them on** — two separate first-run
+questions, each answerable with Don't Share, both reversible later under Account → Settings →
+Privacy & data. No title, search term, subtitle line, server name or address can appear in any
+report. [`PRIVACY.md`](PRIVACY.md) is the whole statement, including the schemas.
 
-```sh
-make FLAVOR=stable RELEASE=1 ipk   # pkg/com.beb.plxnative_<version>_arm.ipk — what a release publishes
-```
+## The honest scope
 
-`make FLAVOR=stable ipk` on its own is refused: the stable id is release-only.
-[`docs/two-installs.md`](docs/two-installs.md) is the whole story — what the two share, what they
-don't, and the name traps.
+I built this for how *I* watch, so it's narrower than Plex's:
 
-### Developing against a real TV
+- **Movies and TV shows.** No music, no photos, no live TV or DVR.
+- **No typing in server addresses.** Servers come from your Plex account; set them up on a phone or
+  PC and choose from what's there. Servers reached through Plex's relay, or that require an
+  encrypted connection, are supported but haven't been watched end to end.
+- **One person's spare time.** There will be bugs I haven't hit, because I don't watch the way you do.
 
-The rest of the loop assumes a **rooted** TV reachable over ssh, because it deploys by copying the
-binary straight into the installed app directory. That directory has to exist first: `deploy` scp's
-into an app the TV has already registered, and only an install teaches SAM the id and writes the
-permission file the media stack needs — so do this once, and it builds, installs and deploys in one
-go:
-
-```sh
-make FLAVOR=debug TV=<ip> install   # ONCE per TV: registers com.beb.plxnative.debug, then deploys
-```
-
-After that, the loop (every target here defaults to the `debug` flavour):
-
-```sh
-make TV=<ip> deploy   # scp the binary + assets
-make TV=<ip> run      # launch, hold it up, then print the on-device event log
-make TV=<ip> test     # deploy + run
-./tests/run.py        # the on-device regression suite
-./tests/run.py --fps  # the frame-rate regression scenes
-```
-
-Skip the install and `deploy` stops with *"the debug flavour is not installed"* rather than
-half-working. Drop the address into a gitignored `.tv-host` (one line, an IP or hostname) and you
-can leave `TV=<ip>` off every command; ask `make -s print-appid print-appdir print-rundir
-FLAVOR=<f>` when you need to know where a given flavour's binary, logs and dev triggers actually
-live, rather than guessing.
-
-The device is the real test. Nothing on your computer draws a pixel, decodes a frame, or talks to
-the TV's media stack, so a green host suite proves much less than it looks like it does.
-`./tests/run.py` needs two gitignored files: `tests/manifest.local.json`, mapping named media shapes
-to items in *your* library (copy the `.example` beside it and drop the ones you don't have), and
-`src/config.local.h` with your Plex token, which the harness reads on the host and injects — it is
-never compiled into the binary.
-
-For anything you intend to ship, add `FLAVOR=stable RELEASE=1` to **every** command that builds or
-packages (`make FLAVOR=stable RELEASE=1 ipk`). `RELEASE=1` drops the developer feature set — the
-on-screen frame counter, and the whole `/tmp` trigger surface the test harness drives the app
-through — and `FLAVOR=stable` is what puts it under the id users actually install. Neither is the
-default, and `FLAVOR=stable` without `RELEASE=1` is refused rather than merely discouraged.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `rust-modules/src/` | the application — UI, event loop, input, playback, the Plex data layer |
-| `rust-modules/src/ui/` | the UI as a design system: theme tokens, components, screens |
-| `rust-modules/src/player/` | the buffer-feed video engine and its worker threads |
-| `src/` | the only C: a boot shim, the LG media-API seam, and the SVG rasterizer |
-| `docs/` | verified PMS API reference, design notes, and the distribution analysis |
-| `tests/` | the on-device regression suite |
-| `ci/`, `.github/` | packaging, ELF/package assertions, release automation |
-
-`AGENTS.md` is the concise shared agent contract; `docs/agent-reference.md` is the detailed
-orientation document — architecture, the build, and all the non-obvious things
-that took a while to work out. Each major subsystem has one of its own next to the code.
+If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
 
 ## Contributing
 
-Issues and pull requests are welcome, especially from anyone whose TV or library differs from mine.
-
-**A rooted webOS 5+ set is the thing I need most.** I can't develop for one blind: no emulator
-substitutes for the hardware
-([why](docs/distribution.md#34a-no-emulator-substitutes-for-the-hardware-researched-2026-07-28)),
-and what's missing is someone who can run and debug on the set — not a report of what's installed
-on it, which is already known. A different 4.x panel, a remote server, or media this has never met
-are all useful too.
-
-Two things worth knowing first:
-
-- **Run `make check` before you push**, on nightly — `make check` runs `cargo +nightly`, while a bare
-  `cargo test` picks up your default toolchain. The two have disagreed.
-- **Anything touching playback, the UI or input has to be checked on a real TV.** Nothing on your
-  computer draws a pixel or decodes a frame, so a green host suite proves less than it looks like
-  it does. Say in the PR what you verified and how.
+Issues and pull requests are welcome, especially from anyone whose television or library differs
+from mine — [**docs/building.md**](docs/building.md) is the build and the test loop, and says what
+hardware I most need help with. Security issues go through [`SECURITY.md`](SECURITY.md) rather than
+a public issue.
 
 ## Acknowledgements
+
+Error monitoring for PlxNative is sponsored by [Sentry](https://sentry.io/for/good/).
 
 <a href="https://sentry.io/for/good/">
   <picture>
@@ -250,21 +132,15 @@ Two things worth knowing first:
   </picture>
 </a>
 
-Error monitoring for PlxNative is sponsored by [Sentry](https://sentry.io/for/good/).
-
 ## Licence
 
-[MIT](LICENSE), © 2026 Gleb Linnik.
-
-The PlxNative name and its brand artwork — logo, splash and launcher icons — are excluded; see [`TRADEMARKS.md`](TRADEMARKS.md),
-which also carries the Plex and LG non-affiliation statements.
-
+[MIT](LICENSE), © 2026 Gleb Linnik. The PlxNative name and its brand artwork are excluded — see
+[`TRADEMARKS.md`](TRADEMARKS.md), which also carries the Plex and LG non-affiliation statements.
 Third-party components and their licences are in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and `licenses/`. Notably the app links the TV's
-own FFmpeg and GLib **dynamically** rather than bundling them. All of it — the notices, the licence
-texts, `LICENSE` and `TRADEMARKS.md` — ships inside the `.ipk`, so it travels with the binary and
-not only with this repository.
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and `licenses/` — notably the app ships its own
+LGPL build of FFmpeg. Those notices and licence texts ship inside the `.ipk` too, so they travel
+with the binary and not only with this repository.
 
-This is an unofficial client. It is not affiliated with, endorsed by, or sponsored by Plex GmbH or
-LG Electronics. "Plex", "Rotten Tomatoes", "IMDb", "TMDB", "LG" and "webOS" are trademarks of their
+This is an unofficial client, not affiliated with, endorsed by, or sponsored by Plex GmbH or LG
+Electronics. "Plex", "Rotten Tomatoes", "IMDb", "TMDB", "LG" and "webOS" are trademarks of their
 respective owners; where they appear in the app, they identify whose service or score is being shown.
