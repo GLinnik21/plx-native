@@ -134,7 +134,7 @@ pub(crate) struct Layout {
 /// same boundary `StatusOverlay::bands` documents). So the measurement is the caller's and every
 /// placement decision in the panel is gradeable without a window.
 pub(crate) fn layout(q_h: f32) -> Layout {
-    let shared = crate::ui::decision_alert::layout(q_h);
+    let shared = crate::ui::decision_alert::layout(q_h, 0.0);
     Layout {
         panel: shared.panel,
         question: shared.question,

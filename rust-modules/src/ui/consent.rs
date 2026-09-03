@@ -18,9 +18,15 @@
 //! slot. Privacy Policy and the exact-payload preview push to the same [`DocumentReader`] contract
 //! as Legal documents; they are not alert sheets and do not introduce a second navigation model.
 //!
-//! **The prose is first-person and short.** WP260 permits layering: the on-screen layer needs who,
-//! why, that it is optional and reversible, and where to read the rest — the exhaustive Art. 13 list
-//! lives in `PRIVACY.md` behind the Legal screen. A legalistic register would be worse here than a
+//! **The prose is first-person and short.** WP260 permits layering: this screen needs who, why,
+//! that it is optional and reversible, and where to read the rest — and the rest is one push away
+//! on the SAME screen, `ui::legal`'s `PRIVACY`, which carries the full Art. 13 narrative including
+//! retention, rights, transfers and what uninstalling does. `PRIVACY.md` is the same narrative as a
+//! repo file, plus the generated event/field schema tables; it is NOT what any screen serves and is
+//! not reachable from one. This paragraph used to say the exhaustive list lived in that file
+//! "behind the Legal screen", which pointed a contributor at the surface a television owner and a
+//! store reviewer never see — the two must be updated together, and the screen is the one that
+//! must not be allowed to fall behind. A legalistic register would be worse here than a
 //! plain one, and not only tonally: a solo MIT project writing like a legal department is what reads
 //! as pretending to be a company, which is the thing this audience reacts to.
 //!
@@ -110,17 +116,40 @@ const ROW_USAGE_SUB: &str = "Optional feature and playback outcomes.";
 /// usage/analytics event can send — each built by its own function (`preview_crash`/
 /// `preview_usage`) so the split is real rather than cosmetic. See this module's doc for why the
 /// preview exists at all.
-const ROW_PREVIEW_CRASH: &str = "Crashes / Errors — what is actually sent";
-const ROW_PREVIEW_USAGE: &str = "Analytics / Usage — what is actually sent";
-/// The two channel documents' own titles — the channel alone, because the row labels above elide
-/// at the route title's rung; "what is actually sent" is each document's subtitle instead.
+/// Each channel document's title **and the label of the row that opens it** — ONE constant, not a
+/// matched pair, so a row and its document cannot come to disagree about the name of the thing
+/// being opened. `ui::legal`'s index is built the same way (`Row::new(page.title())`).
+///
+/// They WERE a pair, and the row half carried a "— what is actually sent" suffix. It earned
+/// nothing: the row's own detail line already says what the row does ("Field-by-field preview of
+/// …"), each document's subtitle already opens with those same four words where it has the room to
+/// be a sentence, and at the row rung the suffix made these two the longest strings on the screen
+/// — in a table whose other rows are two or three words. The elision it risked was already known
+/// here; this comment used to state it as the reason the DOCUMENT titles stay short, which fixed
+/// the shorter surface and left the longer one.
 const DOC_TITLE_CRASH: &str = "Crashes / Errors";
 const DOC_TITLE_USAGE: &str = "Analytics / Usage";
 /// First run asks about ONE purpose at a time, so its preview row says which one it will show —
 /// the click still opens the CHANNEL-scoped document that matches the current [`Stage`].
 const ROW_EXAMPLE: &str = "See an example report";
 const ROW_POLICY: &str = "Privacy policy";
+/// The privacy contact — `ui::legal`'s constant, not a second copy. That module owns the legal
+/// documents and the address they print, and its
+/// `every_document_prints_only_the_one_contact_address` is what keeps them honest; a private copy
+/// here would sit outside that scan.
+use crate::ui::legal::CONTACT_EMAIL;
+/// The row that shows the PostHog installation identifier, and the title of the document it opens.
+/// It exists so that "write to us and ask for your analytics to be deleted" is an instruction a
+/// person can actually follow: the identifier is the only handle those events have, and before this
+/// row it was minted, persisted and sent while being visible nowhere in the application.
+const DOC_TITLE_ANALYTICS_ID: &str = "Analytics ID";
 const ROW_DELETE: &str = "Delete all local data";
+/// What the confirmation says under its question. The verb is accurate about what it removes and
+/// says nothing about what it cannot reach, and this is the last moment that difference can be
+/// stated: after the press the app signs out and the screen is gone. The four recipients are the
+/// ones the privacy policy names, in the same order, because a person who reads both should not
+/// have to reconcile two lists.
+const DELETE_SCOPE: &str = "This signs out and removes PlxNative data stored on this television. It does not delete data already sent to Plex, your Plex Media Servers, Sentry or PostHog.";
 /// Where BACK goes from the Settings-hosted route.
 const CRUMB_SETTINGS: &str = "Settings";
 /// The Settings-hosted route's own title.
@@ -148,11 +177,13 @@ fn answer_labels() -> (&'static std::ffi::CStr, &'static std::ffi::CStr) {
 enum RowId {
     Errors,
     Usage,
-    /// Item 14: the crash/error channel's own preview — see `ROW_PREVIEW_CRASH`.
+    /// Item 14: the crash/error channel's own preview — see `DOC_TITLE_CRASH`.
     PreviewCrash,
-    /// Item 14: the usage/analytics channel's own preview — see `ROW_PREVIEW_USAGE`.
+    /// Item 14: the usage/analytics channel's own preview — see `DOC_TITLE_USAGE`.
     PreviewUsage,
     Policy,
+    /// The PostHog identifier and how to have those events deleted — see [`DOC_TITLE_ANALYTICS_ID`].
+    AnalyticsId,
     Delete,
 }
 
@@ -174,6 +205,7 @@ enum PreviewKind {
     Crash,
     Usage,
     Policy,
+    AnalyticsId,
 }
 
 fn row_ids() -> Vec<RowId> {
@@ -196,6 +228,7 @@ fn row_ids() -> Vec<RowId> {
         RowId::PreviewCrash,
         RowId::PreviewUsage,
         RowId::Policy,
+        RowId::AnalyticsId,
         RowId::Delete,
     ]
 }
@@ -510,18 +543,23 @@ fn rebuild_with_motion(sel: i32, preserve_motion: bool) {
     // combined preview left it unclear which report actually carried which field.
     let info = Section::new("Information")
         .row(
-            Row::new(ROW_PREVIEW_CRASH)
+            Row::new(DOC_TITLE_CRASH)
                 .detail("Field-by-field preview of the crash/error report.")
                 .chevron(true),
         )
         .row(
-            Row::new(ROW_PREVIEW_USAGE)
+            Row::new(DOC_TITLE_USAGE)
                 .detail("Field-by-field preview of product analytics events.")
                 .chevron(true),
         )
         .row(
             Row::new(ROW_POLICY)
                 .detail("The complete PlxNative privacy policy for this build.")
+                .chevron(true),
+        )
+        .row(
+            Row::new(DOC_TITLE_ANALYTICS_ID)
+                .detail("The identifier on your analytics, and how to have it deleted.")
                 .chevron(true),
         );
     let local = Section::new("On this TV").row(
@@ -704,8 +742,16 @@ pub(crate) fn on_ok() -> bool {
             reader().reset();
             crate::ui::idle::invalidate();
         }
+        RowId::AnalyticsId => {
+            unsafe {
+                PREVIEW_KIND = PreviewKind::AnalyticsId;
+                DOCUMENT_OPEN = true;
+            }
+            reader().reset();
+            crate::ui::idle::invalidate();
+        }
         RowId::Delete => {
-            delete_alert().open();
+            delete_alert().open_with_body(DELETE_SCOPE);
         }
     }
     true
@@ -959,8 +1005,41 @@ fn preview() -> String {
     preview_crash() + &preview_usage()
 }
 
+/// The privacy policy this screen's Information section opens — **`ui::legal`'s document, not a
+/// copy of it.** The row promises "the complete PlxNative privacy policy for this build", and the
+/// only text that can keep that promise is the one the Legal notices index shows under the same
+/// name.
+///
+/// It WAS a second literal here, and the two had drifted: this one had no `ON THIS TELEVISION`
+/// section at all, so the door that described its document as complete opened the one omitting
+/// what the app stores locally and what deleting it does. Nothing checks one `&'static str`
+/// against another, which is why the guard is a test
+/// (`both_privacy_policy_doors_open_the_same_document`) rather than a comment asking the next
+/// editor to change two places.
+/// The Analytics ID document — the identifier itself, what it is attached to, and the one process
+/// that can act on a deletion request.
+///
+/// **It reads the STORED consent rather than the draft.** The draft is what the toggles currently
+/// show, which may be an answer the person has not committed yet; the identifier that has actually
+/// been sent with events is the one in `consent::current`. Showing a draft here would name an
+/// identifier no event carries, or hide one that several do.
+///
+/// With analytics off there is no identifier to show, and that is the honest answer rather than a
+/// blank: `consent::apply` sets `install_id: None` on withdrawal and mints a NEW one if analytics is
+/// ever turned back on, so "off" really does mean the old handle is gone.
+fn analytics_id_document() -> String {
+    match consent::current().and_then(|c| c.install_id).as_deref() {
+        Some(id) => format!(
+            "YOUR ANALYTICS ID\n\n{id}\n\nWHAT IT IS\n\nA random identifier created on this television when you turned product analytics on. It is attached to analytics events so they can be counted as coming from one installation. It is not derived from your Plex account, your television or anything about you, and it is never sent with crash reports.\n\nHOW TO HAVE THESE EVENTS DELETED\n\nWrite to {CONTACT_EMAIL} and quote the identifier above. It is the only handle these events carry, so a request without it cannot be matched to anything.\n\nHOW IT ENDS\n\nTurning product analytics off deletes this identifier, and turning analytics on again creates a different one. Delete all local data removes it as well. Events already sent keep the old identifier, which is why it is worth copying down before you turn analytics off if you intend to ask for their deletion."
+        ),
+        None => format!(
+            "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {CONTACT_EMAIL} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports carry no installation or analytics identifier. (Each report has its own event id, and some carry a fingerprint grouping like reports together, but neither is tied to this installation or to you.)"
+        ),
+    }
+}
+
 fn privacy_policy() -> &'static str {
-    "RESPONSIBLE FOR PLXNATIVE DATA\n\nGleb Linnik is responsible only for data PlxNative stores locally and for optional reports you choose to share.\n\nPLEX SERVICES\n\nPlxNative is an independent client for Plex. To sign you in, discover servers and provide Plex account features, the app communicates directly with Plex services. Plex processes information received by those services under Plex’s own Privacy Policy. PlxNative’s developer does not receive that information.\n\nPlex Privacy Policy: https://www.plex.tv/about/privacy-legal/\n\nPLEX MEDIA SERVERS\n\nTo browse and play media, update watch progress and use server features, PlxNative communicates directly with the Plex Media Servers you select. Those requests are handled by the selected server and its operator. PlxNative’s developer does not receive them.\n\nOPTIONAL REPORTING\n\nCrash reports and product analytics are independent, optional and reversible in Settings. Crash reports go to Sentry in Germany. Product analytics go to PostHog in Germany and use a random installation identifier.\n\nNEVER INCLUDED\n\nTitles, Plex accounts, searches, server names or addresses, tokens, subtitle text and exact viewing history are not included.\n\nCONTACT\n\nglinnik21@gmail.com"
+    crate::ui::legal::Page::Privacy.body()
 }
 
 // ---- draw ------------------------------------------------------------------------------------
@@ -1149,6 +1228,10 @@ fn draw_question() {
         // channel's own preview, and the policy — each with its own title and subtitle so the
         // reader can never mistake which document (or which channel) it is looking at.
         let (doc_title, subtitle): (&str, &str) = match kind {
+            PreviewKind::AnalyticsId => (
+                DOC_TITLE_ANALYTICS_ID,
+                "The random identifier attached to product analytics from this installation, and how to have those events deleted.",
+            ),
             PreviewKind::Policy => (
                 ROW_POLICY,
                 "How PlxNative handles local data, Plex services and optional reporting.",
@@ -1180,6 +1263,7 @@ fn draw_question() {
             theme::size::LABEL,
         );
         let text = match kind {
+            PreviewKind::AnalyticsId => analytics_id_document(),
             PreviewKind::Policy => privacy_policy().to_string(),
             PreviewKind::Crash => preview_crash(),
             PreviewKind::Usage => preview_usage(),
@@ -1191,6 +1275,22 @@ fn draw_question() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The two Privacy-policy doors must open ONE document.** This screen's Information section
+    /// and `ui::legal`'s index both offer "Privacy policy", and this row's own detail line calls
+    /// what it opens "The complete PlxNative privacy policy for this build" — a claim only the
+    /// canonical text can satisfy. They were two separate literals, and they had already drifted:
+    /// this module's copy was missing the whole `ON THIS TELEVISION` section, so the shorter of the
+    /// two was the one describing itself as complete. Nothing compiles a `&'static str` against
+    /// another, so only this assertion can hold them together.
+    #[test]
+    fn both_privacy_policy_doors_open_the_same_document() {
+        assert_eq!(
+            privacy_policy(),
+            crate::ui::legal::Page::Privacy.body(),
+            "the policy shown from Privacy & data must BE the policy shown from Legal notices"
+        );
+    }
 
     /// **An automated boot is never asked.** The failure is silent: `tests/run.py` injects a token
     /// and expects Home, the fps scenes grade a heartbeat on a known route, and every `sim-shot`
@@ -1475,11 +1575,35 @@ mod tests {
             addr_of_mut!(DRAFT).write((false, false));
         }
         build_first_run_tables();
+        // COUNT and ORDER. A count alone passes on two rows swapped, or on one replaced by
+        // another — which is exactly the index bug the doc comment above describes, so counting was
+        // never enough to catch it.
         assert_eq!(list().n_rows(), row_ids().len() as i32, "first run, Crash stage");
+        assert_eq!(row_ids(), vec![RowId::PreviewCrash, RowId::Policy], "Crash stage");
+
+        // The Product stage was never exercised here at all, so the one asymmetry in `row_ids`
+        // that a stage CAN get wrong — which channel's preview it offers — was ungraded.
+        unsafe { addr_of_mut!(STAGE).write(Stage::Product) };
+        build_first_run_tables();
+        assert_eq!(list().n_rows(), row_ids().len() as i32, "first run, Product stage");
+        assert_eq!(row_ids(), vec![RowId::PreviewUsage, RowId::Policy], "Product stage");
 
         unsafe { addr_of_mut!(MODE).write(Mode::Settings) };
         rebuild(0);
         assert_eq!(list().n_rows(), row_ids().len() as i32, "settings");
+        assert_eq!(
+            row_ids(),
+            vec![
+                RowId::Errors,
+                RowId::Usage,
+                RowId::PreviewCrash,
+                RowId::PreviewUsage,
+                RowId::Policy,
+                RowId::AnalyticsId,
+                RowId::Delete,
+            ],
+            "settings"
+        );
     }
 
     #[test]
@@ -1492,13 +1616,22 @@ mod tests {
         };
         open_settings(&stored);
         assert!(!action_visible());
+        // The invariant is that the answer's arrival does not RESIZE the list, so the count is
+        // taken here rather than written down: a literal census had to be edited by every change
+        // that legitimately adds a row, and an edited expectation grades nothing.
+        //
+        // It must be the TABLE's count, not `row_ids()`'s. `row_ids` is a function of mode and
+        // stage alone and cannot move when a draft changes, so comparing it to itself across the
+        // rebuild asserted nothing at all — a Done row appended to `TableView` would have passed.
+        let rows_before = list().n_rows();
         unsafe { addr_of_mut!(DRAFT).write((true, false)) };
         rebuild(0);
         assert!(action_visible());
+        assert_eq!(list().n_rows(), rows_before, "Done never changes table geometry");
         assert_eq!(
-            row_ids().len(),
-            6,
-            "Done never changes table geometry (item 14 split one preview row into two)"
+            list().n_rows(),
+            row_ids().len() as i32,
+            "and the id map still describes the rebuilt table"
         );
         close();
     }

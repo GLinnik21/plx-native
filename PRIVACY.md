@@ -5,7 +5,7 @@ Applies to PlxNative 0.5.0. Last updated 1 September 2026.
 ## Who is responsible for PlxNative data
 
 Gleb Linnik is responsible only for data PlxNative stores locally and for optional reports you
-choose to share. Contact: `glinnik21@gmail.com`.
+choose to share. Contact: `support@plxnative.com`.
 
 ## Plex services
 
@@ -23,10 +23,22 @@ and its operator. PlxNative’s developer does not receive them.
 
 ## Data stored on this television
 
-PlxNative stores the session needed to sign in, the selected profile, Home library choices,
-playback position, settings and a small rotating local log. It may temporarily store optional
-reports waiting to be sent. The Settings screen can sign out and remove PlxNative data from this
-television.
+PlxNative stores your Plex account token and a separate token for each server you use, the
+addresses and identifiers of those servers, the profile you selected together with the profile
+names and pictures on your account, your Home library choices, your recent searches, your playback
+quality preference, and a small rotating local log. It also stores your answers to the two
+optional-reporting questions, the random Analytics ID if you turned product analytics on, any
+report waiting to be sent, and a marker recording how much of the crash log has already been read.
+It keeps no bookmark of its own for where you stopped watching: playback position is held by your
+Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
+
+Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
+tokens. Your optional-reporting answers and the Analytics ID are kept apart from the sign-in and
+are **not** removed by signing out, so that a decision you have already made is not put to you
+again. A queued report is deleted once sent, or at the moment you switch its category off. The log
+rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
+sign-in and the reporting answers can survive an uninstall — use Delete all local data before
+uninstalling if you want nothing of PlxNative left on the television.
 
 ## Optional crash reports
 
@@ -104,7 +116,7 @@ reports of that category and removes queued records that are no longer permitted
 
 ## Contact and non-affiliation
 
-Privacy questions may be sent to `glinnik21@gmail.com`. Security vulnerabilities may be reported
+Privacy questions may be sent to `support@plxnative.com`. Security vulnerabilities may be reported
 privately through GitHub Security Advisories for `GLinnik21/plx-native`.
 
 PlxNative is an independent, unofficial application. It is not produced by, endorsed by, or
