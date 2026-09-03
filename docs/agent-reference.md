@@ -42,7 +42,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
 - `make setup-env` — download + extract + `relocate-sdk.sh` the webOS NDK into `$(WEBOS_SDK)`
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
 - `make` — build `pkg/plxnative` (the ARM binary), and, first, the FFmpeg it ships
-  (`ci/build-ffmpeg.sh`; ~2 minutes cold, nothing after) plus the checksum-pinned Sentry Native
+  (`ci/build-ffmpeg.sh`; ~2 minutes on the first checkout to want that configuration, **3 seconds
+  in every checkout after** — the source and object tree is machine-wide under `$PLX_BUILD_CACHE`,
+  default `~/.cache/plxnative`, keyed by the configure flags so a dev tree and a RELEASE tree
+  cannot be confused for one another; only the 3.8 MB prefix is per-checkout) plus the
+  checksum-pinned Sentry Native
   static libraries and out-of-process handler (`ci/build-sentry-native.sh`; CMake, patched for the
   webOS glibc-2.12/ARM32 ABI). Also compiles `ci/ffabi-assert.c` against
   `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
@@ -112,6 +116,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   debuginfo cross build is 30 s cold and the artifact that SHIPS is unchanged (6.93 MB stripped, a
   hair *smaller* than without) — but its target dir is 356 MB, and this repo already keys a
   separate `rust-modules/target*` per configuration and multiplies that again per worktree.
+  (**`make disk` is how you see what that has come to**, across every checkout at once, and
+  `tools/build-gc.sh --incremental|--lanes|--all` is how you get it back. Measured 2026-09-03,
+  twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
+  **incremental cache alone was 24 GB** and FFmpeg, the usual suspect, was 2.6 GB. A linked
+  worktree no longer writes an incremental cache at all; see the Makefile beside `RUST_FEATFLAGS`.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`

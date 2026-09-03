@@ -180,6 +180,11 @@ print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 
+# `make disk` — what every checkout of this repository is costing, in one table, plus how to get
+# it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
+# the script's header carries the measurement that motivated all three.
+disk: ; @./tools/build-gc.sh
+
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
 # Which nightly to use. Defaults to whatever rustup calls `nightly` (the dev-machine behaviour
@@ -348,6 +353,35 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # binary that can still upload a snapshot, which is the configuration a submission candidate is
 # actually tested in. The feature is not in the default set at all, so no ordinary build and no
 # forgotten flag can produce it.
+# INCREMENTAL COMPILATION, OFF IN A LINKED WORKTREE — the single biggest thing on this disk.
+#
+# Measured 2026-09-03 across twelve fleet lanes plus the main checkout: 45 GB of derived trees, of
+# which **24 GB was `target*/debug/incremental` alone** — 1.2 to 4.0 GB per lane, more than the
+# object code beside it, on a volume with 3.2 GiB free. FFmpeg, which is what everyone assumes is
+# eating the disk, was 2.6 GB of that 45.
+#
+# Incremental compilation is a cache of the LAST build, so it pays for itself over a long series
+# of small edits in one tree. A fleet lane is the opposite shape: it is cut for one task, compiles
+# a handful of times and is deleted — and it pays the full multi-gigabyte cache for every one of
+# those compiles anyway, N times over, because nothing about it is shared between worktrees.
+#
+# So a LINKED WORKTREE gets `CARGO_INCREMENTAL=0` and the main checkout keeps its cache. The test
+# is `.git` being a FILE rather than a directory, which is exactly what distinguishes the two (a
+# linked worktree's `.git` is a one-line gitdir pointer). `?=` means an explicit
+# `CARGO_INCREMENTAL=1 make check` still wins, for a lane that really is doing long iterative work
+# — it costs a few GB and it is yours to spend.
+#
+# The cost is real and worth stating: a rebuild after a one-line edit in a lane recompiles the
+# crate rather than patching it. That is seconds per compile against gigabytes per lane.
+# (`export VAR ?= v` on one line is silently a no-op under the make 3.81 macOS ships — measured
+# here, `$(origin CARGO_INCREMENTAL)` came back `undefined` — so the assignment and the export are
+# two statements.)
+PLX_LINKED_WORKTREE := $(shell test -f .git && echo yes)
+ifeq ($(PLX_LINKED_WORKTREE),yes)
+CARGO_INCREMENTAL ?= 0
+export CARGO_INCREMENTAL
+endif
+
 RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
@@ -475,7 +509,7 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)+tel:$(TELE
 # SEE the refusal message the cut-release skill quotes. Without it, asking that question on a
 # different configuration deleted `pkg/plxnative`, the FFmpeg header sentinel and the staged
 # libraries — measured, by a reviewer, mid-review.
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
@@ -1478,5 +1512,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

@@ -396,6 +396,14 @@ def run_check(root, flags, toolchain, secs):
     # 'unusable', which is the honest answer: this lane cannot run the check, and that is not a
     # broken build.
     env["RUSTUP_AUTO_INSTALL"] = "0"
+    # NO `CARGO_INCREMENTAL=0` HERE, deliberately, and it was tried. The Makefile turns incremental
+    # off in a linked worktree because a lane's target dir is per-lane, multi-gigabyte and thrown
+    # away — none of which describes this one. `target_dir` puts the build in a SHARED directory
+    # under $TMPDIR that every invocation and every lane reuses on purpose, and this hook fires
+    # after every single `.rs` edit, so incremental reuse is exactly what the warm latency
+    # documented at the top of this module rests on. Disabling it would force a full crate check
+    # per keystroke-sized edit and hold that shared cargo lock longer for everyone, to save space
+    # in a directory the OS reclaims.
     # Build somewhere cargo can lock. Creating it here rather than trusting cargo is what makes the
     # fallback honest: if the directory cannot be made, say nothing and let cargo use the crate's
     # own `target/` exactly as it did before — and `verdict` files the resulting lock failure as

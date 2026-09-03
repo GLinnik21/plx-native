@@ -72,11 +72,18 @@ pkg/.flavor/
 # ci/build-ffmpeg.sh reproduces them from a sha256-pinned tarball — and the tree alone is
 # 30k files. The .ipk carries the four built .so; releases carry the tarball for LGPL.
 # **No trailing slash on these two, deliberately.** A pattern ending in `/` matches a DIRECTORY
-# and nothing else — so a worktree that reaches the shared build by SYMLINKING
-# `vendor/ffmpeg-prefix` at the main checkout (the cheap way to avoid a 2-minute, 280 MB rebuild
-# per agent) was NOT ignored, and one `git add -A` staged the link. What that commits is a
-# machine-specific absolute path that resolves to nothing on anyone else's disk, in a file nobody
-# reads twice. Slashless, both a real directory and a link to one are ignored.
+# and nothing else — so a worktree that reached the shared build by SYMLINKING
+# `vendor/ffmpeg-prefix` at the main checkout was NOT ignored, and one `git add -A` staged the
+# link. What that commits is a machine-specific absolute path that resolves to nothing on anyone
+# else's disk, in a file nobody reads twice. Slashless, both a real directory and a link to one
+# are ignored.
+#
+# Nobody should be making that symlink any more — `ci/build-ffmpeg.sh` keeps the 122 MB object
+# tree in a machine-wide, flag-keyed cache (`$PLX_BUILD_CACHE`, default `~/.cache/plxnative`), so
+# a fresh worktree gets its own real prefix in about three seconds. The slashless form stays: it
+# costs nothing, and it is the pattern that was actually load-bearing when somebody did.
+# `vendor/ffmpeg-build` still holds one thing after that change — the pinned upstream TARBALL,
+# which stays in the checkout because `release.yml` publishes it as the LGPL corresponding source.
 vendor/ffmpeg-build
 vendor/ffmpeg-prefix
 vendor/sentry-native-*.tar.gz
@@ -132,9 +139,9 @@ __pycache__/
 # The HOST FFmpeg the desktop simulator streams through (ci/build-ffmpeg.sh HOST=1) — derived,
 # ~2 MB of Mach-O, and never shipped: APP_FILES is an explicit list, so it cannot reach an .ipk.
 #
-# SLASHLESS, for exactly the reason spelled out above `vendor/ffmpeg-prefix` — a fleet lane
-# SYMLINKS these at another checkout's prebuilt trees so it does not rebuild FFmpeg, and a trailing
-# slash matches a directory and NOT a link to one. So the trailing-slash form ignored the real
+# SLASHLESS, for exactly the reason spelled out above `vendor/ffmpeg-prefix` — a fleet lane used to
+# SYMLINK these at another checkout's prebuilt trees so it did not rebuild FFmpeg (the shared cache
+# has since made that unnecessary), and a trailing slash matches a directory and NOT a link to one. So the trailing-slash form ignored the real
 # directory and let the symlink through: one `git add -A` on 2026-09-02 committed a machine-local
 # absolute path that resolves to nothing on anyone else's disk, and a later one re-committed it
 # after it had been removed. Both forms are covered without the slash.

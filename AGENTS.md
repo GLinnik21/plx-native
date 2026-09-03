@@ -52,8 +52,18 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
 - After editing `rust-modules/src/**/*.rs`, also check the shipping feature set with
-  `cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib --no-default-features` when
-  the Claude-only release hook did not run.
+  `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
+  --no-default-features` when the Claude-only release hook did not run. The prefix is not
+  decoration: this command is the one cargo invocation here that does NOT go through `make`, so it
+  is the one place the Makefile's linked-worktree `CARGO_INCREMENTAL=0` cannot reach — and a
+  one-shot gate has nothing to reuse a multi-gigabyte cache for.
+- **`make disk` before and after a fleet.** Build trees are per-checkout and were never collected;
+  twelve lanes reached 45 GB with 3.2 GiB free on 2026-09-03. `tools/build-gc.sh
+  --incremental|--lanes|--all` reclaims them and deletes nothing `make` cannot rebuild. Note what
+  the measurement says rather than what everyone assumes: the cargo **incremental cache** was 24 GB
+  of that, FFmpeg 2.6 GB. **Run `tools/build-gc.sh --orphans` after tearing a fleet down** — lane
+  target dirs live outside the repo (`$PLX_FLEET_DIR`) and outlive their worktree; 36 GB of them
+  had accumulated unseen.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.

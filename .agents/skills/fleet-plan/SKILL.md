@@ -150,10 +150,14 @@ it".
 
 ## 4. `make check` only — a full build fills the disk
 
-Every worktree gets **its own everything**: `vendor/ffmpeg-prefix` (`Makefile:409`, built by
-`ci/build-ffmpeg.sh`) and one cargo target dir per feature set — `RUST_TDIR` = `target` /
-`target-release` (`Makefile:305`), `SIM_TDIR` = `target-sim` (`855`), `MACAPP_TDIR` =
-`target-macapp` (`912`), all four under `rust-modules/`. Measured on this Mac, **2026-08-23**:
+Every worktree gets its own cargo target dir per feature set — `RUST_TDIR` = `target` /
+`target-release`, `SIM_TDIR` = `target-sim`, `MACAPP_TDIR` = `target-macapp`, all under
+`rust-modules/` — and its own `vendor/ffmpeg-prefix`, though since 2026-09-03 the expensive half
+of that last one is shared (below). **`make disk` is the current number for every checkout at
+once; take it from there rather than from the table below**, which is a record of one afternoon
+and has already been overtaken twice.
+
+Measured on this Mac, **2026-08-23**:
 
 | | |
 |---|---|
@@ -175,6 +179,27 @@ incremental cache alone is 6.2 GB** and grows without bound. The honest per-lane
 1.2–4.8 GB row. The recorded failure was **7 lanes × ~10 GB against a 72 GB margin**; the margin
 today is 48 GiB.
 
+**Measured again 2026-09-03, twelve lanes in, and the shape had changed enough to act on: 45 GB
+across the family, on a volume with 3.2 GiB free.** The breakdown is the part worth carrying,
+because it contradicts the thing everyone reaches for first — **FFmpeg was 2.6 GB of it, 6%**,
+while `target*/debug/incremental` alone was **24 GB, 53%**, at 1.2 to 4.0 GB per lane. A compile
+cache, sized larger than the object code beside it, in trees that exist for one task each.
+
+Three things came out of that measurement and they are the current state of this section:
+
+- **`make disk`** (`tools/build-gc.sh`) reports every checkout's derived trees, the external lane
+  trees under `$PLX_FLEET_DIR`, and the free space, in one table; `tools/build-gc.sh
+  --orphans | --incremental | --lanes | --all` reclaims. Nothing it deletes is anything but `make`
+  output. Run it when a lane starts failing for space, before launching a fleet, and `--orphans`
+  after tearing one down.
+- **A linked worktree no longer writes an incremental cache at all** — the Makefile sets
+  `CARGO_INCREMENTAL=0` when `.git` is a file rather than a directory, so a lane pays object code
+  and nothing else. The main checkout keeps its cache. `CARGO_INCREMENTAL=1 make check` in a lane
+  overrides it, which is the right call only for a lane genuinely doing long iterative work.
+- **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
+  `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`). See the vendor bullet below: the manual
+  symlink this skill used to prescribe is no longer needed, and the hazard it carried is gone.
+
 **The rule: workers run `make check` and nothing that cross-compiles. ONE integrator does the
 cross-build, once, at the end.** `make check` is `make lint` (three named clippy lints) plus
 `cargo test --lib`, `ci/flavor.py --selftest` and `tests/test_harness.py` — all four invoke their
@@ -194,8 +219,18 @@ export SIM_TDIR=$HOME/plx-fleet/<lane>/target-sim           # `make sim` DOES pa
 Give each lane its **own** path: one shared dir makes concurrent cargo runs block on the target
 lock and re-fingerprint each other's sources.
 
-**That does not save disk** — the bytes move, they do not vanish, and now you have to delete them
-yourself. What it buys is that **`git worktree remove` stays meaningful.** Build output is
+**That does not save disk** — the bytes move, they do not vanish. What it buys is that
+**`git worktree remove` stays meaningful.**
+
+**And moving them is how they become permanent, which is the failure this advice caused.** A tree
+under `$HOME/plx-fleet/<lane>` outlives its worktree by construction: remove the lane and the
+gigabytes stay, owned by nobody, named for a branch that no longer exists. Found 2026-09-03 by
+teaching `tools/build-gc.sh` to look there — **36 GB across ten dead lanes** (`cards`, `deploy`,
+`detail`, `glass`, `integ`, `labels`, `person`, `routes`, `search`, `settings`), every single one
+an orphan, none of them visible to a `du` at the repo root or to any earlier version of that
+script. So: **`tools/build-gc.sh --orphans` after every fleet**, which deletes exactly the
+external trees whose worktree is gone and touches no live lane. `make disk` lists them with an
+ORPHAN marker. Build output is
 untracked, so a lane with a target dir inside it always needs `--force` — and `--force` deletes
 uncommitted *source* changes just as happily (verified 2026-08-23: a plain `remove` refuses with
 `contains modified or untracked files`; `--force` took the tree, modified tracked file and all).
@@ -234,16 +269,21 @@ cp "$MAIN/tests/manifest.local.json" "$WT/tests/"        # only for ./tests/run.
 - **Do NOT `cp -R "$MAIN/vendor" "$WT/vendor"`.** The destination exists, so that writes
   `vendor/vendor/` — and doing it while seeding a fleet once put **30,247 build-artefact files
   (280 MB, plus the builder's MAC addresses and home path in FFmpeg's configure logs) into a branch
-  bound for a public repository**. The `.gitignore` entry that now catches it says so. If a lane
-  genuinely must cross-build, **symlink the prefix** instead — `.gitignore`'s `vendor/ffmpeg-prefix`
-  is deliberately slashless so a symlink is ignored too:
+  bound for a public repository**. The `.gitignore` entry that now catches it says so. **You no
+  longer need to do anything at all**: since 2026-09-03 `ci/build-ffmpeg.sh` puts the 122 MB source
+  and object tree in a machine-wide cache under `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`),
+  keyed by the configure flags, so a lane that cross-builds compiles nothing and copies out a
+  3.8 MB prefix. Measured the day it landed: a cold worktree's `make pkg/.ffabi-ok` went from
+  ~2 minutes and 122 MB to **3 seconds and 3.8 MB**.
 
-  ```sh
-  ln -s "$MAIN/vendor/ffmpeg-prefix" "$WT/vendor/ffmpeg-prefix"
-  ```
-
-  Only between lanes on the **same configuration**: `RELEASE=1` drops swscale and the mpeg1/mpegts
-  pair from that prefix.
+  The `ln -s "$MAIN/vendor/ffmpeg-prefix" "$WT/vendor/ffmpeg-prefix"` recipe this skill used to
+  give is therefore obsolete — and it is worth knowing WHY it was never quite safe, because the
+  cache is keyed precisely to fix it. A symlinked prefix is shared across configurations, and
+  `RELEASE=1` drops swscale and the mpeg1/mpegts pair: a release lane rebuilding through the link
+  silently replaced a dev lane's libraries, and the Makefile's configuration stamp — which deletes
+  a header *inside* the prefix to force a rebuild — reached through the link into the other lane's
+  tree to do it. Different flags now hash to different cache keys, and each checkout keeps its own
+  real prefix directory, so neither half can happen.
 
 ## The worker-prompt block
 
