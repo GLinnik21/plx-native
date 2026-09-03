@@ -767,10 +767,12 @@ which it was.
 
 ## 9. Actions this session generates
 
-1. **Fix the sink ceiling per codec** (§3.1–§3.4). Read `(maxWidth, maxHeight, maxFrameRate)` per
+1. **DONE, 2026-09-03 — see `docs/webos10-resource-allocation.md`'s status banner and
+   `engine::sink_envelope`.** ~~Fix the sink ceiling per codec~~ (§3.1–§3.4). Read `(maxWidth, maxHeight, maxFrameRate)` per
    codec in `devcaps.rs` and declare them per Load. Bench work, pipeline tier behind it. Blocks any
    claim that the app works on webOS 10.
-2. **Make `type=18` a verdict** (§3.5). Today it is latched into a diagnostic counter and nothing
+2. **DONE, 2026-09-03 — `player::sf_on_event_inner` publishes `load_failed` on a `type=18` seen
+   before any picture.** ~~Make `type=18` a verdict~~ (§3.5). Today it is latched into a diagnostic counter and nothing
    else, so a refused Load presents as a silent black screen with a healthy-looking state machine.
 3. **Fix the two redaction holes and blank PIN keystrokes** (§4.2). All three are pure functions
    with host tests; `scrub_addresses` in particular documents an IPv6 case it does not implement.

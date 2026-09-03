@@ -830,6 +830,8 @@ mod tests {
             &Caps {
                 hevc: true,
                 hevc_max: (4096, 2176),
+                h264_row: (0, 0, 0),
+                hevc_row: (0, 0, 0),
                 vp9: true,
                 audio: "aac,ac3,eac3".into(),
             },
@@ -988,6 +990,8 @@ mod tests {
         let caps = Caps {
             hevc: false,
             hevc_max: (1920, 1088),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
@@ -1012,6 +1016,8 @@ mod tests {
             Caps {
                 hevc: false,
                 hevc_max: (1920, 1088),
+                h264_row: (0, 0, 0),
+                hevc_row: (0, 0, 0),
                 vp9: false,
                 audio: "aac".into(),
             },
@@ -1033,6 +1039,8 @@ mod tests {
         let caps = Caps {
             hevc: true,
             hevc_max: (3840, 2176),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: true,
             audio: "aac".into(),
         };

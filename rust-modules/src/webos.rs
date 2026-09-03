@@ -135,6 +135,37 @@ pub(crate) struct Hardware {
     pub hw_revision: String,
 }
 
+impl Hardware {
+    /// The set as one line — `model · board · hw` with the empty parts left out, and an EMPTY
+    /// string when nothing answered (the caller decides what "unknown" reads as on its surface).
+    /// One definition for the two photographable surfaces that print it, the diagnostics panel's
+    /// "Set" row and the failure read-out's support line, so they cannot drift.
+    pub(crate) fn set_line(&self) -> String {
+        [
+            self.model.as_str(),
+            self.board.as_str(),
+            self.hw_revision.as_str(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+    }
+}
+
+impl Info {
+    /// `webOS 4.10.2`, or `webOS unknown` when the file could not be read — the release is the
+    /// one field a stranger's report needs, and the word "unknown" is the honest reading of an
+    /// empty one rather than a plausible default.
+    pub(crate) fn release_line(&self) -> String {
+        if self.major == 0 {
+            "webOS unknown".to_string()
+        } else {
+            format!("webOS {}", self.release)
+        }
+    }
+}
+
 static HW: OnceLock<Hardware> = OnceLock::new();
 
 /// What the set is. All-empty when the file could not be read.
@@ -291,5 +322,23 @@ mod tests {
     fn a_short_release_still_gives_a_major() {
         assert_eq!(parse(r#"{"webos_release": "6.0"}"#).major, 6);
         assert_eq!(parse(r#"{"webos_release": "10.0.1"}"#).major, 10);
+    }
+
+    #[test]
+    fn the_set_and_release_lines_omit_what_is_unknown_and_never_invent_a_set() {
+        let hw = Hardware {
+            model: "49SM9000PLA".into(),
+            board: "HE_DTV_W19H".into(),
+            hw_revision: String::new(),
+        };
+        assert_eq!(hw.set_line(), "49SM9000PLA · HE_DTV_W19H");
+        assert_eq!(Hardware::default().set_line(), "");
+        let i = Info {
+            release: "4.10.2".into(),
+            major: 4,
+            ..Default::default()
+        };
+        assert_eq!(i.release_line(), "webOS 4.10.2");
+        assert_eq!(Info::default().release_line(), "webOS unknown");
     }
 }

@@ -464,6 +464,38 @@ pub(crate) fn state() -> shared::PlaybackState {
     shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
 }
 
+/// The one line that makes a phone photograph of the failure read-out a complete report:
+/// `PlxNative 0.6.0-dev · webOS 4.10.2 · 43LM6300PVB · m3r · tv_pipeline`. It exists because
+/// issue #63 arrived as a title, a model name and nothing else — no version, no reason — and the
+/// only surface carrying those facts (Stats for nerds) is reachable from the player's overflow
+/// menu alone and is force-closed on leaving playback, so a failed session had no way to show them.
+///
+/// Pure. Every part is a product identity or a closed vocabulary: the version every surface shares
+/// (`plex::identity`), the firmware release, the set (model · board · hw — the rule
+/// `ui::stats::device_rows` states: shared by every unit LG built, saying nothing about a
+/// household) and [`FailureKind::code`], the same string the telemetry channel sends. It never
+/// carries `ErrorShape::detail`, the server's free text, which is the one thing here that could
+/// name a file.
+pub(crate) fn support_line(kind: FailureKind) -> String {
+    support_line_of(
+        crate::webos::info(),
+        crate::webos::device(),
+        kind,
+    )
+}
+fn support_line_of(i: &crate::webos::Info, hw: &crate::webos::Hardware, kind: FailureKind) -> String {
+    let set = hw.set_line();
+    let set: &str = if set.is_empty() { "unknown set" } else { &set };
+    format!(
+        "{} {} · {} · {} · {}",
+        crate::plex::identity::PRODUCT,
+        crate::plex::identity::VERSION,
+        i.release_line(),
+        set,
+        kind.code()
+    )
+}
+
 /// The `Error` state's wording, shaped by WHY — issue #22's lesson: `ff: no video stream` was
 /// technically true and cost the reviewer a full server-side investigation that the sentence
 /// "the server sent audio only" would have ended. Pure so every arm is host-testable; the two
@@ -1491,6 +1523,28 @@ pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_ch
         SHARED.with_native_session(epoch, class, num, || sf_on_event_inner(ty, num, s));
     }));
 }
+/// The two libpf frame counters a callback type can name, once the webOS 4 vs 5+ numbering
+/// shift is taken out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SinkCounter {
+    Dropped,
+    Displayed,
+}
+
+/// PURE: which sink counter a raw callback type is, on a firmware of this major. Decompiled from
+/// libpf on webOS 4.10 (`CustomPipeline::updateDroppedFrame` → 0x2e = 46,
+/// `updateDisplayedFrame` → 0x2f = 47); every type above 0x1c is two higher on webOS 5+
+/// (Kodi's `if (webOSVersion < 5 && type > ENDOFSTREAM) type += 2`), so 48/49 there. An unknown
+/// major (0, os_info unreadable) is read as the numbering this project has actually measured.
+fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
+    let normalised = if major == 0 || major < 5 { ty + 2 } else { ty };
+    match normalised {
+        48 => Some(SinkCounter::Dropped),
+        49 => Some(SinkCounter::Displayed),
+        _ => None,
+    }
+}
+
 fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
     if ty != 0 {
         // The diagnostics census, beside the log line that already records every event. A COUNT is
@@ -1519,6 +1573,42 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
                 .collect()
         };
         log(&format!("smp_cb type={ty} num={num} str={preview}"));
+        // The video sink's own frame counters, forwarded by libpf every 200 ms (see the payload
+        // note in engine.rs: `streamQualityInfo` / `streamQualityInfoNonFlushable`). Logged under
+        // a firmware-independent name because these two sit ABOVE the 0x1c point where the
+        // callback numbering shifts by two between webOS 4 and 5+ (`docs/webos5-port.md` §5):
+        // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
+        // the raw type.
+        match sink_counter_kind(ty, crate::webos::info().major) {
+            Some(SinkCounter::Displayed) => log(&format!("sink: displayed={num} (type={ty})")),
+            Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
+            None => {}
+        }
+        // **A refusal before the first picture is a VERDICT, not a statistic.** Until 2026-09-03
+        // the latch above was all this arm did, and `docs/webos10-lab-report.md` §3.5 records the
+        // result on a set that refused the Load asynchronously (`Load()` returned ok=1, then
+        // `type=18 num=601 Resource Allocation Error`): `load_failed` stayed false, the pump waited
+        // in Connecting for a `loadCompleted` that could never come, the demuxer kept downloading,
+        // the adaptive controller stepped down against an estimator that would never see a frame,
+        // and the failure read-out — the one screen built to survive a phone photograph — never
+        // ran, for ~70 s, on the failure it most exists for. Publishing the same flag the
+        // synchronous refusal publishes (`threads::load_thread` on `sf_load == 0`) hands it to the
+        // pump's existing `load_failed` arm: HLS rollback if one is pending, else `Error` with
+        // `FailureKind::TvPipeline`.
+        //
+        // Scoped to `!seen_frame` — SESSION-scoped, never `frames == 0`, which a seek zeroes (see
+        // player/CLAUDE.md, "`frames` is SEEK-scoped"). A `loadCompleted` already received is NOT
+        // an exemption: a completed Load is the pipeline accepting a declaration, and a refusal
+        // that lands after it but before any picture is still a session that never started. A
+        // type=18 after a picture stays diagnostic-only here: whether that shape exists, and what
+        // it means mid-play, is unmeasured, and the lab could not say whether 18 is the only
+        // refusal type either — so the `num` is logged rather than filtered on.
+        if ty == 18 && !SHARED.seen_frame.load(Relaxed) {
+            log(&format!(
+                "smp: Load refused by the pipeline before any picture (type=18 num={num}) — failing the source"
+            ));
+            SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
     if ty == 0 {
         // a POSITION UPDATE — map fed pts -> real content position.
@@ -1684,6 +1774,101 @@ mod tests {
             !mutated,
             "a callback with no live native-session owner must be discarded"
         );
+    }
+
+    /// The four shapes a `type=18` can arrive in, graded on the ONE bit that decides them:
+    /// `seen_frame`. Before any picture it is a refusal whether or not `loadCompleted` came first;
+    /// after a picture it is diagnostic only — including after a seek, which zeroes `frames` but
+    /// never `seen_frame` (the trap player/CLAUDE.md names).
+    #[test]
+    fn a_type_18_before_any_picture_publishes_load_failed_and_after_one_does_not() {
+        let _guard = crate::testlock::serial();
+        let refusal = c"Resource Allocation Error".as_ptr();
+        let refuse = |epoch: u32| sf_on_event(epoch, 18, 601, refusal);
+        let failed = || SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
+
+        // 1. before loadCompleted
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch);
+        assert!(failed(), "a refusal before loadCompleted is a verdict");
+        SHARED.retire_native_session(epoch);
+
+        // 2. after loadCompleted, still no picture
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+        assert!(SHARED.load_completed.load(std::sync::atomic::Ordering::Acquire));
+        refuse(epoch);
+        assert!(
+            failed(),
+            "a completed Load is a declaration accepted, not a picture; the refusal still counts"
+        );
+        SHARED.retire_native_session(epoch);
+
+        // 3. after a picture: diagnostic only
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert!(SHARED.seen_frame.load(std::sync::atomic::Ordering::Acquire));
+        refuse(epoch);
+        assert!(!failed(), "a type=18 on an established session is not a Load refusal");
+        assert_eq!(
+            SHARED.dg_cb_err.load(std::sync::atomic::Ordering::Acquire),
+            18,
+            "…but the diagnostics latch still records it"
+        );
+
+        // 4. after a seek on that session: `frames` is zeroed, `seen_frame` is not
+        SHARED.frames.store(0, std::sync::atomic::Ordering::Relaxed);
+        refuse(epoch);
+        assert!(
+            !failed(),
+            "a seek zeroes `frames`; the refusal predicate must read `seen_frame`, not that"
+        );
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+    }
+
+    #[test]
+    fn the_support_line_names_version_firmware_set_and_code_and_nothing_free_text() {
+        let i = crate::webos::Info {
+            release: "4.10.2".into(),
+            major: 4,
+            ..Default::default()
+        };
+        let hw = crate::webos::Hardware {
+            model: "43LM6300PVB".into(),
+            board: "m3r".into(),
+            hw_revision: String::new(),
+        };
+        let line = support_line_of(&i, &hw, FailureKind::TvPipeline);
+        assert_eq!(
+            line,
+            format!(
+                "PlxNative {} · webOS 4.10.2 · 43LM6300PVB · m3r · tv_pipeline",
+                crate::plex::identity::VERSION
+            )
+        );
+        let bare = support_line_of(
+            &crate::webos::Info::default(),
+            &crate::webos::Hardware::default(),
+            FailureKind::Unspecified,
+        );
+        assert!(bare.contains("webOS unknown · unknown set · unspecified"), "{bare}");
+    }
+
+    #[test]
+    fn the_sink_counters_are_read_through_the_numbering_shift() {
+        use SinkCounter::{Displayed, Dropped};
+        assert_eq!(sink_counter_kind(46, 4), Some(Dropped));
+        assert_eq!(sink_counter_kind(47, 4), Some(Displayed));
+        assert_eq!(sink_counter_kind(47, 0), Some(Displayed), "unknown major reads as measured");
+        assert_eq!(sink_counter_kind(48, 5), Some(Dropped));
+        assert_eq!(sink_counter_kind(49, 10), Some(Displayed));
+        assert_eq!(sink_counter_kind(47, 10), None, "47 is something else on webOS 5+");
+        assert_eq!(sink_counter_kind(49, 4), None);
+        assert_eq!(sink_counter_kind(18, 4), None);
     }
 
     #[test]

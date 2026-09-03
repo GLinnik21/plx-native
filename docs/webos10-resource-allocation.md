@@ -1,9 +1,23 @@
 # webOS 10 refuses every H.264 Load — and so refuses every server transcode
 
-**Status: MEASURED, device-verified both ways, and NOT FIXED on any branch.** The one-line change
-below was proven in the lab slot that found the bug and then deliberately reverted, because it is
-not the ABR defect that session was booked for. This file exists so that decision stays a
-*decision* rather than becoming a thing nobody wrote down.
+**Status: MEASURED, device-verified both ways; the measured half is FIXED on `main` since
+2026-09-03, the rest is still open.** The one-line change below was proven in the lab slot that
+found the bug and then deliberately reverted, because it was not the ABR defect that session was
+booked for. What landed afterwards is exactly the measured shape and no more —
+`engine::sink_envelope`: H.264 declares `1920x1080@60` when the session's widest raster fits FHD
+(the transcode case, i.e. most of a library), keeps `3840x2160@60` otherwise, HEVC is unchanged,
+and the device's own per-codec row (now read WITH `maxFrameRate`) clamps only when the table was
+actually measured. The asynchronous `type=18` is also a verdict now (§3.5's second defect). NOT
+re-measured on 10.3.1. **The frame-rate leg was run on the dev set (webOS 4.10) on 2026-09-03
+instead, with `/tmp/plxnative-sinkmax=WxH@F`, and it is a discriminator there too — in a
+different way:** a 4K H.264 24p direct play declared `3840x2160@60` is announced by the pipeline as
+`frameRate:24` and then, a second later, `frameRate:30` (`smp_cb type=4` twice), i.e. a 24p
+stream presented on a 30 fps lattice; declared `@24` or `@30` it is announced as 24 once and held.
+4K HEVC under `@60` and 1080p H.264 under `@60` hold 24. The sink's own displayed-frame counter
+(payload `streamQualityInfoNonFlushable`, callback type 47) measured the consequence: **13.0 fps
+presented under `@60`, 24.1 fps under `@24`, zero counted drops either way.** H.264 therefore
+declares the stream's rate class now (`engine::fps_class`). Whether declaring 24 at 4K also loads on 10.3.1 is the one leg
+still unrun. The account below is left as it was written, as the evidence.
 
 > **Provenance.** LG Cloud Test Lab, 2026-08-27, one hour, on a set nobody here owns:
 > board `k24` / `K24_DVB`, **release 10.3.1**, booked as "webOS24". The log came back through the

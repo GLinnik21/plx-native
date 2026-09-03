@@ -16,6 +16,13 @@
 //! an agent that playback is broken when it is merely absent. Failing honestly and immediately is
 //! the whole contract of that path.
 //!
+//! # Opt-in: a REFUSED Load (`plxnative-refuseload[=N]`)
+//!
+//! With the sink armed, refuse the first N Loads (bare flag: every Load) the way webOS 10.3.1
+//! refused the 4K60 H.264 envelope — asynchronously, by callback, after `Load()` returned ok=1.
+//! See `sf_load`. It exists so the failure read-out that refusal reaches can be driven and
+//! screenshotted on a Mac, and so a rollback that reloads can be made to fail a second time.
+//!
 //! # Opt-in: the CLOCK SINK (`plxnative-clocksink`)
 //!
 //! **It accepts access units, throws them away, and advances a presentation clock at real time.**
@@ -256,12 +263,73 @@ pub(super) unsafe fn sf_load(_payload: *const c_char, epoch: u32) -> c_int {
     NATIVE_UNLOAD_COMPLETED.store(false, Relaxed);
     OBJECT_READY.store(true, Relaxed);
     LOADED.store(true, Relaxed);
+    if take_refusal() {
+        // **`plxnative-refuseload[=N]`: the webOS 10.3.1 refusal, on a Mac.** The sequence is the
+        // lab set's own (`docs/webos10-lab-report.md` §3.2): the pipeline acknowledges, echoes the
+        // sink envelope it was handed as `type=5`, and then refuses with `type=18 num=601` —
+        // AFTER `Load()` has returned ok=1. That asynchronous shape is what left the app on a black
+        // screen for 70 s with a healthy-looking state machine, and it is the one no other host
+        // path can produce: `LIFECYCLE_BLOCKED` makes `sf_load` return 0, which is the synchronous
+        // refusal and a different code path. N counts Loads refused before the sink behaves again
+        // (absent = every Load), so a rollback that reloads can be made to succeed or to fail too.
+        for (ty, num, s) in [
+            (13, 1, c""),
+            (14, 0, c"1"),
+            (
+                5,
+                0,
+                c"0 video/x-h264 (null) (null) 3840 2160 (null) 60.000000 0 0 0",
+            ),
+            (15, 0, c"1"),
+            (8, 0, c"audio/mpeg"),
+            (18, 601, c"Resource Allocation Error"),
+        ] {
+            CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
+            super::super::sf_on_event(epoch, ty, num, s.as_ptr());
+        }
+        return 1;
+    }
     // The engine waits on `SHARED.load_completed`, which is set by parsing a callback STRING. Go
     // through the real callback rather than setting the flag, so the parse is exercised. Type 2 is
     // benign: the harness greps `smp_cb type=18` for a playback error and this is not one.
     CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
     super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
     1
+}
+
+/// How many more host Loads `plxnative-refuseload[=N]` still refuses. Read once (a trigger is a
+/// boot-time fact like every other), counted down per `sf_load`; `i64::MAX` for the bare flag.
+static REFUSALS_LEFT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+fn take_refusal() -> bool {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let n = match crate::dev::read("refuseload") {
+            None => 0,
+            Some(v) if v.trim().is_empty() => i64::MAX,
+            Some(v) => v.trim().parse::<i64>().unwrap_or(0),
+        };
+        if n > 0 {
+            crate::log(&format!(
+                "clocksink: plxnative-refuseload armed — the next {} Load(s) get the webOS 10.3.1 \
+                 type=18 num=601 refusal after Load() returns ok=1",
+                if n == i64::MAX { "∞".to_string() } else { n.to_string() }
+            ));
+        }
+        REFUSALS_LEFT.store(n, Relaxed);
+    });
+    loop {
+        let left = REFUSALS_LEFT.load(Relaxed);
+        if left <= 0 {
+            return false;
+        }
+        let next = if left == i64::MAX { left } else { left - 1 };
+        if REFUSALS_LEFT
+            .compare_exchange(left, next, Relaxed, Relaxed)
+            .is_ok()
+        {
+            return true;
+        }
+    }
 }
 pub(super) unsafe fn sf_ready() -> c_int {
     c_int::from(enabled() && OBJECT_READY.load(Relaxed))

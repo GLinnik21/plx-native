@@ -47,16 +47,26 @@ use std::sync::atomic::{AtomicI64, Ordering};
 // anchor and the payload to drift apart. For the shipped app the composed bytes and the key order
 // are identical to what every release so far sent — asserted in the tests below, because the
 // webOS 5+ splice path is one this project's 4.5 dev set cannot exercise.
-const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+const PAYLOAD_V: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"streamQualityInfoNonFlushable":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // NB: pauseAtDecodeTime stays FALSE here. Kodi uses true, but only alongside its decode-time
 // trigger machinery (setTimeToDecode); with true and no trigger the decoder never starts
 // (verified on-device: Load+Play OK but zero frames decoded). The feed-ahead throttle
 // (MAX_FEED_AHEAD_NS in feed_stream) is the anti-stall mechanism; the other Kodi payload
 // flags are being re-introduced one at a time.
-const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
+const PAYLOAD_AV: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H264","audio":"AC3"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"streamQualityInfoNonFlushable":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":1048576},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":true,"queryPosition":false,"lowDelayMode":false,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":1920,"maxHeight":1080,"maxFrameRate":30}}}]}"#;
 // Phase 0 HEVC probe payload — identical to PAYLOAD_V but codec video "H265", to isolate
 // the single variable: does StarfishMediaAPIs BUFFERSTREAM decode HEVC on this panel?
-const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
+/// **`streamQualityInfoNonFlushable: true` is the presented-frame counter, and it is the only
+/// per-frame instrument this app has on a non-Dolby path.** Decompiled from libpf 2026-09-03
+/// (`CustomPipeline::updatePeriodicalInfo`, the same 200 ms timer as the position tick):
+/// with `streamQualityInfo` the pipeline reads the sink's `dropped-frames` every 200 ms and
+/// forwards a non-zero count as callback type 46; with this second key it also reads
+/// `non-flushable-displayed-frames` and forwards it as type 47. Both arrive at `sf_on_event`
+/// and are logged as `smp_cb type=46/47 num=<count>`, so consecutive samples against the log's
+/// millisecond stamps ARE the presented cadence — the number the 5 Hz `vtick` and our GL `fps=`
+/// could never give. Whether this firmware's sink exposes the property is answered by the first
+/// run: libpf logs a pmlog error naming the property if it does not.
+const PAYLOAD_H265: &str = r#"{"args":[{"mediaTransportType":"BUFFERSTREAM","option":{"appId":"@APPID@","externalStreamingInfo":{"contents":{"codec":{"video":"H265"},"esInfo":{"pauseAtDecodeTime":false,"ptsToDecode":0,"seperatedPTS":true},"format":"RAW","provider":"plxnative"},"streamQualityInfo":true,"streamQualityInfoNonFlushable":true,"audioSync":true,"restartStreaming":false,"bufferingCtrInfo":{"bufferMaxLevel":0,"bufferMinLevel":0,"preBufferByte":0,"qBufferLevelAudio":0,"qBufferLevelVideo":0,"srcBufferLevelAudio":{"minimum":1,"maximum":32768},"srcBufferLevelVideo":{"minimum":1,"maximum":8388608}}},"needAudio":false,"queryPosition":false,"lowDelayMode":true,"transmission":{"contentsType":"LIVE"},"adaptiveStreaming":{"audioOnly":false,"maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}}}]}"#;
 
 // ACCEPTED AUs — what the pipeline took. This is what `ui::stats` reports, because a count of
 // attempts reads as healthy throughput through a stall: a full sink retains the AU and it is
@@ -399,15 +409,171 @@ fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
 
 /// Build the streamed BUFFERSTREAM Load payload from PAYLOAD_AV, substituting the item's real
 /// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"EAC3"|"AAC".
+/// What the Load's `adaptiveStreaming` block declares: the sink the pipeline ALLOCATES for, on the
+/// firmwares that allocate against the declaration rather than the bitstream (webOS 10.3.1,
+/// measured — `docs/webos10-resource-allocation.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SinkEnvelope {
+    pub w: u32,
+    pub h: u32,
+    pub fps: u32,
+}
+
+/// The declaration every set has ever been verified against: 4K60. Both codecs on the dev set
+/// (webOS 4.10), HEVC on 10.3.1 (13 Loads, DV P8 + Atmos among them).
+const ENVELOPE_UHD60: SinkEnvelope = SinkEnvelope {
+    w: 3840,
+    h: 2160,
+    fps: 60,
+};
+/// The one SMALLER declaration with a device measurement behind it: the H.264 patch that loaded in
+/// 117 ms on 10.3.1 where 4K60 was refused twice, and played through ABR commits afterwards.
+const ENVELOPE_FHD60: SinkEnvelope = SinkEnvelope {
+    w: 1920,
+    h: 1080,
+    fps: 60,
+};
+
+/// **The sink envelope for this session, and the rule is deliberately narrow.** Until 2026-09-03
+/// the streamed A/V Load declared `ENVELOPE_UHD60` for every codec and every source, and on
+/// webOS 10.3.1 that refuses EVERY H.264 Load — i.e. every server transcode — with `type=18
+/// num=601 Resource Allocation Error` before a frame is decoded. The lab session that found it
+/// also measured the fix for the common shape and nothing beyond it, so:
+///
+/// * **HEVC keeps 4K60.** Dolby Vision P5/P8 and HDR10 are device-verified only under that
+///   declaration, and nothing smaller has ever been declared for HEVC on any set.
+/// * **H.264 declares FHD60 when the session's widest raster fits FHD**, which is what the lab
+///   measured (a 1080p source's transcode), and stays 4K60 otherwise — a real 4K H.264 file, or an
+///   Auto session whose catalog can reach the 4K actuator, keeps today's behaviour and today's
+///   known refusal on 10.3.1. "Fits FHD" is width ≤ 1920 and height ≤ 1088: a 1080p H.264 stream's
+///   CODED height is 1088 (16-aligned), and PMS reports coded sizes, so 1088 has to read as 1080
+///   or every 1080p file would be promoted to the 4K declaration it was meant to escape.
+/// * **Unknown raster (0 on an axis) means 4K60**, today's value: "nobody said" must not
+///   under-declare a file that might be 4K.
+/// * **The device's own table clamps, per codec, only when it was actually READ.** On the dev set
+///   and on 10.3.1 both rows claim ≥4K@60 and nothing changes; a set whose HEVC row says
+///   1920x1088 (a Full HD panel — issue #63's hypothesis) gets FHD60 for HEVC too. The assumed
+///   fallback is never a clamp. A clamped 1088 is normalised to 1080 for the same reason as
+///   above, and `fps` is never raised above 60 by the table (120 is a claim nobody has tested).
+///
+/// `maxFrameRate`: **H.264 declares the stream's own rate class** (24/25/30/50/60, never below
+/// the stream; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
+/// value every Dolby Vision verification was taken under. `/tmp/plxnative-sinkmax=WxH@F`
+/// overrides the whole result so the remaining legs are an A/B with no rebuild. Pure; the
+/// wrappers feed it the route.
+fn sink_envelope(
+    is_h265: bool,
+    max_raster: (u16, u16),
+    stream_fps: f64,
+    caps: &crate::devcaps::Caps,
+    measured: bool,
+) -> SinkEnvelope {
+    let fits_fhd = |w: u32, h: u32| w > 0 && h > 0 && w <= 1920 && h <= 1088;
+    let (mw, mh) = (u32::from(max_raster.0), u32::from(max_raster.1));
+    let mut env = if !is_h265 && fits_fhd(mw, mh) {
+        ENVELOPE_FHD60
+    } else {
+        ENVELOPE_UHD60
+    };
+    // **H.264 declares the stream's own rate class, and this is device-measured, not guessed.**
+    // On the dev set (webOS 4.10) a 4K H.264 24p direct play declared at 60 makes the pipeline
+    // announce `frameRate:24` and then, about a second later, `frameRate:30` for the same stream
+    // — a 24p picture on a 30 fps lattice, i.e. pulldown judder the viewer can see. Declared at
+    // 24 or at 30 it announces 24 once and holds it (2026-09-03, `plxnative-sinkmax` A/B, three
+    // legs; 4K HEVC under 60 announces 24 and holds it, and 1080p H.264 under 60 does too, so
+    // the rate is left at 60 for HEVC and for an unknown stream rate). **And the sink's own
+    // displayed-frame counter (callback type 47, see the payload note above) put a number on
+    // what the eye saw: declared at 60 the 4K 24p stream was PRESENTED at 13.0 fps mean, worst
+    // second 10; declared at 24, 24.1 fps.** The class, not the exact value: 23.976 → 24 keeps
+    // the declaration a ceiling the stream fits under.
+    if !is_h265 && stream_fps > 0.0 && stream_fps.is_finite() {
+        env.fps = fps_class(stream_fps);
+    }
+    if measured {
+        let (rw, rh, rf) = if is_h265 { caps.hevc_row } else { caps.h264_row };
+        let clamp = |v: u32, bound: u32| if bound == 0 { v } else { v.min(bound) };
+        env.w = clamp(env.w, rw);
+        env.h = clamp(env.h, rh);
+        env.fps = clamp(env.fps, rf);
+        if env.h == 1088 {
+            env.h = 1080;
+        }
+    }
+    env
+}
+
+/// The sink envelope for THIS Load, from the route (main thread), with the dev override applied.
+/// **What the two STATIC payloads declare**, as the numbers written into their strings — used on
+/// every arm that sends one (the local-sample feeds and the streamed `/tmp/plxnative-noaudio`
+/// path), so the `load:` line's `max=` reports what was SENT rather than the streamed builder's
+/// initializer. The test below pins these to the strings themselves.
+fn static_envelope(hevc: bool) -> SinkEnvelope {
+    if hevc {
+        ENVELOPE_UHD60
+    } else {
+        SinkEnvelope {
+            w: 1920,
+            h: 1080,
+            fps: 30,
+        }
+    }
+}
+
+/// The smallest of the broadcast/film rate classes the stream fits under: 24, 25, 30, 50, 60,
+/// else the rate rounded up. A ceiling, never below the stream.
+fn fps_class(fps: f64) -> u32 {
+    for class in [24u32, 25, 30, 50, 60] {
+        if fps <= f64::from(class) + 0.01 {
+            return class;
+        }
+    }
+    fps.ceil() as u32
+}
+
+fn sink_envelope_now(is_h265: bool) -> SinkEnvelope {
+    if let Some(spec) = crate::dev::read("sinkmax") {
+        if let Some(env) = parse_sinkmax(&spec) {
+            log(&format!(
+                "sinkmax: envelope OVERRIDDEN to {}x{}@{} by /tmp/plxnative-sinkmax",
+                env.w, env.h, env.fps
+            ));
+            return env;
+        }
+        log(&format!("sinkmax: unparseable spec {spec:?} — ignored"));
+    }
+    sink_envelope(
+        is_h265,
+        crate::route::sink_max_raster(),
+        crate::route::stream_fps(),
+        crate::devcaps::caps(),
+        crate::devcaps::measured(),
+    )
+}
+
+/// `WxH@F` — three positive integers; anything else is `None`.
+fn parse_sinkmax(spec: &str) -> Option<SinkEnvelope> {
+    let (wh, fps) = spec.trim().split_once('@')?;
+    let (w, h) = wh.split_once('x')?;
+    let env = SinkEnvelope {
+        w: w.trim().parse().ok()?,
+        h: h.trim().parse().ok()?,
+        fps: fps.trim().parse().ok()?,
+    };
+    (env.w > 0 && env.h > 0 && env.fps > 0).then_some(env)
+}
+
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
 /// the sink envelope.
-fn build_av_payload(video: &str, audio: &str, mw: i32, mh: i32) -> String {
+fn build_av_payload(video: &str, audio: &str, env: SinkEnvelope) -> String {
     let mut p = PAYLOAD_AV
         .replace(r#""video":"H264""#, &format!(r#""video":"{video}""#))
         .replace(r#""audio":"AC3""#, &format!(r#""audio":"{audio}""#))
-        .replace(r#""maxWidth":1920"#, &format!(r#""maxWidth":{mw}"#))
-        .replace(r#""maxHeight":1080"#, &format!(r#""maxHeight":{mh}"#))
-        .replace(r#""maxFrameRate":30"#, r#""maxFrameRate":60"#);
+        .replace(r#""maxWidth":1920"#, &format!(r#""maxWidth":{}"#, env.w))
+        .replace(r#""maxHeight":1080"#, &format!(r#""maxHeight":{}"#, env.h))
+        .replace(
+            r#""maxFrameRate":30"#,
+            &format!(r#""maxFrameRate":{}"#, env.fps),
+        );
     // Real source frame rate (direct-play only; 0 on transcode → skip): give the pipeline the true
     // fps for A/V timing instead of the sink-envelope default, + adaptiveResolution so it adapts if
     // the coded dims change. libpf parses videoFpsValue/videoFpsScale/adaptiveResolution (verified).
@@ -746,6 +912,9 @@ fn start_bufferfeed_inner(
                     p.dovi.to_dovi(),
                     p.atmos,
                 );
+                if let Some([w, h]) = p.source_raster {
+                    crate::route::set_stream_source_raster(w, h);
+                }
                 if p.auto_source_kbps > 0 && !p.auto_hls_base.is_empty() {
                     // A fixture that starts in HLS hands back the playlist to open: the route's
                     // own `url` has already moved, and this local copy is what everything below
@@ -833,6 +1002,9 @@ fn start_bufferfeed_inner(
     let no_audio = crate::dev::flag("noaudio");
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
+    // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
+    // one through `sink_envelope_now` — so a new arm that forgets it fails to compile.
+    let sink_env: SinkEnvelope;
     // The LG-side audio name the payload ended up carrying, hoisted so the `load:` line below can
     // report it. "-" is the video-only case, where there is no audio ES to name.
     let mut audio_declared: &str = "-";
@@ -849,6 +1021,8 @@ fn start_bufferfeed_inner(
             .store(if hevc { 2 } else { 1 }, Ordering::Relaxed);
         if no_audio {
             SHARED.dg_load_a.store(0, Ordering::Relaxed);
+            // A static payload declares its own envelope; say so on the `load:` line.
+            sink_env = static_envelope(hevc);
             if hevc {
                 PAYLOAD_H265
             } else {
@@ -873,35 +1047,25 @@ fn start_bufferfeed_inner(
                 Ordering::Relaxed,
             );
             audio_declared = ac;
-            // Sink envelope = the panel max (4K) regardless of codec. The pipeline reads the
-            // true dims from the bitstream (SPS), so on the dev set (webOS 4.10) this is just a
-            // ceiling and is correct for a 4K stream (HEVC transcode / HEVC direct-play).
-            //
-            // **The rest of that sentence used to read "AND harmless for a 1080p H264 file", and
-            // that is MEASURED FALSE on webOS 10.3.1.** The pipeline there allocates against the
-            // DECLARED ceiling rather than the bitstream, no AVC decoder on that SoC does 4K60,
-            // and the Load is refused outright with `smp_cb type=18 num=601 str=Resource
-            // Allocation Error`. The control is airtight — the identical envelope carrying
-            // `"H265"` played 197+ frames in the same session, minutes apart. Since every server
-            // transcode is H.264, **every transcoded playback is impossible on webOS 10**, and
-            // the whole ABR path downstream never runs, because the Load never completes.
-            //
-            // It is still declared this way on purpose, and the purpose is narrow: the one-line
-            // codec-conditional fix was device-verified in that same lab slot and then reverted
-            // at the owner's request as out of scope, and the value it substituted (1920x1080)
-            // under-declares a genuine 4K H.264 file, which nothing has tested. Do NOT "fix" this
-            // by lowering the raster — the set's own devcaps table claims 4096x2176 for H.264 too,
-            // so the raster was never the binding constraint. The discriminator is almost
-            // certainly `maxFrameRate` (60, spliced in by `build_av_payload`), which `devcaps.rs`
-            // parses and drops by design. Full account, including the A/B and the leg that would
-            // settle it: `docs/webos10-resource-allocation.md`.
-            let (mw, mh) = (3840, 2160);
-            stream_payload = build_av_payload(vc, ac, mw, mh);
+            // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
+            // to be the panel max (4K60) for every codec and every source, on the reasoning that
+            // the pipeline reads the true dims from the SPS and the block is "just a ceiling".
+            // True on the dev set (webOS 4.10); MEASURED FALSE on 10.3.1, which allocates against
+            // the declaration and refuses every H.264 Load at 4K60 (`smp_cb type=18 num=601`) —
+            // i.e. every server transcode. `sink_envelope` is the rule now, and it is deliberately
+            // no wider than what was measured: `docs/webos10-resource-allocation.md`.
+            // `vc` is the STREAM's declared codec; `is_h265` above belongs to the local-sample
+            // path and is false here for every streamed HEVC playback (device-measured 2026-09-03:
+            // three HEVC cells declared FHD before this read the right flag).
+            sink_env = sink_envelope_now(vc == "H265");
+            stream_payload = build_av_payload(vc, ac, sink_env);
             &stream_payload
         }
     } else if is_h265 {
+        sink_env = static_envelope(true);
         PAYLOAD_H265
     } else {
+        sink_env = static_envelope(false);
         PAYLOAD_V
     };
     // The windowId splice happens HERE, at the single point every payload variant passes through,
@@ -923,7 +1087,7 @@ fn start_bufferfeed_inner(
         // consulted. Carries no URL and no token, and costs one line per playback.
         let dv = crate::route::stream_dovi();
         log(&format!(
-            "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{}",
+            "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{} max={}x{}@{}",
             video_declared,
             audio_declared,
             crate::route::stream_fps(),
@@ -931,7 +1095,10 @@ fn start_bufferfeed_inner(
             dv.profile,
             dv.bl_compat,
             dv.el_present as i32,
-            crate::route::stream_immersive() as i32
+            crate::route::stream_immersive() as i32,
+            sink_env.w,
+            sink_env.h,
+            sink_env.fps
         ));
     }
 
@@ -2597,7 +2764,7 @@ mod prime_livelock_tests {
 
     /// An engine in the state a fresh `Load` leaves behind: streaming, nothing fed yet, and
     /// `prime_play` armed so the next sufficient buffer starts the clock.
-    fn engine_after_reload() -> Engine {
+    pub(super) fn engine_after_reload() -> Engine {
         SHARED.ensure_initial_clock_hold_for_test();
         Engine {
             route_start: crate::route::RouteStartAttempt::fixture(),
@@ -3304,5 +3471,186 @@ mod replay_after_stop_tests {
         ));
 
         crate::route::reset_player_control_for_test();
+    }
+}
+
+/// **The webOS 10.3.1 refusal, replayed.** `docs/webos10-lab-report.md` §3.2 records the exact
+/// callback order the pipeline produced when it refused the 4K60 H.264 envelope: `13/1`, `14/0`,
+/// the `type=5` sink echo, `15/0`, `8/0`, then `18/601 Resource Allocation Error` — with `Load()`
+/// itself having returned `ok=1`. §3.5 records what the app did about it: nothing. `load_failed`
+/// stayed false, the state machine sat in Connecting, and no failure read-out was ever reached.
+///
+/// This test is that artifact, host-side, watched RED before the fix (2026-09-03): the red is the
+/// lab set's measured sequence, NOT a reproduction of issue #63, whose set nobody here has seen a
+/// log from. Under `hostsim` only because it borrows `prime_livelock_tests`' engine constructor.
+/// The envelope rule, cell by cell. Every value here is either a measured declaration
+/// (`ENVELOPE_UHD60`, `ENVELOPE_FHD60`) or today's behaviour; the test exists so the narrow rule
+/// stays narrow — a "smarter" envelope that changes HEVC or the unknown-raster case fails here.
+#[cfg(test)]
+mod sink_envelope_tests {
+    use super::*;
+
+    fn caps(h264: (u32, u32, u32), hevc: (u32, u32, u32)) -> crate::devcaps::Caps {
+        let mut c = crate::devcaps::Caps::assumed();
+        c.h264_row = h264;
+        c.hevc_row = hevc;
+        c
+    }
+    const DEV_SET: ((u32, u32, u32), (u32, u32, u32)) = ((4096, 2304, 60), (4096, 2176, 60));
+    const FHD_SET: ((u32, u32, u32), (u32, u32, u32)) = ((1920, 1088, 60), (1920, 1088, 60));
+
+    #[test]
+    fn h264_declares_fhd_only_when_the_widest_raster_fits_fhd() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        for (raster, want) in [
+            ((720, 480), ENVELOPE_FHD60),
+            ((1280, 720), ENVELOPE_FHD60),
+            ((1920, 1080), ENVELOPE_FHD60),
+            ((1920, 1088), ENVELOPE_FHD60), // coded height of a 1080p stream
+            ((1918, 802), ENVELOPE_FHD60),  // scope film
+            ((3840, 2160), ENVELOPE_UHD60),
+            ((4096, 2176), ENVELOPE_UHD60),
+            ((0, 0), ENVELOPE_UHD60),  // nobody said: today's value
+            ((1920, 0), ENVELOPE_UHD60),
+        ] {
+            assert_eq!(sink_envelope(false, raster, 0.0, &c, true), want, "h264 {raster:?}");
+            assert_eq!(
+                sink_envelope(false, raster, 0.0, &c, false),
+                want,
+                "h264 {raster:?} unmeasured"
+            );
+        }
+    }
+
+    #[test]
+    fn hevc_keeps_the_verified_4k60_on_a_4k_set_whatever_the_source() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        for raster in [(720, 480), (1920, 1080), (3840, 2160), (0, 0)] {
+            assert_eq!(sink_envelope(true, raster, 0.0, &c, true), ENVELOPE_UHD60, "{raster:?}");
+            assert_eq!(sink_envelope(true, raster, 0.0, &c, false), ENVELOPE_UHD60, "{raster:?}");
+        }
+    }
+
+    #[test]
+    fn a_measured_full_hd_table_clamps_both_codecs_and_the_assumed_table_clamps_nothing() {
+        let c = caps(FHD_SET.0, FHD_SET.1);
+        assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &c, true), ENVELOPE_FHD60);
+        assert_eq!(sink_envelope(false, (3840, 2160), 0.0, &c, true), ENVELOPE_FHD60);
+        assert_eq!(sink_envelope(true, (0, 0), 0.0, &c, true), ENVELOPE_FHD60);
+        // the same rows, not measured: never a clamp
+        assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &c, false), ENVELOPE_UHD60);
+        assert_eq!(sink_envelope(true, (0, 0), 0.0, &crate::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
+        // a table stating a lower frame rate clamps it; a higher one never raises it
+        let slow = caps((3840, 2160, 30), (3840, 2160, 120));
+        assert_eq!(sink_envelope(false, (3840, 2160), 0.0, &slow, true).fps, 30);
+        assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &slow, true).fps, 60);
+    }
+
+    /// The device measurement behind the rate rule: 4K H.264 declared at 60 is re-announced at
+    /// 30 by the pipeline; at its own class it is not. HEVC and an unknown rate keep 60.
+    #[test]
+    fn h264_declares_the_streams_rate_class_and_hevc_keeps_60() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        for (fps, want) in [(24.0, 24), (23.976, 24), (25.0, 25), (29.97, 30), (30.0, 30), (50.0, 50), (59.94, 60), (60.0, 60), (120.0, 60), (0.0, 60)] {
+            assert_eq!(sink_envelope(false, (3840, 2160), fps, &c, true).fps, want, "h264 {fps}");
+            assert_eq!(sink_envelope(false, (1920, 1080), fps, &c, true).fps, want, "h264 fhd {fps}");
+            assert_eq!(sink_envelope(true, (3840, 2160), fps, &c, true).fps, 60, "hevc {fps}");
+        }
+        // the table still clamps a class from above
+        let slow = caps((3840, 2160, 25), (3840, 2160, 60));
+        assert_eq!(sink_envelope(false, (3840, 2160), 30.0, &slow, true).fps, 25);
+    }
+
+    #[test]
+    fn the_payload_carries_all_three_envelope_numbers() {
+        let p = build_av_payload("H264", "AAC", ENVELOPE_FHD60);
+        assert!(p.contains(r#""maxWidth":1920"#), "{p}");
+        assert!(p.contains(r#""maxHeight":1080"#), "{p}");
+        assert!(p.contains(r#""maxFrameRate":60"#), "{p}");
+        let p = build_av_payload("H265", "AC3 PLUS", ENVELOPE_UHD60);
+        assert!(p.contains(r#""maxWidth":3840"#) && p.contains(r#""maxHeight":2160"#), "{p}");
+        assert!(!p.contains(r#""maxFrameRate":30"#), "the template's 30 must be replaced: {p}");
+    }
+
+    /// The static payloads' declared envelopes, read out of the strings that are actually sent.
+    #[test]
+    fn the_static_envelopes_are_the_static_payloads_own_numbers() {
+        for (hevc, payload) in [(false, PAYLOAD_V), (true, PAYLOAD_H265)] {
+            let e = static_envelope(hevc);
+            assert!(payload.contains(&format!(r#""maxWidth":{}"#, e.w)), "{hevc}");
+            assert!(payload.contains(&format!(r#""maxHeight":{}"#, e.h)), "{hevc}");
+            assert!(payload.contains(&format!(r#""maxFrameRate":{}"#, e.fps)), "{hevc}");
+        }
+    }
+
+    #[test]
+    fn the_sinkmax_override_parses_exactly_wxh_at_f() {
+        assert_eq!(
+            parse_sinkmax("1920x1080@30\n"),
+            Some(SinkEnvelope { w: 1920, h: 1080, fps: 30 })
+        );
+        assert_eq!(parse_sinkmax("1920x1080"), None);
+        assert_eq!(parse_sinkmax("0x1080@60"), None);
+        assert_eq!(parse_sinkmax("abc"), None);
+    }
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+mod load_refusal_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// The strings the lab log carries at each callback, sanitised exactly as the report has them.
+    const ECHO_SINK: &std::ffi::CStr =
+        c"0 video/x-h264 (null) (null) 3840 2160 (null) 60.000000 0 0 0";
+    const REFUSAL: &std::ffi::CStr = c"Resource Allocation Error";
+
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let mt = unsafe { crate::task::MainThread::assume() };
+            let _ = engine_take(&mt);
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test();
+        }
+    }
+
+    #[test]
+    fn an_asynchronous_load_refusal_is_a_verdict_not_a_black_screen() {
+        let _serial = crate::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test();
+        let _cleanup = Cleanup;
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let epoch = SHARED.begin_native_session().expect("native session");
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.native_epoch = epoch;
+        engine_install(&mt, eng);
+
+        // `Load()` returned ok=1 — nothing here says otherwise — and then the pipeline talked.
+        super::super::sf_on_event(epoch, 13, 1, c"".as_ptr());
+        super::super::sf_on_event(epoch, 14, 0, c"1".as_ptr());
+        super::super::sf_on_event(epoch, 5, 0, ECHO_SINK.as_ptr());
+        super::super::sf_on_event(epoch, 15, 0, c"1".as_ptr());
+        super::super::sf_on_event(epoch, 8, 0, c"audio/mpeg".as_ptr());
+        super::super::sf_on_event(epoch, 18, 601, REFUSAL.as_ptr());
+
+        crate::player::pump::pump(&mt, 1_000);
+
+        assert!(
+            SHARED.load_failed.load(Ordering::Acquire),
+            "type=18 num=601 before any picture must publish load_failed; the lab set sat on a \
+             black screen for 70 s because it did not"
+        );
+        assert_eq!(
+            super::super::state(),
+            crate::player::PlaybackState::Error,
+            "the pump must turn a refused Load into the Error state the read-out renders from"
+        );
+        assert_eq!(
+            super::super::error_now().kind,
+            super::super::FailureKind::TvPipeline,
+            "and the verdict must name the television's pipeline, not a generic stop"
+        );
     }
 }

@@ -61,6 +61,17 @@ pub(crate) struct Caps {
     /// class, reintroduced by the module built to end it. The dev set's bound is unchanged:
     /// min((4096,2304), (4096,2176)) = (4096,2176).
     pub hevc_max: (u32, u32),
+    /// **Per-codec `(maxWidth, maxHeight, maxFrameRate)` as the table states them**, H.264 and HEVC
+    /// respectively, duplicate rows MIN-merged per axis, `0` on any axis the table did not say.
+    /// Added 2026-09-03 for ONE consumer — `engine::sink_envelope`, the Starfish Load's
+    /// `adaptiveStreaming` ceiling — and clamped there only when [`measured`] is true: the assumed
+    /// fallback is `(0, 0, 0)` on purpose, so an unreadable table never clamps anything. The
+    /// frame rate is the axis `docs/webos10-resource-allocation.md` names as the likely
+    /// discriminator on webOS 10 (the raster was not: that set's own table claims 4096x2176 for
+    /// H.264 too); this module used to drop it by design, and `hevc_max` above still folds both
+    /// codecs into one raster bound for the PMS profile and the direct-play gate, unchanged.
+    pub h264_row: (u32, u32, u32),
+    pub hevc_row: (u32, u32, u32),
     /// Diagnostic ONLY — nothing derives from it. The buffer-feed pipeline cannot feed VP9
     /// whatever the panel decodes (route.rs's decode gate explains why), but a support log that
     /// names a codec the panel decodes and the app still transcodes answers its own question.
@@ -81,6 +92,8 @@ impl Caps {
         Caps {
             hevc: true,
             hevc_max: (3840, 2176),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: true,
             audio: crate::plex::DP_AUDIO_CODECS.to_string(),
         }
@@ -149,9 +162,10 @@ fn min_nz(a: u32, b: u32) -> u32 {
     }
 }
 
-/// The table's shape, structurally: unknown fields (maxFrameRate, maxBitRate, channels, the
-/// license blurb) are ignored by serde, and every field is defaulted so one malformed row
-/// degrades to "row said nothing" instead of failing the whole parse.
+/// The table's shape, structurally: unknown fields (maxBitRate, channels, the license blurb) are
+/// ignored by serde, and every field is defaulted so one malformed row degrades to "row said
+/// nothing" instead of failing the whole parse. `maxFrameRate` was in that ignored list until
+/// 2026-09-03; it is read now for the per-codec rows and nothing else.
 #[derive(serde::Deserialize)]
 struct Table {
     #[serde(default, rename = "videoCodecs")]
@@ -167,6 +181,11 @@ struct VideoRow {
     max_width: u32,
     #[serde(default, rename = "maxHeight")]
     max_height: u32,
+    /// A float on the wire is tolerated and rounded UP (59.94 → 60): this is a ceiling the
+    /// stream has to fit under, and flooring it would clamp a 59.94 stream to 59. The table on
+    /// the dev set writes integers.
+    #[serde(default, rename = "maxFrameRate")]
+    max_frame_rate: f64,
 }
 #[derive(serde::Deserialize)]
 struct AudioRow {
@@ -188,17 +207,25 @@ fn parse(s: &str) -> Option<Caps> {
     }
     let (mut h264, mut hevc, mut vp9) = (false, false, false);
     let (mut hevc_wh, mut h264_wh) = ((0u32, 0u32), (0u32, 0u32));
+    let (mut hevc_fps, mut h264_fps) = (0u32, 0u32);
     for row in &t.video_codecs {
         let wh = (row.max_width, row.max_height);
+        let fps = if row.max_frame_rate.is_finite() && row.max_frame_rate > 0.0 {
+            row.max_frame_rate.ceil() as u32
+        } else {
+            0
+        };
         match canon(&row.name).as_str() {
             // "H.265" and "HEVC" are duplicate rows for one decoder — MIN on every axis.
             "h265" | "hevc" => {
                 hevc = true;
                 hevc_wh = (min_nz(hevc_wh.0, wh.0), min_nz(hevc_wh.1, wh.1));
+                hevc_fps = min_nz(hevc_fps, fps);
             }
             "h264" => {
                 h264 = true;
                 h264_wh = (min_nz(h264_wh.0, wh.0), min_nz(h264_wh.1, wh.1));
+                h264_fps = min_nz(h264_fps, fps);
             }
             "vp9" => vp9 = true,
             _ => {}
@@ -237,6 +264,12 @@ fn parse(s: &str) -> Option<Caps> {
     Some(Caps {
         hevc,
         hevc_max,
+        h264_row: (h264_wh.0, h264_wh.1, h264_fps),
+        hevc_row: if hevc {
+            (hevc_wh.0, hevc_wh.1, hevc_fps)
+        } else {
+            (0, 0, 0)
+        },
         vp9,
         audio,
     })
@@ -251,8 +284,18 @@ pub(crate) fn probe() {
             Some(c) => {
                 measured = true;
                 crate::log(&format!(
-                    "devcaps: hevc={} {}x{} vp9={} audio={} (device table)",
-                    c.hevc, c.hevc_max.0, c.hevc_max.1, c.vp9, c.audio
+                    "devcaps: hevc={} {}x{} vp9={} audio={} rows: h264={}x{}@{} hevc={}x{}@{} (device table)",
+                    c.hevc,
+                    c.hevc_max.0,
+                    c.hevc_max.1,
+                    c.vp9,
+                    c.audio,
+                    c.h264_row.0,
+                    c.h264_row.1,
+                    c.h264_row.2,
+                    c.hevc_row.0,
+                    c.hevc_row.1,
+                    c.hevc_row.2
                 ));
                 c
             }
@@ -377,6 +420,13 @@ mod tests {
         assert!(c.hevc && c.vp9);
         // H.265 (4096x2304) merged with HEVC (4096x2176) by min — NOT either row verbatim.
         assert_eq!(c.hevc_max, (4096, 2176));
+        // the per-codec rows, frame rate included: H.264 is one row; "H.265"+"HEVC" MIN-merge
+        // to 4096x2176@60 (the 120 on the H.265 row loses to the HEVC row's 60)
+        assert_eq!(c.h264_row, (4096, 2304, 60));
+        assert_eq!(c.hevc_row, (4096, 2176, 60));
+        // a fractional cap is a CEILING the stream must fit under: 59.94 reads as 60, never 59
+        let frac = parse(r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1088,"maxFrameRate":59.94}]}"#).unwrap();
+        assert_eq!(frac.h264_row, (1920, 1088, 60));
         // DTS/FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
         // DP_AUDIO_CODECS's own order, not the table's.
         assert_eq!(c.audio, "aac,ac3,eac3");

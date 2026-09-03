@@ -1449,7 +1449,11 @@
       "declare": {
         "vcodec": "h264",
         "acodec": "ac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          1920,
+          1080
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1467,7 +1471,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "1920x1080@24",
+        "sink_echo": "1920x1080@24"
       }
     },
     {
@@ -1484,7 +1490,11 @@
       "declare": {
         "vcodec": "hevc",
         "acodec": "eac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          3840,
+          2160
+        ]
       },
       "run_secs": 45,
       "operations": [
@@ -1501,7 +1511,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@60",
+        "sink_echo": "3840x2160@60"
       }
     },
     {
@@ -1552,7 +1564,11 @@
           "profile": 8,
           "bl_compat": 1,
           "el_present": false
-        }
+        },
+        "source_raster": [
+          3840,
+          2160
+        ]
       },
       "run_secs": 45,
       "operations": [
@@ -1569,7 +1585,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@60",
+        "sink_echo": "3840x2160@60"
       }
     },
     {
@@ -1678,7 +1696,11 @@
       "declare": {
         "vcodec": "h264",
         "acodec": "ac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          720,
+          480
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1695,7 +1717,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "1920x1080@24",
+        "sink_echo": "1920x1080@24"
       },
       "_note": "Square pixels, so the picture is 3:2 rather than the 4:3 a DVD displays. An anamorphic fixture would be grading PAR handling, which nothing in this repo asserts anywhere; see the matrix comment in make_fixtures.py."
     },
@@ -1711,7 +1735,11 @@
       "declare": {
         "vcodec": "h264",
         "acodec": "ac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          1280,
+          720
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1728,7 +1756,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "1920x1080@24",
+        "sink_echo": "1920x1080@24"
       }
     },
     {
@@ -1743,7 +1773,11 @@
       "declare": {
         "vcodec": "h264",
         "acodec": "ac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          3840,
+          2160
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1760,7 +1794,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@24",
+        "sink_echo": "3840x2160@24"
       },
       "_note": "4K H.264 exists in no real library the maintainer has (every 4K item there is HEVC or AV1 — `library_gaps.video` lists it), so before this fixture the combination had never been played at all. The device's own capability table claims H.264 to 4096x2304@60, so this is inside the envelope, not at its edge."
     },
@@ -1776,7 +1812,11 @@
       "declare": {
         "vcodec": "hevc",
         "acodec": "eac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          720,
+          480
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1793,7 +1833,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@60",
+        "sink_echo": "3840x2160@60"
       }
     },
     {
@@ -1808,7 +1850,11 @@
       "declare": {
         "vcodec": "hevc",
         "acodec": "eac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          1280,
+          720
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1825,7 +1871,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@60",
+        "sink_echo": "3840x2160@60"
       }
     },
     {
@@ -1840,7 +1888,11 @@
       "declare": {
         "vcodec": "hevc",
         "acodec": "eac3",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          1920,
+          1080
+        ]
       },
       "run_secs": 40,
       "operations": [
@@ -1857,7 +1909,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@60",
+        "sink_echo": "3840x2160@60"
       },
       "_note": "NOT the same cell as pipe_hevc_aac_mp4, which is also 1920x1080 HEVC: that one is mp4 + stereo AAC, two axes away, and reading it as this rung is the \"pieces are covered\" answer #50/#51 asks us to stop giving."
     },
@@ -2164,7 +2218,9 @@
           "floor_kbps": 22000,
           "decoded_width_floor": 3800,
           "settle_min_kbps": 20000
-        }
+        },
+        "load_max": "3840x2160@24",
+        "sink_echo": "3840x2160@24"
       },
       "_uhd_note": "This fast-link control reaches the Uhd actuator that the plan's I9 blocker made runnable. Most auto_network cases declare a 1080p source, so `HlsActuatorCatalog::limited_to` deletes Uhd before scoring. Three plumbing changes made the point reachable: `tests/serve_fixtures.py` answers rung 22000 with a real 3840x2160 clip, `route::arm_auto_fixture` takes the source raster instead of hardcoding 1080p, and a case can declare it. Three assertions are intentionally separate: `floor_kbps: 22000` proves the request actuator became Uhd, `decoded_width_floor: 3800` proves the completed candidate actually carried a 4K-class picture rather than a smaller PMS response, and `settle_min_kbps: 20000` proves the run did not finish low. The 60 Mbit/s leg is above the 22 Mbit/s rung so the link is not binding; if this fails, the catalog, response mapping or acceptance path is.",
       "_declare_note": "The fixture is the ABR ladder's OWN 4K clip, and that is the point rather than a convenience. The harness checks a case's `declare` against the streams the fixture really carries, and it must ALSO match what is actually decoded — which under `start_hls` is the ladder, never the Original. A 4K source with AC-3 audio (`pipe_h264_ac3_2160p.mkv`, the resolution matrix's clip) satisfies neither reading at once: declaring `ac3` makes the engine describe a stream it is not playing, and declaring `aac` is refused by the fixture check. `pipe_h264_aac_2160p.mkv` is 3840x2160 H.264 + AAC at full length, so the source raster, the fixture's own streams and the ladder all agree. It is NOT `pipe_abr_4k_22m.ts`, which was tried and skipped: that is a LADDER clip whose unsuffixed file is segment 0 alone, two seconds, and a source has to outlast the case's own `min_pos_climb_s`. This case had it as the matrix clip for one run and skipped. Historic note: AAC, not the AC3 and the mismatch is correct rather than sloppy. With `start_hls` the app never plays the Original at all -- the fixture is there to be the 4K SOURCE, which is what makes the Uhd rung feasible, and every byte actually decoded comes from the ABR ladder, which is AAC at every rung. The Load declaration describes the stream being played. This case had it as `ac3` for one run and the engine correctly logged `a=\"AAC\"`; the expectation was wrong, not the app.",
@@ -3081,7 +3137,11 @@
       "declare": {
         "vcodec": "h264",
         "acodec": "aac",
-        "fps": 24.0
+        "fps": 24.0,
+        "source_raster": [
+          1920,
+          1080
+        ]
       },
       "run_secs": 35,
       "operations": [
@@ -3089,10 +3149,6 @@
           "op": "play"
         }
       ],
-      "gst_trace": {
-        "debug": "lxvideosink:6",
-        "frame_pattern": "gst_lx_videosink_render:.*\\[PLAYING\\] received buffer"
-      },
       "expect": {
         "codec": "h264",
         "video_size": "1280x720",
@@ -3121,9 +3177,15 @@
         "gst_boundary_window_ms": 1000,
         "gst_boundary_gap_floor_ms": 120,
         "gst_boundary_gap_p99_multiplier": 3.0,
-        "gst_first_frame_max_ms": 125
+        "gst_first_frame_max_ms": 125,
+        "load_max": "1920x1080@24",
+        "sink_echo": "1920x1080@24"
       },
-      "_note": "The file changes SPS/PPS/IDR in-band at media 8 s and 16 s while the case requires exactly one `load:` and forbids both app reload paths. Starfish type-4 source-info callbacks prove the coded-size sequence; GST is armed only for lxvideosink's per-picture cadence because the 5 Hz `vtick` heartbeat cannot measure frame-boundary stalls. `feed a#… reply=O` proves at least one AAC AU reached and was accepted by Starfish — readiness, not an assertion that a loudspeaker was audible. The 35 s cap observes both transitions plus 19 s of post-roll but cannot reach this 60 s clip's EOS. Exact server counters reject an invisible demux reopen just as exact Load count rejects an invisible Starfish replacement."
+      "_note": "The file changes SPS/PPS/IDR in-band at media 8 s and 16 s while the case requires exactly one `load:` and forbids both app reload paths. Starfish type-4 source-info callbacks prove the coded-size sequence; GST is armed only for lxvideosink's per-picture cadence because the 5 Hz `vtick` heartbeat cannot measure frame-boundary stalls. `feed a#… reply=O` proves at least one AAC AU reached and was accepted by Starfish — readiness, not an assertion that a loudspeaker was audible. The 35 s cap observes both transitions plus 19 s of post-roll but cannot reach this 60 s clip's EOS. Exact server counters reject an invisible demux reopen just as exact Load count rejects an invisible Starfish replacement.",
+      "gst_trace": {
+        "debug": "lxvideosink:6",
+        "frame_pattern": "gst_lx_videosink_render:.*\\[PLAYING\\] received buffer"
+      }
     },
     {
       "name": "pipe_seek_mp4",
@@ -3171,7 +3233,11 @@
       "declare": {
         "vcodec": "h264",
         "acodec": "ac3",
-        "fps": 59.94
+        "fps": 59.94,
+        "source_raster": [
+          1920,
+          1080
+        ]
       },
       "run_secs": 45,
       "operations": [
@@ -3189,7 +3255,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "1920x1080@60",
+        "sink_echo": "1920x1080@60"
       }
     },
     {
@@ -3204,7 +3272,11 @@
       "declare": {
         "vcodec": "hevc",
         "acodec": "eac3",
-        "fps": 60.0
+        "fps": 60.0,
+        "source_raster": [
+          3840,
+          2160
+        ]
       },
       "run_secs": 50,
       "operations": [
@@ -3222,7 +3294,9 @@
         "min_pos_climb_s": 8,
         "require_video_bound": true,
         "no_playing_error": true,
-        "server_opens_min": 1
+        "server_opens_min": 1,
+        "load_max": "3840x2160@60",
+        "sink_echo": "3840x2160@60"
       }
     },
     {

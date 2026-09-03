@@ -761,6 +761,11 @@ const FR_SLOT_LINE2: f32 = FR_REASON_TOP + 42.0;
 const FR_DETAIL_W: f32 = 1240.0;
 const FR_HINT_TOP: f32 = FR_REASON_TOP + FR_REASON_SLOT + 56.0;
 const FR_HINT_GAP: f32 = 56.0;
+/// The support line's cap top: a MAJOR gap below the second hint, because it is a different kind
+/// of content from the hints (a fact strip for a photograph, not an instruction), and a region
+/// break is what `space::XL` is for. Lands at y≈844 on the 1080 frame — well inside the safe
+/// bottom band and below the BACK line's pointer exclusion (the test pins both).
+const FR_SUPPORT_TOP: f32 = FR_HINT_TOP + FR_HINT_GAP + theme::space::XL;
 
 /// Pointer target for the only forward action on a failed playback.
 ///
@@ -882,6 +887,18 @@ fn draw_failed_readout(p: Painter) {
         c"to return",
         FR_HINT_TOP + FR_HINT_GAP,
     );
+    // The support line — version · firmware · set · failure code — at CAPTION/tertiary, the couch
+    // floor rather than MICRO because a photograph has to survive a phone camera and a chat
+    // thread. Bounded to the detail column and clamped to ONE line with elision, since three of
+    // its five parts are strings a firmware wrote and this layout controls none of their lengths.
+    let support = crate::player::support_line(e.kind);
+    crate::ui::text_view::TextView::new(&support, theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .h(crate::ui::label::HAlign::Center)
+        .max_lines(1)
+        .draw(
+            p,
+            Rect::new((SCR_W - FR_DETAIL_W) * 0.5, FR_SUPPORT_TOP, FR_DETAIL_W, 0.0),
+        );
 }
 
 /// "{pre} [KEY] {post}", centred at cap-top `top` — CAPTION tertiary prose around a keyline cap
@@ -1885,6 +1902,30 @@ mod tests {
     /// up": every WORKING read-out must leave the transport alone, or the HUD blanks through every
     /// cold start, every reconnect and every pre-roll seek — states where the position is real and
     /// the transport is what the user reads the instant the first frame lands.
+    /// The support line sits below the BACK hint's pointer exclusion and inside the safe bottom
+    /// band, whatever its content — the rect is what bounds it, not the string.
+    #[test]
+    fn the_support_line_sits_below_the_back_hint_and_inside_the_safe_bottom_band() {
+        let back_line_exclusion = FR_HINT_TOP + FR_HINT_GAP + 18.0;
+        assert!(
+            FR_SUPPORT_TOP > back_line_exclusion + theme::space::MD,
+            "support top {FR_SUPPORT_TOP} must clear the BACK line at {back_line_exclusion}"
+        );
+        // A generous line box (1.5× the point size) rather than a rasterizer measurement: this
+        // pass runs without SDL_ttf, and the bound only has to be safe, not exact.
+        let line_box = theme::size::CAPTION as f32 * 1.5;
+        let safe_bottom = SCR_H - theme::space::XL;
+        assert!(
+            FR_SUPPORT_TOP + line_box < safe_bottom,
+            "support line bottom {} must stay inside the safe band {safe_bottom}",
+            FR_SUPPORT_TOP + line_box
+        );
+        assert!(
+            !failure_quality_hit(SCR_W * 0.5, FR_SUPPORT_TOP + 8.0),
+            "the support line is not a pointer target"
+        );
+    }
+
     #[test]
     fn only_a_failure_takes_the_frame_away_from_the_transport() {
         for seen in [false, true] {

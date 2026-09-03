@@ -504,6 +504,20 @@ impl HlsActuatorCatalog {
             .filter(move |c| self.admits(*c))
     }
 
+    /// **The widest raster this session can ever be asked to decode**, i.e. the bounding box of
+    /// every feasible candidate — `(0, 0)` when nothing is feasible. This is what the Starfish
+    /// Load has to declare for an adaptive session: a rung commit changes the encoder and the URL
+    /// but never re-issues `Load` (`route::sync_active_hls_to_session`), so a declaration sized to
+    /// the BOOTSTRAP rung would be exceeded the moment the controller climbs past it. The
+    /// smallest-sufficient-box rule already removes the 4K point for a 1080p source, which is why
+    /// this is a question for the catalog and not a second copy of that policy.
+    pub(crate) fn widest_feasible_raster(&self) -> (u16, u16) {
+        self.feasible().fold((0, 0), |acc, c| {
+            let (w, h) = c.rung.raster();
+            (acc.0.max(w), acc.1.max(h))
+        })
+    }
+
     pub(crate) fn candidate(self, rung: Rung) -> HlsCandidate {
         self.candidates
             .iter()

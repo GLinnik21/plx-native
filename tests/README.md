@@ -70,9 +70,9 @@ Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV
 that must be *refused* for exceeding it, a **user-driven** replay (as opposed to the trigger-driven
 one below — a Play control on a detail page is server-tier by construction), and the whole
 **transcode input space** — three server cases on one AV1 item stand in for 17 video codecs. One of
-those is an app gap rather than a test gap: `devcaps` reads the table's width and height and
-explicitly ignores `maxFrameRate`, so the profile sent to PMS carries no frame-rate limitation at
-all.
+those is an app gap rather than a test gap: `devcaps` now reads `maxFrameRate` into per-codec rows,
+but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`engine::sink_envelope`,
+since 2026-09-03) — the profile sent to PMS still carries no frame-rate limitation at all.
 
 - `manifest.json` — the test matrix, and **installation-independent**: the triggers each case
   needs, the expected log signals, and the *shape* of the item it needs (`item`, a symbolic key
@@ -362,6 +362,18 @@ library you care about — which is what `test_user` is for.
 The runner prints per-assertion PASS/FAIL with the failing evidence line, then a final
 summary table. **Exit code is nonzero if any selected case fails** (CI-friendly).
 Add `--verbose` to print evidence for passing assertions too.
+
+**Every playback case in both tiers grades `presented_rate` (since 2026-09-03):** the frame rate
+the video sink actually presented — the app's `sink: displayed=<n>` line, libpf's 200 ms poll of
+the sink's `non-flushable-displayed-frames` (raw callback 47 on webOS 4, 49 on 5+, normalised by
+the app), armed by the Load payload's `streamQualityInfoNonFlushable` —
+against the rate the app declared on the `load:` line, as a median over the healthy wall seconds
+(position advancing, `play=` at real time) within ±6 %. It is the only assertion that can see a
+24p stream presented at 13 fps with every other instrument reading healthy, which is exactly what
+a 4K H.264 stream declared at `maxFrameRate: 60` did on the dev set. A transcode declares no rate
+and is skipped (the evidence says so); `expect.presented_rate: false` opts a case out, and
+`presented_rate_tol_pct` widens the band. Each case also prints a `presented:` characterisation
+line from the same counter.
 
 ## FPS regression suite (`--fps`)
 

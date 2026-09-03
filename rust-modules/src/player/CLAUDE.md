@@ -67,15 +67,42 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   payload nodes, the ACB audio forward, the Profile 5 one-tick fix and the instrument traps live
   there rather than here, because half of that record is about LG's binaries and the Dolby
   specifications rather than about our engine.
-- **The Load's `adaptiveStreaming` ceiling is 4K60 for EVERY codec, and on webOS 10 that refuses
-  every H.264 stream: `docs/webos10-resource-allocation.md`.** Lab-measured 2026-08-27 on release
-  10.3.1 — the pipeline allocates against the DECLARED ceiling rather than the bitstream, so the
-  Load comes back `num=601 Resource Allocation Error`, while the identical envelope carrying
-  `"H265"` played in the same session. Every server transcode is H.264, so transcoded playback is
-  impossible there and the ABR path never runs at all. **Not fixed on any branch** — the
-  device-verified one-line fix was reverted as out of scope, and the naive lowering under-declares
-  a real 4K H.264 file. Read that document before touching `build_av_payload`; in particular the
-  raster is NOT the discriminator (the set's own devcaps claims 4096x2176 for H.264 too).
+- **The Load's `adaptiveStreaming` ceiling is derived per session (`engine::sink_envelope`), and
+  it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264
+  stream: `docs/webos10-resource-allocation.md`.** Lab-measured 2026-08-27 on release 10.3.1: the
+  pipeline allocates against the DECLARED ceiling rather than the bitstream, so the Load came back
+  `num=601 Resource Allocation Error`, while the identical envelope carrying `"H265"` played in the
+  same session, and a 1920x1080 H.264 declaration loaded in 117 ms. The rule now is exactly that
+  measurement and no more: HEVC keeps 4K60; H.264 declares 1920x1080@60 when the session's widest
+  raster (`route::sink_max_raster` — source for direct play, the ceiling for a fixed quality, the
+  catalog's widest feasible actuator for Auto, since a rung commit never re-Loads) fits FHD, and
+  stays 4K60 otherwise; the device table's per-codec row (`devcaps::Caps::{h264_row,hevc_row}`,
+  frame rate included) clamps it only when the table was actually read. The `load:` line carries
+  `max=WxH@F`, the pipeline echoes what it was handed as `smp_cb type=5`, and the pipeline tier
+  grades both (`load_max`, `sink_echo`). **Also since 2026-09-03: a `type=18` before any picture
+  publishes `load_failed`** (`sf_on_event_inner`), so an asynchronous refusal reaches the failure
+  read-out instead of parking the player in Connecting on a black screen (lab report §3.5).
+  **And the frame rate IS a discriminator, measured on the dev set the same day:** a 4K H.264 24p
+  direct play declared at 60 makes the pipeline announce `frameRate:24` and then `:30` for the same
+  stream (a 24p picture on a 30 fps lattice — the judder the maintainer saw on the Auto 4K rung);
+  declared at 24 or 30 it announces 24 once and holds it — and the sink's displayed-frame counter
+  measured the picture: **13.0 fps presented under the 60 declaration, 24.1 under 24**. So H.264
+  declares the stream's rate class
+  (`fps_class`), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
+  keeps 60. `/tmp/plxnative-sinkmax=WxH@F` overrides the envelope for the legs still unrun on
+  10.3.1.
+- **There IS a presented-frame instrument now, and it is not a GStreamer trace.** The payload's
+  `streamQualityInfo` / `streamQualityInfoNonFlushable` keys make libpf read the video sink's
+  `dropped-frames` / `non-flushable-displayed-frames` properties on the same 200 ms timer as the
+  position tick and forward them as callback types 46 / 47 (decompiled from libpf
+  `CustomPipeline::updatePeriodicalInfo`, 2026-09-03). They land in the event log as
+  `smp_cb type=47 num=<frames shown in the last poll>` (per-interval on this firmware, ~5 at 24p)
+  AND, normalised for the numbering shift (46/47 here are 48/49 on webOS 5+ — `sink_counter_kind`),
+  as `sink: displayed=<n>` / `sink: dropped=<n>`, which is the line the harness reads;
+  `tests/run.py::presented_fps` turns them into the `presented:` characterisation line every
+  synthetic case prints. Codec-agnostic — it is the instrument `dualsequencer:6` was only for
+  Dolby Vision. Type 46 is emitted only when non-zero, and a stream shown at 13 fps reported 0
+  drops: the sink does not count a frame it never presented as dropped.
 - **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(slot->object, NULL)`), and in
   buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.

@@ -3319,5 +3319,145 @@ class FpsRunToken(unittest.TestCase):
         self.assertTrue(run.fps_run_needs_token([{"route": "login"}], True))
 
 
+
+class PresentedFps(unittest.TestCase):
+    """The sink's displayed-frame counter (`smp_cb type=47`) read as a rate, both shapes."""
+
+    def test_cumulative_counter_with_stamps_yields_the_stream_rate_and_the_worst_window(self):
+        lines = [f"{1000 + 200 * i}  smp_cb type=47 num={int(24 * 0.2 * i)} str=" for i in range(26)]
+        lines.insert(5, "2000  smp_cb type=46 num=3 str=")
+        mean, worst, n, dropped, monotone = run.presented_fps(lines)
+        self.assertEqual((mean, n, dropped, monotone), (24.0, 26, 3, True))
+        self.assertLessEqual(worst, 24.0)
+
+    def test_per_interval_counter_without_stamps_assumes_the_200ms_poll(self):
+        lines = ["smp_cb type=47 num=5 str=", "smp_cb type=47 num=4 str=",
+                 "smp_cb type=47 num=5 str=", "smp_cb type=47 num=5 str="]
+        mean, worst, n, dropped, monotone = run.presented_fps(lines)
+        self.assertFalse(monotone)
+        self.assertEqual((worst, n, dropped), (20.0, 4, 0))
+        self.assertAlmostEqual(mean, 23.3, places=1)
+
+    def test_a_flat_per_interval_series_is_not_a_cumulative_zero(self):
+        lines = [f"{1000 + 200 * i}  smp_cb type=47 num=5 str=" for i in range(26)]
+        mean, worst, n, dropped, cumulative = run.presented_fps(lines)
+        self.assertFalse(cumulative)
+        self.assertEqual((mean, worst), (25.0, 25.0))
+
+    def test_the_apps_normalised_sink_line_is_read_before_the_raw_type(self):
+        # a webOS 5+ set logs the same counter as raw type 49; the app's `sink:` line is what
+        # the harness reads, and the raw 47 on such a set (something else) is ignored
+        lines = [f"{1000 + 200 * i}  smp_cb type=49 num=5 str=" for i in range(26)]
+        self.assertIsNone(run.presented_fps(lines))
+        lines = [ln for i in range(26) for ln in
+                 (f"{1000 + 200 * i}  smp_cb type=49 num=5 str=", f"{1000 + 200 * i}  sink: displayed=5 (type=49)")]
+        lines.append("2000  smp_cb type=47 num=999 str=")
+        mean, worst, n, dropped, cumulative = run.presented_fps(lines)
+        self.assertEqual((mean, n), (25.0, 26))
+
+    def test_a_cumulative_counter_through_a_pause_is_still_cumulative(self):
+        vals = [int(24 * 0.2 * i) for i in range(30)] + [int(24 * 0.2 * 29)] * 40
+        intervals, cumulative = run.sink_counter_intervals(vals)
+        self.assertTrue(cumulative)
+        self.assertEqual(intervals[-1], 0)
+
+    def test_a_cumulative_counter_that_resets_on_a_second_load_is_split_at_the_reset(self):
+        vals = [int(24 * 0.2 * i) for i in range(26)] + [int(24 * 0.2 * i) for i in range(26)]
+        lines = [f"{1000 + 200 * i}  smp_cb type=47 num={v} str=" for i, v in enumerate(vals)]
+        mean, worst, n, dropped, cumulative = run.presented_fps(lines)
+        self.assertTrue(cumulative)
+        self.assertAlmostEqual(mean, 24.0, delta=1.0)
+        # the reset step reads as "frames since the reset", not as a huge negative delta
+        self.assertGreaterEqual(worst, 0)
+
+    def test_no_counter_is_none_not_zero(self):
+        self.assertIsNone(run.presented_fps(["smp_cb type=0 num=1 str=", "loop=60 fps=60"]))
+
+
+class PresentedRate(unittest.TestCase):
+    """`presented_rate`: the sink counter against the declared rate, on synthetic logs shaped like
+    the device's (one heartbeat per second, five type-47 samples between beats)."""
+
+    LOAD = 'load: v=H264 a="AC3" fps=24.000 dv=present:0 P0/0 el:0 atmos:0 max=3840x2160@24'
+
+    def _log(self, per_poll, secs=12, play=1000, pos_step=1, declared=LOAD):
+        lines = [declared]
+        pos = 0
+        for s in range(secs):
+            lines.append(f"loop=60 route=player overlay=none pos={pos}s play={play}pm vtick=5 vgap=201ms fps=60")
+            pos += pos_step
+            for _ in range(5):
+                lines.append(f"smp_cb type=47 num={per_poll} str=")
+        return lines
+
+    def test_a_24p_stream_shown_at_24_passes(self):
+        ok, why = run.a_presented_rate(self._log(5), {})
+        self.assertTrue(ok, why)
+        self.assertIn("median 25.0", why)
+
+    def test_the_30_lattice_case_shown_at_13_fails(self):
+        # the 2026-09-03 measurement: ~13 fps presented, media clock at real time
+        lines = self._log(2, secs=6) + self._log(3, secs=6)[1:]
+        ok, why = run.a_presented_rate(lines, {})
+        self.assertFalse(ok)
+        self.assertIn("outside", why)
+
+    def test_paused_and_seeking_seconds_are_not_windows(self):
+        # paused: position flat, nothing shown — must not count against the rate
+        paused = self._log(0, secs=8, pos_step=0)[1:]
+        ok, why = run.a_presented_rate(self._log(5, secs=6) + paused, {})
+        self.assertTrue(ok, why)
+        self.assertIn("over 5 healthy s", why)
+
+    def test_a_transcode_with_no_declared_rate_is_skipped_not_failed(self):
+        ok, why = run.a_presented_rate(self._log(5, declared=self.LOAD.replace("24.000", "0.000")), {})
+        self.assertTrue(ok)
+        self.assertIn("skipped", why)
+
+    def test_a_missing_counter_is_a_loud_failure(self):
+        lines = [ln for ln in self._log(5) if "type=47" not in ln]
+        ok, why = run.a_presented_rate(lines, {})
+        self.assertFalse(ok)
+        self.assertIn("type=47", why)
+
+    def test_a_cumulative_counter_with_a_long_pause_grades_only_the_moving_seconds(self):
+        # six healthy seconds of a cumulative 24 fps counter, then eight seconds paused (flat)
+        lines, n, pos = [self.LOAD], 0, 0
+        for s in range(6):
+            lines.append(f"loop=60 route=player pos={pos}s play=1000pm fps=60"); pos += 1
+            for _ in range(5):
+                n += 5
+                lines.append(f"sink: displayed={n} (type=47)")
+        for s in range(8):
+            lines.append(f"loop=60 route=player pos={pos}s play=0pm fps=60")
+            for _ in range(5):
+                lines.append(f"sink: displayed={n} (type=47)")
+        ok, why = run.a_presented_rate(lines, {})
+        self.assertTrue(ok, why)
+        self.assertIn("over 5 healthy s", why)
+
+    def test_opt_out_and_a_cumulative_counter(self):
+        self.assertTrue(run.a_presented_rate([], {"presented_rate": False})[0])
+        lines, n = [self.LOAD], 0
+        for s in range(12):
+            lines.append(f"loop=60 route=player pos={s}s play=1000pm fps=60")
+            for _ in range(5):
+                n += 5
+                lines.append(f"smp_cb type=47 num={n} str=")
+        ok, why = run.a_presented_rate(lines, {})
+        self.assertTrue(ok, why)
+        # …and the same counter reset by a second Load half-way through still grades 24
+        lines2, n = [self.LOAD], 0
+        for s in range(14):
+            lines2.append(f"loop=60 route=player pos={s}s play=1000pm fps=60")
+            if s == 7:
+                n = 0
+            for _ in range(5):
+                n += 5
+                lines2.append(f"smp_cb type=47 num={n} str=")
+        ok, why = run.a_presented_rate(lines2, {})
+        self.assertTrue(ok, why)
+        self.assertIn("median 25.0", why)
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

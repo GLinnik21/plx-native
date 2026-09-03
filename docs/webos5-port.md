@@ -307,8 +307,15 @@ that matters when judging how much a webOS 4 assumption is worth elsewhere.
 - **The event-type numbering shifts by 2** between webOS 4 and 5 for every `StarfishMediaAPIs`
   callback above `PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM` (0x1c). Kodi compensates with
   `if (m_webOSVersion < 5 && type > …ENDOFSTREAM) type += 2;`. **This app is currently immune** —
-  `sf_on_event` dispatches on string content, and its one numeric test (`ty == 0`, FRAMEREADY) is
-  below the shift point. Any *new* numeric event handling must account for it.
+  `sf_on_event` dispatches on string content, and its two numeric tests are both below the shift
+  point: `ty == 0` (FRAMEREADY) and, since 2026-09-03, `ty == 18` (the pipeline's error event —
+  `num=601 Resource Allocation Error` is the shape measured on 10.3.1), which before any picture
+  is published as a refused Load. This bullet said "one numeric test" until then; the 18 arm was
+  added with the shift in view, not in ignorance of it. **The first numeric handling ABOVE 0x1c
+  landed the same day and does account for it:** the two libpf frame counters (46 dropped / 47
+  displayed on webOS 4, hence 48/49 on 5+) go through `player::sink_counter_kind(ty, major)`
+  before being logged as `sink: displayed=` / `sink: dropped=`, and the harness reads that line
+  rather than a raw type. Any further numeric handling above 0x1c must do the same.
 - **`StarfishMediaAPIs::setHdrInfo(const char*)` exists from 5.3.1 on** and is absent on 4.10.0
   (which confirms this repo's earlier finding that it could not be used). On webOS 5 it replaces
   the webOS-4 trick of injecting `hdrType` into the ACB `setMediaVideoData` payload. The JSON key

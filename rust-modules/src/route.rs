@@ -3928,6 +3928,58 @@ pub(crate) fn set_stream_codecs(vc: &str, ac: &str) {
     })
 }
 
+/// **The widest raster this session can put through the decoder**, for the Starfish Load's
+/// `adaptiveStreaming` ceiling — `(0, 0)` when nobody said. Three routes, three answers:
+///
+/// * direct play / remux (`ProgressiveMkv`): the SOURCE's own coded size (`cur_src`), since the
+///   file's elementary stream is what gets fed;
+/// * a fixed quality's HLS: the source capped by that quality's [`crate::plex::Ceiling`] — PMS
+///   never upscales, so the smaller of the two is the largest picture it can send;
+/// * Auto: the bounding box of every FEASIBLE actuator (`HlsActuatorCatalog::widest_feasible_raster`),
+///   because a rung commit never re-issues `Load` and the controller may climb to the 4K point
+///   inside the one declaration — a ceiling sized to the bootstrap rung (`plan.ceiling`, which is
+///   the STARTING rung and not the maximum) would be exceeded on the first climb.
+///
+/// Main thread, like every other session read. Pure over the session it is given.
+pub(crate) fn sink_max_raster() -> (u16, u16) {
+    let s = session();
+    let clamp = |v: i64| u16::try_from(v).unwrap_or(u16::MAX);
+    let source = (clamp(s.cur_src.1), clamp(s.cur_src.2));
+    match s.cur_delivery {
+        crate::plex::TranscodeDelivery::ProgressiveMkv => source,
+        crate::plex::TranscodeDelivery::FixedHls { .. } => {
+            if applied_quality() == Quality::Auto {
+                auto_catalog().widest_feasible_raster()
+            } else {
+                match s.cur_ceiling {
+                    Some(c) => {
+                        // 0 on either side means "nobody said"; the other side's number wins.
+                        let axis = |src: u16, cap: i64| match (src, clamp(cap)) {
+                            (0, c) => c,
+                            (s, 0) => s,
+                            (s, c) => s.min(c),
+                        };
+                        (axis(source.0, c.max_w), axis(source.1, c.max_h))
+                    }
+                    None => source,
+                }
+            }
+        }
+    }
+}
+
+/// The SOURCE raster for a stream the app did not select — the pipeline tier's
+/// `plxnative-playurl` carries it as `source_raster`, the same field its Auto fixtures already
+/// used to size the actuator catalog. One fact, one field: [`sink_max_raster`] reads it from the
+/// same place a PMS-chosen item's dimensions land, so the synthetic tier declares exactly what the
+/// production route would for a file of that size.
+pub(crate) fn set_stream_source_raster(w: u16, h: u16) {
+    session_mut(|s| {
+        s.cur_src.1 = i64::from(w);
+        s.cur_src.2 = i64::from(h);
+    });
+}
+
 /// The whole Load-payload DECLARATION for a stream the app did not SELECT — the pipeline test
 /// tier's `/tmp/plxnative-playurl` ([`crate::dev::PlayUrl`]), whose entire point is that no PMS
 /// chose anything and so `apply_plan` never runs.
@@ -10063,6 +10115,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: true,
             hevc_max: (4096, 2176), // the dev TV's own bound — this must fail on SIZE grounds nowhere
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
@@ -10093,6 +10147,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: true,
             hevc_max: (4096, 2176),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
@@ -10114,6 +10170,8 @@ mod tests {
         assert!(!video_direct_plays("av1", 3840, 1602, dv, &caps));
         let small = crate::devcaps::Caps {
             hevc_max: (1920, 1088),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             ..caps.clone()
         };
         assert!(!video_direct_plays("hevc", 3840, 1602, dv, &small));
@@ -10127,6 +10185,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: true,
             hevc_max: (4096, 2176),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "eac3".into(),
         };
@@ -10161,6 +10221,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: true,
             hevc_max: (4096, 2176),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
@@ -10278,6 +10340,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: true,
             hevc_max: (4096, 2176),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
@@ -10406,6 +10470,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: true,
             hevc_max: (1920, 1088),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
         };
@@ -10449,6 +10515,8 @@ mod tests {
         let caps = crate::devcaps::Caps {
             hevc: false,
             hevc_max: (1920, 1088),
+            h264_row: (0, 0, 0),
+            hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac".into(),
         };

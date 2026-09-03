@@ -607,7 +607,15 @@ which the linking section explains is load-bearing rather than tidy.
   `[[silent-instrument-trap]]`: **prove the instrument can see the thing before reading its
   silence.** Two more instruments here are silent by construction — the heartbeat's `vtick=`/`vgap=`
   count a **5 Hz** position callback, not presented frames, and read a flat `vgap=201ms` straight
-  through a visible stutter; and LG's `GST_DEBUG` was long avoided as perturbing, which is true of
+  through a visible stutter (and the diagnostics panel's "Picture … fps" is the PIPELINE'S OWN
+  CLAIM from its `sourceInfo`, which on 2026-09-03 read "30 fps" over a 24p stream it was judder-
+  presenting on a 30 fps lattice — the row now says whose number it is). **The instrument that
+  CAN see presented frames, since 2026-09-03: the app's `sink: displayed=` line** (raw callback
+  47 on webOS 4, 49 on 5+), the video sink's
+  `non-flushable-displayed-frames` read by libpf every 200 ms once the Load payload says
+  `streamQualityInfoNonFlushable` (type 46 is `dropped-frames`, only when non-zero); the
+  harness's `presented:` characterisation line is that counter as a rate, and it measured the
+  30-lattice case at 13.0 fps presented vs 24.1 with the rate declared correctly; and LG's `GST_DEBUG` was long avoided as perturbing, which is true of
   `dualsequencer:9` and **false of `:6`** (same scene, 123 misses uninstrumented vs 122 traced) —
   `:6` is the only per-frame cadence instrument this project has.
 - `tools/threadprobe.c` — standalone ARM diagnostic (`make threadprobe`, scp, run as root, delete):
@@ -1068,8 +1076,9 @@ uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
 4096-wide edge and any refusal above it, a USER-driven replay (a Play control on a detail page is
 server-tier by construction), and the transcode INPUT space
 (three server cases on one AV1 item stand in for 17 codecs). One of those is an app gap, not a test
-gap — `devcaps` ignores the table's `maxFrameRate`, so the profile sent to PMS bounds no frame
-rate at all. Three things about it
+gap — `devcaps` reads the table's `maxFrameRate` only into the per-codec rows the Starfish Load
+envelope clamps against (since 2026-09-03), so the profile sent to PMS still bounds no frame rate
+at all. Three things about it
 are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
 main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a
 non-`hevc` video codec to the H264 payload, so a trigger that was never read produces exactly the
@@ -1178,6 +1187,18 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   readable. There is deliberately no magnitude gate on `play=`: a seek reads as a huge or negative
   value and a catch-up leg as something above 1000, and both are real observations.
   `docs/measurements/local-original-blind.md` is what it found first.
+- **Since 2026-09-03 every playback case in BOTH tiers also grades `presented_rate`**: the frame
+  rate the video sink PRESENTED against the rate the app DECLARED on the `load:` line. The
+  instrument is the sink's `non-flushable-displayed-frames`, polled by libpf every 200 ms once
+  the Load payload carries `streamQualityInfoNonFlushable` (decompiled from libpf;
+  `player/CLAUDE.md`) and logged by the app as `sink: displayed=<n>` — normalised for the webOS
+  4→5 callback-numbering shift (raw type 47 here, 49 there) — summed per healthy wall second (position advanced, `play=` at real
+  time) and compared as a median within ±6 % plus a one-in-five floor at 85 %. It exists because a
+  4K H.264 24p stream declared at `maxFrameRate: 60` was presented at **13 fps** while `play=`
+  read 1000 pm, `fps=` read 60 and the sink's own drop counter (type 46) read 0 — three healthy
+  instruments over a picture the maintainer could see was wrong. A transcode declares no rate and
+  is skipped, said so in the evidence; `expect.presented_rate: false` opts out. Replayed over the
+  saved logs it fails the 60-declared run at a median of 14 and passes the 24-declared one.
 - **`tests/run.py` always cleans the TV on exit** — pass, fail, Ctrl-C, `kill`, or crash: it closes
   the app, clears every `plxnative-*` trigger in that install's runtime root **including the
   injected PMS token**, and reaps stray ssh clients. Only the three append-only `*.log` files

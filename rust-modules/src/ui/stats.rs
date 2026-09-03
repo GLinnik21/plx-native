@@ -477,24 +477,18 @@ fn device_rows() -> Vec<Field> {
     // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
     // no log a stranger can reach has ever answered. Empty when nyx did not answer — never a
     // plausible default, which is `webos::Hardware`'s own rule for the same reason.
-    let set: Vec<&str> = [
-        hw.model.as_str(),
-        hw.board.as_str(),
-        hw.hw_revision.as_str(),
-    ]
-    .into_iter()
-    .filter(|s| !s.is_empty())
-    .collect();
+    let set = hw.set_line();
+    let set_unknown = set.is_empty();
     v.push(
         Field::new(
             "Set",
-            if set.is_empty() {
+            if set_unknown {
                 "unknown — nyx did not answer".to_string()
             } else {
-                set.join(" · ")
+                set
             },
         )
-        .fault(set.is_empty()),
+        .fault(set_unknown),
     );
 
     // The firmware CODENAME, which is the half the header line drops for width and the key
@@ -588,13 +582,21 @@ fn pipeline_rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Ve
     }
     v.push(Field::new("Audio", audio).fault(d.load_a == 0 && d.load_v != 0));
 
+    // **The frame rate here is a CLAIM, and the row says whose.** `video_fps_milli` is what LG's
+    // pipeline announced in its own `sourceInfo` callback, and on this set that is not a
+    // measurement of anything presented: a 4K H.264 24p direct play declared at 60 was announced
+    // as 24 and then re-announced as 30 (2026-09-03, the maintainer's "the panel says 30 fps and
+    // the picture is plainly worse"), which is the pipeline's lattice guess, not the stream. The
+    // route's value is what WE told it. Nothing in this process counts presented frames (the
+    // position callback ticks at 5 Hz whatever the picture does), so an unlabelled number here is
+    // the silent-instrument trap on a photographed surface.
     let route_fps = crate::route::stream_fps();
-    let fps_milli = if d.video_fps_milli > 0 {
-        d.video_fps_milli
+    let (fps_milli, fps_src) = if d.video_fps_milli > 0 {
+        (d.video_fps_milli, "pipeline says")
     } else if route_fps > 0.0 {
-        (route_fps * 1_000.0).round() as i64
+        ((route_fps * 1_000.0).round() as i64, "declared")
     } else {
-        0
+        (0, "")
     };
     v.push(
         Field::new(
@@ -602,7 +604,7 @@ fn pipeline_rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Ve
             match (d.video_w, d.video_h) {
                 (0, _) | (_, 0) => "stream never opened".to_string(),
                 (w, h) if fps_milli > 0 => {
-                    format!("{w}×{h} · {} fps", fps_milli_str(fps_milli))
+                    format!("{w}×{h} · {} fps ({fps_src})", fps_milli_str(fps_milli))
                 }
                 (w, h) => format!("{w}×{h} · fps unknown"),
             },

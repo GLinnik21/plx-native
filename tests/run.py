@@ -782,6 +782,12 @@ def triggers_for_case(case, url_base=None):
     gst_debug = case.get("gst_trace", {}).get("debug")
     if gst_debug:
         files.append(("plxnative-gstlog", gst_debug))
+    # Arbitrary extra dev triggers, `{"name": content}` → `plxnative-<name>` in the runtime root
+    # (`null` for a bare flag). For the one-run experiments a trigger exists for — `sinkmax`,
+    # `nofps` — without teaching the harness a key per knob; the case's own triggers above win on
+    # a name clash because they are written first and the app reads each name once.
+    for name, content in (case.get("triggers") or {}).items():
+        files.append((f"plxnative-{name}", content))
     for op in case["operations"]:
         kind = op["op"]
         if kind == "seek" and op.get("mode") == "rapid":
@@ -946,7 +952,14 @@ RE_STREAM_PATH = re.compile(r"stream:.*?path=(\S+)")
 # opposed to what the demuxer found in it. The two are independent, and the pipeline tier's whole
 # reason for existing is that the first one can now be set without a PMS.
 RE_LOAD = re.compile(r'load: v=(\S+) a="([^"]*)" fps=([\d.]+) '
-                     r'dv=present:(\d) P(-?\d+)/(-?\d+) el:(\d) atmos:(\d)')
+                     r'dv=present:(\d) P(-?\d+)/(-?\d+) el:(\d) atmos:(\d)'
+                     r'(?: max=(\d+)x(\d+)@(\d+))?')
+# The PIPELINE's echo of the sink envelope it was handed — `smp_cb type=5`, the one line in the
+# log that is the television's reading of our `adaptiveStreaming` block rather than our own
+# (`docs/webos10-lab-report.md` §3.2: `… video/x-h264 (null) (null) 3840 2160 (null) 60.000000 …`).
+# `load_max` above grades what we MEANT to declare; this grades what the set SAW, and the
+# `SMP loadCompleted` that has to follow it grades whether the set accepted it.
+RE_SINK_ECHO = re.compile(r"smp_cb type=5 .*?video/x-(h264|h265|hevc)\b.*?\b(\d{3,4}) (\d{3,4}) \S+ ([\d.]+)")
 # The audio LANE the demuxer actually fed, off the same `ff: v=#0 …` line: `a=#<index>`.
 RE_ALANE = re.compile(r"ff: v=#0 .*\ba=#(-?\d+)")
 # The RATIONAL the Load payload's esInfo actually carries — `engine::fps_rational`'s output, as
@@ -1245,7 +1258,7 @@ def a_load_decl(lines, exp):
     if hit is None:
         return False, "no `load:` line — nothing was declared (or the binary predates it)"
     line = hit.string.strip()
-    v, a, fps, present, prof, blc, _el, atmos = hit.groups()
+    v, a, fps, present, prof, blc, _el, atmos, max_w, max_h, max_fps = hit.groups()
     # "P8/1" — profile/bl_compat, or "none". One token because the two are only ever meaningful
     # together: a profile with the wrong compatibility id describes a different file.
     dv = "none" if present == "0" else f"P{prof}/{blc}"
@@ -1278,6 +1291,34 @@ def a_load_decl(lines, exp):
         got.append(f"esInfo={rat}")
         if rat != exp["load_fps_rational"]:
             return False, f"esInfo videoFps {rat}, want {exp['load_fps_rational']} :: {line}"
+    if "load_max" in exp:
+        # The `adaptiveStreaming` ceiling the app declared — `WxH@F`. Until 2026-09-03 this was a
+        # 4K60 constant for every stream; now it is derived per session (`engine::sink_envelope`),
+        # and the cases that carry this key pin each cell of that rule on the device.
+        if max_w is None:
+            return False, f"no `max=` on the load line — the binary predates the envelope :: {line}"
+        declared = f"{max_w}x{max_h}@{max_fps}"
+        got.append(f"max={declared}")
+        if declared != exp["load_max"]:
+            return False, f"declared max={declared}, want {exp['load_max']} :: {line}"
+    if "sink_echo" in exp:
+        # What the TELEVISION says it was handed, and whether it then completed the Load. The
+        # pipeline echoes the sink as `type=5` before it decides; `SMP loadCompleted` after it is
+        # the acceptance. A refusal is `type=18` after the echo and `no_playing_error` catches it,
+        # but an echo that names a different envelope than `load_max` is a splice bug this alone
+        # can see.
+        echo_at = next(((i, m) for i, ln in enumerate(lines)
+                        for m in [RE_SINK_ECHO.search(ln)] if m), None)
+        if echo_at is None:
+            return False, f"no `smp_cb type=5` sink echo — the pipeline never read the envelope :: {line}"
+        i, m = echo_at
+        _codec, ew, eh, efps = m.groups()
+        echoed = f"{ew}x{eh}@{int(float(efps))}"
+        got.append(f"echo={echoed}")
+        if echoed != exp["sink_echo"]:
+            return False, f"the television echoed {echoed}, want {exp['sink_echo']} :: {m.group(0).strip()}"
+        if not any("SMP loadCompleted" in ln for ln in lines[i:]):
+            return False, f"sink echoed {echoed} but no `SMP loadCompleted` followed it"
     if not got:
         return False, f"case declares no load_* expectation to grade :: {line}"
     return True, f"declared {' '.join(got)} :: {line}"
@@ -2088,6 +2129,208 @@ def report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, earl
             print(f"       {note}")
 
 
+# The video sink's own PRESENTED-frame counter, forwarded by libpf every 200 ms as callback
+# type 47 (`non-flushable-displayed-frames`, armed by the payload's
+# `streamQualityInfoNonFlushable`) and its dropped counter as type 46 (`dropped-frames`, armed by
+# `streamQualityInfo`, emitted only when non-zero). Decompiled 2026-09-03; the only instrument on
+# a non-Dolby path that counts frames the sink displayed rather than ticks of a position clock.
+RE_SINK_LINE = re.compile(r"^(?:(\d+)\s+)?sink: (displayed|dropped)=(-?\d+)\b")
+# The RAW webOS-4 types, for logs written before the app logged the `sink:` line. Only consulted
+# when no `sink:` line exists in the log at all — on a webOS 5+ set the same counters arrive as
+# 48/49 and only the app-side normalisation can say so.
+RE_SINK_COUNT = re.compile(r"^(?:(\d+)\s+)?smp_cb type=(46|47) num=(-?\d+)\b")
+
+
+def sink_counter_events(lines):
+    """(kind, value, stamp_ms|None) per counter line, kind in {'displayed','dropped'}: the app's
+    firmware-normalised `sink:` line when the log has one, else the raw webOS-4 types."""
+    out = []
+    for ln in lines:
+        m = RE_SINK_LINE.search(ln)
+        if m:
+            out.append((m.group(2), int(m.group(3)), int(m.group(1)) if m.group(1) else None))
+    if out:
+        return out
+    for ln in lines:
+        m = RE_SINK_COUNT.search(ln)
+        if m:
+            kind = "dropped" if m.group(2) == "46" else "displayed"
+            out.append((kind, int(m.group(3)), int(m.group(1)) if m.group(1) else None))
+    return out
+
+
+def sink_counter_intervals(values):
+    """The type-47 series as PER-INTERVAL frame counts, whatever shape the firmware gave it.
+
+    Two shapes exist: this firmware's per-interval count (a small number that goes up and down,
+    or sits flat at 5 for a 24p stream) and a cumulative total (strictly increasing at nearly
+    every poll, and soon far beyond anything one 200 ms poll could show). Monotonicity alone
+    cannot tell them apart — a flat `5,5,5,…` is monotone — so cumulative means: at least four
+    steps in five strictly increase AND the series climbs past 20, which no per-interval read
+    reaches below 100 fps. A cumulative total that DECREASES restarted (a second Load resets the
+    sink): that step is read as a boundary — the new value is the count since the reset — rather
+    than reclassifying the whole run. Returns (intervals, cumulative)."""
+    if len(values) < 3:
+        return list(values), False
+    steps = list(zip(values, values[1:]))
+    rising = sum(1 for a, b in steps if b > a)
+    falling = sum(1 for a, b in steps if b < a)
+    # Flat steps are evidence of nothing: a cumulative total sits flat through a pause or a stall
+    # exactly as a per-interval count sits flat at 5. Only the steps that MOVE say which shape
+    # this is — a cumulative counter almost never moves down (one reset per Load), a
+    # per-interval one moves down as often as up.
+    moving = rising + falling
+    cumulative = rising >= 3 and rising * 5 >= moving * 4 and max(values) > 20
+    if not cumulative:
+        return list(values), False
+    out, prev = [], None
+    for v in values:
+        out.append(0 if prev is None else (v - prev if v >= prev else v))
+        prev = v
+    return out, True
+
+
+def presented_fps(lines):
+    """(fps over the whole span, worst 1 s window, sample count, dropped, cumulative) from the
+    type-47/46 counters, or None when fewer than two type-47 samples exist. Timestamps are the
+    log's own millisecond stamps when present, else the 200 ms poll period is assumed; the
+    counter's shape is decided by `sink_counter_intervals`."""
+    shown, dropped = [], 0
+    for kind, n, ms in sink_counter_events(lines):
+        if kind == "dropped":
+            dropped = max(dropped, n)
+        else:
+            shown.append((ms, n))
+    if len(shown) < 2:
+        return None
+    if any(t is None for t, _ in shown):
+        shown = [(i * 200, n) for i, (_, n) in enumerate(shown)]
+    intervals, cumulative = sink_counter_intervals([n for _, n in shown])
+    stamped = list(zip([t for t, _ in shown], intervals))
+    # per-poll counts normalised by each poll's real length (nominally 200 ms)
+    per_s = []
+    for (t0, _), (t1, n) in zip(stamped, stamped[1:]):
+        dt = (t1 - t0) / 1000.0
+        if dt > 0:
+            per_s.append(n / dt)
+    if not per_s:
+        return None
+    mean = sum(per_s) / len(per_s)
+    # worst 1 s window: sum of polls inside any 1 s span, over its span
+    worst = None
+    j = 0
+    for i, (ti, _) in enumerate(stamped):
+        while j < len(stamped) and stamped[j][0] - ti < 1000:
+            j += 1
+        if j < len(stamped) and stamped[j][0] > ti:
+            w = sum(n for _, n in stamped[i + 1:j + 1]) / ((stamped[j][0] - ti) / 1000.0)
+            worst = w if worst is None else min(worst, w)
+    if worst is None:
+        # shorter than one second: the worst single poll is the only "window" there is
+        worst = min(per_s)
+    return round(mean, 1), round(worst, 1), len(shown), dropped, cumulative
+
+RE_HEART = re.compile(r"loop=\d+ .*?\bpos=(\d+)s(?: play=(-?\d+)pm)?")
+
+
+def presented_windows(lines):
+    """Presented frames per second, one number per HEALTHY wall second, from the sink counter.
+
+    A window is the stretch between two consecutive heartbeats whose media position advanced by
+    one second (±1 s of integer quantisation) and whose `play=` — where the line carries one —
+    reads real time (900..1100 pm). That is what excludes pre-roll, a pause, a seek flush and a
+    stall WITHOUT reading any of those events: a window in which the film did not run at speed is
+    not a window in which the sink was asked to show `declared` frames. Inside a window the
+    type-47 samples (nominally five, at 200 ms) are summed and normalised to five; a window with
+    fewer than four samples is dropped as a torn read. A cumulative counter is differenced first.
+    Returns (windows, sample_count)."""
+    events = []  # (kind, value) in log order: ("beat", pos, play) | ("shown", n)
+    use_raw = not any(RE_SINK_LINE.search(ln) for ln in lines)
+    for ln in lines:
+        m = RE_SINK_LINE.search(ln)
+        if m:
+            if m.group(2) == "displayed":
+                events.append(("shown", int(m.group(3))))
+            continue
+        if use_raw:
+            m = RE_SINK_COUNT.search(ln)
+            if m and m.group(2) == "47":
+                events.append(("shown", int(m.group(3))))
+                continue
+        h = RE_HEART.search(ln)
+        if h:
+            events.append(("beat", int(h.group(1)), None if h.group(2) is None else int(h.group(2))))
+    shown = [e[1] for e in events if e[0] == "shown"]
+    intervals, _cumulative = sink_counter_intervals(shown)
+    it = iter(intervals)
+    events = [("shown", next(it)) if e[0] == "shown" else e for e in events]
+    windows, bucket, last_beat = [], [], None
+    for e in events:
+        if e[0] == "shown":
+            bucket.append(e[1])
+            continue
+        _, pos, play = e
+        if last_beat is not None:
+            lpos, lplay = last_beat
+            healthy = 1 <= pos - lpos <= 2 and (play is None or 900 <= play <= 1100) \
+                and (lplay is None or 900 <= lplay <= 1100)
+            if healthy and len(bucket) >= 4:
+                windows.append(sum(bucket) * 5.0 / len(bucket))
+        bucket, last_beat = [], (pos, play)
+    return windows, len(shown)
+
+
+def a_presented_rate(lines, exp):
+    """The frame rate the sink PRESENTED matches the rate the app DECLARED.
+
+    Graded by default on every playback case since 2026-09-03, because the two instruments the
+    suite already had were both blind to the failure this catches: a 4K H.264 24p stream declared
+    at `maxFrameRate: 60` was presented at 13 fps while the media clock ran at real time
+    (`play_rate` 1000 pm), the heartbeat's `fps=` sat at 60 (our GL swaps) and the pipeline's own
+    drop counter (type 46) stayed at 0 — the sink does not count a frame it never presented. The
+    maintainer saw it by eye; nothing here could. The number comes from the app's `sink:
+    displayed=` line (raw callback 47 on webOS 4, 49 on 5+), the sink's `non-flushable-displayed-frames` polled by libpf every 200 ms once the Load payload
+    says `streamQualityInfoNonFlushable` (decompiled from libpf, `player/CLAUDE.md`).
+
+    The declared rate is the `load:` line's `fps=` — what the app told the television the stream
+    runs at. A transcode declares no rate (`fps=0.000`) and is SKIPPED, honestly: there is
+    nothing to match against until the route carries the source rate. `expect.presented_rate:
+    false` opts a case out; `presented_rate_tol_pct` (default 6) widens the band.
+
+    Two bounds on the healthy windows (see `presented_windows`): the MEDIAN within ±tol of the
+    declared rate — one bad second is a hitch, half of them is the lattice — and no more than one
+    window in five below 85 %. At least five healthy windows are required, so under early exit a
+    case has to have played five clean seconds before this can be satisfied; a degradation after
+    that is unobserved, like every other floor here, and `--no-early` is the longer look."""
+    if exp.get("presented_rate") is False:
+        return True, "opted out"
+    hit = next((m for ln in lines for m in [RE_LOAD.search(ln)] if m), None)
+    if hit is None:
+        return False, "no `load:` line — nothing was declared"
+    declared = float(hit.group(3))
+    if declared <= 0:
+        return True, "skipped: the app declared no rate (fps=0.000 — a transcode), nothing to match"
+    windows, samples = presented_windows(lines)
+    if samples == 0:
+        return False, ("no `sink: displayed=` counter line (nor a raw webOS-4 type=47) — the Load "
+                       "payload lacks streamQualityInfoNonFlushable, or the binary predates it")
+    if len(windows) < 5:
+        return False, (f"only {len(windows)} healthy window(s) with a counter read ({samples} samples)"
+                       " — need five clean seconds of playback to grade the presented rate")
+    tol = float(exp.get("presented_rate_tol_pct", 6)) / 100.0
+    ordered = sorted(windows)
+    median = ordered[len(ordered) // 2]
+    low = sum(1 for w in windows if w < 0.85 * declared)
+    ev = (f"declared {declared:.3f} fps; presented median {median:.1f}, min {ordered[0]:.1f}, "
+          f"max {ordered[-1]:.1f} over {len(windows)} healthy s ({samples} counter samples); "
+          f"{low} window(s) below 85%")
+    if not (declared * (1 - tol) <= median <= declared * (1 + tol)):
+        return False, f"presented median {median:.1f} fps is outside ±{tol*100:.0f}% of the declared {declared:.3f} :: {ev}"
+    if low * 5 > len(windows):
+        return False, f"{low}/{len(windows)} windows below 85% of the declared rate :: {ev}"
+    return True, ev
+
+
 def abr_characterisation(lines):
     """The baseline observations I1 has to record, as printable text. Never graded.
 
@@ -2125,6 +2368,14 @@ def abr_characterisation(lines):
         out.append(
             f"playback: max_stall={stall_max}s (total {stall_total}s over {beats} beats, +/-1s) "
             f"rate={rate} lumpy={lumpy} beat(s), longest run {lump_run}"
+        )
+    shown = presented_fps(lines)
+    if shown is not None:
+        mean, worst, n, dropped, monotone = shown
+        out.append(
+            f"presented: {mean} fps mean, worst 1s window {worst} fps "
+            f"(sink displayed-frames counter, {n} samples, "
+            f"{'cumulative' if monotone else 'per-interval'}) dropped={dropped}"
         )
     samples = abr_samples(lines)
     if samples:
@@ -3562,6 +3813,7 @@ def evaluate(case, lines):
         results.append(("no_demux_failure", *a_no_demux_failure(lines)))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
+    results.append(("presented_rate", *a_presented_rate(lines, exp)))
 
     # per-operation assertions
     for op in case["operations"]:
@@ -3928,6 +4180,7 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
         results.append(("replayed", *a_replayed(lines, exp["replays"])))
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
+    results.append(("presented_rate", *a_presented_rate(lines, exp)))
     if "starfish_resolution_sequence" in exp:
         results.append(("starfish_resolution", *a_starfish_resolution_sequence(
             lines, exp["starfish_resolution_sequence"])))
