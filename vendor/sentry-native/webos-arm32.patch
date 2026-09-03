@@ -459,13 +459,14 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
              saved_fp = SENTRY__STRIP_PAC(saved_fp);
              return_addr = SENTRY__STRIP_PAC(return_addr);
  
-@@ -1711,9 +1987,13 @@
+@@ -1711,9 +1987,14 @@
  
      char line[1024];
      ctx->module_count = 0;
 +#    if defined(__arm__)
 +    g_vma_count = 0;
 +    g_vma_complete = false;
++    g_vma_alloc_failed = false;
 +    bool vma_ok = true;
 +#    endif
  
