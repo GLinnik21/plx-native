@@ -17,12 +17,17 @@ use std::ptr::addr_of_mut;
 struct Scene {
     spin_ms: f32,
     qr_tex: u32, // GL texture of Plex's QR PNG (0 until decoded+uploaded)
+    /// Which code `qr_tex` holds ([`auth::qr_generation`]). The cache key, and the reason a code
+    /// replaced mid-`Waiting` cannot be drawn after it has died.
+    qr_gen: u64,
     ground: RouteGround,
-    /// How long the CURRENT auth phase has been on screen. Distinct from `spin_ms`, which is a
-    /// free-running rotation clock: this one is reset by [`update`] whenever the phase changes,
+    /// How long the CURRENT wait has been on screen. Distinct from `spin_ms`, which is a
+    /// free-running rotation clock: this one is reset by [`update`] whenever the wait changes,
     /// because the only question it answers is "has this particular wait gone on too long".
     phase_ms: f32,
-    phase: Phase,
+    /// What that wait IS — see [`wait_id`]. A phase alone was not enough once a code could be
+    /// replaced without leaving [`Phase::Waiting`].
+    wait: (Phase, u64),
     /// How many files the last **Delete all local data** could not unlink. Drives the wording of
     /// the `Deleted` read-out, which must not claim a wipe it did not achieve.
     delete_leftovers: usize,
@@ -67,9 +72,10 @@ pub fn init() {
         *addr_of_mut!(SCENE) = Some(Scene {
             spin_ms: 0.0,
             qr_tex: 0,
+            qr_gen: auth::qr_generation(),
             ground: RouteGround::new(),
             phase_ms: 0.0,
-            phase: Phase::default(),
+            wait: wait_id(),
             delete_leftovers: 0,
         });
     }
@@ -82,47 +88,72 @@ pub fn enter() {
     s.ground.reset();
     // A fresh visit is a fresh wait, whatever phase the last one died in.
     s.phase_ms = 0.0;
-    s.phase = auth::phase();
+    s.wait = wait_id();
     crate::ui::idle::invalidate();
 }
 
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
-    // Each phase gets its own clock. A flow that walks Creating → Waiting → Discovering is making
+    // Each wait gets its own clock. A flow that walks Creating → Waiting → Discovering is making
     // progress, and restarting the timer at every step is what stops a slow-but-healthy sign-in
     // from being offered a way out of itself.
-    if s.phase != auth::phase() {
-        s.phase = auth::phase();
+    let live = wait_id();
+    if wait_restarted(s.wait, live) {
+        s.wait = live;
         s.phase_ms = 0.0;
     } else {
         s.phase_ms += dt * 1000.0;
     }
-    // A retry that needs a new account sign-in enters Creating (hence a new QR); a discovery-only
-    // retry stays in Discovering and deliberately keeps the already-authorized account credential.
-    // Release the cached texture only for the former so its replacement can upload.
-    // The GL texture has to be DELETED, not merely forgotten: `ensure_qr_tex` allocates a fresh id
-    // on every miss (`img_upload_rgba` never reuses the old one), so zeroing the handle alone
-    // orphaned a full 400x400-ish RGBA QR bitmap per sign-in retry, with nothing left holding its
-    // id to free it later. `gfx::delete_tex` no-ops on 0, and `update` is main-thread (the app
-    // loop's Route::Login arm), which is where GL deletes must happen.
-    if auth::phase() == Phase::Creating && s.qr_tex != 0 {
-        crate::gfx::delete_tex(s.qr_tex);
-        s.qr_tex = 0;
+    drop_a_stale_qr(s, auth::qr_generation());
+}
+
+/// Release the cached QR texture as soon as it stops describing the code the flow is showing.
+///
+/// **Keyed on [`auth::qr_generation`], not on the phase, and that swap is this screen's half of
+/// issue #30.** The rule used to be "a retry enters `Creating`, so drop it there" — which was true
+/// of the only way a code could ever change. It no longer is: a pin that runs out is now replaced
+/// automatically, and the flow returns to the same `Waiting` it was already in. A cache keyed on
+/// the phase would have gone on drawing the dead code — sharp, scannable, and pointing at a pin
+/// plex.tv had forgotten — for the whole of its successor's life. `Creating` is still checked, as
+/// the belt to the generation's braces: it is the one moment a flow is known to have thrown its
+/// code away before any replacement exists.
+///
+/// The texture has to be DELETED, not merely forgotten: [`ensure_qr_tex`] allocates a fresh id on
+/// every miss (`img_upload_rgba` never reuses the old one), so zeroing the handle alone orphaned a
+/// full 400x400-ish RGBA QR bitmap per sign-in retry, with nothing left holding its id to free it
+/// later. `gfx::delete_tex` no-ops on 0, and both callers are on the main thread (the app loop's
+/// `Route::Login` arm), which is where GL deletes must happen.
+fn drop_a_stale_qr(s: &mut Scene, live: u64) {
+    if !qr_cache_stale(s.qr_gen, live, auth::phase()) {
+        return;
     }
+    crate::gfx::delete_tex(s.qr_tex);
+    s.qr_tex = 0;
+    s.qr_gen = live;
+}
+
+/// Whether the cached QR bitmap has stopped describing the code the flow is showing.
+///
+/// Pure and split out from the delete for the reason every other rule on this screen is: the
+/// caller frees a GL texture, so no host test can reach it, and this is the half that decides
+/// whether a dead code stays on the television.
+fn qr_cache_stale(cached: u64, live: u64, phase: Phase) -> bool {
+    cached != live || phase == Phase::Creating
 }
 
 /// Decode + upload Plex's QR PNG once, caching the GL texture. Main (draw) thread only.
-fn ensure_qr_tex(s: &mut Scene) {
-    if s.qr_tex != 0 {
-        return;
-    }
-    let png = auth::qr_png();
-    if png.is_empty() {
+fn ensure_qr_tex(s: &mut Scene, qr: &auth::QrCode) {
+    // The SNAPSHOT's generation, not a fresh read: the texture about to be uploaded and the number
+    // it is cached under must come from one lock, or a later frame keys the new bitmap by the old
+    // code. Both call sites run the same rule, so a replaced code can never be drawn out of a
+    // cache that `update` happened not to have reached yet this frame.
+    drop_a_stale_qr(s, qr.generation);
+    if s.qr_tex != 0 || qr.png.is_empty() {
         return;
     }
     let (mut w, mut h): (c_int, c_int) = (0, 0);
-    let px = crate::img::img_decode_rgba(png.as_ptr(), png.len() as c_int, &mut w, &mut h);
+    let px = crate::img::img_decode_rgba(qr.png.as_ptr(), qr.png.len() as c_int, &mut w, &mut h);
     if !px.is_null() {
         s.qr_tex = crate::img::img_upload_rgba(px, w, h);
         crate::img::img_free(px);
@@ -257,6 +288,8 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
         theme::size::LABEL,
     );
     let right = qr_layout(layout);
+    // ONE read of the code, used for the bitmap, the digits and the sentence beneath them.
+    let qr = auth::qr_snapshot();
 
     TextView::new("plex.tv/link", theme::size::TITLE, theme::TEXT_HEADING)
         .bold()
@@ -266,7 +299,7 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     // QR on a bright card (the white border is the scan quiet-zone). Plex's own PNG → we just show it.
     let card = right.card;
     p.rrect(card, 24.0, 24.0, theme::SURFACE_QR_PLATE);
-    ensure_qr_tex(s);
+    ensure_qr_tex(s, &qr);
     if s.qr_tex != 0 {
         let pad = 30.0;
         let inner = Rect::new(
@@ -287,8 +320,7 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
 
     // The manual code and waiting state remain in the same right-column stack as the URL and QR.
     // Both use couch-readable type rungs; this is an alternative sign-in path, not fine print.
-    let pin = auth::pin_code().to_uppercase();
-    if let Ok(code) = CString::new(pin) {
+    if let Ok(code) = CString::new(qr.code.to_uppercase()) {
         p.text(
             code.as_ptr(),
             right.code.cx(),
@@ -302,28 +334,89 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
 
     let wr = 15.0;
     let wy = right.status.cy();
-    let status_w = crate::text::text_width(
-        c"Waiting for you to sign in…".as_ptr(),
-        theme::size::BODY,
-        0,
-    );
+    let status = waiting_status(qr.replaced, qr_escape_offered(s.phase_ms));
+    let status_w = crate::text::text_width(status.as_ptr(), theme::size::BODY, 0);
     let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
     Spinner::new(sx + wr, wy, wr)
         .phase(s.spin_ms as u32)
         .tint(theme::TEXT_SECONDARY)
         .draw(env, p);
-    if let Ok(w) = CString::new("Waiting for you to sign in\u{2026}") {
-        let ty = crate::text::text_vcenter_y(theme::size::BODY, 0, wy);
-        p.text(
-            w.as_ptr(),
-            sx + wr * 2.0 + theme::space::SM,
-            ty,
-            theme::size::BODY,
-            theme::TEXT_SECONDARY,
-            0,
-            0,
-        );
+    let ty = crate::text::text_vcenter_y(theme::size::BODY, 0, wy);
+    p.text(
+        status.as_ptr(),
+        sx + wr * 2.0 + theme::space::SM,
+        ty,
+        theme::size::BODY,
+        theme::TEXT_SECONDARY,
+        0,
+        0,
+    );
+}
+
+/// The line under the code, which has to answer a question that only exists now that a code can be
+/// replaced: *why is this not the code I was looking at*.
+///
+/// A pin lives fifteen minutes and is re-minted when it runs out, so somebody who walked away
+/// mid-sign-in — or whose phone has just told them the OLD code was linked — comes back to
+/// different digits. Saying nothing there reads as the television having lost track of itself, and
+/// it is exactly the moment they need to be told to scan again. Same position, same rung, same
+/// spinner: one sentence swapped for another, never a second read-out.
+/// **`stalled` outranks `code_replaced`**: one of these sentences carries an ACTION, and a line
+/// that explains history is worth less than the one that offers a way forward.
+fn waiting_status(code_replaced: bool, stalled: bool) -> &'static std::ffi::CStr {
+    if stalled {
+        c"Still waiting — press OK for a new code"
+    } else if code_replaced {
+        c"That code expired — scan this one"
+    } else {
+        c"Waiting for you to sign in…"
     }
+}
+
+/// How long a QR code may go unscanned before the screen offers to replace it on request.
+///
+/// **A separate, much longer clock than [`ESCAPE_AFTER_MS`], because this wait is not a stall.**
+/// Twelve seconds is right for a spinner that should have finished in one; a code on screen is
+/// waiting for a person to find their phone, unlock it, open a camera and tap a link, and nagging
+/// them at twelve seconds would be wrong every time. A full minute of a code that has already been
+/// scanned is not.
+///
+/// It exists because the automatic replacement below cannot cover the case the issue reported: the
+/// phone says *Account linked* while our polls are being answered `Pending` or nothing at all, and
+/// the person watching knows something the television does not. Waiting out the rest of a
+/// fifteen-minute lease is not a recovery.
+const QR_ESCAPE_AFTER_MS: f32 = 60_000.0;
+
+/// **What the screen is waiting ON**, as the pair the clock in [`Scene::phase_ms`] is timing.
+///
+/// The phase alone was the whole identity while a code could only change by leaving `Waiting`. It
+/// cannot be any more: a pin that runs out is replaced automatically, `Waiting → Creating →
+/// Waiting`, and `update` samples once a frame — so a replacement completed between two samples
+/// (a paused main loop, a long frame) is invisible, and the FRESH code inherits the dead one's
+/// age. It would then offer "press OK for a new code" about a code that had existed for a
+/// millisecond. Including the generation makes the reset exact rather than probable.
+fn wait_id() -> (Phase, u64) {
+    (auth::phase(), auth::qr_generation())
+}
+
+/// Is what the screen is waiting on a DIFFERENT thing from what it was waiting on last frame?
+///
+/// Trivial, and separate anyway, because the rule it encodes is not: a new CODE restarts the clock
+/// exactly as a new PHASE does, and the version that compared phases alone is the one that would
+/// offer to replace a code a millisecond old.
+fn wait_restarted(seen: (Phase, u64), live: (Phase, u64)) -> bool {
+    seen != live
+}
+
+/// Whether the QR screen is offering its own replacement right now. Pure, and — like
+/// [`escape_ready`] — the ONE predicate behind both the sentence and the key, so a control that
+/// is not drawn can never be activated.
+fn qr_escape_offered(phase_ms: f32) -> bool {
+    phase_ms >= QR_ESCAPE_AFTER_MS
+}
+
+fn qr_escape_ready(s: &Scene) -> bool {
+    auth::phase() == Phase::Waiting && qr_escape_offered(s.phase_ms)
 }
 
 /// The complete manual-link stack in the content column.
@@ -382,24 +475,35 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         auth::retry();
         return;
     }
-    // The escape from a WEDGED sign-in, offered only once the wait has stopped looking normal.
-    // Without it this screen had no exit at all on a first-ever boot: `auth::cancel` resumes a
-    // stored session and there is none, so BACK is swallowed and the spinner is forever.
-    if is_ok(sym) && escape_ready(scene()) {
-        crate::log("login: user restarted a stalled sign-in");
-        auth::retry();
-        // The retry usually re-enters the phase it just left (a stalled `Creating` starts another
-        // `Creating`), and `update` only zeroes the clock when the ENUM changes — so without this
-        // the fresh attempt inherits the dead one's age and shows its way out immediately.
-        scene().phase_ms = 0.0;
+    // **The two timed escapes are ONE press, and they must be, because they share one clock.**
+    // The QR screen's *press OK for a new code* (60 s) and the stalled spinner's *Try again*
+    // (12 s) both hang off `phase_ms`, so a wait that leaves `Waiting` for `Discovering` between
+    // the draw and the key made the first predicate false and the SECOND one true — on the old
+    // code's timer, down the unguarded path. `auth::restart_stalled_wait` takes the wait this
+    // screen actually timed and refuses if the flow has moved on, so the phase it lands on cannot
+    // disagree with the phase that earned the control. A `false` means exactly that happened and
+    // the press is swallowed; the main loop is about to route away from here anyway.
+    if is_ok(sym) && (qr_escape_ready(scene()) || escape_ready(scene())) {
+        // "requested", not "restarted": the press may still be refused a line later, and the
+        // event log is the one place this failure is read from — a claim it did something is
+        // exactly the wrong thing to have written there.
+        crate::log("login: user requested a restart of a stalled sign-in");
+        if auth::restart_stalled_wait(scene().wait) {
+            // The restart usually re-enters the phase it just left (a stalled `Creating` starts
+            // another `Creating`), and `update` only zeroes the clock when the wait's IDENTITY
+            // changes — a fresh code changes it, a re-entered phase may not — so without this the
+            // new attempt could inherit the dead one's age and show its way out immediately.
+            scene().phase_ms = 0.0;
+        }
         return;
     }
     // BACK backs out of the sign-in — but only when there is somewhere to back out TO. This screen
     // is reached two ways: a first-ever boot with no session (nothing behind it — the QR screen is
     // the whole app) and the Home account menu's "Sign in" (a working session is still on disk).
     // `auth::cancel` is the one that knows which, so it decides: it resumes the stored session and
-    // the main loop routes Home, or reports false and we swallow the key, preserving the
-    // long-standing "no exit until sign-in completes" behaviour exactly where it belongs.
+    // the main loop routes Home, or reports false and leaves the flow running. In practice this
+    // arm is reached only from a path that bypassed `app::key_onboarding`'s root rule — that rule
+    // claims every BACK here first and sends a refused one to the television's Home.
     if is_back(sym, wcode) {
         auth::cancel();
     }
@@ -490,6 +594,92 @@ mod tests {
                 "{settled:?} is not a wait this screen may offer to restart"
             );
         }
+    }
+
+    /// **A code that has been replaced may not go on being drawn**, which is the login screen's
+    /// half of issue #30. The cache used to be keyed on the phase — sound while the only way to
+    /// get a new code was a retry, which passes through `Creating`. A pin that runs out is now
+    /// re-minted automatically and the flow returns to the same `Waiting` it was already in, so a
+    /// phase-keyed cache would have kept a sharp, scannable QR on screen pointing at a pin plex.tv
+    /// had forgotten — for the whole of its successor's life.
+    #[test]
+    fn a_replaced_code_invalidates_the_cached_qr_even_without_a_phase_change() {
+        assert!(
+            qr_cache_stale(4, 5, Phase::Waiting),
+            "a new code was published while the screen never left Waiting"
+        );
+        assert!(
+            !qr_cache_stale(5, 5, Phase::Waiting),
+            "…and the settled case must not re-upload a texture every frame"
+        );
+        // the belt beside those braces: a flow that has thrown its code away has no successor yet,
+        // so there is no generation to compare against, only a phase that says the QR is gone.
+        assert!(qr_cache_stale(5, 5, Phase::Creating));
+    }
+
+    /// The one line under the code has to explain a swap the user did not ask for — including to
+    /// somebody whose phone has just told them the OLD code was linked.
+    #[test]
+    fn a_swapped_code_says_so_rather_than_changing_under_the_user() {
+        let says =
+            |s: &std::ffi::CStr, word: &[u8]| s.to_bytes().windows(word.len()).any(|w| w == word);
+        assert!(says(waiting_status(false, false), b"Waiting"));
+        assert!(
+            says(waiting_status(true, false), b"expired"),
+            "it names what happened; a code that simply changes reads as a fault"
+        );
+        // …and the sentence that carries an ACTION outranks the one that carries history.
+        assert!(says(waiting_status(true, true), b"press OK"));
+        assert!(says(waiting_status(false, true), b"press OK"));
+    }
+
+    /// **The QR screen's clock is not the spinner's, and it must not be.**
+    ///
+    /// `ESCAPE_AFTER_MS` is 12 s because a discovery spinner should have finished in one. A code
+    /// on screen is waiting for a person to find a phone, unlock it, open a camera and tap a link,
+    /// so offering to replace it at twelve seconds would be wrong on every healthy sign-in. It is
+    /// offered eventually because the automatic replacement cannot cover the reported case: the
+    /// phone says *Account linked* while our polls say nothing, and waiting out the rest of a
+    /// fifteen-minute lease is not a recovery.
+    #[test]
+    fn the_qr_screen_offers_a_new_code_on_a_much_longer_clock_than_a_stalled_spinner() {
+        assert!(QR_ESCAPE_AFTER_MS > ESCAPE_AFTER_MS * 4.0);
+        assert!(!qr_escape_offered(0.0));
+        assert!(
+            !qr_escape_offered(ESCAPE_AFTER_MS),
+            "a sign-in that is merely twelve seconds old is going fine"
+        );
+        assert!(
+            QR_ESCAPE_AFTER_MS < 900_000.0,
+            "…and it must arrive well inside a code's own fifteen-minute life, or it is not a \
+             recovery from anything"
+        );
+        assert!(qr_escape_offered(QR_ESCAPE_AFTER_MS));
+    }
+
+    /// **A new code starts a new clock, even if the phase change between them was never sampled.**
+    ///
+    /// `update` samples once a frame. An automatic replacement is `Waiting → Creating → Waiting`,
+    /// so a long frame or a paused loop can miss the middle entirely — and a clock keyed on the
+    /// phase alone would then hand the fresh code its predecessor's age and offer to replace it
+    /// immediately.
+    #[test]
+    fn a_replaced_code_restarts_the_wait_even_when_the_phase_never_appeared_to_change() {
+        let old_code = (Phase::Waiting, 7u64);
+        assert!(
+            !wait_restarted(old_code, (Phase::Waiting, 7)),
+            "the same code in the same phase is the same wait, and the clock must keep running"
+        );
+        assert!(
+            wait_restarted(old_code, (Phase::Waiting, 8)),
+            "a new code is a new wait, whatever the phase appeared to do in between — this is \
+             the case a phase-only comparison misses, and it hands a one-millisecond-old code \
+             its predecessor's sixty seconds"
+        );
+        assert!(
+            wait_restarted(old_code, (Phase::Discovering, 7)),
+            "…and the original rule still holds: a step forward is a fresh wait"
+        );
     }
 
     #[test]

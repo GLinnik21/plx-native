@@ -940,7 +940,13 @@ mod tests {
         // Test the exact entry rather than scanning the whole host /tmp. Developers legitimately
         // keep captured TV artifacts there, and their names are intentionally outside DIAG.
         let _g = crate::testlock::serial();
-        let d = crate::paths::in_runtime_dir("plxnative-notatrigger");
+        // Per PROCESS, not a fixed name: the runtime dir is the host's /tmp here, shared with every
+        // other `cargo test` on this Mac, and two suites running at once (a second checkout's
+        // `make check`) removed each other's entry between the create and the read_dir.
+        let d = crate::paths::in_runtime_dir(&format!(
+            "plxnative-notatrigger-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let entry = std::fs::read_dir(d.parent().unwrap())

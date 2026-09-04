@@ -100,18 +100,29 @@ pub(crate) const LABEL_BLOCK: f32 = 114.0;
 /// If a firmware ever moves it, this is the one constant to re-measure (a `DISPLAY` capture with the
 /// panel up, scan a column for the discontinuity) — everything else on this screen is derived.
 pub(crate) const KEYBOARD_H: f32 = 324.0;
-/// The field: **the full content width, and no capsule in it**.
+/// The field: **the full content width, and no capsule OUTLINE in it**.
 ///
-/// It was an 820-wide control-height capsule until 2026-08-30. The design took the fill away — the
-/// query IS the type, at `size::HERO` on the flat ground — and once there is nothing to fill there
-/// is nothing to bound either: the run is the width of the page's own column, and this rect is a
-/// LINE BOX rather than a face. `field::draw` paints no plate inside it; it clips to it, which is
-/// what stops the head of an overlong query sliding out over the margin.
+/// It was an 820-wide control-height capsule until 2026-08-30. The design took the fixed fill away
+/// — the query IS the type, at `size::HERO` on the flat ground — and once there is nothing ALWAYS
+/// filled there is nothing to bound either: the run is the width of the page's own column, and this
+/// rect is a LINE BOX rather than a face. `field::draw` clips to it (grown down by
+/// `field::descent_pad`, so a descender is never cut) rather than a fixed capsule, which is what
+/// stops the head of an overlong query sliding out over the margin. **A flat `theme::ACCENT` plate
+/// briefly lived here too** (issue 22, 2026-09-03, focused-not-editing) — the owner rejected it on
+/// sight ("you made the search bar background white, while I wanted text to be white") and it is
+/// gone again as of 2026-09-04: `field::draw` never paints a fill inside this rect, and focus is
+/// carried by `field::ink_target` alone.
 ///
 /// `x` is `consts::MARGIN_X` rather than the design's literal 90 — it always MEANT the app's side
 /// margin, and spelling it twice is how it stayed at 90 when the margin moved to the overscan-safe
 /// 96. `y` is `widgets::TOP_BAR_BOTTOM` + 8 and `h` is the design's 80, which is the box a 72px run
-/// sits in, not a control height.
+/// sits in, not a control height. **This is also the pointer HIT rect** (`hit`'s `FIELD.contains`,
+/// below) — deliberately NOT grown by `field::descent_pad`, which is a live font-metric read and
+/// would couple this pure geometry function to a glyph cache. The two disagree by only the pad's
+/// few px (≈3.5px on the shipped face): a click landing in that sliver — past `FIELD`'s own bottom
+/// edge but still inside the clipped glyph's own descent — reads as a miss rather than a field hit.
+/// Left as a known, recorded gap (Codex review round 1, `field::draw`'s own comment above its
+/// `field_box`) rather than silently ignored.
 pub(crate) const FIELD: Rect = Rect {
     x: crate::ui::consts::MARGIN_X,
     y: 138.0,
@@ -247,19 +258,26 @@ static mut STRIP: usize = 0;
 /// The shelves' vertical scroll. A [`Spring`], so `ui::idle` hears the motion for free (both
 /// integrators report) and this screen owes the frame gate no clock of its own.
 static mut SCROLL: Spring = Spring::at(0.0);
-/// How far the field is into its FOCUSED face, 0…1 — the one thing on this screen that changed
-/// state as a cut.
+/// How far the field is into its FOCUSED face, 0…1 — the one spring the field's whole state
+/// machine rides. `field::draw`'s ink cross-fade reads it for both focused states
+/// (`field::ink_target` picks the endpoint, on `editing` alone); issue 22 (2026-09-03) briefly had
+/// it also drive a flat plate's alpha, and that fill is gone again as of 2026-09-04 — ink is once
+/// more the only thing this spring feeds.
 ///
-/// The capsule swaps between two complete faces (`CONTROL_IDLE_FILL`/`CONTROL_IDLE_INK` and
-/// `ACCENT`/`ACCENT_INK`), and it did it instantly while every other control in the app animates:
-/// the tab strip's capsules TRAVEL between pills, a card's focus pop is a spring, the season tabs
-/// share that spring by owner directive. A field that snapped from dark to white was the one place
-/// focus arrived without motion, which reads as a repaint rather than as a control taking the
-/// remote.
+/// **A [`Spring`], never a snap — history, not the current shape.** Until 2026-08-30 the field wore
+/// a control face that swapped between two COMPLETE faces (`CONTROL_IDLE_FILL`/`CONTROL_IDLE_INK`
+/// and `ACCENT`/`ACCENT_INK`) INSTANTLY, while every other control in the app animates focus
+/// arriving: the tab strip's capsules TRAVEL between pills, a card's focus pop is a spring, the
+/// season tabs share that spring by owner directive. A field that snapped from dark to white was
+/// the one place focus arrived without motion, which read as a repaint rather than as a control
+/// taking the remote. The redesign that followed took the face away and made this the input to an
+/// ink cross-fade alone — issue 22 put a fill back onto this same spring for one day, and removing
+/// it again (rather than reintroducing a snap anywhere) is exactly the property this paragraph's
+/// history argues for keeping.
 ///
-/// A [`Spring`], so `ui::idle` hears it for free and the fade cannot outlive its own frame — and at
+/// `ui::idle` hears it for free and the fade cannot outlive its own frame — and it runs at
 /// `K_SCALE`, the focus-pop rate, because that is what this IS: the same event a card answers with
-/// a pop, on a control whose only affordance is its fill.
+/// a pop, on a control whose only affordance is its ink.
 static mut HOT: Spring = Spring::at(0.0);
 /// The insertion point, a BYTE offset into `crate::search::query()`. Read through [`caret`], which
 /// clamps it into the CURRENT string — the query is the store's and can be replaced under us (a

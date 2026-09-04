@@ -826,8 +826,15 @@ struct Src {
     /// pointer and credential generation are part of the source identity too.
     client: Option<&'static crate::plex::Client>,
     token_gen: u32,
-    /// The owner's plex.tv handle ("friend") for a BORROWED server; **empty** for one of our own.
-    /// Read from the registry at [`sync_roster`] time, never inside a worker.
+    /// **The CREDIT** for this source — `plex::servers::owner_credit`'s answer, stamped onto every
+    /// shelf and hero row this source contributes. `"friend"` for a borrowed server; **empty when
+    /// there is nobody to credit**, which is our own server, the household's own server whichever
+    /// Plex Home profile is watching, and a share plex.tv never named. Read from the registry at
+    /// [`sync_roster`] time, never inside a worker.
+    ///
+    /// [`roster`] groups the uncredited ones first, so an empty string also orders Home. That is
+    /// the right answer for the first two cases and the wrong one for the third; it was wrong for
+    /// the third before this field held a credit too (see `docs/shared-servers.md` §13).
     handle: String,
     state: HubState,
     /// Single flight, PER SOURCE. Cleared only where a landing is taken, where the spawn was
@@ -898,6 +905,9 @@ fn lock_srcs() -> std::sync::MutexGuard<'static, Vec<Src>> {
 /// Either moving rebuilds it, which is how a share the roster layer has just registered, or a
 /// library the user has just pinned, reaches Home without anyone having to call in.
 static SEEN: AtomicU64 = AtomicU64::new(u64::MAX);
+/// …and what the roster SAID at the time — see [`facts_key`]. Separate because it is a third
+/// `u32`, and separate in MEANING because a re-described server is not a changed server set.
+static SEEN_FACTS: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// One source's finished (or failed) off-thread fetch. `build: None` deliberately carries no data,
 /// so a failure can never be mistaken for "the server returned nothing".
@@ -956,7 +966,9 @@ pub(crate) fn hub_state() -> HubState {
 /// `pinned` is every pinned library's server, from `browse::pinned_libraries`. The rule is *not*
 /// "is this server in that list": an EMPTY list means the pin store knows nothing yet, not that
 /// nothing is pinned. `/library/sections` and `/hubs` land independently and asynchronously,
-/// and `browse::is_last_pinned` forbids unpinning the last library — so "empty" can only mean "no
+/// and the never-empty floor (the Home editor's draft refuses to unpin the last library —
+/// `ui::onboard::toggle_draft` — and `plex::pins` applies the same floor to a recorded selection)
+/// forbids an empty pinned set — so "empty" can only mean "no
 /// section has been discovered anywhere", and treating it as "nothing is pinned" would leave Home
 /// with no sources at all on the frame it boots.
 ///
@@ -1074,7 +1086,7 @@ fn roster() -> Vec<(ServerId, String)> {
 ///
 /// **Two atomic loads and no allocation.** The inputs are the registry's exact roster generation
 /// and the section table. Count was insufficient: replacing active slot 1 with slot 2 leaves the
-/// same number and otherwise aliases the old roster forever. The pinned set is a projection of the second — `toggle_pin`, `append_sections` and
+/// same number and otherwise aliases the old roster forever. The pinned set is a projection of the second — `apply_pins`, `append_sections` and
 /// `reset` all bump `SECTIONS_GEN`, so that counter already moves whenever the pinned set can.
 /// Folding the pinned SERVERS in by hand meant walking `browse`'s table and building two `Vec`s
 /// here, on a path `pump` runs every loop iteration — ~60×/s including on a settled Home, which is
@@ -1083,17 +1095,41 @@ fn roster_key() -> u64 {
     ((crate::plex::server_roster_gen() as u64) << 32) | crate::browse::sections_gen() as u64
 }
 
+/// The other half of the fingerprint, kept as its OWN counter rather than folded into the 64 bits
+/// above — three `u32`s do not fit in one `u64` without a truncation that would eventually alias
+/// two states, and this whole mechanism exists to notice a change.
+///
+/// It is `plex::servers`' facts epoch: what the roster SAYS about a server, as opposed to which
+/// servers there are. `Src::handle` is a copy of the "Shared by …" credit and `merge` stamps that
+/// copy onto every shelf and hero row, so a credit re-graded by a roster refresh is exactly a
+/// change this table must rebuild for — and the roster epoch alone cannot see one.
+fn facts_key() -> u32 {
+    crate::plex::server_facts_gen()
+}
+
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
 /// (its state, its backoff, and the build it last answered with), a new one arrives Loading and is
 /// picked up by the next [`pump`], and one that has left takes its shelves with it.
 fn sync_roster() {
-    let k = roster_key();
-    if SEEN.swap(k, Ordering::Relaxed) == k {
+    let (k, fk) = (roster_key(), facts_key());
+    // Both, and both swapped every time: a frame on which only one moved must still record the
+    // other, or the next change to it reads as "unchanged" against a value from two epochs ago.
+    let (was_k, was_fk) = (
+        SEEN.swap(k, Ordering::Relaxed),
+        SEEN_FACTS.swap(fk, Ordering::Relaxed),
+    );
+    if was_k == k && was_fk == fk {
         return;
     }
     let want = roster();
     let mut srcs = lock_srcs();
     let mut out: Vec<Src> = Vec::with_capacity(want.len());
+    // A retained source whose CREDIT moved — `plex::servers::owner_credit`'s answer, which is what
+    // the shelves and the hero pool were stamped with. Updating `Src::handle` alone left the built
+    // rows saying the old thing until the next successful hub fetch, and an OFFLINE source never
+    // has one: "keep the last good shelves" would then have preserved a wrong attribution for good.
+    // The order can move with it (`roster` groups uncredited first), which the same re-merge fixes.
+    let mut restamped = false;
     for (sid, handle) in want {
         // One slot, one source. The way a roster came to name a slot twice was `plex::register`
         // answering with `current()` when the table was full; that now answers `ServerId::UNSET`,
@@ -1107,6 +1143,7 @@ fn sync_roster() {
         match srcs.iter().position(|x| x.sid == sid) {
             Some(i) => {
                 let mut keep = srcs.remove(i);
+                restamped |= keep.handle != handle && keep.last.is_some();
                 keep.handle = handle;
                 // Preserve the last good shelves while the replacement lifecycle fetches, but
                 // release and supersede the old single-flight so it cannot wedge this slot.
@@ -1121,7 +1158,7 @@ fn sync_roster() {
     // holds, which `pump` drops.
     let dropped = srcs.iter().any(|x| x.last.is_some());
     *srcs = out;
-    if dropped {
+    if dropped || restamped {
         let build = merge(&srcs);
         drop(srcs); // before calling out — `detail::reselect` walks the catalog this replaces
         commit(build);
@@ -1393,8 +1430,10 @@ pub(crate) fn seed_for_test(items: usize, state: HubState) {
     let build = merge(&srcs);
     *lock_srcs() = srcs;
     // leave `sync_roster` believing it is up to date — otherwise the next `pump` would replace this
-    // synthetic source with whatever the (empty, in a host test) registry holds
+    // synthetic source with whatever the (empty, in a host test) registry holds. BOTH halves of the
+    // fingerprint, or the facts epoch alone reads as a change and rebuilds anyway.
     SEEN.store(roster_key(), Ordering::Relaxed);
+    SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
     commit(build);
 }
 
@@ -1407,6 +1446,7 @@ pub(crate) fn reset() {
     *RESULTS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
     *lock_srcs() = Vec::new();
     SEEN.store(u64::MAX, Ordering::Relaxed);
+    SEEN_FACTS.store(u32::MAX, Ordering::Relaxed);
     // Adopt the section table's generation with the empty commit below: a bump from BEFORE this
     // reset is already reflected in "nothing", so it is not owed a re-merge. Left unadopted, the
     // next `pump` "caught up" on a generation some other era had moved and re-committed — freeing
@@ -1445,7 +1485,9 @@ mod tests {
     fn seed(srcs: Vec<Src>) {
         let build = merge(&srcs);
         *lock_srcs() = srcs;
-        SEEN.store(roster_key(), Ordering::Relaxed); // leave `sync_roster` idle
+        // leave `sync_roster` idle — both halves, see `seed_for_test`
+        SEEN.store(roster_key(), Ordering::Relaxed);
+        SEEN_FACTS.store(facts_key(), Ordering::Relaxed);
         commit(build);
     }
 
@@ -2579,6 +2621,55 @@ mod tests {
             "and the share gets its half rather than the leftovers"
         );
         reset();
+    }
+
+    /// **A corrected credit re-stamps the shelves Home has ALREADY built**, with no fetch landing.
+    ///
+    /// This is the last hop of the "Shared by …" fix (`plex::servers::owner_credit`,
+    /// `docs/shared-servers.md` §13) and it needed two things that were both missing. The rows and
+    /// the hero pool carry `Src::handle` as a COPY taken at merge time, and `sync_roster` re-merged
+    /// only when a source had been dropped — so a re-graded credit sat in `Src::handle` and changed
+    /// nothing on screen until the next successful hub fetch, which for an offline source never
+    /// comes: "keep the last good shelves" would have preserved the wrong attribution for good.
+    /// And `roster_key` — the fingerprint this whole rebuild is skipped on — could not see a
+    /// `describe` at all, so `sync_roster` early-returned before reaching any of it.
+    #[test]
+    fn a_corrected_credit_restamps_the_shelves_home_already_built() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        let s = crate::plex::register_for_test("pms-credit", "127.0.0.1", 1, "t", "cid");
+        assert_eq!(s, sid(0), "a fresh registry hands out slot 0");
+
+        // what a build without the rule published: the household's own server, wearing the account
+        // holder's handle, with shelves already merged from it
+        crate::plex::describe_server(s, "Mac mini", "admin", false);
+        seed(vec![src(
+            0,
+            "admin",
+            HubState::Ready,
+            Some(built(0, &[], vec![shelf(0, "Recently Added", "x", &["r1"])])),
+        )]);
+        assert_eq!(hub_source(0), "admin");
+
+        // the roster refresh re-grades it — and there is deliberately NO landing after this
+        crate::plex::describe_server(s, "Mac mini", "", false);
+        sync_roster();
+
+        assert_eq!(
+            hub_source(0),
+            "",
+            "the shelf follows the registry off a credit without waiting for a fetch"
+        );
+        assert_eq!(hero_pool_source(0), "");
+        assert_eq!(
+            lock_srcs()[0].handle,
+            "",
+            "and the source itself is re-read, not only the rows"
+        );
+
+        reset();
+        crate::plex::reset_servers_for_test();
     }
 
     /// The same split over catalog ROWS, which is the cap the shelves' items come out of.

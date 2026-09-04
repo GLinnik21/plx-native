@@ -230,13 +230,11 @@ pub(crate) fn update(dt: f32) {
     let sc = unsafe { &mut *addr_of_mut!(SCROLL) };
     sc.step(want, crate::ui::consts::K_SCROLL, dt);
     crate::ui::anim::probe("personbio.scroll", sc.pos, sc.vel, want, dt);
-    // A generous rest test on purpose, and kept even though `own_motion` above already catches the
-    // spring through `note_spring`: that reporter has a visibility-relative rest tolerance, and the
-    // tail it calls "at rest" is still a tail the route's scoped motion can report as the PAGE
-    // moving. Belt and braces on the side that costs a frame rather than a wrong picture.
-    if (sc.pos - want).abs() > 0.01 || sc.vel.abs() > 0.01 {
-        crate::ui::popover::note_own_damage();
-    }
+    // No per-frame `note_own_damage` here: `own_motion` above attributes the spring AND every
+    // invalidate this update raises to the panel (`idle::OwnScope`), and a claim made per frame
+    // with no invalidate behind it over-counts — on a frame where a poster landed on the page
+    // behind, that claim masked the landing and the frozen host kept the un-landed page (Codex
+    // review, 2026-09-04). A claim belongs beside the one invalidate it names, in a key handler.
 }
 
 /// UP/DOWN page the viewport; LEFT/RIGHT are inert (there is one column of prose, and nothing

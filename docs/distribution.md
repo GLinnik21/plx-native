@@ -627,7 +627,7 @@ those two only after an explicit first-run Share choice or a later Done in Accou
 Privacy & data. First run asks about the two purposes separately and offers the exact payload
 preview before either answer: the first choice remains a draft, the second records both, and BACK
 records nothing either way — it steps back from the product question to the crash one, and on the
-crash question (which is asked once per television, immediately after sign-in and before the
+crash question (which is asked once per sign-in, immediately after it and before the
 profile picker) there is nothing behind it, so it is swallowed rather than closing the ceremony.
 `PRIVACY.md` carries the schemas: usage is generated from
 `diag::schema::EVENT_SPECS`, native crashes are checked against their sanitizer allowlist, and

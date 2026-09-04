@@ -589,6 +589,49 @@ fn remote_synth_wheel(dy: i32) {
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
 
+/// Is this SDL event type INPUT — a key, text, pointer or wheel event — as opposed to a lifecycle,
+/// window or quit event? The one classification `popover::host::input_scope` rests on: input under
+/// an open modal is the modal's, a lifecycle event is the app's and may change the page beneath.
+fn is_input_event(et: u32) -> bool {
+    matches!(
+        et,
+        SDL_KEYDOWN
+            | SDL_KEYUP
+            | SDL_TEXTINPUT
+            | SDL_TEXTEDITING
+            | SDL_MOUSEMOTION
+            | SDL_MOUSEBUTTONDOWN
+            | SDL_MOUSEBUTTONUP
+            | SDL_MOUSEWHEEL
+    )
+}
+
+#[cfg(test)]
+mod input_event_tests {
+    use super::*;
+
+    /// The boundary `popover::host::input_scope` rests on: every input kind is in, and the
+    /// lifecycle events (background/foreground, `0x103`–`0x106`), window events and quit are out.
+    #[test]
+    fn input_events_are_the_modals_and_lifecycle_events_are_the_apps() {
+        for et in [
+            SDL_KEYDOWN,
+            SDL_KEYUP,
+            SDL_TEXTINPUT,
+            SDL_TEXTEDITING,
+            SDL_MOUSEMOTION,
+            SDL_MOUSEBUTTONDOWN,
+            SDL_MOUSEBUTTONUP,
+            SDL_MOUSEWHEEL,
+        ] {
+            assert!(is_input_event(et), "{et:#x} is input");
+        }
+        for et in [SDL_QUIT, 0x101, 0x103, 0x104, 0x105, 0x106, 0x200] {
+            assert!(!is_input_event(et), "{et:#x} is the app's, not a modal's");
+        }
+    }
+}
+
 /// Dispatch one synthetic-input token. Shared by the SSH-only development FIFO and Lab Control's
 /// outbound HTTPS command channel, so a cloud command cannot grow a second interpretation of
 /// `down`, raw key pairs, pointer coordinates or text input beside the one the harness uses.
@@ -596,6 +639,13 @@ fn remote_synth_wheel(dy: i32) {
 /// `true` means the token was accepted and injected/requested, not that the screen necessarily
 /// changed — pressing DOWN at the bottom of a list is still a successfully delivered command.
 fn dispatch_remote_token(tok: &str) -> bool {
+    // As the SDL loop: a modal's input is its own. NOT for `pat:`, which is not input at all — it
+    // changes the PAGE's ground directly, and a frozen host must be retaken to show it.
+    let _own_input = if tok.starts_with("pat:") {
+        None
+    } else {
+        crate::ui::popover::host::input_scope()
+    };
     crate::ui::idle::invalidate(); // injected input is input like any other
                                    // pointer click token "ck:X,Y" — authored 1920x1080 coords
     if let Some(rest) = tok.strip_prefix("ck:") {
@@ -4904,6 +4954,106 @@ mod unsupported_key_tests {
     }
 }
 
+/// What a BACK press MEANS on an onboarding screen.
+///
+/// Two answers, not a bool, because each is decided by something different: [`OnboardBack::Screen`]
+/// is *this screen still has something of its own open*, [`OnboardBack::Root`] is *nothing of this
+/// app is behind this screen at all*. There was a third, `Ignore`, for a profile switch in flight —
+/// retired 2026-09-04 with the reason for it: `auth::cancel` used to invalidate the switch worker
+/// before deciding whether it could back out, so a refused BACK stranded the picker's spinner. A
+/// refused BACK now changes nothing (`auth::cancel`'s doc), so the switch simply keeps running.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OnboardBack {
+    /// Give the key to the screen — it has a panel of its own to close.
+    Screen,
+    /// The ROOT press: back out to a stored session if there is one, otherwise the television's
+    /// own Home.
+    Root,
+}
+
+/// The rule, **pure**, so "which press is the root press on each screen" is gradeable on the host —
+/// [`key_onboarding`] itself is `unsafe`, arms tvOS presses and reaches `auth`, none of which a
+/// unit test wants to drive.
+///
+/// * **Login** — the QR sign-in. It has no panel of its own; BACK is `auth::cancel` and nothing
+///   else, so every BACK here is the root press.
+/// * **Profiles** — the who's-watching picker. Its PIN keypad is a modal the screen owns, and BACK
+///   closes it; that is the one press here that is NOT the root press. Everything else is.
+/// * **Onboard** — the first-run "which sources feed Home" question. The picker is behind it
+///   (`Action::Back` → `enter_profiles_from_onboard`), so this is never a root press.
+///
+/// **A profile switch in flight (`Phase::Switching`) is a root press like any other on these two
+/// screens, and it is safe BECAUSE `auth::cancel` no longer invalidates on refusal.** Where the
+/// picker can back out (a boot picker over an unprotected stored profile) `cancel` retires the
+/// switch worker through the epoch and resumes the stored session — the same answer the picker's
+/// own BACK always gave. Where it refuses (a `Change profile` picker, a PIN boundary, no session
+/// to back out to) nothing is touched: the switch runs on, the app goes to the television's Home,
+/// and the profile it was switching to is what the user comes back to. The one press that still
+/// outranks the root rule is the PIN keypad's, which closes the pad and never reaches `auth` at all
+/// — a protected profile submits its PIN while the switch is already running, and that BACK is the
+/// screen's own.
+///
+/// Anything else reaching this function is a caller bug, and `Screen` is the conservative answer:
+/// worst case the press behaves as it did before this rule existed.
+fn onboarding_back(route: Route, pin_pad_open: bool) -> OnboardBack {
+    match route {
+        // The keypad first: its BACK closes the pad and never reaches `auth` at all, so it is safe
+        // even mid-submit — and a protected profile's switch is exactly the case where the pad is
+        // up and the phase is already `Switching`.
+        Route::Profiles if pin_pad_open => OnboardBack::Screen,
+        Route::Login | Route::Profiles => OnboardBack::Root,
+        _ => OnboardBack::Screen,
+    }
+}
+
+/// Is the who's-watching picker's PIN keypad up?
+///
+/// **Derived, because `ui::profiles` does not publish the pad** — and exactly, not approximately.
+/// Both focus predicates are `!pad.open && …` (`focus_is_avatar` also wants a non-empty roster,
+/// `focus_is_ctl` wants the footer), so `!avatar && !ctl` is `pad || (empty && !footer)`; ANDing the
+/// non-empty roster back in leaves `pad` alone, and a pad can only be opened from a protected
+/// roster tile, so the roster is never empty while it is up.
+///
+/// The failure direction is deliberate: if this ever answered `true` wrongly, the press falls
+/// through to `profiles::key` and behaves exactly as it did before the root rule existed. A
+/// `profiles::pin_pad_open()` accessor is the shape this wants to be, and is the first thing to do
+/// when that module is next open.
+fn profiles_pin_pad_open() -> bool {
+    !crate::ui::profiles::focus_is_avatar()
+        && !crate::ui::profiles::focus_is_ctl()
+        && !crate::auth::users().is_empty()
+}
+
+/// What the root press does once `auth::cancel` has answered.
+///
+/// A plan rather than a bool so the production code visibly OWNS each call and the log line names
+/// what was decided. It used to have a third arm, `RestartAndHome`, because `auth::cancel`
+/// invalidated the running sign-in BEFORE deciding whether it could back out, so a `false` on the
+/// QR screen left a dead poller behind a live code and the press had to `auth::retry` on the way
+/// out. That ordering was issue #30 and is gone: a refused `cancel` changes nothing (`auth::cancel`'s
+/// doc, `a_refused_back_leaves_the_live_pin_poll_running`), so the flow it refused to leave is
+/// still running and a restart here would DISCARD it — a fresh code over a poll the user's phone may
+/// already have answered. Retired 2026-09-04 on Codex's integrated review.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AfterCancel {
+    /// There was somewhere to go inside the app; the main loop's phase→route follower takes it
+    /// from here. Nothing to ask the platform for.
+    BackedOut,
+    /// Nowhere to go inside the app, and nothing was disturbed. Straight to the television's Home.
+    Home,
+}
+
+/// The whole of the rule, pure so the pairing with the log line is gradeable: a `cancel` that
+/// backed out is not a root press after all; one that refused leaves everything as it was and hands
+/// the screen to the television.
+fn after_cancel(backed_out: bool) -> AfterCancel {
+    if backed_out {
+        AfterCancel::BackedOut
+    } else {
+        AfterCancel::Home
+    }
+}
+
 /// Onboarding screens (login / who's-watching / the Home-sources question) own every fresh key —
 /// nothing is behind them, so route the key to the active screen and skip all other handlers.
 ///
@@ -4916,11 +5066,67 @@ unsafe fn key_onboarding(
     wcode: c_uint,
     ok_armed: &mut bool,
 ) -> crate::ui::onboard::Action {
+    // **BACK at one of these screens' own ROOT is the root press** — the same one Home's is, and
+    // for the same reason: nothing of this app is behind it. Issues #17 and #18 are both this
+    // branch missing. Both screens used to hand BACK to `auth::cancel`, whose whole job is to back
+    // out to a stored session; when there is no session to back out TO it reports `false` and the
+    // press was simply DROPPED — on the boot picker with a PIN-protected profile, on the roster
+    // straight after a sign-out, and on the QR sign-in of a first-ever launch, which is the first
+    // screen a new user ever sees. `auth::cancel` still decides whether there is somewhere to go
+    // INSIDE the app; only its `false` is now answered instead of ignored.
+    //
+    // Pre-empting the screen's own handler (rather than adding a fallback behind it) is exact, not
+    // a shortcut: at these two stops BACK reaches `auth::cancel` and nothing else. What it does
+    // reach first — the profile picker's PIN keypad — is why [`onboarding_back`] exists and why
+    // this is not a bare `is_back`.
+    if is_back(sym, wcode) {
+        match onboarding_back(route, profiles_pin_pad_open()) {
+            // the screen's own handler has it — fall through to the dispatch below
+            OnboardBack::Screen => {}
+            OnboardBack::Root => {
+                // **The latch is taken HERE, before `auth::cancel`, and not inside
+                // `webos::go_home`.** A `cancel` that CAN back out is destructive (it retires the
+                // worker and resumes the stored session), so rate-limiting only the platform call
+                // would still let a burst of taps back out once per press. One root press per
+                // cooldown means one `cancel`.
+                if crate::webos::take_root_press() {
+                    let backed_out = crate::auth::cancel();
+                    let phase = crate::auth::phase();
+                    let plan = after_cancel(backed_out);
+                    // ONE line saying what this press decided and on what evidence, for the person
+                    // reading the device log who is not the person who wrote this. The phase is
+                    // evidence, not an input: it says what the refused press left running. Every
+                    // field is an enum name: no identity, no content.
+                    crate::log(&format!(
+                        "back: root route={} phase={phase:?} backed_out={backed_out} action={plan:?}",
+                        if matches!(route, Route::Login) {
+                            "login"
+                        } else {
+                            "profiles"
+                        }
+                    ));
+                    match plan {
+                        // …and a press that turned out to have somewhere to go INSIDE the app was
+                        // never a root press, so it hands the claim straight back rather than
+                        // swallowing the real root BACK the user is about to press on the Home it
+                        // just returned to.
+                        AfterCancel::BackedOut => crate::webos::release_root_press(),
+                        AfterCancel::Home => crate::webos::go_home(),
+                    }
+                }
+                return crate::ui::onboard::Action::None;
+            }
+        }
+    }
     if matches!(route, Route::Onboard) {
         // The action PILL is a control face (`onboard`'s `ACTION_POP`) → tvOS press, committed on
         // the spring-back by `commit_onboarding`. A `TableView` row is not a control face and keeps
         // flipping its pin on the key-down.
         if is_ok(sym) && crate::ui::onboard::focus_is_ctl() {
+            // Record WHICH action is being pressed, not merely that one is: the roster can land
+            // during the spring-back and turn `Try again` into `Start watching` under the same
+            // focus stop — see `onboard::ActionKind`.
+            crate::ui::onboard::arm_action();
             crate::ui::press::begin_ctl(SDL_GetTicks());
             *ok_armed = true;
             return crate::ui::onboard::Action::None;
@@ -5015,21 +5221,23 @@ fn apply_onboarding_action(action: crate::ui::onboard::Action, trail: &mut Trail
 /// Leave the first-run question for Home.
 ///
 /// The trail is RESET rather than pushed to: this route is the last of the onboarding gates and
-/// Home is the root behind it, so a BACK from Home must reach the DOOR exactly as it does on any
-/// other boot — not walk back into a question that has already been answered. (The door is
-/// [`back_at_root`]'s exit alert now; what this reset guarantees is that Home is still the root
-/// when the press lands, which is what puts the user one BACK from it either way.) `enter` is what the
+/// Home is the root behind it, so a BACK from Home must reach the ROOT PRESS exactly as it does on
+/// any other boot — not walk back into a question that has already been answered. (That press is
+/// [`back_at_root`], the television's own Home; what this reset guarantees is that Home is still the
+/// root when it lands, which is what puts the user one BACK from it either way.) `enter` is what the
 /// route's own BACK and its `Start watching` both come through, which is why there is one exit and
 /// not two.
 /// Put the telemetry question on screen, if this boot is one that should see it.
 ///
 /// **Asked as soon as there is an AUTHORIZED ACCOUNT, and before the profile picker.**
 ///
-/// The decision is device-wide — `telemetry_candidates()` is one file with no profile key — so the
-/// person who signed the television in is the person who should answer it. Asking after the picker
-/// (which is what shipped until 2026-09-02) put a data-protection question to whichever household
-/// member happened to be selected, up to and including a managed child profile, and dressed a
-/// device-wide answer as a personal setting.
+/// The decision belongs to the SIGN-IN — `telemetry_candidates()` is one file with no profile
+/// key, shared by every profile on the account, and `auth::forget_account` unlinks it when the
+/// account signs out — so the person who signed the television in is the person who should answer
+/// it, and the next account to sign in is asked afresh. Asking after the picker (which is what
+/// shipped until 2026-09-02) put a data-protection question to whichever household member
+/// happened to be selected, up to and including a managed child profile, and dressed an
+/// account-wide answer as a personal setting.
 ///
 /// It is still not asked at BOOT: a fresh install boots to the QR screen with nothing to consent
 /// about yet, and asking before somebody has managed to sign in is asking while they have nothing
@@ -5072,11 +5280,12 @@ fn enter_home_from_onboard(trail: &mut Trail) -> Route {
         return saved;
     }
     trail.reset();
-    // The consent pair is NOT asked here any more: it is a device decision and is put before the
-    // profile picker, which is upstream of this whole step. See `maybe_ask_consent`.
+    // The consent pair is NOT asked here any more: it is the sign-in's decision, shared by every
+    // profile on the account, and is put before the profile picker, which is upstream of this whole step. See `maybe_ask_consent`.
     // The selection just recorded is an input to Home's merge (`pms::feeds_home`), and the merge
-    // re-runs off `browse`'s section generation — which `record_pins`/`toggle_pin` have already
-    // bumped. Nothing to kick here; Home builds from the answer on its first frame.
+    // re-runs off `browse`'s section generation — which `apply_pins` (the editor's one commit
+    // write) has already bumped. Nothing to kick here; Home builds from the answer on its first
+    // frame.
     Route::Home
 }
 
@@ -5210,7 +5419,9 @@ fn delete_all_local_data() -> Vec<String> {
     }
     crate::ui::search::recents::clear();
     crate::metadata::clear();
-    crate::telemetry::forget_local();
+    // The telemetry decision, both identifiers, the spool and the native backend go with the
+    // account: `erase_local_state` → `forget_account` → `telemetry::forget`, the same door
+    // Sign out uses. The sweep above already unlinked the files; `forget` finds them gone.
     crate::auth::erase_local_state();
     failures
 }
@@ -5324,7 +5535,115 @@ mod failed_player_input_tests {
     }
 }
 
-/// The in-player track menu is modal — it swallows every key while open.
+/// Whether an open player overlay swallows this key rather than letting it fall through, past its
+/// own `if...continue` arm, to the ordinary dispatch further down the event loop —
+/// `key_pause`/`key_play`/the `Key::PlayPause` arm, none of which carry an overlay term of their
+/// own, so falling through reaches the exact toggle the HUD uses with no overlay open and leaves
+/// `route` — and therefore the open panel — untouched.
+///
+/// Tracks (`Overlay::Menu`) / Info / Chapters are each modal and swallow almost everything by
+/// design (see their own `key_track_menu`/`key_info_panel`/`key_chapters` doc comments), but
+/// transport keys are never overlay-scoped: a viewer holding one of those three open still expects
+/// PAUSE/PLAY to work. `Overlay::More` (the `…` options popover) keeps the old swallow-everything
+/// answer — the transport exception was reported and reproduced against Info/Chapters/Tracks, not
+/// this one, and its own call site never consults this function at all, always dispatching to
+/// `key_more_menu` unconditionally; this arm exists so the predicate still answers truthfully for
+/// it rather than silently claiming nothing is swallowed. `Overlay::None` and every non-Player
+/// route swallow nothing HERE for the opposite reason: none of them has an overlay arm above the
+/// ordinary dispatch for this function to be asked about in the first place.
+fn overlay_swallows_key(route: Route, key: Key) -> bool {
+    match route {
+        Route::Player {
+            overlay: Overlay::Menu | Overlay::Info | Overlay::Chapters,
+        } => !matches!(key, Key::Pause | Key::Play | Key::PlayPause),
+        Route::Player {
+            overlay: Overlay::More,
+        } => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod overlay_transport_key_tests {
+    //! Reproduces issue 28 as a pure decision, the way `route_tests` grades the route-classifying
+    //! functions elsewhere in this file: nothing here runs the SDL loop or touches a global, so
+    //! this cannot say whether the panel visually stays up (a device check does that) — only
+    //! whether the DISPATCH itself would have reached the overlay handler or fallen through to the
+    //! ordinary transport-key arms. Watched red against the pre-fix body (the function returned
+    //! `true` unconditionally for the three overlays, i.e. it had no `key` term at all).
+    use super::*;
+
+    /// `Overlay` derives no `Debug` (like `Route` beside it), so these name their own labels
+    /// rather than reaching for `{:?}`.
+    const MODAL_OVERLAYS: [(Overlay, &str); 3] = [
+        (Overlay::Menu, "Menu (tracks)"),
+        (Overlay::Info, "Info"),
+        (Overlay::Chapters, "Chapters"),
+    ];
+
+    #[test]
+    fn pause_falls_through_a_modal_player_overlay() {
+        for (overlay, name) in MODAL_OVERLAYS {
+            let route = Route::Player { overlay };
+            assert!(
+                !overlay_swallows_key(route, Key::Pause),
+                "PAUSE must reach the toggle with {name} open",
+            );
+            assert!(
+                !overlay_swallows_key(route, Key::Play),
+                "PLAY must reach the toggle with {name} open",
+            );
+            assert!(
+                !overlay_swallows_key(route, Key::PlayPause),
+                "PLAYPAUSE must reach the toggle with {name} open",
+            );
+        }
+    }
+
+    #[test]
+    fn every_other_key_still_stays_swallowed_by_those_three() {
+        for (overlay, name) in MODAL_OVERLAYS {
+            let route = Route::Player { overlay };
+            for key in [Key::Ok, Key::Back, Key::Up, Key::Down, Key::Stop] {
+                assert!(
+                    overlay_swallows_key(route, key),
+                    "{key:?} must still be swallowed by {name}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
+        let route = Route::Player {
+            overlay: Overlay::More,
+        };
+        for key in [Key::Pause, Key::Play, Key::PlayPause, Key::Ok, Key::Back] {
+            assert!(
+                overlay_swallows_key(route, key),
+                "More is deliberately excluded from the transport exception ({key:?})",
+            );
+        }
+    }
+
+    #[test]
+    fn a_route_with_no_overlay_arm_has_nothing_to_swallow() {
+        // Not because these routes let transport keys through some OTHER mechanism — the
+        // ordinary dispatch just never asks this function about them, since none of them has an
+        // `if...continue` overlay arm above it. `false` here documents that, not "always works".
+        assert!(!overlay_swallows_key(
+            Route::Player {
+                overlay: Overlay::None
+            },
+            Key::Ok
+        ));
+        assert!(!overlay_swallows_key(Route::Home, Key::Pause));
+    }
+}
+
+/// The in-player track menu is modal — it swallows every key while open, EXCEPT the transport keys
+/// (Pause/Play/PlayPause): see [`overlay_swallows_key`], consulted by the caller before reaching
+/// this function at all.
 fn key_track_menu(sym: c_uint, wcode: c_uint, now: u32, route: &mut Route, held: &mut HeldKey) {
     if sym == SDLK_LEFT || sym == SDLK_RIGHT || sym == SDLK_UP || sym == SDLK_DOWN {
         // move once on the fresh press; holding repeats via the client-side timer
@@ -5373,7 +5692,9 @@ fn key_more_menu(
     }
 }
 
-/// The Info card is modal too — it swallows every key while open.
+/// The Info card is modal too — it swallows every key while open, EXCEPT the transport keys
+/// (Pause/Play/PlayPause): see [`overlay_swallows_key`], consulted by the caller before reaching
+/// this function at all.
 fn key_info_panel(
     mt: &crate::task::MainThread,
     sym: c_uint,
@@ -5478,7 +5799,9 @@ fn commit_info_panel(
     extend_hud(now, HUD_LINGER_MS);
 }
 
-/// The Chapters strip is modal too — LEFT/RIGHT pick, OK seeks, BACK closes.
+/// The Chapters strip is modal too — LEFT/RIGHT pick, OK seeks, BACK closes — EXCEPT the transport
+/// keys (Pause/Play/PlayPause): see [`overlay_swallows_key`], consulted by the caller before
+/// reaching this function at all.
 fn key_chapters(
     mt: &crate::task::MainThread,
     key: Key,
@@ -6139,8 +6462,8 @@ fn key_library_page(dir: c_int) {
 /// screen that is already half gone: the request is at most four frames old and nothing has changed
 /// yet, so it can still be un-asked. `nav_cancel` refuses once the swap has happened, and then this
 /// is an ordinary BACK on the NEW screen — the press is never dropped, only ever spent on exactly
-/// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is raise
-/// the exit alert — see [`back_at_root`].)
+/// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is hand
+/// the screen back to the television — see [`back_at_root`].)
 fn key_back(
     mt: &crate::task::MainThread,
     route: &mut Route,
@@ -6148,7 +6471,6 @@ fn key_back(
     trail: &mut Trail,
     play_from: &Node,
     refresh_hubs_at: &mut u32,
-    running: &mut bool,
 ) {
     if nav_cancel(*route, nav) {
     } else if matches!(*route, Route::Player { .. }) {
@@ -6202,78 +6524,47 @@ fn key_back(
     } else if g_snap() > 0.5 {
         set_snap(0.0);
     } else {
-        // Home is the ROOT and BACK there LEAVES THE APP — deliberately NOT
-        // trail-driven. The background-suspend arm drops to Home without
-        // touching the trail, so route and trail can legitimately disagree;
-        // keeping this branch blind to the trail is what stops that divergence
-        // teleporting the user into a page they did not navigate to, and what
-        // keeps the true root leaving whatever the trail happens to hold.
+        // Home is the ROOT and BACK there LEAVES THE APP'S OWN NAVIGATION —
+        // deliberately NOT trail-driven. The background-suspend arm drops to
+        // Home without touching the trail, so route and trail can legitimately
+        // disagree; keeping this branch blind to the trail is what stops that
+        // divergence teleporting the user into a page they did not navigate to,
+        // and what keeps the true root leaving whatever the trail happens to
+        // hold.
         //
-        // What changed 2026-08-21 is only the LAST STEP: the press raises the
-        // exit alert (`ui::exit_alert`) and *Exit* is what sets `running`. The
-        // divergence argument above is untouched and is why this still does not
-        // consult the trail — the alert is the door, and this is still the one
-        // branch that reaches it. `running` stays a parameter because the
-        // BYPASS below is a real exit from here.
+        // What the LAST STEP is has changed twice. It quit outright until
+        // 2026-08-21, then raised an "Exit PlxNative?" alert, and since
+        // 2026-09-03 it hands the screen back to the television
+        // (`webos::go_home`) with the process still alive — which is what the
+        // platform itself does at an app's entry page on this firmware. The
+        // divergence argument above is untouched: this is still the one branch
+        // that reaches the root press, and it still does not consult the trail.
         //
-        back_at_root(running);
+        back_at_root();
     }
 }
 
-/// **BACK at Home's root — the app's one door**, lifted out of [`key_back`]'s last `else` so a host
-/// test can press it.
+/// **BACK at a ROOT — the press that leaves the app's own navigation**, lifted out of [`key_back`]'s
+/// last `else` so a host test can press it.
 ///
-/// It is one `if` and it is worth its own function for exactly one reason: this is the only place
-/// in the app that ends the process from a key, and the regression to guard is a future edit
-/// putting `*running = false` back where the alert now goes. `key_back` itself is unreachable from
-/// a unit test — its Player arm calls `exit_player`, which pulls the Starfish/ACB seam into the
-/// link — so without this split the one branch that matters most could only be graded by reading
-/// it.
+/// It is one call and it is worth its own function for exactly one reason: this is where the app
+/// answers "there is nowhere further back to go", and the regression to guard is a future edit
+/// putting `running = false` — or a modal question — back where the platform call now goes.
+/// `key_back` itself is unreachable from a unit test (its Player arm calls `exit_player`, which
+/// pulls the Starfish/ACB seam into the link), so without this split the one branch that matters
+/// most could only be graded by reading it.
 ///
-/// `/tmp/plxnative-noexitconfirm` restores the one-press quit. Nothing in the tree needs it —
-/// `make kill`, `tests/run.py` and `tools/tv-session.sh` all close the app through SAM's
-/// `closeByAppId`, and no manifest case injects `back` at all — so it is a door left open for a
-/// script that closes the app by pressing BACK, not a dependency being served. Compiled out under
-/// `RELEASE=1`, so a public build always asks.
-fn back_at_root(running: &mut bool) {
-    if crate::ui::exit_alert::skip_confirm() {
-        *running = false;
-    } else {
-        crate::ui::exit_alert::open();
+/// **It does not end the process, and nothing about a BACK press does any more.** The remote's own
+/// EXIT key still terminates (LG checklist item 38), and a script that wants the app closed uses
+/// SAM's `closeByAppId` exactly as `make kill`, `tests/run.py` and `tools/tv-session.sh` already do.
+/// That is why the old `/tmp/plxnative-noexitconfirm` bypass went with the alert: it existed to let
+/// a headless caller quit by pressing BACK, and BACK is no longer a quit for anybody.
+fn back_at_root() {
+    if crate::webos::take_root_press() {
+        crate::webos::go_home();
     }
 }
 
-/// The exit alert is modal: LEFT/RIGHT walk the two answers, OK PRESSES the focused one, BACK
-/// cancels. Every other key is SWALLOWED — the arm `continue`s unconditionally at its call site, so
-/// nothing behind the sheet can be driven while it is up.
-///
-/// OK arms the press and nothing more; [`commit_exit_alert`] is where the answer is spent, which is
-/// why `running` is that function's argument and not this one's. BACK and *Cancel* are the same
-/// outcome by two routes, which is the point of the panel: the safe answer is both the default focus
-/// and what the dismiss key does — and BACK still acts on the key-down, since a dismiss has no
-/// control face to dip.
-fn key_exit_alert(sym: c_uint, wcode: c_uint, now: u32, ok_armed: &mut bool) {
-    use crate::ui::exit_alert;
-    if is_ok(sym) {
-        // Both answers are control faces with a pop of their own (`exit_alert`'s `CtlPop`), so OK
-        // takes the tvOS press: dip now, commit in `commit_exit_alert` once the bounce has played.
-        // This is the one press in the app worth deferring on its own merits as well as the design
-        // system's — the sheet is still up through the whole animation, so the answer being taken is
-        // legible right up to the moment it acts, including the one that ends the process.
-        crate::ui::press::begin_ctl(now);
-        *ok_armed = true;
-    } else if is_back(sym, wcode) {
-        exit_alert::close();
-    } else {
-        // LEFT/RIGHT only — `exit_alert::step` ignores everything else, so this is one call
-        // rather than a key test here and a second one there.
-        exit_alert::move_focus(sym as c_int);
-    }
-}
-
-/// Commit the exit alert's focused answer — the deferred half of [`key_exit_alert`], run from the
-/// per-frame loop on the press spring-back. The `running` flip lives HERE and nowhere else, which is
-/// the invariant `exit_alert_tests` guards: this is still the app's one door.
 /// Commit the consent screen's focused stop — the answer pill on the press spring-back
 /// (`consent::focus_is_ctl`), or a document row on its key-down. One function for both, because the
 /// erase-everything outcome underneath is the same whichever way the press arrived.
@@ -6299,12 +6590,6 @@ fn commit_consent(route: &mut Route, trail: &mut crate::ui::trail::Trail) {
             trail.reset();
             *route = Route::Login;
         }
-    }
-}
-
-fn commit_exit_alert(running: &mut bool) {
-    if crate::ui::exit_alert::on_ok() == crate::ui::exit_alert::Choice::Exit {
-        *running = false;
     }
 }
 
@@ -6546,6 +6831,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
         crate::egl::probe();
         crate::textinput::bind(win);
+        // …and the same handshake for the ROOT press: `webos::go_home`'s fallback leg minimizes
+        // this window, and the window is created here, a long way from where BACK is decided.
+        crate::webos::bind_window(win);
         let wflags = SDL_GetWindowFlags(win);
         log(&format!(
             "keyboard: support={} active={} focus={} winflags=0x{wflags:x}",
@@ -7077,7 +7365,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut route = match boot_to {
             // **Both Home arms ask, and the shared call is the point.** This is the one boot that
             // has no earlier hook — an install already signed in, either never asked or asked
-            // against an older policy — and the device question has to come before every
+            // against an older policy — and the sign-in's question has to come before every
             // per-profile step, the Home-sources wizard included. Asking only in the second arm
             // (which is what shipped for an hour) meant a stored session that still owed the
             // sources answer walked Onboard → Home and was never asked at all.
@@ -7213,12 +7501,23 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 });
             }
             while SDL_PollEvent(ev.as_mut_ptr() as *mut c_void) != 0 {
+                let et = rd_u32(&ev, 0);
+                // INPUT while a popover holds the page frozen is the POPOVER's: every invalidate
+                // such an event raises — the one below, and whatever its handler adds — is
+                // attributed to it, so the frozen host is not re-rendered on every key-up
+                // (`popover::host::input_scope`). Only input: a lifecycle or window event is the
+                // APP's and may change the page under the panel (backgrounding drops Search's
+                // editing layout), so its damage stays the page's and the snapshot is retaken.
+                let _own_input = if is_input_event(et) {
+                    crate::ui::popover::host::input_scope()
+                } else {
+                    None
+                };
                 // ANY event is a reason to repaint (`ui::idle`): a key changes focus or a label,
                 // a lifecycle event changes the whole screen. Marked here — once, for every event
                 // kind — rather than in each of the ~30 arms below, where the next one added would
                 // silently draw nothing.
                 crate::ui::idle::invalidate();
-                let et = rd_u32(&ev, 0);
                 if et == SDL_KEYDOWN
                     || et == SDL_KEYUP
                     || et == SDL_TEXTINPUT
@@ -7376,7 +7675,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         &mut ok_armed,
                     );
 
-                    // LAB BUILDS ONLY, and above every arm below including the exit alert: the
+                    // LAB BUILDS ONLY, and above every arm below including the modals: the
                     // diagnostics trigger. It has to outrank the chain because the screen a tester
                     // most needs a snapshot of is the playback failure read-out, whose own arm
                     // `continue`s on every key — and because a snapshot changes no app state, so
@@ -7392,37 +7691,50 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // below does deliberately. Keep it a chain — a `match` over the same routes
                     // compiles and keeps the suite green while silently reordering it, because
                     // exhaustiveness cannot see subsumption.
-                    // FIRST, and unconditionally: the exit alert outranks every route below,
-                    // because it is the one panel in the app whose question has to be answered
-                    // before anything else can happen. It is not a `Route` (see `ui::exit_alert`'s
-                    // module doc — it has exactly one host, Home's root), so it cannot take its
-                    // turn by being matched on like `Account`/`ItemMenu` do; it takes it by being
-                    // the top of the chain and `continue`ing on every key. That is also the whole
-                    // of its modality: with the arm here, nothing behind the sheet is reachable.
-                    // Legal sits ABOVE the exit alert, and the ordering is load-bearing rather
-                    // than arbitrary: the alert's host is Home's ROOT, which is exactly where the
-                    // account menu that opens Legal is reachable from — so with the arms the other
-                    // way round, BACK out of the privacy notice would raise "Exit PlxNative?"
-                    // instead of closing the notice. Like the alert it is a `Popover` and not a
+                    // Legal is high in the chain, and the ordering is load-bearing rather than
+                    // arbitrary: the notice is opened from the account menu, which is reachable
+                    // from Home's ROOT — so with this arm any lower, BACK out of the privacy
+                    // notice would be read as the ROOT PRESS and hand the screen to the
+                    // television's Home instead of closing the notice. It is a `Popover` and not a
                     // `Route` (one owner, `ui::legal`), so it takes its turn by being high in the
                     // chain and `continue`ing on every key; that IS its modality.
                     // ABOVE Legal, and therefore above everything: the consent question is the
-                    // one panel that must be answered before the app is usable, and unlike the
-                    // exit alert it is not answering a press the person just made — it is the
-                    // reason the boot stopped. Same mechanism as the two below it (a `Popover`,
+                    // one panel that must be answered before the app is usable, and it is not
+                    // answering a press the person just made — it is the reason the boot stopped,
+                    // which is why its BACK is navigation and never an answer (below). Same
+                    // mechanism as the arm below it (a `Popover`,
                     // not a `Route`, taking its turn by height in the chain and `continue`ing on
                     // every key), which is also the whole of its modality. First-run BACK is
-                    // navigation, never an answer: Product returns to Crash, and Crash restores
-                    // Profiles or Shared Sources. Only the explicit Share / Don’t Share rows write
-                    // a decision. Settings BACK discards its draft.
+                    // navigation, never an answer: Product returns to Crash. Only the explicit
+                    // Share / Don’t Share ANSWERS write a decision — they are the route's
+                    // action band, not rows. Settings BACK discards its draft.
+                    //
+                    // **AT `Stage::Crash` THIS ARM SWALLOWS BACK, AND THAT IS THE ONE ROOT THE
+                    // 2026-09-03 root rule does not yet reach.** The comment here used to say that
+                    // press "restores Profiles or Shared Sources", which `consent::on_back` has
+                    // never done — it returns `true` having done nothing, because sign-in is behind
+                    // this question and cannot be undone. Under the new rule that is a root like
+                    // any other and should call `back_at_root()`: going to the television's Home
+                    // neither answers nor dismisses the question, so nothing is stranded and
+                    // selecting the tile again comes straight back to it. It is NOT done here for
+                    // one mechanical reason — `consent::on_back` reports `true` for BOTH the
+                    // stepped-back and the swallowed case, so this arm cannot tell them apart, and
+                    // teaching it to means changing `ui/consent.rs`'s return type (`Consumed |
+                    // Root`), which belongs with that module rather than in a BACK arm guessing at
+                    // its stage.
                     if crate::ui::consent::is_open() {
                         if is_ok(sym) {
                             if crate::ui::consent::focus_is_ctl() {
                                 // An answer pill is a control face with a pop of its own
                                 // (`route_screen::ActionRow`), so OK takes the tvOS press: dip
-                                // now, commit in `commit_consent` on the spring-back — the exit
-                                // alert's shape, for the same reason (the sheet is up through the
-                                // whole animation, so the answer being taken stays legible).
+                                // now, commit in `commit_consent` on the spring-back — the shared
+                                // decision alert's shape, for the same reason (the sheet is up
+                                // through the whole animation, so the answer being taken stays
+                                // legible).
+                                // `arm_key` records WHICH control and that the press came from the
+                                // KEY, so hover judges it by the focus stop rather than by the
+                                // coordinates it never had (`route_screen::PressFrom`).
+                                crate::ui::consent::arm_key();
                                 crate::ui::press::begin_ctl(last_input);
                                 ok_armed = true;
                             } else {
@@ -7432,7 +7744,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                         } else if is_back(sym, wcode) {
                             // BACK reverses Product → Crash and is swallowed at Crash: the step
-                            // behind the device question is sign-in, which cannot be undone.
+                            // behind the consent question is sign-in, which cannot be undone.
                             crate::ui::consent::on_back();
                         } else if sym == SDLK_UP {
                             crate::ui::consent::on_updown(-1);
@@ -7475,11 +7787,15 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::settings::on_updown(-1);
                         } else if sym == SDLK_DOWN {
                             crate::ui::settings::on_updown(1);
+                        } else if sym == SDLK_LEFT || sym == SDLK_RIGHT {
+                            // `ui::route_screen`'s rules 8 and 9: RIGHT enters the row under
+                            // focus, LEFT leaves a screen that has no action band. The root
+                            // answered neither key at all until the family was given one model.
+                            let action = crate::ui::settings::on_left_right(
+                                if sym == SDLK_LEFT { -1 } else { 1 },
+                            );
+                            perform_settings_action(action, &mut route);
                         }
-                        continue;
-                    }
-                    if crate::ui::exit_alert::is_open() {
-                        key_exit_alert(sym, wcode, last_input, &mut ok_armed);
                         continue;
                     }
                     if matches!(route, Route::Login | Route::Profiles | Route::Onboard) {
@@ -7532,12 +7848,21 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         );
                         continue;
                     }
+                    // Each of these three ALSO gates on `overlay_swallows_key`: a modal overlay
+                    // swallows everything except the transport keys (Pause/Play/PlayPause), which
+                    // fall through — not `continue` here — to the ordinary Key::Pause/Key::Play/
+                    // Key::PlayPause arms further down this chain, none of which carry an overlay
+                    // term of their own. That reaches the exact toggle the HUD uses with no
+                    // overlay open, and leaves `route` (so the open panel) untouched. See
+                    // `overlay_swallows_key`'s doc comment for why `Overlay::More` keeps the old
+                    // swallow-everything behaviour.
                     if matches!(
                         route,
                         Route::Player {
                             overlay: Overlay::Menu
                         }
-                    ) {
+                    ) && overlay_swallows_key(route, key)
+                    {
                         key_track_menu(sym, wcode, last_input, &mut route, &mut held_key);
                         continue;
                     }
@@ -7555,7 +7880,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         Route::Player {
                             overlay: Overlay::Info
                         }
-                    ) {
+                    ) && overlay_swallows_key(route, key)
+                    {
                         key_info_panel(
                             mt,
                             sym,
@@ -7576,7 +7902,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         Route::Player {
                             overlay: Overlay::Chapters
                         }
-                    ) {
+                    ) && overlay_swallows_key(route, key)
+                    {
                         key_chapters(
                             mt,
                             key,
@@ -7687,7 +8014,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else if matches!(key, Key::Exit) {
                         // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
                         // and unlike BACK at Home's root there is nothing ambiguous about a key
-                        // labelled EXIT, so it does NOT raise `ui::exit_alert`.
+                        // labelled EXIT, so unlike BACK it really does end the process — and it
+                        // is now the only key that does.
                         log("EXIT key: terminating");
                         running = false;
                     } else if matches!(route, Route::Player { .. }) && matches!(key, Key::Stop) {
@@ -7709,7 +8037,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             &mut trail,
                             &play_from,
                             &mut refresh_hubs_at,
-                            &mut running,
                         );
                     }
                 } else if et == SDL_MOUSEMOTION {
@@ -7750,10 +8077,57 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         }
                         ptr.dpad_mode = false;
                     }
+                    // The Settings family is a chain of POPOVERS over whatever route is behind
+                    // them, so a hover ladder keyed by `route` never reached any of it — every
+                    // pointer move across Settings, Privacy & data or Legal drove HOME's focus
+                    // underneath instead. `ui::route_screen`'s rule 11 says hover parks focus on
+                    // every screen in the family, so they take their turn here in exactly the
+                    // order the key ladder gives them.
+                    if crate::ui::consent::is_open() {
+                        // `ui::press` assumes focus cannot move while a press is in flight — the
+                        // nav keys pay that by calling `press::cancel`, and hover owes the same.
+                        // Otherwise a pointer-down on `Share reports` plus ordinary Magic Remote
+                        // jitter records the OTHER answer, or — the case the first version of this
+                        // guard missed — slides off every control and records the ORIGINAL one
+                        // anyway, because a miss leaves focus where it was. `pointer_hold` parks
+                        // focus as usual and reports whether the pointer is still on the thing the
+                        // press was armed on, dead space included.
+                        let held = if crate::ui::consent::alert_is_open() {
+                            crate::ui::consent::alert_hold(mx, my)
+                        } else {
+                            crate::ui::consent::pointer_hold(mx, my)
+                        };
+                        if ok_armed && !held {
+                            crate::ui::press::cancel();
+                            ok_armed = false;
+                        }
+                        continue;
+                    }
+                    if crate::ui::legal::is_open() {
+                        crate::ui::legal::pointer_focus(mx, my);
+                        continue;
+                    }
+                    if settings_root_owns_input(
+                        route,
+                        crate::ui::settings::is_open(),
+                        crate::ui::onboard::settings_mode(),
+                    ) {
+                        crate::ui::settings::pointer_focus(mx, my);
+                        continue;
+                    }
                     if matches!(route, Route::Profiles) {
                         crate::ui::profiles::pointer_focus(mx, my);
                     } else if matches!(route, Route::Onboard) {
-                        crate::ui::onboard::pointer_focus(mx, my);
+                        // The same guard the consent arm above pays, and for the same reason: this
+                        // screen's action pill is the one control face in the family that has been
+                        // press-armed from the pointer since it was written, so hover sliding off
+                        // it mid-press could commit from a control the ring had already left.
+                        if ok_armed && !crate::ui::onboard::pointer_hold(mx, my) {
+                            crate::ui::press::cancel();
+                            ok_armed = false;
+                        } else if !ok_armed {
+                            crate::ui::onboard::pointer_focus(mx, my);
+                        }
                     } else if matches!(route, Route::Account { .. }) {
                         crate::ui::account_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::ItemMenu { .. }) {
@@ -7810,7 +8184,26 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::ui::press::cancel();
                         ok_armed = false;
                     }
-                    if crate::ui::consent::is_open() || crate::ui::legal::is_open() {
+                    // Rule 11's click half. These two used to `continue` unconditionally, which
+                    // is why Privacy & Data answered neither hover nor click: an answer pill, a
+                    // Done, a document row and a delete-confirmation answer were all unclickable.
+                    if crate::ui::consent::is_open() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        // a control FACE dips and commits on the spring-back, exactly as its OK
+                        // does; a table row commits on the button-down like every row in the app
+                        if crate::ui::consent::alert_press_at(cx, cy)
+                            || crate::ui::consent::press_at(cx, cy)
+                        {
+                            crate::ui::press::begin_ctl(last_input);
+                            ok_armed = true;
+                        } else if crate::ui::consent::click_row(cx, cy) {
+                            commit_consent(&mut route, &mut trail);
+                        }
+                        continue;
+                    }
+                    if crate::ui::legal::is_open() {
+                        let (cx, cy) = ptr_xy(&ev);
+                        crate::ui::legal::click(cx, cy);
                         continue;
                     }
                     if settings_root_owns_input(
@@ -7821,24 +8214,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         let (cx, cy) = ptr_xy(&ev);
                         let action = crate::ui::settings::click(cx, cy);
                         perform_settings_action(action, &mut route);
-                        continue;
-                    }
-                    // The exit alert's modality, pointer half — the twin of the key ladder's first
-                    // arm, and here for the reason `item_menu`'s arm sits above Home's: without it
-                    // a click that misses the sheet falls through onto the shelf behind it and
-                    // launches whatever card it landed on, from under a modal question.
-                    //
-                    // A MISS is not a dismissal (`exit_alert::press_at` reports `false`): "not either"
-                    // is not an answer to a yes/no question, which is the one place this panel
-                    // differs from every menu in the app.
-                    if crate::ui::exit_alert::is_open() {
-                        let (cx, cy) = ptr_xy(&ev);
-                        // Park the ring and dip the answer; `commit_exit_alert` spends it on the
-                        // spring-back, from the same per-frame arm the key press commits through.
-                        if crate::ui::exit_alert::press_at(cx, cy) {
-                            crate::ui::press::begin_ctl(last_input);
-                            ok_armed = true;
-                        }
                         continue;
                     }
                     // …and the pointer's half of the same rule.  The erased transport geometry is
@@ -9271,14 +9646,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else if crate::ui::press::take_commit(now) {
                     ok_armed = false;
                     // The deferred activation, dispatched by asking the SAME questions the key
-                    // ladder asked when it armed the press, in the SAME order. The two modal panels
-                    // come first here because they come first there (`key_exit_alert` is the top of
-                    // the chain, the onboarding arm is next): each stands OVER a route that has its
-                    // own arm below, so a match on `route` alone would commit an exit-alert press as
-                    // a Home activation.
-                    if crate::ui::exit_alert::is_open() {
-                        commit_exit_alert(&mut running);
-                    } else if crate::ui::consent::is_open() {
+                    // ladder asked when it armed the press, in the SAME order. The modal panel
+                    // comes first here because it comes first there: consent stands OVER a route
+                    // that has its own arm below, so a match on `route` alone would commit a
+                    // consent press as a Home activation.
+                    if crate::ui::consent::is_open() {
                         commit_consent(&mut route, &mut trail);
                     } else if matches!(route, Route::Onboard) {
                         if let Some(next) = apply_onboarding_action(commit_onboarding(), &mut trail)
@@ -9506,7 +9878,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     // the granted roster, which is the stable input to this decision even before
                     // asynchronous section discovery lands. It is asked per PROFILE, which is why
                     // it sits after the switch rather than after the sign-in.
-                    // The device question first, before any per-profile step. On a Plex Home
+                    // The sign-in's question first, before any per-profile step. On a Plex Home
                     // account it was already asked at the picker below and this is a no-op; on a
                     // single-user account this is the earliest authorized moment there is.
                     maybe_ask_consent();
@@ -9521,7 +9893,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 } else {
                     match crate::auth::phase() {
                         crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
-                            // BEFORE the picker: the account is authorized, so the device
+                            // BEFORE the picker: the account is authorized, so the consent
                             // question is answerable, and the person holding the remote at this
                             // moment is the one who signed the television in. It draws over the
                             // picker's route on its own opaque ground.
@@ -9675,12 +10047,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         Nav::Open { node, season } => {
                             // The one mount a `Node` cannot express, and the only thing that has to
                             // happen before the shared entry: a SHOW opened on one particular
-                            // season. Still BLOCKING (its season lookup indexes the loaded item),
-                            // but now behind a page already at alpha 0 instead of stalling the
-                            // frame the user's press landed on. `enter_node` then finds the page
-                            // mounted and only flips the route.
+                            // season. ASYNC since 2026-09-03: this used to call the blocking
+                            // `open_rk_season` here, "behind a page already at alpha 0" — which
+                            // meant the route dip STOPPED at its floor for the two to five PMS
+                            // round trips a show costs (the hero's Info press on a Continue
+                            // Watching episode; reported as a freeze with the counter at ~16 fps).
+                            // The page now mounts on the row this frame and `detail::pump_pending`
+                            // selects the season when the seasons land. `enter_node` then finds
+                            // the page mounted and only flips the route.
                             if let (Node::Detail { sid, rk, .. }, Some(s)) = (&node, season) {
-                                crate::ui::detail::open_rk_season(*sid, rk, s);
+                                crate::ui::detail::open_rk_on_season(*sid, rk, s);
                             }
                             enter_node(&node, &mut route);
                             // AFTER the entry: the guard inside it asks what is currently loaded,
@@ -9833,12 +10209,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // not a trail page, so every way off it carries its teardown to the fade floor, which
             // is where the panel is meant to come down and is also the half the poll never did —
             // it cleared `textinput`'s own flag and left `search::EDITING` set.)
-            // Self-gated on `is_open`, like its draw: the alert is not a route, so there is no
-            // route term to test it with — and it can only be up over Home, whose arm above has
-            // already run.
-            crate::ui::exit_alert::update(dt);
             if account_osc && matches!(route, Route::Account { .. }) {
-                crate::ui::idle::invalidate();
+                // `wake`, not `invalidate`: this buys the continuous present the scene grades
+                // without claiming the PAGE changed — an unscoped per-frame invalidate here read
+                // as page damage and re-rendered the frozen host under the menu on every frame
+                // (26 fps against the 50 floor, 2026-09-04), grading the oscillator, not the app.
+                crate::ui::idle::wake();
                 if now.wrapping_sub(account_osc_last) > 520 {
                     account_osc_last = now;
                     let sym = if account_osc_down { SDLK_DOWN } else { SDLK_UP };
@@ -9850,7 +10226,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // This is deliberately continuous. Row springs naturally settle between D-pad
                 // steps, so measuring only their duty cycle would grade timing policy rather than
                 // the GPU cost of the Settings composition the user asked to hold at 50 fps.
-                crate::ui::idle::invalidate();
+                // `wake` rather than `invalidate`, for `account_osc`'s reason above.
+                crate::ui::idle::wake();
                 // Keep presenting continuously, but move focus at a human D-pad cadence. At 120ms
                 // the target alternated before TableView's pill spring could reach either row: ink
                 // changed immediately while the white plate hovered at their midpoint, a test-only
@@ -9898,12 +10275,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             crate::ui::legal::update(dt);
             crate::ui::consent::update(dt);
             crate::ui::settings::update(dt);
-            if matches!(route, Route::Account { .. }) {
-                crate::ui::account_menu::update(dt);
-            }
-            if matches!(route, Route::ItemMenu { .. }) {
-                crate::ui::item_menu::update(dt);
-            }
+            // Self-gated on `Popover::visible`, NOT on the route — the same rule the draw sites
+            // below obey, and for the same reason. These two popovers are also ROUTES, so
+            // dismissing one flips `route` back to its host page on the press frame while the
+            // panel is still fading out over it. `update` is the only place `Popover`'s `closing`
+            // flag is ever cleared, so a route term here strands a dismissed panel at full opacity
+            // for the rest of the session and every panel opened afterwards stacks on top of it —
+            // reported off a television on 2026-09-03. Both modules already return early unless
+            // they are `visible()`, so the guard bought nothing and cost the fade.
+            crate::ui::account_menu::update(dt);
+            crate::ui::item_menu::update(dt);
             if matches!(page_of(route), Route::Detail) {
                 // dev: plxnative-detailosc swings the scroll hero<->bottom so the FPS heartbeat samples the
                 // transition (the settled ends already hold 60). Only while the PAGE holds focus: the
@@ -10221,7 +10602,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // `Popover::prepare_present`, and decides whether the frozen-host
                             // snapshot still describes the page. Route-agnostic by construction —
                             // see `ui::popover::host::begin_frame`.
-                            crate::ui::popover::host::begin_frame();
+                            crate::ui::popover::host::begin_frame(underlay_moving);
                             // Resolve every glass owner BEFORE anything on this route draws — that is
                             // `Glass::prepare`'s contract, and the shared top tab track is an owner on
                             // every route that wears it.
@@ -10360,12 +10741,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 // place, in the draw order they always occupied.
                                 crate::ui::account_menu::draw_scrim();
                                 crate::ui::item_menu::draw_scrim();
-                                // The third member of that class, and the only one with no opener to
-                                // lift: the alert is about the APP, not about an element on the page,
-                                // so there is nothing behind it the panel is talking about.
-                                crate::ui::exit_alert::draw_scrim();
-                                // Same class again, and with no opener to lift either: the notice is
-                                // about the APP, not about anything on the page behind it.
+                                // The rest of that class, and the ones with no opener to lift: a
+                                // notice is about the APP, not about anything on the page behind it.
                                 crate::ui::settings::draw_scrim();
                                 crate::ui::legal::draw_scrim();
                                 // And the consent question over all of them, mirroring the key ladder.
@@ -10408,17 +10785,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // panel is still fading out over it (`Popover::dismiss`).
                             crate::ui::account_menu::draw(); // profile popover, over the page it opened on
                             crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
-                            // …and the alert over all of it — self-gated, because it is modal state
-                            // rather than a route. Drawn AFTER the two popovers for the reason its
-                            // key arm is drawn first: nothing outranks it.
-                            crate::ui::exit_alert::draw();
-                            // Above the alert, mirroring the key ladder — the two can be open at once
-                            // only in the order Legal-over-alert, and whichever answers BACK first must
-                            // also be the one on top.
+                            // …and the notice over all of it, mirroring the key ladder: whichever
+                            // answers BACK first must also be the one on top.
                             crate::ui::settings::draw();
-                            if matches!(route, Route::Onboard)
-                                && crate::ui::onboard::settings_mode()
-                            {
+                            // The Settings-hosted Home editor, drawn through its OWN push
+                            // (`settings::HOME_PUSH`, split off `settings::CHILD` 2026-09-04 so
+                            // Privacy/Legal opening cannot also satisfy this gate). Gated on the
+                            // push's own amount (`settings::home_editor_visible`), not on
+                            // `route == Route::Onboard && onboard::settings_mode()`: that
+                            // flag-based gate is what used to mount the editor at full opacity on
+                            // its first frame (nothing ever painted it through `RoutePush::child`)
+                            // and drop it with no reverse animation at all
+                            // (`perform_settings_action`'s Done/Cancel exit flips both the route
+                            // and `settings_mode()` away on the SAME frame the reverse spring
+                            // starts). The amount-based gate keeps drawing it, fading and sliding,
+                            // for exactly as long as `settings::update`'s `HOME_PUSH` says there is
+                            // still something on screen — in both directions — and is `false`
+                            // throughout an ordinary first-run boot, which never touches that push.
+                            if crate::ui::settings::home_editor_visible() {
                                 crate::ui::onboard::draw();
                             }
                             crate::ui::legal::draw();
@@ -11211,150 +11595,144 @@ mod key_layout_tests {
 }
 
 #[cfg(test)]
-mod exit_alert_tests {
-    //! **BACK at Home's root asks before it quits.**
+mod root_back_tests {
+    //! **BACK at a ROOT hands the screen back to the television, and the app keeps running.**
     //!
-    //! These drive the real [`back_at_root`] and [`key_exit_alert`], not a re-derivation of them.
-    //! That is the whole point: `back_at_root` is the ONE place in the app that ends the process
-    //! from a key, and the regression they exist to catch is a future edit putting
-    //! `*running = false` back where the alert now goes. Grading the alert's own focus model alone
-    //! would not see that.
+    //! Two halves, and they are graded differently on purpose. [`back_at_root`] is driven for real
+    //! — it is the app's whole answer to "there is nowhere further back to go", and the regression
+    //! to catch is a future edit putting `running = false`, or a modal question, back where the
+    //! platform call now goes. [`onboarding_back`] is pure, because its caller (`key_onboarding`)
+    //! is `unsafe`, arms tvOS presses and reaches `auth`, none of which a host test wants to drive.
     //!
-    //! What they deliberately CANNOT reach is [`key_back`] itself — its Player arm calls
-    //! `exit_player`, which pulls the Starfish/ACB seam into the link, so a test that calls it
-    //! fails at `ld` rather than at an assertion. The one link left un-graded is therefore the
-    //! single line where that function's last `else` calls this one, which is visible at the
-    //! branch and is what `tools/keytable.py` would characterise on a device.
-    //!
-    //! They touch two crate globals — the alert's popover and `ui::idle`'s dirty flag — so every
-    //! one takes `testlock::serial()` for its whole body and closes the alert on the way OUT, not
-    //! only on the way in.
+    //! What NO host test can say is that the television actually shows its launcher and that the
+    //! process survives it. That is `webos::go_home`'s device half — `gohome: SAM accepted`, a
+    //! capture of the launcher (on webOS 4 a RIBBON over the still-running app, so no lifecycle
+    //! event at all) and `fuser` reporting one pid throughout — and it is why this file's
+    //! `home_requests` counter grades the DECISION and never the outcome.
     use super::*;
-    use crate::ui::consts::{SDLK_DOWN, SDLK_ESCAPE, SDLK_LEFT, SDLK_RETURN, SDLK_RIGHT};
-    use crate::ui::exit_alert::{self, Choice};
 
-    /// A BACK press at Home's root, through the real arm. Returns whether the app is still running.
-    fn back_at_home_root() -> bool {
-        let mut running = true;
-        back_at_root(&mut running);
-        running
-    }
-
-    /// Press one key at the alert, through the real modal arm AND the deferral behind it. Returns
-    /// whether the app is still running.
+    /// **The one that matters (issue #16).** The root press asks the platform for its Home screen.
     ///
-    /// OK stopped acting on the key-DOWN on 2026-08-22: both answers are control faces, so the arm
-    /// dips the focused one and the per-frame loop spends the press on the spring-back
-    /// (`ui::press`). Both halves are driven here, in the order the loop drives them, so these tests
-    /// still grade the real door — and the regression they exist for, a future edit putting
-    /// `*running = false` back beside the keypress, is still exactly what they would catch. It would
-    /// simply be [`commit_exit_alert`] that the edit had to be kept out of.
-    fn press(sym: c_uint) -> bool {
-        let mut running = true;
-        let mut armed = false;
-        key_exit_alert(sym, 0, 0, &mut armed);
-        if armed {
-            assert!(settle_press(), "an armed OK must reach its commit");
-            commit_exit_alert(&mut running);
-        }
-        running
-    }
-
-    /// Run the real press machine from an arm to its commit and back to rest, the way the per-frame
-    /// loop does: the key-up, then `tick` at ~60 Hz until [`crate::ui::press::take_commit`] fires.
-    /// Reports whether it did.
-    ///
-    /// It runs on PAST the commit, to rest, deliberately: `press` is a crate global and a test that
-    /// left it mid-bounce would hand the next one a focused control at some fraction of its dip.
-    fn settle_press() -> bool {
-        crate::ui::press::release(1); // the key-up — the dip must still show for MIN_DIP_MS
-        let mut committed = false;
-        let mut now = 0u32;
-        for _ in 0..256 {
-            now = now.wrapping_add(16);
-            crate::ui::press::tick(now, 0.016);
-            committed |= crate::ui::press::take_commit(now);
-            if !crate::ui::press::is_active() {
-                break;
-            }
-        }
-        committed
-    }
-
-    /// **The one that matters**: BACK at the root no longer ends the process by itself. It raises
-    /// the alert, on the SAFE answer, and `running` is untouched.
+    /// Observed RED against the shipped `back_at_root`, which raised the "Exit PlxNative?" alert
+    /// and asked webOS for nothing: `left: 0, right: 1`.
     #[test]
-    fn back_at_home_root_asks_instead_of_quitting() {
+    fn back_at_home_root_shows_the_platform_home() {
         let _g = crate::testlock::serial();
-        exit_alert::close();
-        let running = back_at_home_root();
-        assert!(
-            running,
-            "BACK at Home's root must not set running=false on its own \
-             (if this fails with the alert also closed, /tmp/plxnative-noexitconfirm is armed)"
-        );
-        assert!(exit_alert::is_open(), "…it raises the alert instead");
+        crate::webos::release_root_press();
+        let before = crate::webos::home_requests();
+        back_at_root();
         assert_eq!(
-            exit_alert::focus(),
-            Choice::Cancel,
-            "which opens on the safe answer"
+            crate::webos::home_requests(),
+            before + 1,
+            "BACK at Home's root must ask webOS for its Home screen"
         );
-        exit_alert::close();
+        crate::webos::release_root_press();
     }
 
-    /// The safe answer is reachable two ways and both leave the app running: the default focus
-    /// under OK, and BACK. A dismissed alert is fully down, so the next BACK asks again rather
-    /// than finding a panel already up.
+    /// **A refused root BACK leaves the sign-in it refused to leave RUNNING, and asks for the
+    /// television's Home.** This branch used to restart the flow first (`RestartAndHome`), because
+    /// `auth::cancel` invalidated the worker before it decided; that ordering is gone (issue #30,
+    /// `auth::a_refused_back_leaves_the_live_pin_poll_running`), and a restart on top of a live
+    /// poll would mint a fresh code over one the user's phone may already have answered. Observed
+    /// RED against the shipped `after_cancel`, which answered `RestartAndHome` for `Waiting`.
     #[test]
-    fn cancel_and_back_are_the_same_outcome_by_two_routes() {
-        let _g = crate::testlock::serial();
-        for dismiss in [SDLK_RETURN, SDLK_ESCAPE] {
-            exit_alert::close();
-            assert!(back_at_home_root());
-            assert!(press(dismiss), "neither way out of the alert quits");
-            assert!(!exit_alert::is_open(), "and both take the panel down");
-        }
-        exit_alert::close();
-    }
-
-    /// LEFT/RIGHT walk the pair through the real arm (the pure `step` is graded in the module's own
-    /// tests) and OK on *Exit* is the ONLY press in the app that ends it.
-    #[test]
-    fn only_ok_on_exit_quits() {
-        let _g = crate::testlock::serial();
-        exit_alert::close();
-        assert!(back_at_home_root());
-        assert!(press(SDLK_RIGHT), "moving the ring is not an answer");
-        assert_eq!(exit_alert::focus(), Choice::Exit);
-        assert!(press(SDLK_LEFT), "…and neither is moving it back");
-        assert_eq!(exit_alert::focus(), Choice::Cancel);
-        assert!(press(SDLK_RIGHT));
-        assert!(!press(SDLK_RETURN), "OK on Exit is what quits");
-        assert!(
-            !exit_alert::is_open(),
-            "and it takes the panel down with it"
+    fn a_root_back_out_of_a_running_sign_in_leaves_it_running() {
+        assert_eq!(
+            after_cancel(false),
+            AfterCancel::Home,
+            "nothing was disturbed, so there is nothing to restart — go to the television's Home"
         );
-        exit_alert::close();
     }
 
-    /// Everything else is SWALLOWED. The arm `continue`s on every key at its call site, so this
-    /// grades the half that is visible from here: an unrelated press changes neither the ring nor
-    /// `running`, and — the failure worth naming — cannot land the ring on the destructive answer.
+    /// A cancel that SUCCEEDED went somewhere inside the app: nothing to ask the platform for, and
+    /// the claim goes back so the real root BACK a moment later is not swallowed.
     #[test]
-    fn the_alert_swallows_the_rest_of_the_remote() {
-        let _g = crate::testlock::serial();
-        exit_alert::close();
-        assert!(back_at_home_root());
-        for sym in [SDLK_DOWN, 'x' as c_uint] {
-            assert!(press(sym), "an unrelated key is not an answer");
-            assert!(exit_alert::is_open(), "…and does not dismiss the question");
+    fn a_cancel_that_backed_out_asks_the_platform_for_nothing() {
+        assert_eq!(after_cancel(true), AfterCancel::BackedOut);
+    }
+
+    /// **Issue #18.** The QR sign-in is the first screen of a first-ever launch and has nothing
+    /// behind it, so every BACK there is the root press — there is no panel on that screen for one
+    /// to mean anything else.
+    #[test]
+    fn back_on_the_qr_sign_in_is_always_the_root_press() {
+        assert_eq!(
+            onboarding_back(Route::Login, false),
+            OnboardBack::Root
+        );
+        assert_eq!(
+            onboarding_back(Route::Login, true),
+            OnboardBack::Root,
+            "the picker's keypad is not this screen's, so it cannot claim this press"
+        );
+    }
+
+    /// **Issue #17.** BACK on the who's-watching picker is the root press — *unless* its own PIN
+    /// keypad is up, which is the one thing on that screen a BACK can close.
+    #[test]
+    fn back_on_the_picker_is_the_root_press_unless_the_pin_pad_is_up() {
+        assert_eq!(
+            onboarding_back(Route::Profiles, false),
+            OnboardBack::Root
+        );
+        assert_eq!(
+            onboarding_back(Route::Profiles, true),
+            OnboardBack::Screen,
+            "an open PIN keypad takes the press — closing it is not leaving the app"
+        );
+    }
+
+    /// **A profile switch in flight is a root press like any other** — since `auth::cancel` stopped
+    /// invalidating on refusal there is no worker for the press to strand: either `cancel` backs out
+    /// (retiring the switch through the epoch, the picker's own BACK as it always was) or it refuses
+    /// and the switch runs on behind the television's Home. The keypad still comes first. Observed
+    /// RED against the shipped rule, which answered `Ignore` for both routes.
+    #[test]
+    fn back_during_a_profile_switch_is_a_root_press() {
+        assert_eq!(onboarding_back(Route::Profiles, false), OnboardBack::Root);
+        assert_eq!(
+            onboarding_back(Route::Login, false),
+            OnboardBack::Root,
+            "the follower has one frame in which the route can still say Login"
+        );
+        assert_eq!(
+            onboarding_back(Route::Profiles, true),
+            OnboardBack::Screen,
+            "a protected profile submits its PIN while switching — that BACK closes the pad, which \
+             never reaches auth at all"
+        );
+    }
+
+    /// The first-run sources question is NOT a root: the picker is behind it and `Action::Back`
+    /// returns there. Pinned because it is the one onboarding route where "nothing is behind this
+    /// screen" is false, and a rule that swept it in would strand the user outside the app halfway
+    /// through setting it up.
+    #[test]
+    fn the_first_run_sources_question_still_steps_back_into_the_picker() {
+        assert_eq!(
+            onboarding_back(Route::Onboard, false),
+            OnboardBack::Screen
+        );
+    }
+
+    /// Every route that is not one of the three is `Screen`, which is the conservative answer: the
+    /// press behaves as it did before this rule existed rather than leaving the app from a page
+    /// that has a history behind it.
+    #[test]
+    fn a_route_this_rule_does_not_own_never_leaves_the_app() {
+        for (route, what) in [
+            (Route::Home, "Home"),
+            (Route::Detail, "Detail"),
+            (Route::Library, "Library"),
+            (Route::Search, "Search"),
+            (Route::Person, "Person"),
+        ] {
             assert_eq!(
-                exit_alert::focus(),
-                Choice::Cancel,
-                "…and never moves onto Exit"
+                onboarding_back(route, false),
+                OnboardBack::Screen,
+                "{what}"
             );
         }
-        exit_alert::close();
     }
 }
 

@@ -21,9 +21,11 @@
 //
 // DITHER: framebuffer GL_DITHER is intentionally disabled globally because its ordered dot pattern
 // damaged shadows and rounded edges. An opaque ambient field still needs unstructured noise or its
-// deliberately slow gradient bands. `draw_ambient` enables that one-code dither; `draw_grad4` sets
-// `u_dither` to zero because its alpha gradient is a scrim over ARTWORK, not a ground the eye rests
-// on — dithering it would be adding grain to a photograph.
+// deliberately slow gradient bands. `draw_ambient` enables that one-code dither at rest; in flight,
+// and always for `draw_grad4` (whose alpha gradient is a scrim over ARTWORK, not a ground the eye
+// rests on — dithering it would be adding grain to a photograph), this same source is linked behind
+// `shaders/dither_stub.glsl` instead, a twin program with no uniform and no branch at all
+// (`gfx::ambient_program`, 2026-09-04).
 //
 // **This shader's dither is `dither.glsl`'s now** (2026-09-02). It was written here first and every
 // other slow gradient in the app either had a worse answer or none — `fs_glass.frag`, the popover

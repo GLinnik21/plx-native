@@ -893,18 +893,6 @@ pub(crate) struct Detail {
     /// Which SERVER this item was fetched from, as the OWNER'S HANDLE ("friend") — empty whenever
     /// it came from the signed-in user's own server, which is every item today.
     ///
-    /// The person, never the machine: the machine's name (`nas-home`) belongs to the Sources list
-    /// and to a failure read-out, and appears nowhere else in the product. Empty is the ABSENCE of
-    /// an attribution, not an empty one — the detail hero draws no separator and no run at all for
-    /// it ([`crate::ui::detail`]'s facts row), so a single-server library pays nothing for the
-    /// feature: no gap, no dot, no draw call.
-    ///
-    /// Captured at FETCH time and stored, rather than read from `plex::servers::current()` at paint
-    /// time: the page outlives the fetch, and the current server can move under it while a load is
-    /// in flight. Populated by the multi-server data layer when it lands (`docs/shared-servers.md`
-    /// step 2 threads `ServerId` through this struct); the roster field behind it is
-    /// `plex::account::Resource::source_title`.
-    pub(crate) source: String,
     /// The item's PORTABLE identity (`plex://movie/…`) — the same string on every server that
     /// matched this film, and the only one that is. It is what "Also available" asks the other
     /// sources about, because their copy has a different `rk` and may even have a different title:
@@ -1024,6 +1012,41 @@ pub(crate) struct Detail {
 }
 
 impl Detail {
+    /// **WHOSE copy this is** — the credit for the server this item came from, or empty when there
+    /// is nobody to credit. `plex::servers::owner_credit` decides it, `ServerFacts::handle` holds
+    /// the answer, and `ui::fmt::shared_by` turns it into the words; this is only where the detail
+    /// page asks.
+    ///
+    /// The person, never the machine: the machine's name (`nas-home`) belongs to the Sources list
+    /// and to a failure read-out, and appears nowhere else in the product. Empty is the ABSENCE of
+    /// an attribution, not an empty one — the detail hero draws no separator and no run at all for
+    /// it (`ui::detail`'s facts row), so a single-server library pays nothing for the feature: no
+    /// gap, no dot, no draw call.
+    ///
+    /// **Read from the registry AT USE, and it used to be a `String` captured at FETCH time.** The
+    /// reasoning for storing it was that the page outlives the fetch and the current server can
+    /// move under it — which [`Detail::sid`] answers: with the id in hand the credit can be
+    /// re-asked at any moment, and it has to be. The stored copy could go stale two ways and
+    /// neither had a repair: a roster refresh re-grades the credit under a MOUNTED page (nothing
+    /// invalidates one), and a detail fetch begun before that correction lands after it, carrying
+    /// the old answer past every epoch that would otherwise have caught it.
+    ///
+    /// dev: **`/tmp/plxnative-shared` WINS WHEN ARMED** — the precedence every trigger in this app
+    /// has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session), and the
+    /// phrase to grep for, because the same stand-in is read by `ui::home`'s hero run and
+    /// `ui::search::results`' owner annotation and the three must agree. A trigger exists to FORCE
+    /// a state, so an armed one outranks the real answer, and an armed EMPTY file forces the
+    /// absence of a handle rather than doing nothing. It stamps one handle onto every item this
+    /// session loads, which is what a fully-borrowed library looks like. Read ONCE (see
+    /// [`dev_source`]) — the trigger surface is boot state, and this is reached from a draw.
+    pub(crate) fn source(&self) -> String {
+        dev_source().map(str::to_owned).unwrap_or_else(|| {
+            crate::plex::server_facts(self.sid)
+                .map(|f| f.handle.clone())
+                .unwrap_or_default()
+        })
+    }
+
     /// How many tiles the Cast & Crew shelf holds: every actor, then every crew credit.
     pub(crate) fn credits_len(&self) -> usize {
         self.cast.len() + self.crew.len()
@@ -1227,6 +1250,23 @@ pub(crate) fn sync_now_playing() {
 // detail/season workers, and the house rule is that a worker reads no statics (`pms::parse_item`
 // carries the same note). It is also what stamps the row — an item fetched from slot 1 must be
 // recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
+/// The stand-in handle, read ONCE. The trigger surface is boot state, and [`Detail::source`] is
+/// reached from a draw — a `stat` per frame inside one is exactly what `crate::dev`'s doc forbids.
+/// Compiled out with the `devtriggers` feature, like every other trigger, so a release build folds
+/// this to `None` and the whole call to the registry read below it.
+#[cfg(not(test))]
+fn dev_source() -> Option<&'static str> {
+    static SEEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(|| crate::dev::read("shared")).as_deref()
+}
+/// The host suite must not depend on what this dev Mac happens to have under `/tmp`: an armed
+/// `plxnative-shared` would outrank the registry and make every credit assertion here read the
+/// trigger's handle instead. `ui::alt_sources::dev_stand_in` states the same rule the same way.
+#[cfg(test)]
+fn dev_source() -> Option<&'static str> {
+    None
+}
+
 fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     let it = crate::plex::client_for(sid)?.metadata(rk)?;
     let media0 = it.primary_media();
@@ -1235,26 +1275,6 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     let mut d = Detail {
         sid,
         rk: rk.to_string(),
-        // WHOSE server this fetch went to, asked of the registry with the id we were handed.
-        //
-        // This read `dev::read("shared")` and nothing else, which meant the attribution existed
-        // only under a trigger: on a signed-in television every item's `source` was empty and the
-        // hero drew no "Shared by" run at all, whatever server the item came from. Owner-reported
-        // 2026-08-14. `ServerFacts::handle` is empty on our own server, which is exactly what this
-        // field wants — absence, not an empty owner — so the mapping needs no special case.
-        //
-        // dev: **`/tmp/plxnative-shared` WINS WHEN ARMED** — the precedence every trigger in this
-        // app has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session), and
-        // the phrase to grep for, because the same stand-in is read by `ui::home`'s hero run and
-        // `ui::search::results`' owner annotation and the three must agree. A trigger exists to
-        // FORCE a state, so an armed one outranks the real answer, and an armed EMPTY file forces
-        // the absence of a handle rather than doing nothing. It stamps one handle onto every item
-        // this session loads, which is what a fully-borrowed library looks like.
-        source: crate::dev::read("shared").unwrap_or_else(|| {
-            crate::plex::server_facts(sid)
-                .map(|f| f.handle.clone())
-                .unwrap_or_default()
-        }),
         // the portable identity — what "Also available" resolves across the other sources
         guid: it.guid.clone(),
         is_show: it.kind == "show",
@@ -2099,6 +2119,11 @@ pub(crate) fn pump_detail() -> bool {
 // none) must cost nothing at all.
 static ALT_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static ALT_ROSTER_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The facts epoch this panel's rows were last STAMPED at — `plex::servers::facts_gen`, which moves
+/// when the registry re-describes a server and not when the roster changes. Beside
+/// [`ALT_ROSTER_GEN`] rather than folded into it: the two events want opposite answers (discard vs
+/// restamp), which is the whole reason the registry publishes them as two counters.
+static ALT_FACTS_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 struct AltResult {
     gen: u32,
     roster_gen: u32,
@@ -2223,6 +2248,15 @@ pub(crate) fn pump_alt_sources() {
         ALT_GEN.fetch_add(1, Ordering::SeqCst);
         *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
         crate::ui::alt_sources::prune_inactive();
+    }
+    // A source being RE-DESCRIBED is not the server set changing, and answering it the same way
+    // would be wrong twice: the copies are still the right copies (a re-graded "Shared by …" credit
+    // says nothing about which servers hold the item), and invalidating a resolve in flight would
+    // leave the control absent until the page was remounted, since nothing here re-asks. So the
+    // two epochs are read separately and this one only re-stamps what the rows SAY.
+    let facts_gen = crate::plex::server_facts_gen();
+    if ALT_FACTS_GEN.swap(facts_gen, Ordering::SeqCst) != facts_gen {
+        crate::ui::alt_sources::restamp_owners();
     }
     let taken = ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(r) = taken else { return };
@@ -3583,6 +3617,52 @@ mod tests {
     /// the tab's tick is derived from `viewedLeafCount` ([`Season::watched`]), so a tick left saying
     /// the opposite of the episode row under it is the same "one item, two answers on one screen"
     /// this page refuses everywhere else.
+    /// **A mounted detail page follows a corrected credit** — the sixth surface, and the one where
+    /// a stale copy showed the longest, because nothing invalidates a page that is already open.
+    ///
+    /// `Detail::source` was a `String` captured at FETCH time. Two ways that went wrong and neither
+    /// had a repair: a roster refresh re-grades the credit under the mounted page, and a detail
+    /// fetch dispatched before the correction lands after it carrying the old answer. `sid` is the
+    /// server this item came from, so the credit is simply re-asked; this test is the "under a
+    /// mounted page" half, and it fails against a stored field on the first assertion.
+    #[test]
+    fn a_mounted_detail_page_follows_a_corrected_credit() {
+        let _serial = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let house = crate::plex::register_for_test("md-house", "127.0.0.1", 1, "t", "cid");
+
+        // what a build without the rule published: the household's own server wearing the account
+        // holder's handle
+        crate::plex::describe_server(house, "Mac mini", "admin", false);
+        set_current_for_test(Some(Detail {
+            sid: house,
+            rk: "42".into(),
+            ..Default::default()
+        }));
+        assert_eq!(current().unwrap().source(), "admin");
+
+        // the roster refresh re-grades it, with nothing touching the mounted page
+        crate::plex::describe_server(house, "Mac mini", "", false);
+        assert_eq!(
+            current().unwrap().source(),
+            "",
+            "the page re-asks the registry rather than carrying a copy taken at fetch time"
+        );
+
+        // and a share is still credited, so this is not a blanket clear
+        let friend = crate::plex::register_for_test("md-friend", "127.0.0.1", 2, "t", "cid");
+        crate::plex::describe_server(friend, "nas-home", "friend", false);
+        set_current_for_test(Some(Detail {
+            sid: friend,
+            rk: "318".into(),
+            ..Default::default()
+        }));
+        assert_eq!(current().unwrap().source(), "friend");
+
+        set_current_for_test(None);
+        crate::plex::reset_servers_for_test();
+    }
+
     #[test]
     fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_count() {
         let _serial = crate::testlock::serial();

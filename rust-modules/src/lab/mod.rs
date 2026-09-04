@@ -128,7 +128,7 @@ pub(crate) fn is_trigger_key(_sym: u32, _wcode: u32) -> bool {
 
 /// The key ladder's lab arm: `true` when the press was taken and the ladder must `continue`.
 ///
-/// It sits at the TOP of the chain, above the exit alert, on purpose — the screen a tester most
+/// It sits at the TOP of the chain, above every modal, on purpose — the screen a tester most
 /// wants a snapshot of is the playback failure read-out, whose own arm `continue`s on every key.
 #[inline]
 pub(crate) fn key_press(_sym: u32, _wcode: u32) -> bool {

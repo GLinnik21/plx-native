@@ -4,18 +4,38 @@
 //!
 //! - The field carries **no magnifier**. The pill above it is the mark, and repeating it here says
 //!   nothing the screen has not already said.
-//! - **There is no capsule.** The query IS the type, at `size::HERO` on the flat ground. It wore a
-//!   control face until 2026-08-30 — `ACCENT` focused, `CONTROL_IDLE_FILL` holding a query while
-//!   focus was elsewhere — and the design took the plate away: with nothing to fill, FOCUS is
-//!   carried by INK alone — no rule, no rim, no pop, the design system's `SearchField` contract.
-//!   Until 2026-09-02 that ink step was `TEXT_SECONDARY`→`TEXT_HEADING`, one stop, and from the
-//!   couch it read as "this field has content" rather than "the remote is on it" (owner
-//!   feedback). The step is now to [`theme::FIELD_FOCUS_INK`], the brightest ink stop, and the
-//!   placeholder rides the same spring one step behind (`TEXT_TERTIARY`→`TEXT_SECONDARY`). Plus the
-//!   caret, which exists only while the television's own keyboard is up.
+//! - **There is no RIM, no rule, no capsule OUTLINE, and — since 2026-09-04 — no FILL either.** The
+//!   query IS the type, at `size::HERO` on the flat ground; the design system's `SearchField`
+//!   contract forbids a border on this control and that half never changed. It wore a full control
+//!   face until 2026-08-30 (`ACCENT` focused, `CONTROL_IDLE_FILL` holding a query while focus was
+//!   elsewhere), then briefly a flat `ACCENT` PLATE for one state only (issue 22, 2026-09-03) — and
+//!   the owner rejected that plate on sight: "you made the search bar background white, while I
+//!   wanted text to be white". The plate is gone for good. **Focus is carried by INK ALONE,
+//!   permanently** — the design system's own `SearchField` contract, which the plate never actually
+//!   had authority to override.
+//! - Two focused states, distinguished by ink rather than by a face. `draw`'s `ink_target` picks
+//!   the query's bright endpoint on `editing` alone — never a second spring, riding the SAME `hot`
+//!   spring the ink always has either way. **Focused, not yet editing** — no caret, no keyboard, and
+//!   now no plate to help — crosses to [`theme::FIELD_WAITING_INK`], a genuinely PURE white: this is
+//!   what "I wanted text to be white" means once there is nothing else on screen to carry the
+//!   signal. **Editing** drops back one stop, to [`theme::FIELD_EDITING_INK`] — the SAME near-white
+//!   `TEXT_PRIMARY` stop this control's ink crossed to before issue 22 ever existed, and the caret's
+//!   own colour, so glyph and bar read as one continuous line — because the blinking caret and the
+//!   open keyboard already carry "you are editing this", and the brighter white is left for the
+//!   state that has nothing else. Until 2026-09-02 the whole ink step was `TEXT_SECONDARY`→
+//!   `TEXT_HEADING`, one stop, and from the couch it read as "this field has content" rather than
+//!   "the remote is on it" (owner feedback) — which is the wide step both targets still ride today.
+//!   The flip between the two targets is discrete, not a fade of its own, for the same reason the
+//!   short-lived plate's `fill_t` never faded on `editing`: the keyboard raising is a discrete
+//!   event, not a spring one. The placeholder stays one step behind the query ink at every `hot`,
+//!   unconditionally on `editing` (`TEXT_TERTIARY`→`TEXT_SECONDARY`) — it is never shown once a real
+//!   query needs the brighter ramp to itself.
 //! - The placeholder is **unconditional**: an empty field is "Search your library" at the same
 //!   rung in `TEXT_TERTIARY` — a step back from either query ink — never a bare caret on an empty
-//!   row.
+//!   row. **The caret sits at the field's own START while it is showing over a blank field**
+//!   (issue 20): the placeholder is chrome nobody is editing, so it supplies no insertion point of
+//!   its own to trail — see [`draw`]'s blank branch, which feeds `run_layout` a `caret_w` of zero
+//!   rather than the placeholder's own width.
 //! - The run scrolls so the **CARET** stays on screen — see [`run_layout`]. There is a real
 //!   insertion point now (`super`'s `CARET`), because the television's own panel delegates its
 //!   `◀`/`▶` keys to the app: the field is the thing that owns the text, so it is the thing that
@@ -37,7 +57,8 @@
 //!
 //! ## The two pieces of arithmetic worth extracting
 //!
-//! [`run_layout`], [`run_and_head`] and [`scope_text`] are **pure**, and host-tested below, because
+//! [`run_layout`], [`run_and_head`], [`run_caret_w`], [`descent_pad`], [`ink_target`] and
+//! [`scope_text`] are **pure**, and host-tested below, because
 //! each is the kind of thing that is wrong by a few pixels, one word or one byte and invisible in a
 //! screenshot — and [`run_and_head`]'s failure is not cosmetic at all, since a slice cut off a char
 //! boundary panics inside the SDL event loop. They are not the whole risk, though — [`draw`] and
@@ -89,19 +110,33 @@ const UNNAMED_OWN: &str = "your server";
 const UNNAMED_SHARE: &str = "a shared server";
 
 pub(crate) fn draw(p: Painter, v: &View) {
-    // **No plate, no rule.** There is nothing to fill, so focus is the INK: the brightest stop
-    // (`theme::FIELD_FOCUS_INK`) while the field holds it, `TEXT_SECONDARY` when it does not. One
-    // stop (`TEXT_HEADING`) was too little to read from the couch (owner feedback, 2026-09-02);
-    // the design system's `SearchField` still says ink ONLY, so the step got wider rather than
-    // gaining a second signal. Still CROSS-FADED on `super`'s focus spring rather than swapped —
-    // see `super::HOT` for why this control owes the rest of the app that motion, and
-    // `theme::cross` for why it is not `theme::mix` (the pair differs in ALPHA as well as hue, and
-    // `mix` would land the destination colour at the source's opacity).
+    // **Focus is carried by ink alone — permanently.** Issue 22's flat `ACCENT` plate lived here for
+    // one day (2026-09-03) and the owner rejected it on sight: "you made the search bar background
+    // white, while I wanted text to be white". It is gone, along with the discrete-flip machinery
+    // that only existed to keep an ink ramp legible against a moving plate — there is no plate to
+    // land within a couch-invisible luma of any more, so the ink below is a single continuous
+    // `theme::cross` on `super::HOT`, exactly as it was before issue 22 ever existed.
+    //
+    // The ink is CROSS-FADED on `super`'s focus spring rather than swapped — see `super::HOT` for
+    // why this control owes the rest of the app that motion, and `theme::cross` for why it is not
+    // `theme::mix` (the pair differs in ALPHA as well as hue, and `mix` would land the destination
+    // colour at the source's opacity).
+    //
+    // **Two bright endpoints, picked by `editing` alone — never a second spring.** [`ink_target`]
+    // is the whole of it: focused-not-editing crosses toward [`theme::FIELD_WAITING_INK`], a genuinely
+    // pure white, because that state has no caret and no keyboard to help it read as "the remote is
+    // on this" — editing crosses toward [`theme::FIELD_EDITING_INK`] instead, one stop dimmer and the
+    // caret's own colour, because the blinking bar and the open keyboard already carry that. The
+    // flip is discrete rather than a fade of its own — the keyboard raising is a discrete event, not
+    // a spring one, the same reason issue 22's now-deleted `fill_t` never faded on `editing` either.
     let hot = v.hot;
-    let ink = theme::cross(theme::TEXT_SECONDARY, theme::FIELD_FOCUS_INK, hot);
+    let ink = theme::cross(theme::TEXT_SECONDARY, ink_target(v.editing), hot);
     // The placeholder rides the same spring one step BEHIND the query ink at every `hot`, so it
     // never reads as bright as a real query — that is what makes it a placeholder rather than a dim
-    // query — but it brightens with focus too, so an EMPTY focused field also says so.
+    // query — but it brightens with focus too, so an EMPTY focused field also says so. Unconditional
+    // on `editing`: the placeholder only ever draws while the field is blank (see `blank` below),
+    // and a blank field's caret sits at its own start rather than trailing the hint, so the two
+    // ink ramps never have to agree with each other the way the query's and the fill's once did.
     let hint_ink = theme::cross(theme::TEXT_TERTIARY, theme::TEXT_SECONDARY, hot);
 
     let inner = FIELD;
@@ -112,24 +147,57 @@ pub(crate) fn draw(p: Painter, v: &View) {
     let blank = q.trim().is_empty();
     let cq = CString::new(q).unwrap_or_default();
     let ch = CString::new(head).unwrap_or_default();
-    // An empty field draws the placeholder as its run, so the caret follows those visible words
-    // just as the current SearchField component does. On the first keystroke the placeholder is
-    // replaced, not edited, and the caret follows the new query.
+    // An empty field draws the placeholder as its run — so a short query does not jump when it
+    // replaces the hint — but the CARET sits at the field's own START, not after it (issue 20): see
+    // [`run_caret_w`].
     let (run_w, caret_w) = if blank {
-        let w = crate::text::text_width(PLACEHOLDER.as_ptr(), RUN_SZ, 1);
-        (w, w)
+        (
+            crate::text::text_width(PLACEHOLDER.as_ptr(), RUN_SZ, 1),
+            run_caret_w(true, 0.0),
+        )
     } else {
+        let head_w = crate::text::text_width(ch.as_ptr(), RUN_SZ, 1);
         (
             crate::text::text_width(cq.as_ptr(), RUN_SZ, 1),
-            crate::text::text_width(ch.as_ptr(), RUN_SZ, 1),
+            run_caret_w(false, head_w),
         )
     };
     let (run_dx, caret_dx) = run_layout(run_w, caret_w, inner.w, v.editing);
 
+    // The box the run paints AND clips into. [`FIELD`]'s own 80px height is fit to the cap band
+    // alone ("the box a 72px run sits in", not the glyphs' full extent). `Label`'s `VAlign::Middle`
+    // centres only the CAP BAND on that 80px frame's own middle (`text::text_vcenter_y`'s doc) — it
+    // does NOT centre the run's full glyph box, but because the cap band sits well above that box's
+    // own centre (there is no ascender clearance to match the descent), centring the cap band alone
+    // already pushes a good deal of the full box's lower half inside the 80px frame for free. Issue
+    // 21's fix round 1 missed exactly that: padding by the WHOLE descent (`full_h - cap_base`)
+    // double-counted this free clearance and overshot by ~13px. [`descent_pad`] now takes the
+    // frame's own height too and returns exactly the shortfall past what the cap-band-centred draw
+    // origin already clears — Codex's review round 1 derived the formula
+    // (`full_h − box_h⁄2 − (cap_top+cap_base)⁄2`). It grows only the CLIP now — the short-lived
+    // issue-22 plate that once shared this box is gone (2026-09-04).
+    //
+    // **This DOES leave a sub-4px sliver where the painted clip runs past `FIELD`'s own hit rect**
+    // (`search::mod::hit`'s `FIELD.contains`, unchanged and deliberately not coupled to a live font
+    // metric): a click landing in that sliver — past `FIELD`'s own bottom edge but still inside the
+    // clipped glyph's own descent — reads as a miss rather than a field hit. Left as a known,
+    // recorded gap rather than silently ignored: the pad is small (≈3.5px on the shipped face) and
+    // growing `FIELD` itself was rejected, because `SCOPE_Y`/`CHROME_BOTTOM` are measured off it and
+    // moving them for a font-metric sliver is a bigger change than this bug earns.
+    let (cap_top, cap_base) = crate::text::text_cap_band(RUN_SZ, 1);
+    let pad = descent_pad(
+        inner.h,
+        crate::text::text_height(RUN_SZ, 1),
+        cap_top,
+        cap_base,
+    );
+    let field_box = Rect::new(inner.x, inner.y, inner.w, inner.h + pad);
+
     // Scissor, so the head of an overlong run is CUT at the app's own margin rather than sliding
     // out across it. With the capsule gone this is the ONLY thing bounding the line, which is why
-    // `FIELD` survives as a rect at all. Global GL state — cleared before the scope block below.
-    p.clip(inner);
+    // `FIELD` (grown by the descent pad above) survives as a rect at all. Global GL state — cleared
+    // before the scope block below.
+    p.clip(field_box);
     // Whitespace is not a readable query: `search::draw` gates the whole screen below on the
     // TRIMMED string, so a lone typed space must not leave this line blank and hintless while
     // the rest of the screen says nothing has been asked.
@@ -145,10 +213,12 @@ pub(crate) fn draw(p: Painter, v: &View) {
     if caret_shown(v.editing, v.caret_on) {
         // One CAP BAND tall, sitting on the run's own baseline — the design's "52 of 72", derived
         // from the face rather than transcribed, so it stays the height of the letters beside it.
-        // Square, not rounded: at 5px a radius is a lozenge, and the design draws a bar.
+        // Square, not rounded: at 5px a radius is a lozenge, and the design draws a bar. Always
+        // `TEXT_PRIMARY`: the caret only ever shows while `editing`, which is exactly when
+        // [`ink_target`] has the query ink riding toward that SAME stop — `theme::FIELD_EDITING_INK`
+        // is `TEXT_PRIMARY` — so caret and glyph read as one continuous line rather than two colours.
         let ty = crate::text::text_vcenter_y(RUN_SZ, 1, inner.cy());
-        let (ct, cb) = crate::text::text_cap_band(RUN_SZ, 1);
-        let cr = Rect::new(inner.x + caret_dx, ty + ct, CARET_W, cb - ct);
+        let cr = Rect::new(inner.x + caret_dx, ty + cap_top, CARET_W, cap_base - cap_top);
         p.rect(cr, 0.0, theme::TEXT_PRIMARY, theme::TEXT_PRIMARY, 0.0);
     }
     // One character in, after the insertion point — the component's BODY-sized instruction. It is
@@ -211,6 +281,22 @@ fn run_and_head(q: &str, caret: usize) -> (&str, &str) {
     (run, &run[..c])
 }
 
+/// The width of the run BEFORE the insertion point that `draw` feeds [`run_layout`] as `caret_w` —
+/// issue 20. A blank field's caret is always `0.0`, whatever `head_w` would otherwise measure: the
+/// placeholder is chrome nobody is editing, so it supplies no insertion point of its own to trail. A
+/// real query's caret is its own measured HEAD width, unchanged. Extracted into its own function
+/// (rather than left as `draw`'s inline `if`) so a host test calls the exact decision `draw` makes;
+/// Codex review round 1 noted the PREVIOUS test only re-asserted the geometry `run_layout` produces
+/// from a hand-supplied `0.0`, which could not have caught a regression in which VALUE `draw` chose
+/// to pass.
+fn run_caret_w(blank: bool, head_w: f32) -> f32 {
+    if blank {
+        0.0
+    } else {
+        head_w
+    }
+}
+
 /// Is the one-character hint on? Exactly one character SHORT of the minimum, never at zero (an
 /// empty field already says "Search", and two hints on one control is a control arguing with
 /// itself) and never at the minimum (the query has started; the answer is the hint).
@@ -228,6 +314,55 @@ fn ghost_shown(q: &str) -> bool {
 /// back into an always-on bar by dropping `View::caret_on` from the draw condition.
 fn caret_shown(editing: bool, phase_on: bool) -> bool {
     editing && phase_on
+}
+
+/// How far past [`FIELD`]'s own box the run's clip (and fill) must reach to hold the WHOLE glyph —
+/// issue 21. `box_h` is that box's height (`FIELD.h`); `full_h` is the run's own
+/// [`crate::text::text_height`] (the font's full line box, string-independent — ascent plus
+/// descent, the SAME reading a digit or a capital gets); `cap_top`/`cap_base` are
+/// [`crate::text::text_cap_band`]'s own offsets.
+///
+/// **Not simply `full_h - cap_base`** — that was this function's first shape, and it double-counts
+/// clearance `Label`'s `VAlign::Middle` already gives away for free. `VAlign::Middle` centres only
+/// the CAP BAND on `box_h`'s own middle (`text::text_vcenter_y`), never the run's full glyph box —
+/// but the cap band sits well above that full box's own centre (nothing balances the descent on the
+/// ascent side), so centring the cap band alone already pushes part of the box's lower half inside
+/// `box_h` for free: `box_h/2 - (cap_top+cap_base)/2` of it, below the frame's own vertical centre.
+/// What is left to reserve is `full_h`'s own reach PAST that centre, minus what is already covered.
+/// Caught in Codex review round 1: the untrimmed formula padded FIELD's 80px box by the whole
+/// ≈17px descent when the cap-band-centred draw origin already covered all but ≈3.5px of it,
+/// overshooting enough to run the fill into the scope line's own row below.
+/// `.max(0.0)` only matters for a hypothetical face whose line box does not reach past that centre
+/// at all, which no shipped face here does — kept because a negative pad would SHRINK the clip
+/// instead of leaving it alone.
+///
+/// Pure, so the arithmetic is pinned without a font: `draw` supplies the three live metric reads,
+/// the test below pins the formula against the shipped face's own measured shape (Inter Bold at
+/// `size::HERO`, off `tools/font-hint-audit.py`'s own face — cap band 17..70px of an 87px line box).
+fn descent_pad(box_h: f32, full_h: f32, cap_top: f32, cap_base: f32) -> f32 {
+    (full_h - box_h * 0.5 - (cap_top + cap_base) * 0.5).max(0.0)
+}
+
+/// The bright endpoint [`draw`]'s query ink crosses toward on `super::HOT` — issue 22's whole state
+/// machine, now that the plate it once gated is gone (2026-09-04). A discrete pick on `editing`
+/// alone, never a continuous function of it: the keyboard raising is a discrete event, not a spring
+/// one, which is the same reason the deleted `fill_t` never faded on `editing` either.
+///
+/// **Focused, not editing** has no caret, no keyboard and no plate to carry "the remote is on this
+/// control" instead — so it gets [`theme::FIELD_WAITING_INK`], a genuinely pure white, one stop past
+/// what editing needs. **Editing** drops back to [`theme::FIELD_EDITING_INK`] — the SAME near-white
+/// `TEXT_PRIMARY` stop this control's ink crossed to before issue 22 ever existed, and the caret's
+/// own colour (see the caret's comment in [`draw`]) — because the blinking bar and the open keyboard
+/// already carry "you are editing this", leaving the brighter white for the state that has nothing
+/// else. Extracted so a host test can drive exactly what `draw` does, the same reason
+/// [`run_caret_w`]'s own extraction exists — and the same reason the deleted `fill_t`/`field_ink`
+/// pair (issue 22's plate machinery) were their own functions too.
+fn ink_target(editing: bool) -> [f32; 4] {
+    if editing {
+        theme::FIELD_EDITING_INK
+    } else {
+        theme::FIELD_WAITING_INK
+    }
 }
 
 /// Where the run and the caret sit, as offsets from the padded box's left edge. `caret_w` is the
@@ -694,19 +829,99 @@ mod tests {
         assert!(!ghost_shown("ab"));
     }
 
-    /// Focus must be a couch-visible COLOUR step, and it is ink alone (no rule): the focused ink
-    /// is the brightest stop and the idle ink stays where it was, so the two differ by well over
-    /// one 8-bit quantum on every channel.
+    /// [`ink_target`] in isolation — the whole of issue 22's post-plate state machine (2026-09-04):
+    /// a discrete pick on `editing` alone, never a spring of its own.
+    #[test]
+    fn ink_target_picks_pure_white_off_editing_and_the_editing_stop_on() {
+        assert_eq!(ink_target(false), theme::FIELD_WAITING_INK);
+        assert_eq!(ink_target(true), theme::FIELD_EDITING_INK);
+        assert_ne!(
+            theme::FIELD_WAITING_INK,
+            theme::FIELD_EDITING_INK,
+            "the two focused states must read apart from each other by ink alone"
+        );
+    }
+
+    /// Focus must be a couch-visible COLOUR step in EVERY state, and the two focused states must
+    /// read apart from each other too — the property that replaced issue 22's plate (2026-09-04,
+    /// owner: "you made the search bar background white, while I wanted text to be white"). This is
+    /// `draw`'s whole ink computation (`theme::cross(TEXT_SECONDARY, ink_target(editing), hot)`) at
+    /// both ends of `hot` and both values of `editing`.
     #[test]
     fn focus_is_carried_by_a_wide_ink_step_and_nothing_else() {
-        let idle = theme::cross(theme::TEXT_SECONDARY, theme::FIELD_FOCUS_INK, 0.0);
-        let hot = theme::cross(theme::TEXT_SECONDARY, theme::FIELD_FOCUS_INK, 1.0);
-        assert_eq!(idle, theme::TEXT_SECONDARY);
-        assert_eq!(hot, theme::TEXT_PRIMARY, "focused ink is the brightest stop");
+        let idle = theme::cross(theme::TEXT_SECONDARY, ink_target(false), 0.0);
+        assert_eq!(idle, theme::TEXT_SECONDARY, "idle reads the same whatever `editing` claims");
+
+        // Focused, not yet editing: the brightest thing on the page — no caret, no keyboard, no
+        // plate, so ink alone has to say "the remote is on this control".
+        let waiting = theme::cross(theme::TEXT_SECONDARY, ink_target(false), 1.0);
+        assert_eq!(
+            waiting,
+            theme::FIELD_WAITING_INK,
+            "focused-not-editing ink is the pure-white token"
+        );
+
+        // Editing: one stop dimmer, and the caret's own colour — the blinking bar and the open
+        // keyboard carry the rest of "you are editing this".
+        let editing = theme::cross(theme::TEXT_SECONDARY, ink_target(true), 1.0);
+        assert_eq!(
+            editing,
+            theme::FIELD_EDITING_INK,
+            "editing ink is the same near-white stop the caret itself is drawn in"
+        );
+
         let luma = |c: [f32; 4]| (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * c[3];
         assert!(
-            luma(hot) - luma(idle) > 0.15,
-            "the focus step must be far wider than the old one-stop fade: {idle:?} -> {hot:?}"
+            luma(waiting) - luma(idle) > 0.15,
+            "the focus step must be far wider than a one-stop fade: {idle:?} -> {waiting:?}"
+        );
+        assert!(
+            luma(editing) - luma(idle) > 0.15,
+            "editing must be a couch-visible step off idle too: {idle:?} -> {editing:?}"
+        );
+        assert!(
+            luma(waiting) > luma(editing),
+            "focused-not-editing must read brighter than editing, or the two states collapse into \
+             one: waiting={waiting:?} editing={editing:?}"
+        );
+    }
+
+    /// **A narrow regression tripwire for issue 22's EXACT shape — not a general proof of absence.**
+    /// Nothing on the host can call `draw` itself (it rasterizes; see the module doc's "two pieces
+    /// of arithmetic" section), so there is no way to assert the property this control actually
+    /// wants ("no draw call in `draw` ever fills anything") without a real GPU or a mocked
+    /// `Painter`, neither of which exists here. What this CAN do, the same technique `diag::scrub`'s
+    /// `no_log_call_site_interpolates_viewing_content` uses for its own absence property, is grep the
+    /// file for the two literal fragments issue 22's fill was actually built from — the `Painter`
+    /// call that filled `field_box`, and the `ACCENT` token it filled it with — rather than the
+    /// deleted `fill_t`/`field_ink` function names alone, so simply renaming those two GATING
+    /// helpers and pasting the same call back in still fails it. **It is still only a grep, and
+    /// narrower than that reads**: a fill spelled across multiple lines, through a differently-named
+    /// LOCAL holding `field_box` or the colour itself, via an aliased colour, a different fill token
+    /// than `ACCENT`, or added inside a helper `draw` calls rather than inline, would all slip past
+    /// this exact pattern undetected (Codex review, 2026-09-04). Treat it as "the one bug that
+    /// already happened cannot happen the same way twice",
+    /// not as a guarantee this file has no fill in any state — the module doc's plain-English "no
+    /// FILL either" claim is the actual contract, upheld by review and by the simulator captures this
+    /// change was verified with, not by this test alone. Each needle in the body below is assembled
+    /// at runtime from two literals that do NOT sit adjacent anywhere in this file's own source
+    /// (including this comment) — a whole literal would match this very assertion's own line and
+    /// fail the test against itself.
+    #[test]
+    fn issue_22s_exact_fill_shape_does_not_reappear_in_the_source() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file!());
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let fill_call: String = ["p", ".rect(field_box"].concat();
+        assert!(
+            !src.contains(&fill_call),
+            "a fill rect behind the query line reintroduces the plate the owner rejected — 2026-09-03 \
+             issue 22, reverted 2026-09-04. Focus is ink only."
+        );
+        let accent_use: String = ["theme::AC", "CENT,"].concat();
+        assert!(
+            !src.contains(&accent_use),
+            "ACCENT has no job in this file any more — it was only ever the plate's fill"
         );
     }
 
@@ -871,6 +1086,72 @@ mod tests {
         let (run, caret) = run_layout(0.0, 0.0, 2.0, true);
         assert_eq!(run, 0.0);
         assert_eq!(caret, 0.0);
+    }
+
+    // ---- issue 20: the blank-field caret sits at the FRONT, not after the placeholder ---------
+
+    /// Calls [`run_caret_w`] — the SAME function `draw` calls for both its blank and non-blank
+    /// branches — rather than hand-supplying `0.0` to `run_layout`. That closes ONE gap Codex review
+    /// round 1 found (the first version of this test supplied `0.0` directly and could not have
+    /// caught a regression in `run_caret_w`'s OWN body) but not the other it named: a `draw` that
+    /// stopped calling `run_caret_w` and went back to inlining the placeholder's width would still
+    /// compile and still pass every test here, since nothing on the host can call `draw` itself (it
+    /// rasterizes) — the simulator screenshots this file's commits carry are what close that half.
+    #[test]
+    fn a_blank_field_puts_the_caret_at_the_field_start_not_after_the_placeholder() {
+        // The function itself, in isolation: blank is always 0, whatever `head_w` would have been;
+        // non-blank passes the measured head straight through.
+        assert_eq!(run_caret_w(true, 999.0), 0.0);
+        assert_eq!(run_caret_w(false, 42.0), 42.0);
+
+        let box_w = 756.0;
+        let placeholder_w = 480.0; // stand-in for "Search your library"'s measured width
+        // The FIX composed with `run_layout`: `caret_w` is 0 for a blank field, so the bar lands
+        // `CARET_GAP` past the box's own left edge, exactly where a real query's caret sits before
+        // its first character.
+        let (run, caret) = run_layout(placeholder_w, run_caret_w(true, 0.0), box_w, true);
+        assert_eq!(run, 0.0, "the placeholder itself is not scrolled");
+        assert_eq!(
+            caret, CARET_GAP,
+            "the caret sits CARET_GAP past the field's own start"
+        );
+        // The HISTORICAL BUG, simulated (not reachable through `run_caret_w`, which never returns
+        // the placeholder's own width for the blank case): feeding it back in as `caret_w` — the
+        // shape `draw` had before this fix — parks the bar past every letter of "Search your
+        // library" instead. Kept as a direct `run_layout` call, deliberately bypassing
+        // `run_caret_w`, so this comparison survives even though the buggy VALUE is no longer
+        // reachable through the helper.
+        let (buggy_run, buggy_caret) = run_layout(placeholder_w, placeholder_w, box_w, true);
+        assert_eq!(buggy_run, 0.0);
+        assert_eq!(
+            buggy_caret,
+            placeholder_w + CARET_GAP,
+            "the historical bug: the caret trailed the whole placeholder"
+        );
+        assert!(
+            caret < buggy_caret,
+            "the fixed caret must land well before the buggy one"
+        );
+    }
+
+    // ---- issue 21: the field's clip (and fill) reserve the run's own DESCENT -------------------
+
+    #[test]
+    fn the_clip_reserves_only_the_descent_centering_does_not_already_clear() {
+        // Measured off the shipped face (Inter Bold, `pkg/appfont-bold.ttf`) at `size::HERO` (72px)
+        // via `tools/font-hint-audit.py`'s own FreeType read: cap band 17..70px of an 87px line box
+        // (ascent ≈70px, full line height ≈87px). `Label`'s `VAlign::Middle` centres the CAP BAND —
+        // not the full 87px box — on `FIELD`'s own 80px frame's middle; since the cap band sits well
+        // above the box's own centre, that alone already gives away `(80 - (70-17))/2 ≈ 13.5px`
+        // below the baseline for free — so the true shortfall is `87 - 80/2 - (17+70)/2 = 3.5px`,
+        // not the naive `87 - 70 = 17px` this function's first shape returned (Codex review round 1:
+        // that overshot enough to run the fill 5px into the scope line's own row below `FIELD`).
+        assert_eq!(descent_pad(80.0, 87.0, 17.0, 70.0), 3.5);
+        // A face whose line box does not reach past the frame's own centre needs no pad at all —
+        // the clip stays exactly `FIELD`'s own box.
+        assert_eq!(descent_pad(80.0, 40.0, 17.0, 20.0), 0.0);
+        // A degenerate reading must not SHRINK the clip below FIELD's own box.
+        assert_eq!(descent_pad(80.0, 10.0, 17.0, 70.0), 0.0);
     }
 
     /// **One source is still named** — the rule reversed on 2026-08-15, and worth a test rather
@@ -1131,6 +1412,13 @@ mod tests {
         // …and the roster naming a machine moves it through the facts address on its own: nothing
         // else about the registry or the table changed, and the line goes from "your server" to a
         // name the user recognises.
+        //
+        // **Through the facts ADDRESS and not through `roster`**, which is the distinction
+        // `plex::servers` publishes two counters for: `ROSTER_GEN` says the set of servers moved
+        // (this screen's stores discard work aimed at the old one), `FACTS_GEN` says what we SAY
+        // about one moved. A describe is only ever the second. This screen needs neither counter
+        // for it — every describe leaks a fresh `ServerFacts`, and the address of that record is
+        // already in the key.
         crate::browse::seed_sources_for_test(2, true);
         let before = Key::read();
         crate::plex::describe_server(own, "nas-home", "", true);

@@ -270,9 +270,12 @@ impl PlaybackQuality {
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct RecentSearches {
-    /// The Plex Home user's `uuid`, or **empty for the account owner** with no Home selection —
-    /// the same "empty means the owner" convention [`SourceRef`] uses for a handle. `uuid` and not
-    /// `id`, because it is the identity that survives a roster refetch.
+    /// The Plex Home user's `uuid`, or **empty for the account owner** with no Home selection.
+    /// `uuid` and not `id`, because it is the identity that survives a roster refetch.
+    ///
+    /// This used to cite [`SourceRef`]'s handle as the same "empty means the owner" convention. It
+    /// is not one any more and never quite was: an empty [`SourceRef::shared_by`] is *nobody to
+    /// credit*, which covers the household's server and an unnamed share as well as our own.
     pub user: String,
     pub terms: Vec<String>,
 }
@@ -287,6 +290,14 @@ pub struct RecentSearches {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct HomeUserRef {
+    /// This member's plex.tv **account id** (`/api/v2/home/users[].id`) — the identity
+    /// [`Session::household_ids`] hands the "Shared by …" rule, and the reason it is here at all.
+    /// It is the SAME id space as `account::Resource::owner_id`: the admin's row carries the id
+    /// `/api/v2/user` reports for the account itself (measured 2026-09-03 on the dev account), so
+    /// "does this server's owner live in this house" is an integer comparison rather than a
+    /// comparison of two differently-sourced display names. `0` in every file written before this
+    /// field existed, and `0` never matches — see [`super::servers::is_household`].
+    pub id: i64,
     pub uuid: String,
     pub title: String,
     pub thumb: String,
@@ -362,8 +373,14 @@ pub struct SourceRef {
     pub machine_id: String,
     /// The machine name ("nas-home"). Settings surfaces only — a person is named by `shared_by`.
     pub name: String,
-    /// The OWNER's plex.tv handle (`sourceTitle`), empty on our own server. The one string the
-    /// browsing UI ever says about a share: "Shared by friend".
+    /// **The CREDIT** — whom to name, empty when there is nobody to name. It is
+    /// [`super::servers::owner_credit`]'s answer, decided once at ingest (`auth::credit_of`), and
+    /// deliberately NOT the raw `sourceTitle` it used to be: plex.tv puts the Plex Home ADMIN's
+    /// handle here for a managed profile's own household server, so the raw field named the person
+    /// watching. Empty therefore covers three cases and the UI treats them alike — our own server,
+    /// the household's, and a share plex.tv did not name.
+    ///
+    /// The one string the browsing UI ever says about a source: "Shared by friend".
     pub shared_by: String,
     /// False ⇒ shared with us. A preference (ours sorts first, ours is `current`), never a wall.
     pub owned: bool,
@@ -396,8 +413,14 @@ impl SourceRef {
     /// out entirely — it is a permanent household fingerprint (`ui::stats`), and the event log is
     /// the file we ask users to send us.
     pub fn describe(&self) -> String {
+        // Three states, not two: `owned` is plex.tv's flag about this ACCOUNT, and a source that is
+        // not ours may still credit nobody — the household's own server seen by a managed profile,
+        // or a share plex.tv never named. That case used to print the dangling `shared by ` with
+        // the name missing, which reads as a bug in the logger rather than as the fact it is.
         let who = if self.owned {
             "ours".to_string()
+        } else if self.shared_by.is_empty() {
+            "not owned, uncredited".to_string()
         } else {
             format!("shared by {}", self.shared_by)
         };
@@ -651,6 +674,47 @@ impl Session {
             .find(|u| u.uuid == self.user.uuid)
             .map(|u| u.admin)
             .unwrap_or(false)
+    }
+
+    /// **Everyone in this house, as plex.tv account ids** — the input to
+    /// [`super::servers::is_household`] and so to the one "Shared by …" rule: a server whose
+    /// `ownerId` is in here belongs to the household and credits nobody.
+    ///
+    /// **The Plex Home ROSTER and nothing else, so that an empty answer means exactly one thing:
+    /// the roster could not answer.** The rule leans on that — it falls back to plex.tv's
+    /// undocumented `home` flag precisely when this list is empty — so anything else in here would
+    /// be an id that silences the fallback without being able to replace it.
+    ///
+    /// [`UserRef::id`], the WATCHING profile's own id, is therefore deliberately NOT included, and
+    /// it took a review to see why it must not be. It looks free (a server owned by the person
+    /// watching is already `owned:true` to them, so it can never be the id that decides a case) and
+    /// it is not: a session upgraded from a build without [`HomeUserRef::id`] has a whole roster of
+    /// zeroes and a `user.id` the `/switch` wrote long ago, which made this return
+    /// `[the-managed-profile]` — non-empty, so `home` was ignored — while the id that would have
+    /// mattered, the ADMIN's, was one of the zeroes that got filtered. That is the exact legacy
+    /// session the fallback exists for, and it was the only one it could not reach.
+    ///
+    /// **An empty answer means "we cannot enumerate the house", never "the house is empty"** —
+    /// exactly the trap [`Session::active_profile_is_admin`] documents one function up, and it
+    /// falls the same way: an id we do not hold matches nothing, so the rule degrades to plex.tv's
+    /// own `owned`/`home` flags rather than to a confident wrong answer about somebody's server.
+    /// `0` is filtered because it is the "no id" value on both sides of the comparison — an entry
+    /// from a file written before [`HomeUserRef::id`] existed, and `Resource::ownerId` on our own
+    /// server — and letting those two zeroes meet would credit-suppress by accident.
+    ///
+    /// In practice the roster is rewritten WHOLESALE from one `/api/v2/home/users` response, so it
+    /// is all zeroes (an old build wrote it) or none. That is the writer's behaviour and not an
+    /// invariant anything enforces — `HomeUser::id` is individually `#[serde(default)]`, so a wire
+    /// shape omitting one member's id would yield a mixed roster. A mixed roster degrades the right
+    /// way regardless: the ids present still decide their own cases, and the ones missing fall
+    /// through to the same "outside the house" default an un-enumerable roster gets, one member at
+    /// a time instead of all at once.
+    pub fn household_ids(&self) -> Vec<i64> {
+        self.home_users
+            .iter()
+            .map(|u| u.id)
+            .filter(|&id| id != 0)
+            .collect()
     }
 
     /// **Is the profile this session would resume as behind a PIN?**
@@ -1910,6 +1974,90 @@ mod tests {
         unknown.home_users.clear();
         assert!(!unknown.active_profile_is_admin());
         assert!(!home("u-nobody").active_profile_is_admin());
+    }
+
+    /// **Who lives in this house** — the ids the "Shared by …" rule asks
+    /// `plex::servers::is_household` with, which is the Plex Home ROSTER and nothing else.
+    ///
+    /// The rule falls back to plex.tv's undocumented `home` flag exactly when this list is empty,
+    /// so emptiness has to mean one thing — *the roster could not answer* — and every case below
+    /// is about keeping it meaning that.
+    #[test]
+    fn the_household_is_the_home_roster_and_emptiness_means_it_could_not_answer() {
+        let s = Session {
+            user: UserRef {
+                id: 333_333,
+                uuid: "u-kid".into(),
+                ..Default::default()
+            },
+            home_users: vec![
+                HomeUserRef {
+                    id: 111_111,
+                    uuid: "u-owner".into(),
+                    admin: true,
+                    ..Default::default()
+                },
+                HomeUserRef {
+                    id: 222_222,
+                    uuid: "u-guest".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            s.household_ids(),
+            vec![111_111, 222_222],
+            "the roster, and NOT `user.id` — see the case below and the function's own doc"
+        );
+
+        // **`0` is filtered, and that is the compatibility case rather than a tidy-up.** A roster
+        // read off a file written before `HomeUserRef::id` existed is all zeroes, and our own
+        // server's `ownerId` is `0` too — letting those two meet would suppress a credit by
+        // accident, on evidence that is only the absence of evidence.
+        let legacy = Session {
+            home_users: vec![HomeUserRef {
+                uuid: "u-owner".into(),
+                admin: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(
+            legacy.household_ids().is_empty(),
+            "an un-enumerable house is empty, not a house containing nobody-id-zero"
+        );
+
+        // **The upgraded managed session, and the reason `user.id` is not in this list.** Every
+        // roster id is still the legacy `0`, and the `/switch` that chose this profile wrote a real
+        // `user.id` long ago. Including it made the answer NON-empty — which
+        // `plex::servers::is_household` reads as "the house can speak for itself" and uses to
+        // silence the `home` fallback — while the one id that could have decided the case, the
+        // ADMIN's, was among the zeroes that get filtered. The result was the reported bug
+        // surviving on exactly the sessions the fallback was added for.
+        let upgraded = Session {
+            user: UserRef {
+                id: 333_333,
+                uuid: "u-kid".into(),
+                ..Default::default()
+            },
+            home_users: vec![
+                HomeUserRef {
+                    uuid: "u-owner".into(),
+                    admin: true,
+                    ..Default::default()
+                },
+                HomeUserRef {
+                    uuid: "u-kid".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(
+            upgraded.household_ids().is_empty(),
+            "a roster of zeroes cannot enumerate the house, whoever is watching"
+        );
     }
 
     /// **The stored profile's PIN flag — what the boot picker's BACK is gated on.** The escalation

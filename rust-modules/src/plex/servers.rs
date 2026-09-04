@@ -148,13 +148,117 @@ pub struct ServerFacts {
     /// The MACHINE name — "nas-home". "People in content, machines in settings": this is drawn
     /// only where the grant itself is the subject, i.e. the Sources list's group headers.
     pub name: String,
-    /// The owner's plex.tv handle — "friend". **Empty on your own server**, and empty is the
-    /// ABSENCE of an owner rather than an anonymous one: every surface that annotates a source
-    /// draws nothing at all for it, no separator and no empty run.
+    /// **The CREDIT** — the person to name, or empty when there is nobody to name. It is
+    /// [`owner_credit`]'s answer and never a raw `sourceTitle`; read that function's doc before
+    /// changing anything that writes this field.
+    ///
+    /// Empty is the ABSENCE of an owner rather than an anonymous one: every surface that annotates
+    /// a source draws nothing at all for it, no separator and no empty run. Empty for our own
+    /// server, for the household's server whichever Plex Home profile is watching, and for a share
+    /// plex.tv has not named.
     pub handle: String,
-    /// This account owns the server (`account::Resource.owned`). Not derivable from an empty
-    /// handle: a share whose `sourceTitle` plex.tv did not send is still a share.
+    /// This ACCOUNT owns the server (`account::Resource.owned`) — plex.tv's own flag, carried
+    /// through unedited. Not derivable from an empty handle in either direction: a share whose
+    /// `sourceTitle` plex.tv did not send is still a share, and a Plex Home managed user does not
+    /// "own" the household server they watch every day.
     pub owned: bool,
+}
+
+/// One `/api/v2/resources` row reduced to **whose server it is** — the four fields the credit rule
+/// reads, and nothing else. `account::Resource::grant` is the one place a wire row becomes one of
+/// these; everything downstream (`auth`'s three ingest sites, this module's tests) takes the
+/// reduced form so the rule cannot quietly grow a fifth input at one call site only.
+#[derive(Clone, Copy, Default)]
+pub struct Grant<'a> {
+    /// plex.tv's `owned`: this ACCOUNT owns the server. `false` for a friend's share **and** for
+    /// the household's own server seen through a Plex Home managed profile — which is the whole
+    /// reason this is not the rule by itself.
+    pub owned: bool,
+    /// plex.tv's `home` on the resource: the grant reaches us through our own Plex Home.
+    pub home: bool,
+    /// plex.tv's `ownerId`: the account id of whoever owns the server, `0` on our own.
+    pub owner_id: i64,
+    /// plex.tv's `sourceTitle`: the owner's handle, empty when plex.tv did not name them.
+    pub source_title: &'a str,
+}
+
+/// **Is this grant OUR HOUSEHOLD'S?** — our own server, or one that reaches us through the Plex
+/// Home this session belongs to.
+///
+/// `household` is the plex.tv account ids of the Home's members — `session::Session::household_ids`,
+/// which is the `/api/v2/home/users` ROSTER and nothing else: the admin, every managed user, and
+/// every ordinary account that has joined the Home. **Two signals, and they are not equals: the
+/// second only speaks when the first cannot.**
+///
+/// * **`ownerId` against the household ids** decides it whenever the house can be enumerated, and
+///   it is the MEASURED signal. `/api/v2/home/users` returns each member's plex.tv `id`, and the
+///   admin row's `id` is byte-identical to `/api/v2/user`'s `id` (measured 2026-09-03 on the dev
+///   account) — so `Resource::ownerId` and `HomeUser::id` are one id space and the comparison
+///   means what it reads as. `0` is "plex.tv sent no owner" and must never match a household id,
+///   hence the guard.
+/// * **`home`** is Plex's own flag for the same question and is **community-tier at best**:
+///   python-plexapi documents it as *"home (bool): Unknown"*. One reading of it IS refuted here —
+///   this account is a Plex Home ADMIN (`homeSize` 3) and BOTH of its grants, the owned server and
+///   a friend's share, come back `home:false`, so it is not "the owner has a Plex Home" — but the
+///   reading we want, "this grant is a Home grant", has never been observed TRUE by anybody here.
+///
+/// **So `home` is consulted only for a session that cannot enumerate its own house** — `household`
+/// empty, which `session::Session::household_ids` is built so as to mean exactly that and nothing
+/// else: a roster from a file written before `HomeUserRef::id` existed, or a sign-in whose
+/// `/api/v2/home/users` has not landed yet. An undocumented flag must not be able to take a credit
+/// away from a friend's share on the strength of a name — that is the ONE way this rule can regress
+/// a case that works today — and gating it on the measured signal being unavailable means the worst
+/// it can do is withhold a credit for as long as the roster is un-enumerable, which is until the
+/// next `/api/v2/home/users`.
+///
+/// The gate is what makes that list's contents load-bearing rather than a convenience, and the
+/// trap is not hypothetical: while the watching profile's own id was in there, an upgraded managed
+/// session (every roster id still `0`, a `user.id` written by an old `/switch`) came back
+/// NON-empty, which silenced `home` with an id that could never match anybody's `ownerId`.
+pub fn is_household(g: Grant<'_>, household: &[i64]) -> bool {
+    g.owned
+        || (household.is_empty() && g.home)
+        || (g.owner_id != 0 && household.contains(&g.owner_id))
+}
+
+/// **THE "Shared by …" RULE, and the only one.** Whom a server is credited to, `""` for nobody.
+///
+/// > A server is credited to a person when, and only when, plex.tv says it belongs to somebody
+/// > **outside this household** and names them.
+///
+/// So the credit is `sourceTitle` exactly when the grant is not [`is_household`]'s and the handle
+/// is non-empty, and `""` in all four other cases:
+///
+/// | the server | plex.tv says | drawn |
+/// |---|---|---|
+/// | our own | `owned:true`, `sourceTitle:null` | nothing |
+/// | the household's, seen by a Plex Home managed profile | `owned:false`, the admin in `sourceTitle`, `ownerId` = the admin's | nothing |
+/// | a friend's share | `owned:false`, their handle, their `ownerId` | `Shared by <handle>` |
+/// | a share plex.tv did not name | `owned:false`, `sourceTitle` absent/empty | nothing |
+///
+/// **Absence is the safe direction and the rule is written to fall that way**, which is the whole
+/// reason it exists: the bug it closes is the app telling the person watching that their own
+/// household's library was *"Shared by"* the account holder — an annotation that is not merely
+/// noise but a false statement about who owns what, drawn on the hero, the detail page's facts
+/// row, the Library read-out, the search results and the "Also available" rows at once. A credit
+/// that is late (an unnamed share, a household we cannot yet enumerate) costs one quiet line of
+/// attribution; a credit that is wrong costs the user's trust in every other line beside it.
+///
+/// **A NOTE ON WHAT IS INSIDE THE HOUSEHOLD.** A second server owned by another member of the same
+/// Plex Home is *not* credited either, and that is a decision rather than a side effect: a Plex
+/// Home is one household sharing one subscription, "Shared by" means somebody outside it lent you
+/// their library, and one rule that says "inside the house, nobody is a guest" is worth more than
+/// a second rule for a case nobody here can measure. Change it here, not per screen.
+///
+/// Every "Shared by …" in the app is [`crate::ui::fmt::shared_by`] applied to
+/// [`ServerFacts::handle`], and this is the only function that decides what goes into that field —
+/// see `docs/shared-servers.md` §13.
+pub fn owner_credit<'a>(g: Grant<'a>, household: &[i64]) -> &'a str {
+    if is_household(g, household) {
+        ""
+    } else {
+        g.source_title
+    }
 }
 
 /// The table. A null slot is unpopulated; a non-null one is a leaked `Client` that is never
@@ -180,7 +284,27 @@ static ACTIVE: AtomicU32 = AtomicU32::new(0);
 /// Monotone epoch of the active roster's identity. It moves when a slot appears/disappears or is
 /// re-pointed, even when the active COUNT stays the same, so cached fan-out stores can distinguish
 /// `{0,1}` from `{0,2}` and can discard work aimed at a superseded origin.
+///
+/// **A re-DESCRIBE is deliberately not one of those**, and the distinction is load-bearing: this
+/// counter is what several stores read as "the set of servers I am working against has changed, so
+/// discard what is in flight". Restating a fact about a server already in the table is a different
+/// event, it invalidates nothing that was asked of that server, and it has its own counter one
+/// definition down.
 static ROSTER_GEN: AtomicU32 = AtomicU32::new(1);
+/// Monotone epoch of the published [`ServerFacts`] — it moves on every [`describe_locked`], and on
+/// nothing else. The counter beside it answers "which servers am I working against"; this one
+/// answers "what do I say ABOUT them", and a store that conflated the two paid for it in both
+/// directions.
+///
+/// **It exists because a cached projection cannot otherwise see a fact being restated.**
+/// `pms::roster_key` — the fingerprint Home's whole source-table rebuild is skipped on — was
+/// `(ROSTER_GEN, sections_gen)`, so a corrected "Shared by …" credit was invisible to Home; and
+/// registration bumps `ROSTER_GEN` BEFORE the describe that follows it, so even widening that
+/// counter left a gap in which a rebuild could cache the old credit under the new key and never
+/// revisit. A separate epoch closes both without telling `search`, `person` and `metadata`'s
+/// cross-source resolve — which read `ROSTER_GEN` to discard work aimed at a server set that has
+/// since changed — that their in-flight requests are stale when they are not.
+static FACTS_GEN: AtomicU32 = AtomicU32::new(1);
 /// The first slot that still belongs to the signed-in account. Raised to [`COUNT`] by
 /// [`revoke_all`]; everything below it is a credential of an account that has left.
 ///
@@ -285,6 +409,21 @@ pub fn count() -> usize {
 
 pub fn roster_gen() -> u32 {
     ROSTER_GEN.load(Ordering::Acquire)
+}
+
+/// The [`FACTS_GEN`] epoch — read it beside [`roster_gen`] when a cache projects an AUTHORITATIVE
+/// description (the "Shared by …" credit, and the machine name as a describer stated it) and not
+/// merely which servers are in the table.
+///
+/// **Not every published field moves it**, and the exception is deliberate:
+/// [`commit_reachability_if_current`] can merge a fresher machine NAME — the server naming itself,
+/// on a path that runs per request — without bumping this. A cache that needs to follow that has
+/// the facts POINTER to key on (`ui::search::field::Key` does exactly that, and it is how a name
+/// landing reaches the Search scope line); making a per-request commit move a counter that
+/// `pms::sync_roster` rebuilds Home's whole source table on would be a poor trade for a field Home
+/// does not draw.
+pub fn facts_gen() -> u32 {
+    FACTS_GEN.load(Ordering::Acquire)
 }
 
 /// Every LIVE slot, in registration order — **the granted roster**, since a server is only
@@ -410,27 +549,68 @@ fn current_lifecycle_index(
     (std::ptr::eq(current, expected) && current.token_gen() == token_gen).then_some(i)
 }
 
-/// Record what the roster says about a server. Idempotent and additive: a field given as empty
-/// KEEPS whatever was already known, so a later describer that learned only the machine name (the
-/// server naming itself over `GET /`) cannot blank an owner handle plex.tv already supplied — and
-/// the two ingest paths can land in either order.
+/// Record what the roster says about a server.
+///
+/// **`handle` is AUTHORITATIVE and `name` is MERGED, and the asymmetry is the whole point.**
+///
+/// `handle` is a CREDIT, already decided by [`owner_credit`] at whichever ingest produced it —
+/// never a raw `sourceTitle` — and an empty one is a positive answer, *there is nobody to credit*,
+/// not "I learned nothing". So it REPLACES: passing `""` takes a previously published credit off
+/// the server. It has to. Every caller here holds a roster row that has just been graded by the
+/// rule, and the case that matters is precisely the one where the old answer was wrong — a session
+/// file written by a build that stored the raw `sourceTitle`, replayed at boot by
+/// `auth::install_roster`, or a share whose `sourceTitle` plex.tv has stopped sending. Merging the
+/// credit made `refreshed_sources`' correction unobservable: it persisted the empty credit
+/// faithfully and the registry kept the stale name for the life of the process.
+///
+/// `name` still merges, because a machine NAME genuinely arrives from two describers in either
+/// order and empty there really does mean "I did not learn one". A server naming itself over
+/// `GET /` reaches the table through [`commit_reachability_if_current`] (which merges the name and
+/// carries the existing handle and ownership under the same lock); [`describe_name`] is the same
+/// idea for a caller that has only a name and no request to publish alongside it.
+///
+/// This also enforces the half of the rule it can always see for itself, `owned ⇒ nobody is
+/// credited`, so no describer — the `plxnative-servers` dev trigger, a future one — can put a
+/// person's name on a server this account owns. The other half needs the household, which only the
+/// ingest holds.
 ///
 /// A no-op for an id that names no client: describing a slot nothing dials would leave a row in
 /// the Sources list that cannot be browsed.
 pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    describe_locked(id, name, Some(handle), owned);
+}
+
+/// The body of [`describe`] and [`describe_name`], with the caller holding [`WRITE`].
+///
+/// `credit` says which of the two contracts this describer is under: `Some` is an ANSWER about who
+/// is credited (empty included — that is *nobody*), `None` is "I know nothing about the grant, keep
+/// what is there". Spelling the difference in the type rather than in an empty string is what stops
+/// the two collapsing back together, which is how the raw `sourceTitle` outlived its own correction.
+///
+/// The read-modify-write is inside the critical section for the ordinary reason: [`describe_name`]
+/// reads `facts` and writes back a value derived from it, and an authoritative describe landing
+/// between the two would be overwritten by the stale credit it had just replaced.
+fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, owned: bool) {
     let Some(i) = id.index().filter(|_| client_for(id).is_some()) else {
         return;
     };
     let old = facts(id);
     let merged = ServerFacts {
         name: pick(name, old.map(|f| f.name.as_str())),
-        handle: pick(handle, old.map(|f| f.handle.as_str())),
+        handle: match (owned, credit) {
+            (true, _) => String::new(),
+            (false, Some(c)) => c.to_owned(),
+            (false, None) => old.map(|f| f.handle.clone()).unwrap_or_default(),
+        },
         // `owned` has no "unknown", so the newest answer wins — but a describer that only learned
         // a name passes the flag it read back, which is what makes that a no-op rather than a lie.
         owned,
     };
     FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+    // The PUBLISHED FACTS moved, which every cached projection of them has to be able to notice —
+    // see [`FACTS_GEN`], and note the ordering hazard it closes.
+    FACTS_GEN.fetch_add(1, Ordering::AcqRel);
     // A server learning its own name CHANGES PIXELS — the Search screen's scope line and the
     // Library's Source chip both read it — and it lands asynchronously, well after the first frame.
     // `ui::idle` gates the whole present on detected motion and cannot see a `static` being
@@ -439,23 +619,34 @@ pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
     crate::ui::idle::invalidate();
 }
 
-/// Record a server's MACHINE NAME and nothing else — for the describer that learned it from the
+/// Record a server's MACHINE NAME and nothing else — for a describer that learned it from the
 /// server itself (`GET /` → `friendlyName`) and knows nothing whatever about the grant.
 ///
+/// **It has no production caller today** and is kept because it is the correct shape for that
+/// describer to reappear in: the live one, `Client::friendly_name`'s landing, publishes through
+/// [`commit_reachability_if_current`] instead, which merges the name under the same lock and for
+/// the same reasons.
+///
 /// It exists because [`describe`]'s `owned` has no "unknown" spelling, so a name-only describer has
-/// to pass SOMETHING — and the one call site (`browse`'s discovery landing) computed it as
-/// `handle.is_empty()`, which is precisely the derivation [`ServerFacts::owned`] documents as
-/// wrong: a share whose `sourceTitle` plex.tv did not send has no handle and is still a share. So
-/// every such share flipped to "ours" the moment its friendly name arrived — un-attributing it on
-/// the detail page and the shelf headings, and pinning its libraries to Home by the ownership
-/// default. Carrying the stored flag through is the only honest answer, and doing it HERE rather
-/// than asking each call site to read [`facts`] back is what makes it unforgettable.
+/// to pass SOMETHING — and its call site of the day computed it as `handle.is_empty()`, which is
+/// precisely the derivation [`ServerFacts::owned`] documents as wrong: a share whose `sourceTitle`
+/// plex.tv did not send has no handle and is still a share. So every such share flipped to "ours"
+/// the moment its friendly name arrived — un-attributing it on the detail page and the shelf
+/// headings, and pinning its libraries to Home by the ownership default. Carrying the stored flag
+/// through is the only honest answer, and doing it HERE rather than asking each call site to read
+/// [`facts`] back is what makes it unforgettable.
 ///
 /// A slot nothing has described yet reads as ours, which is not a guess: the only registration that
 /// does not describe is [`install`], the SESSION path, whose server is the account's own.
+///
+/// The CREDIT is preserved for the same reason and by the same means as `owned` — `credit: None`,
+/// the "I know nothing about the grant" arm of [`describe_locked`]. A name-only describer that
+/// passed `""` would un-attribute a friend's share the moment its friendly name arrived: the exact
+/// shape of the `owned` bug this function was written to close, one field over.
 pub fn describe_name(id: ServerId, name: &str) {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let owned = facts(id).map(|f| f.owned).unwrap_or(true);
-    describe(id, name, "", owned);
+    describe_locked(id, name, None, owned);
 }
 
 /// `new` when it says something, else whatever was already known.
@@ -849,6 +1040,7 @@ pub(crate) fn reset_for_test() {
     COUNT.store(0, Ordering::Release);
     ACTIVE.store(0, Ordering::Release);
     ROSTER_GEN.store(1, Ordering::Release);
+    FACTS_GEN.store(1, Ordering::Release);
     // The floor goes back with the count, or every test after one that signed out would register
     // into slots the walk starts above — a table that reads as empty however much is in it.
     FLOOR.store(0, Ordering::Release);
@@ -1151,9 +1343,15 @@ mod tests {
     }
 
     /// The roster half: [`ids`] walks every registered slot in registration order (that IS the
-    /// granted roster), and [`describe`] MERGES rather than replaces — the two ingest paths (plex.tv,
-    /// which knows the owner, and the server naming itself over `GET /`, which knows only the machine
-    /// name) land in either order without either one blanking the other's field.
+    /// granted roster), and [`describe`] merges the machine NAME rather than replacing it — the two
+    /// describers of a name (plex.tv's roster, and the server naming itself, which arrives through
+    /// [`commit_reachability_if_current`]) land in either order without either blanking the other.
+    ///
+    /// The CREDIT is the field that does not merge, and
+    /// [`an_authoritative_describe_can_take_a_credit_away_again`] is where that is graded: every
+    /// caller of [`describe`] holds a roster row the rule has just answered about, and an empty
+    /// answer is *nobody*. The describer that knows only a name is [`describe_name`], which carries
+    /// the credit through rather than spelling an absence it cannot vouch for.
     #[test]
     fn the_roster_walks_in_registration_order_and_describing_it_never_blanks_a_known_field() {
         let _g = fresh();
@@ -1171,7 +1369,7 @@ mod tests {
 
         // plex.tv first (owner known, no machine name in this path), then the server itself
         describe(b, "", "friend", false);
-        describe(b, "nas-home", "", false);
+        describe_name(b, "nas-home");
         let f = facts(b).expect("described");
         assert_eq!(
             (f.name.as_str(), f.handle.as_str(), f.owned),
@@ -1180,7 +1378,7 @@ mod tests {
 
         // and the other order, on the other slot
         describe(a, "mac-mini", "", true);
-        describe(a, "", "", true);
+        describe_name(a, "");
         let f = facts(a).expect("described");
         assert_eq!(
             (f.name.as_str(), f.handle.as_str(), f.owned),
@@ -1461,6 +1659,200 @@ mod tests {
         assert_eq!(
             facts(c).map(|f| (f.name.as_str(), f.owned)),
             Some(("Mac mini", true))
+        );
+    }
+
+    /// **[`owner_credit`]'s whole table**, one case per row of the doc — the rule this module owns
+    /// and the six screens read through [`ServerFacts::handle`].
+    ///
+    /// The field values are the live 2026-09-03 `/api/v2/resources` shapes with stand-in
+    /// identities: an owned server sends `sourceTitle`/`ownerId` as explicit nulls (`""`/`0` after
+    /// `Resource::grant`), a share sends the owner's handle and their plex.tv account id, and
+    /// `ownerId` shares an id space with `/api/v2/home/users[].id`.
+    #[test]
+    fn a_credit_names_a_person_outside_the_household_and_nobody_else() {
+        const ADMIN: i64 = 111_111;
+        const MANAGED: i64 = 222_222;
+        const FRIEND: i64 = 987_654;
+        let house = [ADMIN, MANAGED];
+
+        // ours — plex.tv names no owner at all, and `owned` says so on its own
+        let own = Grant {
+            owned: true,
+            ..Grant::default()
+        };
+        assert_eq!(owner_credit(own, &house), "");
+
+        // THE REPORTED BUG. Seen through a Plex Home managed profile, the household's own server
+        // is not "owned" and DOES carry a handle — the admin's. Both of plex.tv's household
+        // signals are asserted independently, because each has to carry the case on its own: the
+        // id comparison is the measured one, `home` is the one that still works on a roster whose
+        // `HomeUserRef::id`s a previous build never wrote.
+        let household_server = Grant {
+            owned: false,
+            home: true,
+            owner_id: ADMIN,
+            source_title: "admin",
+        };
+        assert_eq!(owner_credit(household_server, &house), "");
+        assert_eq!(
+            owner_credit(
+                Grant {
+                    home: false,
+                    ..household_server
+                },
+                &house
+            ),
+            "",
+            "the ownerId is enough on its own"
+        );
+        assert_eq!(
+            owner_credit(
+                Grant {
+                    owner_id: 0,
+                    ..household_server
+                },
+                &[]
+            ),
+            "",
+            "and `home` carries it for a session that cannot enumerate its own house"
+        );
+        // …but ONLY then. `home` is undocumented ("Unknown", python-plexapi) and must never be
+        // able to take a credit away from a friend's share on the strength of its name, so the
+        // measured signal silences it the moment the house can answer for itself.
+        assert_eq!(
+            owner_credit(
+                Grant {
+                    owned: false,
+                    home: true,
+                    owner_id: FRIEND,
+                    source_title: "friend",
+                },
+                &house
+            ),
+            "friend",
+            "an enumerable household outranks `home`"
+        );
+
+        // a friend: outside the house, named, and still credited — the case a rule that
+        // over-suppresses would break, which is the only way this change can regress anything
+        let share = Grant {
+            owned: false,
+            home: false,
+            owner_id: FRIEND,
+            source_title: "friend",
+        };
+        assert_eq!(owner_credit(share, &house), "friend");
+        assert_eq!(
+            owner_credit(share, &[]),
+            "friend",
+            "an un-enumerable household does not silence a share"
+        );
+
+        // a share plex.tv has not named yet: no credit rather than an anonymous one
+        assert_eq!(
+            owner_credit(
+                Grant {
+                    source_title: "",
+                    ..share
+                },
+                &house
+            ),
+            ""
+        );
+
+        // `0` is "no id" on BOTH sides and the two zeroes must never meet: a roster entry written
+        // before `HomeUserRef::id` existed carries one, and so does our own server's `ownerId`.
+        assert_eq!(
+            owner_credit(
+                Grant {
+                    owner_id: 0,
+                    ..share
+                },
+                &[0, ADMIN]
+            ),
+            "friend"
+        );
+    }
+
+    /// [`describe`] enforces the half of the rule it can see for itself, so that no describer can
+    /// put a person's name on a server this account owns — not a roster entry read off disk that a
+    /// previous build wrote the raw `sourceTitle` into, and not the `plxnative-servers` dev
+    /// trigger. The other half needs the household, which only the ingest holds.
+    ///
+    /// The clear has to beat the MERGE, which is the subtle part: `describe` keeps a known field
+    /// when the new one is empty, so "there is nobody to credit" cannot be spelled as an empty
+    /// handle — it would read as "I learned nothing" and keep the wrong name.
+    #[test]
+    fn describing_a_server_we_own_takes_any_credit_off_it() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+
+        // what a build without the rule persisted, replayed by `install_roster` at boot
+        describe(a, "Mac mini", "admin", false);
+        assert_eq!(facts(a).map(|f| f.handle.as_str()), Some("admin"));
+
+        describe(a, "Mac mini", "", true);
+        assert_eq!(
+            facts(a).map(|f| (f.handle.as_str(), f.owned)),
+            Some(("", true)),
+            "owned means nobody is credited, and it outranks the keep-what-you-knew merge"
+        );
+
+        // and it is not a blanket ban on the merge: the machine NAME still merges, because that
+        // one really does arrive from two describers in either order
+        let b = reg("mach-B", "10.0.0.2", "tok-b");
+        describe(b, "nas-home", "friend", false);
+        describe(b, "", "friend", false);
+        assert_eq!(
+            facts(b).map(|f| (f.name.as_str(), f.handle.as_str())),
+            Some(("nas-home", "friend"))
+        );
+    }
+
+    /// **An authoritative describe TAKES A CREDIT OFF a server we do not own** — the half that
+    /// makes the fix observable at all, and the half a merge cannot express.
+    ///
+    /// This is the reported bug's own recovery path. A session file written before the rule
+    /// existed holds the account holder's raw handle against the household's server;
+    /// `auth::refreshed_sources` re-grades it to no-credit and persists that, and
+    /// `auth::install_roster` republishes the roster as `describe(id, name, "", owned=false)` —
+    /// which is exactly `owned:false` with an empty credit. While the credit merged, that call
+    /// was a no-op and the wrong name outlived every correction for the life of the process.
+    ///
+    /// `describe_name` is the case that has to keep NOT clearing, and it does so by carrying the
+    /// credit rather than by the merge: a server naming itself over `GET /` knows nothing about
+    /// the grant and may not un-attribute a share.
+    #[test]
+    fn an_authoritative_describe_can_take_a_credit_away_again() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+
+        // the stale publication: an older build's persisted `sourceTitle`, replayed at boot
+        describe(a, "Mac mini", "admin", false);
+        assert_eq!(facts(a).map(|f| f.handle.as_str()), Some("admin"));
+
+        // the corrected roster's very next boot — same call shape, empty credit
+        describe(a, "Mac mini", "", false);
+        assert_eq!(
+            facts(a).map(|f| (f.handle.as_str(), f.owned)),
+            Some(("", false)),
+            "an empty credit is `nobody`, not `I learned nothing`"
+        );
+
+        // a share whose handle plex.tv stops sending loses the credit by the same route
+        let b = reg("mach-B", "10.0.0.2", "tok-b");
+        describe(b, "nas-home", "friend", false);
+        describe(b, "nas-home", "", false);
+        assert_eq!(facts(b).map(|f| f.handle.as_str()), Some(""));
+
+        // …while the describer that knows only a NAME still cannot un-attribute anybody
+        let c = reg("mach-C", "10.0.0.3", "tok-c");
+        describe(c, "", "friend", false);
+        describe_name(c, "nas-loft");
+        assert_eq!(
+            facts(c).map(|f| (f.name.as_str(), f.handle.as_str(), f.owned)),
+            Some(("nas-loft", "friend", false))
         );
     }
 }

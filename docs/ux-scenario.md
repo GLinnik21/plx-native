@@ -114,15 +114,15 @@ QA:
 
 - **Search is a peer, not a page.** BACK from Search returns to Home. What Search *opens* stacks;
   Search itself does not.
-- **BACK at Home's own root is the end of the chain.** It does not quit. It raises the app's one
-  decision alert (§5.9).
+- **BACK at Home's own root is the end of the chain.** It does not quit and it does not ask. It
+  hands the screen back to the television's own Home, with the app still running (§5.9).
 
 ### 2.3 EXIT
 
-The remote's **EXIT** key terminates the app outright and does **not** raise the alert — the alert
-exists so that BACK cannot quit by accident, and a key labelled EXIT carries no such ambiguity
-(`app.rs`, the `Key::Exit` arm). Device-verified 2026-08-22: press → `EXIT key: terminating` in the
-event log → the process is gone.
+The remote's **EXIT** key terminates the app outright, and since 2026-09-03 it is the ONLY key
+that does: BACK cannot quit from anywhere, by accident or otherwise, and a key labelled EXIT
+carries no such ambiguity (`app.rs`, the `Key::Exit` arm). Device-verified 2026-08-22: press →
+`EXIT key: terminating` in the event log → the process is gone.
 
 ---
 
@@ -201,8 +201,8 @@ start, so it opens its page, waits for the load to land on the expected item, an
 Play only then — never blindly, because a failed fetch would otherwise play whatever page was open
 before. On any other shelf, a show or season card simply opens its page.
 
-**BACK** from the shelves returns focus to the hero row; BACK at the hero row raises the exit alert
-(§5.9).
+**BACK** from the shelves returns focus to the hero row; BACK at the hero row is the ROOT press and
+shows the television's own Home screen, with the app still running (§5.9).
 
 **Overscan.** The UI is authored at a fixed logical 1920×1080 with a 90 px horizontal margin
 (4.7%), inside LG's 5% overscan frame; nothing load-bearing is drawn outside it.
@@ -224,7 +224,9 @@ draws rather than cutting to it. (LG's guidance is explicit that the splash shou
 Reached automatically when there is no usable session, and on demand from the account menu. It shows
 a **QR code** and a **four-character link code**, with the instruction to scan it or go to
 `plex.tv/link` and enter the code. A spinner reads *"Waiting for you to sign in…"* and the screen
-advances by itself the moment the account is linked — there is nothing to press.
+advances by itself the moment the account is linked. Nothing needs pressing; after a minute with no
+answer the spinner's line becomes *"Still waiting — press OK for a new code"*, and OK mints a fresh
+code without leaving the screen.
 
 *The code in the figure is a one-time, short-lived claim code. It names no account.*
 
@@ -365,16 +367,29 @@ lead back into more detail pages. The BACK trail unwinds the whole chain.
 
 For a series, the page carries its seasons and episodes rather than a single action row.
 
-### 5.9 Exit alert
+### 5.9 The root press
 
-![Exit alert](screenshots/ux-exit-alert.jpg)
+**BACK at a root shows the television's own Home screen, and the app keeps running.** Three roots
+today: Home's own root, the who's-watching picker and the QR sign-in.
 
-Raised by **BACK at Home's root** — the app's only decision alert. Two buttons: **Cancel**, focused
-by default and drawn in the affirmative face, and **Exit** in the destructive face. LEFT/RIGHT
-chooses, OK commits, BACK cancels.
+**One screen with nothing behind it is NOT yet covered**, and saying so is the point of writing the
+list out — the first-run consent question still swallows BACK at its first stage. Going to the LG
+Home would neither answer nor dismiss it, so nothing would be stranded and it ought to behave like
+the other three; what stops it is that `consent::on_back` reports the same value whether it stepped
+back a stage or swallowed the press, so the key arm cannot tell those apart. `app.rs`'s consent arm
+carries the whole account.
 
-Before 2026-08-21 BACK at Home quit on the press. The alert exists because that is a lot of state to
-discard on one keystroke and there was no undo.
+There is no figure, because the screen it produces is LG's launcher and not ours.
+
+This is the platform's behaviour rather than a choice: LG's back-button guide says that at an app's
+entry page the platform "launches the Home launcher on webOS TV 5.0 or lower", and LG's submission
+rules require entry-page BACK to show the Home screen. It took three shapes to get there. Until
+2026-08-21 BACK at Home quit on the press, which discarded a lot of state on one keystroke with no
+undo. Until 2026-09-03 it raised a Cancel/Exit alert instead — which fixed the accident and kept the
+wrong destination, and which the picker and the sign-in screen never had at all. On those two, BACK
+appeared to do nothing; on the sign-in screen it was worse than nothing, because it silently killed
+the pin poller behind the QR code it left on screen. The remote's EXIT key still terminates the
+app; BACK no longer does, anywhere.
 
 ### 5.10 Failure read-out
 
@@ -712,7 +727,7 @@ be.
 
 | figure | source | status |
 |---|---|---|
-| Home hero, Home shelves, Detail, Card menu, Library grid, Library sort, Search, Account menu, Sign in, Exit alert, Failure read-out | simulator, 1920×1080 | **in this document** |
+| Home hero, Home shelves, Detail, Card menu, Library grid, Library sort, Search, Account menu, Sign in, Failure read-out | simulator, 1920×1080 | **in this document** |
 | Player HUD (`screenshots/player.jpg`) | device capture | **in this document** — shows the paused state mark |
 | Player HUD, playing steadily (empty mark slot) | device | **needed** |
 | Player HUD, fast-forward and rewind marks | device | **needed** |

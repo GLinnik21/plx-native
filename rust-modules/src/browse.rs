@@ -473,6 +473,17 @@ pub(crate) fn sections_gen() -> u32 {
     SECTIONS_GEN.load(Ordering::SeqCst)
 }
 
+/// The table's IDENTITY epoch, read out — see [`EPOCH`]'s own doc. A caller that keeps its own
+/// state keyed by SECTION INDEX across more than one frame (`ui::onboard`'s draft, in particular)
+/// must capture this at the point it captured those indices and treat a later mismatch as "the
+/// indices no longer mean what they meant" rather than apply them: `reset` runs on a profile
+/// switch, but also from inside ordinary roster maintenance (`sync_roster`, pumped every frame
+/// while a screen like the first-run route is open) whenever the LIVE roster has dropped a source
+/// the table still holds — a share revoked mid-session, not only a signed-out/signed-in boundary.
+pub(crate) fn table_epoch() -> u32 {
+    EPOCH.load(Ordering::SeqCst)
+}
+
 /// Bumped when a source FACT the Sources list states changes without the table's shape moving: a
 /// machine name learned off the server itself, a library's item count landing, a source flipping
 /// reachable. Deliberately not [`SECTIONS_GEN`], whose documented meaning is the SHAPE and whose
@@ -525,10 +536,11 @@ fn sync_roster() {
         // keep. The list is a handful of servers, so the scan costs nothing.
         let at = sources().iter().position(|s| s.sid == sid);
         match at.and_then(source_mut) {
-            // Steady state — every frame the Library is up — allocates NOTHING: a field is only
-            // read (and cloned) while it is still unknown. A roster that later RENAMES a server we
-            // already have a name for is deliberately not followed: a machine name changing under
-            // an open panel is churn, not news.
+            // Steady state — every frame the Library is up — allocates nothing PER SOURCE: the
+            // machine name is read (and cloned) only while it is still unknown, and the two facts
+            // that DO follow the registry are compared before anything is cloned. See the block
+            // below for which is which and why the answer differs per field. (`sync_roster` itself
+            // still builds one `live: Vec<ServerId>` per call, above — a handful of `u16`s.)
             Some(s) => {
                 let now = crate::plex::client_for(sid);
                 let client_addr = now.map_or(0, |c| c as *const _ as usize);
@@ -552,19 +564,28 @@ fn sync_roster() {
                         crate::ui::idle::invalidate();
                     }
                 }
-                if s.name.is_empty() || s.handle.is_empty() {
-                    if let Some(f) = crate::plex::server_facts(sid) {
-                        if s.name.is_empty() {
-                            s.name = f.name.clone();
-                        }
-                        if s.handle.is_empty() {
-                            s.handle = f.handle.clone();
-                        }
-                        // `owned` follows the roster's answer whenever one lands, unlike the two
-                        // names above: it is not a display string that would churn under an open
-                        // panel but the input to which libraries feed Home, and a source adopted
-                        // before plex.tv described it is optimistically OURS (see the `None` arm).
+                if let Some(f) = crate::plex::server_facts(sid) {
+                    // The machine NAME is a FILL: a roster that later renames a server we already
+                    // have a name for is deliberately not followed, because a machine name changing
+                    // under an open panel is churn, not news.
+                    if s.name.is_empty() {
+                        s.name = f.name.clone();
+                    }
+                    // The CREDIT and the relationship are FOLLOWS, and this cache used to refuse
+                    // both — the whole block sat behind `name.is_empty() || handle.is_empty()`, so
+                    // a source that once had a handle could never lose or change it, and `owned`
+                    // silently inherited that gate despite the comment below claiming otherwise.
+                    // Neither is a name that churns: `handle` is `plex::servers::owner_credit`'s
+                    // ANSWER (empty means *nobody to credit*, not *not learned yet*), and `owned`
+                    // is the input to which libraries feed Home. A background roster refresh that
+                    // corrects either — which is exactly how the household's own server stops being
+                    // captioned "Shared by <the account holder>" — has to reach this panel, or the
+                    // registry is right and the screen is not.
+                    if s.handle != f.handle || s.owned != f.owned {
+                        s.handle = f.handle.clone();
                         s.owned = f.owned;
+                        SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst);
+                        crate::ui::idle::invalidate();
                     }
                 }
                 // The machine id is learned LATE on the one path that matters: a stored session
@@ -1118,6 +1139,7 @@ pub(crate) fn discovery_state() -> SecFetch {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn pinned(i: usize) -> bool {
     sections().get(i).map(|s| s.pinned).unwrap_or(false)
 }
@@ -1126,11 +1148,18 @@ pub(crate) fn pinned_count() -> usize {
 }
 /// Is this the last library feeding Home? Its row draws its value dimmed and states the rule; it
 /// is NOT dimmed whole, because dim means unavailable and this is the library that works.
+#[cfg(test)]
 pub(crate) fn is_last_pinned(i: usize) -> bool {
     pinned(i) && pinned_count() == 1
 }
 /// Flip a library's pin. Returns false — changing nothing — for the last pinned one: unpinning it
 /// would leave Home with nothing to draw, which is the only real failure this control has.
+///
+/// **Test-only since 2026-09-04.** The Home editor writes through [`apply_pins`] — one record for
+/// the whole draft on `Done` — and its BACK no longer undoes per-press writes, because there are
+/// none; this per-press flip and the two predicates above it survive as the fixture the pin
+/// invariants below are graded through.
+#[cfg(test)]
 pub(crate) fn toggle_pin(i: usize) -> bool {
     if is_last_pinned(i) {
         return false;
@@ -1151,6 +1180,44 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     crate::ui::idle::invalidate();
     true
 }
+/// Apply a batch of pin edits and persist ONCE — the Home editor's draft commit
+/// (`ui::onboard::commit`), never a per-toggle write, and since 2026-09-04 the ONLY way a pin is
+/// written by a control at all: the per-press [`toggle_pin`] has no production caller left and is
+/// compiled only for the tests that grade the pin invariants through it. The editor's whole point
+/// is that an editing session can toggle N rows while the route is open, and every one of them
+/// must cost this app nothing until the user explicitly commits, and then exactly one write and
+/// one Home re-merge, not N of each. `i` indexes [`SECTIONS`] exactly as `toggle_pin`
+/// does; an edit naming a since-vanished index is silently dropped rather than panicking, because
+/// the table only ever grows (see this module's header) and a caller holding a draft from before a
+/// `reset` is a lifecycle bug elsewhere, not something this function should crash over.
+///
+/// Trusts the caller's edits rather than re-checking [`is_last_pinned`] per entry — the draft that
+/// produced them already enforced the never-empty floor against its OWN running count as each
+/// toggle was made (`ui::onboard::toggle_draft`), which `toggle_pin`'s per-call check cannot see
+/// mid-edit anyway (it only ever sees what is on disk).
+pub(crate) fn apply_pins(edits: &[(usize, bool)]) {
+    let mut changed = false;
+    unsafe {
+        let secs = &mut *addr_of_mut!(SECTIONS);
+        for &(i, on) in edits {
+            if let Some(s) = secs.get_mut(i) {
+                if s.pinned != on {
+                    s.pinned = on;
+                    changed = true;
+                }
+            }
+        }
+    }
+    // Recorded even when nothing moved: a first-run "Start watching" on the untouched defaults is
+    // still an explicit answer (`record_pins`'s own `asked` rule — a profile that has SEEN the
+    // question and left it alone has still been asked), and the commit's own log line reads
+    // `pinned_count()`/`section_count()` right after this returns regardless.
+    record_pins(true);
+    if changed {
+        SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
+        crate::ui::idle::invalidate();
+    }
+}
 /// Every library this profile has an ANSWER for as `(source index, section key, pinned)` — the
 /// READ side of the pin store, and the ONE projection of it this module exports.
 ///
@@ -1166,7 +1233,8 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
 /// had turned them off. The recorded answer is keyed by machine, precisely the join that is needed.
 ///
 /// NB an EMPTY result STILL means "nothing has been discovered or recorded yet", NOT "nothing is
-/// pinned": [`is_last_pinned`] forbids unpinning the last library, so the pinned set is never
+/// pinned": the never-empty floor (`ui::onboard::toggle_draft` on the editor's draft, `plex::pins`
+/// on a recorded selection) forbids unpinning the last library, so the pinned set is never
 /// legitimately empty. `pms::feeds_home` is written around exactly that distinction.
 ///
 /// The section KEY is what an item carries (`librarySectionID`), so this is the join Home needs to
@@ -1506,6 +1574,87 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
         })
         .collect();
     unsafe { *addr_of_mut!(SOURCES) = v };
+}
+
+/// One reachable, named source with one library per entry of `pinned`, at exactly the pin state
+/// given — a host test on the PIN side's shortcut. [`seed_sources_for_test`] gives `ui::library`'s
+/// tests a roster with no libraries at all, which is right for grading a source's reachability word
+/// and wrong for anything that toggles or commits a pin: `plex::pins::record` needs a real
+/// `(machine_id, key)` pair to write anything down, and an empty-`machine_id` source (what
+/// `seed_sources_for_test` leaves for `k > 0`, and what `n == 0` sections leave regardless) makes
+/// every write a silent no-op — see [`plex::pins::record`](crate::plex::pins::record)'s own doc.
+/// Real discovery goes through `sync_roster` + `append_sections`; this writes `SOURCES`/`SECTIONS`
+/// directly, runs no `resolve_pins`, and touches neither the network nor the session file — a test
+/// that also wants to grade what got PERSISTED still has to set up its own session (redirect a temp
+/// file, `plex::session::save` a `client_id`, `plex::session::set_current`), exactly as `browse`'s
+/// own `TempPins` does for the tests beside this one.
+/// Flip section `i`'s pin directly, with NONE of [`toggle_pin`]'s side effects — no persist, no
+/// generation bump, no "last pinned" refusal. A host test's stand-in for the ONE thing this module
+/// does to a live pin that is not a user's own press: [`resolve_pins`] re-deriving an as-yet
+/// UNRECORDED row's default as the roster's ownership mix changes out from under it (a second
+/// source landing async). `apply_pins`/`toggle_pin` both go through the real path and are what a
+/// test should reach for to simulate an actual toggle; this is for simulating everything else.
+#[cfg(test)]
+pub(crate) fn set_pinned_for_test(i: usize, on: bool) {
+    if let Some(s) = unsafe { (&mut *addr_of_mut!(SECTIONS)).get_mut(i) } {
+        s.pinned = on;
+    }
+}
+
+/// Append ONE more library to the fake source [`seed_pins_for_test`] built, with none of that
+/// function's `reset()` — the structural difference between a library LANDING (`append_sections`,
+/// `SECTIONS_GEN` moves, `EPOCH` does not) and the table's IDENTITY changing (`reset`, both move).
+/// A host test's stand-in for a second source answering after this profile's editor is already
+/// open, without needing the worker/mailbox machinery real discovery goes through.
+#[cfg(test)]
+pub(crate) fn land_pin_for_test(pinned: bool) {
+    unsafe {
+        let secs = &mut *addr_of_mut!(SECTIONS);
+        let key = secs.len() as i64 + 1;
+        secs.push(BrowseSection {
+            src: 0,
+            key,
+            title: format!("Library {}", secs.len()),
+            kind: SecKind::Movie,
+            count: -1,
+            pinned,
+        });
+    }
+    SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn seed_pins_for_test(pinned: &[bool]) {
+    reset();
+    unsafe {
+        *addr_of_mut!(SOURCES) = vec![BrowseSource {
+            sid: crate::plex::current_server(),
+            client_addr: 0,
+            token_gen: 0,
+            machine_id: "mach-test".into(),
+            owned: true,
+            name: "nas-home".into(),
+            handle: String::new(),
+            state: SourceState::Reachable,
+            tier: None,
+            sections_done: true,
+            counts_done: true,
+            retry_cd: 0,
+        }];
+        *addr_of_mut!(SECTIONS) = pinned
+            .iter()
+            .enumerate()
+            .map(|(i, &on)| BrowseSection {
+                src: 0,
+                key: i as i64 + 1,
+                title: format!("Library {i}"),
+                kind: SecKind::Movie,
+                count: -1,
+                pinned: on,
+            })
+            .collect();
+    }
+    SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Re-kick the source behind what the screen is showing — the read-out's *Try again*, and the ONE
@@ -2481,6 +2630,51 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    /// **A corrected credit reaches the Library panel.** `plex::servers::owner_credit` is the one
+    /// rule, but this table is a per-source CACHE in front of it, and it used to fill the handle
+    /// only while its own copy was empty — so a source that had once been captioned could never
+    /// lose or change that caption, whatever the registry later learned.
+    ///
+    /// That is the reported bug's last hop. A session written before the rule existed publishes the
+    /// account holder's own handle against the household's server; the roster refresh re-grades it
+    /// and `describe` takes it off the registry — and the Sources panel and the Library read-out
+    /// went on saying "Shared by …" regardless.
+    ///
+    /// The machine NAME keeps its fill-only behaviour in the same block, deliberately: it is the
+    /// one field here that a rename would churn under an open panel.
+    #[test]
+    fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        let sid = crate::plex::register_for_test("browse-credit", "127.0.0.1", 1, "t", "cid");
+
+        // what a build without the rule left in the registry at boot
+        crate::plex::describe_server(sid, "Mac mini", "admin", false);
+        sync_roster();
+        assert_eq!(
+            sources().first().map(|s| (s.handle.as_str(), s.owned)),
+            Some(("admin", false))
+        );
+
+        // the roster refresh lands, re-graded: nobody is credited for the household's own server
+        crate::plex::describe_server(sid, "Mac mini", "", false);
+        sync_roster();
+        assert_eq!(
+            sources().first().map(|s| s.handle.as_str()),
+            Some(""),
+            "the panel follows the registry off a credit, not only onto one"
+        );
+
+        // …and a rename still does not travel
+        crate::plex::describe_server(sid, "nas-loft", "", false);
+        sync_roster();
+        assert_eq!(sources().first().map(|s| s.name.as_str()), Some("Mac mini"));
+
+        reset();
+        crate::plex::reset_servers_for_test();
+    }
+
     #[test]
     fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
         let _g = crate::testlock::serial();
@@ -3277,6 +3471,35 @@ mod tests {
         assert!(!toggle_pin(2), "the last pinned library is refused");
         assert!(pinned(2), "…and refused means UNCHANGED, not toggled twice");
         assert_eq!(pinned_count(), 1);
+        reset();
+    }
+
+    /// **The editor's commit is one write for the whole batch, not one per toggle.** [`toggle_pin`]
+    /// above records on every call because it has no draft standing between the press and the
+    /// store; [`apply_pins`] is what a caller with one (`ui::onboard`) reaches for instead — every
+    /// edit lands in the SAME `record_pins` call, so an editing session that flips three rows costs
+    /// this app one write and one generation bump, exactly as it costs one press of Done.
+    #[test]
+    fn apply_pins_writes_the_whole_batch_in_one_record() {
+        let _g = crate::testlock::serial();
+        let t = TempPins::new("apply-pins");
+        t.watching("u-owner");
+        seed_two_servers();
+        assert_eq!((pinned(0), pinned(1), pinned(2)), (true, true, false));
+
+        apply_pins(&[(2, true), (1, false)]);
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2)),
+            (true, false, true),
+            "every edit in the batch landed"
+        );
+
+        let sess = crate::plex::session::peek();
+        let rec = sess.pins_for(&crate::plex::session::current_profile_key());
+        assert!(
+            rec.is_some_and(|r| r.asked),
+            "one commit is still a recorded answer"
+        );
         reset();
     }
 

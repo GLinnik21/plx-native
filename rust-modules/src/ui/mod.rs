@@ -20,7 +20,6 @@ pub mod consts;
 pub(crate) mod decision_alert;
 pub mod detail;
 pub(crate) mod document_reader;
-pub mod exit_alert; // the app's ONE decision alert: BACK at Home's root asks before it quits
 pub mod fmt; // shared duration/clock display formatters
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)

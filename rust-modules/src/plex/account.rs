@@ -120,10 +120,38 @@ impl AccountClient {
         self.post(&format!("{PLEX_TV}/api/v2/pins?strong=false"))
     }
 
-    /// GET /api/v2/pins/{id} — poll a pending PIN. `Pin.auth_token` becomes `Some` once the user
-    /// approves it (scans the QR / enters the code + signs in); poll until then or `expires_in`.
-    pub fn poll_pin(&self, id: i64) -> Option<Pin> {
-        self.get(&format!("{PLEX_TV}/api/v2/pins/{id}"))
+    /// GET /api/v2/pins/{id} — poll a pending PIN, GRADED. `Pin.auth_token` becomes `Some` once
+    /// the user approves it (scans the QR / enters the code + signs in); poll until then, or until
+    /// the pin stops existing.
+    ///
+    /// **It returns [`PinPoll`] rather than `Option<Pin>` because the caller has to tell a dead
+    /// pin from a bad moment**, and an `Option` cannot. See [`PinPoll::Gone`].
+    pub fn poll_pin(&self, id: i64) -> PinPoll {
+        let url = format!("{PLEX_TV}/api/v2/pins/{id}");
+        let Some(resp) = crate::net::https_get(&url, &self.headers()) else {
+            return PinPoll::Unreachable;
+        };
+        let status = resp.status;
+        // `decode` owns the logging for both of its failures, so this only has to say what the
+        // status MEANS for a pin: whether there is still something to wait for.
+        //
+        // **[`PinToken`], not [`Pin`], and the narrowness is the point.** This response is the one
+        // place the account credential can ever appear, and a poll that cannot parse it is
+        // indistinguishable from a poll that was never answered — which is the whole shape of the
+        // bug this module is being changed for. `Pin` also carries `id`, `code` and `expiresIn`,
+        // none of which the poll uses and any of which could change TYPE on the service side (a
+        // number arriving as a string is exactly what PMS does elsewhere); that would fail the
+        // whole deserialization and hide a token that was sitting right there. Creation still
+        // takes the wide DTO, because it genuinely needs those fields and its failure is immediate
+        // and visible.
+        match decode::<PinToken>("GET", &url, resp) {
+            Some(p) => match p.auth_token {
+                Some(t) if !t.is_empty() => PinPoll::Authorized(t),
+                _ => PinPoll::Pending,
+            },
+            None if pin_is_gone(status) => PinPoll::Gone,
+            None => PinPoll::Unreachable,
+        }
     }
 
     // ---- server discovery ----
@@ -158,6 +186,44 @@ impl AccountClient {
         };
         self.post(&format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}"))
     }
+}
+
+/// How a poll of a pending link pin came back — the four states the sign-in flow has to tell
+/// apart, which an `Option<Pin>` folds into two.
+///
+/// **[`PinPoll::Gone`] is the one that could not be said before, and it is the whole point.**
+/// plex.tv answers a poll of a pin that has expired — or never existed, or was minted under a
+/// different `X-Plex-Client-Identifier` — with `404 {"code":1020,"message":"Code not found or
+/// expired"}` (measured against the live service 2026-09-03, alongside the `expiresIn: 900` a
+/// fresh pin is created with). The old `poll_pin` returned `None` for that AND for a Wi-Fi drop,
+/// so the sign-in flow could not distinguish "there is nothing left to wait for" from "ask again
+/// in two seconds" — and kept a dead QR code on screen, waiting for a pin plex.tv had forgotten.
+pub enum PinPoll {
+    /// 200, `authToken` still null: nobody has authorized this code yet.
+    Pending,
+    /// 200 with a non-empty `authToken` — the account credential. The only success.
+    Authorized(String),
+    /// This pin no longer exists. Nothing will ever come back for it; mint another.
+    Gone,
+    /// Nothing usable came back and the pin may well still be alive: a transport failure, a 5xx,
+    /// or a 2xx body that did not parse. Retryable.
+    Unreachable,
+}
+
+/// Does this status mean the pin itself is finished, as opposed to the request having been?
+///
+/// **404 is the one plex.tv actually sends, and this list says only what the evidence says.** A
+/// measured 404 (`code 1020`, "Code not found or expired") is the service telling us this id no
+/// longer exists; 410 is the same statement by HTTP's own definition. **400 was here for one
+/// review round and is not any more**: a 400 is a rejection of the REQUEST — headers, syntax, a
+/// service-side validation change — and minting a replacement pin cannot fix any of those, so
+/// reading it as expiry would burn every automatic regeneration in seconds against a fault that
+/// regeneration does not address. It goes back to the retryable side, where the caller's own
+/// deadline bounds it and `decode` has already logged the status.
+///
+/// Anything else — notably a 5xx — is a fact about the service at this instant, not about the pin.
+fn pin_is_gone(status: u16) -> bool {
+    matches!(status, 404 | 410)
 }
 
 /// Status + body → the typed DTO, with a LOG LINE for each of the two ways that fails.
@@ -289,6 +355,16 @@ pub struct Pin {
     pub qr: String,
 }
 
+/// The poll of a pending pin, read as narrowly as it can be: the credential and nothing else.
+///
+/// See [`AccountClient::poll_pin`] for why this is not [`Pin`]. Every field of a DTO is a way for
+/// the parse to fail, and on this endpoint a failed parse is a sign-in that never completes.
+#[derive(Deserialize, Default)]
+struct PinToken {
+    #[serde(rename = "authToken", default)]
+    auth_token: Option<String>,
+}
+
 /// One account server/resource (`/api/v2/resources`) — owned **and** shared alike; `owned` is the
 /// only thing that tells them apart, and it is a preference here, never a wall.
 ///
@@ -327,7 +403,15 @@ pub struct Resource {
     /// handle to show a user is `source_title`.
     #[serde(rename = "ownerId", default, deserialize_with = "de_i64")]
     pub owner_id: i64,
-    /// The server is in the account's Plex Home (a shared *household*, not a friend share).
+    /// **Undocumented, and read as a FALLBACK only.** The name says "this grant reaches me through
+    /// my Plex Home (a household, not a friend share)", and that is the reading
+    /// [`super::servers::is_household`] uses — but python-plexapi documents this field as
+    /// *"home (bool): Unknown"*, and nobody in this project has observed it `true`. One rival
+    /// reading IS refuted: the dev account is a Plex Home ADMIN and both its grants (its own server
+    /// and a friend's share) report `false`, so it is not "the owner has a Plex Home".
+    ///
+    /// So it decides nothing while `ownerId` can be compared against the Home roster, which is the
+    /// measured signal; see `docs/shared-servers.md` §13 for the evidence and the precedence.
     #[serde(default, deserialize_with = "de_bool")]
     pub home: bool,
     /// plex.tv's own liveness hint from its last check-in. A hint, never a verdict: only a probe
@@ -349,6 +433,21 @@ pub struct Resource {
 impl Resource {
     pub fn is_server(&self) -> bool {
         self.provides.split(',').any(|p| p.trim() == "server")
+    }
+
+    /// This row reduced to **whose server it is** — the input to the one "Shared by …" rule,
+    /// [`servers::owner_credit`](super::servers::owner_credit). It is the only place a wire row
+    /// becomes a [`Grant`](super::servers::Grant), so no caller can decide ownership from a subset
+    /// of these fields — and each of the two obvious subsets is a shipped bug: `owned` alone reads
+    /// a Plex Home managed user's own household server as somebody else's, and a non-empty
+    /// `sourceTitle` alone reads it as a friend's share.
+    pub fn grant(&self) -> super::servers::Grant<'_> {
+        super::servers::Grant {
+            owned: self.owned,
+            home: self.home,
+            owner_id: self.owner_id,
+            source_title: self.source_title.as_deref().unwrap_or_default(),
+        }
     }
 }
 
@@ -412,7 +511,7 @@ pub struct HomeUser {
 
 #[cfg(test)]
 mod tests {
-    use super::{endpoint_shape, AccountClient, Pin, Resource};
+    use super::{endpoint_shape, pin_is_gone, AccountClient, Pin, Resource};
 
     #[test]
     fn account_headers_use_the_same_honest_language_source_as_pms() {
@@ -421,6 +520,44 @@ mod tests {
             .iter()
             .find_map(|h| h.strip_prefix("X-Plex-Language: "));
         assert_eq!(sent, super::super::identity::language());
+    }
+
+    /// **A poll of a pin that is finished is a 404, and it has to be told apart from a bad
+    /// moment.** Measured against the live service on 2026-09-03: an unknown id, an expired one,
+    /// and a live one polled under the wrong `X-Plex-Client-Identifier` all answer
+    /// `404 {"errors":[{"code":1020,"message":"Code not found or expired"}]}`. A 5xx says nothing
+    /// about the pin at all, so it must stay retryable — reading it as an ending would throw away
+    /// a code the user may be halfway through typing into their phone.
+    #[test]
+    fn only_a_status_about_the_pin_itself_ends_the_wait() {
+        assert!(pin_is_gone(404), "what plex.tv actually sends");
+        assert!(
+            pin_is_gone(410),
+            "and the same statement in HTTP's own words"
+        );
+        for still_worth_asking in [400, 429, 500, 502, 503, 504] {
+            assert!(
+                !pin_is_gone(still_worth_asking),
+                "{still_worth_asking} is a fact about the request or the service, not about \
+                 this code — and a replacement pin would not fix any of them"
+            );
+        }
+    }
+
+    /// **A poll must find the token whatever else the body is doing.** Drift in a field the poll
+    /// never reads — `id` arriving as a string, say, which is exactly what PMS does on its own
+    /// endpoints — used to fail the whole deserialization, and a failed parse on THIS endpoint is
+    /// a sign-in that never completes while the user's phone says it did.
+    #[test]
+    fn the_poll_reads_the_credential_out_of_a_body_whose_other_fields_have_drifted() {
+        let drifted = br#"{"id":"581637088","code":42,"expiresIn":"900","brandNew":{"x":[1]},
+                           "authToken":"account-token"}"#;
+        let p: super::PinToken = serde_json::from_slice(drifted).expect("the token survives");
+        assert_eq!(p.auth_token.as_deref(), Some("account-token"));
+        // …and an unauthorized poll is still simply the absence of one, not a parse failure.
+        let pending: super::PinToken =
+            serde_json::from_slice(br#"{"authToken":null}"#).expect("pending parses");
+        assert!(pending.auth_token.is_none());
     }
 
     /// The log's shape rule, on the exact URLs this file and `discover.rs` build. Both halves are
@@ -623,6 +760,71 @@ mod tests {
             "null address degrades to empty"
         );
         assert_eq!(rs[1].connections[0].port, 32400);
+    }
+
+    /// **The `/api/v2/resources` a Plex Home MANAGED user gets**, and the [`Resource::grant`] that
+    /// reads it — the shape behind the reported "Shared by <the account holder>" on the user's own
+    /// household server.
+    ///
+    /// A profile switch re-fetches this endpoint with the SWITCHED user's token, so plex.tv answers
+    /// about that user: the household's own server is not theirs (`owned:false`), it names the
+    /// admin in `sourceTitle`, and `ownerId` is the admin's plex.tv account id — the same id
+    /// `/api/v2/home/users` lists for the admin row and `/api/v2/user` reports for the account
+    /// (measured 2026-09-03 on the dev account). Fed to the rule with the household enumerated,
+    /// none of that is a credit.
+    #[test]
+    fn a_managed_users_view_of_the_household_server_grants_no_credit() {
+        const ADMIN: i64 = 111_111;
+        const MANAGED: i64 = 222_222;
+        let json = br#"[
+          {"name":"Mac mini","clientIdentifier":"aaaa1111","provides":"server",
+           "owned":false,"home":true,"sourceTitle":"admin","ownerId":111111,
+           "accessToken":"tok-managed-own","connections":[]},
+          {"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server",
+           "owned":false,"home":false,"sourceTitle":"friend","ownerId":987654,
+           "accessToken":"tok-managed-share","connections":[]}
+        ]"#;
+        let rs: Vec<Resource> = serde_json::from_slice(json).expect("lenient parse");
+
+        let household = [ADMIN, MANAGED];
+        let (house, share) = (&rs[0], &rs[1]);
+
+        // plex.tv's raw answer, which is what makes this look exactly like a share
+        assert!(!house.owned && house.source_title.as_deref() == Some("admin"));
+
+        assert_eq!(
+            super::super::servers::owner_credit(house.grant(), &household),
+            "",
+            "the house's own server credits nobody, whichever profile is watching"
+        );
+        assert_eq!(
+            super::super::servers::owner_credit(share.grant(), &household),
+            "friend",
+            "and a person outside the house still is credited"
+        );
+
+        // **The `home:true` in that fixture is not what carries this test.** That field is the one
+        // value in the row nobody here has measured (`docs/shared-servers.md` §13), so the case has
+        // to hold on `ownerId` alone — which is the signal `/api/v2/home/users` proves is in the
+        // same id space.
+        let mut without_home = house.grant();
+        without_home.home = false;
+        assert_eq!(
+            super::super::servers::owner_credit(without_home, &household),
+            ""
+        );
+
+        // `grant` is the ONE reduction, so the null-vs-empty distinction dies here rather than at
+        // six call sites: an owned server's absent `sourceTitle` arrives as the empty handle the
+        // rule takes, and its absent `ownerId` as the `0` that matches no household member.
+        let own: Resource = serde_json::from_slice(
+            br#"{"clientIdentifier":"cccc3333","provides":"server","owned":true,
+                 "sourceTitle":null,"ownerId":null}"#,
+        )
+        .expect("lenient parse");
+        let g = own.grant();
+        assert!(g.owned && g.source_title.is_empty() && g.owner_id == 0);
+        assert_eq!(super::super::servers::owner_credit(g, &household), "");
     }
 }
 

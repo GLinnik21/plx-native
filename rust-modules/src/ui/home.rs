@@ -642,7 +642,8 @@ impl View for Backdrop {
             // fading picture, and the noise is a full-screen cost for a gradient nobody sees as
             // one — measured 2026-09-02 as the difference between the fold's 45 and its 50 fps.
             let still = sp <= 0.005 && slide.is_none();
-            self.wash.draw_with(p, Rect::FULL, still);
+            self.wash
+                .draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(still));
         }
         // EXPERIMENT (`/tmp/plxnative-heroground`): draw the art and BOTH scrim fields in one
         // pass. The four quads below are 2.78M fragments a frame — 52% of everything this screen
@@ -1341,6 +1342,73 @@ impl View for Hero {
     }
 }
 
+/// The y a shelf heading is DRAWN at, for a row whose origin is `row_y` and whose heading has been
+/// raised `lift` by the focus pop ([`card_row::heading_clearance`]).
+///
+/// One expression, so the draw below and the clearance rule that reserves room for it
+/// ([`row_reveal_band`]) cannot describe two different lines. It was written out at the draw alone,
+/// which is precisely how the scroll came to be allowed to push it into the top bar.
+#[inline]
+fn heading_y(row_y: f32, lift: f32) -> f32 {
+    row_y - TITLE_DY - lift
+}
+
+/// **The vertical reveal band for the focused row** — the `(lo, hi)` scroll pair
+/// [`card_row::reveal`] clamps into, for a row whose block starts `top` into the grid's flow. The
+/// vertical twin of `CardRow`'s horizontal rule, over the same `reveal` core: only move the page
+/// when the focused row's block — title band above, card + focused label below — would clip the
+/// viewport; a fully visible row never re-seats the page.
+///
+/// `lo` reveals the BOTTOM: the card plus its focused title/caption block, and a [`MARGIN_Y`] clear
+/// of the panel edge (it was a bare 24, which settled a focused tile's caption inside the overscan
+/// frame).
+///
+/// **`hi` reveals the TOP, and it is a CLEARANCE rule rather than an offset.** [`GRID_TOP_Y`] is
+/// not an arbitrary first-row line: its own doc says what it IS — the y that leaves the first hub
+/// title (`row_y − TITLE_DY`, raised a further [`card_row::heading_lift_max`] when its leftmost card
+/// magnifies) clear underneath the profile chip. So the highest DESTINATION a row may be given is
+/// exactly its resting line, and the clearance the layout solved for is not the scroller's to
+/// spend. Past it the heading RESTS inside the shared top band, at the very margin the chip sits on
+/// — `no_shelf_heading_settles_inside_the_shared_top_band` grades that outcome against the rect
+/// `widgets` actually draws, over every hub count and every row, so moving the top bar, the pop or
+/// `TITLE_DY` fails here instead of on a television.
+///
+/// It read `top + GRID_TOP_Y − 66.0 − 96.0` — i.e. `top + 32`, two hand numbers that let a row rise
+/// 32px past its own resting line. Reachable only by walking UP (a downward move settles on `lo`),
+/// which is why it survived: the first shelf's heading landed under the chip after the focus had
+/// been down the grid and come back, and a fresh boot could not reproduce it.
+///
+/// **It bounds where a row RESTS, and deliberately not where it passes through.** The scroll is a
+/// spring, and a row travelling to its resting line crosses the top band on the way exactly as its
+/// CARDS do — the grid is drawn before the band (`home_draw`), so the chrome paints over both. That
+/// transit is the page scrolling under fixed chrome, which is this screen's z-order and not a
+/// defect; the report was a heading that came to REST there, which is a position and stays until
+/// the next keypress. Clipping the travel would need the grid's paint loop to cut at
+/// [`crate::ui::widgets::TOP_BAR_BOTTOM`], which would also stop a card sliding off the top edge —
+/// a different design, not a stricter version of this one.
+fn row_reveal_band(top: f32) -> (f32, f32) {
+    let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - MARGIN_Y);
+    (lo, top)
+}
+
+/// **How far the grid may scroll at all** — the content range [`card_row::reveal`] clamps its answer
+/// into, for `nh` addressable shelves.
+///
+/// It truncates the band's UPPER end, never its lower one. For the last row of a grid of `n >= 2`
+/// the three terms order as `lo = n·ROW_PITCH − 884`, `this = lo + 64`, `hi = this + 271`: `lo`
+/// stays reachable, so a row arrived at from ABOVE is unaffected, while one arrived at from BELOW
+/// stops here instead of at `hi` and therefore rests LOWER — further from the top band, never
+/// nearer. A one-hub grid is the degenerate case rather than a second one: `lo = −335`, and this and
+/// `hi` COINCIDE at 0, which is then the only reachable scroll.
+///
+/// Pure and named so the clearance tests can settle a scroll the way the screen does rather than
+/// re-deriving the range beside it — the last row of an `n >= 2` grid is where this term truncates
+/// [`row_reveal_band`]'s `hi`, and the one-hub grid is covered beside it because the two coincide
+/// at zero there.
+fn grid_max_scroll(nh: usize) -> f32 {
+    (nh.max(1) as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
+}
+
 // ---- Grid: the collection view. Holds one CardRow per hub (the shared animated shelf component) +
 // the vertical scroll spring; drives nav/hit-test/wheel, draws all non-focused cells then the single
 // focused card LAST (cross-row z-order, invariant #3). CardRow owns the per-cell scale springs + the
@@ -1364,16 +1432,10 @@ impl View for Grid {
             let focused = (grid && env.fr as usize == r).then_some(env.fc as usize);
             self.shelves[r].update(crate::pms::hub_len(r), focused, &RowStyle::HOME, env.dt);
         }
-        let nh = n_hubs().max(1);
-        let max_y = (nh as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0);
-        // minimal scroll-into-view (the vertical twin of CardRow's rule, same reveal core): only
-        // move the page when the focused row's block — title band above, card + focused label
-        // below — would clip the viewport; a fully visible row never re-seats the page.
-        let top = env.fr as f32 * ROW_PITCH;
-        // card + title/caption metadata visible, and a MARGIN_Y clear of the bottom edge — it was a
-        // bare 24, which settled a focused tile's caption inside the overscan frame
-        let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - MARGIN_Y);
-        let hi = top + GRID_TOP_Y - 66.0 - 96.0; // hub title band clear below the chip row
+        let max_y = grid_max_scroll(n_hubs());
+        // minimal scroll-into-view over the shared `reveal` core — the rule, its two bounds and
+        // why the top one is a clearance rather than an offset are on [`row_reveal_band`].
+        let (lo, hi) = row_reveal_band(env.fr as f32 * ROW_PITCH);
         self.scroll_y.step(
             card_row::reveal(self.scroll_y.pos, lo, hi, max_y),
             K_SCROLL,
@@ -1410,7 +1472,7 @@ impl View for Grid {
                     crate::pms::hub_title(r),
                     crate::pms::hub_source(r),
                     MARGIN_X,
-                    row_y - TITLE_DY - lift,
+                    heading_y(row_y, lift),
                 );
             }
             for c in 0..crate::pms::hub_len(r) {
@@ -2953,6 +3015,198 @@ mod tests {
         assert_eq!(
             cw_caption(&mid).unwrap().to_str().unwrap(),
             "Laura \u{00b7} 25 min left"
+        );
+    }
+
+    // ---- the shelf heading's clearance under the shared top band -------------------------------
+    //
+    // Pure geometry over constants — no focus state, no font, so these deliberately do NOT take the
+    // `FOCUS` mutex (the same call as `the_home_hero_logo_never_reaches_the_top_bar`).
+    //
+    // They grade where a heading COMES TO REST. A row travelling to that line crosses the band on
+    // the way, under chrome drawn after it, exactly as its cards do — see [`row_reveal_band`] for
+    // why that transit is the page's z-order rather than a defect, and why clipping it would be a
+    // different design.
+
+    /// The chip's bottom edge — the line no settled heading may cross. Taken from the rect the
+    /// control DRAWS at full unfurl; its HEIGHT does not move with the unfurl (`chip_cap` grows only
+    /// rightward), so this is the closed chip's edge too, and it coincides with the tab track's
+    /// [`crate::ui::widgets::TOP_BAR_BOTTOM`] — one band, one edge.
+    fn top_band_bottom() -> f32 {
+        let chip = crate::ui::widgets::CHIP_CAP_MAX;
+        assert_eq!(
+            chip.y + chip.h,
+            crate::ui::widgets::TOP_BAR_BOTTOM,
+            "the chip capsule and the tab track are one band"
+        );
+        chip.y + chip.h
+    }
+
+    /// The DRAW-y of shelf `r`'s heading, for a grid of `nh` hubs scrolled to `scroll`, with `r`
+    /// focused (`lift`: the full focus-pop rise, the worst case — a magnified card sitting right
+    /// under it) or not (no rise; only the focused row lifts, per `Grid::update`).
+    ///
+    /// A scalar rather than a rect because that is the whole of what a clearance needs: the draw-y
+    /// is the TEXTURE top, which already sits above the glyphs' cap line, so comparing it against
+    /// the band over-states the collision — the safe direction. Measuring the run's height would
+    /// need a font the host suite does not open.
+    fn heading_top(r: usize, scroll: f32, focused: bool) -> f32 {
+        let lift = if focused {
+            card_row::heading_lift_max(&RowStyle::HOME)
+        } else {
+            0.0
+        };
+        heading_y(GRID_TOP_Y + r as f32 * ROW_PITCH - scroll, lift)
+    }
+
+    /// Where the grid SETTLES with shelf `fr` of `nh` focused, reached from `cur` — the screen's own
+    /// arithmetic, through the same [`card_row::reveal`] and [`grid_max_scroll`] `Grid::update`
+    /// feeds its spring, so a test cannot grade a rule the screen does not run.
+    fn settled_scroll(nh: usize, focus_row: usize, cur: f32) -> f32 {
+        let (lo, hi) = row_reveal_band(focus_row as f32 * ROW_PITCH);
+        card_row::reveal(cur, lo, hi, grid_max_scroll(nh))
+    }
+
+    /// A scroll deep enough to be ARRIVING FROM BELOW — the direction that reaches the top bound at
+    /// all (a downward move settles on `lo`), and therefore the direction the report describes and a
+    /// fresh boot cannot reproduce.
+    fn from_below(nh: usize) -> f32 {
+        grid_max_scroll(nh) + ROW_PITCH
+    }
+
+    /// **The reported defect.** Focus walks down the grid and back up to Continue Watching; the
+    /// shelf's raised heading comes to rest behind the profile chip, which sits at the same margin
+    /// the heading starts at.
+    ///
+    /// It was `hi = top + GRID_TOP_Y - 66 - 96` = `top + 32`, so the first shelf settled 32px above
+    /// its own resting line and the heading's draw-y reached 111.125 with the band ending at 130 —
+    /// 19px inside it, which is the simulator capture this fix was written against.
+    #[test]
+    fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
+        let y = heading_top(0, settled_scroll(5, 0, from_below(5)), true);
+        assert!(
+            y >= top_band_bottom(),
+            "the raised Continue Watching heading settles at {y} — inside the top band, which ends \
+             at {}",
+            top_band_bottom()
+        );
+    }
+
+    /// The two ends of the reachable settle for shelf `focus_row` of `nh`, low scroll first —
+    /// [`card_row::reveal`] passes any `cur` ALREADY inside the band through unchanged, so what a
+    /// row can rest at is the whole closed interval between these, not the two of them.
+    ///
+    /// Reversing focus mid-flight is how an interior value is reached: the spring is somewhere
+    /// between two destinations when the second arrives, and `reveal` keeps it there.
+    fn settle_range(nh: usize, focus_row: usize) -> (f32, f32) {
+        (
+            settled_scroll(nh, focus_row, 0.0),
+            settled_scroll(nh, focus_row, from_below(nh)),
+        )
+    }
+
+    /// The same rule over the whole space the screen can be in: every hub count the grid can
+    /// address, every row, and every scroll a row can settle at.
+    ///
+    /// **No shelf heading may SETTLE inside the shared top band** — every heading is either at or
+    /// below the band, or its allocated title band is above the panel entirely. The focused row
+    /// always satisfies the first arm (raised by the full pop and still clear); so do the rows BELOW
+    /// it, which are simply further down the page. Only the rows ABOVE it take the second arm.
+    ///
+    /// **Graded on the interval, not on its two ends.** The safe predicate is a DISJUNCTION, so two
+    /// safe endpoints would not imply a safe middle — they could sit on opposite sides of the band.
+    /// A heading's draw-y is affine and strictly decreasing in the scroll, so comparing the two
+    /// extrema TOGETHER (`min` below the band, or `max` above the panel) proves every value between
+    /// them, which is what the disjunction needs.
+    ///
+    /// **The upper arm grades the ALLOCATED title band, not the rasterized run.** `TITLE_DY` is the
+    /// heading's offset from its row origin, not the height of the texture drawn there, and the host
+    /// suite opens no SDL_ttf to measure one — so `y <= -TITLE_DY` says the heading's draw ORIGIN is
+    /// a whole title band above the panel edge. (It is not tight: the nearest value any settle can
+    /// reach is −54, a further 20px up, because the row above the focused one is a whole `ROW_PITCH`
+    /// higher.) The LOWER arm has no such gap — a draw-y at or below the band's bottom puts the
+    /// texture top there, and a run only paints downward from it.
+    ///
+    /// The LAST row of an `n >= 2` grid is the case [`grid_max_scroll`] decides rather than
+    /// [`row_reveal_band`]'s `hi` (at `n == 1` the two coincide at 0), which is why the settle goes
+    /// through both.
+    #[test]
+    fn no_shelf_heading_settles_inside_the_shared_top_band() {
+        let band = top_band_bottom();
+        for nh in 1..=MAX_HUBS {
+            for focus_row in 0..nh {
+                let (s0, s1) = settle_range(nh, focus_row);
+                for r in 0..nh {
+                    let (y0, y1) = (
+                        heading_top(r, s0, r == focus_row),
+                        heading_top(r, s1, r == focus_row),
+                    );
+                    let (lo_y, hi_y) = (y0.min(y1), y0.max(y1));
+                    assert!(
+                        lo_y >= band || hi_y <= -TITLE_DY,
+                        "nh={nh} fr={focus_row}: shelf {r}'s heading settles anywhere in {lo_y}..{hi_y}, \
+                         which crosses the top band (0 .. {band})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Bounding the TOP must not have quietly clipped the bottom: wherever the grid settles, the
+    /// focused row's card and the title/caption block under it stop above the overscan frame's
+    /// bottom edge. That edge is the whole of the claim — the block's sides and top are the row's
+    /// own layout and are not at issue here.
+    ///
+    /// Over the same interval as the rule above (the block's bottom is affine in the scroll too, so
+    /// the two ends bound it), which is what covers the case [`grid_max_scroll`] decides: the last
+    /// row of an `n >= 2` grid, where it truncates `hi` and the row stops LOWER than its own reveal
+    /// asked for. (At `n == 1` the two coincide at 0, so there is nothing to truncate.)
+    #[test]
+    fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
+        for nh in 1..=MAX_HUBS {
+            for focus_row in 0..nh {
+                let (s0, s1) = settle_range(nh, focus_row);
+                for scroll in [s0, s1] {
+                    let row_y = GRID_TOP_Y + focus_row as f32 * ROW_PITCH - scroll;
+                    let block_bottom = row_y + CARD_DY + CARD_H + card_row::UNDER_LABEL_H;
+                    assert!(
+                        block_bottom <= SCR_H - MARGIN_Y,
+                        "nh={nh} fr={focus_row} scroll={scroll}: the focused label block ends at \
+                         {block_bottom}, past the overscan frame ({})",
+                        SCR_H - MARGIN_Y
+                    );
+                }
+            }
+        }
+    }
+
+    /// The bound IS the resting line, stated directly — the rule the two sweeps above grade the
+    /// consequences of. A DESTINATION, as everywhere else here: a row travelling to it still crosses
+    /// the band on the way.
+    ///
+    /// **The air it leaves is 13.125px, and that is LESS than the clearance
+    /// [`crate::ui::consts::GRID_TOP_Y`]'s own doc claims** (`space::MD`, 24): that constant was
+    /// solved against a focus lift of "~10" where [`card_row::heading_lift_max`] is 16.875, and
+    /// against a chip bottom of 126 where the band now ends at 130. The floor asserted here is the
+    /// rung the layout actually delivers ([`theme::space::XS`]); closing the gap to MD means moving
+    /// `GRID_TOP_Y` to ~205, which is a layout change to a shared constant rather than part of this
+    /// fix — and this assertion goes on holding when it happens.
+    #[test]
+    fn the_grids_resting_top_is_the_highest_a_shelf_may_settle() {
+        assert_eq!(
+            row_reveal_band(0.0).1,
+            0.0,
+            "the first shelf's top bound IS its resting line"
+        );
+        assert_eq!(
+            row_reveal_band(3.0 * ROW_PITCH).1,
+            3.0 * ROW_PITCH,
+            "…and so is every other shelf's"
+        );
+        let air = heading_top(0, 0.0, true) - top_band_bottom();
+        assert!(
+            air >= theme::space::XS,
+            "the resting first hub title clears the top band by {air}px"
         );
     }
 

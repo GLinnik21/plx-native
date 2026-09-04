@@ -89,6 +89,7 @@ struct State {
     release_at: u32, // tick of the real key-up (0 = still held)
     commit_at: u32, // tick at which the activation may fire (0 = none scheduled)
     want_commit: bool, // false after a cancel or the long-press latch — spring back, do NOT activate
+    cancelled: bool,   // this press was ABANDONED (see `is_live`) — distinct from "did not commit"
     long: bool,        // the hold crossed LONG_MS → a press-and-hold, not a tap (see `was_long`)
     took: bool,        // the caller already consumed the commit
     holdable: bool,    // a HOLD is a distinct gesture here (a card) — see `begin` vs `begin_ctl`
@@ -103,6 +104,7 @@ static mut S: State = State {
     release_at: 0,
     commit_at: 0,
     want_commit: false,
+    cancelled: false,
     long: false,
     took: false,
     holdable: true,
@@ -151,6 +153,7 @@ fn arm(now: u32, holdable: bool) {
     s.release_at = 0;
     s.commit_at = 0;
     s.want_commit = true;
+    s.cancelled = false;
     s.long = false;
     s.took = false;
     s.holdable = holdable;
@@ -180,9 +183,27 @@ pub fn cancel() {
     if s.phase != Phase::Idle {
         s.phase = Phase::Up;
         s.want_commit = false;
+        s.cancelled = true;
         s.commit_at = 0;
         s.release_at = 0;
     }
+}
+
+/// True while a press is in flight that can still reach its activation — [`is_active`] MINUS the
+/// cancelled ones.
+///
+/// **The two are not interchangeable, and reading `is_active` for this is a real bug.** A cancel
+/// only clears the commit; the press stays ACTIVE for the ~200 ms of its spring-back, because that
+/// bounce is what the user sees. A screen that records what its press was armed FOR (`consent`'s
+/// and `onboard`'s `ARMED`) and expires that record against `is_active` therefore keeps reading a
+/// dead press's identity: press the action pill, press DOWN — which cancels the press and moves
+/// focus into the list — then press OK on the row before the spring settles, and the row's
+/// activation, which is immediate and starts no press of its own, is judged against the abandoned
+/// pill and swallowed. Expiring against THIS instead makes that impossible by construction, which
+/// is the property those screens wanted in the first place. (Codex review, 2026-09-04.)
+pub fn is_live() -> bool {
+    let s = st();
+    s.phase != Phase::Idle && !s.cancelled
 }
 
 /// True while a press is dipping or springing back — the renderer applies [`scale`] only then.
@@ -280,9 +301,9 @@ mod tests {
     //! **The two press KINDS**, which is the whole of what [`begin_ctl`] added: a card's hold is a
     //! second gesture and swallows the tap, a control face's hold is nothing and must not.
     //!
-    //! Every one of these drives the real module, and the module is a crate GLOBAL — `app.rs`'s
-    //! `exit_alert_tests` now drive it too, from another file — so each takes `testlock::serial()`
-    //! for its whole body and leaves the spring back at rest on the way out.
+    //! Every one of these drives the real module, and the module is a crate GLOBAL — tests in
+    //! other files drive it too — so each takes `testlock::serial()` for its whole body and leaves
+    //! the spring back at rest on the way out.
     use super::*;
 
     /// Tick the machine forward `ms` from `now` at ~60 Hz, reporting whether the activation
@@ -412,6 +433,45 @@ mod tests {
         assert!(!run(&mut now, 600), "a cancelled press must never commit");
         assert!(!is_active(), "and it must reach rest on its own");
         assert!((scale() - REST).abs() < 0.001);
+    }
+
+    /// **A cancelled press stops being LIVE at the cancel, not at the end of its bounce** — the
+    /// distinction `is_live` exists for, and the one a screen holding an armed identity has to read
+    /// (Codex review, 2026-09-04). It stays `is_active` throughout, because the spring-back is
+    /// still on screen; what it can no longer do is own an activation.
+    #[test]
+    fn a_cancelled_press_stops_being_live_while_it_is_still_on_screen() {
+        let _g = crate::testlock::serial();
+        let mut now = 1000;
+        begin_ctl(now);
+        run(&mut now, 100);
+        assert!(is_live(), "a press that can still commit is live");
+        cancel();
+        assert!(is_active(), "the bounce is still playing");
+        assert!(!is_live(), "…but nothing can be armed on it any more");
+        run(&mut now, 600);
+        assert!(!is_active() && !is_live(), "and both end together");
+        // …while a press that COMMITS stays live through the commit: `take_commit` clears
+        // `want_commit`, and a screen reading that instead would disarm itself one frame before
+        // the activation it armed for actually runs.
+        begin_ctl(now);
+        run(&mut now, 100);
+        release(now);
+        let mut live_at_commit = None;
+        for _ in 0..40 {
+            now = now.wrapping_add(16);
+            tick(now, 0.016);
+            if take_commit(now) {
+                live_at_commit = Some(is_live());
+                break;
+            }
+        }
+        assert_eq!(
+            live_at_commit,
+            Some(true),
+            "a press that commits is still live AT the commit — `take_commit` clears `want_commit`,\n             so a screen reading that instead would disarm one frame before its own activation ran"
+        );
+        rest(&mut now);
     }
 
     /// A tap shorter than [`MIN_DIP_MS`] still shows its dip: the release waits out the floor

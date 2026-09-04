@@ -10,7 +10,13 @@
 // answer or none: `fs_src.frag`'s vertical fill had nothing, `fs_modal_ground.frag` had nothing,
 // `fs_shadow.frag`'s penumbra had nothing, and `fs_glass.frag` — the popover background this was
 // reported against — had a hash that was both structured AND unconditional. Five programs, four
-// answers. This file is the one answer.
+// answers. This file is the one answer — for the three programs whose ramp is a slow FIELD:
+// `fs_ambient.frag`, `fs_modal_ground.frag`, `fs_glass.frag`. `fs_src.frag` and `fs_shadow.frag`
+// carried it too for two days and were taken back off on 2026-09-04: rule 1 below makes the branch
+// cheap, not free, and on the two programs behind every rect and every card shadow it measured
+// +4M shader words a frame on hero paging with every ramp test answering 0 — the whole of a 57→50
+// fps regression. A rect's two-stop fill crosses tens of codes over hundreds of pixels; nobody has
+// seen a tread on one. `gfx::glsl_dithered!`'s doc and its shader test pin both lists.
 //
 // IT IS NOT A PRECISION PROBLEM, and reaching for `highp` is the expensive wrong turn. An fp16
 // interpolant across a 1920px quad steps by about 1/1000 of the quad, i.e. a colour error far under
@@ -23,9 +29,11 @@
 // THE THREE COST RULES, all of them measured and all of them load-bearing:
 //
 //  1. **Behind a UNIFORM branch.** Midgard resolves a uniform condition per DRAW, not per fragment,
-//     so a surface whose caller set `u_dither` to 0 pays nothing at all. The first version of the
-//     ambient dither ran unconditionally and multiplied by zero: 5.3M of a 13.8M-cycle Home frame,
-//     38% of it, and hero paging fell to 46 fps.
+//     so a surface whose caller set `u_dither` to 0 pays no fetch and no add. The first version of
+//     the ambient dither ran unconditionally and multiplied by zero: 5.3M of a 13.8M-cycle Home
+//     frame, 38% of it, and hero paging fell to 46 fps. The branch is cheap, NOT free — on the two
+//     per-rect programs it measured +4M shader words a frame with every draw answering 0
+//     (2026-09-04) — which is why only the three slow-field programs carry this prelude at all.
 //  2. **A TEXTURE FETCH, never a hash.** `fract(sin(dot(p,k))*43758.5)` is a range reduction plus a
 //     polynomial on this part — about 7 arithmetic words. The arithmetic pipe is what binds a broad
 //     quad here; the texture pipe beside it is idle. An interleaved-gradient hash was tried as the
@@ -47,9 +55,11 @@
 // for the life of the process means no program pays a bind, and `glActiveTexture` never moves off
 // unit 0 on the drawing path.
 //
-// WHO SETS `u_dither` IS A CPU DECISION — `gfx::dither_for_ramp`, the one policy — because the
-// question "is this ramp slow enough over a broad enough area to band" is answered from the two
-// colours and the span, which only the caller has.
+// WHO SETS `u_dither` IS A CPU DECISION — `gfx::dither_for_field`, the one policy — because the
+// question is one only the caller can answer: is the field broad enough for a plateau to be
+// findable. Motion is NOT part of it for a field: a focus spring on Settings must not strip the
+// ground's noise (it did, for one day, and the bands flickered in and out with every animation).
+// Only the two page washes under moving artwork read the present gate, `gfx::page_wash_dither`.
 precision mediump float;
 uniform float u_dither;
 uniform sampler2D u_dither_tex; // gfx::noise_tex — 256², TPDF, GL_REPEAT + GL_NEAREST, unit 2
@@ -66,14 +76,4 @@ vec3 plx_dither(vec3 c){
     c += plx_noise() * u_dither;
   }
   return c;
-}
-
-// Dither an ALPHA. `fs_shadow.frag`'s penumbra is one colour at a varying coverage, so its ramp is
-// entirely in the alpha channel and dithering the rgb would do nothing at all — the destination
-// never sees those bits. Same tile, same branch, same amplitude.
-float plx_dither_a(float a){
-  if (u_dither > 0.0) {
-    a += plx_noise() * u_dither;
-  }
-  return a;
 }

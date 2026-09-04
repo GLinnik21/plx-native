@@ -227,6 +227,23 @@ pub(crate) fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, 
     reveal(cur, lo, hi, max_sx)
 }
 
+/// **The FULL height a `sty` heading ever rises by** — half the focus pop's growth, which is what a
+/// tile magnified about its own centre lifts its top edge by.
+///
+/// [`heading_clearance`] is this number tapered by a proximity ramp, so it is the CEILING of that
+/// function and never a value it merely happens to reach. It is named and public because a screen
+/// has to RESERVE room for it: the home grid's vertical reveal bounds the scroll so a raised
+/// heading cannot SETTLE inside the shared top band ([`crate::ui::home`]'s `row_reveal_band` — a
+/// row travelling to that destination still crosses the band, under chrome drawn after it, exactly
+/// as its cards do), and it can only do that arithmetic if the lift is a fact it can ask for rather
+/// than one that lives inside a draw. Written out by hand at the call site it would be the same three terms in two
+/// places, and a change to `focus_scale` would move the drawn heading while leaving the layout that
+/// makes room for it behind.
+#[inline]
+pub(crate) fn heading_lift_max(sty: &RowStyle) -> f32 {
+    sty.h * (sty.focus_scale - 1.0) * 0.5
+}
+
 /// How far a row's heading must rise to stay clear of the focused tile — the ONE rule home hub
 /// titles and the detail strip headings ("Related", "Cast & Crew") share. A popped tile's focus
 /// glow spills past its top edge and washes over the heading above it, but only while that tile is
@@ -247,7 +264,7 @@ fn heading_clearance(focused: Option<usize>, sty: &RowStyle, scroll: f32) -> f32
     };
     let x = sty.margin_x + c as f32 * (sty.w + sty.gap) - scroll;
     let near = ((sty.margin_x + sty.w * 2.5 + sty.gap - x) / sty.w).clamp(0.0, 1.0);
-    sty.h * (sty.focus_scale - 1.0) * 0.5 * near
+    heading_lift_max(sty) * near
 }
 
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
@@ -785,8 +802,13 @@ mod tests {
     use super::*;
 
     const DT: f32 = 1.0 / 60.0;
-    /// The full clearance a HOME shelf's heading needs over a popped tile.
-    const FULL: f32 = RowStyle::HOME.h * (RowStyle::HOME.focus_scale - 1.0) * 0.5;
+    /// The full clearance a HOME shelf's heading needs over a popped tile — asked of
+    /// [`heading_lift_max`] rather than restating its three terms, because a screen now RESERVES
+    /// this same number in its layout (`ui::home`'s `row_reveal_band`) and a test that re-derived it
+    /// would keep passing while the two drifted.
+    fn full() -> f32 {
+        heading_lift_max(&RowStyle::HOME)
+    }
 
     fn run(row: &mut CardRow, frames: usize, focused: Option<usize>, sty: &RowStyle) {
         for _ in 0..frames {
@@ -806,8 +828,9 @@ mod tests {
         run(&mut row, 180, Some(0), &sty);
         let held = row.lift();
         assert!(
-            (held - FULL).abs() < 0.1,
-            "slot 0 must hold the full clearance ({held} vs {FULL})"
+            (held - full()).abs() < 0.1,
+            "slot 0 must hold the full clearance ({held} vs {})",
+            full()
         );
 
         // slot 1 is also under the heading, so nothing should move — not by a pixel, not for a frame
@@ -863,7 +886,7 @@ mod tests {
         let sty = RowStyle::HOME;
         let at = |c: usize| heading_clearance(Some(c), &sty, 0.0);
         assert_eq!(at(0), at(1), "the first two slots share the full clearance");
-        assert!((at(0) - FULL).abs() < 0.001);
+        assert!((at(0) - full()).abs() < 0.001);
         assert!(
             at(2) > 0.5 && at(2) < at(1),
             "slot 2 is on the taper ({} vs {})",

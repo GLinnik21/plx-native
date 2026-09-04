@@ -55,7 +55,31 @@ pub(crate) use glsl;
 /// is legal; the last one before a declaration is the one that applies to it.)
 ///
 /// Every program built with this owes `gfx` two things at link time: `u_dither_tex` set to texture
-/// unit 2 ([`bind_dither_tile`]), and `u_dither` set per draw from [`dither_for_ramp`].
+/// unit 2 ([`bind_dither_tile`]), and `u_dither` set per draw from [`dither_for_field`] (the ambient
+/// wash asks through its caller's flag instead — [`page_wash_dither`] for the two pages whose wash
+/// sits under moving artwork, `true` everywhere else).
+///
+/// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_modal_ground` and
+/// `fs_glass`, the ones whose ramp is a blur or a full-screen wash. `fs_src` and `fs_shadow`, the
+/// per-rect programs every card, chip, scrim and row highlight goes through, are deliberately plain:
+/// the prelude's uniform branch is not free on Midgard, and carrying it on those two was measured
+/// at +4M shader words a frame on the hero paging scene — the whole of the 57→50 fps regression the
+/// tile arrived with (bisected 2026-09-04; `docs/backdrop-blur-profiling.md`). The test
+/// `every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own` pins both lists.
+/// [`glsl_dithered`]'s twin: the SAME fragment source behind `shaders/dither_stub.glsl`, whose
+/// `plx_dither` is the identity — so one file links as two programs, and the in-flight one has no
+/// uniform, no sampler and no branch. See [`ambient_program`] for why the branch is worth a program.
+macro_rules! glsl_undithered {
+    ($file:literal) => {
+        // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!(include_str!("shaders/dither_stub.glsl"), include_str!($file), "\0").as_bytes(),
+            )
+        }
+    };
+}
+
 macro_rules! glsl_dithered {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -68,16 +92,18 @@ macro_rules! glsl_dithered {
 }
 
 const VS_SRC: &CStr = glsl!("shaders/vs_src.vert");
-const FS_SRC: &CStr = glsl_dithered!("shaders/fs_src.frag");
+const FS_SRC: &CStr = glsl!("shaders/fs_src.frag");
 const FS_AMBIENT: &CStr = glsl_dithered!("shaders/fs_ambient.frag");
+const FS_AMBIENT_PLAIN: &CStr = glsl_undithered!("shaders/fs_ambient.frag");
 const VS_AMBIENT: &CStr = glsl!("shaders/vs_ambient.vert");
-const FS_SHADOW: &CStr = glsl_dithered!("shaders/fs_shadow.frag");
+const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const FS_MODAL_GROUND: &CStr = glsl_dithered!("shaders/fs_modal_ground.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
+const FS_FLAT: &CStr = glsl!("shaders/fs_flat.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
@@ -364,12 +390,23 @@ static mut AL_TL: c_int = 0;
 static mut AL_TR: c_int = 0;
 static mut AL_BR: c_int = 0;
 static mut AL_BL: c_int = 0;
-/// `u_dither` on each `glsl_dithered!` program. Five programs, one uniform name, one policy —
-/// `shaders/dither.glsl`.
-static mut LOC_DITHER: c_int = 0;
-static mut SL_DITHER: c_int = 0;
+/// `u_dither` on each `glsl_dithered!` program — the three slow-field ones, one uniform name, one
+/// policy: `shaders/dither.glsl`.
+/// The flat-fill program (`shaders/fs_flat.frag`) and its two uniforms; 0 when the link failed, in
+/// which case every uniform rect takes `fs_src.frag`'s flat path as before.
+static mut FPROG: c_uint = 0;
+static mut FL_RECT: c_int = 0;
+static mut FL_COL: c_int = 0;
 static mut ML_DITHER: c_int = 0;
 static mut AL_DITHER: c_int = 0;
+/// The ambient field's IN-FLIGHT program (`FS_AMBIENT_PLAIN`) and its uniforms; 0 when the link
+/// failed, in which case `APROG` serves every frame with `u_dither` at 0 as before.
+static mut APROG_PLAIN: c_uint = 0;
+static mut PL_RECT: c_int = 0;
+static mut PL_TL: c_int = 0;
+static mut PL_TR: c_int = 0;
+static mut PL_BR: c_int = 0;
+static mut PL_BL: c_int = 0;
 /// The ONE dither source for every `glsl_dithered!` program: a [`NOISE_DIM`]-square tile of TPDF noise, `GL_REPEAT`,
 /// `GL_NEAREST`, sampled at `gl_FragCoord / NOISE_DIM`. A TEXTURE rather than a hash for one reason
 /// the counters made plain: on this part the arithmetic pipe is what binds a full-screen quad, and
@@ -407,7 +444,7 @@ const NOISE_DIM: usize = 256;
 /// header prices what one extra arithmetic word costs on this part. Summing the two hashes into the
 /// STORED byte instead leaves the fragment expression byte-for-byte unchanged — `plx_noise() *
 /// u_dither` in `shaders/dither.glsl` — and moves the entire difference into the amplitude every
-/// caller passes, [`DITHER_LSB`] (2/255), through `dither_for_ramp`/`dither_for_field` or
+/// caller passes, [`DITHER_LSB`] (2/255), through `dither_for_field` or
 /// [`draw_ambient`] directly. Same one fetch, same one multiply, 2M times a frame.
 ///
 /// What it buys is NOT less contour: the ±½ LSB uniform it replaces already flattened this
@@ -676,9 +713,6 @@ pub(crate) fn init_gl() {
         LOC_RADIUS = glGetUniformLocation(PROG, c"u_radius".as_ptr());
         LOC_COLTOP = glGetUniformLocation(PROG, c"u_colTop".as_ptr());
         LOC_COLBOT = glGetUniformLocation(PROG, c"u_colBot".as_ptr());
-        // Binds PROG itself — see `dither_uniforms`. PROG is what the rest of this block wants
-        // current anyway.
-        LOC_DITHER = dither_uniforms(PROG);
         LOC_FOCUS = glGetUniformLocation(PROG, c"u_focus".as_ptr());
         LOC_FOCUS_RGB = glGetUniformLocation(PROG, c"u_focus_rgb".as_ptr());
         LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
@@ -714,7 +748,21 @@ pub(crate) fn init_gl() {
             AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
             AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
             AL_DITHER = dither_uniforms(APROG);
-            bind_dither_tile();
+        }
+        bind_dither_tile();
+
+        APROG_PLAIN = link_program(VS_AMBIENT.as_ptr(), FS_AMBIENT_PLAIN.as_ptr()).unwrap_or_else(|| {
+            log("ambient (plain) prog link failed — the dithered program serves every frame");
+            0
+        });
+        if APROG_PLAIN != 0 {
+            PL_RECT = glGetUniformLocation(APROG_PLAIN, c"u_rect".as_ptr());
+            PL_TL = glGetUniformLocation(APROG_PLAIN, c"u_atl".as_ptr());
+            PL_TR = glGetUniformLocation(APROG_PLAIN, c"u_atr".as_ptr());
+            PL_BR = glGetUniformLocation(APROG_PLAIN, c"u_abr".as_ptr());
+            PL_BL = glGetUniformLocation(APROG_PLAIN, c"u_abl".as_ptr());
+            use_prog(APROG_PLAIN);
+            glUniform2f(glGetUniformLocation(APROG_PLAIN, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
 
         // Soft-shadow program (own program so the hot FS_SRC pays nothing; mirrors init_image).
@@ -731,7 +779,17 @@ pub(crate) fn init_gl() {
             SL_OFF = glGetUniformLocation(SPROG, c"u_off".as_ptr());
             SL_CUT = glGetUniformLocation(SPROG, c"u_cut".as_ptr());
             SL_COL = glGetUniformLocation(SPROG, c"u_col".as_ptr());
-            SL_DITHER = dither_uniforms(SPROG);
+        }
+
+        FPROG = link_program(VS_SRC.as_ptr(), FS_FLAT.as_ptr()).unwrap_or_else(|| {
+            log("flat prog link failed — uniform rects take the fill program's flat path");
+            0
+        });
+        if FPROG != 0 {
+            FL_RECT = glGetUniformLocation(FPROG, c"u_rect".as_ptr());
+            FL_COL = glGetUniformLocation(FPROG, c"u_col".as_ptr());
+            use_prog(FPROG);
+            glUniform2f(glGetUniformLocation(FPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
 
         // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
@@ -827,6 +885,44 @@ unsafe fn pill_on(pill: Option<&PillArgs>, glow: Option<&GlowArgs>) {
     }
 }
 
+/// Are two 4-float colours the same fill? Pointer equality first — every `Painter::rect` caller
+/// that wants one colour passes the same array twice — then the four components.
+#[inline]
+fn same_colour(top: *const f32, bot: *const f32) -> bool {
+    if std::ptr::eq(top, bot) {
+        return true;
+    }
+    // SAFETY: every caller passes a 4-float colour, exactly as `glUniform4fv` beside it requires.
+    unsafe { (0..4).all(|i| *top.add(i) == *bot.add(i)) }
+}
+
+/// One colour over an axis-aligned quad through `shaders/fs_flat.frag` — the cheapest fragment this
+/// renderer has, and the one every full-screen scrim is. Falls back to the fill program's flat path
+/// (same pixels, ~2 shader words a fragment dearer) when the flat program failed to link.
+unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
+    if FPROG == 0 {
+        use_prog(PROG);
+        glUniform4f(LOC_RECT, x, y, w, h);
+        glUniform2f(LOC_SIZE, w, h);
+        glUniform1f(LOC_PAD, 0.0);
+        glUniform1f(LOC_RADIUS, 0.0);
+        glUniform1f(LOC_RADR, 0.0);
+        glUniform4fv(LOC_COLTOP, 1, col);
+        glUniform4fv(LOC_COLBOT, 1, col);
+        glUniform1f(LOC_FOCUS, 0.0);
+        glUniform1f(LOC_RIMW, 0.0);
+        glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
+        glUniform1f(LOC_RIMTOP, 0.0);
+        pill_off();
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        return;
+    }
+    use_prog(FPROG); // u_screen is set once at init (uniforms are per-program state)
+    glUniform4f(FL_RECT, x, y, w, h);
+    glUniform4fv(FL_COL, 1, col);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_rect(
     x: f32,
@@ -844,6 +940,12 @@ pub(crate) fn draw_rect(
         return;
     }
     unsafe {
+        // `pad` is not in the condition: `fs_src.frag`'s own flat path never reads it either, so
+        // the two programs draw the same quad for a square, unfocused rect whatever it was given.
+        if radius < 0.5 && focus < 0.001 && same_colour(top, bot) {
+            draw_flat(x, y, w, h, top);
+            return;
+        }
         // A flat two-stop gradient STAYS on this program, and that was measured rather than assumed
         // (`plxnative-hwcnt`, 2026-09-02): routed through the ambient program instead, the hero's
         // two full-width ramp quads made the frame 0.6M GPU cycles DEARER, because `fs_src`'s
@@ -866,7 +968,6 @@ pub(crate) fn draw_rect(
         glUniform1f(LOC_RADR, radius);
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
-        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, radius, top, bot));
         glUniform1f(LOC_FOCUS, focus);
         // Fill/rim colours arrive pre-scaled by Painter::rgb. The focus ring/glow is generated in
         // the shader, so it needs the same RGB gain explicitly while its alpha coverage stays put.
@@ -934,7 +1035,6 @@ pub(crate) fn draw_rect_shaped(
         glUniform1f(LOC_RADR, radius);
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
-        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, radius, top, bot));
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
@@ -965,49 +1065,51 @@ pub(crate) fn draw_ambient(
     }
     unsafe {
         let c3 = |p: *const f32, i: usize| *p.add(i);
-        use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
-        glUniform4f(AL_RECT, x, y, w, h);
-        glUniform4f(
-            AL_TL,
-            c3(tl, 0) * dim,
-            c3(tl, 1) * dim,
-            c3(tl, 2) * dim,
-            1.0,
-        );
-        glUniform4f(
-            AL_TR,
-            c3(tr, 0) * dim,
-            c3(tr, 1) * dim,
-            c3(tr, 2) * dim,
-            1.0,
-        );
-        glUniform4f(
-            AL_BR,
-            c3(br, 0) * dim,
-            c3(br, 1) * dim,
-            c3(br, 2) * dim,
-            1.0,
-        );
-        glUniform4f(
-            AL_BL,
-            c3(bl, 0) * dim,
-            c3(bl, 1) * dim,
-            c3(bl, 2) * dim,
-            1.0,
-        );
-        // ±1 one 8-bit framebuffer quantum, TRIANGULAR — the tile already carries the triangle
-        // (`noise_tex`), so this scale is the only place the ±½-LSB uniform it replaced differed.
-        // **`dither` is the caller's word on whether this ground is what the eye RESTS on.** The
-        // noise exists for a still, opaque, slow gradient — the one case 8-bit output bands
-        // visibly. A wash behind a moving translucent photograph (Home's hero fold and slide) is
-        // never seen as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are
-        // ~2.5M GPU cycles a frame on the set (2026-09-02) — the difference between the fold
-        // passing its 50 fps gate and not. Off, the shader's uniform branch skips the whole term.
-        // The tile lives permanently on unit 2 (`bind_dither_tile`), so this is one uniform and no
-        // binding — the ambient program used to bind it on unit 0 per draw, which only worked
-        // because it samples nothing else.
-        glUniform1f(AL_DITHER, if dither { DITHER_LSB } else { 0.0 });
+        // **`dither` is the caller's word, and the whole of the decision.** The noise exists for a
+        // still, opaque, slow gradient — the one case 8-bit output bands visibly. A wash behind a
+        // moving translucent photograph (Home's hero fold and slide, Detail's art) is never seen
+        // as a gradient, and the fetch plus its two arithmetic ops on 2M pixels are ~2.5M GPU
+        // cycles a frame on the set (2026-09-02) — the difference between the fold passing its
+        // 50 fps gate and not; those two pages answer through `page_wash_dither`. A wash that IS
+        // the screen (Settings, the who's-watching picker, first run, sign-in) passes `true` and
+        // dithers on every frame, moving or not: for one day this function also gated on the
+        // frame's own motion, and every focus spring on those screens then drew the wash's bands
+        // and erased them again on the settle frame — a flicker of staircases the owner saw at
+        // once, bought for nothing, since those screens were at 60 fps with the noise on before
+        // the gate existed (2026-09-04). The tile lives permanently on unit 2
+        // (`bind_dither_tile`), so the dithered draw is one uniform and no binding; the in-flight
+        // draw is a different PROGRAM, with no branch to pay for — see `ambient_program`.
+        let amp = if dither { DITHER_LSB } else { 0.0 };
+        let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(amp);
+        use_prog(prog); // u_screen is set once per program at init
+        glUniform4f(l_rect, x, y, w, h);
+        glUniform4f(l_tl, c3(tl, 0) * dim, c3(tl, 1) * dim, c3(tl, 2) * dim, 1.0);
+        glUniform4f(l_tr, c3(tr, 0) * dim, c3(tr, 1) * dim, c3(tr, 2) * dim, 1.0);
+        glUniform4f(l_br, c3(br, 0) * dim, c3(br, 1) * dim, c3(br, 2) * dim, 1.0);
+        glUniform4f(l_bl, c3(bl, 0) * dim, c3(bl, 1) * dim, c3(bl, 2) * dim, 1.0);
+        if prog == APROG {
+            glUniform1f(AL_DITHER, amp);
+        }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+}
+
+/// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
+/// (`APROG`) only when it will actually dither, the plain twin (`APROG_PLAIN`, the same source
+/// behind the no-op stub) for every in-flight frame — or as the fallback when the twin failed to
+/// link, in which case the caller sets `u_dither` itself.
+///
+/// A `u_dither` of 0 skips the fetch and the add but not the branch, and on a 2.07M-fragment wash
+/// drawn under every Home fold and every cast-row scroll the branch alone is on the order of a
+/// million GPU cycles a frame (`docs/backdrop-blur-profiling.md`, 2026-09-04) for noise that is off.
+#[inline]
+unsafe fn ambient_program(amp: f32) -> (c_uint, c_int, c_int, c_int, c_int, c_int) {
+    // Each program is the other's fallback: a positive amplitude with the dithered program gone
+    // draws the field undithered rather than through program 0 (which draws nothing at all).
+    if (amp > 0.0 && APROG != 0) || APROG_PLAIN == 0 {
+        (APROG, AL_RECT, AL_TL, AL_TR, AL_BR, AL_BL)
+    } else {
+        (APROG_PLAIN, PL_RECT, PL_TL, PL_TR, PL_BR, PL_BL)
     }
 }
 
@@ -1032,13 +1134,18 @@ pub(crate) fn draw_grad4(
         return;
     }
     unsafe {
-        use_prog(APROG); // AL_SCREEN is set once at init (uniforms are per-program state)
-        glUniform4f(AL_RECT, x, y, w, h);
-        glUniform4fv(AL_TL, 1, tl);
-        glUniform4fv(AL_TR, 1, tr);
-        glUniform4fv(AL_BR, 1, br);
-        glUniform4fv(AL_BL, 1, bl);
-        glUniform1f(AL_DITHER, 0.0);
+        // Never dithered (a translucent scrim over artwork has nothing to band), so always the
+        // plain twin when it linked.
+        let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(0.0);
+        use_prog(prog); // u_screen is set once per program at init
+        glUniform4f(l_rect, x, y, w, h);
+        glUniform4fv(l_tl, 1, tl);
+        glUniform4fv(l_tr, 1, tr);
+        glUniform4fv(l_br, 1, br);
+        glUniform4fv(l_bl, 1, bl);
+        if prog == APROG {
+            glUniform1f(AL_DITHER, 0.0);
+        }
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -1048,6 +1155,10 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
         return;
     }
     unsafe {
+        if rad_l < 0.5 && rad_r < 0.5 {
+            draw_flat(x, y, w, h, col);
+            return;
+        }
         use_prog(PROG);
         // Rounded corners always take the SDF path, so always give the edge band its bleed.
         let aa = if rad_l >= 0.5 || rad_r >= 0.5 {
@@ -1063,7 +1174,6 @@ pub(crate) fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32,
         glUniform4fv(LOC_COLTOP, 1, col);
         glUniform4fv(LOC_COLBOT, 1, col);
         // A single colour: no ramp to quantise, so the policy answers 0 and the branch is skipped.
-        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, rad_l.max(rad_r), col, col));
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
@@ -1100,7 +1210,6 @@ pub(crate) fn draw_rrect_sheened(
         glUniform4fv(LOC_COLTOP, 1, col);
         glUniform4fv(LOC_COLBOT, 1, col);
         // A single colour: no ramp to quantise, so the policy answers 0 and the branch is skipped.
-        glUniform1f(LOC_DITHER, dither_for_ramp(w, h, rad_l.max(rad_r), col, col));
         glUniform1f(LOC_FOCUS, 0.0);
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
@@ -1156,21 +1265,6 @@ pub(crate) fn draw_shadow(
         glUniform1f(SL_OFF, off); // occluder (tile) offset above the shadow box; shader discards the covered interior
         glUniform1f(SL_CUT, cut); // <0 = the opaque tile's box cut; >=0 = cut the occluder's rounded shape
         glUniform4fv(SL_COL, 1, col);
-        // The penumbra is an ALPHA ramp from `u_col.a` to 0 over `b` px on each side — so the ramp
-        // this shader quantises is `2*b` long and crosses `col.a * 255` codes, which is what the
-        // policy is asked here. It goes to `plx_dither_a`, not `plx_dither`: dithering the rgb of a
-        // single-colour shadow changes nothing the destination can see.
-        let a = *col.add(3);
-        glUniform1f(
-            SL_DITHER,
-            dither_for_ramp(
-                qw,
-                2.0 * b,
-                b,
-                [0.0, 0.0, 0.0, 0.0].as_ptr(),
-                [a, a, a, 0.0].as_ptr(),
-            ),
-        );
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -2831,12 +2925,6 @@ fn blur_lazy_init() -> bool {
         let (edge, light) = chamfer();
         glUniform4fv(GL_EDGE, 1, edge.as_ptr());
         glUniform3f(GL_LIGHT, light[0], light[1], light[2]);
-        // Hoisted, like the screen size beside it: every glass surface in the app is a panel or a
-        // track, i.e. always past `DITHER_MIN_SPAN`, and its ramp is a BLUR — the slowest field the
-        // app produces. So the policy's answer is constant for this program and the uniform is set
-        // once rather than per draw. It was `GLASS_NOISE` (½ LSB, uniform) feeding an unconditional
-        // sine hash; it is the shared TPDF tile at ±1 LSB behind a uniform branch now.
-        glUniform1f(GL_DITHER_AMT, DITHER_LSB);
         // `GL_UVPX` is NOT set here. It was, back when the grab was always the whole screen and one
         // authored pixel was therefore always `1/SCR_W` of the texture — but the snapshot is a
         // REGION now and that ratio moves with it, so it belongs to the draw. `draw_blur_backdrop`
@@ -3541,53 +3629,60 @@ pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32;
 /// a number, not a second channel on two million fragments.
 const DITHER_LSB: f32 = 2.0 / 255.0;
 
-/// **THE ONE RULE for whether a surface's output needs dithering**, shared by every program built
-/// with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
+/// **THE ONE RULE for whether a surface's output needs dithering**, shared by the three programs
+/// built with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
 ///
-/// It is a CPU decision because the question is about the RAMP — how many 8-bit codes it crosses,
-/// over how many pixels — and only the caller holds both. Two conditions, and both have to hold:
+/// **A field dithers whenever it is drawn, and only the two PAGE washes are gated on motion.**
+/// The noise is a texture fetch plus two arithmetic ops per fragment, and it is priced by AREA:
+/// on a popover's glass or the Settings ground it is nothing anyone has measured, while on the
+/// 2M-fragment wash under Home's hero fold it was the difference between 45 and 50 fps
+/// (2026-09-02). So the wash that sits under moving artwork — Home's, Detail's — is the caller's
+/// decision through [`page_wash_dither`]: its own slide flag, AND the present gate's motion
+/// verdict, because a critically damped slide spends its last dozen frames under the slide's own
+/// threshold while the gate — which judges motion exactly — is still presenting every one of
+/// them; `ui::idle::should_present`'s SETTLE FRAME then presents the first still frame once more,
+/// so the picture that stays on the panel is the dithered one.
 ///
-///  * **The ramp must be SLOW.** Banding is treads of one flat code; a tread is
-///    `span / codes_crossed`, and one at or under a pixel is not a stair, it is the gradient. The
-///    threshold is deliberately low ([`DITHER_MIN_TREAD`]) because the cost of dithering something
-///    that did not need it is invisible grain at ±1 LSB, while the cost of missing one is the
-///    horizontal lines this exists to remove.
-///  * **The area must be BROAD.** A 40px chip with a subtle vertical gradient has treads too, and
-///    nobody has ever seen them: there is not enough of the ramp on screen for the eye to find the
-///    edge between two plateaus. [`DITHER_MIN_SPAN`] is the smallest surface where one is findable,
-///    and keeping small quads off the branch is most of what makes this free — the app draws far
-///    more chips, pills and row highlights than panels.
-///  * **It must be a CONTAINER, not a page-level field** ([`DITHER_MIN_RADIUS`]).
+/// **For one day (2026-09-04) that motion gate was GLOBAL** — this function and `draw_ambient`
+/// both refused every draw while any spring was in flight — and it was wrong on every screen whose
+/// wash is the whole picture: Settings, the who's-watching picker, first run, sign-in. There a
+/// focus spring undithered the wash, the bands appeared for the length of the animation and the
+/// settle frame erased them, which the owner saw as "discretization patterns during the
+/// animation". Those screens ran at 60 fps with the noise on before the gate existed (Settings
+/// root, session 4), so the gate bought nothing there. The area test below is what is left.
 ///
-/// A FLAT fill (`top == bot`) returns 0: there is no ramp in it to quantise, and the destination it
-/// blends over is not this shader's to dither.
-fn dither_for_ramp(w: f32, h: f32, radius: f32, top: *const f32, bot: *const f32) -> f32 {
-    if radius < DITHER_MIN_RADIUS || w < DITHER_MIN_SPAN || h < DITHER_MIN_SPAN {
-        return 0.0;
-    }
-    // SAFETY: every caller passes a 4-float colour, exactly as `glUniform4fv` beside it requires.
-    let (t, b) = unsafe { (std::slice::from_raw_parts(top, 4), std::slice::from_raw_parts(bot, 4)) };
-    let codes = (0..3)
-        .map(|i| (t[i] - b[i]).abs() * 255.0)
-        .fold(0.0f32, f32::max);
-    if codes < 1.0 {
-        return 0.0; // flat, or a ramp that does not cross a single output code
-    }
-    // The gradient runs down the quad, so its span is the height.
-    if h / codes < DITHER_MIN_TREAD {
-        return 0.0;
-    }
-    DITHER_LSB
+/// **And no dither on a RECT at all.** Until 2026-09-04 `fs_src` and `fs_shadow` carried the
+/// prelude too, behind a per-draw ramp test (`dither_for_ramp`: slow enough, broad enough, a
+/// container rather than a page field). The test answered 0 for nearly every draw — and the draws
+/// still paid, because the branch it gates is resolved per draw on Midgard but not for free: the
+/// hero paging scene measured +4M shader words a frame with the prelude on those two programs
+/// against without, the whole of a 57→50 fps regression, on frames where every ramp test had
+/// answered 0. A rect's ramp is a scrim or a two-stop fill, crossing tens of codes over hundreds
+/// of pixels, and nobody had reported a tread on one; the fields that DID band (the wash, the
+/// glass blur, the modal ground) are exactly the three that keep the prelude.
+/// **The page wash's answer** — Home's and Detail's, the two full-screen grounds under moving,
+/// fading artwork. `still` is the page's own slide/fold flag; the PAGE's motion verdict
+/// (`idle::underlay_moving` — the scoped `underlay_moving` app.rs threads into every frame OR'd
+/// with the unscoped `idle::page_moving`, Detail's) covers the last dozen sub-threshold frames of
+/// a critically damped slide that the flag cannot see. It is
+/// the page's verdict and not the merged one on purpose: a popover's appear spring is motion too,
+/// and the frozen-host snapshot is captured on exactly that frame — read the merged bit and the
+/// page under every panel is undithered for as long as the panel stays open (Codex review,
+/// 2026-09-04).
+#[inline]
+pub(crate) fn page_wash_dither(still: bool) -> bool {
+    still && !crate::ui::idle::underlay_moving()
 }
 
-/// **The same rule for a surface whose ramp is in SAMPLED DATA rather than in two uniforms** — the
-/// frosted glass over a blurred snapshot, and the Settings ground's desaturate-and-tint grade.
+/// **The rule for a surface whose ramp is in SAMPLED DATA or a whole-screen field** — the frosted
+/// glass over a blurred snapshot, the Settings ground's desaturate-and-tint grade, and (through
+/// `draw_ambient`'s caller flag) the ambient wash.
 ///
 /// The tread cannot be computed here: the ramp is whatever the blur chain produced, and a blur is
 /// by construction the slowest field the app ever puts on screen (that is what a blur IS). So the
-/// area test is the whole of it, and the answer above the threshold is always yes. Measured on the
-/// television, Settings over Home before this existed: a 700-row column through the ground spanned
-/// luma 55.7 to 59.1 in FOUR distinct levels, treads of 158, 157 and 146 rows.
+/// area test is the whole of it, and the answer above the threshold is always yes.
+/// Measured on the television, Settings over Home before this existed: a 700-row column through
+/// the ground spanned luma 55.7 to 59.1 in FOUR distinct levels, treads of 158, 157 and 146 rows.
 fn dither_for_field(w: f32, h: f32) -> f32 {
     if w < DITHER_MIN_SPAN || h < DITHER_MIN_SPAN {
         return 0.0;
@@ -3598,31 +3693,6 @@ fn dither_for_field(w: f32, h: f32) -> f32 {
 /// The smallest surface on which a staircase is findable by eye, in authored px, applied to BOTH
 /// axes. Below it the branch is never taken and the fragment pays nothing.
 const DITHER_MIN_SPAN: f32 = 96.0;
-
-/// **The corner radius that separates a CONTAINER from a page-level field**, and the one axis of
-/// this policy that is about what a surface IS rather than how big it is.
-///
-/// The distinction that actually matters is whether the eye RESTS on the surface or reads it
-/// THROUGH something moving, and the renderer cannot know that. It can tell a container from a
-/// page-level fill, though, and here the two coincide: every panel, sheet and menu ground in this
-/// design has a corner, and every full-screen page field — the hero's two full-width ramp quads,
-/// the modal scrim, the ambient wash — has none.
-///
-/// **It was measured, not assumed.** Without this term the hero's ramps took the branch, and
-/// `fps:home-fold` — the scene that exists to price exactly that quad — failed at `robust_min=46`
-/// against its 50 floor. `fs_ambient.frag`'s own header had already written the finding down for
-/// the wash beside them ("a wash behind a moving translucent photograph is never seen as a
-/// gradient, and the fetch plus its two arithmetic ops on 2M pixels are ~2.5M GPU cycles a frame —
-/// the difference between the fold passing its 50 fps gate and not"); this is the same sentence
-/// applied to the ramps, rather than one surface's exception.
-///
-/// A page that genuinely does want a dithered ground already has the way to ask: `draw_ambient`
-/// takes an explicit `dither` flag from its caller, because only the caller knows.
-const DITHER_MIN_RADIUS: f32 = 4.0;
-
-/// Pixels per output code below which a ramp is not a staircase. At 1.0 each code gets its own row
-/// and the "band" is one pixel wide; 2.0 is one step of slack under that.
-const DITHER_MIN_TREAD: f32 = 2.0;
 
 /// Bind the dither tile on texture unit 2 for the LIFE OF THE PROCESS, and leave the active unit
 /// back on 0.
@@ -4101,6 +4171,12 @@ pub(crate) fn draw_blur_backdrop(
         ];
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
         use_prog(GPROG);
+        // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
+        // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
+        // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
+        // appear spring. It was `GLASS_NOISE` (½ LSB, uniform) feeding an unconditional sine
+        // hash, then a constant set once at link.
+        glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, c.out);
         // **Per DRAW, not per init.** This is the UV travelled by one authored screen pixel, and it
         // is what turns the lens's displacement (in px) into a texture offset. It was a boot-time
@@ -4647,9 +4723,7 @@ mod tests {
         );
 
         for (name, src) in [
-            ("fs_src.frag", FS_SRC),
             ("fs_ambient.frag", FS_AMBIENT),
-            ("fs_shadow.frag", FS_SHADOW),
             ("fs_modal_ground.frag", FS_MODAL_GROUND),
             ("fs_glass.frag", FS_GLASS),
         ] {
@@ -4672,6 +4746,38 @@ mod tests {
                 "{name} must reach the dither through the prelude's two helpers, not inline it"
             );
         }
+        // The other half of the list: the per-rect programs carry NOTHING of it — not the branch,
+        // not the uniforms. This is the 2026-09-04 hero-paging regression (+4M shader words a
+        // frame for a branch that answered "no" on every draw) written as a test.
+        for (name, src) in [
+            ("fs_src.frag", FS_SRC),
+            ("fs_shadow.frag", FS_SHADOW),
+            ("fs_flat.frag", FS_FLAT),
+            ("fs_ambient.frag (plain twin)", FS_AMBIENT_PLAIN),
+        ] {
+            let code = shader_code(src);
+            assert!(
+                !code.contains("u_dither") && !code.contains("texture2D(u_dither_tex"),
+                "{name} is a hot-path program and must stay free of the dither prelude"
+            );
+            assert!(!code.contains("fract(sin("), "{name} has a sine hash of its own");
+        }
+    }
+
+    /// The flat program is the whole of `fs_src.frag`'s flat path minus the interpolation: one
+    /// uniform out, and the routing test in `draw_rect` is exact on the colour pair.
+    #[test]
+    fn a_uniform_square_rect_is_one_colour_out_and_the_pair_test_is_exact() {
+        let code = shader_code(FS_FLAT);
+        assert!(code.contains("gl_FragColor = u_col;"));
+        assert!(!code.contains("mix("), "no interpolation: that is the point of the program");
+        assert!(!code.contains("varying"), "and no varying to load");
+        let a = [0.10f32, 0.10, 0.12, 0.8];
+        let b = [0.10f32, 0.10, 0.12, 0.8];
+        let c = [0.10f32, 0.10, 0.12, 0.79];
+        assert!(same_colour(a.as_ptr(), a.as_ptr()), "the same array twice is the common call");
+        assert!(same_colour(a.as_ptr(), b.as_ptr()), "equal components are the same fill");
+        assert!(!same_colour(a.as_ptr(), c.as_ptr()), "one component apart is a gradient");
     }
 
     /// **The policy, at the two edges that decide whether a fragment pays anything at all.**
@@ -4680,45 +4786,73 @@ mod tests {
     /// refusals matter more than the acceptance: a flat fill has no ramp to quantise, and a chip
     /// too small to show a plateau must never take the branch. The app draws far more chips, pills
     /// and row highlights than it draws panels.
+    /// Only the PAGE wash is gated on motion; a field (glass, the modal ground) pays whenever it is
+    /// drawn, spring in flight or not. Observed RED against the day-old global gate, which
+    /// answered 0 for the field under motion and produced the banding-flicker the owner reported on
+    /// Settings, the picker and first run (2026-09-04). The page's verdict is exercised through the
+    /// real seam — `popover::host::begin_frame`, which publishes the scoped verdict app.rs threads
+    /// in OR'd with the unscoped `idle::page_moving` — because the bug Codex found twice lived in
+    /// exactly that publication: first the merged bit (a popover's own spring stripped the
+    /// snapshot under it), then the scoped half alone (Detail's unscoped springs never arrived).
     #[test]
-    fn the_dither_policy_refuses_flat_fills_and_small_surfaces() {
-        let dark = [0.10f32, 0.10, 0.12, 1.0];
-        let darker = [0.08f32, 0.08, 0.10, 1.0];
-        let broad = 700.0;
-        let rad = crate::ui::theme::ALERT_PANEL_RAD;
+    fn only_the_page_wash_is_gated_on_motion() {
+        use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
+        use crate::ui::popover::host::begin_frame;
+        let _g = crate::testlock::serial();
+        frame_begin(1.0 / 60.0);
+        begin_frame(false);
+        assert_eq!(dither_for_field(700.0, 700.0), DITHER_LSB, "at rest, the field pays");
+        assert!(page_wash_dither(true), "a still page wash pays at rest");
+        assert!(!page_wash_dither(false), "a page wash mid-slide never pays");
+
+        // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
+        // `Popover::update` steps every appear spring. The frame is in motion — and the page is not.
+        frame_begin(1.0 / 60.0);
+        let scope = MotionScope::open();
+        note_spring(0.0, 100.0, 0.0);
+        assert!(scope.close(), "the scope saw the spring");
+        assert!(present_moving() && !page_moving());
+        begin_frame(false);
         assert_eq!(
-            dither_for_ramp(broad, broad, rad, dark.as_ptr(), dark.as_ptr()),
-            0.0,
-            "a flat fill has no ramp in it to quantise"
-        );
-        assert_eq!(
-            dither_for_ramp(40.0, 40.0, rad, dark.as_ptr(), darker.as_ptr()),
-            0.0,
-            "a chip is too small for a plateau to be findable"
-        );
-        assert_eq!(
-            dither_for_ramp(broad, broad, rad, dark.as_ptr(), darker.as_ptr()),
+            dither_for_field(700.0, 700.0),
             DITHER_LSB,
-            "a slow ramp over a panel is exactly the case this exists for"
+            "a field still pays in motion — a focus spring on Settings must not strip its ground"
         );
-        // A ramp crossing 255 codes over 96 rows is 0.38 rows per code — a gradient, not a stair.
-        let white = [1.0f32, 1.0, 1.0, 1.0];
-        let black = [0.0f32, 0.0, 0.0, 1.0];
+        assert!(
+            page_wash_dither(true),
+            "a popover's own spring is not the page's: the snapshot under it stays dithered"
+        );
+
+        // The page's UNSCOPED springs (Detail updates outside `scoped_motion`): reported at scope
+        // depth zero, they reach the wash only through `begin_frame`'s OR with `page_moving`.
+        frame_begin(1.0 / 60.0);
+        note_spring(0.0, 100.0, 0.0);
+        assert!(page_moving());
+        begin_frame(false);
+        assert!(
+            !page_wash_dither(true),
+            "Detail's unscoped motion gates its wash through the published verdict"
+        );
+
+        // The page's SCOPED verdict (Home, the Library, Search), threaded in by app.rs.
+        frame_begin(1.0 / 60.0);
+        begin_frame(true);
+        assert!(!page_wash_dither(true), "the slide's last sub-threshold frames are motion too");
+
+        // …and a frame that skipped every publication reads nothing stale.
+        frame_begin(1.0 / 60.0);
+        assert!(page_wash_dither(true), "the settled frame pays again");
+    }
+
+    #[test]
+    fn the_dither_policy_refuses_small_fields() {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        let broad = 700.0;
         assert_eq!(
-            dither_for_ramp(broad, 96.0, rad, white.as_ptr(), black.as_ptr()),
+            dither_for_field(40.0, broad),
             0.0,
-            "a FAST ramp does not band and must not pay"
+            "a chip-narrow field is too small for a plateau to be findable"
         );
-        // THE MEASURED ONE. A square-cornered full-screen ramp is a PAGE-LEVEL field — the hero's
-        // two full-width quads — read through moving artwork, and dithering it failed
-        // `fps:home-fold` at robust_min=46 against a 50 floor. Same colours, same span, one
-        // property different. See `DITHER_MIN_RADIUS`.
-        assert_eq!(
-            dither_for_ramp(1920.0, 1080.0, 0.0, dark.as_ptr(), darker.as_ptr()),
-            0.0,
-            "a page-level field asks through draw_ambient's own flag, not through this"
-        );
-        assert_eq!(dither_for_field(40.0, 700.0), 0.0);
         assert_eq!(dither_for_field(broad, broad), DITHER_LSB);
     }
 

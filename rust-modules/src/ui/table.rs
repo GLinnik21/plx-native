@@ -356,6 +356,34 @@ impl TableView {
         self.sections.iter().map(|s| s.rows.len()).sum::<usize>() as i32
     }
 
+    /// The LAST **selectable** row's global index, or `None` for a table with none.
+    ///
+    /// Not `n_rows() - 1`: [`Row::separator`] rows occupy an index but cannot be landed on, so on
+    /// a list that ends in one the last index is a row the selection can never reach. The route
+    /// family's "DOWN off the last row enters the action band" rule
+    /// ([`crate::ui::route_screen`]'s rule 2) is graded against this, so the band stays reachable
+    /// whatever the list ends with.
+    pub fn last_row(&self) -> Option<i32> {
+        (0..self.n_rows()).rev().find(|&i| !self.rows_at(i).sep)
+    }
+
+    /// Is the selection on the last selectable row? — rule 2's own predicate.
+    pub fn at_last_row(&self) -> bool {
+        self.last_row() == Some(self.sel)
+    }
+
+    /// Does the row at `i` OPEN something — i.e. does it wear the drill-in chevron?
+    ///
+    /// The route family's rule 8 (RIGHT enters nested content) is a statement about the chevron a
+    /// row already draws, so it is read off that rather than kept as a second per-screen list that
+    /// can drift from what is painted. A toggle row, which changes a value in place, answers
+    /// `false`, and RIGHT does nothing on it.
+    pub fn row_opens(&self, i: i32) -> bool {
+        i >= 0
+            && i < self.n_rows()
+            && matches!(self.rows_at(i).ticon, Some(crate::ui::icons::Icon::Chevron))
+    }
+
     /// the full drawn height of the content (headers + rows + top/bottom padding) — the owner
     /// sizes its panel to this (clamped) so the panel hugs the list, tvOS-style.
     pub fn measured_height(&self) -> f32 {
@@ -876,6 +904,53 @@ mod tests {
     /// The shared table promises a travelling focus pill. A caller that changes `sel` but forgets
     /// to call `update` gets exactly the reported failure: new-row ink with the old pill, followed
     /// by a later jump. Pin both halves of the motion contract here — moving and genuinely resting.
+    /// **The last SELECTABLE row is not the last index.** `route_screen`'s rule 2 (DOWN off the
+    /// last row enters the action band) is graded on this, so on a list that ends in a grouping
+    /// hairline — which `move_sel` can never land on — the band would be unreachable if the
+    /// predicate were `sel == n_rows() - 1`.
+    #[test]
+    fn the_last_selectable_row_is_never_a_grouping_hairline() {
+        let mut t = TableView::new();
+        t.set_sections(
+            vec![Section::new("S")
+                .row(Row::new("a"))
+                .row(Row::new("b"))
+                .row(Row::separator())],
+            0,
+            false,
+        );
+        assert_eq!(t.n_rows(), 3);
+        assert_eq!(t.last_row(), Some(1), "the hairline is not a landable row");
+        t.sel = 1;
+        assert!(t.at_last_row());
+        t.sel = 0;
+        assert!(!t.at_last_row());
+
+        let empty = TableView::new();
+        assert_eq!(empty.last_row(), None);
+        assert!(!empty.at_last_row());
+    }
+
+    /// **A row OPENS something exactly when it wears the drill-in chevron.** `route_screen`'s
+    /// rule 8 is read off the painted affordance rather than kept as a second per-screen list.
+    #[test]
+    fn a_row_opens_something_exactly_when_it_wears_the_drill_in_chevron() {
+        let mut t = TableView::new();
+        t.set_sections(
+            vec![Section::new("S")
+                .row(Row::new("a door").chevron(true))
+                .row(Row::new("a switch").toggle(true))
+                .row(Row::new("a plain row"))],
+            0,
+            false,
+        );
+        assert!(t.row_opens(0));
+        assert!(!t.row_opens(1), "a switch changes a value in place");
+        assert!(!t.row_opens(2));
+        assert!(!t.row_opens(-1), "and an out-of-range ask answers no rather than panicking");
+        assert!(!t.row_opens(99));
+    }
+
     #[test]
     fn the_focus_pill_runs_between_rows_and_goes_quiet_at_rest() {
         let _serial = crate::testlock::serial();

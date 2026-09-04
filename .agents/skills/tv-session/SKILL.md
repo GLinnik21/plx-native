@@ -195,6 +195,12 @@ Every `plxnative-*` trigger in the install's runtime root is read **once at boot
 must be in place before the launch. Anything you want to do to a *running* app goes through
 the remote FIFO (`tv-session.sh key` / `click`).
 
+**Three exceptions, all deliberate and all read LIVE**: `plxnative-failtest` (so a read-out variant
+can be swapped mid-playback), `plxnative-testpat` (the same for the synthetic ground), and
+`plxnative-gohome` (which leg of the root press to force — armed AFTER the screen you want has
+settled, because arming it before the launch also makes the boot count as automated and moves which
+screen you land on).
+
 **Two traps that cost real time:**
 
 1. **A stale trigger silently changes what you are looking at.** `make run` clears only
@@ -357,13 +363,19 @@ the TV is signed in as whatever the automation chose.
   split separates the app directories and the runtime roots, and nothing else: one panel,
   one video plane, one capture service, one set of luna calls. Run `tv-session.sh down`
   (or just stop the streamer) first.
-- **`BACK` at the Home root raises the EXIT ALERT** (`ui::exit_alert`) — it no longer ends the
-  session by itself, which it did until 2026-08-21. Two consequences for a driver: a stray `back`
-  now leaves a modal question on screen, so the next `shot` captures the alert rather than the page
-  you meant, and the way out is `back` again (or `ok`, which lands on *Cancel* — the default focus).
-  `right` then `ok` is what actually quits. `plxnative-noexitconfirm` (in the runtime root) restores
-  the one-press exit for a script that wants it; `tv-session.sh down` still closes through SAM and
-  is unaffected.
+- **`BACK` at a ROOT hands the screen to the LG launcher** (`webos::go_home`) — Home's root, the
+  who's-watching picker and the QR sign-in all do this since 2026-09-03, and none of them ends the
+  session. The consequence for a driver: a stray `back` at a root puts the **LG launcher RIBBON
+  over the still-running, still-drawing app** — on this webOS 4 set the launcher is an overlay, so
+  the app keeps its pid, keeps presenting, and receives NO `LIFECYCLE: background` (device-measured
+  2026-09-04; there is no `0x105`/`0x106` pair to wait for here). The next `shot` captures the
+  ribbon over your screen, and keys go to the launcher until it is dismissed. To carry on without a
+  relaunch, ask SAM to foreground the app again — a `launch` of its own id, the same call
+  `tools/tv-session.sh up` makes — which removes the ribbon and logs nothing new; `up` itself is
+  NOT that, it closes first and waits for a CHANGED pid. A webOS 5+ set (full-screen launcher)
+  should background the app instead, and is unmeasured.
+  `tv-session.sh down` still closes through SAM and is unaffected; the remote's EXIT key is now the
+  only key that ends the process.
 - **Clicks need the jitter**, which the app's injection path already applies: a pointer
   click after D-pad use is swallowed unless enough motion accumulates first. Hover is
   deliberately *not* forwarded (it used to park focus on a tab pill so the next ENTER

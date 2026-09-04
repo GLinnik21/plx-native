@@ -338,29 +338,37 @@ whether **461** and **412 / 417 / 413 / 415 / 402** ever fire (§2, §4.2), and 
 
 ---
 
-## 8. Known QA blocker: BACK on the entry page
+## 8. BACK on the entry page — issues #16-#18 implemented 2026-09-03, one root still open
 
-**Recorded here, not changed.** LG's submission UX rules include, as quoted in
+**This section recorded a known QA blocker for three weeks; three of its four roots are now
+implemented and the fourth is named at the bottom.** LG's submission UX rules include, as quoted in
 `docs/distribution.md` §2, that
 
 > every selectable element must respond to 4-way + OK + Back, and on webOS 23–25 Back on the entry
 > page must show the Home screen.
 
 That is `distribute/*` submission and QA policy, so it is **presumed to apply to native apps** and
-cannot be waved off as web-app-facing the way an API page under `develop/*` can.
+cannot be waved off as web-app-facing the way an API page under `develop/*` can. LG's `develop/*`
+back-button guide says the same thing from the platform's side, and for the firmware this app
+actually runs on: at an app's entry page, `webOS.platformBack()` "displays a popup asking whether to
+exit the app on webOS TV 6.0 or higher, or **the Home launcher is launched on webOS TV 5.0 or
+lower**" (<https://webostv.developer.lge.com/develop/guides/back-button>). The dev set is 4.10.2.
 
-**What the app does today:** BACK at Home's own root does not leave. It raises the app's one
-decision alert (`ui/exit_alert.rs`) — *Cancel* focused, *Exit* in the destructive control face — and
-only *Exit* ends the process. `/tmp/plxnative-noexitconfirm` restores the old quit-on-the-press
-behaviour for a script that wants it.
+**What the app does today:** BACK at a ROOT — Home's root, the who's-watching picker's root, the QR
+sign-in — hands the screen back to the television and keeps running (`app.rs::back_at_root` →
+`webos::go_home`, which asks SAM to launch `com.webos.app.home` and falls back to minimizing the
+surface). It does not ask, and it does not quit. The remote's own EXIT key still terminates
+(checklist #38), and a script that wants the app closed uses SAM's `closeByAppId` exactly as
+`make kill`, `tests/run.py` and `tools/tv-session.sh` already do — which is why the
+`/tmp/plxnative-noexitconfirm` bypass went away with the "Exit PlxNative?" alert rather than being
+kept: it existed only to let a caller quit by pressing BACK, and BACK is no longer a quit for
+anybody.
 
-**Verdict: known QA blocker, pending native-specific evidence.** Reconciling it needs Seller Lounge
-or Native SDK evidence about whether native apps differ from the web-runtime rule this sentence was
-written for, and that evidence is still being sought. Do not "fix" it by deleting the confirmation
-on the strength of the quotation alone: the alert was added deliberately on 2026-08-21, nothing
-automated depends on the old behaviour (`make kill`, `tests/run.py` and `tools/tv-session.sh` all
-close through SAM's `closeByAppId`), and reverting it silently is how a considered decision gets
-lost.
+**What replaced the confirmation is the platform's own behaviour, not its absence.** The alert was
+added deliberately on 2026-08-21 and the warning that stood here — do not delete it on the strength
+of the submission quotation alone — was right: what closed this is the `develop/*` statement of what
+the platform DOES at an entry page on webOS ≤5, which makes "show the Home screen" a behaviour to
+reproduce rather than a rule to obey by quitting.
 
 ---
 

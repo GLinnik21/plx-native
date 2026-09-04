@@ -2446,8 +2446,8 @@ fn draw_backdrop(p: Painter, m: Option<&PmsMovie>, scroll: f32, amb: AmbientWash
     // colour `frame_clear` laid down one line earlier, so without this test such a page pays a
     // ~2.07M-fragment opaque gradient every frame to write the pixels that are already there.
     if (art_tex == 0 || art_a < 0.99) && !amb.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
-        // Dithered only at rest; see `backdrop_is_still`.
-        amb.draw_with(p, Rect::FULL, still);
+        // Dithered only at rest; see `backdrop_is_still` and `gfx::page_wash_dither`.
+        amb.draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(still));
     }
     if art_tex != 0 {
         // COVER, never stretch. `Painter::tex` maps UV 0..1 across the rect, so a source that is not
@@ -2613,7 +2613,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         let (date, extent) = hero_facts(d);
         let ext = extent.as_deref().unwrap_or("");
         // The item's SOURCE, last on the line — empty (and so absent entirely) on our own server.
-        let credit = shared_by(&d.source);
+        let credit = shared_by(&d.source());
         // Every candidate is measured through the VERY flow that draws it, so a reserved width and
         // a painted one cannot come to differ. (The `dotted_run_w` this replaced was a second width
         // expression that had to be kept agreeing with the first — `home::heading_flow`'s doc names
@@ -5093,8 +5093,137 @@ enum Pending {
     },
     /// A page BACK returned to, put back exactly as it was left ([`open_rk_at`]).
     Spot { rk: String, spot: Spot },
+    /// A show page opened ON one particular season ([`open_rk_on_season`]) — the hero's Info press
+    /// on a Continue-Watching episode, and every `Nav::Open` that names a season. Show rk, season
+    /// NUMBER. Nothing is placed: the season is selected and the focus stays where the mount put it.
+    /// `requested` is set once the season fetch has been asked for, so a fetch that comes back
+    /// WITHOUT moving the tab (a failed `/children`, which `metadata` answers by putting
+    /// `cur_season` back) retires the latch instead of asking again forever — see [`season_step`].
+    Season {
+        show_rk: String,
+        season: c_int,
+        requested: bool,
+    },
+}
+
+/// What a [`Pending::Season`] latch does on one pump, decided from the page as it stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SeasonStep {
+    /// The seasons have not landed yet, or a season fetch is in flight: look again next pump.
+    Wait,
+    /// Ask `metadata::load_season` for this position, once.
+    Request(usize),
+    /// Done — on the season already, a season the show does not have, the page moved to another
+    /// item, or the one request this latch is allowed came back without moving the tab.
+    Retire,
+}
+
+/// The pure half of the [`Pending::Season`] pump arm. `page_rk` is the item the page holds now,
+/// `season_pos` where the wanted season sits in its list (`None` while the seasons have not landed
+/// or the show lacks it), `cur_season` the tab in force, `loading` whether a season fetch is in
+/// flight.
+///
+/// **One request per latch.** `metadata::land_season` answers a failed fetch by restoring
+/// `cur_season` to the previous tab so the tab stays retryable BY THE USER; read naively from here
+/// that looks exactly like "not on it yet", and the latch asked again — an unbounded `/children`
+/// retry loop against a server that keeps refusing (Codex review, 2026-09-04). A latch that has
+/// asked once and sees the tab unmoved with nothing in flight has its answer.
+fn season_step(
+    latch_rk: &str,
+    requested: bool,
+    page_rk: &str,
+    seasons_known: bool,
+    season_pos: Option<usize>,
+    cur_season: usize,
+    loading: bool,
+) -> SeasonStep {
+    if page_rk != latch_rk {
+        return SeasonStep::Retire; // the page moved on — not ours to steer
+    }
+    if !seasons_known {
+        return SeasonStep::Wait; // the show fetch is still in flight
+    }
+    match season_pos {
+        Some(pos) if pos != cur_season => {
+            // A fetch already in flight (the default season, requested by the show landing) is left
+            // to land first: two season fetches racing would leave whichever lands last.
+            if loading {
+                SeasonStep::Wait
+            } else if requested {
+                SeasonStep::Retire
+            } else {
+                SeasonStep::Request(pos)
+            }
+        }
+        _ => SeasonStep::Retire,
+    }
+}
+
+#[cfg(test)]
+mod season_latch_tests {
+    use super::{season_step, SeasonStep};
+
+    /// The hero's Info press on a Continue-Watching episode: the show lands, the default season's
+    /// fetch is in flight, then the wanted season is asked for ONCE and the latch retires on it.
+    #[test]
+    fn the_latch_waits_for_the_show_then_asks_once_and_retires_on_the_season() {
+        assert_eq!(season_step("2161", false, "2161", false, None, 0, false), SeasonStep::Wait);
+        assert_eq!(
+            season_step("2161", false, "2161", true, Some(2), 0, true),
+            SeasonStep::Wait,
+            "the default season's fetch lands first"
+        );
+        assert_eq!(season_step("2161", false, "2161", true, Some(2), 0, false), SeasonStep::Request(2));
+        assert_eq!(season_step("2161", true, "2161", true, Some(2), 0, true), SeasonStep::Wait);
+        assert_eq!(
+            season_step("2161", true, "2161", true, Some(2), 2, false),
+            SeasonStep::Retire,
+            "on it"
+        );
+    }
+
+    /// A failed `/children` puts `cur_season` back where it was; the latch must not read that as
+    /// "not yet" and ask again — that was an unbounded retry loop.
+    #[test]
+    fn a_failed_season_fetch_retires_the_latch_instead_of_asking_again() {
+        assert_eq!(
+            season_step("2161", true, "2161", true, Some(2), 0, false),
+            SeasonStep::Retire
+        );
+    }
+
+    #[test]
+    fn a_superseding_open_and_a_missing_season_both_retire_it() {
+        assert_eq!(season_step("2161", false, "999", true, Some(1), 0, false), SeasonStep::Retire);
+        assert_eq!(
+            season_step("2161", false, "2161", true, None, 0, false),
+            SeasonStep::Retire,
+            "a season the show does not have is nothing to select"
+        );
+    }
 }
 static mut PENDING: Option<Pending> = None;
+
+/// [`open_rk_season`] WITHOUT the freeze: the page mounts on the row THIS frame, the show fetch goes
+/// through the detail mailbox, and the season is selected by [`pump_pending`] once the seasons have
+/// landed — the same two-stage wait the two placements above already make.
+///
+/// It exists for the hero's Info press. That press reached the page through `Nav::Open` with a
+/// season, whose landing called the blocking [`open_rk_season`] "behind a page already at alpha 0":
+/// two to five PMS round trips for a show, spent at the FLOOR of the route dip, where the fade simply
+/// stopped for as long as the server took — the reported freeze, with the on-screen counter reading
+/// ~16 fps for that second. The blocking variant stays for the one caller that must act on the
+/// loaded item in the same frame (home_activate's play-a-show arm, which fires Play on it).
+pub(crate) fn open_rk_on_season(sid: crate::plex::ServerId, show_rk: &str, season_num: c_int) {
+    open_rk(sid, show_rk);
+    unsafe {
+        *addr_of_mut!(PENDING) = Some(Pending::Season {
+            show_rk: show_rk.to_string(),
+            season: season_num,
+            requested: false,
+        })
+    }
+}
 
 /// Open the SHOW detail page for `show_rk` with the episode `ep_rk` (in the season numbered
 /// `season`) revealed once the data lands — a season entry point routes to the show page, not to a
@@ -5244,6 +5373,44 @@ fn pump_pending() {
             v.ep_row = row;
             v.card_scale.jump(1.0);
             v.column.scroll.jump(sct);
+        }
+        Pending::Season {
+            show_rk,
+            season,
+            requested,
+        } => {
+            // Copied out first: `load_season` writes `cur_season` through CURRENT, and `d` is a
+            // reference into it (the Episode arm's shape).
+            let (rk, seasons_known, cur_season, season_pos) = (
+                d.rk.clone(),
+                !d.seasons.is_empty(),
+                d.cur_season,
+                d.seasons.iter().position(|s| s.index as c_int == season),
+            );
+            match season_step(
+                &show_rk,
+                requested,
+                &rk,
+                seasons_known,
+                season_pos,
+                cur_season,
+                metadata::season_loading(),
+            ) {
+                SeasonStep::Wait => {}
+                // `load_season` moves `cur_season` at once and fills the episodes on its landing,
+                // so the next pump finds the season selected and retires the latch.
+                SeasonStep::Request(pos) => {
+                    metadata::load_season(pos);
+                    unsafe {
+                        *addr_of_mut!(PENDING) = Some(Pending::Season {
+                            show_rk,
+                            season,
+                            requested: true,
+                        })
+                    }
+                }
+                SeasonStep::Retire => unsafe { *addr_of_mut!(PENDING) = None },
+            }
         }
     }
 }

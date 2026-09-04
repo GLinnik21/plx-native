@@ -802,3 +802,73 @@ scene naming one would fail as "never entered this screen"; it needs the tag add
 five in `app.rs`'s heartbeat match. `person_bio` is the interesting one — the ONLY
 `Glass::DYNAMIC_BACKDROP` popover in the app, so it is the only surface where the refresh cadence is
 live — and it is opened by a key press on the person page, which no boot trigger expresses.
+
+## 2026-09-04: the shared dither's branch, the host cache's ledger, and a spinner that never stopped
+
+Four reported frame-rate items were one renderer census: hero paging at ~50 fps, the hero→shelf
+fold under its floor, the Settings entry ramp with 89 ms frames and a grey pause, the Library
+popovers at ~20 fps beside a smooth account menu, and the Cast & Crew row dropping frames. Every
+number below is from the debug install on the dev set (`tests/run.py --fps`, `plxnative-hwcnt=frame.ui`,
+`plxnative-cpuprof`, `plxnative-framedrop=1`), and the "before" column is `f3bdbdce`.
+
+**The bisect.** `fps:home-hero` / `fps:home-fold` medians across the last five commits:
+`a0a682af` 57/53, `2365a525` 57/53, `f361b776` 57/–, `becb4e56` **50/48**, `f3bdbdce` 50/48. One
+commit, and a binary-swap bisect (the same worktree, four binaries) said the same. Hardware
+counters on the hero paging scene: the fast builds spend 20.5M arithmetic words a frame (12.0M GPU
+cycles), the slow ones **24.6M (14.0M)**, with rasterised quads and texture words unchanged — so
+the +4M words were per-fragment ALU on the same pixels. `becb4e56` had put `shaders/dither.glsl`
+behind a uniform branch on FIVE programs, two of them the per-rect `fs_src` and per-shadow
+`fs_shadow`. Rule 1 of that file ("a uniform branch is resolved per draw, so a draw with
+`u_dither = 0` pays nothing") is true of the fetch and the add and false of the branch: on this
+Midgard it cost ~2 words a fragment on every rect, pill, scrim and shadow in the frame, and the
+ramp policy had answered 0 for nearly all of them.
+
+**What changed, as shared mechanisms.**
+
+- `fs_src.frag` and `fs_shadow.frag` are plain again (`glsl!`); `dither_for_ramp` and its two
+  thresholds are gone. The three slow-field programs keep the prelude, and the glass amplitude is
+  per draw rather than a link-time constant. (The same day's GLOBAL motion gate — no field dithered
+  while any spring was in flight — lasted one day: it flickered the wash's bands in and out on every
+  focus spring on Settings, the picker and first run, screens that were at 60 fps with the noise on.
+  Only the two page washes under moving artwork keep a motion gate, `gfx::page_wash_dither`.)
+- `ui::idle::should_present` presents one **settle frame** after motion stops, so the LIVE picture left
+  on the panel is the dithered one.
+- The ambient field has an in-flight twin program (`fs_ambient.frag` linked behind
+  `shaders/dither_stub.glsl`, `gfx::ambient_program`), with no uniform, sampler or branch at all;
+  `draw_grad4` always takes it. That alone moved the fold from 50 to 55.
+- A flat-colour program (`shaders/fs_flat.frag`) draws every uniform, square, unfocused rect —
+  the full-screen scrims — with no interpolation.
+- The popover host cache (`ui::popover::host`) is on the Library menus, Settings and the decision
+  alert, and its refresh decision was rebuilt three times under review: page damage is now
+  **attributed at the source and counted** (`idle::OwnScope` around a panel's update, its
+  drawing, the input it holds, and the host page pass itself; `idle::take_page_damage`), page
+  motion is a refresh reason only while every holder is fading, and the fps scenes' oscillators
+  `wake` instead of `invalidate`.
+
+**The account menu, three wrong answers deep.** `fps:home-acct-glass` read 47 before this pass
+and **26** through most of it: first the two-bit ledger stopped masking the panel's own per-frame
+appear/marquee invalidate; then page MOTION was a refresh reason while Home's decorations kept
+moving under the frozen page; then, with both fixed, a simulator backtrace at the unscoped
+`invalidate` named `home::draw_status`'s `Spinner::draw` — a spinner on the host reports damage
+from its own draw, so any refresh frame (the page drawn for real) re-armed the next, forever.
+`host::PagePass` now scopes the page draw: what the page reports while being drawn into the
+snapshot IS the snapshot. Simulator: 799 host refreshes in 14 s → 2. Device: 60 fps.
+
+| scene / boot | before | after |
+|---|---|---|
+| `fps:home-hero` median | 50 | **60** |
+| `fps:home-fold` median / robust_min | 48 / 46 | **55 / 53** |
+| `fps:home-acct-glass` median / robust_min | 47 / 43 | **60 / 60** |
+| `fps:settings-root` | 60 | 60 |
+| account menu over Home under `acctosc`, GPU cycles per frame (mean) | 23.1M | **4.3M** |
+| `fps:library-switch` (Sort menu, p50 draw) | 33 ms | 16 ms |
+| hero paging, GPU cycles / ARITH words per frame (mean) | 14.0M / 24.6M | 11.2M / 17.8M |
+| Settings boot (entry ramp, Privacy, Delete alert), GPU per frame mean / p50 | 12.2M / 9.5M | 8.4M / 6.2M |
+| Settings entry, worst draw frames | 3 × 89 ms | 1 × 69 ms |
+| Cast & Crew scroll (Depeche Mode: 101), GPU per frame mean / p50 | 10.7M / 10.6M | 8.4M / 7.5M |
+| Cast & Crew scroll, worst steady frames | ~50 ms | ~42 ms |
+
+Still open from the same census, and not renderer work: the show detail's entry pays two ~80 ms
+CPU frames rasterising the episode list and the hero text (`dt.eps`, `dt.hero`); the Cast & Crew
+row's remaining drops are the page's fill (a full-screen wash plus fifteen shadowed circle
+composites) crossing the budget on the frames the ambient twin does not reach.

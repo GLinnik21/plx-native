@@ -151,11 +151,14 @@ past `press::LONG_MS`), and `shot` (simulator only).
 A desktop keyboard also works directly in `make sim-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 
-**`back` at Home's root raises the EXIT ALERT** (`ui::exit_alert`), it does not end the process —
-so a `back` too many leaves a modal question on screen and the next `shot` captures *that*, not the
-page you were driving toward. `back` again dismisses it (so does `ok`, which lands on the default
-*Cancel*); `right` then `ok` is what actually quits. Arm `$SIM_DIR/plxnative-noexitconfirm` if a
-script wants the old one-press exit.
+**`back` at a ROOT is the platform's root press** (`webos::go_home`) — Home's root, the
+who's-watching picker and the QR sign-in — and it does not end the process. **On the simulator it
+is a LOG LINE and nothing else** (`gohome: no LS2 bus off-device …`): there is no webOS launcher to
+hand a Mac window to, so the screen does not change and a `back` too many looks like a key that did
+nothing. That is the one part of this behaviour the simulator is structurally blind to; whether the
+television really shows its launcher and brings the SAME PROCESS back is a `tv-session` question —
+and note the contract is the process, not the screen: workers keep running while backgrounded, so a
+sign-in may legitimately have advanced by the time the app is foregrounded again.
 
 ### Three traps, each of which has already cost an hour
 

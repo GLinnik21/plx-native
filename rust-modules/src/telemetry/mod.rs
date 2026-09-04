@@ -78,7 +78,34 @@ pub(crate) fn boot() -> native::Guard {
 /// for the same reason: which of the two `/media` directories is writable depends on the jail
 /// profile, so the answer cannot be a literal.
 fn load() -> Consent {
-    load_from(&crate::paths::telemetry_candidates())
+    load_from(&candidates())
+}
+
+/// Where the decision lives: `paths::telemetry_candidates()`, until a test redirects it to a file
+/// of its own. Same shape and same reason as `session::redirect_for_test`: every real candidate is
+/// either a device path that does not exist on the dev Mac or the directory the test binary runs
+/// from, so a test that writes through the real list leaves a consent file in `target/`.
+#[cfg(not(test))]
+fn candidates() -> Vec<std::path::PathBuf> {
+    crate::paths::telemetry_candidates()
+}
+
+#[cfg(test)]
+static TEST_FILE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn candidates() -> Vec<std::path::PathBuf> {
+    match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        Some(p) => vec![p],
+        None => crate::paths::telemetry_candidates(),
+    }
+}
+
+/// Point this module's decision file at `p`, or back at the real search order with `None`. The
+/// caller holds `crate::testlock::serial()` for the whole test: this is a crate global.
+#[cfg(test)]
+pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
 }
 
 fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
@@ -100,7 +127,7 @@ pub(crate) fn record(c: Consent) {
     let Ok(json) = serde_json::to_vec_pretty(&c) else {
         return;
     };
-    let stored = crate::paths::telemetry_candidates()
+    let stored = candidates()
         .iter()
         .any(|p| crate::plex::session::write_atomic(p, &json));
     if !stored {
@@ -124,12 +151,53 @@ pub(crate) fn record(c: Consent) {
     native::sync_change(&c);
 }
 
-/// Withdraw every in-memory telemetry permission and purge queued/native reports without writing a
-/// replacement consent file. Used by full local-data erasure, where recreating even a default
-/// settings file would make the operation's name false.
-pub(crate) fn forget_local() {
+/// **End the signed-in account's tenure over telemetry.** The decision returns to *unanswered*
+/// and is PUBLISHED FIRST — before any file I/O — so from that instant every producer's gate
+/// answers no and the sender's per-record revision check picks up no further record; this is what
+/// lets `PRIVACY.md` say that no further report is picked up after a sign-out. ONE record the
+/// sender had already passed through that check may still go out — the check-to-POST gap has no
+/// cancellation — and the policy says exactly that, no more. Then both identifiers are gone with it, the consent file
+/// is unlinked from every candidate location — a candidate that cannot be unlinked is overwritten
+/// with the default decision, and one that refuses both is logged: that disk is also refusing the
+/// session's own clear, the same failure sign-out already has for the credentials — queued records
+/// are purged, and the native capture backend is stopped with its pending envelopes removed.
+/// Nothing is written otherwise: a missing file IS "never asked", which is what Delete all local
+/// data needs the name to mean.
+///
+/// ONE mechanism with two consumers, both behind `auth::forget_account`: the two Sign out doors
+/// (account menu, who's-watching pill) and Delete all local data.
+///
+/// Why sign-out ends it: consent is given by the person who signed the television in, and it
+/// authorises nothing about the next person to sign in through the QR flow. Until 2026-09-04 the
+/// decision and both identifiers deliberately outlived the sign-in ("so that a decision you have
+/// already made is not put to you again"), which meant account B was never asked and every report
+/// B caused went out under A's consent and A's identifiers. A managed-profile switch is not a
+/// sign-out and keeps the decision; an uninstall keeps the sign-in, so it keeps the decision too.
+///
+/// The crash MARK (`paths::telemetry_crashmark_candidates`) is deliberately left alone: it records
+/// how much of the crash log has been read — a fact about the log, not about anybody — and the
+/// next opt-in watermarks the log again through `crashreport::discard_pending_before_opt_in`.
+pub(crate) fn forget() {
     let c = Consent::default();
+    // Install first — then the files, then the purge: the same order and the same reason as
+    // `record`, and here also the moment the sender stops starting requests.
     consent::install(c.clone());
+    crate::player::report::clear_error_trace();
+    for p in candidates() {
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // A file that will not go must at least stop saying yes.
+                let overwritten = serde_json::to_vec_pretty(&c)
+                    .map(|json| crate::plex::session::write_atomic(&p, &json))
+                    .unwrap_or(false);
+                crate::log(&format!(
+                    "telemetry: sign-out could not unlink the decision ({e}); overwritten={overwritten}"
+                ));
+            }
+        }
+    }
     spool::purge_withdrawn(&c);
     native::sync_change(&c);
 }
@@ -149,11 +217,6 @@ static FLUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// At most one sleeping retry worker. Manual flushes may happen while it waits; the eventual wake
 /// is harmless, while spawning one sleeper per flush would consume this small device's thread cap.
 static RETRY_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Queue one record for later. Main-thread-safe, and it does NOT send.
-pub(crate) fn enqueue(r: queue::Record) {
-    spool::append(&r);
-}
 
 /// Drain the spool on a worker thread.
 ///
@@ -251,9 +314,10 @@ fn process_records(
     let mut retry: Option<u64> = None;
     'destinations: for dest in [queue::Dest::Sentry, queue::Dest::PostHog] {
         for r in all.iter().filter(|r| r.dest == dest) {
-            // Never carry an old consent snapshot through a withdrawal or a quick off→on cycle.
-            // A request that already passed this check may finish because the socket API has no
-            // cancellation; PRIVACY.md states that narrow in-flight boundary explicitly.
+            // Never carry an old consent snapshot through a withdrawal, a sign-out or a quick
+            // off→on cycle. A request that already passed this check may finish because the socket
+            // API has no cancellation; PRIVACY.md ("Your choices") states that narrow in-flight
+            // boundary explicitly — it did not until 2026-09-04, while this comment said it did.
             if !still_current() {
                 break 'destinations;
             }
@@ -412,25 +476,51 @@ mod tests {
         }
     }
 
-    /// **Delete all local data leaves neither identifier in the snapshot.** `app.rs` removes the
-    /// consent file itself; this is the in-memory half, and it is the half a producer on the
-    /// render thread reads, so a report queued after the deletion must find nothing to attach.
+    /// **Ending the tenure leaves neither identifier in the snapshot and no file on disk.** The
+    /// snapshot is the half a producer on the render thread reads, so a report queued after the
+    /// sign-out must find nothing to attach; the file is the half the next boot reads.
+    /// `auth::tests::signing_out_leaves_no_consent_and_no_identifier_for_the_next_account` grades
+    /// the same thing through the real sign-out tail.
     #[test]
-    fn forgetting_local_data_clears_both_identifiers_from_the_snapshot() {
+    fn forgetting_the_tenure_clears_both_identifiers_and_the_file() {
+        /// The redirects and the snapshot, handed back on drop, so a failed assertion cannot leave
+        /// the next test writing into this directory.
+        struct Redirects {
+            dir: std::path::PathBuf,
+            saved: Option<Consent>,
+        }
+        impl Drop for Redirects {
+            fn drop(&mut self) {
+                spool::set_test_path(None);
+                redirect_for_test(None);
+                if let Some(c) = self.saved.take() {
+                    consent::install(c);
+                }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
         let _g = crate::testlock::serial();
-        let saved = consent::current();
-        consent::install(consent::apply(&Consent::default(), true, true, || {
+        let dir = std::env::temp_dir().join(format!("plxnative-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _redirects = Redirects {
+            dir: dir.clone(),
+            saved: consent::current(),
+        };
+        let file = dir.join("telemetry.json");
+        redirect_for_test(Some(file.clone()));
+        spool::set_test_path(Some(dir.join("spool.jsonl")));
+        record(consent::apply(&Consent::default(), true, true, || {
             Some("f".repeat(32))
         }));
+        assert!(file.exists());
         assert!(consent::errors_id().is_some() && consent::allows_usage());
-        forget_local();
+        forget();
         let after = consent::current().expect("a default decision is published, not none");
         assert!(!after.any() && !after.answered());
         assert!(after.install_id.is_none() && after.errors_id.is_none());
         assert!(consent::errors_id().is_none() && !consent::allows_errors());
-        if let Some(c) = saved {
-            consent::install(c);
-        }
+        assert!(!file.exists(), "the decision file survived");
     }
 
     /// An unreadable or corrupt file is the DEFAULT decision, never a partial one — a file we

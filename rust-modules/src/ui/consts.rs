@@ -272,8 +272,9 @@ pub enum Key {
     /// because `key_play` and `key_pause` are each one direction of the toggle.
     PlayPause,
     Stop,
-    /// The remote's EXIT key. Terminates the app outright rather than raising the exit alert:
-    /// the alert exists so BACK at Home's root cannot quit by accident, and a key labelled EXIT
+    /// The remote's EXIT key, and since 2026-09-03 the ONLY key that ends the process. BACK at a
+    /// root hands the screen back to the television and leaves the app running (`webos::go_home`),
+    /// because a press people lean on must not be able to quit by accident; a key labelled EXIT
     /// carries no such ambiguity.
     Exit,
     /// The Magic Remote reporting that its pointer auto-hid ([`WCODE_POINTER_HIDDEN`]).

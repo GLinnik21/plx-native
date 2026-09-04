@@ -169,8 +169,10 @@ Two rules, both of which this material got wrong on its own before 2026-09-02:
   same construction `fs_ambient.frag`'s own header had been recording as a mistake that cost 38% of
   a Home frame. A sine hash is also structured, which is the "strange patterns" half of the report.
 
-`shaders/dither.glsl` is now the one answer for all five gradient programs, `gfx::dither_for_ramp`
-the one policy for which draws pay. Measured on the panel afterwards: the flat runs that ARE the
+`shaders/dither.glsl` is now the one answer for the three programs whose ramp is a blur or a
+whole-screen wash (`fs_ambient`, `fs_modal_ground`, `fs_glass` — the per-rect `fs_src`/`fs_shadow`
+carried it for two days and cost the hero paging scene 57→50 fps for a branch that answered "no" on
+every draw, 2026-09-04), `gfx::dither_for_field` the one policy for which draws pay. Measured on the panel afterwards: the flat runs that ARE the
 staircase fall from 9.6 px / 15.7 px to 2.2 px, the horizontal autocorrelation at lag 64 from
 +0.144 to −0.010, and the paging numbers in §3b are unchanged.
 

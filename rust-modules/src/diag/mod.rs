@@ -95,15 +95,23 @@ fn event_for(e: schema::DiagEvent, server: Option<crate::plex::ServerId>) {
     // Queued, never sent from here: this is the frame loop, and a send opens a socket. The worker
     // in `telemetry::flush_soon` drains it.
     //
+    // **Appended only if usage consent still holds while the spool is exclusively owned.** The
+    // gate at the top of this function is a snapshot read; a withdrawal or a sign-out between it
+    // and this line publishes its decision first and then takes this same lock to purge, so the
+    // record is either refused here or appended and purged — never left behind to be framed under
+    // the NEXT sign-in's identifier at send time (`sender::wire_body` attaches the identifier
+    // current at the send, not at the capture). The handled playback error already went this way.
+    //
     // Deliberately not logged. `crate::log` writes the event log, and an event stream duplicated
     // into the primary debugging surface would double its volume to say nothing new — every one of
     // these is derived from a line already there.
-    crate::telemetry::enqueue(crate::telemetry::queue::Record {
+    let record = crate::telemetry::queue::Record {
         category: crate::telemetry::queue::Category::Usage,
         dest: crate::telemetry::queue::Dest::PostHog,
         event_id,
         body,
-    });
+    };
+    let _ = crate::telemetry::spool::append_if(&record, crate::telemetry::consent::allows_usage);
 }
 
 /// A process-local session identity. Random and never persisted separately: queued events carry the

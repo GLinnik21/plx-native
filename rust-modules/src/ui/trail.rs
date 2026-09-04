@@ -164,7 +164,7 @@ impl Trail {
     /// Trail ceiling. A Related chain is unbounded (PMS's related hubs are near-symmetric, so
     /// A→B→A is two presses) and so is person→detail→person, which makes this a MEMORY bound rather
     /// than a correctness one: 16 nodes is a couple of kilobytes and deeper than any real session,
-    /// and BACK terminates either way because the ROOT is never dropped.
+    /// and BACK still reaches the ROOT PRESS either way because the root is never dropped.
     pub(crate) const CAP: usize = 16;
 
     pub(crate) fn new() -> Self {
@@ -185,11 +185,12 @@ impl Trail {
     }
 
     /// BACK: leave the top page and hand back the one under it. `None` at the ROOT — which is what
-    /// keeps BACK at Home reaching THE DOOR, because `app.rs`'s BACK arm reaches its root branch by
-    /// never consulting the trail on Home at all. (That branch raises the exit alert now rather
-    /// than setting `running = false` outright — see `app.rs::back_at_root`. What this module
-    /// guarantees is unchanged and is the half that matters here: at the root there is nothing
-    /// left to pop, so the press falls through to whatever the app does with a root BACK.)
+    /// keeps BACK at Home reaching THE ROOT PRESS, because `app.rs`'s BACK arm reaches its root
+    /// branch by never consulting the trail on Home at all. (What that branch DOES has changed
+    /// three times — quit, then a Cancel/Exit alert, and since 2026-09-03 the television's own Home
+    /// with the app still running; see `app.rs::back_at_root`. What this module guarantees is
+    /// unchanged and is the half that matters here: at the root there is nothing left to pop, so
+    /// the press falls through to whatever the app does with a root BACK.)
     ///
     /// Returns by VALUE. The clone is two `String`s once per BACK press, and it buys the caller the
     /// right to touch the trail again inside the re-entry it is about to run.
@@ -304,10 +305,10 @@ mod tests {
         }
     }
 
-    /// The executable form of "BACK at the Home root REACHES THE DOOR": the trail declines, and the
-    /// arm falls through to its root branch — which raises the exit alert (`app.rs::back_at_root`),
-    /// and used to quit outright. Either way this module's obligation is the same and nothing else
-    /// in it may make it untrue: at the root there is nothing to pop.
+    /// The executable form of "BACK at the Home root REACHES THE ROOT PRESS": the trail declines,
+    /// and the arm falls through to its root branch (`app.rs::back_at_root`, which today shows the
+    /// television's own Home). Whatever that branch does, this module's obligation is the same and
+    /// nothing else in it may make it untrue: at the root there is nothing to pop.
     #[test]
     fn a_fresh_trail_is_the_root_and_back_there_declines() {
         let mut t = Trail::new();
@@ -425,7 +426,7 @@ mod tests {
         assert_eq!(
             t.stack[0],
             Node::Home,
-            "the root is what makes BACK terminate"
+            "the root is what makes BACK reach the root press"
         );
         assert_eq!(
             t.stack[1],
@@ -533,16 +534,17 @@ mod tests {
         assert_eq!(t.stack.len(), 3, "a different person is a different page");
     }
 
-    /// **BACK at the Home root REACHES THE DOOR** (the exit alert, since 2026-08-21 — before that,
-    /// the exit itself), so a return to Home is a TRUNCATION and never a push: a second `Node::Home`
-    /// on the stack would put an extra BACK between the user and that door, which is the one place a
-    /// wrong trail is not merely a misnavigation.
+    /// **BACK at the Home root REACHES THE ROOT PRESS** (the television's own Home since
+    /// 2026-09-03; a Cancel/Exit alert before that, and the exit itself before that), so a return
+    /// to Home is a TRUNCATION and never a push: a second `Node::Home` on the stack would put an
+    /// extra BACK between the user and that press, which is the one place a wrong trail is not
+    /// merely a misnavigation.
     ///
     /// The other half of the same rule: playing a Continue Watching card off Home and stopping it
     /// must leave the user exactly one BACK from the door, whatever page they had been on before
     /// they came back to Home.
     #[test]
-    fn a_return_to_home_leaves_exactly_one_back_between_the_user_and_the_door() {
+    fn a_return_to_home_leaves_exactly_one_back_between_the_user_and_the_root_press() {
         let mut t = Trail::new();
         t.push(Node::Library);
         t.push(det("a"));

@@ -3,10 +3,32 @@
 //! does not state — an optional body, which this module measures and which grows the panel.
 //!
 //! [`layout`] is the pure half, `layout(question_h, body_h)`, and `body_h == 0.0` is byte-identical
-//! to the geometry that existed before bodies did (`no_body_leaves_the_geometry_untouched`) —
-//! `exit_alert` shares this layout and asks its question alone. The body is held on the ALERT
+//! to the geometry that existed before bodies did (`no_body_leaves_the_geometry_untouched`), which
+//! is the shape an alert takes when it asks its question and nothing more. No shipping alert does
+//! that today — the last bare one was `ui::exit_alert`, retired 2026-09-03 when BACK at a root
+//! stopped asking anything and started handing the screen back to the television, and the one that
+//! ships (Privacy & data's *Delete local data*) carries a body — so that test is now the ONLY thing
+//! holding the body-free arithmetic, and it is kept deliberately: the next question this app asks
+//! will almost certainly be a bare one. The body is held on the ALERT
 //! rather than passed to [`DecisionAlert::draw`] because it moves the controls, and
 //! [`DecisionAlert::press_at`] has to compute the same panel the last draw did.
+//!
+//! **Every interactive exit — confirm, cancel, or BACK — takes [`DecisionAlert::dismiss`], never
+//! [`DecisionAlert::close`].** `close` is [`Popover::close`]'s case: a subject that vanished out
+//! from under the alert, or a defensive reset before opening it fresh (`consent`'s `open`/
+//! `open_settings` both call it for exactly that, unconditionally, before the alert has ever shown
+//! anyone anything). A person's OWN answer is not that case, however destructive: the alert has
+//! already been seen and already been answered, and the caller learns the choice from
+//! [`DecisionAlert::choice`] before anything the answer authorizes runs — so there is always a
+//! frame in which fading it out costs nothing but a few frames of a panel already leaving. Reported
+//! off `consent.rs`'s "Delete all local data" flow (2026-09-03): confirming jumped straight to an
+//! instant hide because the confirm arm reused the screen's own defensive `close()` reset instead
+//! of `dismiss()` — this alert had the same appearance animation `exit_alert` shares, and none
+//! leaving. A
+//! caller that tears its OWN host down synchronously under the alert (as that same confirm arm
+//! still does, to the Settings screen behind it) may keep doing so; the alert's fade then simply
+//! runs over whatever the app shows next, exactly like a dismissed `account_menu`/`item_menu`
+//! fading over the host it returned to.
 
 use crate::ui::label::{HAlign, Label};
 use crate::ui::popover::Popover;
@@ -46,8 +68,8 @@ pub(crate) struct Layout {
 }
 
 /// The panel, **pure**, from the two measured text heights. `body_h` is 0.0 for an alert that asks
-/// its question and nothing more (`exit_alert`), and the arithmetic is written so that case stays
-/// byte-identical to the layout that existed before a body was possible.
+/// its question and nothing more, and the arithmetic is written so that case stays byte-identical
+/// to the layout that existed before a body was possible.
 pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     let body_block = if body_h > 0.0 { BODY_GAP + body_h } else { 0.0 };
     let h = PAD_TOP + question_h + body_block + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
@@ -99,7 +121,13 @@ pub(crate) struct DecisionAlert {
 impl DecisionAlert {
     pub(crate) const fn new() -> Self {
         Self {
-            pop: Popover::new(),
+            // The page under a decision alert is frozen into the shared host snapshot
+            // (`popover::host`) — the alert's own contents are a question and two answers, and
+            // what made "Cancel / Delete" lag was the full page being re-rendered under it on every
+            // frame its focus spring moved. Over the Settings family (the delete-data alert) the
+            // page closure is already skipped and nothing is captured, which costs nothing; over
+            // Home (the exit alert) it is the difference between the page's ~50 ms and one quad.
+            pop: Popover::new().caching_host(),
             choice: Choice::Cancel,
             controls: CtlPop::new(),
             body: None,
@@ -107,6 +135,13 @@ impl DecisionAlert {
     }
     pub(crate) fn is_open(&self) -> bool {
         self.pop.is_open()
+    }
+    /// **Has the sheet finished arriving?** A key acts on the logical state, but a POINTER hit is
+    /// positional and [`Self::press_at`] tests FINAL coordinates while the sheet is still drawn
+    /// through the entrance painter — so an immediate click lands on a control that is displaced
+    /// and nearly invisible. Every pointer caller gates on this (`ui::route_screen`'s rule 11).
+    pub(crate) fn settled(&self) -> bool {
+        self.pop.appear_settled()
     }
     /// Ask the question alone.
     pub(crate) fn open(&mut self) {
@@ -159,6 +194,8 @@ impl DecisionAlert {
     }
     pub(crate) fn set_choice(&mut self, choice: Choice) {
         self.choice = choice;
+        // The ring moved and nothing behind the alert did — `popover::note_own_damage`.
+        crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
     }
     pub(crate) fn move_focus(&mut self, delta: i32) {
@@ -167,12 +204,16 @@ impl DecisionAlert {
         } else {
             Choice::Cancel
         };
+        crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
     }
     pub(crate) fn update(&mut self, dt: f32) {
         if !self.visible() {
             return;
         }
+        // The appear spring and the two answers' focus pops are the ALERT's motion, not the
+        // page's — `popover::own_motion`.
+        let _own = crate::ui::popover::own_motion();
         self.pop.update(dt);
         self.controls.step(
             Some(matches!(self.choice, Choice::Destructive) as usize),
@@ -181,6 +222,9 @@ impl DecisionAlert {
     }
     pub(crate) fn draw_scrim(&self) {
         if self.visible() {
+            // Live over the frozen host — and the first `live` of a frame is what takes the
+            // snapshot, before this scrim lands on it. See `popover::host::live`.
+            let _live = crate::ui::popover::host::live();
             self.pop.scrim(0.55);
         }
     }
@@ -193,17 +237,22 @@ impl DecisionAlert {
         if !self.visible() {
             return;
         }
+        // Everything below is LIVE over the frozen host page — see `popover::host::live`.
+        let _live = crate::ui::popover::host::live();
         let l = self.measured();
         let p = self.pop.content_painter(Popover::RISE);
-        self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD);
-        Label::new(question.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
-            .bold()
-            .h(HAlign::Center)
-            .draw(p, l.question);
-        if let Some(body) = self.body {
-            Self::body_view(body).draw(p, l.body);
-        }
+        crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD));
+        crate::ui::profile::phase("da.text", || {
+            Label::new(question.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+                .bold()
+                .h(HAlign::Center)
+                .draw(p, l.question);
+            if let Some(body) = self.body {
+                Self::body_view(body).draw(p, l.body);
+            }
+        });
         let env = Env::inert();
+        crate::ui::profile::phase("da.ctl", || {
         Button::new(cancel.as_ptr(), theme::size::BODY, l.cancel)
             .focused(self.choice == Choice::Cancel)
             .scale(self.controls.scale(0))
@@ -213,14 +262,15 @@ impl DecisionAlert {
             .focused(self.choice == Choice::Destructive)
             .scale(self.controls.scale(1))
             .draw(&env, p);
+        });
     }
     pub(crate) fn press_at(&mut self, x: f32, y: f32) -> bool {
         let l = self.measured();
         if l.cancel.contains(x, y) {
-            self.choice = Choice::Cancel;
+            self.set_choice(Choice::Cancel);
             true
         } else if l.destructive.contains(x, y) {
-            self.choice = Choice::Destructive;
+            self.set_choice(Choice::Destructive);
             true
         } else {
             false
@@ -231,9 +281,14 @@ impl DecisionAlert {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// **A body must not move an alert that has none.** `exit_alert` shares this layout and asks
-    /// its question alone, so the body arithmetic has to vanish completely at `body_h == 0.0` —
-    /// not merely add a small gap. Written by computing the panel both ways and comparing.
+    /// **A body must not move an alert that has none.** The body arithmetic has to vanish
+    /// completely at `body_h == 0.0` — not merely add a small gap. Written by computing the panel
+    /// both ways and comparing.
+    ///
+    /// Every shipping alert carries a body today — `ui::exit_alert`, which asked its question
+    /// alone, was retired on 2026-09-03 along with the root-BACK question itself — so this test is
+    /// the whole of what holds the body-free case. It stays for that reason rather than in spite of
+    /// it: arithmetic nothing exercises is arithmetic that drifts.
     #[test]
     fn no_body_leaves_the_geometry_untouched() {
         let plain = layout(40.0, 0.0);

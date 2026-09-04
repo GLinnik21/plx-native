@@ -14,12 +14,14 @@
 //! case", and [`no_identifier_exists_before_anyone_says_yes`] is the test that keeps it that way.
 //!
 //! **Two identifiers, because they are two channels.** The crash-report id (`errors_id`) exists so
-//! that Sentry can count how many opted-in televisions an issue reached rather than how many times
-//! it fired — its built-in "users affected" reads exactly `user.id` and nothing else. The
+//! that Sentry can count how many uninterrupted opt-ins an issue reached rather than how many
+//! times it fired — its built-in "users affected" reads exactly `user.id` and nothing else. The
 //! analytics id (`install_id`) is PostHog's `distinct_id`. They are never the same value and never
 //! travel together: a person who consented to two purposes did not consent to having them joined,
 //! and one shared handle is precisely the join. Withdrawing one channel destroys ITS id and leaves
-//! the other untouched.
+//! the other untouched. **Signing out destroys both and the decision with them**
+//! (`telemetry::forget`, behind `auth::forget_account`): consent belongs to the account that gave
+//! it, and the next account to sign in is asked afresh.
 //!
 //! **Two switches, because they are two questions.** Error reports and usage statistics are judged
 //! differently by the people who care — when Audacity retreated it dropped usage analytics and kept
@@ -98,9 +100,10 @@ pub(crate) struct Consent {
     /// The CRASH-REPORT id: same shape and same source, minted when crash reports are enabled and
     /// dropped when they are withdrawn. Sent as Sentry's `user.id` on every report of that
     /// channel — the native envelope, both fallback shapes and the handled playback error — and
-    /// never to PostHog. It is what makes "users affected" a count of televisions instead of a
-    /// count of events. Independent of [`Self::install_id`] in both directions: minted, kept and
-    /// destroyed by its own switch alone.
+    /// never to PostHog. It is what makes "users affected" a count of Crash report IDs — one per
+    /// uninterrupted opt-in on a television — instead of a count of events. Independent of [`Self::install_id`] in
+    /// both directions: minted, kept and destroyed by its own switch alone — and by sign-out,
+    /// which destroys both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errors_id: Option<String>,
 }

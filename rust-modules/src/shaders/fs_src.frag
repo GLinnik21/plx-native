@@ -93,10 +93,12 @@ highp vec2 sdBoxNormal(highp vec2 p, highp vec2 b, highp float r){
 void main(){
   float vy = v_uv.y;
   if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {
-    // The flat fast path — full-screen scrims and backdrops. Also the broadest quad in the app, so
-    // it is the one that bands worst when its two colours differ; see `dither.glsl`.
-    vec4 flat_c = mix(u_colTop, u_colBot, vy);
-    gl_FragColor = vec4(plx_dither(flat_c.rgb), flat_c.a);
+    // The flat fast path — full-screen scrims and backdrops. Undithered ON PURPOSE: this program
+    // runs on more fragments than any other (every rect, scrim, pill and row highlight), and the
+    // shared dither's uniform branch alone was measured at +4M shader words a frame across the
+    // hero paging scene (`docs/backdrop-blur-profiling.md`, 2026-09-04). The slow fields that band
+    // — the ambient wash, the glass blur, the modal ground — carry `dither.glsl`; a rect does not.
+    gl_FragColor = mix(u_colTop, u_colBot, vy);
     return;
   }
   highp vec2 p = (v_uv - 0.5) * u_size;
@@ -119,10 +121,7 @@ void main(){
   highp vec2 inner = hsz - vec2(radm + u_rimw + 2.0);
   if (abs(p.x) < inner.x && abs(p.y) < inner.y) {
     // The interior of a rounded panel — most of its fragments, and the ones a viewer stares at.
-    // It has to dither on the SAME terms as the edge path below, or the two exits of this shader
-    // disagree and the boundary between them becomes a visible ring.
-    vec4 in_c = mix(u_colTop, u_colBot, vy);
-    gl_FragColor = vec4(plx_dither(in_c.rgb), in_c.a);
+    gl_FragColor = mix(u_colTop, u_colBot, vy);
     return;
   }
   highp float rad = (p.x > 0.0) ? u_radR : u_radius;
@@ -181,5 +180,5 @@ void main(){
     rgb += (vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow) * u_focus_rgb;
     a = max(a, max(ring, glow));
   }
-  gl_FragColor = vec4(plx_dither(rgb), a);
+  gl_FragColor = vec4(rgb, a);
 }

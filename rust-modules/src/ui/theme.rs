@@ -305,12 +305,29 @@ pub const CONTROL_SPENT_FOCUS_W: f32 = 0.76;
 /// mid-word.
 pub const CONTROL_SPENT_FILL: [f32; 4] = mix(COOL_0, NEUTRAL_500, 1.0 - CONTROL_SPENT_FOCUS_W);
 
-/// The Search query field's focused ink — the bright endpoint of the `hot` cross-fade in
-/// `search::field::draw` (idle end: `TEXT_SECONDARY`). Its own role because it names the JOB: the
-/// field has no plate, rim or rule by the design system's `SearchField` contract, so this ONE step
-/// is the entire focus signal, and one stop (`TEXT_HEADING`) was too little from the couch (owner
-/// feedback, 2026-09-02). Lands on `TEXT_PRIMARY`, the brightest ink stop.
-pub const FIELD_FOCUS_INK: [f32; 4] = TEXT_PRIMARY;
+/// The Search query field's **editing** ink — the bright endpoint of the `hot` cross-fade in
+/// `search::field::draw` (idle end: `TEXT_SECONDARY`) while the television's keyboard is up. Its own
+/// role because it names the JOB: the design system's `SearchField` contract forbids a rim or rule
+/// on this control, so ink is the only focus signal editing ever gets, and one stop (`TEXT_HEADING`)
+/// was too little from the couch (owner feedback, 2026-09-02). Lands on `TEXT_PRIMARY`, the
+/// brightest ink stop short of pure white.
+///
+/// **Until 2026-09-04 this was also the ink for focused-but-not-editing** — first alone, then (for
+/// one day, issue 22) behind a flat [`ACCENT`]/[`ACCENT_INK`] plate that the owner rejected on sight
+/// ("you made the search bar background white, while I wanted text to be white"). The plate is
+/// gone for good and focus is ink-only again, but the two focused states now read apart by ink
+/// alone too: [`FIELD_WAITING_INK`] is the target while waiting for a press, and this token narrowed
+/// to the state that still has the caret to help it — see `field::draw`'s `ink_target`.
+pub const FIELD_EDITING_INK: [f32; 4] = TEXT_PRIMARY;
+
+/// The Search query field's **focused-but-not-editing** ink — the `hot` cross-fade's bright
+/// endpoint for the one state that has no caret, no keyboard and (since 2026-09-04) no plate to
+/// carry focus instead. Pure `WHITE`, not `TEXT_PRIMARY`/[`FIELD_EDITING_INK`]'s near-white
+/// `#f7fafc`: a field waiting for a press has to read as the brightest thing on the page by ink
+/// alone, one stop past what editing needs once the caret is there to help. `field::draw`'s
+/// `ink_target` is the one place that picks between this and [`FIELD_EDITING_INK`], on `editing`
+/// alone — never a second spring.
+pub const FIELD_WAITING_INK: [f32; 4] = WHITE;
 
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
 pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_600, 0.92);
@@ -1146,7 +1163,7 @@ pub const CARD_RING_RAD: f32 = 14.0;
 /// `ALERT_RAD`, `RADIUS_PANEL`) before the four panels were merged into one tree.
 ///
 /// One independent corroboration is worth keeping, because it was derived from the app rather than
-/// from the mock and it agrees: the exit alert's two answers are fully-rounded capsules at
+/// from the mock and it agrees: a decision alert's two answers are fully-rounded capsules at
 /// [`StatusOverlay::CTRL_H`](crate::ui::widgets::StatusOverlay::CTRL_H)`/2` = 30, so 32 sits a hair
 /// OVER the pills it contains — enough that the sheet is unmistakably the outer shape, not enough
 /// for it to become one. That is the design's "as round as the pills inside it" objection to 60,

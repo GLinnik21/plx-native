@@ -20,7 +20,8 @@
 //!   silently Off, and that is what makes "a share arriving later does not reopen this screen"
 //!   honest rather than merely quiet.
 //! * **Home is never empty.** The one state the control genuinely has no answer for, and the reason
-//!   `browse::toggle_pin` refuses to unpin the last library. The same floor is applied here,
+//!   the Home editor's draft refuses to unpin the last library (`ui::onboard::toggle_draft`; the
+//!   test-only `browse::toggle_pin` keeps the same floor). The same floor is applied here,
 //!   because a *recorded* selection can be emptied without any toggle at all: unpin your own
 //!   libraries in favour of a friend's, then lose the friend from the roster.
 use super::session::{HomePins, PinnedLib};

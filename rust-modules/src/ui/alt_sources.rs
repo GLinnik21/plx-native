@@ -93,10 +93,21 @@ pub(crate) struct AltCopy {
     /// Libraries are what a person browses; the machine name (`nas-home`) belongs to the Sources
     /// list and to a failure read-out, and appears nowhere else in the product.
     pub(crate) library: String,
-    /// Who owns that server: `None` for the signed-in account's own, `Some(handle)` for a share —
-    /// the same `sourceTitle` handle the shelf headings and the Sources list use. `None` is the
-    /// ABSENCE of an owner, not an empty one: it is what the row spells "This account", and it is
-    /// the ordering's own-before-a-friend's tiebreak.
+    /// **The CREDIT for that server** — `plex::servers::owner_credit`'s answer, the same one the
+    /// shelf headings and the Sources list draw, and NOT the raw `sourceTitle` it used to be.
+    /// `Some(handle)` for a person outside this household; `None` when there is nobody to credit,
+    /// which is our own server, the household's own server whichever Plex Home profile is watching,
+    /// and a share plex.tv never named.
+    ///
+    /// `None` is the ABSENCE of an owner, not an empty one: it is what the row spells
+    /// [`OWN_ACCOUNT`], and it is the ordering's own-before-a-friend's tiebreak. That read-out is
+    /// exactly right for the first two cases and a slight over-claim for the third — see
+    /// `docs/shared-servers.md` §13, which records why an unnamed external share is not
+    /// distinguishable here today.
+    ///
+    /// Stamped when the resolve lands and RE-stamped by [`restamp_owners`] whenever the registry
+    /// re-describes a source, because this is a copy of a fact that can be corrected under an open
+    /// page.
     pub(crate) owner: Option<String>,
     /// That server's ratingKey for the item — per-server, and the whole reason the identity above
     /// it is a guid. Where OK navigates.
@@ -217,6 +228,7 @@ pub(crate) fn reset(item_sid: ServerId, item_rk: &str) {
         *addr_of_mut!(FOR_RK) = item_rk.to_string();
         *addr_of_mut!(COPIES) = Vec::new();
         *addr_of_mut!(STAND_RK) = String::new();
+        addr_of_mut!(STAND_OWNS).write(false);
     }
     unsafe { addr_of_mut!(FOR_SID).write(item_sid) }; // `Copy`, so `write` is the right idiom here
 }
@@ -240,9 +252,103 @@ pub(crate) fn install(item_sid: ServerId, item_rk: &str, list: Vec<AltCopy>) {
     if !crate::plex::same_item((item_sid, item_rk), here) {
         return;
     }
+    // A real resolve replaces whatever was there, stand-in included — so it is no longer the
+    // stand-in's list and `regrade` below must grade it.
+    unsafe { addr_of_mut!(STAND_OWNS).write(false) };
+    let mut list = list;
+    // **The worker's stamp is not trusted.** `resolve_alt_sources` reads the credit on a background
+    // thread, and a resolve dispatched before a roster refresh re-grades that credit lands after
+    // it — past `pump_alt_sources`' facts epoch, which it has already consumed. Regrading here is
+    // the only point that sees both the list and the current answer.
+    regrade(&mut list);
     unsafe { *addr_of_mut!(COPIES) = list }; // assignment — see [`reset`]
+    rebuild_if_showing();
     crate::ui::idle::invalidate();
 }
+
+/// **Re-read every retained copy's CREDIT from the registry.** Called when the facts epoch moves —
+/// `plex::servers::facts_gen`, i.e. a source has been re-described — which is a different event
+/// from the roster changing and must not be answered the same way.
+///
+/// The copies themselves are still correct: a re-grade of who is credited for a server does not
+/// change which servers hold the item, so discarding the list (or the resolve in flight for it)
+/// would throw away good work and leave the panel's control absent until the page was remounted.
+/// What IS stale is this struct's copy of `owner`, taken at resolve time — and it is the sixth and
+/// last surface that draws the "Shared by …" decision, so leaving it saying the old thing puts the
+/// account holder's name back on the household's own library after every other surface has dropped
+/// it.
+///
+/// **MAIN THREAD**, like every other reader and writer of `COPIES` — `metadata::pump_alt_sources`
+/// is its only caller and runs on the SDL loop. The workers in this chain touch the mutex-protected
+/// result slot and never this store.
+pub(crate) fn restamp_owners() {
+    let changed = unsafe { regrade(&mut *addr_of_mut!(COPIES)) };
+    if changed {
+        rebuild_if_showing();
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// Re-materialise the panel's table whenever it is ON SCREEN — which is **not** [`is_open`].
+///
+/// The rows are a SNAPSHOT: `open` builds `TABLE` and `DESTS` once and `draw` renders that, so a
+/// correction reaches `COPIES` and stops there. Rebuilding is what carries it the last step, and
+/// the order moves with the text — `owner` is the own-before-a-friend's tiebreak in [`rows`], so a
+/// corrected panel can legitimately swap two of its rows.
+///
+/// `visible()` and not `is_open()`, because [`close`] runs the appear choreography BACKWARDS: it
+/// clears "open" immediately and keeps drawing for the length of the fade. A panel dismissed a
+/// frame before the correction would otherwise spend that fade still naming the wrong person, which
+/// is a small window and exactly the kind that ships.
+fn rebuild_if_showing() {
+    if pop().visible() {
+        rebuild_table(Sel::Keep);
+    }
+}
+
+/// **Re-read a copy list's CREDITS from the registry**, `true` when any of them moved.
+///
+/// The ONE place `AltCopy::owner` is decided, applied at both boundaries where a list can be
+/// wrong: on the way IN ([`install`], because a resolve dispatched before a correction lands after
+/// it and no epoch downstream can see that) and on an already-installed list ([`restamp_owners`],
+/// because a roster refresh re-grades the credit under a mounted page). Stamping it on the worker
+/// as well would be a third opinion; the worker's value is simply overwritten here.
+///
+/// **Skipped entirely while the headless stand-in owns the list** — see [`dev_stand_in`], whose
+/// whole purpose is to FABRICATE a borrowed copy on a slot the registry describes as ours. The
+/// trigger outranks the real answer everywhere else in this app for the same reason.
+///
+/// The guard is [`STAND_OWNS`], an explicit "the current `COPIES` came from the stand-in", and not
+/// "the trigger is armed" — which is what it was for one round, and is a different statement.
+/// A real resolve can land over a stand-in list (`install` takes it and `STAND_RK` stops the
+/// stand-in rebuilding), and an armed-but-EMPTY trigger builds no stand-in at all; on both, "armed"
+/// would have gone on suppressing the regrade for a list the stand-in does not own.
+///
+/// **MAIN THREAD** — see [`restamp_owners`].
+fn regrade(list: &mut [AltCopy]) -> bool {
+    if unsafe { addr_of!(STAND_OWNS).read() } {
+        return false;
+    }
+    let mut moved = false;
+    for c in list.iter_mut() {
+        let credit = crate::plex::server_facts(c.sid)
+            .map(|f| f.handle.clone())
+            .unwrap_or_default();
+        // `None` is the absence of an owner and must not become `Some("")` — the same guard
+        // `metadata::alt_copies` applies when it stamps this field in the first place.
+        let next = (!credit.is_empty()).then_some(credit);
+        if c.owner != next {
+            c.owner = next;
+            moved = true;
+        }
+    }
+    moved
+}
+
+/// Does the headless stand-in own the CURRENT `COPIES`? Set where [`dev_stand_in`] writes them,
+/// cleared by [`install`] (a real resolve has replaced them) and by [`reset`] (a new page). Always
+/// `false` in a release build, where the stand-in is compiled out entirely.
+static mut STAND_OWNS: bool = false;
 
 /// Drop copies whose grant left the live registry while this detail page remained mounted.
 /// Called only when the registry generation moves, so the ordinary per-frame path pays nothing.
@@ -425,9 +531,32 @@ pub(crate) fn is_open() -> bool {
 /// Selection starts on the copy you are on — the row the tick is against — because that is where
 /// the eye already is, and one DOWN from it is the alternative.
 pub(crate) fn open(anchor: Rect) {
+    unsafe { addr_of_mut!(ANCHOR).write(anchor) };
+    rebuild_table(Sel::OnTheCopyYouAreOn);
+    pop().open();
+}
+
+/// Where the selection lands when [`rebuild_table`] runs.
+enum Sel {
+    /// Opening: on the copy you are on — the row the tick is against — because that is where the
+    /// eye already is, and one DOWN from it is the alternative.
+    OnTheCopyYouAreOn,
+    /// Rebuilding under an OPEN panel: leave the cursor where the user put it. The rows can
+    /// re-order beneath it (a credit correction moves the own-before-a-friend's tiebreak), which
+    /// is a smaller surprise than the cursor jumping back to the tick mid-interaction.
+    Keep,
+}
+
+/// Materialise `COPIES` into the popover's table and destination list. Called on [`open`] and
+/// again whenever the rows' content changes under an open panel ([`restamp_owners`]) — the table
+/// is a snapshot, not a view, so nothing else makes a correction visible.
+fn rebuild_table(sel_mode: Sel) {
     let rs = live_rows();
     let mut sec = Section::new("");
-    let mut sel = 0;
+    let mut sel = match sel_mode {
+        Sel::Keep => table().sel.max(0),
+        Sel::OnTheCopyYouAreOn => 0,
+    };
     dests().clear();
     for (i, r) in rs.iter().enumerate() {
         // all four of the cell's content places, which is what the row has to say: the tick is
@@ -446,15 +575,14 @@ pub(crate) fn open(anchor: Rect) {
         }
         sec = sec.row(row);
         dests().push((r.sid, r.rk.clone()));
-        if r.checked {
+        if r.checked && matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
             sel = i as i32;
         }
     }
-    unsafe { addr_of_mut!(ANCHOR).write(anchor) };
+    sel = sel.min((rs.len() as i32 - 1).max(0));
     table().compact = false; // rows carry a sub-line — the track menu's size class, not the account popover's
     table().set_sections(vec![sec], sel, false);
     debug_assert_eq!(dests().len() as i32, table().n_rows());
-    pop().open();
 }
 
 pub(crate) fn close() {
@@ -621,7 +749,10 @@ pub(crate) fn pump() {
     // opens the `/tmp` file ONCE per page rather than on every frame of it.
     unsafe { *addr_of_mut!(STAND_RK) = for_rk.to_string() };
     if let Some(list) = dev_stand_in(for_rk) {
-        unsafe { *addr_of_mut!(COPIES) = list };
+        unsafe {
+            *addr_of_mut!(COPIES) = list;
+            addr_of_mut!(STAND_OWNS).write(true);
+        }
         crate::ui::idle::invalidate();
     }
 }
@@ -1077,6 +1208,186 @@ mod tests {
     /// Touches the module's `static mut` store, so it holds `testlock::serial()` and empties the
     /// store on the way OUT as well as in — `ui::detail`'s hero-row tests count the controls this
     /// store produces, and a leaked list is a count they never touched.
+    /// **A corrected credit re-stamps rows already on an OPEN page**, which is the sixth and last
+    /// surface that draws the "Shared by …" decision (`plex::servers::owner_credit`,
+    /// `docs/shared-servers.md` §13).
+    ///
+    /// `AltCopy::owner` is a COPY of the registry's credit, taken when the cross-source resolve
+    /// landed. When a roster refresh re-grades that credit — the household's own server ceasing to
+    /// be captioned with the account holder's handle — every other surface follows and this one
+    /// could not: `metadata::pump_alt_sources` answered the change by invalidating the resolve and
+    /// pruning, which retains the installed copies untouched and restarts nothing, so the row went
+    /// on naming the person watching until the page was remounted.
+    ///
+    /// The row ORDER is asserted with it, because `owner` is the own-before-a-friend's tiebreak in
+    /// [`rows`] and a restamp that did not reach the ordering would put the household's copy below
+    /// a friend's on a page that had just decided they were equals.
+    #[test]
+    fn a_re_described_source_restamps_the_credit_on_an_open_page() {
+        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                reset(ServerId::UNSET, "");
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _g = Fresh(crate::testlock::serial());
+        crate::plex::reset_servers_for_test();
+        let house = crate::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
+        let friend = crate::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
+        assert_eq!((house, friend), (sid(0), sid(1)), "slots 0 and 1");
+
+        // what a build without the rule published: the household's own server wearing the account
+        // holder's handle, and the panel's rows stamped from it
+        crate::plex::describe_server(house, "Mac mini", "admin", false);
+        crate::plex::describe_server(friend, "nas-home", "friend", false);
+        reset(house, "4");
+        install(
+            house,
+            "4",
+            vec![
+                copy(0, "Movies", "admin", "4", "1080"),
+                copy(1, "Film Club", "friend", "318", "1080"),
+            ],
+        );
+        assert_eq!(
+            rows(copies(), house, "4")
+                .iter()
+                .map(|r| r.detail.clone())
+                .collect::<Vec<_>>(),
+            ["admin", "friend"]
+        );
+
+        // the roster refresh re-grades the household's own server, with NO new resolve
+        crate::plex::describe_server(house, "Mac mini", "", false);
+        restamp_owners();
+
+        let after = rows(copies(), house, "4");
+        assert_eq!(
+            after.iter().map(|r| r.detail.clone()).collect::<Vec<_>>(),
+            [OWN_ACCOUNT, "friend"],
+            "the row follows the registry off a credit without waiting for a re-resolve"
+        );
+        assert_eq!(
+            copies()[0].owner,
+            None,
+            "and absence is spelled `None`, never `Some(\"\")`"
+        );
+
+        // the friend is untouched — a restamp is not a blanket clear
+        assert_eq!(copies()[1].owner.as_deref(), Some("friend"));
+
+        // **An OPEN panel is a materialised table, not a view of `COPIES`.** Without the rebuild
+        // it keeps both its old text and its old ORDER — and the order is not cosmetic, `owner` is
+        // the own-before-a-friend's tiebreak — until the user closes and reopens it.
+        crate::plex::describe_server(house, "Mac mini", "admin", false);
+        restamp_owners();
+        reset(house, "4");
+        install(
+            house,
+            "4",
+            vec![
+                copy(0, "Movies", "admin", "4", "1080"),
+                copy(1, "Film Club", "friend", "318", "1080"),
+            ],
+        );
+        open(crate::ui::Rect::new(0.0, 0.0, 100.0, 40.0));
+        // read the MATERIALISED table, not `rows(copies())` — the pure path would pass without the
+        // rebuild and prove nothing about what is on screen
+        let drawn = || {
+            table().sections[0]
+                .rows
+                .iter()
+                .map(|r| r.detail.clone())
+                .collect::<Vec<_>>()
+        };
+        // no detail page is mounted in a host test, so no row wears the tick and the ordering is
+        // decided by the two keys under it — equal quality, then OWNER, then library name. Both
+        // copies are credited here, so it falls through to the name: "Film Club" before "Movies".
+        assert_eq!(drawn(), ["friend", "admin"]);
+
+        crate::plex::describe_server(house, "Mac mini", "", false);
+        restamp_owners();
+        assert_eq!(
+            table().n_rows(),
+            2,
+            "the open panel is rebuilt, not emptied or duplicated"
+        );
+        // The text AND the order, which is the whole reason the table has to be rebuilt rather than
+        // patched: with nobody credited for the house's copy, `owner.is_some()` breaks the tie one
+        // key EARLIER than the library name and the two rows swap.
+        assert_eq!(
+            drawn(),
+            [OWN_ACCOUNT, "friend"],
+            "an OPEN panel follows the correction; it is a snapshot, not a view of COPIES"
+        );
+
+        // **And a DISMISSED but still-drawing panel too.** `close` runs the appear choreography
+        // backwards: `is_open()` goes false at once while `visible()` stays true and `draw` keeps
+        // rendering the table for the length of the fade. Gating the rebuild on `is_open` left that
+        // window naming the wrong person — small, and exactly the kind that ships.
+        crate::plex::describe_server(house, "Mac mini", "admin", false);
+        restamp_owners();
+        assert_eq!(drawn(), ["friend", "admin"]);
+        close();
+        assert!(
+            !is_open() && pop().visible(),
+            "dismissed, and still on screen for the fade"
+        );
+        crate::plex::describe_server(house, "Mac mini", "", false);
+        restamp_owners();
+        assert_eq!(
+            drawn(),
+            [OWN_ACCOUNT, "friend"],
+            "the fade draws the corrected rows, not the ones it was dismissed with"
+        );
+        hide();
+    }
+
+    /// **A resolve dispatched BEFORE the correction, landing AFTER it.** The worker reads the
+    /// credit off the registry on a background thread; by the time its list reaches the main
+    /// thread the roster refresh can have re-graded that credit AND `pump_alt_sources` can have
+    /// consumed the facts epoch it moved. Nothing downstream would ever look again, so the stale
+    /// stamp would have outlived every correction — which is why [`install`] regrades rather than
+    /// trusting what the worker carried.
+    #[test]
+    fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
+        struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                reset(ServerId::UNSET, "");
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _g = Fresh(crate::testlock::serial());
+        crate::plex::reset_servers_for_test();
+        let house = crate::plex::register_for_test("alt-late-house", "127.0.0.1", 1, "t", "cid");
+        let friend = crate::plex::register_for_test("alt-late-friend", "127.0.0.1", 2, "t", "cid");
+        crate::plex::describe_server(house, "Mac mini", "admin", false);
+        crate::plex::describe_server(friend, "nas-home", "friend", false);
+
+        // the worker's list, stamped while the old credit was still published
+        let in_flight = vec![
+            copy(0, "Movies", "admin", "4", "1080"),
+            copy(1, "Film Club", "friend", "318", "1080"),
+        ];
+
+        // …then the correction lands, and the epoch that saw it is already spent
+        crate::plex::describe_server(house, "Mac mini", "", false);
+        restamp_owners();
+
+        // …and only now does the resolve arrive
+        reset(house, "4");
+        install(house, "4", in_flight);
+
+        assert_eq!(
+            copies()[0].owner,
+            None,
+            "the list is graded against the registry as it is NOW, not as the worker found it"
+        );
+        assert_eq!(copies()[1].owner.as_deref(), Some("friend"));
+    }
+
     #[test]
     fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
         struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);

@@ -121,6 +121,25 @@ thread_local! {
     /// assertions as moving.
     static MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
+    /// Motion noted while NO [`MotionScope`] was open — the PAGE's own springs, as distinct from a
+    /// popover's, which step inside `popover::own_motion`'s scope. [`MOVING`] merges both, and has
+    /// to (either keeps the present gate awake); this one is the half `popover::host` needs to
+    /// answer "did the page under a FADING panel move" — a page that takes input again on the
+    /// press frame, so its motion may not be masked by the fade's own. Same thread-local
+    /// rationale as `MOVING`.
+    static PAGE_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The UNDERLAY's motion verdict for this frame — `app.rs`'s `underlay_moving` (the OR of every
+    /// SCOPED page update: Home, the Library, Search, the press dip) OR [`PAGE_MOVING`] (the
+    /// UNSCOPED page springs: Detail updates outside `scoped_motion`), and nothing a popover
+    /// stepped — published by `popover::host::begin_frame` before anything draws. It is what
+    /// `gfx::page_wash_dither` reads: the merged [`MOVING`] would also count a popover's own appear
+    /// spring, and a frozen-host snapshot captured on that frame would then keep an undithered
+    /// page under the panel for as long as it stayed open (Codex review, 2026-09-04).
+    static UNDERLAY_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many [`MotionScope`]s are open right now — zero means a spring reporting now belongs
+    /// to the page.
+    static SCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
     /// This frame's `dt`, stamped once by [`frame_begin`]. [`note_spring`] needs it to convert a
     /// velocity into "distance this frame", which is the only form in which a velocity can be
     /// judged visible. Same thread-local rationale as `MOVING`.
@@ -135,6 +154,13 @@ thread_local! {
     /// spring motion with async/data landings without inheriting foreground-widget motion.
     static PRESENT_DIRTY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
+thread_local! {
+    /// Did the PREVIOUS iteration's update phase report motion? Read-and-replaced once per
+    /// iteration by [`should_present`], which is what turns the first still frame after a spring
+    /// lands into the SETTLE frame — see there.
+    static WAS_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// A discrete change happened; present once more. Taken-and-cleared by [`should_present`] — NOT by
 /// [`note_present`], so that a report raised during a draw survives to the frame it belongs to.
 static DIRTY: AtomicBool = AtomicBool::new(true);
@@ -173,6 +199,9 @@ pub(crate) fn note_spring(pos: f32, target: f32, vel: f32) {
     // distance, and the whole reason the tail of every scroll used to keep the panel awake.
     if (pos - target).abs() > t || (vel * DT.with(|d| d.get())).abs() > t {
         MOVING.with(|m| m.set(true));
+        if SCOPE_DEPTH.with(|d| d.get()) == 0 {
+            PAGE_MOVING.with(|m| m.set(true));
+        }
     }
 }
 
@@ -233,6 +262,85 @@ pub(crate) fn invalidate() {
     }
     DIRTY.store(true, Relaxed);
     DAMAGE_GEN.fetch_add(1, Relaxed);
+    if OWN_SCOPE.with(|d| d.get()) > 0 {
+        OWN_DAMAGE_N.fetch_add(1, Relaxed);
+    }
+    #[cfg(test)]
+    LOCAL_DAMAGE.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times THIS thread has raised discrete damage — the test-only half of `DIRTY`.
+    /// `DIRTY` and `DAMAGE_GEN` are process-wide on purpose (a worker thread's landing must wake
+    /// the main loop), which makes them useless for grading "did this animation ask for a frame"
+    /// under `cargo test`: any unlocked test on another thread that repaints anything flips them,
+    /// and a test asserting a QUIET frame then fails at random under load. This counter cannot be
+    /// moved by another thread, so a test reads what its own code path reported and nothing else.
+    static LOCAL_DAMAGE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Discrete damage raised on this thread since the last call. See [`LOCAL_DAMAGE`].
+#[cfg(test)]
+pub(crate) fn take_local_damage() -> u32 {
+    LOCAL_DAMAGE.with(|c| c.replace(0))
+}
+
+thread_local! {
+    /// Depth of open [`OwnScope`]s: while non-zero, every [`invalidate`] is a POPOVER's own damage.
+    static OWN_SCOPE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// Damage this frame raised inside a popover's [`OwnScope`] — the panel's own. Taken against
+/// [`DAMAGE_GEN`] by [`take_page_damage`].
+static OWN_DAMAGE_N: AtomicU32 = AtomicU32::new(0);
+/// The [`DAMAGE_GEN`] value at the last [`take_page_damage`].
+static TAKEN_GEN: AtomicU32 = AtomicU32::new(0);
+
+/// **Everything invalidated while this guard is held is a POPOVER's own damage, not the page's.**
+///
+/// Opened by `popover::own_motion` around a panel's `update`, by `popover::host::live` around its
+/// drawing, and by `popover::host::input_scope` around every INPUT event (never a lifecycle or
+/// window event, which is the app's) while a panel holds the page — the three places a panel raises
+/// damage (the appear spring's `invalidate`, a table's
+/// marquee, the per-event repaint and whatever a key handler adds). Attributing those by
+/// construction is what lets [`take_page_damage`] answer the host cache's real question — DID THE
+/// PAGE UNDERNEATH CHANGE — with no per-frame bit or explicit claim for a handler to get wrong.
+/// Nests; drop closes it.
+#[must_use = "damage is attributed only for this guard's lifetime"]
+pub(crate) struct OwnScope(());
+
+impl OwnScope {
+    pub(crate) fn open() -> Self {
+        OWN_SCOPE.with(|d| d.set(d.get() + 1));
+        OwnScope(())
+    }
+}
+
+impl Drop for OwnScope {
+    fn drop(&mut self) {
+        OWN_SCOPE.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// **Did the PAGE change since the last take?** Once per drawn frame, by `popover::host::begin_frame`.
+///
+/// Every [`invalidate`] since the last take, minus those raised inside an [`OwnScope`] — more
+/// invalidations than the panel's own means at least one came from the page (a poster landing,
+/// hub data, a marker), and the frozen host must be drawn again. The subtraction is by COUNT
+/// rather than by a per-frame bit so that a page landing on the same frame as a popover key press,
+/// or during the popover's own motion, is still seen: with one merged bit either of those was
+/// consumed unseen and the snapshot kept the un-landed page for as long as the panel stayed open
+/// (Codex review, 2026-09-04).
+pub(crate) fn take_page_damage() -> bool {
+    let gen = DAMAGE_GEN.load(Relaxed);
+    let bumps = gen.wrapping_sub(TAKEN_GEN.swap(gen, Relaxed));
+    page_damage(bumps, OWN_DAMAGE_N.swap(0, Relaxed))
+}
+
+/// [`take_page_damage`]'s arithmetic: invalidations this frame against the popover's claims.
+#[inline]
+fn page_damage(bumps: u32, own: u32) -> bool {
+    bumps > own
 }
 
 /// Buy a frame without claiming that UI pixels changed. Reports raised during a draw survive just
@@ -247,7 +355,21 @@ pub(crate) fn wake() {
 #[inline]
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
+    PAGE_MOVING.with(|m| m.set(false));
+    UNDERLAY_MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
+}
+/// Publish this frame's page-under-everything motion verdict (`app.rs`'s `underlay_moving`) for
+/// [`underlay_moving`]. Once per drawn frame, by `popover::host::begin_frame`.
+#[inline]
+pub(crate) fn note_underlay_motion(moving: bool) {
+    UNDERLAY_MOVING.with(|m| m.set(moving));
+}
+/// Did the PAGE under any popover move this frame, by its own scoped verdict — never a popover's
+/// spring? See [`UNDERLAY_MOVING`].
+#[inline]
+pub(crate) fn underlay_moving() -> bool {
+    UNDERLAY_MOVING.with(|m| m.get())
 }
 
 /// This frame's `dt`, for a clock-driven animator that has no `dt` of its own to hand it — the
@@ -280,6 +402,7 @@ pub(crate) struct MotionScope {
 
 impl MotionScope {
     pub(crate) fn open() -> Self {
+        SCOPE_DEPTH.with(|d| d.set(d.get() + 1));
         Self {
             before: MOVING.with(|m| m.replace(false)),
         }
@@ -288,6 +411,7 @@ impl MotionScope {
     /// Merge the scope back into the frame-wide bit and report whether anything inside it moved.
     pub(crate) fn close(self) -> bool {
         let before = self.before;
+        SCOPE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
         MOVING.with(|m| {
             let own = m.get();
             m.set(before || own);
@@ -307,6 +431,19 @@ impl MotionScope {
 /// Clearing here rather than after the draw is what lets a report raised DURING a draw survive:
 /// `Spinner::draw` is the first such reporter, and with the flag cleared post-draw its report was
 /// destroyed on the frame it was raised, so the spinner would freeze on its very first link.
+///
+/// **The first still frame after motion is presented too — the SETTLE frame.** A spring in flight
+/// is judged by the rest test at the top of this file, so the last frame it forces is one whose
+/// residual is under a quarter pixel; the frame after it, where the spring reports nothing, is the
+/// picture that stays on the panel until the next key. The one at-rest term in the renderer —
+/// `gfx::page_wash_dither`, which is what puts the ±1 LSB dither on Home's and Detail's page wash
+/// — reads THIS frame's page-motion verdict, so without one more present the resting picture
+/// would be the undithered in-flight one, and the banding the dither exists for would reappear at
+/// exactly the moment the eye rests on it. One frame, once per settle, and the idle gate then
+/// closes as before. (This repairs the LIVE page only. A frozen-host snapshot is drawn again on
+/// page damage or, under a fading panel, on page motion — `popover::host::begin_frame`'s rule —
+/// and never by this frame, which is why the wash reads the page's own verdict and not a
+/// popover's appear spring.)
 pub(crate) fn should_present(now: u32) -> bool {
     let damage_gen = DAMAGE_GEN.load(Relaxed);
     let new_damage = PRESENT_DAMAGE_GEN.with(|seen| {
@@ -315,6 +452,7 @@ pub(crate) fn should_present(now: u32) -> bool {
         changed
     });
     let moving = MOVING.with(|m| m.get());
+    let settling = WAS_MOVING.with(|w| w.replace(moving)) && !moving;
     if !ENABLED.load(Relaxed) {
         PRESENT_DIRTY.with(|c| c.set(new_damage));
         return true;
@@ -322,12 +460,19 @@ pub(crate) fn should_present(now: u32) -> bool {
     let wake = WAKE.swap(false, Relaxed);
     let dirty = DIRTY.swap(false, Relaxed);
     let dirty = dirty || new_damage;
-    let changed = moving || dirty || wake;
+    let changed = moving || dirty || wake || settling;
     PRESENT_DIRTY.with(|c| c.set(dirty));
     if changed {
         return true;
     }
-    KEEPALIVE_MS != 0 && now.wrapping_sub(LAST_PRESENT.load(Relaxed)) >= KEEPALIVE_MS
+    let keepalive = KEEPALIVE_MS != 0 && now.wrapping_sub(LAST_PRESENT.load(Relaxed)) >= KEEPALIVE_MS;
+    if !keepalive {
+        // A skipped frame takes nothing (`take_page_damage` runs on drawn frames); an own count
+        // cannot normally exist here (an invalidate would have made the frame present), so this
+        // only keeps a count from ever carrying into a later drawn frame's arithmetic.
+        OWN_DAMAGE_N.store(0, Relaxed);
+    }
+    keepalive
 }
 
 /// Did new discrete damage (input, async data, a texture landing) select this present? Unlike
@@ -342,6 +487,13 @@ pub(crate) fn present_dirty() -> bool {
 #[inline]
 pub(crate) fn present_moving() -> bool {
     MOVING.with(|m| m.get())
+}
+
+/// Did a spring OUTSIDE every [`MotionScope`] report motion this frame — i.e. the page's own, not a
+/// popover's? `popover::host::begin_frame`'s question for a page under a fading panel.
+#[inline]
+pub(crate) fn page_moving() -> bool {
+    PAGE_MOVING.with(|m| m.get())
 }
 
 /// Record that a frame was presented. Deliberately does NOT clear the discrete flag — a report
@@ -382,7 +534,43 @@ mod tests {
         DAMAGE_GEN.store(0, Relaxed);
         PRESENT_DAMAGE_GEN.with(|c| c.set(0));
         PRESENT_DIRTY.with(|c| c.set(false));
+        WAS_MOVING.with(|c| c.set(false));
+        OWN_DAMAGE_N.store(0, Relaxed);
+        TAKEN_GEN.store(0, Relaxed);
         g
+    }
+
+    /// The host cache's question — did the PAGE change — answered by count: damage raised inside
+    /// a popover's own scope (its update, its drawing, the input it holds) is not the page's, and
+    /// one page invalidation beside any amount of the panel's own is still seen.
+    #[test]
+    fn page_damage_is_what_no_popover_scope_raised() {
+        let _g = fresh();
+        assert!(!take_page_damage(), "nothing happened");
+        {
+            let _own = OwnScope::open();
+            invalidate(); // the appear spring, a marquee, a key the panel handled — its own
+            invalidate();
+        }
+        assert!(!take_page_damage(), "damage inside an own scope is not the page's");
+        {
+            let _own = OwnScope::open();
+            invalidate(); // the panel's key press...
+            let _nested = OwnScope::open();
+            invalidate(); // ...and its handler's own repaint, nested
+        }
+        invalidate(); // AND a poster landing, same frame, outside every scope
+        assert!(take_page_damage(), "one invalidation the panel did not raise is the page's");
+        assert!(!take_page_damage(), "taken");
+        assert!(!page_damage(1, 1) && page_damage(2, 1) && page_damage(1, 0));
+        // A frame with nothing to draw takes nothing and leaves nothing behind for the next.
+        frame_begin(1.0 / 60.0);
+        should_present(10_000);
+        note_present(10_000);
+        frame_begin(1.0 / 60.0);
+        assert!(!should_present(10_016), "nothing to draw");
+        invalidate();
+        assert!(take_page_damage(), "the landing after a skipped frame is the page's");
     }
 
     #[test]
@@ -621,8 +809,9 @@ mod tests {
         assert!(should_present(10_016));
     }
 
-    /// Motion is re-derived every frame, never remembered: last frame's movement must not leak
-    /// into this frame's decision, or a single animation would pin the loop permanently.
+    /// Motion is re-derived every frame, never remembered: last frame's movement buys exactly ONE
+    /// more present — the settle frame — and must not leak past it, or a single animation would
+    /// pin the loop permanently.
     #[test]
     fn motion_does_not_survive_the_frame_that_had_it() {
         let _g = fresh();
@@ -631,9 +820,12 @@ mod tests {
         assert!(should_present(10_000));
         note_present(10_000);
         frame_begin(1.0 / 60.0); // next frame: nothing steps
+        assert!(should_present(10_016), "the settle frame, once");
+        note_present(10_016);
+        frame_begin(1.0 / 60.0);
         assert!(
-            !should_present(10_016),
-            "yesterday's motion must not repaint today"
+            !should_present(10_032),
+            "yesterday's motion must not repaint past the settle frame"
         );
     }
 

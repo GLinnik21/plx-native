@@ -728,8 +728,10 @@ which the linking section explains is load-bearing rather than tidy.
   field but `id` — which it keeps ONLY when it has the 32-hex shape of the app's own crash-report
   identifier, the `errors_id` that `sdk::start` puts on the SDK scope as `user.id` right after
   init so the daemon's base event carries it — and queues the event through the existing
-  consent-aware sender. That id is what makes Sentry's "users affected" a count of opted-in
-  televisions rather than of events; it is minted on crash-report opt-in, destroyed on withdrawal,
+  consent-aware sender. That id is what makes Sentry's "users affected" a count of Crash report
+  IDs — one per uninterrupted opt-in — rather than of events; it is minted on crash-report opt-in, destroyed on withdrawal
+  and on sign-out (the decision belongs to the account that gave it, so the next account is asked
+  afresh),
   and never the PostHog analytics id (`docs/../PRIVACY.md`, and the two-identifier note in
   `telemetry/consent.rs`). `-fno-omit-frame-pointer` / Rust
   `force-frame-pointers=yes` are therefore crash-reporting ABI, not optional debug flags.
@@ -1406,11 +1408,17 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   card → **OK** opens the detail page → Play starts playback; OK toggles play/pause, LEFT/RIGHT
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
-  at **Home's own root** is the end of that chain and raises the app's ONE decision alert
-  (`ui/exit_alert.rs`) — *Cancel* focused, *Exit* in the destructive control face — rather than
-  quitting on the press, which is what it did until 2026-08-21. Nothing automated depended on the
-  old behaviour (`make kill`, `tests/run.py` and `tools/tv-session.sh` all close through SAM's
-  `closeByAppId`), and `/tmp/plxnative-noexitconfirm` restores it for a script that wants it. Text
+  at **Home's own root** is the end of that chain and hands the screen back to the TELEVISION
+  (`app.rs::back_at_root` → `webos::go_home`), with the app still running — which is what the
+  platform itself does at an app's entry page on this firmware, and what LG's submission rules
+  require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
+  sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
+  both handed it to `auth::cancel` and ignored its `false`. **The first-run consent question is a
+  fourth and is NOT covered yet**; `app.rs`'s consent arm says why, and it is a `ui/consent.rs`
+  change rather than a BACK-arm one. BACK is no longer a quit anywhere — the remote's EXIT key
+  still is, and `closeByAppId` is still how `make kill`, `tests/run.py` and `tools/tv-session.sh`
+  close the app — so the `/tmp/plxnative-noexitconfirm` bypass went with the "Exit PlxNative?"
+  alert it existed for (both retired 2026-09-03). Text
   entry is the **television's own keyboard**, raised by plain `SDL_StartTextInput` — the backend is
   in LG's Wayland driver, not the webOS extension API, which is why `SDL_webOS.h` looks like it has
   no keyboard. The field, shelves, test seams and every trap in that path are documented in

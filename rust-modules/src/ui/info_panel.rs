@@ -9,7 +9,7 @@ use crate::ui::icons::Icon;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{badge, resolve_tex_on, BadgeStyle};
+use crate::ui::widgets::{badge, badge_w, resolve_tex_on, BadgeStyle};
 use crate::ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -237,6 +237,90 @@ pub(crate) fn playback_now(
     })
 }
 
+/// One candidate on the metadata/badge row — see [`chips_that_fit`] for why `draw` measures every
+/// chip before drawing any of them, rather than drawing straight through and letting the row run
+/// under the action-button column (issue #26).
+struct Chip {
+    label: String,
+    /// What this chip IS and, for a text run, how it is inked — a data-bearing enum rather than a
+    /// `kind` tag plus a `bold`/`col` pair that only ever meant something for one of the two
+    /// variants: a `Badge` chip always draws through [`meta_badge`]'s own fixed style, so a flat
+    /// `bold`/`col` field on every `Chip` would carry a value for `Badge` that nothing reads and
+    /// that a future caller could plausibly set expecting it to matter.
+    kind: ChipKind,
+    /// The pixel gap this chip needs ahead of it, PROVIDED some earlier chip was actually drawn —
+    /// the chip that ends up first pays nothing (see [`chips_that_fit`]'s `n == 0` case). Computed
+    /// once, by [`chip_gap`], when the chip is built.
+    gap_before: f32,
+    /// This chip's own measured pixel width — never including `gap_before`.
+    w: f32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ChipKind {
+    /// A plain text run (the meta line, or the live playback fact) — bold flag and ink, since the
+    /// two runs on this row are inked differently (see the call site).
+    Text { bold: c_int, col: [f32; 4] },
+    Badge,
+}
+
+/// The row's own spacing rule between two adjacent DRAWN chips, pulled out as its own pure
+/// function so this arithmetic — not just its effect through [`chips_that_fit`]'s cut — can be
+/// pinned by a host test directly. `prev` is `None` for whichever chip ends up first; that chip
+/// pays no gap regardless of `cur`.
+fn chip_gap(prev: Option<ChipKind>, cur: ChipKind) -> f32 {
+    match (prev, cur) {
+        (None, _) => 0.0,
+        // meta → fact: the separator is already inside the fact string (see `fact_run` below).
+        (Some(ChipKind::Text { .. }), ChipKind::Text { .. }) => 0.0,
+        // text block → first badge: the row's one 18px block gap.
+        (Some(ChipKind::Text { .. }), ChipKind::Badge) => 18.0,
+        // badge → badge: the row's 12px chip gap.
+        (Some(ChipKind::Badge), ChipKind::Badge) => 12.0,
+        // never happens — this row's fixed priority order puts every text run before every badge.
+        (Some(ChipKind::Badge), ChipKind::Text { .. }) => 0.0,
+    }
+}
+
+/// **The chip row's pure fitting maths (issue #26).** Host-testable on purpose: no `Painter`, no
+/// `crate::text::text_width` — that needs a live SDL2_ttf font the host test binary never loads
+/// (see `text.rs::text_width`'s own doc on why measurement is the "impure half"). `draw` measures
+/// every candidate chip FIRST — meta text (genres/year/duration), then the live playback fact,
+/// then the rating/audio/CC/SDH/AD badges, in that fixed priority order (see the call site for why
+/// that order) — and hands the resulting `(width, gap_before)` pairs here, still in priority order,
+/// as an ITERATOR rather than a collected slice: this card sits on the one route exempt from the
+/// idle present gate (see `now_fact`'s own doc), so `draw` runs at ~60/s, and a temporary `Vec`
+/// solely to satisfy this signature would be one more per-frame allocation this card does not need
+/// — `chips.iter().map(...)` at the call site is enough. This is the one place that turns "how many
+/// chips fit" into a number.
+///
+/// Greedy front-fill: keep adding chips while the running total (each chip's own width plus the
+/// gap it needs ahead of it) still clears `avail_w`, and stop the moment one would not — dropping
+/// that chip and every lower-priority one behind it, never skipping ahead to try a smaller later
+/// chip instead. Skipping ahead would let a narrow low-priority badge bump a wide high-priority one
+/// for no reason a viewer could predict, and would make the row's content depend on exactly how
+/// much air a drop happened to leave rather than on priority alone — the row is meant to read the
+/// same way every time it truncates. `avail_w` is `draw`'s `tw`: the action-button column's left
+/// edge minus this panel's own text-column gutter, the same right edge the title and synopsis
+/// above this row already respect. That is the actual fix for #26 — the CTA disappearing under a
+/// long chip list — everything else here exists to make the cut deterministic and testable.
+fn chips_that_fit(items: impl Iterator<Item = (f32, f32)>, avail_w: f32) -> usize {
+    if avail_w <= 0.0 {
+        return 0;
+    }
+    let mut used = 0.0f32;
+    let mut n = 0usize;
+    for (w, gap_before) in items {
+        let need = if n == 0 { w } else { gap_before + w };
+        if used + need > avail_w {
+            break;
+        }
+        used += need;
+        n += 1;
+    }
+    n
+}
+
 pub(crate) fn draw() {
     if !is_open() {
         return;
@@ -392,6 +476,17 @@ pub(crate) fn draw() {
         crate::route::is_remux(),
         &crate::route::stream_vcodec(),
     );
+    // metadata line (genres · year · duration) + capability badges. Built and FIT here, before the
+    // title/synopsis layout below, rather than inside its own draw block further down — see
+    // `chips_that_fit`'s doc for issue #26 itself; the reason this part specifically has to happen
+    // before `span` is a second, smaller bug the same fix could otherwise reintroduce. `span` folds
+    // in a fixed `gap_tags + tag_h` for this row whenever it might have anything to say
+    // (`has_tags`), which used to be exactly right because the row always drew SOMETHING once
+    // `has_tags` was true. Once a row can be fit down to nothing at all — a single candidate (one
+    // very long genre string, say) wider than `tw` on its own — `has_tags` and "this row draws a
+    // pixel" stop being the same question, and centring the title/synopsis group as though a tag
+    // row existed would leave a blank gap where one doesn't. So the row's actual chip COUNT, `n`,
+    // has to be known before `span` is computed, not decided by a separate boolean.
     let has_tags = year > 0
         || dur_ms > 0
         || !rating.is_empty()
@@ -401,43 +496,10 @@ pub(crate) fn draw() {
         || now_fact.is_some()
         || audio.first().and_then(|s| audio_badge(&s.codec)).is_some();
 
-    // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
-    let title_h = 42.0f32; // title advance (font 40)
-    let syn_lh = 31.0f32; // synopsis line advance (font 28)
-    let tag_h = 34.0f32;
-    let gap_title = 6.0f32; // title → synopsis
-    let gap_tags = 12.0f32; // synopsis → tags
-
-    // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
-    // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
-    let title_v = TextView::new(&info_title, theme::size::TITLE, white)
-        .bold()
-        .max_lines(1);
-    let syn_v = TextView::new(&summary, theme::size::BODY, dim)
-        .leading(syn_lh)
-        .max_lines(2);
-    let syn_h = if summary.is_empty() {
-        0.0
-    } else {
-        syn_v.measure_h(tw)
-    };
-
-    // centre the [title + synopsis + tag row] group in the card (cap-top coordinates)
-    let span = title_h
-        + if syn_h > 0.0 { gap_title + syn_h } else { 0.0 }
-        + if has_tags { gap_tags + tag_h } else { 0.0 };
-    let mut ty = cyt + (ch - span) * 0.5;
-    title_v.draw(p, Rect::new(tx, ty, tw, 0.0));
-    ty += title_h;
-    if syn_h > 0.0 {
-        ty += gap_title;
-        syn_v.draw(p, Rect::new(tx, ty, tw, 0.0));
-        ty += syn_h;
-    }
-    // metadata line (genres · year · duration) + capability badges, centred on the tag row
-    if has_tags {
-        ty += gap_tags;
-        let my = ty + tag_h * 0.5; // vertical centre of the tag row
+    // `has_tags` is the cheap pre-filter (a handful of comparisons, no allocation) that skips this
+    // entirely for the common "nothing at all to report" case; once it's true the row still might
+    // fit zero chips (see above), which is exactly what `n` then says.
+    let (chips, n): (Vec<Chip>, usize) = if has_tags {
         let mut meta = Vec::new();
         if let Some(x) = d {
             for g in x.genres.iter().take(2) {
@@ -450,70 +512,298 @@ pub(crate) fn draw() {
         if dur_ms > 0 {
             meta.push(crate::ui::fmt::dur_short(dur_ms));
         }
-        let mut mx = tx;
-        let ly = crate::text::text_vcenter_y(theme::size::CAPTION, 1, my);
-        if !meta.is_empty() {
-            let line = meta.join("   ·   ");
-            if let Ok(cs) = CString::new(line) {
-                mx += p.text(cs.as_ptr(), tx, ly, theme::size::CAPTION, white, 0, 1);
-            }
-        }
-        // …then the live playback fact, closing the line in its own quieter ink. It is drawn as a
-        // separate run rather than joined into `meta` because it is a different KIND of statement —
-        // a fact about this session, not a property of the item — and tertiary is what says so.
-        // No chip and no capsule: a conversion that worked is not a warning.
+        let meta_line = (!meta.is_empty()).then(|| meta.join("   \u{b7}   "));
+
+        // …then the live playback fact, in its own quieter ink. It is a separate run rather than
+        // one more entry joined into `meta` because it is a different KIND of statement — a fact
+        // about this session, not a property of the item — and tertiary is what says so. No chip
+        // and no capsule: a conversion that worked is not a warning.
         //
         // REGULAR weight, unlike the item run beside it, and that is the mock's: its whole meta line
         // is `font-weight:400` at `--text-tertiary`. The item run's bold/primary is this screen's own
         // long-standing deviation (the card is read over live video, not over a panel); repeating it
         // on a run the mock has no bold in would make the quiet fine print the loudest thing on the
-        // row. Its own `ly` because a cap band is weight-dependent — one y for both would sit the
-        // lighter run visibly off the line.
-        if let Some(fact) = &now_fact {
-            let run = if meta.is_empty() {
-                fact.clone()
-            } else {
+        // row.
+        //
+        // The separator is baked into the STRING (rather than a stored `gap_before`) because
+        // whether it is needed depends only on whether the meta line EXISTS, which is known right
+        // here — not on whether the meta line ends up FITTING. By construction a chip only draws
+        // once every higher-priority chip already fit (see `chips_that_fit`'s front-fill), so by
+        // the time this fact chip is actually on screen those two questions have the same answer.
+        let fact_run = now_fact.as_ref().map(|fact| {
+            if meta_line.is_some() {
                 format!("   \u{b7}   {fact}")
-            };
-            if let Ok(cs) = CString::new(run) {
-                let fy = crate::text::text_vcenter_y(theme::size::CAPTION, 0, my);
-                mx += p.text(
-                    cs.as_ptr(),
-                    mx,
-                    fy,
-                    theme::size::CAPTION,
-                    theme::TEXT_TERTIARY,
-                    0,
-                    0,
-                );
+            } else {
+                fact.clone()
             }
+        });
+
+        // pure measurement — no draw — so every candidate's width is known before any of them
+        // touches the screen
+        let text_w = |s: &str, bold: c_int| -> f32 {
+            CString::new(s)
+                .ok()
+                .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, bold))
+                .unwrap_or(0.0)
+        };
+
+        let mut chips: Vec<Chip> = Vec::with_capacity(7);
+        let mut prev_kind: Option<ChipKind> = None;
+        let mut push = |label: String, kind: ChipKind| {
+            let gap_before = chip_gap(prev_kind, kind);
+            let w = match kind {
+                ChipKind::Text { bold, .. } => text_w(&label, bold),
+                ChipKind::Badge => badge_w(&label, None),
+            };
+            chips.push(Chip {
+                label,
+                kind,
+                gap_before,
+                w,
+            });
+            prev_kind = Some(kind);
+        };
+
+        if let Some(line) = meta_line {
+            push(
+                line,
+                ChipKind::Text {
+                    bold: 1,
+                    col: white,
+                },
+            );
         }
-        if !meta.is_empty() || now_fact.is_some() {
-            mx += 18.0;
+        if let Some(fact) = fact_run {
+            push(
+                fact,
+                ChipKind::Text {
+                    bold: 0,
+                    col: theme::TEXT_TERTIARY,
+                },
+            );
         }
         // badges: rating (from the leaf), top-audio Dolby tag, CC/SDH/AD (from the loaded streams)
         if !rating.is_empty() {
-            mx += meta_badge(p, mx, my, &rating) + 12.0;
+            push(rating.clone(), ChipKind::Badge);
         }
         if let Some(tag) = audio.first().and_then(|s| audio_badge(&s.codec)) {
-            mx += meta_badge(p, mx, my, &tag) + 12.0;
+            push(tag, ChipKind::Badge);
         }
         if !subs.is_empty() {
-            mx += meta_badge(p, mx, my, "CC") + 12.0;
+            push("CC".to_string(), ChipKind::Badge);
         }
         if subs.iter().any(|s| s.sdh) {
-            mx += meta_badge(p, mx, my, "SDH") + 12.0;
+            push("SDH".to_string(), ChipKind::Badge);
         }
         if audio.iter().any(|s| s.ad) {
-            mx += meta_badge(p, mx, my, "AD") + 12.0;
+            push("AD".to_string(), ChipKind::Badge);
         }
-        let _ = mx;
+
+        let n = chips_that_fit(chips.iter().map(|c| (c.w, c.gap_before)), tw);
+        (chips, n)
+    } else {
+        (Vec::new(), 0)
+    };
+
+    // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
+    let title_h = 42.0f32; // title advance (font 40)
+    // Issue #29: the synopsis is reading copy (the longest run of prose on this card), which is
+    // exactly the case `ui/CLAUDE.md` rule 2 already settled — the hero blurb is `size::LABEL` 26
+    // through `ui::hero_synopsis`, one rung below plain `size::BODY`, precisely because a blurb
+    // reads as prose rather than as chrome. This card built its own synopsis at `BODY` instead of
+    // going through that shared helper (it needs its own 2-line cap and card-local ink, not the
+    // hero's 3-line one), so it never inherited the correction; stepping it to `LABEL` brings the
+    // player's synopsis in line with both heroes' own settled rung. The line advance keeps the same
+    // `font + 3` rhythm the card already used at `BODY` (31 = 28 + 3), rather than carrying the old
+    // px figure forward onto a smaller font, which would leave the new rung looking loose.
+    let syn_lh = theme::size::LABEL as f32 + 3.0; // synopsis line advance (font 26) — 29
+    let tag_h = 34.0f32;
+    let gap_title = 6.0f32; // title → synopsis
+    let gap_tags = 12.0f32; // synopsis → tags
+
+    // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
+    // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
+    let title_v = TextView::new(&info_title, theme::size::TITLE, white)
+        .bold()
+        .max_lines(1);
+    let syn_v = TextView::new(&summary, theme::size::LABEL, dim)
+        .leading(syn_lh)
+        .max_lines(2);
+    let syn_h = if summary.is_empty() {
+        0.0
+    } else {
+        syn_v.measure_h(tw)
+    };
+
+    // centre the [title + synopsis + tag row] group in the card (cap-top coordinates). The tag
+    // row's contribution is gated on `n > 0` — whether the chip row ACTUALLY has something to draw
+    // — not `has_tags`; see the comment above where `chips`/`n` are built for why those are two
+    // different questions once a fit can drop every candidate.
+    let span = title_h
+        + if syn_h > 0.0 { gap_title + syn_h } else { 0.0 }
+        + if n > 0 { gap_tags + tag_h } else { 0.0 };
+    let mut ty = cyt + (ch - span) * 0.5;
+    title_v.draw(p, Rect::new(tx, ty, tw, 0.0));
+    ty += title_h;
+    if syn_h > 0.0 {
+        ty += gap_title;
+        syn_v.draw(p, Rect::new(tx, ty, tw, 0.0));
+        ty += syn_h;
+    }
+    // metadata line (genres · year · duration) + capability badges, centred on the tag row —
+    // `chips`/`n` were already measured and fit above, so this is draw-only.
+    //
+    // **Issue #26.** This row used to draw every candidate unconditionally and let `mx` run past
+    // the action column whenever an item had enough facts — a rating, a premium audio tag, CC, SDH
+    // and AD can all be true of one stream at once — so the chips drew straight under "From
+    // Beginning"/"Go to Show". The fix constrains the row to `tw`, the SAME right edge the title
+    // and synopsis above it already respect, and decides what fits by measuring every candidate
+    // BEFORE drawing any of it, in a fixed priority order: the item's own facts (genres/year/
+    // duration) first, then the live playback fact (what the server is actually sending — the
+    // technical heart of this panel, and the one thing here that can surprise a viewer), then the
+    // rating badge, then the premium-audio badge, then the accessibility badges CC/SDH/AD — each
+    // rarer, and each a smaller part of why this panel got opened, than the one before it. Dropped
+    // chips are hidden outright rather than faded: each one is a discrete fact (a word, a bordered
+    // badge), and a badge sliced in half by a fade band reads as a rendering bug, not as "there was
+    // more" — a clean drop keeps every chip that IS shown fully legible, which a fade cannot
+    // promise once it crosses a border. [`chips_that_fit`] is the pure packer that turns the
+    // measured candidates into a cut, so the maths is pinned by a host test with no font involved.
+    if n > 0 {
+        ty += gap_tags;
+        let my = ty + tag_h * 0.5; // vertical centre of the tag row
+        let mut mx = tx;
+        for (i, chip) in chips.iter().take(n).enumerate() {
+            if i > 0 {
+                mx += chip.gap_before;
+            }
+            match chip.kind {
+                ChipKind::Text { bold, col } => {
+                    if let Ok(cs) = CString::new(chip.label.as_str()) {
+                        let y = crate::text::text_vcenter_y(theme::size::CAPTION, bold, my);
+                        p.text(cs.as_ptr(), mx, y, theme::size::CAPTION, col, 0, bold);
+                    }
+                }
+                ChipKind::Badge => {
+                    meta_badge(p, mx, my, &chip.label);
+                }
+            }
+            mx += chip.w;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::playback_now;
+    use super::{chip_gap, chips_that_fit, playback_now, ChipKind};
+
+    /// The row's spacing rule, checked directly rather than only through [`chips_that_fit`]'s
+    /// aggregate cut — `push`'s `gap_before` computation in `draw` is exactly this function, so a
+    /// mistake in the match arms would otherwise only show up as a subtly wrong PIXEL position on a
+    /// device, not as a failed assertion here.
+    #[test]
+    fn chip_gap_matches_this_rows_fixed_spacing_rule() {
+        let text = ChipKind::Text {
+            bold: 0,
+            col: crate::ui::theme::TEXT_PRIMARY,
+        };
+        // whichever chip ends up first pays nothing, regardless of its own kind
+        assert_eq!(chip_gap(None, text), 0.0);
+        assert_eq!(chip_gap(None, ChipKind::Badge), 0.0);
+        // meta → fact: the separator is baked into the fact string itself, so no extra gap
+        assert_eq!(chip_gap(Some(text), text), 0.0);
+        // text block → first badge: the one 18px block gap
+        assert_eq!(chip_gap(Some(text), ChipKind::Badge), 18.0);
+        // badge → badge: the 12px chip gap
+        assert_eq!(chip_gap(Some(ChipKind::Badge), ChipKind::Badge), 12.0);
+        // badge → text never happens at this row's fixed priority order, but the arm is defined
+        // (see `chip_gap`'s own match) and reachable by the type, so it is pinned here too.
+        assert_eq!(chip_gap(Some(ChipKind::Badge), text), 0.0);
+    }
+
+    /// **Issue #26, reproduced.** The exact geometry `draw` computes for a real card: `bx` (the
+    /// action column's left edge) at 1460, this panel's own 34px gutter in front of it, and the
+    /// text column starting (`tx`) at 462 — so `avail_w` below is the literal `tw` a real frame
+    /// would pass to [`chips_that_fit`]. The chip list is what the issue names: an item with a
+    /// meta line, a live playback fact, a rating, a premium audio tag and all three of CC/SDH/AD —
+    /// "enough chips/actions... that they overlap the main CTA." Before this fix `draw` had no
+    /// bound at all here, so every one of these drew and the row reached roughly 1060px into a
+    /// 964px lane — squarely under the action buttons. The two assertions are the guarantee that
+    /// replaces that: not everything fits, and whatever DOES fit never crosses into the CTA.
+    #[test]
+    fn chip_row_never_overlaps_the_action_column_with_a_long_chip_list() {
+        let cta_x = 1460.0f32; // `bx` in `draw`
+        let gutter = 34.0f32; // `bx - tright` in `draw`
+        let text_x = 462.0f32; // `tx` in `draw`
+        let avail_w = (cta_x - gutter) - text_x; // == `tw`, 964.0
+        assert_eq!(avail_w, 964.0);
+
+        // (width, gap_before) in this row's fixed priority order — meta, fact, rating, audio,
+        // CC, SDH, AD — mirroring real measured widths at `size::CAPTION`.
+        let items = [
+            (400.0, 0.0),  // "Action, Adventure   ·   2019   ·   1h 32m"
+            (170.0, 0.0),  // "   ·   Converting · HEVC" (separator baked in, so gap_before 0)
+            (90.0, 18.0),  // rating badge
+            (140.0, 12.0), // audio badge ("Dolby Atmos")
+            (60.0, 12.0),  // CC
+            (74.0, 12.0),  // SDH
+            (60.0, 12.0),  // AD
+        ];
+
+        let n = chips_that_fit(items.iter().copied(), avail_w);
+        assert!(
+            n < items.len(),
+            "this list must not all fit in {avail_w}px — that is the bug being reproduced"
+        );
+
+        let mut used = 0.0f32;
+        for (i, &(w, gap)) in items.iter().take(n).enumerate() {
+            used += if i == 0 { w } else { gap + w };
+        }
+        assert!(
+            used <= avail_w,
+            "drawn chips ({used}px) must never reach the action column ({avail_w}px)"
+        );
+    }
+
+    /// The packer never skips ahead to a smaller lower-priority chip once a higher-priority one
+    /// does not fit — dropping stops the row at that chip, full stop. Chip 1 alone leaves no room
+    /// for chip 2, even though chip 2 would fit on its own in the space chip 1 wanted.
+    #[test]
+    fn chips_that_fit_drops_the_tail_rather_than_skipping_ahead() {
+        let items = [(50.0, 0.0), (60.0, 10.0), (10.0, 10.0)];
+        // avail 100: chip 0 (50) fits, chip 1 needs 10+60=70 more (total 120, too much) — stop.
+        // chip 2 alone would fit in the remaining 50px, but it is never reached.
+        assert_eq!(chips_that_fit(items.into_iter(), 100.0), 1);
+    }
+
+    /// A single chip wider than the whole lane draws nothing rather than spilling past `avail_w` —
+    /// there is no partial chip.
+    #[test]
+    fn a_single_oversized_chip_is_dropped_whole() {
+        assert_eq!(chips_that_fit([(2000.0, 0.0)].into_iter(), 964.0), 0);
+    }
+
+    /// Exact-fit boundary: a chip that lands EXACTLY on `avail_w` is kept, not dropped — the guard
+    /// is `> avail_w`, not `>=`.
+    #[test]
+    fn an_exact_fit_is_kept() {
+        assert_eq!(
+            chips_that_fit([(100.0, 0.0), (50.0, 20.0)].into_iter(), 170.0),
+            2
+        );
+        assert_eq!(
+            chips_that_fit([(100.0, 0.0), (50.0, 21.0)].into_iter(), 170.0),
+            1
+        );
+    }
+
+    /// No candidates, or no room at all — both are 0, not a panic.
+    #[test]
+    fn empty_or_zero_width_is_zero_chips() {
+        assert_eq!(chips_that_fit(std::iter::empty(), 964.0), 0);
+        assert_eq!(chips_that_fit([(10.0, 0.0)].into_iter(), 0.0), 0);
+        assert_eq!(chips_that_fit([(10.0, 0.0)].into_iter(), -5.0), 0);
+    }
 
     /// The meta line's live fact, arm by arm. It is the one thing on that row the app could get
     /// wrong by GUESSING, so each arm pins a different way of guessing:

@@ -84,11 +84,19 @@ pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
     format!("S{season}, E{index}")
 }
 
-/// The source attribution — `"Shared by friend"` — or `None` when the item is the signed-in
-/// account's own.
+/// The source attribution — `"Shared by friend"` — or `None` when there is nobody to credit.
 ///
-/// `None` rather than an empty `String`, because ABSENCE is what the design specifies for an owned
-/// item: no separator, no empty run, no draw call. Both call sites were hand-rolling that guard.
+/// **This is the WORDS and not the RULE.** `handle` arrives already decided:
+/// `plex::servers::owner_credit` is the one place that says whether a server is credited to
+/// anybody, `plex::ServerFacts::handle` is where its answer rests, and every caller here reads
+/// that field. So an empty handle does not mean "an owned server" — it means *our own server, or
+/// the household's server whichever Plex Home profile is watching, or a share plex.tv has not
+/// named* — and this function must never grow a second opinion about which of those it is. The
+/// field it reads used to be plex.tv's raw `sourceTitle`, which is how the app came to tell a
+/// managed user that their own house's library was "Shared by" the person who pays for it.
+///
+/// `None` rather than an empty `String`, because ABSENCE is what the design specifies: no
+/// separator, no empty run, no draw call. Both call sites were hand-rolling that guard.
 ///
 /// ONE formatter for the same reason [`episode_kicker`] is one: this phrase is drawn by the hero's
 /// meta line, the detail page's facts row and (with a sentence after it) the Library's failure

@@ -40,13 +40,29 @@ Store-distributed build, followed by factory reset, install/restore through the 
 distribution channel, and launch. That distribution evidence is not available yet, so this row is
 Open rather than N/A.
 
-### Root BACK on the entry page: POLICY CONFLICT
+### Root BACK on the entry page: three of four roots done 2026-09-03, device evidence not taken
 
-This is a submission-policy blocker in addition to the numbered checklist. The current app raises
-its Cancel/Exit confirmation at Home root. The webOS 23–25 submission expectation says entry-page
-BACK must show the television Home screen. Closing it requires either native-specific Seller Lounge
-or Native SDK evidence that native apps are exempt, or a code change followed by device
-verification. The existing exit alert is not evidence of compliance.
+This was a submission-policy blocker in addition to the numbered checklist: the app raised a
+Cancel/Exit confirmation at Home root, where the webOS 23–25 submission expectation says entry-page
+BACK must show the television Home screen. The confirmation is gone. BACK at each of the THREE
+implemented roots — Home, the who's-watching picker, the QR sign-in — now calls `webos::go_home`,
+which asks SAM to launch the Home launcher and leaves the process running (`docs/remote-keys.md`
+§8). The first-run consent question is a fourth root and is NOT covered; `app.rs`'s consent arm
+says why, and it is a `ui/consent.rs` change rather than a BACK-arm one.
+
+**Device evidence, taken 2026-09-04 on the dev set (webOS 4.10.2), for Home's root and the QR
+sign-in:** `gohome: SAM accepted in 16ms → {"returnValue":true}`, the launcher visible in the
+capture — as the RIBBON over the still-drawing app, which is what the HOME key shows on this
+firmware — `fuser` reporting the SAME pid before, after, and after a SAM `launch` of the app's own
+id brought it back with no ribbon. There is NO `LIFECYCLE: background` line on this firmware and
+there cannot be: the webOS 4 launcher is an overlay and the app never leaves the foreground, so a
+grader waiting for that line reads a working root press as a failure (this paragraph asked for it
+until the session that took the evidence). The pid is the assertion, not the screen. It took a plain
+anonymous `LSRegister` to get here — until that session the app's registration was refused by the
+hub and the press fell through to an `SDL_MinimizeWindow` that did nothing; `webos::ls2`'s module
+doc has the table. `tv-session.sh up` cannot prove any of this because it closes the app first and
+waits for a CHANGED pid; the who's-watching picker's root and a webOS 5+ set (full-screen launcher,
+where a background event IS expected) are still unmeasured.
 
 ## 3. Device evidence still unknown — do not mark Pass
 
@@ -138,6 +154,8 @@ full/original screen toggle · #47 live/real-time TV streaming · #48 subtitle a
 ## 7. Release verdict at this snapshot
 
 The integrated implementation and its automated/device suites are green. The LG submission is
-**not ready**: Store factory-reset evidence is unavailable, root BACK is in policy conflict, and the
-unrun device evidence in §3 cannot honestly be marked Pass. Automatic ABR and LG #43 CASE1 are no
+**not ready**: Store factory-reset evidence is unavailable, root BACK is implemented against the
+policy at three of its four roots — the first-run consent question is the fourth and is untouched —
+and neither that nor its device evidence has been taken, so the unrun device evidence in §3 cannot
+honestly be marked Pass. Automatic ABR and LG #43 CASE1 are no
 longer blockers. Keep plan completion and submission readiness separate when reporting status.

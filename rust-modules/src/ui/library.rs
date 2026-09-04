@@ -349,7 +349,13 @@ static mut PREV_S: Spring = Spring::at(1.0); // previously-focused cell shrinkin
 static mut PREV_IDX: i64 = -1;
 /// The open menu, **and its build-time key** — the two are one value, see [`Menu`].
 static mut MENU: Menu = Menu::None;
-static mut POP: Popover = Popover::new();
+/// The chip menus' one popover. `caching_host` since 2026-09-03: the grid under an open Sort/Filter/
+/// Source menu is a full page of poster tiles, a glass toolbar and a scrim, and it was re-rendered
+/// under the panel on every frame the menu's own selection moved — measured `fps:library-switch`
+/// at a 16 fps median with the panel up against the profile menu's 60 over the same kind of page.
+/// The three guards that go with it: `host::live` in [`draw`]'s menu block, `own_motion` around
+/// the menu's springs in [`update`], `note_own_damage` beside its selection moves.
+static mut POP: Popover = Popover::new().caching_host();
 static mut TABLE: TableView = TableView::new();
 static mut PHASE_MS: f32 = 0.0; // spinner phase accumulator
 /// The failure read-out's Try again pill, recorded at draw for the pointer (the `TOOL_RECTS` /
@@ -1391,6 +1397,10 @@ pub(crate) fn update(dt: f32) {
     // dissolves under it
     crate::ui::widgets::tab_row_update(wanted_tab() as c_int + 1, top_focus(), dt);
     if menu_open() {
+        // The panel's appear spring and its list's springs are the MENU's motion, not the grid's
+        // behind it — see `popover::own_motion`. Without this every frame of the entry ramp read
+        // as page damage and threw the frozen grid away.
+        let _own = crate::ui::popover::own_motion();
         pop().update(dt);
         table().update(dt, table_rect().h - crate::ui::table::PAD_V);
         // async menu data landing while the popover is open — rebuild it in place (a Sort
@@ -1424,6 +1434,8 @@ pub(crate) fn move_focus(sym: c_uint) {
         } else if sym == SDLK_DOWN {
             table().move_sel(1);
         }
+        // The selection moved and nothing behind the menu did — `popover::note_own_damage`.
+        crate::ui::popover::note_own_damage();
         return;
     }
     unsafe {
@@ -1926,6 +1938,7 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) {
     if menu_open() {
         if let Some(gi) = table().hit_row(table_rect(), mx, my) {
             table().sel = gi;
+            crate::ui::popover::note_own_damage();
         }
         return;
     }
@@ -2051,6 +2064,7 @@ fn rail_at(mx: f32, my: f32) -> Option<usize> {
 pub(crate) fn wheel(dy: c_int) {
     if menu_open() {
         table().move_sel(if dy < 0 { 1 } else { -1 });
+        crate::ui::popover::note_own_damage();
         return;
     }
     move_focus(if dy < 0 { SDLK_DOWN } else { SDLK_UP });
@@ -2383,6 +2397,10 @@ pub(crate) fn draw() {
     // but the popovers Home and the detail page carry (the item context menu, the profile menu) are
     // NOT, so the rule belongs in the shared component rather than in a note per screen.
     if menu_open() {
+        // Everything from here is LIVE over the frozen grid — and constructing this is what takes
+        // the snapshot on the menu's first frame (the grid above is complete, nothing of the menu is
+        // on the framebuffer yet). See `popover::host::live`.
+        let _live = crate::ui::popover::host::live();
         // Split into TWO phases on purpose (`/tmp/plxnative-profile`): an open menu costs this
         // screen ~2× its draw — measured `draw` 16 → 33-42 ms with the Sort panel up, which is
         // the whole of the frame (`pump=0.0 swap=0.4 up=0`) and lands it either side of the vsync
@@ -2737,8 +2755,16 @@ mod tests {
 
     #[test]
     fn tv_shows_selected_before_discovery_stays_tv_shows_and_loads() {
-        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        // **`serial` BEFORE `PEND`, and the order is the whole point.** Five tests in this module
+        // take the crate-wide lock first and this module's own second; this one took them the
+        // other way round, which is a lock-order inversion and deadlocks whenever the two
+        // schedules interleave — reproduced 2026-09-04 with several checkouts building at once
+        // (`every_chip_opens_its_own_menu_by_identity_and_never_by_position` holding `serial` and
+        // parked on `PEND` while this test held `PEND` and parked on `serial`; ten tests queued
+        // behind them and `make check` never returned). It reads as flakiness under load, which is
+        // exactly what `[[test-suite-global-pollution]]` warns it will.
         let _serial = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         crate::browse::reset();
         switch_tab(1);
@@ -3589,6 +3615,10 @@ mod tests {
         assert_eq!(table().sel, 1, "LEFT cannot reveal a Home-pinning mode");
         assert_eq!(src_action(1), SrcAction::Library(2));
 
+        // Reset on the way OUT: the panel's popover counts in `popover::OPEN_COUNT`, a process
+        // static, and leaving it open here failed `popover`'s `!any_open()` assertions in whichever
+        // test happened to run between this one and the next library test that closed it.
+        close_menu();
         crate::browse::reset();
         set_menu(menu0);
         clear();

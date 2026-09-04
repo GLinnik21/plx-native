@@ -71,6 +71,38 @@ structurally, so `step_blink` calls `invalidate()` only when the phase flips. Th
 therefore costs about two presents a second instead of holding the GL loop awake, and with the
 keyboard down the phase parks ON and costs nothing.
 
+**A blank field's caret sits at the field's own START**, before the placeholder, not after it — the
+placeholder is chrome nobody is editing, so it supplies no insertion point of its own to trail
+(owner-reported 2026-09-03; `field.rs`'s blank branch feeds `run_layout` a `caret_w` of zero rather
+than the placeholder's own measured width).
+
+### Focus is ink only — two bright endpoints, never a fill
+
+For one day (2026-09-03, issue 22) the field had THREE visual states, not two: idle and editing
+drew no plate, but **focused-but-not-yet-editing** lit up with a flat `theme::ACCENT`/
+`theme::ACCENT_INK` fill — the same pair every other focused control in this app fills with —
+because ink alone read too close to idle from the couch (owner feedback). It shipped, and the
+owner rejected it on sight the next day: "you made the search bar background white, while I wanted
+text to be white". **The plate is gone (2026-09-04)** — `field.rs`'s test suite carries a narrow
+regression tripwire, reading the file's own source for the exact `p.rect(field_box`/`theme::ACCENT,`
+shape issue 22 shipped (the same technique `diag::scrub` uses for its own absence property), so
+that specific reintroduction fails loudly. It is a tripwire for the bug that already happened, not a
+proof that no fill can ever reappear under a different name or shape — the actual contract is the
+plain-English one above, upheld by review and device/simulator verification each time this control
+changes.
+
+Focus is carried by **ink alone**, permanently — the design system's `SearchField` contract, which
+forbids a rim, rule or capsule OUTLINE and was never actually license for a fill either. What
+answers the couch-legibility problem the plate was trying to solve is two DIFFERENT bright ink
+endpoints instead of one, picked by `editing` alone (`field::draw`'s `ink_target`, never a second
+spring, riding the field's existing `hot` spring either way): **focused, not yet editing** — no
+caret, no keyboard, nothing else on screen to say "the remote is on this" — crosses to
+`theme::FIELD_WAITING_INK`, a genuinely pure white; **editing** drops back one stop to
+`theme::FIELD_EDITING_INK` (`TEXT_PRIMARY`, and the caret's own colour), because the blinking bar and
+the open keyboard already carry that state's own signal. Both ride the same wide
+`TEXT_SECONDARY`→target step that replaced the original one-stop `TEXT_HEADING` fade (owner
+feedback, 2026-09-02).
+
 One character short of `MIN_QUERY`, `one more character` appears at BODY after that caret. It is
 part of the field, not a second caption above the scope line: it explains the control at the place
 the eye is already following and is consumed by the next keystroke. The scope remains one CAPTION

@@ -5,10 +5,13 @@
 //! archival `com.palm.keymanager` AES-CFB interface is deliberately not used: it provides no
 //! authenticated-encryption primitive, and ciphertext integrity is part of the storage contract.
 //!
-//! This module deliberately uses LS2 as an *application* (`LSRegisterApplicationService`) and no
-//! root-only broker, filesystem or HAL symbol. A normal SAM-launched app therefore follows the
-//! same unprivileged call path on development and retail sets; the retail LS2 entitlement itself
-//! is capability-probed at runtime and denial selects the mode-0600 fallback.
+//! This module deliberately uses LS2 as an unprivileged in-app client — the process's one client
+//! in `webos::ls2`, a plain anonymous `LSRegister`; the `LSRegisterApplicationService(NULL, app_id)`
+//! it used until 2026-09-04 is refused by the hub on the dev set (`-1027 Invalid permissions`), so
+//! every probe here failed at registration and never reached a service — and no root-only broker,
+//! filesystem or HAL symbol. A normal SAM-launched app therefore follows the same unprivileged call path on
+//! development and retail sets; the retail LS2 entitlement itself is capability-probed at runtime
+//! and denial selects the mode-0600 fallback.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -208,178 +211,59 @@ mod platform {
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 mod platform {
-    use std::ffi::{CStr, CString};
-    use std::os::raw::{c_char, c_int, c_void};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
-    #[repr(C)]
-    struct LSError {
-        error_code: c_int,
-        message: *mut c_char,
-        file: *const c_char,
-        line: c_int,
-        func: *const c_char,
-        padding: *mut c_void,
-        magic: libc::c_ulong,
-    }
+    /// Keymanager3's budget. A key generation on a cold set is not a 600 ms affair, and this
+    /// client never runs on the press path `webos::ls2::BUDGET` is sized for.
+    const BUDGET: Duration = Duration::from_secs(4);
 
-    #[derive(Default)]
-    struct Reply {
-        payload: Option<String>,
-    }
-
-    extern "C" {
-        fn LSErrorInit(error: *mut LSError) -> bool;
-        fn LSErrorFree(error: *mut LSError);
-        fn LSRegisterApplicationService(
-            name: *const c_char,
-            app_id: *const c_char,
-            handle: *mut *mut c_void,
-            error: *mut LSError,
-        ) -> bool;
-        fn LSGmainContextAttach(
-            handle: *mut c_void,
-            context: *mut c_void,
-            error: *mut LSError,
-        ) -> bool;
-        fn LSCallOneReply(
-            handle: *mut c_void,
-            uri: *const c_char,
-            payload: *const c_char,
-            callback: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
-            context: *mut c_void,
-            token: *mut libc::c_ulong,
-            error: *mut LSError,
-        ) -> bool;
-        fn LSCallCancel(handle: *mut c_void, token: libc::c_ulong, error: *mut LSError) -> bool;
-        fn LSMessageGetPayload(message: *mut c_void) -> *const c_char;
-        fn LSUnregister(handle: *mut c_void, error: *mut LSError) -> bool;
-        fn g_main_context_new() -> *mut c_void;
-        fn g_main_context_iteration(context: *mut c_void, may_block: c_int) -> c_int;
-        fn g_main_context_unref(context: *mut c_void);
-    }
-
-    extern "C" fn on_reply(
-        _handle: *mut c_void,
-        message: *mut c_void,
-        context: *mut c_void,
-    ) -> bool {
-        if context.is_null() || message.is_null() {
-            return true;
-        }
-        let payload = unsafe { LSMessageGetPayload(message) };
-        if !payload.is_null() {
-            unsafe {
-                (*(context as *mut Reply)).payload =
-                    Some(CStr::from_ptr(payload).to_string_lossy().into_owned());
-            }
-        }
-        true
-    }
-
+    /// One registration on the bus, kept alive for the length of a logical keymanager operation
+    /// (`modern_crypt` needs begin → finish on ONE connection). The registration itself is the
+    /// process-wide `webos::ls2` client — the shape it registers with and the reason are there.
+    ///
+    /// **A service that stalls once is not asked again on this client.** Registration succeeds on
+    /// the dev set since 2026-09-04, which makes [`BUDGET`] REACHABLE from a synchronous session
+    /// save for the first time, and `modern_crypt`'s begin → (finish | abort) is two calls: a
+    /// keymanager3 that hangs on the first would otherwise cost two budgets on a path that holds
+    /// the auth and session locks (Codex review, 2026-09-04). A timeout marks the client dead and
+    /// every later call on it answers at once; `seal` then records the backend unavailable.
     pub(super) struct Client {
-        handle: *mut c_void,
-        context: *mut c_void,
-        error: LSError,
+        registration: crate::webos::ls2::Registration,
+        dead: bool,
     }
 
     impl Client {
         pub(super) fn new() -> Result<Self, ()> {
-            let app_id = CString::new(crate::paths::app_id()).map_err(|_| ())?;
-            let mut error: LSError = unsafe { std::mem::zeroed() };
-            unsafe {
-                LSErrorInit(&mut error);
-            }
-            let context = unsafe { g_main_context_new() };
-            if context.is_null() {
-                unsafe { LSErrorFree(&mut error) };
-                return Err(());
-            }
-            let mut handle = std::ptr::null_mut();
-            let registered = unsafe {
-                LSRegisterApplicationService(
-                    std::ptr::null(),
-                    app_id.as_ptr(),
-                    &mut handle,
-                    &mut error,
-                )
-            };
-            if !registered || handle.is_null() {
-                unsafe {
-                    LSErrorFree(&mut error);
-                    g_main_context_unref(context);
-                }
-                return Err(());
-            }
-            reset_error(&mut error);
-            if !unsafe { LSGmainContextAttach(handle, context, &mut error) } {
-                reset_error(&mut error);
-                unsafe {
-                    LSUnregister(handle, &mut error);
-                    LSErrorFree(&mut error);
-                    g_main_context_unref(context);
-                }
-                return Err(());
-            }
-            Ok(Self {
-                handle,
-                context,
-                error,
-            })
+            crate::webos::ls2::register()
+                .map(|registration| Self {
+                    registration,
+                    dead: false,
+                })
+                .map_err(|e| {
+                    crate::log(&format!("keymanager: LS2 {e}"));
+                })
         }
 
         pub(super) fn call(&mut self, uri: &str, payload: &str) -> Result<String, ()> {
-            let uri = CString::new(uri).map_err(|_| ())?;
-            let payload = CString::new(payload).map_err(|_| ())?;
-            reset_error(&mut self.error);
-            let mut reply = Reply::default();
-            let mut token = 0;
-            let called = unsafe {
-                LSCallOneReply(
-                    self.handle,
-                    uri.as_ptr(),
-                    payload.as_ptr(),
-                    on_reply,
-                    &mut reply as *mut Reply as *mut c_void,
-                    &mut token,
-                    &mut self.error,
-                )
-            };
-            if called {
-                let until = Instant::now() + Duration::from_secs(4);
-                while reply.payload.is_none() && Instant::now() < until {
-                    unsafe {
-                        g_main_context_iteration(self.context, 0);
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
+            if self.dead {
+                return Err(());
+            }
+            let started = std::time::Instant::now();
+            match self.registration.call(uri, payload, BUDGET) {
+                Ok(reply) => Ok(reply),
+                Err(crate::webos::ls2::Fail::Timeout) => {
+                    self.dead = true;
+                    crate::log(&format!(
+                        "keymanager: no reply in {} ms — this client asks nothing more",
+                        started.elapsed().as_millis()
+                    ));
+                    Err(())
+                }
+                Err(crate::webos::ls2::Fail::Setup { stage, detail }) => {
+                    crate::log(&format!("keymanager: call failed stage={stage} ({detail})"));
+                    Err(())
                 }
             }
-            if reply.payload.is_none() && token != 0 {
-                reset_error(&mut self.error);
-                unsafe {
-                    LSCallCancel(self.handle, token, &mut self.error);
-                }
-            }
-            reply.payload.ok_or(())
-        }
-    }
-
-    impl Drop for Client {
-        fn drop(&mut self) {
-            reset_error(&mut self.error);
-            unsafe {
-                LSUnregister(self.handle, &mut self.error);
-                LSErrorFree(&mut self.error);
-                g_main_context_unref(self.context);
-            }
-        }
-    }
-
-    fn reset_error(error: &mut LSError) {
-        unsafe {
-            LSErrorFree(error);
-            *error = std::mem::zeroed();
-            LSErrorInit(error);
         }
     }
 }

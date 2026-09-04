@@ -33,9 +33,11 @@
 //!   glass changes: `Glass::CACHED` grabs framebuffer 0 after the page scrim is on it, and the page
 //!   scrim is drawn live over the cached quad, so the composite it samples is identical.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
-//!   was `person_bio`'s private `OWN_DAMAGE` ledger and is now [`note_own_damage`] /
-//!   [`own_motion`], shared, with [`glass_refresh`] as the one decision both the dynamic backdrop
-//!   and the host cache are resolved from.
+//!   was `person_bio`'s private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
+//!   [`host::input_scope`] / [`host::page_pass`] for the host cache (and [`note_own_damage`] for
+//!   the glass ledger), shared — attributed at the source and counted
+//!   (`idle::take_page_damage`), with [`host_refresh`] as the host cache's decision and
+//!   [`glass_refresh`] as the dynamic backdrop's.
 use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::{theme, Painter, Rect, Spring};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -69,6 +71,11 @@ pub(crate) fn any_open() -> bool {
 /// a counter: the popovers live in seven modules and two of them are routes, so nothing can
 /// enumerate them. Reaching zero is what puts the page back on the live path.
 static mut HOST_USERS: u32 = 0;
+/// How many of [`HOST_USERS`] are panels on their way OUT — dismissed, fading, still holding the
+/// freeze (see `Popover::release_host`). When every user is one of these the page under the
+/// snapshot is live to input again, and its MOTION becomes a reason to redraw it
+/// ([`host_refresh`]) — under an open panel only its damage is.
+static mut HOST_CLOSING: u32 = 0;
 
 /// Damage this frame that a POPOVER caused, rather than the page underneath it.
 ///
@@ -82,6 +89,11 @@ static mut HOST_USERS: u32 = 0;
 /// because it was the first one whose FPS was measured. Set through [`note_own_damage`] /
 /// [`own_motion`], taken once a frame by [`host::begin_frame`].
 static OWN_DAMAGE: AtomicBool = AtomicBool::new(false);
+/// The panel's own SPRINGS moved this frame ([`own_motion`]). Both bits feed ONE consumer now —
+/// the dynamic backdrop's cadence, through [`host::own_damage_this_frame`] — merged; the host
+/// cache no longer reads either, its attribution being by scope and by count
+/// (`idle::take_page_damage`, [`host::input_scope`]).
+static OWN_MOTION: AtomicBool = AtomicBool::new(false);
 
 /// Record that a popover's OWN state changed this frame — a page turn, a selection move, a row
 /// commit. Call it beside the `idle::invalidate` such a change already owes: the two are different
@@ -95,33 +107,42 @@ pub(crate) fn note_own_damage() {
 /// Attribute the spring motion of a popover's own `update` to the POPOVER rather than to the page
 /// it stands on — one line at the top of that `update`, held for the body.
 ///
-/// This is [`crate::ui::idle::MotionScope`] with the result routed into [`OWN_DAMAGE`]: the same
-/// shape `app.rs` already uses to keep Home's springs out of the account popover's backdrop, said
-/// once here so every panel's `update` is one line rather than six, and so that a panel added
-/// tomorrow inherits it.
+/// This is [`crate::ui::idle::MotionScope`] with the result routed into [`OWN_MOTION`], plus an
+/// [`crate::ui::idle::OwnScope`] so that every `idle::invalidate` the update raises (the appear
+/// spring's, a marquee's) is the panel's own damage rather than the page's: the same shape `app.rs`
+/// already uses to keep Home's springs out of the account popover's backdrop, said once here so
+/// every panel's `update` is one line rather than six, and so that a panel added tomorrow inherits
+/// it.
 ///
 /// **The scope merges back**, so a popover's motion still keeps the present gate awake — this
 /// changes who the motion is ATTRIBUTED to, never whether it counts as motion.
 #[must_use = "the scope is only open for this guard's lifetime"]
-pub(crate) struct OwnMotion(Option<crate::ui::idle::MotionScope>);
+pub(crate) struct OwnMotion(
+    Option<crate::ui::idle::MotionScope>,
+    #[allow(dead_code)] crate::ui::idle::OwnScope,
+);
 
 /// See [`OwnMotion`].
 pub(crate) fn own_motion() -> OwnMotion {
-    OwnMotion(Some(crate::ui::idle::MotionScope::open()))
+    OwnMotion(
+        Some(crate::ui::idle::MotionScope::open()),
+        crate::ui::idle::OwnScope::open(),
+    )
 }
 
 impl Drop for OwnMotion {
     fn drop(&mut self) {
         if let Some(scope) = self.0.take() {
             if scope.close() {
-                note_own_damage();
+                OWN_MOTION.store(true, Relaxed);
             }
         }
     }
 }
 
-/// **Should a popover re-source what it is standing on this present?** The one decision behind both
-/// the dynamic backdrop's cadence and the host snapshot's lifetime.
+/// **Should a popover re-source its dynamic BACKDROP this present?** The decision behind the
+/// dynamic glass cadence. (The host snapshot's lifetime used to be resolved from it too; that is
+/// [`host_refresh`] over `idle::take_page_damage` now.)
 ///
 /// Lifted verbatim out of `person_bio`, where it was written after a measured FPS regression and
 /// two review passes; the reasoning that produced it is general and the file it lived in was not.
@@ -138,6 +159,33 @@ impl Drop for OwnMotion {
 /// that just grew a shelf, or landed a poster texture, re-sources once.
 pub(crate) fn glass_refresh(underlay_changed: bool, appear_settled: bool, own_damage: bool) -> bool {
     !appear_settled || (underlay_changed && !own_damage)
+}
+
+/// **Does the host snapshot survive this frame?** Two questions about the PAGE, and only the page.
+///
+/// `page_dirty` — did it CHANGE: `idle::take_page_damage`, every invalidation this frame that no
+/// popover claimed as its own, by count, so a landing beside a key press or during the panel's
+/// own motion is still seen. That is a reason to redraw whether the panels are open or fading.
+///
+/// `page_moving` — is it MOVING: `app.rs`'s `underlay_moving` (Home, the Library and Search step
+/// their springs inside a `scoped_motion`) OR'd with the gate's unscoped-motion bit. **That is a
+/// reason to redraw only while every holder is FADING** (`fading_only`: dismissed, input back on
+/// the page, the page free to scroll under the fade). With a panel OPEN the page cannot be driven,
+/// and what still moves on it is decoration — a focused card's title marquee, the hero's slow
+/// drift — which the frozen picture is MEANT to pause (the module doc's "a decoration on a page
+/// the user cannot reach"). Read as a refresh reason, that decoration re-rendered Home under the
+/// account menu on every frame: 25M GPU cycles and 26 fps on the set, 2026-09-04, against the
+/// 11M and 50+ the freeze exists for. The one thing this leaves out is a page still SETTLING on
+/// the frame a panel opens (the item menu over a grid whose focus spring has not landed): the
+/// snapshot holds that frame and the page finishes its last few pixels when the panel lets go.
+/// Accepted — it is the account menu's behaviour since the cache existed.
+///
+/// The panel's own motion and damage never reach either term: they are attributed at the source
+/// (`own_motion`, `host::live`, `host::input_scope`, `host::page_pass`). Earlier shapes subtracted a merged per-frame
+/// "own" bit from `dirty || moving`, and each had a case where the page's change was consumed
+/// unseen (Codex review, three rounds, 2026-09-04).
+pub(crate) fn host_refresh(fading_only: bool, page_dirty: bool, page_moving: bool) -> bool {
+    page_dirty || (fading_only && page_moving)
 }
 
 /// The element a popover was opened FROM — where it is, and how to put it back on screen.
@@ -189,9 +237,10 @@ impl Opener {
 pub(crate) enum HostPolicy {
     /// The page keeps drawing underneath. The right answer whenever the popover does not cover
     /// enough of it to matter, or whenever the host is not a page at all — the player route, where
-    /// what is behind the panel is punch-through alpha to a hardware plane that GL cannot read, and
-    /// the Settings family, which replaces its host with an opaque ground and so has nothing to
-    /// cache.
+    /// what is behind the panel is punch-through alpha to a hardware plane that GL cannot read.
+    /// (The Settings family was listed here too, as "replaces its host with an opaque ground and so
+    /// has nothing to cache" — since 2026-09-03 it caches its host like every other page popover,
+    /// and once its ground is ready it skips the page pass altogether; see `settings.rs`.)
     Live,
     /// The page is drawn once into the shared snapshot and served from it, refreshed on host
     /// damage. See the module doc.
@@ -209,6 +258,13 @@ pub(crate) struct Popover {
     /// See [`HostPolicy`]. Opt-in through [`Popover::caching_host`], so the set of popovers that
     /// freeze their page is a list a reviewer can read off the constructors.
     host: HostPolicy,
+    /// Is this popover currently counted in [`HOST_USERS`]? Held from [`open`](Self::open) until
+    /// the panel has GONE — which for a [`dismiss`](Self::dismiss) is the end of its fade, not the
+    /// press frame (see [`release_host`](Self::release_host)). A flag of its own rather than a
+    /// reading of `open`, because the two disagree for exactly that stretch.
+    host_held: bool,
+    /// Counted in [`HOST_CLOSING`]: held AND dismissed. Cleared by a re-open or by the release.
+    host_closing: bool,
     /// The `rise` the last [`painter`](Self::painter) was asked for, so [`panel`](Self::panel) can
     /// work out how far this frame is from the panel's resting position. Stashed rather than passed
     /// again because the painter and panel belong to one draw choreography, and a second copy of the
@@ -231,6 +287,8 @@ impl Popover {
             glass_state: GlassState::new(),
             rise: std::cell::Cell::new(0.0),
             host: HostPolicy::Live,
+            host_held: false,
+            host_closing: false,
         }
     }
 
@@ -254,6 +312,8 @@ impl Popover {
     pub(crate) fn open(&mut self) {
         self.appear = Spring::at(0.0);
         self.closing = false;
+        // A re-open DURING the fade-out: the held user stops being a closing one.
+        self.leave_closing();
         // Both transitions are guarded on the flag actually CHANGING, not on the call: `open` is a
         // re-open (a second press on the same chip restarts the motion) and `close` is called
         // defensively by arms that do not know whether anything was up. An unguarded pair leaks the
@@ -261,9 +321,7 @@ impl Popover {
         // the rest of the session.
         if !self.open {
             unsafe { *std::ptr::addr_of_mut!(OPEN_COUNT) += 1 };
-            if self.host == HostPolicy::Cached {
-                unsafe { *std::ptr::addr_of_mut!(HOST_USERS) += 1 };
-            }
+            self.hold_host();
         }
         self.open = true;
         self.glass.activate(&mut self.glass_state);
@@ -280,25 +338,76 @@ impl Popover {
     /// mechanism, not that one screen, that got the fade.
     pub(crate) fn close(&mut self) {
         self.release();
+        self.release_host();
         self.closing = false;
         self.appear = Spring::at(0.0);
     }
-    /// The bookkeeping half of a close: input modality, the host freeze and the glass lifetime end
-    /// NOW, whether the panel then vanishes or fades.
+    /// The bookkeeping half of a close: input modality and the glass lifetime end NOW, whether the
+    /// panel then vanishes or fades. The host freeze is NOT in here — see
+    /// [`release_host`](Self::release_host) for why it outlives a dismiss.
     fn release(&mut self) {
         if self.open {
             unsafe { *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1 };
-            if self.host == HostPolicy::Cached {
-                unsafe { *std::ptr::addr_of_mut!(HOST_USERS) -= 1 };
-            }
         }
         self.open = false;
         self.glass_state.deactivate();
         host::invalidate();
     }
+    /// Register this popover's frozen-host user — once, however many times it is (re)opened, and
+    /// not at all under a `Live` policy. A re-open DURING the fade-out finds the user still held
+    /// and must not count it twice.
+    fn hold_host(&mut self) {
+        if self.host == HostPolicy::Cached && !self.host_held {
+            unsafe { *std::ptr::addr_of_mut!(HOST_USERS) += 1 };
+            self.host_held = true;
+        }
+    }
+    /// The other half, and deliberately NOT part of [`release`](Self::release): **a dismissed panel
+    /// keeps its page frozen for the length of its fade-out.** The page has not changed — input
+    /// went back to it on the press frame, but nothing it does in the next 300 ms is a reason to
+    /// redraw a hero and three shelves under a panel that is on its way out — and the fade is
+    /// drawn over it up to sixty times. Releasing on the press frame put every one of those frames
+    /// on the live path, which is the laggy DISMISSAL every cached panel had (2026-09-03: the About
+    /// sheet, 60 fps while scrolling, fell to ~20 while fading; Settings' exit ramp showed its grey
+    /// ground for a second over a Home that was being fully re-rendered under it). `close` releases
+    /// at once; `update` releases when the fade lands. Real page damage during the fade still
+    /// re-captures through `host::begin_frame`, exactly as it does while the panel is open.
+    fn release_host(&mut self) {
+        self.leave_closing();
+        if self.host_held {
+            unsafe { *std::ptr::addr_of_mut!(HOST_USERS) -= 1 };
+            self.host_held = false;
+            host::invalidate();
+        }
+    }
+    /// Count this held user among the fading ones — see [`HOST_CLOSING`]. A no-op for a panel that
+    /// holds no user, or is already counted.
+    fn enter_closing(&mut self) {
+        if self.host_held && !self.host_closing {
+            unsafe { *std::ptr::addr_of_mut!(HOST_CLOSING) += 1 };
+            self.host_closing = true;
+        }
+    }
+    fn leave_closing(&mut self) {
+        if self.host_closing {
+            unsafe { *std::ptr::addr_of_mut!(HOST_CLOSING) -= 1 };
+            self.host_closing = false;
+        }
+    }
+    /// Step the appear spring inside an `idle::MotionScope`, so the panel's own motion is never
+    /// read as the PAGE's — the distinction [`host_refresh`] rests on for a fading panel. Reports
+    /// whether the spring moved.
+    fn step_appear(&mut self, target: f32, dt: f32) -> bool {
+        let scope = crate::ui::idle::MotionScope::open();
+        self.appear.step(target, K_APPEAR, dt);
+        scope.close()
+    }
     /// Close with the appear choreography played backwards: the panel stops being OPEN this frame
-    /// (keys go to the page again, the host thaws and its glass lifetime ends) and stays VISIBLE
-    /// while `appear` springs back to 0 under [`update`](Self::update). Draw sites gate on
+    /// (keys go to the page again, its glass lifetime ends) and stays VISIBLE while `appear`
+    /// springs back to 0 under [`update`](Self::update). A CACHING panel keeps its host frozen for
+    /// the length of that fade and lets go at the end ([`Live`]'s doc,
+    /// `a_cached_popover_holds_its_frozen_host_through_the_fade_and_releases_at_the_end`) — the
+    /// page under a fading panel has not changed. Draw sites gate on
     /// [`visible`](Self::visible) so the fade is actually drawn; input sites keep gating on
     /// [`is_open`](Self::is_open). A no-op on a panel that is not open.
     pub(crate) fn dismiss(&mut self) {
@@ -307,6 +416,7 @@ impl Popover {
         }
         self.release();
         self.closing = true;
+        self.enter_closing();
         crate::ui::idle::invalidate();
     }
     pub(crate) fn is_open(&self) -> bool {
@@ -325,17 +435,18 @@ impl Popover {
     /// where nothing behind it moves at all.
     pub(crate) fn update(&mut self, dt: f32) {
         if self.open {
-            self.appear.step(1.0, K_APPEAR, dt);
+            self.step_appear(1.0, dt);
             if !self.appear_settled() {
                 note_own_damage();
             }
         } else if self.closing {
-            self.appear.step(0.0, K_APPEAR, dt);
+            self.step_appear(0.0, dt);
             note_own_damage();
             // the same visual-arrival tolerance as `appear_settled`, at the other end
             if self.appear.pos <= 0.001 {
                 self.closing = false;
                 self.appear = Spring::at(0.0);
+                self.release_host();
             }
         }
     }
@@ -582,7 +693,7 @@ impl Popover {
 /// of itself, one refresh stale, forever. [`live`] and [`page_pass`] both fall back to the page
 /// stage inside such a pass, and entering one drops the ground.
 pub(crate) mod host {
-    use super::{glass_refresh, HOST_USERS, OWN_DAMAGE};
+    use super::{HOST_USERS, OWN_DAMAGE, OWN_MOTION};
     use std::sync::atomic::Ordering::Relaxed;
 
     /// What the one snapshot currently holds — see the module doc's two stages.
@@ -629,6 +740,22 @@ pub(crate) mod host {
     fn users() -> u32 {
         unsafe { *std::ptr::addr_of!(HOST_USERS) }
     }
+    /// **Input while a panel holds the page frozen belongs to the panel.** Opened by `app.rs`
+    /// around every INPUT event (key, text, pointer, wheel — `app::is_input_event`) and every
+    /// remote token: the per-event `idle::invalidate` and whatever the handler raises are then the
+    /// panel's own damage rather than the page's, so a key-up under the account menu does not
+    /// re-render Home behind it. NOT around lifecycle or window events, which are the app's and
+    /// may change the page under the panel. `None` — no scope — once every holder is fading, when
+    /// input has gone back to the page and its damage is the page's.
+    pub(crate) fn input_scope() -> Option<crate::ui::idle::OwnScope> {
+        (users() > 0 && !fading_only()).then(crate::ui::idle::OwnScope::open)
+    }
+
+    /// Is every one of them a dismissed panel still fading out? See [`super::host_refresh`].
+    fn fading_only() -> bool {
+        let n = users();
+        n > 0 && unsafe { *std::ptr::addr_of!(super::HOST_CLOSING) } == n
+    }
 
     /// Throw the snapshot away; the next page pass will draw the real page and take a new one.
     pub(crate) fn invalidate() {
@@ -663,32 +790,46 @@ pub(crate) mod host {
         OWN_THIS_FRAME.load(Relaxed)
     }
 
-    /// Open the frame: take the popovers' own-damage ledger and decide whether the snapshot
-    /// survives it.
+    /// Open the frame: take the popovers' own-damage ledger (for the glass) and the page's damage
+    /// count (for the host), and decide whether the snapshot survives them.
     ///
-    /// **The host-damage test is route-agnostic on purpose.** It is `present_dirty || present_moving`
-    /// minus the popovers' own ledger, which is the same pair `app.rs` hands `person_bio` today —
-    /// but derived here it also covers the detail and person pages, which never had an
-    /// `underlay_moving` term threaded to them, and it cannot go stale when a seventh screen learns
-    /// to host a popover.
+    /// **The host-damage test is route-agnostic on purpose.** It is `idle::take_page_damage` —
+    /// every invalidation this frame that was not raised inside a popover's own scope
+    /// (`own_motion`, [`live`], [`input_scope`]) — plus, once every holder is fading, the page's
+    /// motion (`app.rs`'s `underlay_moving`, which is threaded in as the one term this module
+    /// cannot derive). Derived here rather than per screen, it covers the detail and person pages
+    /// too, and it cannot go stale when a seventh screen learns to host a popover.
     ///
     /// **Ramping open is deliberately NOT a reason to re-capture**, although it is one for the
     /// dynamic backdrop (see [`glass_refresh`]). The two are asking about different pictures: the
     /// backdrop re-sources because the SCRIM over the page is still darkening, and the scrim is
     /// drawn live above this snapshot rather than into it. The page itself is not moving.
-    pub(crate) fn begin_frame() {
+    pub(crate) fn begin_frame(page_moving: bool) {
+        // Published for the renderer before anything draws: `gfx::page_wash_dither` reads it, so a
+        // popover's own appear spring cannot strip the dither off the page snapshot under it. The
+        // same OR `host_refresh` reads below: the scoped verdict app.rs threads in (Home, the
+        // Library, Search, the press dip) plus the unscoped one (Detail updates outside
+        // `scoped_motion` and reports through `idle::page_moving`) — Codex review, 2026-09-04.
+        crate::ui::idle::note_underlay_motion(page_moving || crate::ui::idle::page_moving());
         let own = OWN_DAMAGE.swap(false, Relaxed);
-        OWN_THIS_FRAME.store(own, Relaxed);
+        let own_motion = OWN_MOTION.swap(false, Relaxed);
+        // The glass backdrop's ledger stays MERGED: re-sourcing a blur one frame late self-heals on
+        // the next damage, and the dynamic cadence reads it through `Popover::prepare_present`.
+        OWN_THIS_FRAME.store(own || own_motion, Relaxed);
+        // Taken every drawn frame, holder or not, so the count never carries over into the first
+        // frame of the next panel to open.
+        let page_dirty = crate::ui::idle::take_page_damage();
         CAPTURE_OWED.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
         if users() == 0 {
             invalidate();
             return;
         }
-        let changed = crate::ui::idle::present_dirty() || crate::ui::idle::present_moving();
-        // `appear_settled` is passed as `true` because the entry ramp is not page damage — the
-        // ramp's own refresh need belongs to the backdrop, not to this.
-        if glass_refresh(changed, true, own) {
+        if super::host_refresh(
+            fading_only(),
+            page_dirty,
+            crate::ui::idle::page_moving() || page_moving,
+        ) {
             invalidate();
         }
     }
@@ -697,6 +838,16 @@ pub(crate) mod host {
     /// page closure; dropping it lifts the freeze and takes the capture nobody else took.
     pub(crate) struct PagePass {
         was_frozen: bool,
+        /// **Damage the page raises while being drawn into (or under) the snapshot is not new
+        /// damage.** A spinner on the host reports through `idle::invalidate` from its own `draw`
+        /// to keep itself animating; on a frame the page is drawn for real (the refresh frame,
+        /// with the freeze off) that report would otherwise count as page damage and buy another
+        /// refresh, and the next, for as long as the spinner is on screen — the account menu over
+        /// a Home still waiting on a hub re-rendered Home on every frame (26 fps, 2026-09-04). The
+        /// picture the spinner reported from IS the snapshot being taken, so the snapshot pauses
+        /// it, which is what the freeze has always done to a decoration nobody can reach.
+        #[allow(dead_code)]
+        own: Option<crate::ui::idle::OwnScope>,
     }
 
     /// Begin a host-page draw. Draws the cached quad and arms the freeze when there is a snapshot;
@@ -705,6 +856,7 @@ pub(crate) mod host {
         if users() == 0 {
             return PagePass {
                 was_frozen: crate::gfx::page_frozen(),
+                own: None,
             };
         }
         // A source pass may never be served the GROUND stage — it would hand a dynamic backdrop a
@@ -727,6 +879,7 @@ pub(crate) mod host {
         }
         PagePass {
             was_frozen: crate::gfx::set_page_frozen(served),
+            own: Some(crate::ui::idle::OwnScope::open()),
         }
     }
 
@@ -766,6 +919,10 @@ pub(crate) mod host {
     #[must_use = "the freeze is lifted only for this guard's lifetime"]
     pub(crate) struct Live {
         was_frozen: bool,
+        /// Everything drawn under this guard is the panel's own: an `idle::invalidate` raised by
+        /// its marquee or spinner must not read as page damage to `begin_frame`.
+        #[allow(dead_code)]
+        own: crate::ui::idle::OwnScope,
     }
 
     /// See [`Live`].
@@ -781,6 +938,7 @@ pub(crate) mod host {
             }
             return Live {
                 was_frozen: crate::gfx::set_page_frozen(true),
+                own: crate::ui::idle::OwnScope::open(),
             };
         }
         if CAPTURE_OWED.swap(false, Relaxed) {
@@ -794,6 +952,7 @@ pub(crate) mod host {
         }
         Live {
             was_frozen: crate::gfx::set_page_frozen(false),
+            own: crate::ui::idle::OwnScope::open(),
         }
     }
 
@@ -938,7 +1097,8 @@ mod tests {
     }
 
     /// **The exit is the entry played backwards, and it is drawn.** `dismiss` ends the panel's
-    /// OPEN state on the press frame — keys return to the page, the host thaws — but the panel stays
+    /// OPEN state on the press frame — keys return to the page; a caching panel's host stays frozen
+    /// through the fade, see the test two below — but the panel stays
     /// VISIBLE while the appear spring runs back to 0, reporting every frame of it as its own
     /// damage so the present gate keeps presenting. `close` stays the instant hide. Settings' exit
     /// was the report (2026-09-02); every popover took the mechanism.
@@ -1015,6 +1175,7 @@ mod tests {
 
     #[test]
     fn cached_is_the_default_and_dynamic_glass_requires_an_explicit_opt_in() {
+        let _g = crate::testlock::serial();
         let mut cached = Popover::new();
         let mut dynamic = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
         assert_eq!(cached.glass, Glass::CACHED);
@@ -1065,6 +1226,195 @@ mod tests {
         assert!(
             !any_open(),
             "back to rest — the tab bar resumes retaking its backdrop"
+        );
+    }
+
+    /// **A dismissed CACHED panel keeps its page frozen for the length of its fade and lets go when
+    /// the fade lands; `close` lets go at once; neither path can leak the count.** The fade is drawn
+    /// over a page that has not changed, so releasing on the press frame put every frame of it on
+    /// the live path — the laggy dismissal every cached panel had.
+    #[test]
+    fn a_cached_popover_holds_its_frozen_host_through_the_fade_and_releases_at_the_end() {
+        let _g = crate::testlock::serial();
+        let base = unsafe { *std::ptr::addr_of!(HOST_USERS) };
+        let closing_base = unsafe { *std::ptr::addr_of!(HOST_CLOSING) };
+        let users = || unsafe { *std::ptr::addr_of!(HOST_USERS) } - base;
+        let mut pop = Popover::new().caching_host();
+        pop.open();
+        for _ in 0..240 {
+            pop.update(1.0 / 60.0);
+        }
+        assert_eq!(users(), 1);
+        pop.dismiss();
+        assert!(!pop.is_open() && pop.visible());
+        assert_eq!(users(), 1, "the page under a fading panel has not changed: keep it frozen");
+        let mut frames = 0;
+        while pop.visible() {
+            assert_eq!(users(), 1, "held for the whole fade (frame {frames})");
+            pop.update(1.0 / 60.0);
+            frames += 1;
+            assert!(frames < 240, "a dismiss must settle within four seconds");
+        }
+        assert_eq!(users(), 0, "the fade landed: the page is live again");
+
+        // a re-open DURING its own fade must not count twice — settle first, because a dismiss
+        // straight after an open has a zero-length fade (the spring is still at 0)
+        let settle = |pop: &mut Popover| {
+            for _ in 0..240 {
+                pop.update(1.0 / 60.0);
+            }
+        };
+        let closing = || unsafe { *std::ptr::addr_of!(HOST_CLOSING) } - closing_base;
+        pop.open();
+        settle(&mut pop);
+        assert_eq!((users(), closing()), (1, 0));
+        pop.dismiss();
+        pop.update(1.0 / 60.0);
+        assert_eq!((users(), closing()), (1, 1), "a fading holder is counted as one");
+        pop.open();
+        assert_eq!(
+            (users(), closing()),
+            (1, 0),
+            "re-opened mid-fade: still one user, and no longer a fading one"
+        );
+        // …and the instant hide releases at once, from the open state and from mid-fade
+        pop.close();
+        assert_eq!((users(), closing()), (0, 0));
+        pop.open();
+        settle(&mut pop);
+        pop.dismiss();
+        pop.update(1.0 / 60.0);
+        assert_eq!((users(), closing()), (1, 1));
+        pop.close();
+        assert_eq!(
+            (users(), closing()),
+            (0, 0),
+            "close during a fade releases the held user and its closing count"
+        );
+        pop.close();
+        pop.dismiss();
+        assert_eq!((users(), closing()), (0, 0), "redundant close/dismiss decrement nothing");
+        // the fade running out releases both counts too
+        pop.open();
+        settle(&mut pop);
+        pop.dismiss();
+        while pop.visible() {
+            pop.update(1.0 / 60.0);
+        }
+        assert_eq!((users(), closing()), (0, 0));
+
+        // a Live panel never registers, through the same sequence
+        let mut live = Popover::new();
+        live.open();
+        settle(&mut live);
+        live.dismiss();
+        live.update(1.0 / 60.0);
+        live.close();
+        assert_eq!((users(), closing()), (0, 0));
+    }
+
+    /// [`host_refresh`]'s truth table: page DAMAGE redraws the host in either state; page MOTION
+    /// only once every holder is fading (under an open panel it is decoration, meant to pause —
+    /// read as a reason it cost the account menu 26 fps). The panel's own motion and damage never
+    /// reach it: `idle::page_damage_is_what_no_popover_claimed` grades that attribution.
+    #[test]
+    fn the_host_redraws_on_page_damage_and_on_page_motion_only_under_a_fade() {
+        assert!(!host_refresh(false, false, false));
+        assert!(host_refresh(false, true, false), "a page event redraws the host");
+        assert!(
+            !host_refresh(false, false, true),
+            "page motion under an OPEN panel is a decoration the freeze pauses"
+        );
+        assert!(host_refresh(true, false, true), "page motion under a fade is the user scrolling");
+        assert!(host_refresh(true, true, false));
+        assert!(!host_refresh(true, false, false));
+    }
+
+    /// **A popover drawn on `visible()` must be updated on `visible()` too.** Reported off a
+    /// television on 2026-09-03 as "popover menus do not hide and may stack up".
+    ///
+    /// [`Popover::dismiss`] ends the OPEN state on the press frame and leaves `closing` set, and
+    /// [`Popover::update`] is the only place `closing` is ever cleared. So a panel that stops being
+    /// updated the moment it stops being OPEN never finishes its fade: `visible()` stays true for
+    /// the rest of the session, the draw site keeps drawing it at full opacity, and every panel
+    /// opened afterwards piles on top of it.
+    ///
+    /// `account_menu` and `item_menu` are the two popovers that are also ROUTES, so dismissing one
+    /// flips `route` back to its host page on the same frame — and `app.rs` guarded their `update`
+    /// with `matches!(route, …)` while drawing them self-gated. The draw site already carried the
+    /// rule in a comment ("Both self-gated on `Popover::visible`, not on the route: a dismissed
+    /// menu's route flips back to its host on the press frame while the panel is still fading out
+    /// over it"); the update site did not obey it. Both modules already return early unless
+    /// `visible()`, so the route guard bought nothing and cost the fade.
+    ///
+    /// **The player's four overlays are deliberately not in this list.** They gate DRAW and UPDATE
+    /// on the same `Route::Player { overlay }` term, which is coherent: a stuck one could never be
+    /// drawn off its own overlay route, so it can neither linger nor stack. The defect is the
+    /// MISMATCH between the two gates, not a route gate as such — which is why this test lists the
+    /// popovers whose draw is self-gated rather than every popover in the app.
+    ///
+    /// Asserted by reading `app.rs`, because the frame loop is reachable from no unit test — the
+    /// same reason `diag::scrub` pins its call-site property by grepping the tree.
+    #[test]
+    fn a_self_gated_popover_is_not_route_gated_on_update() {
+        let _g = crate::testlock::serial();
+        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
+        let text = std::fs::read_to_string(&app).expect("app.rs is readable");
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines.len() > 1000,
+            "read only {} lines of app.rs — not reading the frame loop",
+            lines.len()
+        );
+
+        // The popovers `app.rs` draws WITHOUT a route term, gated only on `Popover::visible`.
+        const SELF_GATED: &[&str] = &[
+            "account_menu",
+            "item_menu",
+            "legal",
+            "consent",
+            "settings",
+        ];
+
+        let mut offences: Vec<String> = Vec::new();
+        let mut seen = 0usize;
+        for (n, line) in lines.iter().enumerate() {
+            let Some(m) = SELF_GATED
+                .iter()
+                .find(|m| line.contains(&format!("ui::{m}::update(")))
+            else {
+                continue;
+            };
+            seen += 1;
+            // Join the preceding non-comment lines so a `matches!` split across several of them —
+            // which is how the player's overlay guards are written — is still seen as one guard.
+            let preceding: String = lines[..n]
+                .iter()
+                .rev()
+                .take(8)
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with("//"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if preceding.contains("matches!(") && preceding.contains("route") {
+                offences.push(format!(
+                    "app.rs:{}: {m}::update is gated on a route, but {m}::draw is not\n    {}",
+                    n + 1,
+                    line.trim()
+                ));
+            }
+        }
+        assert!(
+            seen >= SELF_GATED.len(),
+            "found only {seen} of {} self-gated popover update call sites — the scan is not \
+             finding them",
+            SELF_GATED.len()
+        );
+        assert!(
+            offences.is_empty(),
+            "a dismissed popover stops being updated when its route flips, so its fade never \
+             finishes and it never hides:\n{}",
+            offences.join("\n")
         );
     }
 }

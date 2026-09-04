@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.5.0. Last updated 3 September 2026.
+Applies to PlxNative 0.5.0. Last updated 4 September 2026.
 
 ## Who is responsible for PlxNative data
 
@@ -34,10 +34,11 @@ It keeps no bookmark of its own for where you stopped watching: playback positio
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
 
 Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
-tokens. Your optional-reporting answers and the two identifiers are kept apart from the sign-in
-and are **not** removed by signing out, so that a decision you have already made is not put to
-you again. A queued report is deleted once sent, or at the moment you switch its category off. The log
-rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
+tokens — and with them your optional-reporting answers, both identifiers and any queued report,
+because those choices were made by the person who signed in and say nothing about whoever signs
+in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
+not a sign-out and keeps them. A queued report is deleted once sent, or at the moment you switch
+its category off or sign out. The log rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
 sign-in and the reporting answers can survive an uninstall — use Delete all local data before
 uninstalling if you want nothing of PlxNative left on the television.
 
@@ -50,13 +51,13 @@ details needed to reproduce and symbolicate the failure.
 
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
-reports from one television are counted once rather than once per crash — Sentry's "users
-affected" figure is the number of distinct Crash report IDs an issue has reached — which is what
-tells a problem that hit many televisions apart from one television that hit it many times. It is
-not derived from your Plex account, your television or anything about you, and it is never sent
-with product analytics. Settings shows it while crash reports are on. Turning crash reports off
-deletes the local identifier; enabling them later creates a new one. Reports already sent keep
-the old identifier, so copy it down first if you intend to ask for their deletion.
+repeated crashes under one Crash report ID are counted once rather than once each — Sentry's
+"users affected" figure is the number of distinct Crash report IDs an issue has reached — which is
+what tells a problem that hit many people apart from one television that hit it many times. It is not derived from your Plex
+account, your television or anything about you, and it is never sent with product analytics.
+Settings shows it while crash reports are on. Turning crash reports off, or signing out, deletes
+the local identifier; enabling them later creates a new one. Reports already sent keep the old
+identifier, so copy it down first if you intend to ask for their deletion.
 
 The same independent choice also covers a handled playback-error report when playback reaches its
 explicit terminal error screen. That report contains a fixed failure kind, delivery and quality
@@ -75,10 +76,10 @@ Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transpor
 
 Product analytics is a separate choice and is off until you choose to share it. If enabled,
 PlxNative sends typed screen and feature events and broad sign-in and playback outcome classes to
-PostHog in Germany. Reports use a random installation identifier and may include the app version,
-webOS version, television model and SoC, and whether the selected server is local, remote or
-relayed. Turning product analytics off deletes the local identifier; enabling it later creates a
-new one.
+PostHog in Germany. Reports carry a random Analytics ID created when you turn product analytics on
+and may include the app version, webOS version, television model and SoC, and whether the selected
+server is local, remote or relayed. Turning product analytics off, or signing out, deletes the
+local identifier; enabling it later creates a new one.
 
 The Settings screen shows field-by-field example payloads produced through the same serializers
 used for real reports.
@@ -124,7 +125,9 @@ names or addresses, access tokens, subtitle text, or exact viewing history.
 Crash reports and product analytics are independent. You can enable either, both or neither during
 setup, and change either choice later in Settings → Privacy & data. Withdrawing a choice stops new
 reports of that category, removes queued records that are no longer permitted, and deletes that
-category's identifier from this television.
+category's identifier from this television. Signing out does the same for both categories at once.
+One report that the sender had already picked up at the moment you withdraw or sign out may still
+be sent; no further report is picked up after it.
 
 To ask what a category holds for your installation, or to have it deleted, write to the contact
 below and quote the identifier Settings shows for that category — the Crash report ID for crash

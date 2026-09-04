@@ -22,6 +22,50 @@
 //! `git grep -A2 'draw_narrative(' -- 'rust-modules/src/ui/*.rs'`. They are the Settings modal
 //! (BACK leaves the family), the FIRST first-run consent question (sign-in is behind it and
 //! cannot be undone) and the QR sign-in itself (there is no app behind it yet).
+//!
+//! # ONE focus model for the whole family
+//!
+//! Every screen here is the same two regions: the **content column** on the right (a table of
+//! rows, or a document), and the **action band** at the bottom of the left column (0, 1 or 2
+//! controls). [`RouteFocus`] holds where focus is and [`RouteShape`] is what a screen tells it
+//! about itself this frame; the rules below are pure, live here, and every screen in the family
+//! obeys all of them. They exist because the family had drifted into five different answers —
+//! Legal entered on RIGHT and left on LEFT while the Settings root ignored both; the Home editor
+//! reached its Done pill only with LEFT; Privacy & data jumped focus onto Done after a toggle and
+//! then had no way back; and first-run consent's two answers could not be left rightward at all.
+//!
+//! 1. **UP/DOWN walk the content column.** A table moves its selection; a document scrolls.
+//! 2. **DOWN off the LAST row enters the band**, on the control the band's cursor last rested on.
+//! 3. **UP leaves the band for the content column**, on the row it left from — so 2 and 3 are an
+//!    exact round trip.
+//! 4. **DOWN on the band is the floor.** The band is the bottom of the screen; there is nothing
+//!    under it.
+//! 5. **LEFT from the content column enters the band**, on the same remembered control as rule 2.
+//!    (The band sits in the LEFT column, so this is the spatial move, not a shortcut.)
+//! 6. **LEFT inside the band steps to the control on its left.**
+//! 7. **RIGHT inside the band steps to the control on its right; from the trailing control it
+//!    returns to the content column** — the inverse of rule 5.
+//! 8. **RIGHT on a row that opens nested content (a chevron row) enters it**, exactly as OK does.
+//!    RIGHT on any other row does nothing.
+//! 9. **LEFT is BACK once there is nothing further to its left, UNLESS the screen is holding an
+//!    uncommitted edit** ([`RouteShape::uncommitted`]). This is what makes the crumb literal — it
+//!    is drawn as a left-pointing chevron naming where BACK goes, and LEFT follows it. The
+//!    exception is the one thing a directional key must never do: BACK on these screens DISCARDS
+//!    (Privacy & data drops its draft, the Home editor drops its — nothing was written), and
+//!    overshooting the band's leading control by one press is not consent to lose an edit.
+//!    **`uncommitted` is stated by the screen and is NOT "the screen has a band".** That inference
+//!    was this rule's first justification and it is false in both directions: the Home editor's
+//!    `Try again` is a band with no edit behind it, and first run's two answers are a band whose
+//!    BACK records nothing. So Settings-mode Retry and first-run consent both let LEFT follow
+//!    their crumb, while a dirty draft does not.
+//! 10. **Focus can never rest on nothing.** [`RouteFocus::settle`] runs after every rebuild: a band
+//!    that has gone away hands focus back to the content column, and a content column with no rows
+//!    hands it to the band. Privacy & data used to lose focus entirely by toggling a value back —
+//!    it parked focus on a Done that the same edit had just removed.
+//! 11. **The pointer PARKS focus and nothing else.** Hover moves focus to the row or band control
+//!    under the pointer on every screen in the family ([`ActionRow::hit`] +
+//!    [`crate::ui::table::TableView::hit_row`]); a click activates whatever is parked; a click that
+//!    parks nothing does nothing.
 
 use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
@@ -128,7 +172,7 @@ impl RouteGround {
 
     /// Freeze the page that was already drawn this frame. Its one caller is the Settings modal,
     /// which opens over Home; first-run consent takes [`Self::draw_home`] instead, because since
-    /// the device question moved ahead of the profile picker it usually has no rendered host to
+    /// the consent question moved ahead of the profile picker it usually has no rendered host to
     /// sample at all.
     pub(crate) fn draw_host(&mut self, p: Painter) {
         if !self.latched {
@@ -229,6 +273,45 @@ impl RoutePush {
         self.progress.pos.clamp(0.0, 1.0)
     }
 
+    /// Seed this push's spring — position AND velocity, not just [`amount`](Self::amount)'s
+    /// clamped read-out — from ANOTHER push's current state. For a screen that gets its OWN
+    /// dedicated `RoutePush` split out of a shared one so a sibling's fade cannot bleed into it
+    /// (`settings::HOME_PUSH` off `settings::CHILD`, 2026-09-04), a caller that starts the new
+    /// push cold at rest whenever it starts driving it is right in the ordinary case — both begin
+    /// at 0 together — but wrong the moment the shared push is NOT at rest, because a sibling
+    /// (Privacy/Legal) was open a moment ago and is still reversing out of it: the shared root
+    /// would resume mid-fade while the freshly-opened child painted itself from a cold zero,
+    /// which is two supposedly-complementary halves of one crossfade disagreeing about how far it
+    /// has travelled (Codex review, 2026-09-04). Call this once, on the RISING EDGE of the new
+    /// push starting to drive toward open — detected from that flag's own transition, never from
+    /// `self.amount() == 0.0`: this type's spring only APPROACHES its target (see [`amount`]'s
+    /// own doc), so a settled-closed push sits at some tiny positive residual, not exactly zero,
+    /// and an equality guard reads as "already synced" forever after the first open (Codex review,
+    /// 2026-09-04, round 3 — the first version of this call site's guard made exactly that
+    /// mistake). Unconditional on the edge is deliberately simpler than gating on `other` being
+    /// away from rest: when `other` already IS at rest the copy is a harmless no-op.
+    pub(crate) fn sync_to(&mut self, other: &RoutePush) {
+        self.progress = other.progress;
+    }
+
+    /// **Is the push parked at the endpoint `open` names?** Rule 11's timing guard.
+    ///
+    /// A key press acts on the LOGICAL state and is right to: `DOCUMENT_OPEN` goes false the
+    /// instant BACK is pressed, and the next UP belongs to the list underneath whatever the
+    /// animation is still showing. A pointer hit cannot borrow that reasoning, because it is
+    /// POSITIONAL — it means "the thing I can see at these coordinates", and mid-push the thing at
+    /// those coordinates is somewhere else, half-transparent, or both. The rects an `ActionRow`
+    /// records and the frame a `TableView` is hit-tested against are both FINAL-position, so every
+    /// pointer path in this family refuses until the layer it belongs to has arrived.
+    pub(crate) fn settled(&self, open: bool) -> bool {
+        let t = self.amount();
+        if open {
+            t > 0.999
+        } else {
+            t < 0.001
+        }
+    }
+
     pub(crate) fn parent(&self, p: Painter) -> Painter {
         let t = self.amount();
         p.alpha(1.0 - t)
@@ -239,6 +322,242 @@ impl RoutePush {
         let t = self.amount();
         p.alpha(t)
             .translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0)
+    }
+}
+
+/// **Where a press came from**, which decides what may cancel it.
+///
+/// `ui::press` holds ONE press at a time and assumes focus cannot move while it is in flight. The
+/// nav keys pay that by cancelling; the pointer has to pay it differently, and the difference is
+/// this enum. A press that began under the POINTER is bound to the coordinates it began on — the
+/// pointer leaving that control, dead space included, is the person taking the click back. A press
+/// that began on the OK KEY is bound to the focus stop instead: hover that moves the ring off it
+/// cancels, but hover across dead space is not a retraction of a key the user is still holding.
+/// Conflating them cancelled every key press the moment the cursor twitched over nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PressFrom {
+    Key,
+    Pointer,
+}
+
+/// A focus stop on a route screen — see the module doc's rule list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Stop {
+    /// The content column: a row of the table, or the document reader.
+    Content,
+    /// Control `i` of the bottom action band, counted from its leading (left) edge.
+    Band(usize),
+}
+
+/// What a screen must DO once a shared rule has decided. The [`RouteFocus`] has already moved by
+/// the time one of these comes back; everything else is the screen's own to perform, because only
+/// it knows whether its content column is a table or a document and what its rows open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RouteStep {
+    /// A wall: nothing moved and nothing happens.
+    Wall,
+    /// Focus moved. Repaint; there is nothing else to do.
+    Moved,
+    /// The content column takes this vertical delta — a table moves its selection, a document
+    /// scrolls.
+    Scroll(i32),
+    /// Activate the focused row: enter the nested content behind it, exactly as OK does.
+    Enter,
+    /// Leave this screen, exactly as BACK does.
+    Back,
+}
+
+/// What the shared rules need to know about a route screen at the moment a key arrives. A screen
+/// answers it from live state every time rather than caching it, so a list that fills in on a
+/// worker (the Home editor's roster) or a band that appears with the first edit (Privacy & data's
+/// Done) cannot leave the rules reasoning about a shape that is no longer on screen.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RouteShape {
+    /// How many controls the bottom action band is drawing. `0` = this screen has no band.
+    pub(crate) band: usize,
+    /// Whether the content column has a focusable row. `false` for a document reader, and for a
+    /// table whose rows have not landed yet.
+    pub(crate) rows: bool,
+    /// Whether the table's selection is on its LAST focusable row (rule 2).
+    pub(crate) at_last_row: bool,
+    /// Whether the focused row opens nested content — a chevron row (rule 8).
+    pub(crate) opens: bool,
+    /// **Is leaving on LEFT UNPROVEN to be lossless?** Rule 9's only guard, and it is answered by
+    /// the screen rather than inferred from the band, because the two are not the same question:
+    /// the Home editor's `Try again` band commits nothing, and first run's two answers record
+    /// nothing until OK. A screen that answers `true` never leaves on LEFT.
+    ///
+    /// **The negative framing is deliberate and it is not the same as "an edit exists."** A screen
+    /// can also be unable to TELL — the Home editor's baseline is captured once and its roster
+    /// lands on a worker, so an editor opened before discovery answered cannot say whether a row
+    /// that arrived afterwards has been touched. `true` there is a refusal to trust an answer, not
+    /// a claim about an edit; erring toward the wall costs one press of BACK, and erring the other
+    /// way loses the edit silently. Read it as "BACK is not proven lossless" (Codex review,
+    /// 2026-09-04).
+    pub(crate) uncommitted: bool,
+}
+
+impl RouteShape {
+    /// The shape of a document route: no band, no rows, nothing to enter. Named because three
+    /// screens push the same reader and none of them should be spelling four fields out.
+    pub(crate) const fn document() -> Self {
+        Self {
+            band: 0,
+            rows: false,
+            at_last_row: false,
+            opens: false,
+            // A document is a READ. There is nothing in it to lose, on any of the three routes
+            // that push one, so LEFT always walks back out of it.
+            uncommitted: false,
+        }
+    }
+}
+
+/// **Where focus is on a route screen, and the whole of how it moves.** The module doc's eleven
+/// rules are implemented here and nowhere else; a screen owns the words, the geometry and what its
+/// rows DO, and delegates every "which stop is focused now" question to this.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct RouteFocus {
+    on_band: bool,
+    /// The band control the ring returns to. Remembered while focus is in the content column, so
+    /// rules 2 and 5 both land back where the band was left rather than snapping to its leading
+    /// control.
+    cursor: usize,
+}
+
+impl RouteFocus {
+    /// Open in the content column — a Settings child arrives on its list.
+    pub(crate) const fn content() -> Self {
+        Self {
+            on_band: false,
+            cursor: 0,
+        }
+    }
+    /// Open on the band's leading control — first run arrives on its answer, because the defaults
+    /// are already an answer and the screen opens on the way out of itself.
+    pub(crate) const fn band() -> Self {
+        Self {
+            on_band: true,
+            cursor: 0,
+        }
+    }
+
+    pub(crate) fn stop(self) -> Stop {
+        if self.on_band {
+            Stop::Band(self.cursor)
+        } else {
+            Stop::Content
+        }
+    }
+    pub(crate) fn on_content(self) -> bool {
+        !self.on_band
+    }
+    /// The band control holding focus, or `None` when focus is in the content column. This is the
+    /// value an [`ActionRow::step`] wants, and the one `focus_is_ctl` is built on.
+    pub(crate) fn band_index(self) -> Option<usize> {
+        self.on_band.then_some(self.cursor)
+    }
+    /// The band control the ring would RETURN to, focused or not — what a draw uses to decide
+    /// which of two answers wears the ring.
+    pub(crate) fn cursor(self) -> usize {
+        self.cursor
+    }
+
+    pub(crate) fn to_content(&mut self) {
+        self.on_band = false;
+    }
+    pub(crate) fn to_band(&mut self, i: usize) {
+        self.on_band = true;
+        self.cursor = i;
+    }
+
+    /// **Rule 10: focus may never rest on nothing.** Run after any rebuild and before any rule, so
+    /// a band that has just gone away hands focus back to the list and a list with no rows yet
+    /// hands it to the band. Reports whether it had to move anything, which is what a caller
+    /// invalidates on.
+    pub(crate) fn settle(&mut self, s: RouteShape) -> bool {
+        let before = *self;
+        if self.on_band {
+            if s.band == 0 {
+                // The control focus was on is gone. The content column is the honest home even
+                // when it has no rows either: that state is a list still loading, and the next
+                // settle puts focus back on the band if one appears first.
+                self.on_band = false;
+            } else if self.cursor >= s.band {
+                self.cursor = s.band - 1;
+            }
+        } else if !s.rows && s.band > 0 {
+            self.to_band(self.cursor.min(s.band - 1));
+        }
+        *self != before
+    }
+
+    /// Rules 1–4.
+    pub(crate) fn updown(&mut self, s: RouteShape, delta: i32) -> RouteStep {
+        self.settle(s);
+        if self.on_band {
+            if delta < 0 && s.rows {
+                self.to_content();
+                RouteStep::Moved
+            } else {
+                RouteStep::Wall
+            }
+        } else if s.rows && delta > 0 && s.band > 0 && s.at_last_row {
+            self.to_band(self.cursor.min(s.band - 1));
+            RouteStep::Moved
+        } else {
+            RouteStep::Scroll(delta)
+        }
+    }
+
+    /// Rules 5, 6 and 9.
+    pub(crate) fn left(&mut self, s: RouteShape) -> RouteStep {
+        self.settle(s);
+        if self.on_band {
+            if self.cursor > 0 {
+                self.to_band(self.cursor - 1);
+                RouteStep::Moved
+            } else {
+                // Off the band's leading edge there is nothing further left INSIDE the screen, so
+                // rule 9's one guard decides: leave, unless leaving would discard an edit.
+                self.out(s)
+            }
+        } else if s.band > 0 {
+            self.to_band(self.cursor.min(s.band - 1));
+            RouteStep::Moved
+        } else {
+            self.out(s)
+        }
+    }
+
+    /// Rule 9's guard alone: LEFT off the left-most stop is BACK unless the screen says it is
+    /// holding an edit that BACK would throw away.
+    fn out(&self, s: RouteShape) -> RouteStep {
+        if s.uncommitted {
+            RouteStep::Wall
+        } else {
+            RouteStep::Back
+        }
+    }
+
+    /// Rules 7 and 8.
+    pub(crate) fn right(&mut self, s: RouteShape) -> RouteStep {
+        self.settle(s);
+        if self.on_band {
+            if self.cursor + 1 < s.band {
+                self.to_band(self.cursor + 1);
+                RouteStep::Moved
+            } else if s.rows {
+                self.to_content();
+                RouteStep::Moved
+            } else {
+                RouteStep::Wall
+            }
+        } else if s.opens {
+            RouteStep::Enter
+        } else {
+            RouteStep::Wall
+        }
     }
 }
 
@@ -262,13 +581,45 @@ impl RoutePush {
 /// is shared.
 pub(crate) struct ActionRow<const N: usize> {
     pop: crate::ui::widgets::CtlPop<N>,
+    /// Each control's drawn frame, recorded at draw for the pointer — the `TOOL_RECTS` idiom.
+    /// Parked OFF the panel rather than at the origin, because [`Rect::contains`] is inclusive and
+    /// a zero-size rect at (0,0) would "contain" a click at exactly (0,0).
+    rects: [Rect; N],
 }
+
+/// Where a control's frame sits while it is not drawn — see [`ActionRow::rects`].
+const OFF_PANEL: Rect = Rect::new(-1.0, -1.0, 0.0, 0.0);
 
 impl<const N: usize> ActionRow<N> {
     pub(crate) const fn new() -> Self {
         Self {
             pop: crate::ui::widgets::CtlPop::new(),
+            rects: [OFF_PANEL; N],
         }
+    }
+
+    /// Record control `i`'s drawn frame, from the same place the button itself is drawn. Rule 11:
+    /// this is the whole of what makes an action band hoverable and clickable, and doing it at
+    /// draw is what keeps the hit rect and the painted pill the same object.
+    pub(crate) fn place(&mut self, i: usize, r: Rect) {
+        if let Some(slot) = self.rects.get_mut(i) {
+            *slot = r;
+        }
+    }
+
+    /// Forget every frame — call this on the branch that does NOT draw the band, so a control that
+    /// is not on screen is not hit-testable either. (Settings' Done exists only while the draft
+    /// differs from the stored answer; a stale rect would leave a live click target where it used
+    /// to be.)
+    pub(crate) fn clear(&mut self) {
+        self.rects = [OFF_PANEL; N];
+    }
+
+    /// Which control is under the pointer, or `None` for dead space.
+    pub(crate) fn hit(&self, mx: f32, my: f32) -> Option<usize> {
+        self.rects
+            .iter()
+            .position(|r| r.w > 0.0 && r.h > 0.0 && r.contains(mx, my))
     }
 
     /// Advance every control's pop toward its target for this frame. `focused` is the index of the
@@ -322,6 +673,36 @@ impl RouteLayout {
             self.content.y - inset,
             self.content.w,
             self.content.h + inset,
+        )
+    }
+
+    /// Frame for a content column that is PLAIN TEXT rather than a table.
+    ///
+    /// **A document hangs from the TITLE's anchor, not from the crumb's**, and that is the whole
+    /// of the fix for "on Settings screens that contain plain text rather than a table, the title
+    /// appears too high and is aligned roughly with the Back navigation control". A table's frame
+    /// is lifted by [`Self::sectioned_table`] so its first section LABEL lands on the shared top
+    /// guide — the guide the crumb also sits on — and the first thing that reads as content, the
+    /// first row's own label, therefore lands well below it, beside the narrative title. A
+    /// document has no section label to spend that band on, so drawn at the bare `content` rect
+    /// its first line — which on every document here is a bold all-caps heading, i.e. exactly what
+    /// a reader takes for the screen's title — landed ON the crumb's line, a whole title block
+    /// above the title it belongs to.
+    ///
+    /// So: one geometry rule in the layout, not an offset per screen. Both anchors are now used by
+    /// both columns — the guide carries the crumb and a table's first label, the title anchor
+    /// carries the narrative title and a document's first line.
+    ///
+    /// `has_crumb` for the same reason [`Self::narrative_top`] takes it: the title anchor moves by
+    /// exactly the crumb's band, and a document on a crumbless route must follow it up rather than
+    /// leaving a gap nothing explains.
+    pub(crate) fn document(self, has_crumb: bool) -> Rect {
+        let top = self.narrative_top(has_crumb);
+        Rect::new(
+            self.content.x,
+            top,
+            self.content.w,
+            (self.content.y + self.content.h - top).max(0.0),
         )
     }
 
@@ -576,6 +957,275 @@ mod tests {
         assert!(
             (row.scale(0) - 1.0).abs() < 0.001,
             "focus leaving the row must settle every control back to rest"
+        );
+    }
+
+    // ---- the shared focus model ---------------------------------------------------------------
+    //
+    // Eleven rules, graded here as pure state transitions with no screen, no font and no GL. The
+    // per-screen tests (`consent`, `onboard`, `legal`) grade that each screen ROUTES its keys
+    // through these; this block grades that the rules themselves say what the module doc says.
+
+    /// A table with a `band`-control band, holding nothing uncommitted.
+    fn table_shape(band: usize, at_last_row: bool) -> RouteShape {
+        RouteShape {
+            band,
+            rows: true,
+            at_last_row,
+            opens: false,
+            uncommitted: false,
+        }
+    }
+
+    /// **Rules 2 and 3: the band and the last row are one vertical walk, and it round-trips.**
+    #[test]
+    fn down_off_the_last_row_enters_the_band_and_up_comes_straight_back() {
+        let mut f = RouteFocus::content();
+        assert_eq!(
+            f.updown(table_shape(1, false), 1),
+            RouteStep::Scroll(1),
+            "a middle row just moves the selection"
+        );
+        assert!(f.on_content());
+        assert_eq!(f.updown(table_shape(1, true), 1), RouteStep::Moved);
+        assert_eq!(f.stop(), Stop::Band(0), "DOWN off the last row enters the band");
+        assert_eq!(f.updown(table_shape(1, true), -1), RouteStep::Moved);
+        assert_eq!(f.stop(), Stop::Content, "…and UP comes straight back");
+    }
+
+    /// **Rule 4: the band is the floor**, and **rule 2 does not fire without a band** — a screen
+    /// with none must keep handing DOWN to its list rather than inventing a stop.
+    #[test]
+    fn the_band_is_the_floor_and_a_bandless_screen_has_no_band_to_fall_into() {
+        let mut f = RouteFocus::band();
+        assert_eq!(f.updown(table_shape(1, true), 1), RouteStep::Wall);
+        assert_eq!(f.stop(), Stop::Band(0));
+        let mut g = RouteFocus::content();
+        assert_eq!(g.updown(table_shape(0, true), 1), RouteStep::Scroll(1));
+        assert!(g.on_content());
+    }
+
+    /// **Rules 5, 6 and 7: LEFT and RIGHT are one horizontal walk across the whole screen.** Two
+    /// peer answers plus a list is three stops, and every step is reversible — which is exactly
+    /// what first-run consent lacked (RIGHT off the trailing answer went nowhere) and what
+    /// Privacy & data lacked in both directions.
+    #[test]
+    fn left_and_right_walk_the_band_and_the_list_as_one_row_of_stops() {
+        // Two peer answers over a screen that is holding an edit, so the leading control is a wall
+        // (rule 9's guard) and the walk's own ends are visible. The guard itself is graded by
+        // `left_leaves_unless_the_screen_is_holding_an_edit_that_back_would_discard`.
+        let s = RouteShape {
+            uncommitted: true,
+            ..table_shape(2, false)
+        };
+        let mut f = RouteFocus::content();
+        assert_eq!(f.left(s), RouteStep::Moved);
+        assert_eq!(f.stop(), Stop::Band(0), "LEFT from the list enters the band");
+        assert_eq!(f.left(s), RouteStep::Wall, "…and stops at its leading control");
+        assert_eq!(f.right(s), RouteStep::Moved);
+        assert_eq!(f.stop(), Stop::Band(1));
+        assert_eq!(f.right(s), RouteStep::Moved);
+        assert_eq!(f.stop(), Stop::Content, "RIGHT off the trailing control returns to the list");
+        // …and coming back in lands on the control it left, not on the band's first.
+        assert_eq!(f.left(s), RouteStep::Moved);
+        assert_eq!(f.stop(), Stop::Band(1));
+    }
+
+    /// **Rule 9, and its one guard.** LEFT off the left-most stop leaves the screen — unless the
+    /// screen says it is holding an uncommitted edit, which BACK would discard.
+    ///
+    /// The guard is `uncommitted`, NOT "the screen has a band", and this test exists because the
+    /// rule's first justification made exactly that inference and it is false in both directions:
+    /// the Home editor's `Try again` is a band with nothing behind it, and first run's two answers
+    /// record nothing until OK. So a band is not a wall on its own — a DRAFT is.
+    #[test]
+    fn left_leaves_unless_the_screen_is_holding_an_edit_that_back_would_discard() {
+        let mut bandless = RouteFocus::content();
+        assert_eq!(bandless.left(table_shape(0, false)), RouteStep::Back);
+        assert_eq!(
+            bandless.left(RouteShape::document()),
+            RouteStep::Back,
+            "a document is a read: nothing to its left and nothing to lose"
+        );
+
+        // A band with nothing behind it is NOT a wall — this is the Home editor's `Try again`, and
+        // first run's two answers, both of which record nothing until OK.
+        let mut clean_band = RouteFocus::band();
+        assert_eq!(clean_band.left(table_shape(1, false)), RouteStep::Back);
+
+        // A draft IS. Overshooting Done by one press must not throw an edit away.
+        let dirty = RouteShape {
+            uncommitted: true,
+            ..table_shape(1, false)
+        };
+        let mut on_done = RouteFocus::band();
+        assert_eq!(on_done.left(dirty), RouteStep::Wall);
+        assert_eq!(on_done.stop(), Stop::Band(0), "…and focus does not wander either");
+        // …and the guard reaches the bandless case too: a screen holding an edit with no band to
+        // step into still may not be left by a directional key.
+        let mut on_list = RouteFocus::content();
+        assert_eq!(
+            on_list.left(RouteShape {
+                uncommitted: true,
+                ..table_shape(0, false)
+            }),
+            RouteStep::Wall
+        );
+    }
+
+    /// **Rule 11's timing guard.** A key acts on the LOGICAL state; a positional hit cannot, so
+    /// every pointer path in the family refuses until its layer has arrived at an endpoint.
+    #[test]
+    fn a_push_is_settled_only_at_the_endpoint_its_state_names() {
+        let mut push = RoutePush::new();
+        assert!(push.settled(false), "at rest, closed");
+        assert!(!push.settled(true));
+        push.update(true, 1.0 / 60.0);
+        assert!(
+            !push.settled(true) && !push.settled(false),
+            "mid-flight is settled for NEITHER state — which is the whole point"
+        );
+        for _ in 0..600 {
+            push.update(true, 1.0 / 60.0);
+        }
+        assert!(push.settled(true) && !push.settled(false));
+    }
+
+    /// **Rule 8: RIGHT enters a chevron row and nothing else.** A toggle row changes a value in
+    /// place, so there is nothing to its right to go to.
+    #[test]
+    fn right_enters_only_a_row_that_opens_something() {
+        let mut f = RouteFocus::content();
+        let opens = RouteShape {
+            opens: true,
+            ..table_shape(0, false)
+        };
+        assert_eq!(f.right(opens), RouteStep::Enter);
+        assert!(f.on_content(), "entering is the SCREEN's job; focus stays put");
+        assert_eq!(f.right(table_shape(0, false)), RouteStep::Wall);
+    }
+
+    /// **Rule 1: a document scrolls.** It has no rows, so no vertical press may be interpreted as
+    /// falling off the end of a list.
+    #[test]
+    fn a_document_scrolls_on_up_and_down_however_far_it_is_driven() {
+        let mut f = RouteFocus::content();
+        for _ in 0..5 {
+            assert_eq!(f.updown(RouteShape::document(), 1), RouteStep::Scroll(1));
+        }
+        assert_eq!(f.updown(RouteShape::document(), -1), RouteStep::Scroll(-1));
+        assert!(f.on_content());
+    }
+
+    /// **Rule 10: focus may never rest on nothing** — the reported "toggling the value back can
+    /// cause focus to disappear completely", as a pure transition. A band that goes away hands
+    /// focus back to the list; a list with no rows yet hands it to the band; and a cursor left
+    /// past the end of a shrunken band is pulled back inside it.
+    #[test]
+    fn a_shape_that_removes_the_focused_stop_re_seats_focus_rather_than_losing_it() {
+        let mut on_done = RouteFocus::band();
+        assert!(
+            on_done.settle(table_shape(0, false)),
+            "removing the band has to move focus"
+        );
+        assert_eq!(on_done.stop(), Stop::Content);
+
+        let mut on_empty_list = RouteFocus::content();
+        assert!(on_empty_list.settle(RouteShape {
+            band: 1,
+            rows: false,
+            at_last_row: false,
+            opens: false,
+            uncommitted: false,
+        }));
+        assert_eq!(
+            on_empty_list.stop(),
+            Stop::Band(0),
+            "a list that has not landed yet cannot hold the ring"
+        );
+
+        let mut past_the_end = RouteFocus::band();
+        past_the_end.to_band(1);
+        assert!(past_the_end.settle(table_shape(1, false)));
+        assert_eq!(past_the_end.stop(), Stop::Band(0));
+
+        let mut settled = RouteFocus::content();
+        assert!(
+            !settled.settle(table_shape(1, false)),
+            "a shape that still holds the focused stop reports no move"
+        );
+    }
+
+    /// Every rule re-settles before it runs, so a key that arrives on the frame a rebuild removed
+    /// the focused stop cannot act on a stop that is no longer there.
+    #[test]
+    fn every_rule_settles_before_it_decides() {
+        for step in [
+            RouteFocus::band().updown(table_shape(0, true), -1),
+            RouteFocus::band().left(table_shape(0, false)),
+            RouteFocus::band().right(table_shape(0, false)),
+        ] {
+            assert!(
+                !matches!(step, RouteStep::Moved),
+                "a band that is gone must not answer as though focus were still on it: {step:?}"
+            );
+        }
+        // …and the LEFT case is the one that matters most: settled onto the list of a bandless
+        // screen, LEFT is the way out of it rather than a step to a control that is not drawn.
+        assert_eq!(
+            RouteFocus::band().left(table_shape(0, false)),
+            RouteStep::Back
+        );
+    }
+
+    /// **Rule 11's geometry half**: only a control DRAWN this frame is hit-testable, and dead
+    /// space parks nothing. `clear` is what retires a Done that an undo has just removed — without
+    /// it the band leaves a live click target where it used to be.
+    #[test]
+    fn only_a_placed_action_control_can_be_hit_and_dead_space_hits_nothing() {
+        let mut row: ActionRow<2> = ActionRow::new();
+        assert_eq!(row.hit(0.0, 0.0), None, "an unplaced row has no target anywhere");
+        row.place(0, Rect::new(100.0, 900.0, 200.0, 60.0));
+        row.place(1, Rect::new(320.0, 900.0, 180.0, 60.0));
+        assert_eq!(row.hit(150.0, 930.0), Some(0));
+        assert_eq!(row.hit(400.0, 930.0), Some(1));
+        assert_eq!(row.hit(310.0, 930.0), None, "the gap between them is dead space");
+        assert_eq!(row.hit(150.0, 400.0), None, "and so is the rest of the screen");
+        row.clear();
+        assert_eq!(row.hit(150.0, 930.0), None, "a band that is not drawn is not clickable");
+    }
+
+    /// **Issue 2's geometry rule.** A text-only content column hangs from the TITLE's anchor, not
+    /// from the crumb's — so its first line is level with the title beside it instead of sitting up
+    /// on the return chevron's line. Written against the two anchors rather than against a number,
+    /// because the number is `narrative_top`'s and must not be transcribed twice.
+    #[test]
+    fn a_text_only_column_starts_on_the_title_line_not_on_the_crumbs() {
+        let l = RouteLayout::screen();
+        for crumbed in [true, false] {
+            let doc = l.document(crumbed);
+            assert_eq!(
+                doc.y,
+                l.narrative_top(crumbed),
+                "a document's first line shares the narrative title's cap-top anchor"
+            );
+            assert_eq!(doc.x, l.content.x, "…in the content column, unmoved sideways");
+            assert_eq!(doc.w, l.content.w);
+            assert_eq!(
+                doc.y + doc.h,
+                l.content.y + l.content.h,
+                "…and it still ends where every other content column does"
+            );
+            assert!(inside_safe(doc));
+        }
+        assert!(
+            l.document(true).y > l.sectioned_table().y,
+            "a table is LIFTED so its first section label lands on the guide; a document, which \
+             has no such label, must not be"
+        );
+        assert!(
+            l.document(true).y > l.narrative.y,
+            "…and specifically it must not start on the crumb's own line"
         );
     }
 

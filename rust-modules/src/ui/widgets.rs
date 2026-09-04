@@ -3056,8 +3056,10 @@ impl AmbientWash {
         self.draw_with(p, r, true);
     }
     /// [`draw`](Self::draw) with the dither made the caller's decision: `false` for a wash that is
-    /// only ever seen THROUGH something moving (Home's hero fold and slide), where the noise buys
-    /// nothing and costs ~2.5M GPU cycles a frame at full screen. See `gfx::draw_ambient`.
+    /// only ever seen THROUGH something moving (Home's hero fold and slide, Detail's art — through
+    /// `gfx::page_wash_dither`), where the noise buys nothing and costs ~2.5M GPU cycles a frame at
+    /// full screen. Every other wash is the screen itself and takes [`draw`](Self::draw), which
+    /// dithers on every frame. See `gfx::draw_ambient`.
     pub(crate) fn draw_with(&self, p: Painter, r: Rect, dither: bool) {
         p.ambient(
             r,
@@ -4381,10 +4383,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
         ),
     ));
     out.push(("profile chip", CHIP_FRAME));
-    out.push((
-        "profile chip, focused capsule",
-        chip_cap(1.0, CHIP_NAME_MAX),
-    ));
+    out.push(("profile chip, focused capsule", CHIP_CAP_MAX));
 }
 
 /// The strip's scroll stiffness. The detail page's season-tab row springs at the same 240 — same
@@ -4920,16 +4919,24 @@ fn lstar(c: [f32; 4]) -> f32 {
 /// a continuous edge. See [`GLASS_TRACK_MAX`].
 const BAND_AIR: f32 = theme::space::SM;
 
-/// **Where the unfurled [`profile_chip`] capsule's right edge can reach, at its widest.**
+/// **The widest box the profile chip ever draws** — [`chip_cap`] at full unfurl with a name at its
+/// budget, i.e. **the rect the control DRAWS**, not a hand-copy of the terms that build it. The
+/// name is elided to [`CHIP_NAME_MAX`] before it is measured, so this is arithmetic on constants
+/// and needs no font to evaluate, which is what makes every clearance solved against it a host test
+/// rather than a device capture.
 ///
-/// It is [`chip_cap`] at rest with a name at its budget — **the rect the control DRAWS**, not a
-/// hand-copy of the terms that build it. The name is elided to [`CHIP_NAME_MAX`] before it is
-/// measured, so this is arithmetic on constants and needs no font to evaluate, which is what makes
-/// the clearance below a host test rather than a device capture.
-const CHIP_CAP_MAX_R: f32 = {
-    let c = chip_cap(1.0, CHIP_NAME_MAX);
-    c.x + c.w
-};
+/// Two of those clearances are HORIZONTAL and live here ([`CHIP_CAP_MAX_R`], and through it
+/// [`GLASS_TRACK_TOUCH_MAX`]). The third is VERTICAL and belongs to another screen: Home's shelf
+/// headings begin at the very margin this capsule sits on, so the grid's vertical reveal is bounded
+/// by this rect's bottom edge (`ui::home`'s `row_reveal_band`). Exported whole rather than as a
+/// second edge constant, for the same reason the `_R` form exists at all — one expression, drawn
+/// and graded from the same place.
+pub(crate) const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
+
+/// **Where the unfurled [`profile_chip`] capsule's right edge can reach, at its widest** — the one
+/// edge of [`CHIP_CAP_MAX`] the band's own arithmetic asks for, named because the reader there
+/// wants a position rather than a projection.
+const CHIP_CAP_MAX_R: f32 = CHIP_CAP_MAX.x + CHIP_CAP_MAX.w;
 
 /// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
 ///
@@ -5602,7 +5609,8 @@ pub enum ControlStyle {
     /// deleting it would take `Button::plate`'s knockout branch with it; reach for the ground, not
     /// for this, when a control lands on video.
     Keyline,
-    /// The **destructive** face — the control that ends something (the exit alert's *Exit*).
+    /// The **destructive** face — the control that ends something (a decision alert's destructive
+    /// answer, e.g. consent's *Delete all local data*).
     ///
     /// Idle it states the hue TWICE: the plate is [`Accent`]'s local idle face carrying
     /// [`theme::DANGER_IDLE_TINT`] of [`theme::DANGER`] (the static fallback is

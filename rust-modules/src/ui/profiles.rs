@@ -39,6 +39,7 @@ const PAD_GRID_H: f32 = 4.0 * PAD_KEY + 3.0 * PAD_KGAP;
 const PAD_TITLE_GRID: f32 = 152.0; // title draw-y → keypad top (the unit's overall pacing)
 const PAD_DOT: f32 = 18.0; // entry-dot diameter
 const PIN_ERR_S: f32 = 1.4; // wrong-PIN red-flash duration (s)
+const PIN_ERR_HALF_S: f32 = 0.175; // …and one half-cycle of it, so the window is four full blinks
 
 /// (title_y, dots_y, grid_y) with the whole unit — title ink top through keypad bottom —
 /// vertically centered on the screen, and the dot row centered in the air between the title's
@@ -69,7 +70,10 @@ struct Pad {
     fr: c_int,
     fc: c_int,
     submitting: bool, // a full PIN is being verified (switch thread in flight) — pad stays up
-    error_ms: f32,    // wrong-PIN flash countdown: dots pulse DANGER, entry restarts
+    /// Wrong-PIN flash: SECONDS still to run (it is stepped by `dt`, which is seconds — the field
+    /// was called `error_ms` and held neither). Zero means no flash. While it runs the dot row
+    /// blinks DANGER and the entry has been restarted.
+    error_s: f32,
 }
 impl Pad {
     const fn new() -> Self {
@@ -80,7 +84,7 @@ impl Pad {
             fr: 0,
             fc: 0,
             submitting: false,
-            error_ms: 0.0,
+            error_s: 0.0,
         }
     }
 }
@@ -122,6 +126,8 @@ pub fn enter() {
     let s = scene();
     s.fc = 0;
     s.pad = Pad::new();
+    // …and no verdict about the last keypad follows a fresh picker onto the screen (`close_pad`).
+    auth::dismiss_pin_error();
     s.footer = false;
     s.ground.reset();
     crate::ui::idle::invalidate();
@@ -141,9 +147,6 @@ pub fn update(dt: f32) {
         (*std::ptr::addr_of_mut!(FOOTER_POP)).step((s.footer && !s.pad.open).then_some(0), dt)
     };
     if s.pad.open {
-        if s.pad.error_ms > 0.0 {
-            s.pad.error_ms = (s.pad.error_ms - dt).max(0.0);
-        }
         // a submitted PIN resolves off-thread: success routes the app away (Phase::Ready);
         // dropping back to Profiles means the switch failed. Only a PIN-blaming failure flashes
         // the dots red and stays up (closing the whole pad on a typo made the user re-pick the
@@ -154,11 +157,15 @@ pub fn update(dt: f32) {
             if auth::pin_denied() {
                 s.pad.submitting = false;
                 s.pad.entry.clear();
-                s.pad.error_ms = PIN_ERR_S;
+                s.pad.error_s = PIN_ERR_S;
+                // the spinner has just become a flashing dot row, and no spring said so
+                crate::ui::idle::invalidate();
             } else {
-                s.pad = Pad::new();
+                close_pad(s);
             }
         }
+        // AFTER that block, so the frame a rejection lands on is also the flash's first frame.
+        step_pin_flash(&mut s.pad, dt);
     }
     let n = auth::users().len();
     if s.fc as usize >= n.max(1) {
@@ -172,6 +179,61 @@ pub fn update(dt: f32) {
         Some(s.fc as usize)
     };
     s.row.update(n, focus, &RowStyle::PROFILES, dt);
+}
+
+/// Take the keypad down, and retire the PIN verdict with it.
+///
+/// The pad is the ONLY surface that asks about a PIN, so it is the only one that may answer about
+/// one: a `pin_denied` left standing after the keypad is gone is a verdict about a control that is
+/// no longer on screen, and the roster behind it is a screen where every profile is a candidate.
+/// The banner half of the same rule is `auth::switch_failure`, which no longer writes one at all.
+///
+/// **Every door out of the pad comes through here**, and there are THREE rather than the two that
+/// are obvious from the key handler: BACK ([`pad_key`]), the non-PIN failure that closes the pad
+/// ([`update`]), and a pointer click OUTSIDE the keypad ([`apply_pad_click`]) — the pad is not a
+/// press surface, so that dismissal is handled on the button-down in a different function and was
+/// left behind by the first version of this rule.
+///
+/// **It takes the pad down; it does not CANCEL a submission.** Closing while a PIN is still in
+/// flight leaves that worker running under its own auth epoch, so a switch the user walked away
+/// from can still land — as `Phase::Ready` if the PIN was right (they entered it; nothing is
+/// bypassed, and cancelling would instead strand a correct sign-in), or by re-raising the verdict
+/// this call just cleared if it was wrong. Pre-existing, and not a PIN boundary either way: the
+/// roster banner a late rejection could reach no longer exists (`auth::switch_failure`).
+fn close_pad(s: &mut Scene) {
+    s.pad = Pad::new();
+    auth::dismiss_pin_error();
+    crate::ui::idle::invalidate(); // the whole overlay just left the screen
+}
+
+/// Advance the wrong-PIN flash by one frame, and ask [`crate::ui::idle`] for a frame on the phase
+/// FLIPS alone — the two halves `ui/CLAUDE.md` demands of anything that animates from a CLOCK.
+///
+/// The gate detects motion by watching the two spring integrators, so a countdown is invisible to
+/// it by construction; without this call the flash drew whatever half-cycle the last spinner frame
+/// happened to buy and then froze, which is the whole of the reported "the dots only become
+/// slightly red". Reporting only on the flips is the other half: eight repaints, not eighty-four.
+fn step_pin_flash(pad: &mut Pad, dt: f32) {
+    if pad.error_s <= 0.0 {
+        return;
+    }
+    let was = pin_flash(pad.error_s);
+    pad.error_s = (pad.error_s - dt).max(0.0);
+    if pin_flash(pad.error_s) != was {
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// Which half of the flash cycle the pad is in — `None` once the flash is over, `Some(true)` on a
+/// lit half. Pure, and separate so [`step_pin_flash`] and [`draw_pad`] read ONE expression.
+///
+/// Phased off **elapsed** rather than remaining time, which is not a stylistic choice: keyed off
+/// the remainder, the opening frame's bucket is `PIN_ERR_S / PIN_ERR_HALF_S` rounded by whatever
+/// the two `f32`s happen to divide to, and it landed on the DIM half — so the one frame the frozen
+/// present gate ever showed was the faint one. Elapsed starts at exactly `0.0`, so a rejected PIN
+/// is red on the frame it is rejected, at every duration anyone might later pick.
+fn pin_flash(error_s: f32) -> Option<bool> {
+    (error_s > 0.0).then(|| (((PIN_ERR_S - error_s) / PIN_ERR_HALF_S) as i32) % 2 == 0)
 }
 
 /// Avatar-row geometry: (first tile's left x before scroll, per-tile stride). Centered when the
@@ -370,17 +432,17 @@ fn draw_pad(p: Painter, env: &Env, s: &Scene, users: &[auth::UserTile]) {
             .tint(theme::TEXT_PRIMARY)
             .draw(env, p);
     } else {
-        let flash = s.pad.error_ms > 0.0;
-        let blink = ((s.pad.error_ms * 5.0) as i32 % 2) == 0; // ~2.5Hz pulse
+        let flash = pin_flash(s.pad.error_s);
         let dgap = 34.0f32;
         let dw = PIN_LEN as f32 * PAD_DOT + (PIN_LEN as f32 - 1.0) * dgap;
         let mut dx = SCR_W as f32 * 0.5 - dw * 0.5;
         for i in 0..PIN_LEN {
             let filled = i < s.pad.entry.len();
-            let col = if flash {
-                theme::with_a(theme::DANGER, if blink { 1.0 } else { 0.35 })
-            } else {
-                theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 })
+            // A BLINK, not a tint: the dark half drops below the resting unfilled dot (0.28), so
+            // the row reads as going out and coming back rather than as sitting at a lower red.
+            let col = match flash {
+                Some(lit) => theme::with_a(theme::DANGER, if lit { 1.0 } else { 0.16 }),
+                None => theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 }),
             };
             p.rect(
                 Rect::new(dx, dots_y, PAD_DOT, PAD_DOT),
@@ -511,22 +573,60 @@ pub fn pointer_focus(mx: f32, my: f32) -> bool {
     false
 }
 
-/// Pointer click, **keypad only** since the control faces landed: press the key under the cursor, or
-/// dismiss the pad like BACK on a click outside it. Everything else on this screen is a press
-/// surface and belongs to [`press_at`], which has already had its turn by the time this is called —
-/// this doc still described the tile and Sign-out actions it no longer performs.
-pub fn click(mx: f32, my: f32) {
-    let s = scene();
-    if s.pad.open {
-        if let Some((r, c)) = pad_key_at(mx, my) {
+/// What a pointer click MEANS while the keypad is up — the pad's twin of [`act`], and pure for the
+/// same reason that one is.
+///
+/// **It takes the HIT, not the coordinates**, and that is the whole of what makes it gradeable: the
+/// hit-test is `pad_key_at` → `pad_geom` → `text::text_cap_band`, which measures a font and so pulls
+/// GL into the link. The host suite links none, so a test that so much as *mentions* a function
+/// reaching it fails at the LINKER and takes the entire test binary down rather than one case.
+/// Coordinates in, and this decision would be untestable for a reason that has nothing to do with
+/// the decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PadClick {
+    /// The keypad key at this `(row, col)`.
+    Key(c_int, c_int),
+    /// Anywhere else — including the bottom-left gap, which is inside the grid and is not a key:
+    /// take the pad down, through [`close_pad`] like every other door out.
+    Dismiss,
+}
+
+fn pad_click(hit: Option<(c_int, c_int)>) -> PadClick {
+    match hit {
+        Some((r, c)) => PadClick::Key(r, c),
+        None => PadClick::Dismiss,
+    }
+}
+
+/// Spend a [`PadClick`] on the scene — **the EFFECT half, and it is split out for the same reason
+/// the classification is**: the bug was never the classification. It was that this dismissal used
+/// to be an inline `s.pad = Pad::new()`, which is a correct-looking line that skips the cleanup
+/// [`close_pad`] owes. A test that only grades `pad_click(None) == Dismiss` would stay green with
+/// that line back, so the arm itself has to be reachable from one — and it is, because everything
+/// below is already linked by the KEY path while the font measurement stays up in [`click`].
+fn apply_pad_click(s: &mut Scene, action: PadClick) {
+    match action {
+        PadClick::Key(r, c) => {
             s.pad.fr = r;
             s.pad.fc = c;
             if let Some(k) = KEYS[r as usize][c as usize] {
                 press(s, k);
             }
-        } else {
-            s.pad = Pad::new();
         }
+        // the POINTER's door out of the pad, and it owes exactly what BACK owes
+        PadClick::Dismiss => close_pad(s),
+    }
+}
+
+/// Pointer click, **keypad only** since the control faces landed: press the key under the cursor, or
+/// dismiss the pad like BACK on a click outside it ([`pad_click`] is that decision). Everything else
+/// on this screen is a press surface and belongs to [`press_at`], which has already had its turn by
+/// the time this is called — this doc still described the tile and Sign-out actions it no longer
+/// performs.
+pub fn click(mx: f32, my: f32) {
+    let s = scene();
+    if s.pad.open {
+        apply_pad_click(s, pad_click(pad_key_at(mx, my)));
         return;
     }
     // …and everything OUTSIDE the pad is a press surface, so the click parks focus and stops:
@@ -675,17 +775,22 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         return;
     }
     if is_back(sym, wcode) {
-        // BACK leaves the picker exactly the way choosing the ALREADY-ACTIVE profile does:
-        // `auth::cancel` re-arms the resolved-credentials handoff with the persisted session, the
-        // main loop installs it and routes Home. It reports false — and we swallow the key — in the
-        // two cases where that would not be backing out to anything the user is entitled to: when
-        // there is no usable session behind the picker (the roster shown straight after a sign-out,
-        // where the picker really is a dead end you must choose your way out of), and at the BOOT
-        // picker when the stored session is behind a PIN — either a protected profile or one that
-        // names no profile at all, whose token is then the owner's (where resuming silently is the
-        // bypass `auth::cancel`'s doc describes). Both leave the user with a fully working picker
-        // and the Sign out pill under it, which is why swallowing is enough and no read-out is
-        // owed: nothing has been attempted and failed, the key simply does not act here.
+        // BACK leaves the picker the way choosing the ALREADY-ACTIVE profile does: `auth::cancel`
+        // re-arms the resolved-credentials handoff with the persisted session, the main loop
+        // installs it and routes Home. **Whether it may is `auth::may_resume`'s decision, not this
+        // screen's**, and it reports false — we swallow the key — in three cases. There is no
+        // usable session behind the picker (the roster straight after a sign-out, a dead end you
+        // must choose your way out of). The BOOT picker stands over a PIN — a protected profile, or
+        // one naming no profile at all, whose token is then the owner's. And, since the *Change
+        // profile* picker DETACHES (`auth::detaches_active_profile`), that picker is a ROOT and
+        // backs out to nothing whatever the profile behind it was: entering a protected profile,
+        // pressing *Change profile* and then BACK was a way straight back inside it with no PIN.
+        //
+        // Swallowing is enough and no read-out is owed — nothing was attempted and failed, the key
+        // simply does not act here — and every one of the three leaves a fully working picker with
+        // the Sign out pill under it. What a BACK at a picker ROOT should do instead (leave the app
+        // to the television's own Home, as the exit alert does from Home's root) is a separate
+        // question and is not decided here.
         auth::cancel();
         return;
     }
@@ -711,7 +816,7 @@ fn digit_of(sym: c_uint, wcode: c_uint) -> Option<u8> {
 
 fn pad_key(s: &mut Scene, sym: c_uint, wcode: c_uint) {
     if is_back(sym, wcode) {
-        s.pad = Pad::new();
+        close_pad(s);
         return;
     }
     if s.pad.submitting {
@@ -771,7 +876,7 @@ fn press(s: &mut Scene, k: u8) {
     if s.pad.submitting {
         return;
     }
-    s.pad.error_ms = 0.0; // typing again cancels the wrong-PIN flash
+    s.pad.error_s = 0.0; // typing again cancels the wrong-PIN flash
     if k == b'D' {
         s.pad.entry.pop();
         return;
@@ -984,6 +1089,149 @@ mod tests {
             "▼ off 9 lands on delete, which is under it"
         );
         assert_eq!(nearest_col(1, 1), 1, "an occupied column is kept as it is");
+    }
+
+    /// **Every door out of the keypad clears the PIN verdict, and there are THREE.**
+    ///
+    /// Two are obvious from the key handler — BACK, and the non-PIN failure `update` closes the pad
+    /// for. The third is a pointer click OUTSIDE the keypad, and it is exactly the one the first
+    /// version of `close_pad` missed: the pad is not a press surface, so `press_at` declines it and
+    /// the dismissal happens on the button-down inside [`click`], a different function that still
+    /// held its own bare `Pad::new()`. So this drives the two the host can reach through the REAL
+    /// entry points rather than calling `close_pad` directly, which would grade nothing.
+    ///
+    /// The split is the module's usual one and is forced the usual way: BACK goes through the real
+    /// [`key`] against the real scene, and the pointer door through [`pad_click`] +
+    /// [`apply_pad_click`]. [`click`] itself cannot be NAMED here at all — its hit-test reaches
+    /// `pad_geom` → `text::text_cap_band`, which measures a font, and the host suite links no GL, so
+    /// mentioning it fails at the LINKER and takes the whole test binary down rather than one case.
+    /// That is also how the pointer hole was found: the first version of this test called `click`
+    /// and `cargo test --lib` stopped building.
+    ///
+    /// **The effect is graded, not just the classification.** `pad_click(None) == Dismiss` says
+    /// nothing about the bug — the inline `s.pad = Pad::new()` classified the click correctly too.
+    /// So the verdict is seeded LIVE and the arm is spent on the real scene; with that line back,
+    /// the pad closes and `auth::pin_denied` stays true, which is exactly the shipped defect.
+    #[test]
+    fn every_door_out_of_the_keypad_goes_through_one_close() {
+        let _s = crate::testlock::serial();
+        let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mid_flash = || Pad {
+            open: true,
+            error_s: PIN_ERR_S,
+            ..Pad::new()
+        };
+
+        // Door 1 — BACK, through the real key ladder.
+        boot();
+        scene().pad = mid_flash();
+        auth::set_pin_denied_for_test(true);
+        key(SDLK_ESCAPE, 0);
+        assert!(!scene().pad.open, "BACK takes the keypad down");
+        assert_eq!(scene().pad.error_s, 0.0, "…and the flash goes with it");
+        assert!(
+            !auth::pin_denied(),
+            "…and the verdict, which is what leaks onto the roster behind it"
+        );
+
+        // Door 2 — the pointer. A hit on a KEY is that keypress; a miss (the surround, and equally
+        // the bottom-left gap `pad_key_at` refuses) is the dismissal.
+        assert_eq!(pad_click(Some((1, 1))), PadClick::Key(1, 1));
+        assert_eq!(
+            pad_click(None),
+            PadClick::Dismiss,
+            "a click that hit no key is the pointer's way out of the pad"
+        );
+        boot();
+        scene().pad = mid_flash();
+        auth::set_pin_denied_for_test(true);
+        apply_pad_click(scene(), PadClick::Dismiss);
+        assert!(!scene().pad.open, "the pointer takes the keypad down too");
+        assert_eq!(scene().pad.error_s, 0.0);
+        assert!(
+            !auth::pin_denied(),
+            "the pointer's door owes the SAME cleanup BACK's does — it used to blank the pad by \
+             its own hand and skip it"
+        );
+
+        auth::set_pin_denied_for_test(false);
+        boot(); // the pad is scene state — leave the singleton where `enter` leaves it
+    }
+
+    /// **A rejected PIN must BLINK, and a blink is a clock.**
+    ///
+    /// `ui::idle` gates the whole present, and it detects motion by watching the two spring
+    /// integrators — so a countdown is invisible to it (`ui/CLAUDE.md`'s standing hazard, the one
+    /// `Xfade::tick` and `Spinner::draw` both shipped without). The flash predates the gate by
+    /// three weeks and never reported: after the last spinner frame's `invalidate` was spent the
+    /// picker settled, the dot row froze on whichever half-cycle that frame caught, and what the
+    /// user saw was the reported symptom — dots that "only become slightly red" and stay there.
+    ///
+    /// So this grades the two halves `ui/CLAUDE.md` demands of a clock-driven animation, over the
+    /// whole flash window: a frame is asked for on **every** phase flip (including the one that
+    /// ends the flash and returns the dots to their resting ink), and on **no** frame in between —
+    /// a blink that reported every frame would hold the picker awake for 1.4 s to move eight quads.
+    #[test]
+    fn the_wrong_pin_flash_blinks_and_asks_for_a_frame_on_every_flip() {
+        let _s = crate::testlock::serial();
+        let _g = SCENELOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dt = 1.0 / 60.0;
+        let mut pad = Pad {
+            open: true,
+            error_s: PIN_ERR_S,
+            ..Pad::new()
+        };
+
+        // Graded on THIS thread's damage reports (`idle::take_local_damage`), never on
+        // `should_present`: its sticky flag is process-wide, so any unlocked test on another
+        // thread that repaints anything made a quiet frame here read as a repaint request, and
+        // this test failed at random under load. Drain what the setup above raised.
+        crate::ui::idle::frame_begin(dt);
+        crate::ui::idle::take_local_damage();
+
+        let mut phases = vec![pin_flash(pad.error_s)];
+        assert_eq!(
+            phases[0],
+            Some(true),
+            "the flash opens LIT — the first thing a rejected PIN does is go red"
+        );
+        let mut frames = 0;
+        while pad.error_s > 0.0 && frames < 600 {
+            frames += 1;
+            let was = pin_flash(pad.error_s);
+            crate::ui::idle::frame_begin(dt);
+            step_pin_flash(&mut pad, dt);
+            let now = pin_flash(pad.error_s);
+            let asked = crate::ui::idle::take_local_damage() > 0;
+            if now != was {
+                phases.push(now);
+                assert!(
+                    asked,
+                    "frame {frames}: the dot row changed colour and did not ask to be drawn — \
+                     the present gate freezes it on one static tint"
+                );
+            } else {
+                assert!(
+                    !asked,
+                    "frame {frames}: a dot row mid-phase asked for a repaint"
+                );
+            }
+        }
+
+        assert_eq!(pad.error_s, 0.0, "the flash runs out rather than sticking");
+        assert_eq!(
+            phases.last(),
+            Some(&None),
+            "…and the last report is the one that returns the dots to their resting ink"
+        );
+        // The lit halves, counted: this is what "flashed/blinked red" means as a number, and it is
+        // the assertion a static tint fails no matter how red it is.
+        let lit = phases.iter().filter(|p| **p == Some(true)).count();
+        assert!(
+            lit >= 4,
+            "a 1.4s error window must read as several distinct red pulses, not one — got {lit} \
+             ({phases:?})"
+        );
     }
 
     /// A PIN digit is read from whichever field carries it — SDL gives a printable key its ASCII

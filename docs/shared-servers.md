@@ -595,9 +595,12 @@ screen" honest rather than merely quiet.
 The rules are `plex::pins` — pure, no store, host-graded: the ownership default, the recorded
 answer, the "more than one source, once per profile" gate, and a **never-empty floor** (a recorded
 selection CAN be emptied without any toggle — pin only a friend's library, then lose the friend
-from the roster). `browse.rs` is the plumbing around them, and `toggle_pin` now persists: every
-flip was in-memory before, so a selection made in the Sources panel was gone by the next boot and
-the ownership default came back, which reads as the switch not working.
+from the roster). `browse.rs` is the plumbing around them, and a selection PERSISTS: every flip was
+in-memory before 2026-08-21, so a selection made in the Sources panel was gone by the next boot and
+the ownership default came back, which reads as the switch not working. Since 2026-09-04 the write
+is `browse::apply_pins`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
+flip edits the in-memory draft and nothing is written until then (`toggle_pin`, the old per-press
+write, is a test-only fixture now).
 
 ### Where the implementation reinterprets the canvas
 
@@ -677,3 +680,185 @@ A third, smaller ordering bug went with them: the stored-session boot called `in
 section fetch resolves the Home selection — **before** `session::set_current`, so that resolve ran
 against the owner's record whoever was signed in. The switch path (`auth::take_ready`) already had
 the two the right way round; the boot path now matches it.
+
+---
+
+## 13. Who gets the credit — the one "Shared by …" rule (2026-09-03)
+
+**Reported:** *"Shared by Gleb"* appeared on the user's **own** server as well as on an actually
+shared one. It was not a display bug. The app was drawing plex.tv's raw `sourceTitle` wherever it
+was non-empty, and there is a perfectly ordinary session in which plex.tv puts the account holder's
+own handle on the household's own server: a **Plex Home managed profile**.
+
+### What plex.tv gives us (measured 2026-09-03, dev account, placeholders per the table in the header)
+
+`GET /api/v2/resources` answers **about the identity that asks**, and a profile switch re-asks it
+with the switched user's token (`auth::switch_thread`). So the same machine is described two ways:
+
+| asked as | `owned` | `sourceTitle` | `ownerId` | `home` |
+|---|---|---|---|---|
+| the account holder, about their own server | `true` | `null` | `null` | `false` |
+| the account holder, about a friend's share | `false` | `<handle>` | the friend's account id | `false` |
+| a managed Home profile, about the household's server | `false` | the admin's handle | the admin's account id | — |
+
+The first two rows are measured on this account. The third is the reported symptom read back into
+the wire shape: it is what makes `owned` alone insufficient, and it is why `sourceTitle` alone is
+worse than useless — it is *actively* the wrong answer, naming the person watching.
+
+Two further measurements decide how the household is identified:
+
+* **`/api/v2/home/users` returns each member's plex.tv `id`, and the admin row's `id` is exactly the
+  `id` `/api/v2/user` reports for the account.** So `Resource.ownerId` and `HomeUser.id` are one id
+  space and "does this server's owner live in this house" is an integer comparison — not a
+  comparison of two differently-sourced display names. (It has to be: a managed user's `username`
+  is `null`, and this account's `title`/`friendlyName` differ from its `username`.)
+* **`home` is community-tier and is consulted ONLY when the id comparison cannot answer.**
+  python-plexapi documents it as *"home (bool): Unknown"*. One reading is refuted here — this
+  account is a Plex Home admin with `homeSize` 3, and both its grants (owned server, friend's
+  share) come back `home:false`, so it is not "the owner has a Plex Home" — but the reading we want,
+  *"this grant is a Home grant"*, has never been observed **true** by anybody in this project. So it
+  is subordinate: `is_household` looks at `home` only when the household cannot be enumerated at
+  all (a roster from a file written before `HomeUserRef::id`, or a sign-in whose
+  `/api/v2/home/users` has not landed). An undocumented flag must not be able to take a credit away
+  from a friend's share on the strength of its name — that is the one way this change could regress
+  a case that works today.
+
+### The rule
+
+> **"Shared by …" credits a person OUTSIDE this household, and nobody else.** A server is credited
+> only when plex.tv says all three: `owned:false`; the owner is not one of us (`ownerId` is not a
+> member of the signed-in Plex Home — or, when the Home cannot be enumerated at all, `home:false`);
+> and `sourceTitle` names them.
+
+Everything else draws nothing at all: our own server, the household's server whichever profile is
+watching, and a share whose owner plex.tv has not named. **Absence is the safe direction**, and the
+rule is written to fall that way — a late credit costs one quiet line of attribution, a wrong one
+is a false statement about who owns what, drawn on the hero, the detail facts row, the Library
+read-out, the search results and the "Also available" rows at once.
+
+A second server owned by *another member of the same Plex Home* is not credited either. That is a
+decision, not a side effect: a Plex Home is one household on one subscription, "Shared by" means
+somebody outside it lent you their library, and one rule that says *inside the house nobody is a
+guest* is worth more than a second rule for a case nobody here can measure.
+
+### Where it lives
+
+`plex::servers::owner_credit` is the rule; `plex::servers::Grant` is its input and
+`account::Resource::grant` the only place a wire row becomes one. `plex::session::Session::
+household_ids` supplies the house: **the Plex Home roster's ids and nothing else**, `0` filtered
+because it is the "no id" value on both sides. That list's contents are load-bearing rather than a
+convenience — the rule falls back to `home` exactly when it is empty, so emptiness has to mean *the
+roster could not answer*, and nothing that cannot decide a case may be in it. The watching profile's
+own `UserRef::id` was, briefly, and it broke precisely the sessions the fallback exists for: an
+upgraded managed session has a roster of legacy `0`s and a real `user.id` from an old `/switch`, so
+the list came back non-empty, `home` was silenced, and the one id that mattered (the admin's) had
+been filtered away. `auth` calls it at every point a `/api/v2/resources`
+row becomes something persisted or published — discovery, the early per-candidate publication, the
+profile switch and the roster refresh — through the single `auth::credit_of`, so
+`session::SourceRef::shared_by` and therefore `plex::ServerFacts::handle` hold **the credit and
+never a raw `sourceTitle`**. `plex::servers::describe` additionally enforces the half it can always
+see for itself (`owned` ⇒ nobody is credited), and publishes the credit AUTHORITATIVELY, which is
+what lets a re-derived roster take a wrong name back off. It does not repair a stored entry by
+itself: for the managed-profile case the persisted row still says `owned:false`, so the correction
+has to come from the ingest re-grading it — see "What is NOT fixed" below.
+
+**Nothing downstream decides who is CREDITED.** All seven presentations take
+`ServerFacts::handle` and nothing else; what differs between them is only the wording around it.
+Two say the whole phrase through `ui::fmt::shared_by`, which is words and not policy — the Home
+hero's meta run and the detail page's facts row. The Library read-out, the Sources panel and
+Search's owner annotation draw the bare handle in their own sentence. The "Also available" rows
+carry it as `AltCopy::owner`, naming a row's source rather than captioning an item. And the
+first-run onboarding copy (`ui::onboard::body_copy`, "…has shared a library with you") lists the
+people from `browse::source_groups`, i.e. the same field one projection further out. Adding a screen
+means reading that field; it does not mean re-deciding this.
+
+**Six things about the plumbing are load-bearing and were all broken in the first cut**, found over
+five review rounds, each with a regression test that fails without it. Five of them are one shape,
+and it is worth naming because it is the whole cost of this change:
+
+> **The credit is a DECISION that can be re-graded, and it was being COPIED into five caches, each
+> of which had a rule for acquiring it and none for following it back down.**
+
+So the rule to apply to any new consumer is: **derive it at use, or regrade it at the boundary
+where it enters your cache.** Never take a copy and trust it.
+
+**`plex::servers` publishes TWO epochs**, and the split is what makes the rest of it correct.
+`ROSTER_GEN` still means *the set of servers changed* — the stores that discard in-flight work read
+it, and a re-describe must not look like that to them. `FACTS_GEN` means *what we SAY about a
+server changed* and moves on every `describe`. A single widened counter was tried first and was
+wrong in both directions at once: it told `search`, `person` and the cross-source resolve that their
+requests were stale when they were not, and folding it into `pms::roster_key` still left the gap
+where registration bumps the counter BEFORE the describe that follows it, so a rebuild racing that
+gap would cache the old credit under the new key and never revisit.
+
+Then, per cache:
+
+- **`describe` REPLACES the credit and merges only the machine name**
+  (`an_authoritative_describe_can_take_a_credit_away_again`). An empty credit is the positive answer
+  *nobody*, so it has to be able to take a previously published name off. While it merged, the
+  correction below was persisted faithfully and then thrown away at boot: `install_roster`
+  republished the roster as `describe(…, "", owned=false)`, which was a no-op, and the registry kept
+  the wrong name for the life of the process. `describe_name` — the describer that knows only a name
+  — carries the credit through instead of spelling an absence it cannot vouch for.
+- **`browse::sync_roster` FOLLOWS the credit** rather than filling it once
+  (`a_source_follows_a_corrected_credit_but_not_a_renamed_machine`). That per-source cache copied
+  the handle only while its own copy was empty, so the Library read-out and the Sources panel could
+  never lose or change a caption whatever the registry later learned. `owned` silently inherited the
+  same gate, against its own comment. The machine NAME keeps its fill-only behaviour, deliberately:
+  it is the one field there that a rename would churn under an open panel.
+- **`pms::sync_roster` RE-STAMPS the shelves Home has already built**
+  (`a_corrected_credit_restamps_the_shelves_home_already_built`). `merge` copies `Src::handle` onto
+  every `HubRow` and hero row, and the re-merge only ran when a source had been DROPPED — so a
+  re-graded credit changed nothing on screen until the next successful hub fetch, which an offline
+  source never has: "keep the last good shelves" would have preserved the wrong attribution
+  indefinitely. Its fingerprint reads both epochs now, as two atomics rather than three `u32`s
+  crushed into one `u64`.
+- **`metadata::Detail::source` is a METHOD, not a field** (`a_mounted_detail_page_follows_a_corrected_credit`).
+  It was a `String` captured at fetch time, and the reasoning for storing it — the page outlives the
+  fetch, the current server can move under it — is answered by `Detail::sid`, which names the server
+  the item came FROM. With the id in hand the credit can be re-asked, and it has to be: nothing
+  invalidates a mounted detail page, so a roster refresh corrected every other surface and left the
+  hero's facts row saying the old thing until the user navigated away; and a detail fetch dispatched
+  before the correction lands after it, past every epoch that would have caught it.
+- **"Also available" RE-STAMPS rather than invalidating**
+  (`a_re_described_source_restamps_the_credit_on_an_open_page`). `metadata::pump_alt_sources`
+  answered a facts change the way it answers a roster change — invalidate the pending resolve and
+  prune — which retains the installed copies untouched and restarts nothing, so the row named the
+  person watching until the page was remounted. A re-graded credit says nothing about which servers
+  hold the item, so the copies are kept and only their `owner` is re-read. Two riders, both found
+  the round after: `install` regrades the incoming list as well, because a resolve dispatched before
+  the correction lands after it and no epoch downstream looks again; and an OPEN panel is rebuilt,
+  because `open` materialises `TABLE`/`DESTS` once and `draw` renders that snapshot — so the rows
+  keep their old text *and their old order* otherwise, and the order is not cosmetic, `owner` is the
+  own-before-a-friend's tiebreak. The one place `AltCopy::owner` is decided is `alt_sources::regrade`,
+  applied at both boundaries, and skipped whole while the `/tmp/plxnative-shared` stand-in owns the
+  list (its entire purpose is to fabricate a borrowed copy on a slot the registry calls ours).
+
+### What is NOT fixed, and is worth knowing
+
+- **An empty credit means three different things** — our own server, the household's, and an
+  external share plex.tv did not name — and two places still read that emptiness as *ours*:
+  `pms::roster` groups Home's shelves by it, and `metadata::alt_copies` turns it into the
+  "This account" row. For the household server that is now the right answer; for an unnamed external
+  share it is wrong, and it was wrong before this change too (`ServerFacts::owned` has always
+  documented that a share with no `sourceTitle` is still a share). Fixing it properly means a
+  three-state `Owned | Household | External` relation carried on `ServerFacts` and `SourceRef`
+  instead of two booleans — a bigger change than the reported bug needs, and one that would also
+  want `owned` to stop meaning "this ACCOUNT owns it" on the four surfaces that read it for
+  ordering and default pinning. Recorded here rather than done.
+- **A session file written by an earlier build** has the raw handle already persisted in
+  `SourceRef::shared_by`. It is corrected the first time the roster is re-derived — a sign-in, a
+  `refresh_roster` (every boot, for the account owner) or any profile switch that is not the
+  no-network "same profile" fast path — because `refreshed_sources` now *assigns* the credit rather
+  than merging it, and `describe` now publishes that assignment. There is no offline migration, and
+  there cannot be a good one: the evidence that would grade a stored entry (`ownerId`, `home`) was
+  never written down.
+- **The `/tmp/plxnative-servers` dev trigger still derives `owned` as `handle.is_empty()`**
+  (`app.rs`), which is the derivation `ServerFacts::owned` documents as wrong. It is left alone
+  because there the operator states the handle by hand and means it; but it cannot express an
+  unnamed share or a household server, so it is an exception to the rule above rather than an
+  instance of it.
+- **The managed-profile row of the wire table is still unmeasured.** Obtaining it needs
+  `POST /api/v2/home/users/{uuid}/switch`, which mints a credential; nobody has run it for this.
+  Until somebody does, `home:true` has never been *seen*, which is precisely why the rule leans on
+  `ownerId` and treats `home` as a fallback.

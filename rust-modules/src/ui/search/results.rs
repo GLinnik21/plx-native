@@ -1224,6 +1224,13 @@ mod tests {
         for _ in 0..600 {
             step_owner(&mut o, 0, "friend", DT);
         }
+        // The 600 steps above ran outside any `frame_begin`, so the gate last saw the rise's motion
+        // and this first still frame is the SETTLE frame (`idle::should_present`): one present,
+        // owed to every at-rest term, and not this annotation's doing.
+        crate::ui::idle::frame_begin(DT);
+        crate::ui::idle::note_present(0);
+        step_owner(&mut o, 0, "friend", DT);
+        crate::ui::idle::should_present(0);
         for f in 0..10 {
             crate::ui::idle::frame_begin(DT);
             crate::ui::idle::note_present(0);

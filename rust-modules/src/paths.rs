@@ -486,12 +486,14 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
 /// person who had already answered, which is both worse for them and the exact pattern that makes
 /// a consent prompt feel like nagging rather than a choice.
 ///
-/// **So it outlives an uninstall, and it outlives a change of owner short of a factory reset.**
-/// webOS gives a native app no uninstall hook, so nothing can clear this on the way out. That is
-/// why the file holds a DECISION and, only after opt-in, one random identifier PER CHANNEL (the
+/// **So it outlives an uninstall** — webOS gives a native app no uninstall hook, so nothing can
+/// clear this on the way out — **but not a sign-out**: the decision belongs to the account that
+/// gave it, and `auth::forget_account` unlinks every candidate here (through `telemetry::forget`)
+/// when that account signs out, so a change of owner IS a fresh question. That is also why the
+/// file holds a DECISION and, only after opt-in, one random identifier PER CHANNEL (the
 /// crash-report id and the analytics id, each owned by its own switch) — and why withdrawing a
-/// channel DELETES its identifier rather than merely disabling it. Recorded in
-/// `PRIVACY.md`, because a user cannot audit a file they cannot reach.
+/// channel DELETES its identifier rather than merely disabling it. Recorded in `PRIVACY.md`,
+/// because a user cannot audit a file they cannot reach.
 ///
 /// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
 /// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
