@@ -335,8 +335,8 @@ pub fn update(dt: f32) {
         return;
     }
     pop().update(dt);
-    let ph = panel_rect().h;
-    table().update(dt, ph - 40.0);
+    // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
+    table().update(dt, panel_rect().h);
 }
 
 pub fn draw() {

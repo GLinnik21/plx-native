@@ -20,6 +20,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     emit_version();
+    emit_build_sha();
 
     // The simulator is the only configuration that links anything here. Checked via the feature's
     // env var rather than `cfg!`, because a build script is compiled for the HOST and its own
@@ -196,6 +197,53 @@ fn compile_svg() {
     );
     // Link the object directly; no intermediate archive, so no `ar` involved.
     println!("cargo:rustc-link-arg-bins={}", out.display());
+}
+
+/// Publish `PLX_BUILD_SHA` — the short commit this binary was built from, so the About screen can
+/// name the exact source a bug report came from. `PLX_VERSION` alone cannot: every commit on trunk
+/// between two releases reports the identical `X.Y.0-dev`.
+///
+/// Best-effort and NOT [`emit_version`]'s contract: a release source package (`docs/distribution.md`
+/// publishes one per release) has no `.git` at all and must still build, so a failed `git` falls
+/// back to `"unknown"` rather than failing the build the way an unparsable `Cargo.toml` version
+/// does. Re-run on whatever moves this WORKTREE's `HEAD` — a commit, checkout or rebase all touch
+/// its reflog — via `git rev-parse --git-path`, which resolves `logs/HEAD`/`HEAD` under the linked
+/// worktree's own `.git/worktrees/<name>/`, not the main checkout's; watching the wrong one would
+/// silently miss every commit made from here.
+fn emit_build_sha() {
+    let sha = git_short_sha().unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=PLX_BUILD_SHA={sha}");
+    for rel in ["logs/HEAD", "HEAD"] {
+        if let Some(path) = git_path(rel) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
+fn git_short_sha() -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(out.stdout).ok()?;
+    let sha = sha.trim();
+    (!sha.is_empty()).then(|| sha.to_string())
+}
+
+/// The absolute path `git` resolves `<rel>` (a path inside `.git`) to for the CURRENT worktree.
+fn git_path(rel: &str) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-path", rel])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let p = String::from_utf8(out.stdout).ok()?;
+    Some(PathBuf::from(p.trim()))
 }
 
 /// Homebrew's lib directory, asked of `brew` itself and sanity-checked, or `None`.

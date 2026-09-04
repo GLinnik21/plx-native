@@ -698,8 +698,8 @@ pub(crate) fn update(dt: f32) {
     // This menu's own springs, kept out of the host page's motion — `popover::own_motion`.
     let _own = crate::ui::popover::own_motion();
     pop().update(dt);
-    let ph = panel_rect().h;
-    table().update(dt, ph - crate::ui::table::PAD_V);
+    // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
+    table().update(dt, panel_rect().h);
 }
 
 pub(crate) fn draw() {

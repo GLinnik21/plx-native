@@ -1402,7 +1402,8 @@ pub(crate) fn update(dt: f32) {
         // as page damage and threw the frozen grid away.
         let _own = crate::ui::popover::own_motion();
         pop().update(dt);
-        table().update(dt, table_rect().h - crate::ui::table::PAD_V);
+        // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
+        table().update(dt, table_rect().h);
         // async menu data landing while the popover is open — rebuild it in place (a Sort
         // menu stuck on "Loading…" whose OK secretly toggled the direction was a
         // review-confirmed bug). Two matches over one enum, the `chip_menu`/`open_chip_menu`

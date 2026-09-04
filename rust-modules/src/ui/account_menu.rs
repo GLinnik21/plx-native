@@ -270,8 +270,8 @@ pub fn update(dt: f32) {
     // page's — see `popover::own_motion`.
     let _own = crate::ui::popover::own_motion();
     pop().update(dt);
-    let ph = panel_rect().h;
-    table().update(dt, ph - 40.0);
+    // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
+    table().update(dt, panel_rect().h);
 }
 
 /// How dark the page goes behind this menu — [`draw_scrim`]'s weight, and the module's own, in the

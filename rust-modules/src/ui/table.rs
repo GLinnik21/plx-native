@@ -200,9 +200,14 @@ impl Section {
 /// between the two groups it divides — a gap between stacked blocks comes from a `space` rung, so
 /// it is the rung, not a hand-tuned number.
 const SEP_H: f32 = theme::space::MD;
-/// The list's own vertical padding: the amount an owning panel must subtract from its height to get
-/// the visible list height for [`TableView::update`]. Exposed because each popover screen was
-/// re-hardcoding `panel_h - 40.0` and would drift the moment either pad changed.
+/// The list's own vertical padding — air above the first row, air below the last.
+/// [`TableView::update`] subtracts it from the frame height it is given, so a caller never derives
+/// this number itself. It USED to be something every popover screen subtracted by hand
+/// (`panel_h - 40.0`), which is exactly the footgun this constant's own doc used to warn about and
+/// which half the callers fell into anyway — passing the raw frame height straight through, so the
+/// scroll clamp thought the viewport was `PAD_V` taller than it is and stopped short of the true
+/// bottom. Settings ▸ Privacy & data's *Delete all local data* row (last in its list) was the
+/// reported case; `legal.rs`, `onboard.rs` and both of `consent.rs`'s tables had the identical bug.
 pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
 /// A plain row (label only) — mockup rowBase padding 13 + 34px label.
 ///
@@ -486,10 +491,13 @@ impl TableView {
         h + self.row_height(self.n_rows() - 1)
     }
 
-    pub fn update(&mut self, dt: f32, visible_h: f32) {
+    /// `frame_h` is the SAME rect height passed to [`Self::draw`]/[`Self::hit_row`] — this
+    /// function subtracts [`PAD_V`] itself, so a caller must not subtract it a second time.
+    pub fn update(&mut self, dt: f32, frame_h: f32) {
         if self.n_rows() == 0 {
             return;
         }
+        let visible_h = (frame_h - PAD_V).max(0.0);
         let top = self.row_top(self.sel);
         let rh = self.row_height(self.sel);
         // top and bottom edges spring independently → the pill stretches/morphs between rows
@@ -520,6 +528,14 @@ impl TableView {
             self.hl_bot.pos,
             self.hl_bot.vel,
         )
+    }
+
+    /// The scroll spring's settled position, in content coordinates. Test-only: this is what a
+    /// regression on the `update(dt, frame_h)` contract shows up as first — the pill motion test
+    /// above cannot see it, since a 2-row list never scrolls.
+    #[cfg(test)]
+    pub(crate) fn scroll_pos(&self) -> f32 {
+        self.scroll.pos
     }
 
     pub fn draw(&self, p: Painter, frame: Rect) {
@@ -985,6 +1001,44 @@ mod tests {
         assert!(
             resting.1.abs() < 0.01,
             "settled pill still reports motion: {resting:?}"
+        );
+    }
+
+    /// **Regression for the Settings ▸ Privacy & data report**: "Delete all local data" (the last
+    /// row) never scrolled fully into view. `update`'s `frame_h` is the SAME height passed to
+    /// `draw`/`hit_row` — a caller that (wrongly) subtracted [`PAD_V`] before calling `update`, or
+    /// an `update` that (wrongly) failed to subtract it internally, makes the scroll clamp believe
+    /// the viewport is `PAD_V` taller than the clipped frame it is actually drawn into, so it stops
+    /// short of the true bottom by exactly that amount — the last row settles PARTIALLY behind the
+    /// clip. This overflows a small frame on purpose and settles on the last row.
+    #[test]
+    fn scrolling_to_the_last_row_reveals_it_fully_above_the_bottom_pad() {
+        let _serial = crate::testlock::serial();
+        let mut t = TableView::new();
+        let mut sec = Section::new("S");
+        for i in 0..20 {
+            sec = sec.row(Row::new(format!("row {i}")));
+        }
+        t.set_sections(vec![sec], 0, false);
+        let content_h = t.measured_height() - PAD_V;
+        let frame_h = 300.0; // far shorter than the 20-row content, so this frame must scroll
+        assert!(content_h > frame_h, "test needs overflowing content");
+
+        t.move_sel(t.n_rows() - 1);
+        for _ in 0..300 {
+            t.update(1.0 / 60.0, frame_h);
+        }
+
+        // The frame passed to `draw` reserves TOP_PAD above row 0 and BOT_PAD below the last row —
+        // so at rest the last row's bottom (`content_h`, in content coordinates) must land exactly
+        // `BOT_PAD` above the clipped frame's bottom edge, not merely somewhere inside it.
+        let last_row_bottom_on_screen = TOP_PAD + content_h - t.scroll_pos();
+        let want = frame_h - BOT_PAD;
+        assert!(
+            (last_row_bottom_on_screen - want).abs() < 0.5,
+            "last row settled at {last_row_bottom_on_screen}, wanted {want} \
+             (frame_h={frame_h}, content_h={content_h}, scroll={})",
+            t.scroll_pos()
         );
     }
 }

@@ -94,11 +94,32 @@ const CONTACT: &str = "Privacy questions may be sent to support@plxnative.com.\n
 /// other. It is composed from the same `PLX_VERSION` the diagnostics panel and `X-Plex-Version`
 /// report, so a release build says `0.5.0` here and a developer build says `0.6.0-dev`: this is
 /// a screen a user is asked to read out in a bug report, and it must name the binary they are
-/// running rather than the last thing that was published.
+/// running rather than the last thing that was published. `PLX_BUILD_SHA` (`build.rs`'s
+/// `emit_build_sha`) goes further than the version alone can: every trunk commit between two
+/// releases reports the identical `X.Y.0-dev`, so the commit is what actually distinguishes one
+/// developer build from the next.
+///
+/// **No `VERSION`/`DEVELOPER`/`LICENCE`/`PROJECT` section labels** — every other document here
+/// uses that ALL-CAPS-line-as-heading idiom (`DocumentReader::rebuild_layout` bolds a fully
+/// uppercase line), which reads right over several paragraphs of prose and wrong over four lines
+/// that are each already self-explanatory; a label per line was closer to a form than to
+/// something meant to be read.
+///
+/// **No leading `PlxNative` line, either** (owner correction, 2026-09-04) — the route's own
+/// narrative title already draws "About PlxNative" directly above this body, so repeating the name
+/// as the first body line duplicated it rather than adding anything.
 ///
 /// `concat!` rather than a `format!` at draw time: the whole page is a `&'static str` the reader
 /// borrows, and `env!` is a literal at expansion.
-const ABOUT: &str = concat!("VERSION\n\nPlxNative ", env!("PLX_VERSION"), "\n\nDEVELOPER\n\nGleb Linnik\n\nLICENCE\n\nMIT Licence\n\nPROJECT\n\ngithub.com/GLinnik21/plx-native\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.");
+const ABOUT: &str = concat!(
+    "Version ",
+    env!("PLX_VERSION"),
+    "\nBuild ",
+    env!("PLX_BUILD_SHA"),
+    "\n\nDeveloped by Gleb Linnik\n\u{00A9} 2026 Gleb Linnik",
+    "\n\nOpen source under the MIT License\ngithub.com/GLinnik21/plx-native",
+    "\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc."
+);
 
 static mut POP: Popover = Popover::new();
 static mut TABLE: TableView = TableView::new();
@@ -319,7 +340,7 @@ pub(crate) fn draw() {
             p,
             Some(CRUMB_SETTINGS),
             "About PlxNative",
-            "Version, copyright, project source and independent-client information.",
+            "A native media client built for LG webOS.",
             theme::size::LABEL,
         );
         reader().draw(p, layout.document(true), None, ABOUT);
@@ -453,8 +474,22 @@ mod tests {
     fn about_names_the_running_version() {
         let v = crate::plex::identity::VERSION;
         assert!(
-            ABOUT.contains(&format!("PlxNative {v}")),
+            ABOUT.contains(&format!("Version {v}")),
             "About should name {v}, says: {ABOUT:?}"
+        );
+    }
+
+    /// The About page also names the exact COMMIT — `PLX_VERSION` alone cannot distinguish two
+    /// trunk builds cut minutes apart, since both report the same `X.Y.0-dev`.
+    #[test]
+    fn about_names_a_build_sha() {
+        assert!(
+            ABOUT.contains("\nBuild "),
+            "About should carry a Build line, says: {ABOUT:?}"
+        );
+        assert!(
+            !env!("PLX_BUILD_SHA").is_empty(),
+            "PLX_BUILD_SHA must never be the empty string (build.rs falls back to \"unknown\")"
         );
     }
 
