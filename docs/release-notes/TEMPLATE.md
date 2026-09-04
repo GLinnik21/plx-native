@@ -10,6 +10,11 @@ Everything technical — package facts, DT_NEEDED, sizes, provenance, the payloa
 CI gate verdicts, the firmware matrix, the LGPL detail — belongs in docs/release-audits/vX.Y.Z.md,
 which is written from its own template and completed by CI from the real build. It is not gone;
 it is not here.
+
+The `# vX.Y.Z — <theme>` line below becomes the GitHub release's own title, not the body's first
+line — release.yml strips it before posting, since GitHub already renders it as its own header
+next to the tag. Write it anyway; it is the only source for that title and it is what makes this
+file read as a complete document on its own.
 -->
 
 # vX.Y.Z — <short human-readable theme>

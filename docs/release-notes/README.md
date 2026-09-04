@@ -57,6 +57,14 @@ A small standard, not a wall of mandatory sections. Sections that would add noth
 
 `**Full Changelog**` is appended by GitHub, from the compare range, and must never be typed into the file. A hand-written compare link is exactly the class of measurable fact this project has got wrong before.
 
+**The `# vX.Y.Z — <theme>` line never reaches the published body.** `release.yml` extracts it as
+the release's own `name` — GitHub already renders that next to the tag, above the body, so leaving
+it in as the body's first line too put the version on the page twice (a v0.6.0 defect, fixed the
+same day it published). Keep writing it: it is still what makes the committed `.md` file read as a
+complete, titled document on its own, and it is the only source the workflow has for the release's
+display name. Just do not expect to see it a second time on the release page — the body CI posts
+starts at the paragraph underneath it.
+
 ### When the reader has to act, that comes first
 
 **A security disclosure, a migration step, or anything else the reader must do goes in its own `##` section immediately after the lede, above every feature.** Never inside `Fixed`: the test is mechanical — *if installing the release does not complete the item, it does not belong in a list of things installing completes.* Leave one cross-reference line in `Fixed` so a changelog reader is routed rather than told twice.

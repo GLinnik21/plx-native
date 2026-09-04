@@ -549,6 +549,7 @@ jobs:
       # from its committed file. New notes should not need them: provenance and sizes are the
       # release AUDIT's job now, generated from the artifact rather than pasted through a sentinel.
       - name: Render the release body from the committed note
+        id: render
         run: |
           set -euo pipefail
           tag='${{ needs.guard.outputs.tag }}'
@@ -574,7 +575,25 @@ jobs:
             || { echo "::error::$note does not carry the __IPK_SHA256__ sentinel"; exit 1; }
           sed -e "s|__IPK_SHA256__|$sha|g" -e "s|__COMMIT__|$commit|g" -e "s|__RUN_URL__|$run|g" \
               -e "s|__IPK_SIZE__|$size|g" -e "s|__INSTALLED_SIZE__|$inst|g" \
-              "$note" > dist/body.md
+              "$note" > dist/body-full.md
+          # GitHub already renders a release's own `name` as its own big header next to the tag —
+          # see the release page itself, not this file. The note's `# vX.Y.Z — <theme>` line is
+          # therefore the RELEASE'S NAME, not also the body's first line: publishing it as both
+          # put "v0.6.0" on the page twice, once as GitHub's own title and once as the body's H1
+          # repeating it. The H1 stays in the committed note (docs/release-notes/*.md keeps reading
+          # naturally as a standalone file, and this is where a human writing the next one edits
+          # it) and is extracted here, not duplicated into what gets posted as the body.
+          title_line="$(head -1 dist/body-full.md)"
+          # Anchored to THIS tag specifically, not just "starts with a #": a note copied from the
+          # template or from the previous release with its version line left unedited would
+          # otherwise publish under a stale display name — cosmetic before this change (one wrong
+          # string buried in the body), now the release's own canonical title.
+          echo "$title_line" | grep -qE "^# ${tag} — .+" \
+            || { echo "::error::$note's first line ('$title_line') must read exactly '# $tag — <theme>' — it becomes the release title"; exit 1; }
+          title="$(echo "$title_line" | sed -e 's/^# *//')"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          tail -n +2 dist/body-full.md | sed '/./,$!d' > dist/body.md
+          echo "title: $title" >> "$GITHUB_STEP_SUMMARY"
           echo "body: $(wc -l < dist/body.md) lines, sha $sha" >> "$GITHUB_STEP_SUMMARY"
       # THE AUDIT'S EVIDENCE HALF, derived from the artifact that is about to be published.
       #
@@ -617,7 +636,12 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
-          # the committed note, with GitHub's compare-link tail appended after it
+          # The note's own `# vX.Y.Z — theme` line, not the bare tag — GitHub already shows this
+          # as the release's own header, so leaving `name` unset (which defaults it to the tag)
+          # made the body's H1 repeat it right underneath. Extracted in the render step above.
+          name: ${{ steps.render.outputs.title }}
+          # the committed note (its H1 stripped — see the render step), with GitHub's
+          # compare-link tail appended after it
           body_path: dist/body.md
           append_body: true
           # NEITHER of these may become true: both exclude the release from `releases/latest`,
