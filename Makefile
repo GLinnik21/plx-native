@@ -396,8 +396,8 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # commit leaves the whole tree at the version it just published, so every developer build after it
 # reported that exact number as its own — in X-Plex-Version, in the Sentry release, on the
 # diagnostics panel — and nothing downstream could tell a working tree from the shipped artifact.
-# `rust-modules/build.rs` reads this ONE variable: set, the binary says `0.5.0`; unset or empty, it
-# says `0.6.0-dev`, the next MINOR — trunk is where features land, so that is what is cut from it
+# `rust-modules/build.rs` reads this ONE variable: set, the binary says `0.6.0`; unset or empty, it
+# says `0.7.0-dev`, the next MINOR — trunk is where features land, so that is what is cut from it
 # next; a patch release comes off an existing minor's own line. Exported (rather than per recipe) so
 # the cross-build, `make check`, `make sim` and `make macapp` cannot answer differently — they run
 # cargo from four places, and the failure of missing one is a mislabelled artifact, not an error.
@@ -407,14 +407,26 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # supported door rebuilds a DIFFERENT .a and cargo re-runs the script for it. What the stamp could
 # not have caught is somebody decoupling this from RELEASE by hand — `make PLX_RELEASE=1 deploy`
 # (a command-line variable outranks an ordinary assignment) or `make -e` with it exported — which
-# would write a binary reporting 0.5.0 into the DEV target dir, leave RUST_CFG unmoved, and let
+# would write a binary reporting 0.6.0 into the DEV target dir, leave RUST_CFG unmoved, and let
 # every later plain `make` link that stale library without a word. `override` makes the value a
 # function of RELEASE and nothing else, which is the property the stamp is relying on.
 #
 # The suffix never reaches pkg/appinfo.json or ipkroot/ctl/control — LG takes three integers and
 # nothing else, and `ci/check-package.py` asserts both that and, for the stable id, that the
 # packaged binary is not a `-dev` one.
-override export PLX_RELEASE := $(if $(RELEASE),1,)
+#
+# TWO STATEMENTS, not one — and the precise culprit is narrower than CARGO_INCREMENTAL's own
+# comment above suggests. Isolated on this Mac's make 3.81: plain `export VAR := value` and
+# `export VAR ?= value` both work, on one line, with or without `override`; what is a silent
+# no-op is `override export VAR := value` — override AND export STACKED on one line — which sets
+# the value for make's own expansions but never reaches a child process's environment. That is
+# exactly what happened here: `RELEASE=1` correctly drove `RUST_FEATFLAGS`, so the cargo
+# invocation used the right feature set, while the linked binary's `PLX_VERSION` still read
+# `0.7.0-dev` with no error from anything, because PLX_RELEASE never left make. `override` has to
+# stay on the assignment, not the export, or a command-line `PLX_RELEASE=1` could outrank this
+# derivation again.
+override PLX_RELEASE := $(if $(RELEASE),1,)
+export PLX_RELEASE
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
 # write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
 # than the release binary sitting at pkg/plxnative, so make would call the link up to date and

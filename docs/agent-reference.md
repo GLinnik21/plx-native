@@ -197,17 +197,17 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   FIFO and the capture listener — see `rust-modules/src/dev.rs`). **It also decides WHICH VERSION
   THE BINARY SAYS IT IS**: the Makefile exports `PLX_RELEASE`, and `rust-modules/build.rs` publishes
   `PLX_VERSION` as the `Cargo.toml` version exactly for a release build and as the **next MINOR plus
-  `-dev`** for every other one — `0.5.0` published, `0.6.0-dev` in the tree. The minor rather than the
+  `-dev`** for every other one — `0.6.0` published, `0.7.0-dev` in the tree. The minor rather than the
   patch because development is TRUNK-BASED here: features land on main, so the next release cut from
   it is a minor (or a major, which no build script can predict); a patch is cut from an existing
   minor's own line, where trunk's number is not the question. It also makes the semver ordering
-  mean something — `0.6.0-dev` precedes `0.6.0`. That is the string every
+  mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
   surface reports (X-Plex-Version, the Sentry release, PostHog's `app_version`, the lab snapshot, the
   photographed diagnostics panel); before it, a release commit left the whole tree claiming to BE the
   release it had just cut, and nothing downstream could separate a working tree from the shipped
   artifact. The suffix never reaches `pkg/appinfo.json` or the control file — LG takes three integers
-  and nothing else — so a developer flavour's package is labelled `0.5.0` while its binary says
-  `0.6.0-dev`, deliberately; `ci/check-package.py` grades both directions on the packaged bytes. It
+  and nothing else — so a developer flavour's package is labelled `0.6.0` while its binary says
+  `0.7.0-dev`, deliberately; `ci/check-package.py` grades both directions on the packaged bytes. It
   must be on
   EVERY invocation that produces or ships the binary (`make RELEASE=1 deploy`, **not**
   `make RELEASE=1 && make deploy`, which rebuilds as dev and ships that). `deploy`/`ipk` echo
