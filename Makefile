@@ -226,11 +226,45 @@ CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -funwind-tables 
 # DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
+# The C-side twin of RUST_REMAP below, for the exact same reason: `-g` writes the CURRENT
+# WORKING DIRECTORY (`DW_AT_comp_dir`) and every `-I`/sysroot path into DWARF, which
+# --remap-path-prefix cannot touch — that flag is rustc's, and GCC never sees it. Found on the
+# first release build that ever combined SYMBOLS=1 with ci/check-elf.sh's build-host-identity
+# scan (both existed before; this exact pairing had not): pkg/plxnative, built with SYMBOLS=1 on
+# CI, carried five `/home/runner/work/plx-native/plx-native/.webos-ndk/…/sysroot/usr/include…`
+# strings and the bare checkout root, both from GCC's DWARF, not rustc's. Same broad-then-
+# specific order as RUST_REMAP and the same reasoning: WEBOS_SDK defaults under $(HOME) but is
+# user-overridable to anywhere.
+#
+# The checkout root ($(CURDIR), where every .c file and -I path this build compiles actually
+# lives) is its OWN specific mapping rather than being left to the $(HOME) catch-all, and it goes
+# LAST for the same tie-break reason RUST_REMAP's comment gives — reproduced directly against this
+# NDK's gcc rather than assumed: a throwaway `-g` compile with two overlapping
+# -fdebug-prefix-map values showed the LAST matching one wins DW_AT_comp_dir, not the first or the
+# longest. Without this, a checkout whose path is nested under $(HOME) (true of every case measured
+# so far — this Mac, and CI's /home/runner/work/…) still has that FIXED "/build" prefix, but the
+# home-relative REMAINDER — worktree name, CI's repo-name-twice segment — still varies build to
+# build, which is exactly the gap a symbol-server upload should not have and CI's runner path
+# happening to be stable today does not guarantee tomorrow.
+#
+# KNOWN TRADEOFF, not fixed here: this makes every remapped path (this one and RUST_REMAP's three)
+# stop resolving to a real file on whatever machine later runs `sentry-cli debug-files upload
+# --include-sources` — confirmed locally: `debug-files bundle-sources` against a binary built this
+# way finds zero files, against the same command finding real ones when comp_dir is left pointing
+# at a directory that still exists. RUST_REMAP has shipped with this same property since before
+# v0.5.0; `--include-sources` in release.yml is new since v0.5.0 and had never actually run in a
+# published release as of the build that added this comment, so whether it hard-fails an empty
+# source bundle or degrades to file+line-only symbolication was NOT determined before shipping. The
+# fix, if the degradation turns out to matter, is a real directory or symlink at each remapped
+# target path, created in the CI job between the build and the upload step — not a change here.
+CFLAGS_REMAP = -fdebug-prefix-map=$(HOME)=/build -fdebug-prefix-map=$(WEBOS_SDK)=/webos-sdk \
+               -fdebug-prefix-map=$(CURDIR)=/plxnative
+
 ifeq ($(DEBUG),1)
 # -DPLX_DEBUG lets the C shim keep core dumps enabled for a post-mortem (src/crashtrace.c's
 # setrlimit(RLIMIT_CORE, 0) — a shipping build must not write 200 MB into the TV's app
 # partition). This is the only thing DEBUG=1 changes about behaviour rather than debuginfo.
-CFLAGS      += -g -DPLX_DEBUG
+CFLAGS      += -g $(CFLAGS_REMAP) -DPLX_DEBUG
 RUST_DEBUGINFO = -C debuginfo=2
 endif
 
@@ -252,7 +286,7 @@ endif
 # `rust-modules/target*` already runs to tens of gigabytes across the configurations this repo
 # keys, and where a worktree fleet multiplies that again. That is the only reason this is opt-in.
 ifeq ($(SYMBOLS),1)
-CFLAGS      += -g
+CFLAGS      += -g $(CFLAGS_REMAP)
 RUST_DEBUGINFO = -C debuginfo=2
 endif
 
