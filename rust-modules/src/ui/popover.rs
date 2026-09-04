@@ -736,6 +736,31 @@ pub(crate) mod host {
     static CAPTURE_OWED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
 
+    /// The page is MOVING under a panel that is fading out, so [`host_refresh`](super::host_refresh)
+    /// will drop whatever is captured this frame before anything draws from it. Set by
+    /// [`begin_frame`], read by [`capture_now`]: a 1080p `glCopyTexSubImage2D` per frame that
+    /// nothing ever reads was the larger half of the Settings exit fade (device-measured 2026-09-05:
+    /// ~50 ms a frame with it, ~32 ms without, Home re-rendered live under the fade either way).
+    static CAPTURE_POINTLESS: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// Take the page snapshot off the framebuffer and HOLD it (`Held::Page`). The one place that
+    /// pairs the copy with the stage, because the two were apart: [`PagePass`]'s drop captured
+    /// without ever setting the stage, so a popover that draws its scrim without [`live`]
+    /// (Settings, whose opaque ground needs no lift) re-rendered its host AND re-copied it on
+    /// every ramp frame — 67 ms a frame on the entry fade, 33 ms once the copy is held.
+    fn capture_now() -> bool {
+        if CAPTURE_POINTLESS.load(Relaxed) {
+            return false;
+        }
+        if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
+            unsafe { HELD = Held::Page };
+            true
+        } else {
+            false
+        }
+    }
+
     /// How many open popovers want a frozen host.
     fn users() -> u32 {
         unsafe { *std::ptr::addr_of!(HOST_USERS) }
@@ -825,11 +850,9 @@ pub(crate) mod host {
             invalidate();
             return;
         }
-        if super::host_refresh(
-            fading_only(),
-            page_dirty,
-            crate::ui::idle::page_moving() || page_moving,
-        ) {
+        let moving = crate::ui::idle::page_moving() || page_moving;
+        CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
+        if super::host_refresh(fading_only(), page_dirty, moving) {
             invalidate();
         }
     }
@@ -894,7 +917,7 @@ pub(crate) mod host {
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
             if CAPTURE_OWED.swap(false, Relaxed) {
-                unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() };
+                capture_now();
             }
         }
     }
@@ -944,9 +967,7 @@ pub(crate) mod host {
         if CAPTURE_OWED.swap(false, Relaxed) {
             // Refused during a blur source pass (the framebuffer is a small FBO, not the page).
             // `page_pass` books it again on the visible pass, so nothing is lost.
-            if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
-                unsafe { HELD = Held::Page };
-            } else {
+            if !capture_now() {
                 CAPTURE_OWED.store(true, Relaxed);
             }
         }
