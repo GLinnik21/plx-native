@@ -8,6 +8,10 @@ stub/*.so
 # cross-compiled binary + packaging output
 pkg/plxnative
 pkg/threadprobe
+pkg/mali-irq-sample
+pkg/plxnative-stackwalk
+# Local opt-in profiler bundles: raw stacks/maps and device measurements are evidence, not source.
+pkg/diagnostics/
 pkg/*.ipk
 pkg/ipk.sha256
 

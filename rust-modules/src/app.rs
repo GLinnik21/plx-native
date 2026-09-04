@@ -7311,6 +7311,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let mut loop_t = t0;
         let mut iters_ct = 0i32;
         let mut loop_shown = 0i32;
+        // The dev number painted in the top-right corner. Unlike `loop_shown`, this is a real
+        // presentation rate: the same completed-window value the heartbeat publishes as `fps=`.
+        // It is updated only when that heartbeat drains PRESENTS, so pixels and logs cannot
+        // disagree by observing two different counters. On a settled screen the number changes
+        // only when the ordinary keepalive next buys a frame; the diagnostic must never defeat
+        // the present gate merely to repaint itself.
+        #[cfg(feature = "devtools")]
+        let mut fps_shown = 0i32;
         // (media ns, SDL ticks) at the previous heartbeat, for `play=` below. `None` while
         // nothing is presenting, so the first beat of a playback reports no rate rather than a
         // fabricated one.
@@ -10817,9 +10825,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::glassload::draw_nav_blur();
                             crate::ui::glassload::draw();
                             // The on-screen counter, off the player route (chrome over video). It draws
-                            // `loop_shown` — LOOP ITERATIONS, the same number the heartbeat logs as
-                            // `loop=`, NOT the frame rate. It also necessarily FREEZES on a settled
-                            // screen: it is drawn, so it can only update on a frame that presents.
+                            // the last completed `fps=` window — frames actually swapped, not loop
+                            // iterations. It necessarily HOLDS its last painted value on a settled
+                            // screen until the ordinary keepalive buys another present; waking the
+                            // renderer for the diagnostic would falsify the number it is showing.
                             //
                             // NOT in a release build (`make RELEASE=1` → --no-default-features). This
                             // costs the fps scenes nothing: they grade the once/sec heartbeat in the
@@ -10827,17 +10836,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // are unaffected by whether the digits are painted.
                             #[cfg(feature = "devtools")]
                             {
-                                let loop_col = if buffer_flip_count < 30 {
+                                let fps_col = if buffer_flip_count < 30 {
                                     crate::ui::theme::DIAG_FLIP_A
                                 } else {
                                     crate::ui::theme::DIAG_FLIP_B
                                 };
                                 crate::gfx::draw_number(
-                                    loop_shown,
+                                    fps_shown,
                                     SCR_W as f32 - 70.0,
                                     64.0,
                                     46.0,
-                                    loop_col.as_ptr(),
+                                    fps_col.as_ptr(),
                                 );
                             }
                         }
@@ -11108,8 +11117,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // is the app's liveness signal and `pos=` is anchored to it, so it must not read 0
                 // on a screen that is merely idle. The pair is the diagnostic — `loop=62 fps=0` is
                 // a settled screen doing its job, `loop=0` is an app in trouble, and `fps=0` on its
-                // own is not a fault at all. Note the on-screen counter still draws `loop=`.
+                // own is not a fault at all. The dev on-screen counter draws this same drained
+                // value, cached below; it never reads a second presentation counter.
                 let pres = crate::ui::idle::take_presents();
+                #[cfg(feature = "devtools")]
+                {
+                    fps_shown = pres.min(i32::MAX as u32) as i32;
+                }
                 // dev: which LOAD-DIAL step these frames belong to, the blur refreshes
                 // actually TAKEN in that second, and the cadence in force. Absent unless the
                 // dial or the cadence knob is armed, and placed after `fps=` / before

@@ -193,7 +193,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `$(strip $(shell cat .tv-host …))` and every ssh built from it fails against a live television.
   Full account: **`docs/two-installs.md`**.
 - **`RELEASE=1`** drops **both** default cargo features: `devtools` (the on-screen counter — the
-  feature is contracted to be draw-only) and `devtriggers` (the whole `/tmp` surface, the remote
+  last completed `fps=` present window, held until an ordinary present repaints it; the feature is
+  contracted to be draw-only and never wakes an idle screen) and `devtriggers` (the whole `/tmp` surface, the remote
   FIFO and the capture listener — see `rust-modules/src/dev.rs`). **It also decides WHICH VERSION
   THE BINARY SAYS IT IS**: the Makefile exports `PLX_RELEASE`, and `rust-modules/build.rs` publishes
   `PLX_VERSION` as the `Cargo.toml` version exactly for a release build and as the **next MINOR plus
@@ -1019,7 +1020,8 @@ gone. The remote FIFO's key and `ck:` tokens are safe because every field they s
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
 fails as "no line found", which reads exactly like a total regression. The **`tv-session` skill** is
-the bring-up/observe/drive loop; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
+the bring-up/observe/drive loop; **`profile-tv`** handles a live but slow or stuck process and the
+three-layer graphics profile; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
 FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/manifest.local.json`**
 — `manifest.json` holds only the installation-INDEPENDENT case definitions, and each case names the
 SHAPE of item it needs (`item: "movie_h264_ac3_1080p"`); the overlay maps that to a ratingKey on
@@ -1161,8 +1163,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   **`fps=<n>`** is frames actually swapped that second (the real frame rate, what this gate moves)
   while **`loop=<n>` counts LOOP iterations** — so `loop=62 fps=0` is a healthy settled screen,
   `loop=0` is an app in trouble, and `fps=0` on its own is not a fault at all; the on-screen
-  counter draws `loop=` and FREEZES when idle (it is drawn, so it can
-  only update on a present) and that is expected, not a hang; and **an fps floor taken on a static
+  counter draws the last completed `fps=` window and HOLDS when idle (it is drawn, so it can
+  only update on an ordinary present) and that is expected, not a hang; and **an fps floor taken on a static
   screen now grades nothing**, which is why `fps:home-grid` arms `plxnative-homeosc` and the still
   case is gated by `fps:home-idle`'s `fps_ceiling` instead. `/tmp/plxnative-noidle` turns the
   gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). The **player
@@ -1256,7 +1258,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
   heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
-  scroll judder headlessly.
+  scroll judder headlessly. For a reproducible three-layer account of one FPS scene use
+  `./tests/run.py --fps --only <scene> --graphics-profile --profile-phase <phase>`: it preserves
+  one unarmed pacing leg, samples global Mali IRQ activity with the selected install closed, then runs
+  HWCNT separately and labels that leg's FPS invalid. `tools/profile-graphics` attaches active
+  present/IRQ observation to an already-running app, with no baseline; it checks profiler triggers
+  and labels pacing invalid when one is armed. For a live freeze use `tools/plxnative-sample`; unlike the
+  shipped crash path its `watch` mode is a foreground developer command and sends nothing.
 - **Dev trigger files (read once at boot, in the install's RUNTIME ROOT).** There are ~40; this
   lists the ones worth knowing by name. **The ROOT moved for flavoured installs and ONLY for
   them:** the stable install keeps `/tmp` byte for byte, so every `/tmp/plxnative-*` path written

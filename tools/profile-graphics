@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Observe the first two graphics-profile layers on an already-running PlxNative app."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+from graphics_profile import (
+    format_irq,
+    parse_irq_snapshots,
+    selftest as parser_selftest,
+    summarize_irq,
+    summarize_pacing,
+    write_irq_jsonl,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCK = ROOT / "tools" / "tv-lock.sh"
+LOCAL_HELPER = ROOT / "pkg" / "mali-irq-sample"
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8"]
+
+
+def make_query(flavor: str) -> tuple[str, str, str, str]:
+    proc = subprocess.run(
+        ["make", "-s", f"FLAVOR={flavor}", "print-tv", "print-appid", "print-appdir", "print-rundir"],
+        cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE,
+    )
+    values = proc.stdout.splitlines()
+    if len(values) != 4:
+        raise SystemExit("cannot resolve TV/install paths from Makefile")
+    return tuple(values)  # type: ignore[return-value]
+
+
+def ssh_base(tv: str) -> list[str]:
+    return ["sshpass", "-p", "alpine", "ssh", *SSH_OPTS, f"root@{tv}"]
+
+
+def ssh(tv: str, command: str, *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(ssh_base(tv) + [command], check=check, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def lock_reexec(argv: list[str]) -> None:
+    if os.environ.get("PLX_TV_LOCK_INHERITED") == "1":
+        return
+    os.execv(str(LOCK), [str(LOCK), "with", "--why", "passive graphics observation", "--",
+                             sys.executable, str(Path(__file__).resolve()), *argv])
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--flavor", default="debug")
+    ap.add_argument("--seconds", type=float, default=30.0)
+    ap.add_argument("--output", type=Path)
+    ap.add_argument("--selftest", action="store_true")
+    args = ap.parse_args()
+    if args.selftest:
+        parser_selftest()
+        print("profile-graphics selftest: ok")
+        return 0
+    if args.seconds <= 0:
+        raise SystemExit("--seconds must be positive")
+    lock_reexec(sys.argv[1:])
+    tv, appid, appdir, rundir = make_query(args.flavor)
+    executable = f"{appdir}/plxnative"
+    pid_out = ssh(tv, f"fuser {shlex.quote(executable)} 2>/dev/null", check=False).stdout
+    pids = [word for word in pid_out.split() if word.isdigit()]
+    if not pids:
+        raise SystemExit(f"{appid} is not running")
+    trigger_probe = ssh(
+        tv,
+        "for n in profile hwcnt cpuprof; do "
+        f"[ -e {rundir}/plxnative-$n ] && echo $n; done",
+        check=False,
+    ).stdout.split()
+    pacing_valid = not trigger_probe
+
+    subprocess.run(["make", "mali-irq-sample"], cwd=ROOT, check=True)
+    remote = f"/tmp/plxnative-mali-irq-{os.getpid()}"
+    try:
+        scp = ["sshpass", "-p", "alpine", "scp", "-O", *SSH_OPTS,
+               str(LOCAL_HELPER), f"root@{tv}:{remote}.new"]
+        subprocess.run(scp, cwd=ROOT, check=True)
+        ssh(tv, f"chmod 700 {remote}.new && mv {remote}.new {remote}")
+        start_lines_text = ssh(tv, f"wc -l < {rundir}/plxnative-events.log 2>/dev/null || echo 0",
+                               check=False).stdout.strip()
+        start_lines = int(start_lines_text or "0")
+        samples = max(2, math.ceil(args.seconds * 10.0) + 1)
+        raw = ssh(tv, f"{remote} {samples} 100", check=False)
+        if not raw.stdout:
+            raise SystemExit(raw.stderr.strip() or "Mali IRQ sampler produced no data")
+        log = ssh(tv, f"tail -n +{start_lines + 1} {rundir}/plxnative-events.log 2>/dev/null",
+                  check=False).stdout
+    finally:
+        ssh(tv, f"rm -f {remote} {remote}.new", check=False)
+
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    bundle = args.output or ROOT / "pkg" / "diagnostics" / f"graphics-observe-{stamp}"
+    bundle.mkdir(parents=True, exist_ok=False)
+    rows = parse_irq_snapshots(raw.stdout, "attach")
+    write_irq_jsonl(bundle / "mali-irq.jsonl", [rows])
+    (bundle / "events.log").write_text(log, encoding="utf-8")
+    pacing = summarize_pacing(log.splitlines())
+    irq = summarize_irq(rows)
+    metadata = {"version": 1, "mode": "observe", "flavor": args.flavor, "appid": appid,
+                "pid": int(pids[0]), "seconds": args.seconds, "pacing_valid": pacing_valid,
+                "active_profilers": trigger_probe, "pacing": pacing, "irq": irq}
+    (bundle / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    lines = [
+        "PlxNative graphics observation (attach; active signals only, no baseline)",
+        f"install: {appid} [{args.flavor}] pid={pids[0]}",
+        f"pacing ({'valid: render profilers absent' if pacing_valid else 'INVALID: active ' + ','.join(trigger_probe)}): "
+        f"fps p50={pacing['fps_p50']:.1f} p10={pacing['fps_p10']:.1f} "
+        f"p95={pacing['fps_p95']:.1f} drift={pacing['fps_drift']:+.1f} n={pacing['n']}",
+        *format_irq("Mali active observation (global, no attach baseline)", irq),
+        "HWCNT: not collected in attach mode; it requires a separately armed launch.",
+    ]
+    summary = "\n".join(lines) + "\n"
+    (bundle / "summary.txt").write_text(summary, encoding="utf-8")
+    print(summary, end="")
+    print(f"wrote {bundle}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

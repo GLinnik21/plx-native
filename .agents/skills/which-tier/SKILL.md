@@ -15,7 +15,7 @@ description: >
 
 # which-tier — what actually verifies this change
 
-This skill **decides**. `ui-sim`, `tv-session`, `tv-lock`, `fleet-plan`, `crash-triage` and
+This skill **decides**. `ui-sim`, `tv-session`, `tv-lock`, `fleet-plan`, `profile-tv`, `crash-triage` and
 `cut-release` **execute** — it ends by handing off to one of them, and it deliberately does not
 restate what they already document.
 
@@ -211,7 +211,7 @@ knows the set is theirs.
 | **UI layout / spacing / colour / a new screen** (`ui/`) | `make check` → `make sim-shot SIM_W=1920 SIM_H=1080` (`ui-sim`) → **one device capture, looked at** | the fps tier is blind to pixels (the 2026-08-13 watched-mark bug); a FITTED sim shot is 960x540 on a 1x display, layout evidence only — which is what `SIM_W`/`SIM_H` exist for |
 | **text rasterization, fonts, the `theme::size` ladder** | `tools/font-hint-audit.py` → device capture | **the simulator is disqualified** — different FreeType; `make check` never rasterizes anything |
 | **anything ANIMATED, or repainting from a CLOCK** | two host tests (runs / rests) → `--fps` with a real `fps_floor`, plus an `fps_ceiling` if the screen settles | `loop_floor` cannot see a stopped animation at all; the simulator cannot see rate |
-| **frame rate / perf** | `./tests/run.py --fps` (implies `--server`), unarmed | never the simulator; never a run with a profiler armed; `drift` is reported, never asserted |
+| **frame rate / perf** | `profile-tv`: `./tests/run.py --fps` unarmed, or one scene with `--graphics-profile` for pacing + IRQ + HWCNT | never the simulator; only the profile's production leg has quotable FPS; `drift` is reported, never asserted |
 | **player pipeline, demux, Starfish/ACB, the Load payload** | `make check` (pure `ff.rs` logic) → `./tests/run.py` (synthetic) → `--server` if selection is involved | the synthetic tier bypasses `metadata → plan → apply_plan` and false-PASSes an unread trigger via `engine`'s `_ =>` arm |
 | **track selection, resume, markers, Up Next, `/:/timeline`** | `./tests/run.py --server` — **only** | the synthetic tier reaches none of these; a bare `./tests/run.py` is not evidence about any of them |
 | **FFI / linkage / `dynlib!`** | `tools/fwcompat.py` → `make check` → **`make sim` or `make macapp`** → device | **there is no link error any more**; and the device cannot see an Apple-ABI variadic bug — see below |
@@ -311,6 +311,7 @@ built the package; a real release goes through the **`cut-release`** skill.
 | needs a suite on the television | `tv-lock` → `./tests/run.py`, plus `--server` / `--fps` / `--fps-player` as the router says |
 | several agents, and one of them needs the set | **`fleet-plan`** — at most ONE lane gets the television; the rest go to the simulator |
 | new FFI into a TV library | **`bind-tv-lib-abi`** (evidence via **`decompile-tv-lib`**) |
+| it is alive but slow or stuck | **`profile-tv`** |
 | it died on the set | **`crash-triage`** |
 | it is going out to users | **`cut-release`** |
 

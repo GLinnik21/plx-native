@@ -406,6 +406,22 @@ cast+about / info-panel regressions.
 ./tests/run.py --list          # scenes print as `fps:<name>`
 ```
 
+For a diagnosis rather than a regression gate, select exactly one reproducible scene and ask for
+the three-layer bundle:
+
+```bash
+./tests/run.py --fps --only home-grid --graphics-profile --profile-phase frame.ui
+```
+
+It first runs the scene with every GPU profiler off (the only leg whose `fps=` is quotable), while
+a temporary root helper samples the global Mali IRQ rows against a selected-install-closed baseline. It then
+repeats the identical scene with HWCNT around the named phase. That second leg's FPS is labelled
+invalid because the counter boundaries intentionally use `glFinish`. Raw logs, IRQ JSONL, HWCNT
+JSONL and one summary land under `pkg/diagnostics/`; use `--graphics-output DIR` to choose another
+new directory. `tools/profile-graphics --seconds 30` observes active presents and Mali IRQ on an
+app you are already driving by hand. It has no baseline because it does not restart the app, and
+marks pacing invalid if a render-profiler trigger is armed.
+
 - **Three assertions, and picking the wrong one is how a frozen animation ships.** Since the present
   gate (`ui::idle`) landed, a skipped frame is a 16 ms sleep, so `loop=` reads ~60 whether or not
   anything reached the panel:

@@ -83,12 +83,18 @@ patch -d "$SOURCE" -p1 < "$PATCH"
 cp "$SOURCE/include/sentry.h" "$PREFIX/include/sentry.h"
 cp "$BUILD/libsentry.a" "$PREFIX/lib/libsentry.a"
 cp "$BUILD/vendor/libunwind/libunwind.a" "$PREFIX/lib/libunwind.a"
+# The live developer sampler links the ptrace accessors as a standalone helper.  Keep this archive
+# beside the local unwinder rather than reaching into the disposable CMake build tree; neither one
+# is packaged unless an explicit package input names it (and only sentry-crash is such an input).
+cp "$BUILD/vendor/libunwind/libunwind_remote.a" "$PREFIX/lib/libunwind_remote.a"
 cp "$BUILD/sentry-crash" "$PREFIX/bin/sentry-crash"
 "$STRIP" --strip-unneeded "$PREFIX/bin/sentry-crash"
 chmod 755 "$PREFIX/bin/sentry-crash"
 
 test -s "$PREFIX/lib/libsentry.a"
 test -s "$PREFIX/lib/libunwind.a"
+test -s "$PREFIX/lib/libunwind_remote.a"
 test -x "$PREFIX/bin/sentry-crash"
 echo "sentry-native: $VERSION ARM handler ($("$STRIP" --version | head -1))"
-du -h "$PREFIX/bin/sentry-crash" "$PREFIX/lib/libsentry.a" "$PREFIX/lib/libunwind.a"
+du -h "$PREFIX/bin/sentry-crash" "$PREFIX/lib/libsentry.a" "$PREFIX/lib/libunwind.a" \
+    "$PREFIX/lib/libunwind_remote.a"

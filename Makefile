@@ -621,6 +621,7 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 SENTRY_NATIVE_PREFIX = vendor/sentry-native-prefix
 SENTRY_NATIVE_LIB     = $(SENTRY_NATIVE_PREFIX)/lib/libsentry.a
 SENTRY_UNWIND_LIB     = $(SENTRY_NATIVE_PREFIX)/lib/libunwind.a
+SENTRY_REMOTE_UNWIND_LIB = $(SENTRY_NATIVE_PREFIX)/lib/libunwind_remote.a
 SENTRY_HANDLER        = $(SENTRY_NATIVE_PREFIX)/bin/sentry-crash
 SENTRY_NATIVE_STAMP   = $(SENTRY_NATIVE_PREFIX)/.built
 SENTRY_NATIVE_INPUTS  = ci/build-sentry-native.sh vendor/sentry-native/webos-arm32.patch
@@ -1090,6 +1091,10 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	@# Host-only halves of the opt-in live diagnostics: /proc/interrupt parsing, rate normalization,
+	@# stack aggregation and folded output. Neither command resolves a TV or takes its lock.
+	tools/profile-graphics --selftest
+	tools/plxnative-sample selftest
 	@# The direct-screen TV command's own host-only contract: `--server N` must suppress the
 	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
 	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
@@ -1339,6 +1344,24 @@ logmprobe: tools/logmprobe.c
 mali-hwcnt-probe: tools/mali-hwcnt-probe.c
 	$(CC) $(CFLAGS) -o pkg/mali-hwcnt-probe tools/mali-hwcnt-probe.c
 
+# Passive /proc/interrupts sampler used as the middle, non-attributable layer of the opt-in
+# graphics profile. Standalone and temporary like the HWCNT probe; never an application payload.
+mali-irq-sample: tools/mali-irq-sample.c
+	@mkdir -p pkg
+	$(CC) $(CFLAGS) -o pkg/mali-irq-sample tools/mali-irq-sample.c
+
+# tools/plxnative-stackwalk.c — opt-in live-process sampler for the rooted development set.  The
+# ptrace implementation is the same libunwind remote archive used by sentry-crash, but this helper
+# is never an APP_FILE and therefore never enters an ipk or a deploy.  tools/plxnative-sample owns
+# its temporary copy under /tmp and removes it after every session.
+plxnative-stackwalk: $(SENTRY_NATIVE_STAMP) tools/plxnative-stackwalk.c
+	@mkdir -p pkg
+	$(CC) $(CFLAGS) \
+	  -Ivendor/sentry-native-src/vendor/libunwind/include \
+	  -Ivendor/sentry-native-build/vendor/libunwind/include \
+	  -o pkg/plxnative-stackwalk tools/plxnative-stackwalk.c \
+	  $(SENTRY_REMOTE_UNWIND_LIB) -ldl -lpthread
+
 # ---------------------------------------------------------------------------------------------
 # The desktop UI simulator — the same app core against a desktop SDL2 + desktop GL, no television.
 #
@@ -1558,5 +1581,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

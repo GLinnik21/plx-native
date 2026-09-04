@@ -1,0 +1,554 @@
+#!/usr/bin/env python3
+"""Opt-in stack sampling for a live PlxNative process on the rooted TV.
+
+The application is unchanged while this command is absent.  The wrapper takes the TV lock,
+temporarily stages the ARM ptrace helper under /tmp, verifies the selected install/PID and binary
+identity, captures raw JSONL, symbolizes matching local images, and removes the helper on exit.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Iterable
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCK = ROOT / "tools" / "tv-lock.sh"
+HELPER = ROOT / "pkg" / "plxnative-stackwalk"
+SSH_OPTIONS = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+    "-o", "ConnectTimeout=8",
+    "-o", "BatchMode=yes",
+]
+MAP_RE = re.compile(
+    r"^([0-9a-f]+)-([0-9a-f]+)\s+(\S+)\s+([0-9a-f]+)\s+\S+\s+\d+\s*(.*)$"
+)
+HEARTBEAT_RE = re.compile(r"\bloop=\d+\s+route=\w+.*?\bfps=\d+")
+
+
+def run(argv: list[str], *, check: bool = True, capture: bool = False, **kwargs):
+    return subprocess.run(
+        argv,
+        cwd=ROOT,
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        **kwargs,
+    )
+
+
+def query_make(flavor: str, *targets: str) -> list[str]:
+    proc = run(["make", "-s", f"FLAVOR={flavor}", *targets], capture=True)
+    return proc.stdout.splitlines()
+
+
+def transport(tv: str) -> tuple[list[str], list[str]]:
+    ssh = ["ssh", *SSH_OPTIONS, f"root@{tv}"]
+    probe = subprocess.run(ssh + ["true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if probe.returncode == 0:
+        return ssh, ["scp", "-O", *SSH_OPTIONS]
+    if shutil.which("sshpass"):
+        prefix = ["sshpass", "-p", "alpine"]
+        # BatchMode is useful for the key probe and explicitly disables password authentication;
+        # carrying it into sshpass makes the documented fallback impossible.
+        password_options = SSH_OPTIONS[:-2]
+        return (prefix + ["ssh", *password_options, f"root@{tv}"],
+                prefix + ["scp", "-O", *password_options])
+    raise SystemExit(f"cannot authenticate to root@{tv}; install an SSH key or sshpass")
+
+
+def ssh_call(ssh: list[str], command: str, *, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        # ssh joins all trailing argv into one remote shell command; passing separate
+        # ["sh", "-c", command] words loses command's grouping on the remote side.
+        ssh + [command],
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def remote_md5(ssh: list[str], path: str) -> str:
+    proc = ssh_call(ssh, f"md5sum {shlex.quote(path)} 2>/dev/null | awk '{{print $1}}'", check=False)
+    return proc.stdout.strip()
+
+
+def local_md5(path: Path) -> str:
+    digest = hashlib.md5()  # nosec B324 - identity witness, not a security primitive
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_pid(ssh: list[str], executable: str) -> int | None:
+    quoted = shlex.quote(executable)
+    script = (
+        f"for p in $(fuser {quoted} 2>/dev/null); do "
+        "case $p in *[!0-9]*|'') continue;; esac; "
+        # Root sees a jailed process's executable through /var/palm/jail/<id>/..., while fuser
+        # names the host-side inode. Validate the install-scoped suffix, not a byte-identical path.
+        f"x=$(readlink /proc/$p/exe 2>/dev/null); case \"$x\" in *{quoted}) "
+        "echo $p; exit 0;; esac; done; exit 1"
+    )
+    proc = ssh_call(ssh, script, check=False)
+    try:
+        return int(proc.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def parse_maps(text: str) -> list[dict]:
+    mappings = []
+    for line in text.splitlines():
+        match = MAP_RE.match(line)
+        if not match:
+            continue
+        mappings.append({
+            "start": int(match.group(1), 16),
+            "end": int(match.group(2), 16),
+            "perms": match.group(3),
+            "offset": int(match.group(4), 16),
+            "path": match.group(5),
+            "line": line,
+        })
+    return mappings
+
+
+def module_for(ip: int, mappings: list[dict]) -> tuple[str, int]:
+    for mapping in mappings:
+        if mapping["start"] <= ip < mapping["end"]:
+            path = mapping["path"] or "[anonymous]"
+            return path, ip - mapping["start"] + mapping["offset"]
+    return "[unknown]", ip
+
+
+def toolprefix() -> str:
+    sdk = os.environ.get("WEBOS_SDK", str(Path.home() / "webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot"))
+    return str(Path(sdk) / "bin" / "arm-webos-linux-gnueabi-")
+
+
+def elf_type(path: Path) -> str:
+    readelf = toolprefix() + "readelf"
+    proc = subprocess.run([readelf, "-h", str(path)], text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL)
+    match = re.search(r"^\s*Type:\s+(\S+)", proc.stdout, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def build_id(path: Path) -> str:
+    readelf = toolprefix() + "readelf"
+    proc = subprocess.run([readelf, "-n", str(path)], text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL)
+    match = re.search(r"Build ID:\s*([0-9a-f]+)", proc.stdout)
+    return match.group(1) if match else ""
+
+
+def select_local_image(remote: str, app_suffix: str, binary_match: bool,
+                       chosen_app: Path, pkg_dir: Path) -> Path | None:
+    if remote.endswith(app_suffix):
+        # Do not fall through to pkg/<basename>: that is also pkg/plxnative and would confidently
+        # symbolize a deployed mismatch against the wrong local executable.
+        return chosen_app if binary_match else None
+    candidate = pkg_dir / Path(remote).name
+    return candidate if candidate.exists() else None
+
+
+def symbolizer(appdir: str, binary_match: bool):
+    addr2line = toolprefix() + "addr2line"
+    local_app = ROOT / "pkg" / "plxnative"
+    debug_app = ROOT / "pkg" / "plxnative.debug"
+    chosen_app = local_app
+    if debug_app.exists() and build_id(debug_app) == build_id(local_app):
+        chosen_app = debug_app
+    app_type = elf_type(local_app) if local_app.exists() else ""
+    app_suffix = f"{appdir}/plxnative"
+
+    def local_image(remote: str) -> Path | None:
+        return select_local_image(remote, app_suffix, binary_match, chosen_app, ROOT / "pkg")
+
+    cache: dict[tuple[str, int], str] = {}
+
+    def symbolize(remote: str, relative: int, ip: int, fallback: str) -> str:
+        image = local_image(remote)
+        if not image:
+            return fallback
+        address = ip if remote.endswith(app_suffix) and app_type == "EXEC" else relative
+        key = (str(image), address)
+        if key not in cache:
+            proc = subprocess.run(
+                [addr2line, "-C", "-f", "-e", str(image), hex(address)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines()]
+            cache[key] = " @ ".join(lines[:2]) if lines and lines[0] != "??" else fallback
+        return cache[key]
+
+    return symbolize
+
+
+def frame_labels(rows: list[dict], mappings: list[dict], symbolize) -> list[dict]:
+    enriched = []
+    for row in rows:
+        if row.get("type") != "thread":
+            continue
+        labels = []
+        for frame in row.get("frames", []):
+            ip = int(frame["ip"])
+            module, relative = module_for(ip, mappings)
+            fallback = frame.get("symbol") or f"{Path(module).name}+0x{relative:x}"
+            labels.append(symbolize(module, relative, ip, fallback))
+        copy = dict(row)
+        copy["labels"] = labels
+        enriched.append(copy)
+    return enriched
+
+
+def write_report(bundle: Path, metadata: dict, rows: list[dict], mappings: list[dict], symbolize) -> None:
+    threads = frame_labels(rows, mappings, symbolize)
+    stacks: collections.Counter[tuple[str, ...]] = collections.Counter()
+    leaves: collections.Counter[str] = collections.Counter()
+    names: collections.Counter[str] = collections.Counter()
+    failures: collections.Counter[str] = collections.Counter()
+    folded: collections.Counter[str] = collections.Counter()
+    for row in threads:
+        name = row.get("comm") or f"tid-{row.get('tid', '?')}"
+        names[name] += 1
+        labels = row.get("labels", [])
+        if row.get("error"):
+            failures[row["error"]] += 1
+        if not labels:
+            continue
+        stack = tuple(labels)
+        stacks[stack] += 1
+        leaves[labels[0]] += 1
+        folded[f"{name};" + ";".join(reversed(labels))] += 1
+
+    with (bundle / "stacks.folded").open("w", encoding="utf-8") as out:
+        for stack, count in folded.most_common():
+            out.write(f"{stack} {count}\n")
+
+    lines = [
+        "PlxNative live stack sample",
+        f"mode: {metadata['mode']}",
+        f"install: {metadata['appid']} [{metadata['flavor']}]",
+        f"pid: {metadata['pid']}",
+        f"binary identity: {'match' if metadata['binary_match'] else 'MISMATCH — no local file:line; target symbols/raw offsets only'}",
+        f"thread records: {len(threads)}; usable stacks: {sum(stacks.values())}",
+        "",
+        "Most sampled threads:",
+    ]
+    lines.extend(f"  {count:5d}  {name}" for name, count in names.most_common(12))
+    lines.extend(["", "Hottest leaf frames:"])
+    lines.extend(f"  {count:5d}  {leaf}" for leaf, count in leaves.most_common(15))
+    lines.extend(["", "Dominant full stacks (leaf first):"])
+    for stack, count in stacks.most_common(10):
+        lines.append(f"  [{count} samples]")
+        lines.extend(f"    {index:02d} {label}" for index, label in enumerate(stack))
+    if failures:
+        lines.extend(["", "Sampling failures:"])
+        lines.extend(f"  {count:5d}  {error}" for error, count in failures.most_common())
+    (bundle / "report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def new_bundle(output: Path | None, prefix: str) -> Path:
+    if output:
+        bundle = output
+    else:
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        bundle = ROOT / "pkg" / "diagnostics" / f"{prefix}-{stamp}"
+    bundle.mkdir(parents=True, exist_ok=False)
+    return bundle
+
+
+class Session:
+    def __init__(self, flavor: str):
+        values = query_make(flavor, "print-tv", "print-appid", "print-appdir", "print-rundir")
+        if len(values) != 4 or not values[0]:
+            raise SystemExit("cannot resolve TV/install paths from Makefile")
+        self.tv, self.appid, self.appdir, self.rundir = values
+        self.flavor = flavor
+        self.executable = f"{self.appdir}/plxnative"
+        self.ssh, self.scp = transport(self.tv)
+        self.remote_helper = f"/tmp/plxnative-stackwalk-{os.getpid()}"
+        self.staged = False
+
+    def build_and_stage(self) -> None:
+        run(["make", "plxnative-stackwalk"])
+        proc = subprocess.run(
+            self.scp + [str(HELPER), f"root@{self.tv}:{self.remote_helper}.new"],
+            cwd=ROOT,
+        )
+        if proc.returncode != 0:
+            raise SystemExit("failed to stage stackwalk helper")
+        ssh_call(
+            self.ssh,
+            f"chmod 700 {shlex.quote(self.remote_helper)}.new && "
+            f"mv {shlex.quote(self.remote_helper)}.new {shlex.quote(self.remote_helper)}",
+        )
+        self.staged = True
+
+    def cleanup(self) -> None:
+        # Unconditional and both names: an interrupted scp or a failed chmod/mv happens before
+        # `staged` can become true, but its .new file is just as much ours to remove.
+        ssh_call(
+            self.ssh,
+            f"rm -f {shlex.quote(self.remote_helper)} {shlex.quote(self.remote_helper)}.new",
+            check=False,
+        )
+        self.staged = False
+
+    def capture(self, pid: int, bundle: Path, *, samples: int, interval_ms: int,
+                all_threads: bool, mode: str) -> Path:
+        maps = ssh_call(self.ssh, f"cat /proc/{pid}/maps", check=False).stdout
+        (bundle / "maps.txt").write_text(maps, encoding="utf-8")
+        command = [self.remote_helper, "--pid", str(pid), "--samples", str(samples),
+                   "--interval-ms", str(interval_ms), "--max-frames", "64"]
+        if all_threads:
+            command.append("--all-threads")
+        proc = ssh_call(self.ssh, " ".join(shlex.quote(part) for part in command), check=False)
+        raw = proc.stdout
+        (bundle / "samples.jsonl").write_text(raw, encoding="utf-8")
+        if proc.stderr:
+            (bundle / "helper.stderr").write_text(proc.stderr, encoding="utf-8")
+        rows = []
+        for line_no, line in enumerate(raw.splitlines(), 1):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as error:
+                raise RuntimeError(f"invalid helper JSON on line {line_no}: {error}") from error
+        local_binary = ROOT / "pkg" / "plxnative"
+        local_hash = local_md5(local_binary) if local_binary.exists() else ""
+        remote_hash = remote_md5(self.ssh, self.executable)
+        metadata = {
+            "version": 1,
+            "captured_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "mode": mode,
+            "flavor": self.flavor,
+            "appid": self.appid,
+            "pid": pid,
+            "samples": samples,
+            "interval_ms": interval_ms,
+            "all_threads": all_threads,
+            "local_md5": local_hash,
+            "remote_md5": remote_hash,
+            "binary_match": bool(local_hash and local_hash == remote_hash),
+        }
+        (bundle / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n",
+                                               encoding="utf-8")
+        mappings = parse_maps(maps)
+        write_report(bundle, metadata, rows, mappings,
+                     symbolizer(self.appdir, metadata["binary_match"]))
+        return bundle
+
+
+def lock_reexec(argv: list[str]) -> None:
+    if os.environ.get("PLX_TV_LOCK_INHERITED") == "1":
+        return
+    os.execv(
+        str(LOCK),
+        [str(LOCK), "with", "--why", "opt-in PlxNative live diagnostics", "--",
+         sys.executable, str(Path(__file__).resolve()), *argv],
+    )
+
+
+def wait_for_pid(session: Session) -> int:
+    while True:
+        pid = resolve_pid(session.ssh, session.executable)
+        if pid:
+            return pid
+        print(f"waiting for {session.appid} to start…", flush=True)
+        time.sleep(1.0)
+
+
+def capture_once(args, session: Session) -> Path:
+    pid = resolve_pid(session.ssh, session.executable)
+    if not pid:
+        raise SystemExit(f"{session.appid} is not running")
+    if args.command == "snapshot":
+        samples, interval_ms, all_threads = 1, 0, True
+    else:
+        samples = max(1, round(args.seconds * args.hz))
+        interval_ms = max(1, round(1000 / args.hz))
+        all_threads = args.all_threads
+    bundle = new_bundle(args.output, f"stack-{args.command}")
+    session.capture(pid, bundle, samples=samples, interval_ms=interval_ms,
+                    all_threads=all_threads, mode=args.command)
+    return bundle
+
+
+def watch(args, session: Session) -> None:
+    print(f"watching {session.appid}; no capture until loop= is silent for {args.stall_ms} ms")
+    while True:
+        pid = wait_for_pid(session)
+        eventlog = f"{session.rundir}/plxnative-events.log"
+        tail = subprocess.Popen(
+            session.ssh + [f"tail -n 0 -f {shlex.quote(eventlog)}"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=1,
+        )
+        last_heartbeat: float | None = None
+        fired = False
+        resumed_heartbeats = 0
+        try:
+            assert tail.stdout is not None
+            import selectors
+            selector = selectors.DefaultSelector()
+            selector.register(tail.stdout, selectors.EVENT_READ)
+            while tail.poll() is None:
+                events = selector.select(timeout=0.20)
+                for key, _ in events:
+                    line = key.fileobj.readline()
+                    if HEARTBEAT_RE.search(line):
+                        last_heartbeat = time.monotonic()
+                        if fired:
+                            resumed_heartbeats += 1
+                            if resumed_heartbeats >= 2:
+                                fired = False
+                                resumed_heartbeats = 0
+                                print("two heartbeats resumed; watchdog re-armed", flush=True)
+                        else:
+                            resumed_heartbeats = 0
+                if last_heartbeat is None or fired:
+                    continue
+                age_ms = (time.monotonic() - last_heartbeat) * 1000.0
+                if age_ms < args.stall_ms:
+                    continue
+                current = resolve_pid(session.ssh, session.executable)
+                if current != pid:
+                    break
+                fired = True
+                resumed_heartbeats = 0
+                bundle = new_bundle(args.output, "stack-hang")
+                session.capture(pid, bundle, samples=3, interval_ms=100,
+                                all_threads=True, mode="watch")
+                print(f"captured suspected hang ({age_ms:.0f} ms): {bundle}", flush=True)
+                if args.output:
+                    return
+        finally:
+            tail.terminate()
+            try:
+                tail.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                tail.kill()
+
+
+def selftest() -> int:
+    maps = parse_maps(
+        "00010000-00110000 r-xp 00000000 00:00 1 /app/plxnative\n"
+        "70000000-70010000 r-xp 00002000 00:00 2 /lib/libfoo.so\n"
+    )
+    assert module_for(0x10020, maps) == ("/app/plxnative", 0x20)
+    assert module_for(0x70000010, maps) == ("/lib/libfoo.so", 0x2010)
+    assert module_for(0x90000000, maps) == ("[unknown]", 0x90000000)
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = Path(tmp)
+        pkg_dir = bundle / "pkg"
+        pkg_dir.mkdir()
+        local_app = pkg_dir / "plxnative"
+        local_app.write_bytes(b"not an ELF; selection is the contract under test")
+        jail_path = "/var/palm/jail/test/media/apps/com.test/plxnative"
+        suffix = "/media/apps/com.test/plxnative"
+        assert select_local_image(jail_path, suffix, False, local_app, pkg_dir) is None
+        assert select_local_image(jail_path, suffix, True, local_app, pkg_dir) == local_app
+        metadata = {"mode": "selftest", "appid": "test", "flavor": "debug", "pid": 7,
+                    "binary_match": False}
+        rows = [
+            {"type": "thread", "sample": 0, "tid": 7, "comm": "main", "frames": [
+                {"ip": 0x10020, "symbol": "hot", "offset": 4},
+                {"ip": 0x70000010, "symbol": "root", "offset": 8},
+            ]},
+            {"type": "thread", "sample": 1, "tid": 7, "comm": "main", "frames": [
+                {"ip": 0x10020, "symbol": "hot", "offset": 4},
+            ]},
+        ]
+        write_report(bundle, metadata, rows, maps, lambda _m, _r, _i, fallback: fallback)
+        report = (bundle / "report.txt").read_text()
+        folded = (bundle / "stacks.folded").read_text()
+        assert "2  hot" in report
+        assert "main;root;hot 1" in folded
+    print("plxnative-sample selftest: ok")
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--flavor", default="debug", help="install to sample (default: debug)")
+    sub = ap.add_subparsers(dest="command", required=True)
+    snap = sub.add_parser("snapshot", help="capture every live thread once")
+    snap.add_argument("--output", type=Path)
+    profile = sub.add_parser("profile", help="statistically sample the main/render thread")
+    profile.add_argument("--seconds", type=float, default=5.0)
+    profile.add_argument("--hz", type=float, default=10.0)
+    profile.add_argument("--all-threads", action="store_true",
+                         help="sample every LWP (more invasive; main thread is the default)")
+    profile.add_argument("--output", type=Path)
+    watching = sub.add_parser("watch", help="capture all threads when loop= heartbeat stalls")
+    watching.add_argument("--stall-ms", type=int, default=2500)
+    watching.add_argument("--output", type=Path,
+                          help="capture one incident here and exit (default: keep watching)")
+    sub.add_parser("selftest", help="run host-only parser/aggregation tests")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    if args.command == "selftest":
+        return selftest()
+    if args.command == "profile" and (args.seconds <= 0 or not 0 < args.hz <= 100):
+        raise SystemExit("profile needs --seconds > 0 and 0 < --hz <= 100")
+    if args.command == "watch" and args.stall_ms < 1000:
+        raise SystemExit("watch --stall-ms must be >= 1000")
+    lock_reexec(sys.argv[1:])
+    session = Session(args.flavor)
+    old_handlers = {}
+
+    def stop(signum, _frame):
+        old = old_handlers.get(signum)
+        if callable(old):
+            old(signum, _frame)
+        # The ordinary finally owns cleanup, including the partly-staged .new case.
+        raise KeyboardInterrupt
+
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        old_handlers[signum] = signal.signal(signum, stop)
+    try:
+        session.build_and_stage()
+        if args.command == "watch":
+            watch(args, session)
+            return 0
+        bundle = capture_once(args, session)
+        print(f"wrote {bundle}")
+        print((bundle / "report.txt").read_text(), end="")
+        return 0
+    finally:
+        session.cleanup()
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)

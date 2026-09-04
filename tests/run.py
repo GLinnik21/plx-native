@@ -61,11 +61,15 @@ No third-party deps -- Python 3 stdlib only (macOS system python3 is fine).
 
 import argparse
 import atexit
+import datetime as datetime_module
 import functools
 import json
+import math
 import os
+from pathlib import Path
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -79,6 +83,7 @@ import urllib.request
 # ---------------------------------------------------------------------------
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TESTS_DIR)
+TOOLS_DIR = os.path.join(REPO_ROOT, "tools")
 MANIFEST = os.path.join(TESTS_DIR, "manifest.json")
 MANIFEST_LOCAL = os.path.join(TESTS_DIR, "manifest.local.json")
 MANIFEST_LOCAL_EXAMPLE = MANIFEST_LOCAL + ".example"
@@ -87,6 +92,14 @@ TV_HOST_FILE = os.path.join(REPO_ROOT, ".tv-host")
 
 sys.path.insert(0, TESTS_DIR)
 from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
+sys.path.insert(0, TOOLS_DIR)
+from graphics_profile import (  # noqa: E402
+    format_irq,
+    parse_irq_snapshots,
+    percentile as profile_percentile,
+    summarize_irq,
+    write_irq_jsonl,
+)
 
 # Where `make fixtures-pipeline` puts the generated pack. NOT inside the repo, and not merely by
 # convention: the generator REFUSES an --out under the repo root, because this repository is
@@ -542,16 +555,102 @@ def sh_squote(s):
 # ---------------------------------------------------------------------------
 # Device I/O
 # ---------------------------------------------------------------------------
-def ssh(tv, remote_cmd, timeout=30):
-    """Run a command on the TV. Mirrors the Makefile's committed sshpass creds."""
-    cmd = [
+def ssh_argv(tv, remote_cmd):
+    """The one SSH command shape used by blocking calls and streaming profiler helpers."""
+    return [
         "sshpass", "-p", "alpine", "ssh",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=8",
         f"root@{tv}", remote_cmd,
     ]
+
+
+def ssh(tv, remote_cmd, timeout=30):
+    """Run a command on the TV. Mirrors the Makefile's committed sshpass creds."""
+    cmd = ssh_argv(tv, remote_cmd)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+class MaliIrqSampler:
+    """Temporary root helper for passive, global Mali IRQ samples.
+
+    The app cannot read root's /proc view from its jail, and it should not: this layer must remain
+    external so an unarmed production leg has no new hot-path work. The helper is an explicit
+    standalone Make target, not an APP_FILE, and this owner removes its unique /tmp copy.
+    """
+
+    def __init__(self, tv):
+        self.tv = tv
+        self.remote = f"/tmp/plxnative-mali-irq-{os.getpid()}"
+        self.proc = None
+
+    def stage(self):
+        built = make(["mali-irq-sample"], timeout=120, capture=False)
+        if built.returncode != 0:
+            raise RuntimeError("failed to build mali-irq-sample")
+        local = os.path.join(REPO_ROOT, "pkg", "mali-irq-sample")
+        cmd = [
+            "sshpass", "-p", "alpine", "scp", "-O",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=8",
+            local, f"root@{self.tv}:{self.remote}.new",
+        ]
+        if subprocess.run(cmd).returncode != 0:
+            raise RuntimeError("failed to stage mali-irq-sample")
+        moved = ssh(self.tv, f"chmod 700 {self.remote}.new && mv {self.remote}.new {self.remote}")
+        if moved.returncode != 0:
+            raise RuntimeError("failed to install temporary mali-irq-sample")
+
+    def capture(self, seconds, interval_ms=100):
+        samples = max(2, math.ceil(seconds * 1000.0 / interval_ms) + 1)
+        result = ssh(self.tv, f"{self.remote} {samples} {interval_ms}",
+                     timeout=max(30, int(seconds) + 15))
+        if not result.stdout:
+            raise RuntimeError(result.stderr.strip() or "Mali IRQ sampler returned no data")
+        return result.stdout
+
+    def start(self, seconds, interval_ms=100):
+        if self.proc is not None:
+            raise RuntimeError("Mali IRQ sampler already running")
+        samples = max(2, math.ceil(seconds * 1000.0 / interval_ms) + 1)
+        self.proc = subprocess.Popen(
+            ssh_argv(self.tv, f"{self.remote} {samples} {interval_ms}"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+
+    def finish(self, timeout=15):
+        if self.proc is None:
+            raise RuntimeError("Mali IRQ sampler was not started")
+        proc, self.proc = self.proc, None
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            out, err = proc.communicate(timeout=5)
+        if not out:
+            raise RuntimeError(err.strip() or "Mali IRQ sampler returned no data")
+        return out
+
+    def close(self):
+        if self.proc is not None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+        ssh(self.tv, f"rm -f {self.remote} {self.remote}.new", timeout=15)
 
 
 def make_argv(target_args):
@@ -4474,7 +4573,8 @@ def fps_run_needs_token(scenes, has_shared_server):
                 or any(fps_scene_needs_token(s, has_shared_server) for s in scenes))
 
 
-def run_fps_scene(scene, cfg, token):
+def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
+                  instrumented=False, log_suffix="", before_run=None):
     name = scene["name"]
     tv = cfg["tv"]
     route = scene["route"]
@@ -4500,6 +4600,7 @@ def run_fps_scene(scene, cfg, token):
     # opt in explicitly with `"quality": "auto"`.
     if scene.get("tier") == "player":
         files.append(("plxnative-quality", scene.get("quality", "original")))
+    files.extend(extra_triggers)
     # clears every plxnative-* (incl. plxnative-profile) then writes this scene's. Player-tier
     # scenes actually decode video, so they need the test-user token too — appended to the same
     # round-trip via extra= so its value stays off stdout, exactly like the playback cases.
@@ -4519,6 +4620,8 @@ def run_fps_scene(scene, cfg, token):
         # same redaction as the playback cases — see `describe_server`.
         print(f"    plxnative-servers: <{describe_server(cfg['shared_server'])}, token redacted>")
 
+    if before_run:
+        before_run()
     try:
         proc = make(["run", f"TV={tv}", f"RUN_SECS={run_secs}"], timeout=run_secs + 90)
     except subprocess.TimeoutExpired:
@@ -4528,7 +4631,10 @@ def run_fps_scene(scene, cfg, token):
     # FPS scenes are the runs most likely to carry profiler summaries.  Preserve them just like
     # playback cases when --save-logs is requested; otherwise teardown relaunches the app and the
     # only copy of the HWCNT/phase evidence is lost before it can be compared with the A/B leg.
-    save_case_log(cfg, f"fps-{name}", lines)
+    save_case_log(cfg, f"fps-{name}{log_suffix}", lines)
+    if capture is not None:
+        capture.update({"lines": lines, "warmup": warmup, "run_secs": run_secs,
+                        "route": route, "overlay": overlay})
     # Same refusal as the playback cases, and it matters at least as much here: a scene graded
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
@@ -4546,6 +4652,17 @@ def run_fps_scene(scene, cfg, token):
                f"entered this screen? ({len(alls)} total matched before warmup)")
         print(f"    [FAIL] {msg}")
         return False, msg
+
+    # HWCNT deliberately brackets the selected phase with glFinish. The leg is evidence about
+    # counters, never a regression gate on frame pacing; applying the ordinary floor here would
+    # reject the instrument for perturbing the pipeline exactly as documented. We still require
+    # five live route heartbeats above, so a failed boot cannot masquerade as an empty profile.
+    if instrumented:
+        pres = parse_fps(lines, route, overlay)[warmup:]
+        detail = (f"instrumented HWCNT leg: route={tag}, loop samples={st['n']}, "
+                  f"fps samples={len(pres)} — pacing is INVALID under glFinish")
+        print(f"    [INFO] {detail}")
+        return True, detail
 
     ok = st["robust_min"] >= loop_floor
     detail = (f"robust_min={st['robust_min']} loop/s (min={st['min']}, median={st['median']}, "
@@ -4642,6 +4759,145 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     return 0 if nfail == 0 else 1  # the TV is cleaned by main()'s teardown, on every exit path
 
 
+def _pacing_profile(capture):
+    values = parse_fps(capture["lines"], capture["route"], capture["overlay"])[capture["warmup"]:]
+    if not values:
+        return {"n": 0, "p50": 0.0, "p10": 0.0, "p95": 0.0, "min": 0.0,
+                "max": 0.0, "drift": 0.0}
+    floats = [float(value) for value in values]
+    third = max(len(floats) // 3, 1)
+    return {
+        "n": len(floats),
+        "p50": statistics.median(floats),
+        "p10": profile_percentile(floats, 0.10),
+        "p95": profile_percentile(floats, 0.95),
+        "min": min(floats),
+        "max": max(floats),
+        "drift": statistics.fmean(floats[-third:]) - statistics.fmean(floats[:third]),
+    }
+
+
+def run_graphics_profile(scene, cfg, token, phase, output=None):
+    """Two launches, three layers: unarmed pacing + passive IRQ, then attributable HWCNT.
+
+    A single launch cannot answer all three honestly. HWCNT's glFinish boundaries perturb pacing,
+    while the unarmed leg must remain exactly the scene the FPS suite grades. The scene definition
+    is reused for both launches so route, oscillators, account and timing cannot drift by hand.
+    """
+    if not re.fullmatch(r"[a-z0-9_.~]+", phase):
+        raise SystemExit("--profile-phase must be one exact profiler phase name")
+    stamp = datetime_module.datetime.now(datetime_module.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    bundle = output or os.path.join(REPO_ROOT, "pkg", "diagnostics",
+                                    f"graphics-{scene['name']}-{stamp}")
+    os.makedirs(bundle, exist_ok=False)
+    sampler = MaliIrqSampler(cfg["tv"])
+    production = {}
+    instrumented = {}
+    try:
+        sampler.stage()
+        # The baseline deliberately closes the SELECTED install. Another installed app and the
+        # compositor may still exist, so this is a system floor, not a claim that every active IRQ
+        # in the next leg belongs to PlxNative. Layer two remains global by construction.
+        make(["kill", f"TV={cfg['tv']}"], timeout=40)
+        baseline_raw = sampler.capture(3.0)
+
+        run_secs = scene.get("run_secs", 18)
+        prod_ok, prod_detail = run_fps_scene(
+            scene, cfg, token, capture=production, log_suffix="-production",
+            before_run=lambda: sampler.start(run_secs + 4.0),
+        )
+        production_raw = sampler.finish()
+
+        hw_ok, hw_detail = run_fps_scene(
+            scene, cfg, token,
+            extra_triggers=(("plxnative-hwcnt", phase),),
+            capture=instrumented,
+            instrumented=True,
+            log_suffix="-hwcnt",
+            before_run=lambda: sampler.start(run_secs + 4.0),
+        )
+        hw_irq_raw = sampler.finish()
+        hwcnt_result = ssh(cfg["tv"], f"cat {RUNDIR}/plxnative-hwcnt.jsonl 2>/dev/null", timeout=30)
+        if not hwcnt_result.stdout:
+            raise RuntimeError(
+                "HWCNT produced no JSONL — phase unknown, trigger unread, or /dev/mali0 refused"
+            )
+    finally:
+        sampler.close()
+
+    baseline_rows = parse_irq_snapshots(baseline_raw, "baseline")
+    production_rows = parse_irq_snapshots(production_raw, "production")
+    hw_irq_rows = parse_irq_snapshots(hw_irq_raw, "instrumented")
+    if not baseline_rows or not production_rows or not hw_irq_rows:
+        raise RuntimeError("one or more Mali IRQ legs contained no matching IRQ rows")
+    write_irq_jsonl(Path(bundle) / "mali-irq.jsonl",
+                    [baseline_rows, production_rows, hw_irq_rows])
+    with open(os.path.join(bundle, "events-production.log"), "w", encoding="utf-8") as out:
+        out.write("\n".join(production["lines"]) + "\n")
+    with open(os.path.join(bundle, "events-hwcnt.log"), "w", encoding="utf-8") as out:
+        out.write("\n".join(instrumented["lines"]) + "\n")
+    hwcnt_path = os.path.join(bundle, "plxnative-hwcnt.jsonl")
+    with open(hwcnt_path, "w", encoding="utf-8") as out:
+        out.write(hwcnt_result.stdout)
+
+    # The sampler starts immediately before make run. Drop launch plus the scene's declared
+    # heartbeat warmup from active summaries; raw JSONL remains complete for a different cut.
+    discard = int((production["warmup"] + 2) * 10)
+    baseline_irq = summarize_irq(baseline_rows)
+    production_irq = summarize_irq(production_rows, discard)
+    instrumented_irq = summarize_irq(hw_irq_rows, discard)
+    pacing = _pacing_profile(production)
+    analyzer = subprocess.run(
+        [sys.executable, os.path.join(TOOLS_DIR, "analyze-hwcnt.py"), hwcnt_path,
+         "--phase", phase, "--discard", "10"],
+        capture_output=True, text=True,
+    )
+    if analyzer.returncode != 0:
+        raise RuntimeError(f"HWCNT analyzer failed: {analyzer.stderr.strip()}")
+
+    metadata = {
+        "version": 1,
+        "scene": scene["name"],
+        "phase": phase,
+        "flavor": FLAVOUR,
+        "appid": APPID,
+        "production_gate": {"ok": prod_ok, "detail": prod_detail},
+        "instrumented_gate": {"ok": hw_ok, "detail": hw_detail},
+        "pacing": pacing,
+        "irq": {"baseline": baseline_irq, "production": production_irq,
+                "instrumented": instrumented_irq},
+    }
+    with open(os.path.join(bundle, "metadata.json"), "w", encoding="utf-8") as out:
+        json.dump(metadata, out, indent=2)
+        out.write("\n")
+
+    summary = [
+        f"PlxNative three-layer graphics profile: fps:{scene['name']}",
+        f"install: {APPID} [{FLAVOUR}]  HWCNT phase={phase}",
+        "",
+        "Layer 1 — production present pacing (profilers OFF):",
+        f"  fps p50={pacing['p50']:.1f} p10={pacing['p10']:.1f} "
+        f"p95={pacing['p95']:.1f} min={pacing['min']:.0f} max={pacing['max']:.0f} "
+        f"drift={pacing['drift']:+.1f} n={pacing['n']}",
+        f"  regression gate: {'PASS' if prod_ok else 'FAIL'} — {prod_detail}",
+        "",
+        "Layer 2 — passive Mali IRQ activity (global; not process-attributable):",
+        *format_irq("baseline (selected install closed)", baseline_irq),
+        *format_irq("production scene", production_irq),
+        *format_irq("instrumented scene", instrumented_irq),
+        "",
+        "Layer 3 — Mali Midgard HWCNT (phase-attributable):",
+        "  FPS FROM THIS LEG IS INVALID: glFinish intentionally serializes the selected phase.",
+        analyzer.stdout.rstrip(),
+    ]
+    summary_text = "\n".join(summary) + "\n"
+    with open(os.path.join(bundle, "summary.txt"), "w", encoding="utf-8") as out:
+        out.write(summary_text)
+    print("\n" + summary_text, end="")
+    print(f"graphics profile bundle: {bundle}")
+    return 0 if prod_ok and hw_ok else 1
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -4709,7 +4965,7 @@ def main():
         pass
     ap = argparse.ArgumentParser(description="webOS Plex player on-device regression harness")
     ap.add_argument("--build", action="store_true", help="cargo + make + make deploy before running")
-    ap.add_argument("--filter", default=None,
+    ap.add_argument("--filter", "--only", dest="filter", default=None,
                     help="run only cases or FPS scenes whose name contains this substring")
     ap.add_argument("--suite", default=None, choices=["logic", "codec"],
                     help="run only one suite: 'logic' (seek/resume/audio/subtitle — the engine and "
@@ -4746,6 +5002,13 @@ def main():
                     help="run the FPS regression suite (UI tier: home/detail, no video needed)")
     ap.add_argument("--fps-player", action="store_true",
                     help="FPS suite INCLUDING player-tier scenes (info/menu — needs playback, slower)")
+    ap.add_argument("--graphics-profile", action="store_true",
+                    help="for exactly one selected FPS scene, run production pacing + passive "
+                         "Mali IRQ + a separate HWCNT leg and save one diagnostic bundle")
+    ap.add_argument("--profile-phase", default="frame.ui", metavar="PHASE",
+                    help="exact HWCNT phase for --graphics-profile (default: frame.ui)")
+    ap.add_argument("--graphics-output", default=None, metavar="DIR",
+                    help="bundle directory for --graphics-profile (default pkg/diagnostics/<stamp>)")
     # THE DEFAULT TIER. `--server` opts into the library-backed one; `--pipeline` is accepted and
     # redundant, kept because it is what every recipe written between this tier landing and the
     # inversion says, and because naming the default explicitly is never wrong.
@@ -4764,6 +5027,13 @@ def main():
                     help="port for the fixture HTTP server (default: pick a free one). Pin it when "
                          "a firewall rule names a port")
     args = ap.parse_args()
+    if args.graphics_profile and not (args.fps or args.fps_player):
+        sys.exit("--graphics-profile operates on one deterministic FPS scene; combine it with "
+                 "--fps or --fps-player and select one with --only/--filter")
+    if args.graphics_output and not args.graphics_profile:
+        sys.exit("--graphics-output is only meaningful with --graphics-profile")
+    if args.graphics_profile and args.list:
+        sys.exit("--graphics-profile drives the television and cannot be combined with --list")
 
     # WHICH TIER. The synthetic pipeline tier is the DEFAULT (2026-08-22); the library-backed one
     # is `--server`. The inversion is deliberate and it is about what a bare `./tests/run.py`
@@ -4939,6 +5209,10 @@ def main():
             sys.exit("no FPS scene left to run"
                      + (":\n  " + "\n  ".join(f"{n}  <- {r}" for n, r in fps_skipped)
                         if fps_skipped else f" for tier(s) {'ui+player' if include_player else 'ui'}"))
+        if args.graphics_profile and len(scenes) != 1:
+            names = ", ".join(scene["name"] for scene in scenes)
+            sys.exit("--graphics-profile requires exactly one reproducible scene; "
+                     f"--only/--filter currently selected {len(scenes)}: {names}")
         token = None
         # A second-server scene needs the FIRST server's token too, whatever its tier: without it
         # the app boots to QR sign-in and the scene grades a screen it never reached.
@@ -4956,6 +5230,10 @@ def main():
         arm_teardown(cfg["tv"])
         if args.build:
             do_build(cfg["tv"])
+        if args.graphics_profile:
+            return run_graphics_profile(
+                scenes[0], cfg, token, args.profile_phase, args.graphics_output
+            )
         return run_fps_suite(scenes, cfg, token, include_player, fps_skipped)
 
     if not cases:

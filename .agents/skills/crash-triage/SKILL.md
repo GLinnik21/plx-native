@@ -11,6 +11,10 @@ description: >
 
 # Crash triage on the TV
 
+> **Alive is a different evidence path.** If `fuser <appdir>/plxnative` still returns a PID but
+> `loop=` has stopped or the UI is frozen, use the **`profile-tv`** skill and
+> `tools/plxnative-sample`; a crash report cannot explain a process that never died.
+
 > **Collecting evidence is read-only and needs no lock** (`tools/crash-report.sh`, `tv-session.sh
 > log`) — but the moment you RE-RUN to reproduce, take the television's lock first:
 > `tools/tv-lock.sh acquire --why "reproduce <crash>"`. See the **`tv-lock`** skill.

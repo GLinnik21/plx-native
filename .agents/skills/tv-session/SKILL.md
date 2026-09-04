@@ -391,7 +391,7 @@ the TV is signed in as whatever the automation chose.
 
 | Symptom | Fix |
 |---|---|
-| `no route= heartbeat` after launch | The app died on boot or is still starting. Run `tools/crash-report.sh` (crash-triage skill). |
+| `no route= heartbeat` after launch | Check the install-scoped PID with `fuser`. No PID: `crash-triage`; live PID: `profile-tv` / `tools/plxnative-sample snapshot`. |
 | Landed on the wrong screen | A stale trigger. Re-run `up` (it clears), or check `status`, which lists what is armed. |
 | Boot shows the QR sign-in screen | No token — `src/config.local.h` is missing/unreadable, or you passed `--no-token`. |
 | Picker appeared during an automated run | You armed only DIAG-exempt triggers. Add any other trigger, or use `--screen profiles` deliberately. |
