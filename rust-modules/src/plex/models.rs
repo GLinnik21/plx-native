@@ -157,6 +157,15 @@ pub struct Hub {
     pub kind: String,
     #[serde(rename = "hubIdentifier", default)]
     pub hub_identifier: String, // e.g. home.continue, home.ondeck — stable, locale-independent
+    /// The route this hub's own listing lives at — `/hubs/sections/1/continueWatching/items` for a
+    /// per-section deck, `/library/collections/{id}/children` for a collection.
+    ///
+    /// It exists because on `/hubs/sections/{id}` it is the second half of "is this the Continue
+    /// Watching row" (`browse::section_hubs::shelf_is_continue`): the identifier is what a server
+    /// could plausibly spell differently, the key is the route it must answer at. Nothing follows
+    /// it yet — the items on that route arrive embedded (`docs/pms-api.md` §3a).
+    #[serde(default)]
+    pub key: String,
     #[serde(default)]
     pub title: String,
     #[serde(rename = "Metadata", default)]

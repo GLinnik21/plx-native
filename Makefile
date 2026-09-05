@@ -1035,11 +1035,28 @@ CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
 PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
 
 check: lint
+	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
+	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
+	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
+	@# TEST FIXTURES' machine ids ("mac-mini", "nas-home") into /tmp/auth.json, and the next run's
+	@# `resolve_pins` read them back as a recorded answer. The suite was grading itself against its
+	@# own residue, and against a file the simulator and the Mac app share.
+	@#
+	@# It was invisible for as long as the pin governed Home alone, because no host assertion read
+	@# one. It stopped being invisible the moment the favourite switch started governing the tab
+	@# strip: the same seeded table produced a two-pill strip on a clean machine and a one-pill
+	@# strip on this one. That is exactly the failure `[[make-check-hides-host-assumptions]]`
+	@# describes — a check that only ever passes where it was written — and the fix is the same one:
+	@# give the run an empty environment instead of the developer's.
+	@#
+	@# `mktemp -d` per invocation rather than a fixed path, so two checkouts (or two lanes) cannot
+	@# share one, and it is removed on the way out whether the suite passed or not.
 	@# The telemetry credentials are passed here too, and that is not decoration: `ENVIRONMENT` and
 	@# the two compile-time refusals are derived from them, so a host suite run WITHOUT them grades a
 	@# configuration nobody builds. With them, `the_environment_matches_the_credential_pair_that_was_
 	@# supplied` checks this checkout's actual configuration rather than the empty one.
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" \
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) test --lib
@@ -1050,7 +1067,8 @@ check: lint
 	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
 	@# Cargo keys fingerprints by feature set, so the two configurations coexist in one target/ and
 	@# this costs a few seconds warm rather than a rebuild.
-	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" \
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim

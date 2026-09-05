@@ -191,10 +191,15 @@ DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT
 The focused card grows, and its title and a status line appear beneath it — here *"2 hr 6 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
-**OK on a card in *Continue Watching* plays it directly** — as does OK on any card that is itself an
-episode, wherever it sits. **OK on any other card opens that item's page.** The difference is
-intentional: the deck is a list of things already in progress, and one press is the whole point of
-it.
+**OK on a card in *Continue Watching* plays it directly**, and the amber ▶ on the card is what
+announces that. **Every other card opens a page, an episode included**: an episode tile on a
+discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
+carries no ▶, precisely so nothing on it promises playback. The difference is intentional: the deck
+is a list of things already in progress, and one press is the whole point of it — everywhere else,
+a press is a question rather than a commitment. A card's resume bar is a fact about how far in you
+are and appears on both kinds, so it is never the thing that says a press will play; that is the
+triangle's job alone. (Until 2026-09-05 an episode played from wherever it sat, which put the
+triangle on cards that navigated.)
 
 One refinement inside the deck rule: a **show** or **season** card there has no single stream to
 start, so it opens its page, waits for the load to land on the expected item, and fires that page's
@@ -275,9 +280,12 @@ Reached from any library pill in the top strip. A poster grid, four-way navigabl
 
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
 
-**BACK here is two steps, not one**: from the grid or the toolbar it returns focus to the tab row,
-and only a second BACK leaves the library for Home. UP from the toolbar does the same thing, landing
-on the pill of the library being browsed.
+**BACK here is ONE step to the head of the library, and a second leaves for Home.** From a shelf, a
+grid row, the Sort/Filter row or the A–Z rail, BACK returns to the top of the page — a deep shelf is
+as far from the head as a deep grid row is — and only from the head does it hand the screen back.
+(This said "two steps: to the tab row, then Home" until 2026-09-05. The Library is one continuous
+scroll now, with no fixed toolbar to walk up from and a tab track that never hides, so UP is the
+one-press route to the strip and BACK is about the DOCUMENT.)
 
 Sort and Filter open as **popovers over the live grid**, never as full-screen sheets:
 
@@ -335,8 +343,9 @@ OK opens a popover headed *ACCOUNT*. Signed in, it offers switching profile and 
 One more row, **Settings**, is offered in **every** state, signed in or out. A person who cannot get
 past sign-in has still received a copy of this software, so privacy and legal information cannot be
 conditional on an account. *(The figure above predates this row.)* Settings opens a full-screen
-modal: signed-in users also get **Home screen**, while everyone gets **Privacy & data**, **Legal
-notices** and **About PlxNative**.
+modal: signed-in users also get **Favorite libraries** (under a **Libraries** section — which
+libraries this television shows, on Home, in the top strip and in the Library's own picker), while
+everyone gets **Privacy & data**, **Legal notices** and **About PlxNative**.
 
 - **Privacy & data** holds the two saved reporting choices, one scrollable what-is-actually-sent document PER CHANNEL (Crashes / Errors, Analytics / Usage),
   the privacy policy, and Delete all local data. Changed switches commit through Done; BACK

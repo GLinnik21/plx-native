@@ -1338,13 +1338,21 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   repeatable — the hero advances on its own clock and two simulators launched together drift apart
   within seconds — and two comparisons were silently mis-paired that way before it did.
   And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
-  browse grid on section N), `/tmp/plxnative-libosc` (perpetual grid focus sweep), and
+  library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
+  whole DOCUMENT — the chip at the head, each published shelf, the grid's control row, then the
+  poster grid — reversing at the document's own ENDS rather than on a clock, which is the one
+  oscillator here that does. `ui::library::osc_step`, since 2026-09-05: at the shared 350 ms
+  cadence a clock reversing every 3 s gives about eight presses a leg, and a twelve-shelf library
+  spends more than four of those seconds just reaching the grid — so `fps:library-scroll`, whose
+  whole purpose is to sweep the seam between the last shelf and the poster wall, graded a sweep
+  that could not reach it), and
   `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
   Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already
   holding `<query>` — the seed is not a convenience, since neither the harness nor `sim-shot` can
   type and the TV's own keyboard is raised by a user, so without it every headless look at this
   screen is the empty state) and `/tmp/plxnative-searchosc` (sweep the result shelves' focus down↔up
-  perpetually, 350 ms per step reversing every 3 s — the same cadence as `libosc`/`homeosc`). The
+  perpetually, 350 ms per step reversing every 3 s — the same cadence and the same CLOCK reversal
+  as `homeosc`; `libosc` shares the cadence and reverses at its document's ends instead, above). The
   oscillator does NOT reach the screen on its own: pair it with `plxnative-search`, and with a query
   the library actually matches, or `fps:search-type` has no shelves to sweep. Design, and the
   on-screen-keyboard research behind the field (three traps, two dead ends): **`docs/search.md`**.

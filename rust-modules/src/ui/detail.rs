@@ -420,7 +420,7 @@ const EP_GAP: f32 = 28.0;
 // The still carries exactly TWO things: a bottom scrim with one state line on it, and a full-bleed
 // progress bar. There is no capsule behind the line and no badge in any corner; see `ep_state`.
 /// Left inset of the state line, and the margin every mark on a still shares.
-const EP_MARK_INSET: f32 = 16.0;
+const EP_MARK_INSET: f32 = crate::ui::widgets::STILL_LINE_INSET;
 /// The progress bar's height. It is **full-bleed at the very bottom edge** — the same bar, in the
 /// same place, that a Continue Watching card wears (`card_row::resume_bar`), which is the whole point:
 /// this strip used to draw an inset rounded capsule 16px up, so "how far in am I" was two different
@@ -428,19 +428,19 @@ const EP_MARK_INSET: f32 = 16.0;
 const EP_BAR_H: f32 = 5.0;
 /// The bottom scrim under the state line: its height and its darkest alpha at the card's edge.
 /// Without it a white label sits on an arbitrary video frame and its legibility is a coin flip.
-const EP_SCRIM_H: f32 = 88.0;
-const EP_SCRIM_A: f32 = 0.78;
+const EP_SCRIM_H: f32 = crate::ui::widgets::STILL_SCRIM_H_1;
+const EP_SCRIM_A: f32 = crate::ui::widgets::STILL_SCRIM_A;
 /// The state line's BASELINE inset from the still's bottom edge. The mock spells this as a CSS
 /// `bottom:11px` on the line's flex box, which is its box bottom, not its baseline — with a 24px font
 /// on `line-height:normal` the descender band under that baseline is ~6px, so the equivalent baseline
 /// inset is ~17. Reading the 11 literally sat the label 6px lower than the design and that much closer
 /// to the bar.
-const EP_LINE_BOT: f32 = 17.0;
+const EP_LINE_BOT: f32 = crate::ui::widgets::STILL_LINE_BOT;
 /// The state glyph's box, and its gap to the label. ONE box for both glyphs (the play triangle and
 /// the watched disc) so the label starts at the same x whichever state a tile is in — the mock sizes
 /// them 18 and 20 and lets the label shift, which makes a row of stills read as ragged.
-const EP_GLYPH_D: f32 = 20.0;
-const EP_LINE_GAP: f32 = 10.0;
+const EP_GLYPH_D: f32 = crate::ui::widgets::STILL_GLYPH_D;
+const EP_LINE_GAP: f32 = crate::ui::widgets::STILL_LINE_GAP;
 // Under-still metadata: kicker → title → summary → date row. The (fine-print) air date sits at the
 // BOTTOM of the block, under the summary; offsets are from the meta top (EP_H + EP_META_TOP below
 // the still) and the block height is derived from the tallest episode summary (see `ep_meta_h`) so
@@ -2616,7 +2616,7 @@ fn draw_hero(p: Painter, env: &Env, m: Option<&PmsMovie>) {
         let credit = shared_by(&d.source());
         // Every candidate is measured through the VERY flow that draws it, so a reserved width and
         // a painted one cannot come to differ. (The `dotted_run_w` this replaced was a second width
-        // expression that had to be kept agreeing with the first — `home::heading_flow`'s doc names
+        // expression that had to be kept agreeing with the first — `card_row::heading_flow`'s doc names
         // that pair as the pattern to stop repeating.)
         let width = |f: FactsFit| {
             facts_flow(
@@ -3940,44 +3940,36 @@ fn ep_watch_state(ep: &metadata::Episode) -> PosterMark {
 /// `card` is the rect actually drawn, i.e. the SCALED one while the tile is popped, so the line rides
 /// the focus pop without resizing.
 fn ep_state_line(p: Painter, card: Rect, st: &EpState) {
-    let sz = theme::size::CAPTION;
-    // the label's cap band sits on the line's baseline inset, so the glyph can centre on it
-    let (ct, cb) = crate::text::text_cap_band(sz, 0);
-    let ty = card.y + card.h - EP_LINE_BOT - cb;
-    let mut lx = card.x + EP_MARK_INSET;
-    // Both glyphs are plain masks in ONE box now: the watched tick used to be a filled amber disc,
-    // and the 2026-08-13 evening sync took the disc off the poster too — amber belongs to the resume
-    // bar alone. It also takes the LINE's own ink rather than a hue, because a watched line is a
-    // statement about the past (`✓ 48 min`) while an unstarted one is an invitation (`▶ 48 min`),
-    // and only the invitation earns the amber.
-    let icon = match st.glyph {
-        EpGlyph::Play => Some((crate::ui::icons::Icon::Play, theme::RESUME_FILL)),
-        EpGlyph::Watched => Some((crate::ui::icons::Icon::Check, theme::TEXT_SECONDARY)),
-        EpGlyph::None => None,
-    };
-    let cy = ty + (ct + cb) * 0.5;
-    if let Some((icon, tint)) = icon {
-        crate::ui::icons::draw(
-            p,
-            icon,
-            Rect::new(lx, cy - EP_GLYPH_D * 0.5, EP_GLYPH_D, EP_GLYPH_D),
-            tint,
-        );
-        lx += EP_GLYPH_D + EP_LINE_GAP;
-    }
-    if st.label.is_empty() {
-        return;
-    }
-    // a watched episode's runtime steps back a rung: the tick beside it is the statement, and at full
-    // primary the two competed
-    let col = if st.glyph == EpGlyph::Watched {
-        theme::TEXT_SECONDARY
+    // **The shared landscape-still line** (`widgets::still_line`), which this function WAS until the
+    // Library grew a shelf of the same object; promoted rather than copied. What stays here is the
+    // filmstrip's own choice of label — the runtime — because on a page that already names the show
+    // in 72px type the missing fact is how long the episode is. The Library shelf passes the show
+    // name instead, for the opposite reason.
+    let mark = if st.progress.is_some() {
+        PosterMark::InProgress
+    } else if st.glyph == EpGlyph::Watched {
+        PosterMark::Watched
     } else {
-        theme::TEXT_PRIMARY
+        PosterMark::None
     };
-    if let Ok(lc) = CString::new(st.label.as_str()) {
-        p.text(lc.as_ptr(), lx, ty, sz, col, 0, 0);
-    }
+    // `true`: a press on the filmstrip PLAYS this episode — you are already on its show's page, so
+    // there is nowhere left to navigate to — which is what earns the amber ▶ here.
+    //
+    // **One line, not the shelves' two.** The component grew a `label` + `sub` pair on 2026-09-05
+    // for the episode SHELVES, whose tiles have to identify themselves in a row of near-identical
+    // neighbours; a filmstrip is already inside one season of one show, in order, under the show's
+    // own name in 72px type, so it has nothing to disambiguate and prints only its runtime. Passing
+    // the empty label is how that is said — the pair collapses to the sub line and its glyph, which
+    // is exactly the line this function drew before the revision.
+    crate::ui::widgets::still_line(
+        p,
+        card,
+        mark,
+        "",
+        &st.label,
+        true,
+        st.progress.is_some(),
+    );
 }
 
 /// "Related" — a horizontal row of portrait poster cards from the related hub. A real instance of

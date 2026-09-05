@@ -17,8 +17,11 @@
 //! exactly as Continue Watching's does on Home, and rides on the focused tile's own caption.
 //!
 //! One caption on screen at a time, as every other shelf in this app does it: the label belongs to
-//! the focused tile and nothing else carries type under its artwork. The band is reserved either
-//! way ([`super::LABEL_BLOCK`]) so nothing reflows as focus travels.
+//! the focused tile and nothing else carries type under its artwork. **The band it needs OPENS on
+//! focus and closes again behind it** (`card_row::under_band`, shared with Home, the Library and
+//! the person page) — so the column does reflow as focus travels, deliberately: this line used to
+//! say the band was reserved either way "so nothing reflows", which is what left ~74px of dead air
+//! under every shelf nobody was standing on.
 //!
 //! ## What it is built on
 //!
@@ -30,7 +33,7 @@
 //! ## Five things that are not obvious from the picture
 //!
 //! **1. The flow is authored; the lift is paint.** A shelf's block is `HEAD_TO_ROW` + the tile +
-//! [`super::LABEL_BLOCK`], and [`stack_top`] stacks them — the ONE vertical geometry this screen
+//! its own live label band ([`super::LABEL_BLOCK`] at focus), and [`stack_top`] stacks them — the ONE vertical geometry this screen
 //! has. The draw reads it and so does the scroll rule ([`reveal_shelf`], which `super`'s
 //! `scroll_target` is now a single line over); the pointer reads rects RECORDED at draw, which is
 //! the same geometry observed rather than a second derivation of it.
@@ -41,9 +44,10 @@
 //! as `shift() = min(blockTop − CONTENT_TOP, max)`. Three reasons, in order of weight. Every other
 //! vertical shelf flow in this app is [`card_row::reveal`] — `home.rs`'s grid, `person.rs`'s
 //! `reveal_block`, the Library grid — so pinning would make Search the one screen that jumps. The
-//! pin's stated justification in `super` ("nothing clips the flow") went stale the day [`draw`]
-//! gained a real scissor: a shelf above the focused one is now CUT at the field, where before it
-//! would have painted up through the chrome. And the shipped pin was not the mock's anyway — the
+//! pin's stated justification in `super` ("nothing clips the flow") is true again, and by a
+//! different route than when it was first written: the field scrolls WITH the shelves now, so a
+//! shelf above the focused one has no chrome to paint through and needs no cut. And the shipped
+//! pin was not the mock's anyway — the
 //! mock clamps to `end − SCR_H + 40`, and that 40 is [`BOTTOM_PAD`], which `super::content_h`
 //! omitted, so the last shelf's caption band sat flush on the panel edge with no air under it.
 //!
@@ -101,7 +105,9 @@ use crate::search::{Item, Kind, Shelf};
 use crate::ui::card_row::{self, CardRow, RowStyle, TileLabel};
 use crate::ui::consts::*;
 use crate::ui::label::{Label, VAlign};
-use crate::ui::search::{View, Zone, CONTENT_TOP, HEAD_TO_ROW, LABEL_BLOCK};
+#[cfg(test)]
+use crate::ui::search::LABEL_BLOCK;
+use crate::ui::search::{View, Zone, CONTENT_TOP, HEAD_TO_ROW};
 use crate::ui::theme;
 use crate::ui::widgets::Art;
 use crate::ui::{on_axis, Painter, Rect, Spring};
@@ -125,10 +131,6 @@ const SOURCE_PAD: f32 = theme::space::XS;
 /// and for its reason: what this bounds is a focused tile's own caption against the bottom edge of
 /// the panel, so the number is the safe area's and not one from the spacing ladder.
 const BOTTOM_PAD: f32 = crate::ui::consts::MARGIN_Y;
-/// Headroom between the field's bottom edge and where scrolled content is cut. It is not spacing —
-/// nothing is drawn in it at rest — it is the allowance for the two things that paint above a
-/// shelf's own block top: the focused heading's `CardRow::lift()` and a magnified tile's glow.
-const BAND_CLEAR: f32 = theme::space::MD;
 
 /// Art is asked for at the size the REST OF THE APP asks for it, never at this shelf's own tile
 /// size: the store key is `(server, path, w, h, png)`, so a film already on a Home shelf is a
@@ -168,20 +170,27 @@ fn style(kind: Kind) -> RowStyle {
 
 // ---- geometry (pure: the draw and the reveal rule both read these) ------------------------------
 
-/// The vertical extent shelf `i` occupies in the flow: its heading, the row, and the caption band
-/// reserved under it whether or not a caption is drawn. There is no gap term because the reserved
-/// band IS the air — a poster shelf comes out at `HEAD_TO_ROW + 375 + LABEL_BLOCK` = 549, which is
-/// `consts::ROW_PITCH` exactly, so a search shelf and a home shelf stack at the same rhythm (the
-/// test below asserts that equality rather than restating the number).
+/// The vertical extent shelf `i` occupies in the flow: its heading, the row, and the band reserved
+/// under it for the focused tile's label block. There is no gap term because the reserved band IS
+/// the air — at a FOCUSED band a poster shelf comes out at `HEAD_TO_ROW + 375 + LABEL_BLOCK` = 549,
+/// which is `consts::ROW_PITCH` exactly, so a search shelf and a home shelf stack at the same
+/// rhythm (the test below asserts that equality rather than restating the number).
+///
+/// **`e` is the shelf's label-band expansion, 0 collapsed → 1 focused** (2026-09-05). The block is
+/// drawn only while its shelf holds focus, so an unfocused shelf reserves
+/// `card_row::LABEL_BAND_COLLAPSED` in place of the whole `card_row::UNDER_LABEL_H` and the shelf
+/// below moves up by the difference — `card_row::under_band` is the one expression, shared with
+/// Home, the Library and the person page so the four cannot collapse by different amounts.
 ///
 /// **[`super::LABEL_BLOCK`] must stay at least [`card_row::TileLabel::height`] for the [`style`]
 /// this module draws with** — that function is `ui/CLAUDE.md`'s named single authority on the band,
-/// and this expression is what has to reserve it. The focused title is always one line (92px with a
-/// caption), so the 114 declared there holds it with 22 to spare — the same 22 home's `ROW_PITCH`
-/// carries — with no per-row variation left to grow it, which
+/// and this expression is what has to reserve it AT `e == 1`, which is the only expansion at which
+/// the block is fully drawn (`card_row::band_reveal`). The focused title is always one line (92px
+/// with a caption), so the 114 declared there holds it with 22 to spare — the same 22 home's
+/// `ROW_PITCH` carries — which
 /// `the_reserved_caption_band_holds_the_block_the_shared_component_draws` below still pins.
-fn block_h(kind: Kind) -> f32 {
-    HEAD_TO_ROW + tile_size(kind).1 + LABEL_BLOCK
+fn block_h(kind: Kind, e: f32) -> f32 {
+    HEAD_TO_ROW + tile_size(kind).1 + crate::ui::consts::UNDER_LABEL_AIR + card_row::under_band(e)
 }
 
 /// Flow y of shelf `i`'s HEADING top, given the kinds on screen — the ONE vertical geometry this
@@ -192,18 +201,29 @@ fn block_h(kind: Kind) -> f32 {
 /// Pure, and kept so deliberately: it is the layer the host suite can drive, and [`reveal_shelf`]
 /// — the only impure thing built on it — is one line on top. (`person.rs`'s `reveal_block` splits
 /// for exactly this reason.)
-fn stack_top(kinds: &[Kind], i: usize) -> f32 {
+fn stack_top(kinds: &[Kind], i: usize, e: impl Fn(usize) -> f32) -> f32 {
     CONTENT_TOP
         + kinds[..i.min(kinds.len())]
             .iter()
-            .map(|&k| block_h(k))
+            .enumerate()
+            .map(|(k, &kind)| block_h(kind, e(k)))
             .sum::<f32>()
 }
 
+/// The band function for the SETTLED document — shelf `f` open, everything else closed. What every
+/// scroll target is measured against; the DRAW passes each shelf's live `CardRow::band_expand`
+/// instead. `card_row::settled_top` carries the argument for the split.
+fn settled_bands(f: usize) -> impl Fn(usize) -> f32 + Copy {
+    move |i| (i == f) as i32 as f32
+}
+
 /// Total flowed height — the last block's bottom plus the bottom air.
-fn stack_content_h(kinds: &[Kind]) -> f32 {
+fn stack_content_h(kinds: &[Kind], e: impl Fn(usize) -> f32 + Copy) -> f32 {
     match kinds.last() {
-        Some(&k) => stack_top(kinds, kinds.len() - 1) + block_h(k) + BOTTOM_PAD,
+        Some(&k) => {
+            let last = kinds.len() - 1;
+            stack_top(kinds, last, e) + block_h(k, e(last)) + BOTTOM_PAD
+        }
         None => 0.0,
     }
 }
@@ -221,11 +241,14 @@ fn reveal_of(cur: f32, kinds: &[Kind], i: usize) -> f32 {
     if i >= kinds.len() {
         return 0.0;
     }
-    let top = stack_top(kinds, i);
-    let h = block_h(kinds[i]);
+    // …against the SETTLED document: shelf `i` is the one being revealed, so it is the one whose
+    // label band is open, and the target must not chase a column the springs are still moving.
+    let e = settled_bands(i);
+    let top = stack_top(kinds, i, e);
+    let h = block_h(kinds[i], e(i));
     let lo = top + h - (SCR_H - BOTTOM_PAD);
     let hi = top - CONTENT_TOP;
-    card_row::reveal(cur, lo, hi, (stack_content_h(kinds) - SCR_H).max(0.0))
+    card_row::reveal(cur, lo, hi, (stack_content_h(kinds, e) - SCR_H).max(0.0))
 }
 
 /// The kinds on screen, in flow order, and how many — the store's own order, which is already
@@ -255,20 +278,24 @@ pub(crate) fn reveal_shelf(cur: f32, i: usize) -> f32 {
 /// see — or `None` when the whole tile is above it.
 ///
 /// **What is painted and what is REACHABLE are not the same rect on this screen**, and that is the
-/// whole reason this exists. [`draw`]'s scissor cuts at `BAND_CLEAR` above the field, and the
-/// navigation scrim over everything above [`super::CHROME_BOTTOM`] is OPAQUE — so a shelf scrolled
-/// up under the chrome goes on being drawn (partly into the scissor's dead zone, partly behind a
-/// flat band) while its recorded rects went on claiming it was there to be pressed. The pointer
-/// then found tiles in blank top chrome: a hover re-seated focus, which yanks the flow to reveal a
-/// shelf nobody pointed at, and a click opened a poster that was not on screen.
+/// whole reason this exists. The floor is [`crate::ui::widgets::TOP_BAR_BOTTOM`]: the glass tab
+/// track is drawn over the column and is opaque enough to read through but not to press through,
+/// so a tile that has travelled under it goes on being drawn while its recorded rect went on
+/// claiming it was there. The pointer then found tiles in the top chrome — a hover re-seated
+/// focus, which yanks the flow to reveal a shelf nobody pointed at, and a click opened a poster
+/// that was not on screen. (The floor was `super::HEAD_BOTTOM` while the field was pinned under an
+/// opaque scrim; the scrim is gone and the track is the only thing over content now.)
 ///
 /// It is this module's own cull rule at the other end. `on_axis` skips a shelf that is off the
-/// PANEL, before `strip` is entered; this trims the tile that is behind the CHROME, after `strip`
+/// PANEL, before `strip` is entered; this trims the tile that is behind the TRACK, after `strip`
 /// has drawn it — and it FLOORS rather than dropping, so a tile crossing the line stays addressable
 /// on exactly the half of it that can be seen. The `> 0.5` is `super::find_rect`'s own rule about
 /// zero-extent rects, applied where the rect is made instead of only where it is scanned:
 /// `Rect::contains` is inclusive, so a rect floored to nothing would still answer on its own edge.
-fn hit_band(r: Rect, floor: f32) -> Option<Rect> {
+///
+/// [`super::field_hit_rect`] trims the query box against the same floor: one rule for the whole
+/// document, which is what this screen became.
+pub(super) fn hit_band(r: Rect, floor: f32) -> Option<Rect> {
     let top = r.y.max(floor);
     let bottom = r.y + r.h;
     (bottom - top > 0.5).then(|| Rect::new(r.x, top, r.w, bottom - top))
@@ -369,6 +396,19 @@ fn focus_col(v: &View, i: usize, n: usize) -> Option<usize> {
 fn focused_item(v: &View) -> Option<&'static Item> {
     let s = crate::search::shelves().get(v.row)?;
     focus_col(v, v.row, s.items.len()).and_then(|c| s.items.get(c))
+}
+
+/// The focused item's `UltraBlurColors` corners, for the page ground — `None` when nothing in the
+/// shelves holds focus, when the focused hit is a PERSON or a COLLECTION ([`Item::Tag`] carries no
+/// artwork envelope), or when the item's own art came without one.
+///
+/// `None` HOLDS the ground rather than clearing it (`widgets::PageGround`), which is what makes a
+/// row of people between two rows of films leave the atmosphere alone instead of flashing it grey.
+pub(crate) fn focused_blur(v: &View) -> Option<[[f32; 3]; 4]> {
+    match focused_item(v)? {
+        Item::Media(m) => m.has_blur.then_some(m.blur),
+        Item::Tag(_) => None,
+    }
 }
 
 /// Whose server the focused item came from, as the owner's handle — **empty for our own**, which is
@@ -494,38 +534,27 @@ pub(crate) fn draw(p: Painter, v: &View) {
     }
     // `shift` is a SCROLL, as every other flow in this app spells it: content is drawn one shift
     // higher, so the whole region rides ONE translate and every y below stays a flow coordinate.
-    // Content scrolls UP, and has to be CUT above rather than painted over the chrome. The shelves
-    // ride one translate and nothing else bounds them, so a scrolled row rose behind the tab strip
-    // and the bare query line and was drawn ON TOP of both — device-observed, and invisible until
-    // something was actually scrolled.
     //
-    // **The cut is now ABOVE the field, and it is a bound rather than a treatment.** It sat just
-    // BELOW the field, which made it the only thing standing between a scrolling poster and the
-    // chrome — and a scissor is a razor: a tile crossing the query line lost its top half to a hard
-    // horizontal line, which is what got photographed. `super::draw_scroll_scrim` does that job
-    // properly now (the Library's veil, and the draw order that lets it be opaque), so this only
-    // has to stop a tile reaching the tab strip, and it cuts inside the veil's own opaque band
-    // where the cut cannot be seen. `BAND_CLEAR` is still the headroom for the two things that
-    // legitimately paint above a shelf's block top — the focused heading's lift and a magnified
-    // tile's glow.
-    //
-    // Paired with `clip_clear` below, and deliberately AFTER the early return above: this is global
-    // GL scissor state, so a return between the two would leave the rest of the frame scissored.
-    let cut = super::FIELD.y - BAND_CLEAR;
-    p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
+    // **There is no scissor here any more, and no scrim over it** (2026-09-05). Both existed to
+    // stop a rising poster reaching the pinned query line; the field is IN this flow now
+    // (`field::draw`), so there is nothing above the shelves to protect — the column travels as
+    // one and passes under the glass tab track, which `super::draw` draws last and which is a
+    // material rather than a cut. What replaced the razor edge that got photographed is simply
+    // that the edge has nothing left to cut against.
     let pf = p.translate(0.0, -v.shift);
     let st: &Shelves = state();
     let (ks, n) = present();
+    // the LIVE column — each shelf's own band spring, which is what is on screen this frame
+    let live = |k: usize| st.rows[k.min(NSHELF - 1)].band_expand();
     for (i, s) in shelves.iter().take(n).enumerate() {
-        let top = stack_top(&ks[..n], i);
+        let top = stack_top(&ks[..n], i, live);
         // The VERTICAL cull, over the whole block: a shelf off the panel must not reach `strip` at
         // all, because that is where `resolve_tex` is called — the poster LRU is 64 slots against
         // five shelves of answers.
-        if on_axis(top - v.shift, block_h(s.kind), SCR_H, 0.0) {
+        if on_axis(top - v.shift, block_h(s.kind, live(i)), SCR_H, 0.0) {
             draw_shelf(pf, st, s, i, v, top);
         }
     }
-    p.clip_clear();
 }
 
 fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32) {
@@ -552,9 +581,11 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         &sty,
         SCR_W,
         |k| tile_art(s.kind, &s.items[k]),
+        // an EPISODE tile draws its own bar in the hook below, AFTER its scrim — the order
+        // `detail.rs` documents, or the 78%-black gradient darkens the bar it sits above
         |k| match &s.items[k] {
-            Item::Media(m) => m.resume_frac(),
-            Item::Tag(_) => None,
+            Item::Media(m) if s.kind != Kind::Episode => m.resume_frac(),
+            _ => None,
         },
         |k| TileLabel::titled(s.items[k].title(), &subtitle(s.kind, &s.items[k], handle)),
         // Record what was DRAWN, in screen space, so the pointer can reach it. Without this
@@ -582,7 +613,7 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
         // …and CUT to what is visible before it is recorded ([`hit_band`]): the paint is scissored
         // and over-painted above the field, so a rect taken straight from the layout claims ground
         // the tile does not hold.
-        |_, k, x, focused| {
+        |pe, k, x, focused| {
             let base = Rect::new(
                 x - row.scroll_x(),
                 top + HEAD_TO_ROW - v.shift,
@@ -597,8 +628,36 @@ fn draw_shelf(p: Painter, st: &Shelves, s: &Shelf, i: usize, v: &View, top: f32)
                 // tile's real frame, at the magnification the redraw will re-derive.
                 unsafe { *addr_of_mut!(FOCUS_TILE) = Some((i, k, base)) };
             }
-            if let Some(r) = hit_band(base.scaled(row.scale(k)), super::CHROME_BOTTOM) {
+            if let Some(r) = hit_band(base.scaled(row.scale(k)), crate::ui::widgets::TOP_BAR_BOTTOM) {
                 super::note_tile_rect(i, k, r);
+            }
+            // …and an EPISODE still names its show on its own artwork, exactly as the Library's
+            // does: a poster prints its title inside the picture and a still has none of its own,
+            // so without this a shelf of episodes is a row of anonymous frames of television
+            // (`Library Screens.dc.html` E). **No play triangle**: a search result NAVIGATES —
+            // `search::on_ok` only ever `nav_open`s — and a play indicator is a promise that the
+            // press starts the video.
+            if s.kind == Kind::Episode {
+                if let Item::Media(m) = &s.items[k] {
+                    let sc = if focused {
+                        row.scale(k) * crate::ui::press::scale()
+                    } else {
+                        row.scale(k)
+                    };
+                    // **`strip`'s own painter and `strip`'s own rect**, not `base`. The two are
+                    // different spaces and mixing them put the line above the artwork: `base` is
+                    // the SCREEN rect the hit test needs, with the row's horizontal scroll and the
+                    // flow's `shift` already taken out, while `strip` draws through a painter that
+                    // applies both — so drawing `base` there subtracts each of them twice.
+                    let card = Rect::new(x, top + HEAD_TO_ROW, sty.w, sty.h).scaled(sc);
+                    crate::ui::widgets::still_overlay(
+                        pe,
+                        m,
+                        card,
+                        sty.tile_radius(card, sc),
+                        false,
+                    );
+                }
             }
         },
     );
@@ -615,6 +674,23 @@ static mut FOCUS_TILE: Option<(usize, usize, Rect)> = None;
 
 /// The focused result tile's rect at its focus magnification — what the item context menu anchors
 /// beside. `press::scale()` is left out for `home::focused_card_rect`'s reason.
+/// **Shelf `i`'s drawn lattice** — `(scroll_x, advance, tile width)`, everything a vertical step
+/// needs to know about where that row's tiles actually ARE. Its style is per KIND here (a person
+/// shelf's circular tiles are neither as wide nor as spaced as a poster's), so the destination
+/// row's own numbers are the only ones that can answer "which tile is under the cursor".
+///
+/// Reads the same `style(kind)` and the same `CardRow` the draw does, rather than a second
+/// derivation kept in step by hand.
+pub(crate) fn row_lattice(i: usize) -> (f32, f32, f32) {
+    let st = state();
+    let sh = crate::search::shelves();
+    let Some(s) = sh.get(i) else {
+        return (0.0, 1.0, 0.0);
+    };
+    let sty = style(s.kind);
+    (st.rows[i.min(NSHELF - 1)].scroll_x(), sty.w + sty.gap, sty.w)
+}
+
 pub(crate) fn focused_tile_rect() -> Option<Rect> {
     let (i, k, base) = unsafe { (*addr_of!(FOCUS_TILE))? };
     Some(base.scaled(state().rows.get(i)?.scale(k)))
@@ -623,11 +699,12 @@ pub(crate) fn focused_tile_rect() -> Option<Rect> {
 /// Re-draw the focused result tile ON TOP of a modal scrim — this screen's half of
 /// [`crate::ui::popover::Opener`].
 ///
-/// Under the SAME scissor the shelves are drawn through, cut at the chrome rather than at
-/// `BAND_CLEAR`: a lifted tile is drawn after `draw_scroll_scrim`'s opaque band, so without a bound
-/// a half-scrolled poster would paint over the query line and the tab strip — the exact artefact
-/// [`hit_band`] records for the pointer. Set and cleared in one breath, as `Painter::clip`'s global
-/// GL state requires.
+/// Cut at the tab track, which is the one thing on this screen still drawn over the column: this
+/// tile is painted AFTER the track (the popover's scrim goes between them), so without a bound a
+/// half-scrolled poster would paint over the pills — the exact artefact [`hit_band`] records for
+/// the pointer, at the same floor. The shelves themselves need no such cut any more; only this
+/// out-of-order redraw does. Set and cleared in one breath, as `Painter::clip`'s global GL state
+/// requires.
 pub(crate) fn redraw_focused_tile() {
     let Some((i, k, base)) = (unsafe { *addr_of!(FOCUS_TILE) }) else {
         return;
@@ -640,26 +717,29 @@ pub(crate) fn redraw_focused_tile() {
     let sty = style(s.kind);
     let sc = row.scale(k) * crate::ui::press::scale();
     let label = TileLabel::titled(item.title(), &subtitle(s.kind, item, handle_of(item)));
+    // **An EPISODE's whole overlay comes from `widgets::still_overlay`, exactly as the shelf's
+    // does**, which is why `resume` is `None` for one: the bar is inside that composition and has
+    // to be drawn after its scrim. This path forgot the composition entirely for one commit — the
+    // lifted tile kept its artwork and lost the show's name and its tick under the modal scrim,
+    // which is the same defect the Library's own redraw had, in the same place, one commit earlier.
+    // A shelf and its lifted twin are two draw paths for one object; sharing the composition is the
+    // only thing that keeps them from drifting a third time.
+    let episode = match item {
+        Item::Media(m) if s.kind == Kind::Episode => Some(m),
+        _ => None,
+    };
     let resume = match item {
-        Item::Media(m) => m.resume_frac(),
-        Item::Tag(_) => None,
+        Item::Media(m) if episode.is_none() => m.resume_frac(),
+        _ => None,
     };
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
-    p.clip(Rect::new(
-        0.0,
-        super::CHROME_BOTTOM,
-        SCR_W,
-        SCR_H - super::CHROME_BOTTOM,
-    ));
-    card_row::draw_focused(
-        p,
-        tile_art(s.kind, item),
-        base.scaled(sc),
-        sc,
-        &sty,
-        resume,
-        &label,
-    );
+    let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+    p.clip(Rect::new(0.0, floor, SCR_W, SCR_H - floor));
+    let card = base.scaled(sc);
+    card_row::draw_focused(p, tile_art(s.kind, item), card, sc, &sty, resume, &label);
+    if let Some(m) = episode {
+        crate::ui::widgets::still_overlay(p, m, card, sty.tile_radius(card, sc), false);
+    }
     p.clip_clear();
 }
 
@@ -766,23 +846,14 @@ fn tile_art<'a>(kind: Kind, it: &'a Item) -> Art<'a> {
         // The episode's OWN still, falling back to the show's fanart only when the server sent
         // none. `m.art` alone drew the same picture on every episode of one show — the fanart IS
         // the show's, so a row of six results for one series was six identical tiles.
-        (Kind::Episode, Item::Media(m)) => {
-            // still → thumb → art, and the middle step is the one that matters. `parse_item` fills
-            // `still` only when it SUBSTITUTED the show poster into `thumb`; when the show has no
-            // `grandparentThumb` there is nothing to substitute, so `thumb` IS the episode's own
-            // 16:9 still and `still` is empty. Falling straight through to `art` there is the show
-            // fanart again — the identical-tiles defect, surviving for exactly the shows the fix
-            // did not cover.
-            let key = [&m.still, &m.thumb, &m.art]
-                .into_iter()
-                .find(|k| !k.is_empty())
-                .unwrap_or(&m.art);
-            Art::Thumb {
-                sid: m.sid,
-                key,
-                res: STILL_RES,
-            }
-        }
+        // **The shared landscape tile**, which is also the shared fallback chain: `widgets::still_key`
+        // is still → thumb → art, the exact ladder this arm used to spell out by hand. It carries
+        // the ROW rather than a bare path, which is what lets the tile wear its state — the show's
+        // name and its watched tick, through `widgets::still_line` in the draw hook below. As
+        // `Art::Thumb` it could wear none of that: a watched episode was indistinguishable from an
+        // unstarted one, which a Codex pass found and which is the same defect `detail`'s Related
+        // shelf had for months.
+        (Kind::Episode, Item::Media(m)) => Art::Still(Some(m)),
         (_, Item::Media(m)) => Art::Poster(Some(m)),
         (Kind::Person, Item::Tag(t)) => Art::Person {
             sid: t.sid,
@@ -811,11 +882,21 @@ fn subtitle(kind: Kind, it: &Item, handle: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     match it {
         Item::Media(m) if kind == Kind::Episode => {
-            let ord = crate::ui::fmt::episode_ordinal(m.season_index as i64, m.ep_index as i64);
-            parts.push(match m.show_title.is_empty() {
-                true => ord,
-                false => format!("{} \u{b7} {ord}", m.show_title),
-            });
+            // **The RELEASE DATE — the show AND the address are printed on the artwork.** This
+            // caption has now given up two things in two revisions and for one reason: the still
+            // carries what identifies the tile, so the rung below owes what it cannot. It led with
+            // the show's name while the tile had no label of its own, then with the address once
+            // `still_line` printed the show, and now with the date because the 2026-09-05 revision
+            // moved the address onto the artwork too — four episodes of one show differ only by
+            // number, so the number has to be legible without focus.
+            //
+            // A search result is a discovery surface and its press NAVIGATES, so it takes the
+            // Recently Released side of `Library Screens.dc.html` E's choice ("release date on
+            // Recently Released") rather than Continue Watching's time-left.
+            let d = crate::ui::fmt::pretty_date(&m.aired, m.year as i64);
+            if !d.is_empty() {
+                parts.push(d);
+            }
         }
         Item::Media(m) if m.year > 0 => parts.push(m.year.to_string()),
         Item::Tag(t) if kind == Kind::Collection && t.count > 0 => {
@@ -840,6 +921,12 @@ mod tests {
     //! look right — nothing below opens a GL context or an SDL_ttf font, so the heading flow is
     //! measured through a synthetic advance and the picture is a device (or simulator) capture.
     use super::*;
+
+    /// Every shelf's band OPEN — the geometry the block constants were authored for and the only
+    /// expansion at which the label is fully drawn. A real document has ONE open shelf; these are
+    /// assertions about the ladder each shelf's block is built from, not about a live column, and
+    /// [`settled_bands`] is what the reveal tests below use instead.
+    const OPEN: fn(usize) -> f32 = |_| 1.0;
 
     /// One 60 Hz frame.
     const DT: f32 = 1.0 / 60.0;
@@ -867,41 +954,41 @@ mod tests {
     /// of it may depend on which kinds are present or on how many items they hold.
     #[test]
     fn shelves_stack_by_their_own_block_heights_from_the_content_top() {
-        assert_eq!(stack_top(&ALL, 0), CONTENT_TOP);
+        assert_eq!(stack_top(&ALL, 0, OPEN), CONTENT_TOP);
         for i in 1..ALL.len() {
             assert_eq!(
-                stack_top(&ALL, i) - stack_top(&ALL, i - 1),
-                block_h(ALL[i - 1]),
+                stack_top(&ALL, i, OPEN) - stack_top(&ALL, i - 1, OPEN),
+                block_h(ALL[i - 1], 1.0),
                 "shelf {i} did not start one block below shelf {}",
                 i - 1
             );
         }
         // A poster shelf is the app's ONE shelf rhythm, stated as the equality rather than as 549:
         // a tile-size change here must not silently re-space this flow against every other one.
-        assert_eq!(block_h(Kind::Movie), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Show), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Collection), crate::ui::consts::ROW_PITCH);
-        assert_eq!(block_h(Kind::Episode), HEAD_TO_ROW + 236.0 + LABEL_BLOCK);
-        assert_eq!(block_h(Kind::Person), HEAD_TO_ROW + 250.0 + LABEL_BLOCK);
+        assert_eq!(block_h(Kind::Movie, 1.0), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Show, 1.0), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Collection, 1.0), crate::ui::consts::ROW_PITCH);
+        assert_eq!(block_h(Kind::Episode, 1.0), HEAD_TO_ROW + 236.0 + LABEL_BLOCK);
+        assert_eq!(block_h(Kind::Person, 1.0), HEAD_TO_ROW + 250.0 + LABEL_BLOCK);
         // an episode shelf is shorter than a poster shelf by exactly the tile difference, so which
         // types are present must never change any other shelf's own height
         assert_eq!(
-            block_h(Kind::Movie) - block_h(Kind::Episode),
+            block_h(Kind::Movie, 1.0) - block_h(Kind::Episode, 1.0),
             CARD_H - 236.0
         );
         // …and the same shelf laid out among a DIFFERENT set keeps its block
         assert_eq!(
-            stack_top(&[Kind::Episode, Kind::Movie], 1),
-            CONTENT_TOP + block_h(Kind::Episode)
+            stack_top(&[Kind::Episode, Kind::Movie], 1, OPEN),
+            CONTENT_TOP + block_h(Kind::Episode, 1.0)
         );
         assert_eq!(
-            stack_content_h(&[]),
+            stack_content_h(&[], OPEN),
             0.0,
             "no shelves is no content, not one block of air"
         );
         // an index past the end cannot panic: the store re-lands under a focus that has not been
         // re-clamped yet on exactly one frame
-        assert_eq!(stack_top(&ALL, 99), stack_top(&ALL, ALL.len()));
+        assert_eq!(stack_top(&ALL, 99, OPEN), stack_top(&ALL, ALL.len(), OPEN));
     }
 
     /// **The keyboard clearance the whole screen is sized for.** With the panel up, the first
@@ -912,7 +999,7 @@ mod tests {
     fn the_first_shelfs_whole_row_clears_the_raised_keyboard() {
         let floor = SCR_H - crate::ui::search::KEYBOARD_H;
         for k in ALL {
-            let bottom = stack_top(&[k], 0) + HEAD_TO_ROW + tile_size(k).1;
+            let bottom = stack_top(&[k], 0, OPEN) + HEAD_TO_ROW + tile_size(k).1;
             assert!(
                 bottom <= floor,
                 "{k:?}: the first row ends at {bottom}, under the keyboard at {floor}"
@@ -923,7 +1010,7 @@ mod tests {
         // of clearance, and the tightest this layout has ever been. (683 until 2026-08-23, when the
         // field moved down 18px with the top bar; 701 until 2026-08-30, when the capsule went and
         // `CONTENT_TOP` moved to the design's 300 to clear the scope block under a 72px query.)
-        assert_eq!(stack_top(&[Kind::Movie], 0) + HEAD_TO_ROW + CARD_H, 735.0);
+        assert_eq!(stack_top(&[Kind::Movie], 0, OPEN) + HEAD_TO_ROW + CARD_H, 735.0);
         assert_eq!(floor, 756.0);
     }
 
@@ -944,9 +1031,9 @@ mod tests {
             want > 0.0,
             "the third shelf is below the fold and must be revealed"
         );
-        let top = stack_top(&ALL, 2);
+        let top = stack_top(&ALL, 2, settled_bands(2));
         assert!(
-            top + block_h(ALL[2]) - want <= SCR_H,
+            top + block_h(ALL[2], 1.0) - want <= SCR_H,
             "its block bottom is still off screen"
         );
         assert!(
@@ -962,24 +1049,24 @@ mod tests {
         // screen instead of leaving.
         let one = reveal_of(0.0, &ALL, 1);
         assert!(
-            one < stack_top(&ALL, 1) - CONTENT_TOP,
+            one < stack_top(&ALL, 1, settled_bands(1)) - CONTENT_TOP,
             "the reveal must undercut the pin, or it IS the pin"
         );
         assert_eq!(
             one,
-            stack_top(&ALL, 1) + block_h(ALL[1]) - (SCR_H - BOTTOM_PAD)
+            stack_top(&ALL, 1, settled_bands(1)) + block_h(ALL[1], 1.0) - (SCR_H - BOTTOM_PAD)
         );
 
         // …and the end of the flow keeps `BOTTOM_PAD` of air, which the pin's own clamp dropped.
         let last = ALL.len() - 1;
         let end = reveal_of(0.0, &ALL, last);
         assert_eq!(
-            stack_content_h(&ALL) - end,
+            stack_content_h(&ALL, settled_bands(last)) - end,
             SCR_H,
             "the last block rests one panel above the flow's end"
         );
         assert_eq!(
-            stack_top(&ALL, last) + block_h(ALL[last]) - end,
+            stack_top(&ALL, last, settled_bands(last)) + block_h(ALL[last], 1.0) - end,
             SCR_H - BOTTOM_PAD
         );
 
@@ -990,20 +1077,19 @@ mod tests {
         );
     }
 
-    /// **What is drawn and what can be PRESSED are not the same rect above the field.** The paint
-    /// is scissored at `BAND_CLEAR` above it and the navigation scrim over everything higher is
-    /// opaque, so a shelf scrolled up under the chrome goes on being drawn while its recorded rects
-    /// went on claiming it was there. The pointer found tiles in blank top chrome: a hover
-    /// re-seated focus, which yanks the flow back to reveal a shelf nobody pointed at, and a click
-    /// opened a poster that was not on screen.
+    /// **What is drawn and what can be PRESSED are not the same rect under the tab track.** The
+    /// column passes behind the track and goes on being drawn there while its recorded rects went
+    /// on claiming it was reachable. The pointer found tiles in the top chrome: a hover re-seated
+    /// focus, which yanks the flow back to reveal a shelf nobody pointed at, and a click opened a
+    /// poster that was not on screen.
     #[test]
     fn a_tile_scrolled_under_the_chrome_is_not_a_pointer_target() {
-        let floor = crate::ui::search::CHROME_BOTTOM;
+        let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
         let tile = |y: f32| Rect::new(400.0, y, CARD_W, CARD_H);
 
         // At rest the first shelf's row is well clear of the chrome, and its rect is recorded
         // exactly as it was drawn — the common case must cost nothing.
-        let at_rest = tile(stack_top(&ALL, 0) + HEAD_TO_ROW);
+        let at_rest = tile(stack_top(&ALL, 0, settled_bands(0)) + HEAD_TO_ROW);
         let r = hit_band(at_rest, floor).expect("an on-screen tile is a target");
         assert_eq!((r.y, r.h), (at_rest.y, at_rest.h));
 
@@ -1040,7 +1126,7 @@ mod tests {
         // …and the flow really does reach that state: revealing the last shelf — where a ▼ walk
         // down the shelves ends — puts the first one's whole row above the chrome.
         let deep = reveal_of(0.0, &ALL, ALL.len() - 1);
-        let row0 = tile(stack_top(&ALL, 0) + HEAD_TO_ROW - deep);
+        let row0 = tile(stack_top(&ALL, 0, settled_bands(0)) + HEAD_TO_ROW - deep);
         assert!(
             row0.y + row0.h < floor,
             "the first row is behind the chrome at {deep}px of scroll"
@@ -1263,13 +1349,34 @@ mod tests {
             show_title: "Wallace & Gromit".into(),
             season_index: 1,
             ep_index: 3,
+            aired: "1989-11-04".into(),
             ..Default::default()
         });
+        // **The RELEASE DATE.** This rung has given up two things in two revisions, both because
+        // the artwork took them: the show's name once `still_line` printed it, then the address
+        // once the 2026-09-05 revision printed that too. What is left is the fact the tile cannot
+        // carry — and a search result NAVIGATES, so it takes the Recently Released side of the
+        // choice rather than Continue Watching's time-left.
         assert_eq!(
             subtitle(Kind::Episode, &ep, ""),
-            "Wallace & Gromit \u{b7} S1, E3",
-            "an episode says where it lives"
+            "4 Nov 1989",
+            "the date; the show AND the address are on the artwork"
         );
+        // …and a borrowed source still closes the line, after it
+        assert_eq!(
+            subtitle(Kind::Episode, &ep, "friend"),
+            "4 Nov 1989 \u{b7} friend"
+        );
+        // an episode the server dated to nothing at all leaves the rung to the source alone
+        let undated = Item::Media(PmsMovie {
+            kind: 3,
+            title: "A Grand Day Out".into(),
+            season_index: 1,
+            ep_index: 3,
+            ..Default::default()
+        });
+        assert_eq!(subtitle(Kind::Episode, &undated, ""), "");
+        assert_eq!(subtitle(Kind::Episode, &undated, "friend"), "friend");
 
         // no year, no show, nothing to say — and then a handle stands alone rather than opening the
         // line with a stray dot
@@ -1311,6 +1418,39 @@ mod tests {
                 ""
             ),
             "1 item"
+        );
+    }
+
+    /// **The head of the document really leaves the screen** — the whole point of unpinning the
+    /// query field (owner, 2026-09-05: *"when I scroll to search results, search bar also scrolls
+    /// and everything goes under our glass tab bar"*).
+    ///
+    /// Graded through [`super::field_hit_rect`] rather than against a bare number, because "gone"
+    /// is a statement about the FLOOR the pointer and the eye share, not about a y: the field is
+    /// gone when it has travelled entirely under the tab track, which is the same trim
+    /// [`hit_band`] gives a tile. One step — field to shelf 0 to shelf 1 — is enough to do it, and
+    /// that is the first scroll a user makes on this screen.
+    ///
+    /// It could not have been red before the change: the field was drawn at a constant `FIELD.y`
+    /// and had no shift to apply, so this is a NEW promise rather than a repaired one.
+    #[test]
+    fn revealing_the_second_shelf_carries_the_query_field_under_the_track() {
+        let rest = reveal_of(0.0, &ALL, 0);
+        assert_eq!(rest, 0.0, "shelf 0 is already whole on the panel; nothing moves");
+        assert!(
+            crate::ui::search::field_hit_rect(rest).is_some(),
+            "…so at rest the field is exactly where it has always been",
+        );
+
+        let want = reveal_of(rest, &ALL, 1);
+        assert!(
+            want > 0.0,
+            "stepping to shelf 1 must move the column: {want}",
+        );
+        assert!(
+            crate::ui::search::field_hit_rect(want).is_none(),
+            "the field is still on screen at shift {want} — the head has to travel under the \
+             track, not stop above it",
         );
     }
 }

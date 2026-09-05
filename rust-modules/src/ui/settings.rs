@@ -88,13 +88,19 @@ fn rebuild(sel: i32) {
     let mut sections = Vec::new();
     if signed_in() {
         let n = crate::browse::pinned_count();
+        // **The section is Libraries and the row is Favorite libraries**, because the switch is no
+        // longer about Home. It governs the whole app: Home's shelves, the top tab strip (a type
+        // with no favourite draws no pill at all) and the Library screen's own Sources picker. The
+        // row said "Home screen / Choose which libraries contribute shelves" while that was true;
+        // widening the setting without widening its words would leave the one surface that
+        // EXPLAINS it describing a third of what it does.
         sections.push(
-            Section::new("Home").row(
-                Row::new("Home screen")
-                    .detail("Choose which libraries contribute shelves.")
+            Section::new("Libraries").row(
+                Row::new("Favorite libraries")
+                    .detail("Which libraries this television shows.")
                     .value(format!(
                         "{n} {}",
-                        if n == 1 { "library" } else { "libraries" }
+                        if n == 1 { "favorite" } else { "favorites" }
                     ))
                     .chevron(true),
             ),

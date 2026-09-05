@@ -38,16 +38,37 @@ pub(crate) struct LibRef<'a> {
     pub(crate) machine_id: &'a str,
     /// the section key, server-local: both servers in the measured pair have a section `1`
     pub(crate) key: i64,
-    /// this account's own server rather than a friend's — the ownership default's whole input
+    /// this account's own server rather than a friend's — half of the ownership default's input
     pub(crate) owned: bool,
+    /// **Does this account own any library of THIS library's type?** The other half, and the
+    /// reason the default is per-type rather than per-roster since 2026-09-05.
+    ///
+    /// A `bool` rather than the type itself so these rules stay a leaf: `SecKind` lives in
+    /// `browse`, which sits *above* this layer, and the rule never needs to know which type a
+    /// library is — only whether the account already has one of its own. `browse::lib_refs`
+    /// computes it, because the section table is the only thing that can.
+    pub(crate) own_type: bool,
 }
 
 /// What the first-run screen SHOWS for one library before anybody touches it.
 ///
-/// `any_owned` is the roster's fact, not the library's: with no server of your own there is
-/// nothing to prefer, so the ownership default has no question to answer and everything comes On.
-pub(crate) fn default_on(lib: LibRef<'_>, any_owned: bool) -> bool {
-    lib.owned || !any_owned
+/// **Your own, and anything of a type you have none of.** With no server of your own there is
+/// nothing to prefer, so everything comes On — which this still says, because an account that owns
+/// nothing owns nothing of every type.
+///
+/// The per-type half arrived with the favourite switch on 2026-09-05, and it is a correctness fix
+/// rather than a nicety. The switch governs the tab strip now, so a library that is off draws no
+/// pill — and under the old roster-wide rule, a friend sharing a type you do not own (they have TV,
+/// you have only films) defaulted to Off and took the *entire type* off the strip with it. A
+/// content type silently absent on first boot is not a preference anybody expressed; it is a
+/// default nobody chose, and it is exactly the "tab that leads to nothing" argument running
+/// backwards. `Library Screens.dc.html` B says the strip grows by missing types, and this is what
+/// makes that true at the default rather than only after a visit to Settings.
+///
+/// Your own libraries are unaffected, and so is the case the rule was written for: a friend's
+/// films still default Off while you have films of your own.
+pub(crate) fn default_on(lib: LibRef<'_>) -> bool {
+    lib.owned || !lib.own_type
 }
 
 /// Resolve the whole table for one profile: the recorded answer where there is one, the default
@@ -58,12 +79,11 @@ pub(crate) fn default_on(lib: LibRef<'_>, any_owned: bool) -> bool {
 /// and re-running it over rows that already have an answer is free, because every toggle is
 /// recorded, so a resolved row and its record always agree.
 pub(crate) fn resolve(libs: &[LibRef<'_>], rec: Option<&HomePins>) -> Vec<bool> {
-    let any_owned = libs.iter().any(|l| l.owned);
     let mut out: Vec<bool> = libs
         .iter()
         .map(|&l| {
             rec.and_then(|r| r.answer(l.machine_id, l.key))
-                .unwrap_or_else(|| default_on(l, any_owned))
+                .unwrap_or_else(|| default_on(l))
         })
         .collect();
     if out.iter().any(|&on| on) {
@@ -168,11 +188,24 @@ pub(crate) fn carry_forward(
 mod tests {
     use super::*;
 
+    /// A library of a type this account also owns — the ordinary case, and what every test here
+    /// asserted before `own_type` existed. [`lib_of_new_type`] is its counterpart.
     fn lib(mid: &str, key: i64, owned: bool) -> LibRef<'_> {
         LibRef {
             machine_id: mid,
             key,
             owned,
+            own_type: true,
+        }
+    }
+    /// A borrowed library of a type this account has NONE of — a friend's TV shelf on a films-only
+    /// install. It defaults On, and the strip would otherwise lose the whole type.
+    fn lib_of_new_type(mid: &str, key: i64) -> LibRef<'_> {
+        LibRef {
+            machine_id: mid,
+            key,
+            owned: false,
+            own_type: false,
         }
     }
     /// The measured pair: your own two libraries and a friend's one, in registration order.
@@ -182,6 +215,33 @@ mod tests {
             lib("mine", 2, true),
             lib("theirs", 1, false),
         ]
+    }
+
+    /// **The per-type default, and the bug it closes.** The switch governs the tab strip since
+    /// 2026-09-05, so a library that is Off draws no pill — and a whole TYPE whose only library is
+    /// a friend's would have defaulted Off and vanished from the strip entirely, on first boot,
+    /// with nothing on screen to say a decision had been made. That is a default nobody chose, not
+    /// a preference anybody expressed.
+    #[test]
+    fn a_borrowed_library_of_a_type_you_do_not_own_defaults_on() {
+        assert!(
+            !default_on(lib("theirs", 1, false)),
+            "a friend's FILMS still default off while you have films of your own"
+        );
+        assert!(
+            default_on(lib_of_new_type("theirs", 2)),
+            "…but a friend's SHOWS come on when you own no shows at all, or the type has no pill"
+        );
+        assert!(
+            default_on(lib("mine", 1, true)),
+            "your own is unaffected, by either half of the rule"
+        );
+        // …and the roster-wide case the rule was originally written for still holds, because an
+        // account that owns nothing owns nothing of every type.
+        assert!(
+            default_on(lib_of_new_type("theirs", 3)),
+            "with no server of your own there is nothing to prefer"
+        );
     }
 
     /// **The defaults rule, which is the whole first frame of the screen.**
@@ -195,7 +255,9 @@ mod tests {
     /// who has no other library to fall back on.
     #[test]
     fn an_account_with_no_server_of_its_own_gets_every_borrowed_library() {
-        let libs = vec![lib("a", 1, false), lib("b", 1, false)];
+        // An account that owns nothing owns nothing OF EVERY TYPE, which is why the per-type
+        // default subsumes the roster-wide one rather than replacing it.
+        let libs = vec![lib_of_new_type("a", 1), lib_of_new_type("b", 1)];
         assert_eq!(resolve(&libs, None), vec![true, true]);
     }
 

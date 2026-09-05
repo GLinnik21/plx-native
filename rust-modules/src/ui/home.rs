@@ -13,7 +13,7 @@ use crate::ui::label::{Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{
-    AmbientWash, Art, Button, CircleButton, ControlPalette, PageDots, HERO_BASE_SCRIM_Y0,
+    AmbientWash, Art, Button, CircleButton, ControlPalette, PageDots, PageGround, HERO_BASE_SCRIM_Y0,
 };
 // `guard` was a private copy of this barrier living here; it is now the shared `ui::guard` (its
 // doc comment carries the FFI-unwind rationale + the GL-scissor repair the local copy was missing).
@@ -418,11 +418,38 @@ fn dev_source() -> Option<&'static str> {
 /// from `draw` would advance twice on those frames and settle at the wrong rate.
 static mut HERO_POP: crate::ui::widgets::CtlPop<{ HERO_NBTN }> = crate::ui::widgets::CtlPop::new();
 
+/// **The pill the top band is standing on, as an IDENTITY** — the anchor under the `-(i+2)`
+/// packing (Codex review, 2026-09-05).
+///
+/// The packing itself is fine; what was not is that a packed index outlives the strip it was taken
+/// against. The favourite switch can add or remove a type pill mid-session, and then `-3` stops
+/// meaning Movies and starts meaning TV Shows without anything moving on screen — so the ring sits
+/// where it was and OK navigates somewhere the user never chose.
+///
+/// Anchoring it here costs one static and no call-site changes, because `hero_fc` has exactly one
+/// setter and one getter: the int stays the transport (`hero_pill_index` and every match on it are
+/// untouched), and the MEANING is re-derived from this on every read.
+static mut HERO_PILL: crate::ui::widgets::Pill = crate::ui::widgets::Pill::Home;
+
 pub(crate) fn hero_focus() -> c_int {
-    unsafe { addr_of!(hero_fc).read() }
+    let raw = unsafe { addr_of!(hero_fc).read() };
+    // A top-band value is re-packed from the identity against the strip as it is NOW. A pill whose
+    // type lost its last favourite resolves to Home — the one pill always drawn — rather than to
+    // whatever has moved into its slot.
+    if hero_pill_index(raw).is_some() {
+        let i = crate::ui::widgets::pill_of(unsafe { addr_of!(HERO_PILL).read() }).unwrap_or(0);
+        return hero_focus_for_pill(i);
+    }
+    raw
 }
 pub(crate) fn set_hero_focus(v: c_int) {
-    unsafe { addr_of_mut!(hero_fc).write(v.clamp(hero_focus_lo(), HERO_NBTN as c_int - 1)) }
+    let v = v.clamp(hero_focus_lo(), HERO_NBTN as c_int - 1);
+    unsafe {
+        if let Some(i) = hero_pill_index(v) {
+            HERO_PILL = crate::ui::widgets::pill_at(i);
+        }
+        addr_of_mut!(hero_fc).write(v);
+    }
 }
 
 /// The lowest (most negative) hero-focus value: the LAST of the four permanent tab pills.
@@ -518,11 +545,22 @@ struct Backdrop {
     /// sliding past each other put a hard vertical seam between two atmospheres across the panel,
     /// and atmosphere is the one thing that should cross-fade rather than travel.
     ///
-    /// It is HERO-SCOPED: [`wash_corners`]'s lean falls to zero as the snap dives, so in the grid it
-    /// resolves to exactly [`theme::SURFACE_APP`] and `is_flat` skips the pass entirely. The shelves
-    /// keep sitting on the flat clear the card shadows are tuned against — this is a billboard
-    /// ground, not a page tint.
+    /// It carries the page across the DIVE: at the top it is the billboard's, keyed to the hero at
+    /// [`HERO_WASH_W`]; in the grid it is the focused shelf tile's, at the [`PageGround::CARD_W`]
+    /// arrangement the Library, Search and the person page all stand on. [`wash_corners`] lerps
+    /// between the two ends over the snap, so neither half is ever showing the other's subject.
+    ///
+    /// It used to resolve to exactly [`theme::SURFACE_APP`] in the grid and be skipped there — the
+    /// shelves sat on the flat clear the card shadows are tuned against. They still do when nothing
+    /// focused carries colours; what changed is that "this screen is about THIS artwork" is now said
+    /// on the shelves too, and the shadow argument survives it because
+    /// [`AmbientWash::GROUND_W`] IS the floor (see its doc: the darkest ground a black-cornered
+    /// poster can produce is ~33/255, clear of the 25/255 the surface's own doc rejects).
     wash: AmbientWash,
+    /// The grid end of that lerp, HELD past a tile with no `UltraBlurColors` envelope rather than
+    /// falling back to the flat surface — [`PageGround`]'s rule, and Home is where it bites hardest:
+    /// the shelves are where one artless poster sits between two coloured ones.
+    grid_t: [[f32; 4]; 4],
     /// Art reveal 0→1 for the CURRENT layer and, during a flip, the OUTGOING one. THIS is the
     /// cross-fade that covers a prefetch miss: a layer whose backdrop has not decoded yet sits at 0
     /// and shows the wash, then dissolves the photograph in when it lands, replacing the hard
@@ -559,6 +597,7 @@ impl Backdrop {
         // (keyed < 0) so Home does not fade up from grey on every boot.
         Backdrop {
             wash: AmbientWash::flat(theme::SURFACE_APP),
+            grid_t: [theme::SURFACE_APP; 4],
             art_a: Spring::at(0.0),
             art_out_a: Spring::at(0.0),
             tex: (0, 0.0, 0.0),
@@ -605,7 +644,9 @@ impl View for Backdrop {
                                                  // is this component's own "the backdrop was not ready" behaviour, not a new one.
             self.art_a.jump(if self.tex.0 != 0 { 1.0 } else { 0.0 });
             if self.keyed < 0 {
-                self.wash.jump(wash_corners(hero_item(), env.sp)); // mount: no dissolve from grey
+                // mount: no dissolve from grey
+                self.wash
+                    .jump(wash_corners(hero_item(), self.grid_t, env.sp));
             }
             self.keyed = cur;
         }
@@ -617,8 +658,15 @@ impl View for Backdrop {
         if self.tex_out.0 != 0 {
             self.art_out_a.step(1.0, AmbientWash::K, env.dt);
         }
-        self.wash
-            .step(wash_corners(hero_item(), env.sp), AmbientWash::K, env.dt);
+        // The grid end, before the step that reads it. A tile with no envelope leaves it alone.
+        if let Some(t) = grid_wash_corners() {
+            self.grid_t = t;
+        }
+        self.wash.step(
+            wash_corners(hero_item(), self.grid_t, env.sp),
+            AmbientWash::K,
+            env.dt,
+        );
     }
     fn draw(&self, env: &Env, p: Painter) {
         let sp = env.sp;
@@ -641,7 +689,11 @@ impl View for Backdrop {
             // still arriving. Mid-fold (`sp` off zero) or mid-slide the wash is behind a moving,
             // fading picture, and the noise is a full-screen cost for a gradient nobody sees as
             // one — measured 2026-09-02 as the difference between the fold's 45 and its 50 fps.
-            let still = sp <= 0.005 && slide.is_none();
+            // BOTH ends of the dive are "still": the grid is as much a screen somebody stops and
+            // looks at as the billboard is, and down there the ground is directly visible in every
+            // gutter rather than behind a photograph. Only the dive itself, and a hero flip, are
+            // motion the noise cannot be seen through.
+            let still = (sp <= 0.005 || sp >= 0.995) && slide.is_none();
             self.wash
                 .draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(still));
         }
@@ -795,12 +847,28 @@ pub(crate) fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
 /// IS the app's flat ground with no special case, and the grid end of the snap lands on exactly the
 /// colour `home_draw`'s `frame_clear` already laid down — which is also what keeps this wash
 /// hero-scoped rather than a tint over the shelves.
-fn wash_corners(m: Option<&PmsMovie>, sp: f32) -> [[f32; 4]; 4] {
-    let lean = (1.0 - sp).clamp(0.0, 1.0);
-    match m.filter(|m| m.has_blur) {
-        Some(m) => AmbientWash::keyed(m.blur, HERO_WASH_W.map(|w| w * lean)),
+fn wash_corners(m: Option<&PmsMovie>, grid: [[f32; 4]; 4], sp: f32) -> [[f32; 4]; 4] {
+    let hero = match m.filter(|m| m.has_blur) {
+        Some(m) => AmbientWash::keyed(m.blur, HERO_WASH_W),
         None => [theme::SURFACE_APP; 4],
-    }
+    };
+    // A LERP BETWEEN TWO GROUNDS, not two leans added: each end is already a finished target mixed
+    // from the app surface, and adding their leans would double the ground's strength through the
+    // middle of the dive — brightest exactly where neither subject is the page's.
+    let dive = sp.clamp(0.0, 1.0);
+    std::array::from_fn(|i| theme::mix(hero[i], grid[i], dive))
+}
+
+/// The GRID end of that lerp: the focused shelf tile's own ground, at the arrangement every
+/// browsing screen shares ([`PageGround::CARD_W`]) rather than the billboard's — down here the wash
+/// is a ground under card captions, which is the case that constant was measured for.
+///
+/// `None` when the tile under the ring carries no `UltraBlurColors` envelope; [`Backdrop::grid_t`]
+/// then HOLDS the last one, for [`PageGround`]'s reason.
+fn grid_wash_corners() -> Option<[[f32; 4]; 4]> {
+    movie_at(g_fr(), g_fc())
+        .filter(|m| m.has_blur)
+        .map(|m| AmbientWash::keyed(m.blur, PageGround::CARD_W))
 }
 
 /// Would every pixel of the ground be painted over anyway? Pure, and split out because the
@@ -1406,7 +1474,18 @@ fn row_reveal_band(top: f32) -> (f32, f32) {
 /// [`row_reveal_band`]'s `hi`, and the one-hub grid is covered beside it because the two coincide
 /// at zero there.
 fn grid_max_scroll(nh: usize) -> f32 {
-    (nh.max(1) as f32 * ROW_PITCH - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
+    // The content height is the SETTLED column with the LAST shelf focused — which is the state the
+    // deepest scroll is actually reached in, and the only one whose band is open below every other.
+    let n = nh.max(1);
+    let h = card_row::settled_top(n, Some(n - 1), card_row::ROW_PITCH_FIXED);
+    (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
+}
+
+/// The settled top of shelf `r` with `focus_row` focused — [`card_row::settled_top`] at this
+/// screen's pitch. Every scroll target and every clearance test goes through it; the LIVE tops
+/// (what is drawn) are `Grid::layout`'s running sum of each shelf's own animated band.
+fn shelf_top_settled(r: usize, focus_row: usize) -> f32 {
+    card_row::settled_top(r, Some(focus_row), card_row::ROW_PITCH_FIXED)
 }
 
 // ---- Grid: the collection view. Holds one CardRow per hub (the shared animated shelf component) +
@@ -1435,7 +1514,7 @@ impl View for Grid {
         let max_y = grid_max_scroll(n_hubs());
         // minimal scroll-into-view over the shared `reveal` core — the rule, its two bounds and
         // why the top one is a clearance rather than an offset are on [`row_reveal_band`].
-        let (lo, hi) = row_reveal_band(env.fr as f32 * ROW_PITCH);
+        let (lo, hi) = row_reveal_band(shelf_top_settled(env.fr as usize, env.fr as usize));
         self.scroll_y.step(
             card_row::reveal(self.scroll_y.pos, lo, hi, max_y),
             K_SCROLL,
@@ -1446,8 +1525,14 @@ impl View for Grid {
         // full-screen root view: positions absolutely from PEEK_Y/GRID_TOP_Y by env.sp, so the
         // trait's frame rect (env.screen) is unused.
         let shelf_top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * env.sp; // 828 -> 150
+        // The pitch is no longer a constant: each shelf reserves its own live label band, open only
+        // while it holds focus (`card_row::under_band`). So the column is a RUNNING SUM rather than
+        // `r * ROW_PITCH` — and it is accumulated here, at the one place `base_y` is written, which
+        // is what makes the draw, the pointer hit-test and the focused-card rect follow for free.
+        let mut top = 0.0f32;
         for r in 0..MAX_HUBS {
-            self.shelves[r].base_y = shelf_top + r as f32 * ROW_PITCH - self.scroll_y.pos * env.sp;
+            self.shelves[r].base_y = shelf_top + top - self.scroll_y.pos * env.sp;
+            top += card_row::ROW_PITCH_FIXED + self.shelves[r].under_band();
         }
     }
     fn draw(&self, env: &Env, p: Painter) {
@@ -1467,12 +1552,15 @@ impl View for Grid {
                 // the snap fade rides the painter's cascade alpha, not the ink: `with_a` REPLACES a
                 // token's alpha rather than multiplying it, and the separator token carries .45 of
                 // its own — baking `env.sp` into the colour would throw that away.
-                draw_heading(
+                crate::ui::card_row::draw_heading(
                     p.alpha(env.sp),
                     crate::pms::hub_title(r),
                     crate::pms::hub_source(r),
                     MARGIN_X,
                     heading_y(row_y, lift),
+                    // unbounded: nothing occupies the right of this screen's content region, so a
+                    // heading runs to the margin like any other string here
+                    f32::INFINITY,
                 );
             }
             for c in 0..crate::pms::hub_len(r) {
@@ -1527,14 +1615,14 @@ impl Grid {
                 } else {
                     card_row::TileLabel::title(&mm.title)
                 };
-                l.caption = if cw {
-                    cw_caption(mm)
-                } else {
-                    focused_caption(mm)
-                };
+                l.caption = card_row::focused_caption(mm, cw);
                 l
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+            // …and the block only appears as the room for it does: this shelf's label band opens
+            // on focus, and until it holds the block the caption would print through the NEXT
+            // shelf's heading (`card_row::band_reveal`).
+            .revealed(self.shelves[r].band_reveal());
         let resume = m.and_then(PmsMovie::resume_frac);
         card_row::draw_focused(p, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
     }
@@ -1546,129 +1634,6 @@ impl Grid {
 /// heading ([`heading_flow`]) and the hero's meta line ([`meta_source_flow`]) — and they are one
 /// annotation in two positions, not two spacings.
 const SOURCE_PAD: f32 = theme::space::XS;
-
-/// The shelf heading, flowed left→right from the heading origin: the hub's title, and — only when
-/// the row came from ANOTHER server — a quiet `· handle` naming that source ("Recently Added in
-/// Film Club · friend").
-///
-/// **With an empty source the annotation is ABSENT, not empty**: no gap, no dot, no second run, no
-/// draw call. That is the design's "with one source, none of this is drawn" implemented as absence
-/// rather than as a branch that draws nothing visible — so the ANNOTATION costs a single-server
-/// library nothing at all, in geometry, in draw calls and in ink.
-///
-/// The heading is NOT unchanged overall, and the difference is deliberate: its ink moved from
-/// `TEXT_PRIMARY` (`#f7fafc`) to `TEXT_HEADING` (`#ebf0f7`) in the same pass. Every shelf heading on
-/// Home is ~4% darker as a result, today, with no source string anywhere. That is a harmonization,
-/// not a side effect — `TEXT_HEADING` is the shared section-heading ink that `detail.rs` and
-/// `person.rs` already use, and Home was the one screen still inking its headings as body text.
-///
-/// Two runs and not one string because they are two SIZES, two weights and three inks, and
-/// `Painter::text` can express exactly one of each per call (`theme::TEXT_SEPARATOR`'s doc: a dot
-/// baked into a joined string is one run at one colour by construction). They are BASELINE-aligned
-/// via `text::baseline_y` — a `BODY` run top-aligned against a `HEADLINE` one reads as a
-/// superscript.
-///
-/// `run(text, dx, sz, bold, ink) -> advance` is the seam: the draw passes a closure that paints and
-/// returns `Painter::text`'s advance, the host tests pass one that measures. The drawn flow and the
-/// graded one are therefore ONE expression, not `dotted_run`/`dotted_run_w`'s two that have to be
-/// kept agreeing. Returns the total advance.
-///
-/// The flow is PURE — it takes no font metric, which is also why the host suite can drive it: the
-/// per-run baseline drop is resolved in [`draw_heading`], from the very `sz`/`bold` handed out here.
-fn heading_flow(
-    title: &str,
-    source: &str,
-    mut run: impl FnMut(&str, f32, c_int, c_int, [f32; 4]) -> f32,
-) -> f32 {
-    let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING);
-    if source.is_empty() {
-        return dx; // one source: the heading is the title and nothing else
-    }
-    dx += SOURCE_PAD;
-    dx += run("\u{b7}", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR);
-    dx += SOURCE_PAD;
-    dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY);
-    dx
-}
-
-/// Draw [`heading_flow`] with its title's cap top at `(x, y)`. Every run rides the painter handed
-/// in, so the snap fade and the row's heading `lift` move the whole heading together — an
-/// annotation that detached from its title mid-scroll would read as two objects.
-///
-/// Each run drops onto the TITLE's baseline (`text::baseline_y`, a no-op for the title itself,
-/// which is measured against its own tokens): the annotation is a rung down, and top-aligning a
-/// `BODY` run against a `HEADLINE` one would read as a superscript. That one line is the only part
-/// of this heading the host suite cannot grade — it opens no SDL_ttf, so there are no cap bands to
-/// measure (the same boundary `widgets`' anchor table works within); what the tests DO pin is the
-/// tokens it resolves from.
-fn draw_heading(p: Painter, title: &str, source: &str, x: f32, y: f32) {
-    heading_flow(title, source, |s, dx, sz, bold, ink| {
-        // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
-        match CString::new(s) {
-            Ok(cs) => p.text(
-                cs.as_ptr(),
-                x + dx,
-                crate::text::baseline_y(sz, bold, theme::size::HEADLINE, 1, y),
-                sz,
-                ink,
-                0,
-                bold,
-            ),
-            Err(_) => 0.0,
-        }
-    });
-}
-
-/// Metadata caption under the FOCUSED poster: episodes read "S1 • E8", movies their year — the
-/// selected item's info lives with the selected poster instead of floating between the rows.
-fn focused_caption(m: &PmsMovie) -> Option<CString> {
-    let s = if m.kind == 3 && m.ep_index > 0 {
-        if m.season_index > 0 {
-            format!("S{} \u{2022} E{}", m.season_index, m.ep_index)
-        } else {
-            format!("E{}", m.ep_index)
-        }
-    } else if m.kind == 0 && m.year > 0 {
-        m.year.to_string()
-    } else {
-        return None;
-    };
-    CString::new(s).ok()
-}
-
-/// The focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
-/// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
-/// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
-///
-/// "In progress" is [`PmsMovie::resume_frac`] — THE resume rule, and the same call `Grid::draw`
-/// makes for the BAR in the pass that asks for this caption. A hand-written
-/// `resume_ms > 0 && dur_ns > 0` here dropped that rule's end-guard, so a finished item whose
-/// server never cleared `viewOffset` drew NO bar (`resume_frac`'s answer) under a caption still
-/// promising "1 min left" — `fmt::time_left` floors at a minute, so it could not even read zero.
-/// One item, described two ways in one draw. Whether that tile also wore the watched TICK is a
-/// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
-/// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
-fn cw_caption(m: &PmsMovie) -> Option<CString> {
-    let show = m.show_title.as_str();
-    let s = if m.resume_frac().is_some() {
-        let left = crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
-        if m.kind == 3 && !show.is_empty() {
-            format!("{show} \u{00b7} {left}")
-        } else {
-            left // a resumed movie: time-remaining alone
-        }
-    } else if m.kind == 3 {
-        // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
-        if show.is_empty() {
-            "New episode".to_string()
-        } else {
-            format!("{show} \u{00b7} New episode")
-        }
-    } else {
-        return None;
-    };
-    CString::new(s).ok()
-}
 /// The drawn left edge of grid column `c` in a row whose EFFECTIVE horizontal scroll is `es`.
 /// The one x formula the draw, the pointer hit-test and the vertical column-keeper all share —
 /// hit_at/vert used to re-derive it WITHOUT the `* sp` snap fold the draw applies, so the hover
@@ -1722,14 +1687,24 @@ impl Grid {
         let n = n_hubs();
         let cur = step_row(g_fr(), 0, n);
         let ncur = step_row(g_fr(), dir, n);
-        let cx = card_x(g_fc().max(0) as usize, self.eff_scroll(cur as usize, sp)) + CARD_W * 0.5;
-        let mut nc = ((cx - MARGIN_X - CARD_W * 0.5 + self.eff_scroll(ncur as usize, sp))
-            / (CARD_W + GAP)
-            + 0.5) as c_int;
-        let ncount = crate::pms::hub_len(ncur as usize) as c_int;
-        nc = nc.clamp(0, (ncount - 1).max(0));
+        // **The shared rule, since 2026-09-05** (`card_row::column_near_x`). This arithmetic lived
+        // here and only here — every other shelf screen carried the index across, which lands focus
+        // on a tile most of a screen away whenever two rows hold different scrolls. It is the same
+        // expression it always was, with one addition it needed and did not have: the source index
+        // breaks an exact half-tile tie, so bouncing UP/DOWN no longer walks focus along the row.
+        let from = g_fc().max(0) as usize;
+        let cx = card_x(from, self.eff_scroll(cur as usize, sp)) + CARD_W * 0.5;
+        let nc = crate::ui::card_row::column_near_x(
+            cx,
+            MARGIN_X,
+            CARD_W + GAP,
+            CARD_W,
+            self.eff_scroll(ncur as usize, sp),
+            crate::pms::hub_len(ncur as usize),
+            from,
+        );
         fr = ncur;
-        fc = nc;
+        fc = nc as c_int;
     }
     /// Card under the pointer, or None. Vertical fly-away guard: a row that is only PARTIALLY on
     /// screen is not hoverable unless it is already the focused row — hovering it would move `fr`
@@ -2299,6 +2274,12 @@ mod tests {
     /// empty), so the row here is Home and Search: the two pills that exist whatever the account
     /// turns out to hold. The band's last pill is therefore SEARCH, and this asserts the clamp
     /// lands on it rather than on the last library — which on a fresh boot there is none of.
+    ///
+    /// **Those two are the whole row now, and that is the change**: a type pill is drawn only for a
+    /// type with a favourite library in it, so an empty table draws neither. This asserted FOUR
+    /// while its own prose above said two, which was true only while Movies and TV Shows were
+    /// permanent furniture — no reachable state could take them away, so the sentence and the
+    /// number never had to agree.
     #[test]
     fn set_hero_focus_clamps_onto_the_last_drawable_pill() {
         let _s = crate::testlock::serial(); // the count comes from `browse`'s table, a crate global
@@ -2307,8 +2288,8 @@ mod tests {
         crate::browse::reset();
         assert_eq!(
             crate::ui::widgets::tab_count(),
-            4,
-            "Home, Movies, TV Shows and Search are permanent"
+            2,
+            "with no libraries the row is Home and Search, and nothing between them"
         );
         set_hero_focus(c_int::MIN / 2);
         let last = crate::ui::widgets::search_pill();
@@ -2463,9 +2444,15 @@ mod tests {
         set_snap_target(snap0);
     }
 
-    /// The top band walks the four permanent PILLS, not the section table. FOUR libraries across
-    /// two servers still expose exactly two type destinations, so RIGHT stops past TV Shows and
-    /// reaches Search rather than inventing one focus stop per library.
+    /// The top band walks the PILLS, not the section table. FOUR libraries across two servers
+    /// still expose exactly two type destinations, so RIGHT stops past TV Shows and reaches Search
+    /// rather than inventing one focus stop per library.
+    ///
+    /// The seed is the owner's own server holding both types plus a friend's share of each, and the
+    /// session is isolated because the row is a projection of the FAVOURITE set: your own libraries
+    /// default on and the friend's fold onto the pills they already made, so the count is two
+    /// whichever way the shared pair resolve — but only a scratch session makes that a fact about
+    /// the fixture rather than about the developer's `auth.json`.
     ///
     /// The row is Home + those two + Search, and the last stop is the SEARCH pill — which is the
     /// other half of why the two counts must not be conflated: one end of the row is not a library
@@ -2475,6 +2462,8 @@ mod tests {
         let _s = crate::testlock::serial();
         let _g = FOCUS.lock().unwrap_or_else(|e| e.into_inner());
         let saved = hero_focus();
+        let _t = crate::plex::session::TempSession::new("home-strip");
+        _t.watching("u-home-strip");
         crate::browse::seed_two_source_table_for_test();
         assert_eq!(crate::browse::section_count(), 4, "four libraries…");
         assert_eq!(
@@ -2733,12 +2722,12 @@ mod tests {
         let flat = [theme::SURFACE_APP; 4];
         // "no artwork" IS the app's own ground, with no special case
         assert_eq!(
-            wash_corners(None, 0.0),
+            wash_corners(None, flat, 0.0),
             flat,
             "an empty pool is the app's ground"
         );
         assert_eq!(
-            wash_corners(Some(&PmsMovie::default()), 0.0),
+            wash_corners(Some(&PmsMovie::default()), flat, 0.0),
             flat,
             "…and so is an item with no envelope"
         );
@@ -2751,15 +2740,23 @@ mod tests {
             [0.1, 0.1, 0.12],
         ]);
         assert_eq!(
-            wash_corners(Some(&bright), 1.0),
+            wash_corners(Some(&bright), flat, 1.0),
             flat,
             "the dive resolves to the app ground, not to black"
         );
         assert_eq!(
-            wash_corners(Some(&bright), 1.5),
+            wash_corners(Some(&bright), flat, 1.5),
             flat,
             "…and an overshooting snap cannot push past it"
         );
+
+        // **The grid end held at the app's own surface, which is what makes every assertion below
+        // hold VERBATIM through the change that gave this function a second subject.** With
+        // `grid = SURFACE_APP` the lerp `mix(hero_t, SURFACE, sp)` is algebraically the old
+        // `keyed(blur, W * (1 - sp))` weight ramp, corner for corner — so these are still the same
+        // measurements of the same behaviour, not loosened ones. The grid end's own bound is
+        // `the_grid_end_of_the_dive_is_the_focused_tiles_ground` below.
+        const FLAT_GRID: [[f32; 4]; 4] = [theme::SURFACE_APP; 4];
 
         // The tail of the dive — the exact frames that used to be near-black — for a DARK envelope
         // as much as a bright one. The bound is the one invariant that separates a WEIGHT scale
@@ -2773,7 +2770,7 @@ mod tests {
         // put them at 0.010 — a deviation of 0.163, off by three and a half times the budget.
         for m in [&bright, &blurred([[0.0; 3]; 4])] {
             for &sp in &[0.9f32, 0.99, 0.996] {
-                for (c, w) in wash_corners(Some(m), sp).iter().zip(HERO_WASH_W) {
+                for (c, w) in wash_corners(Some(m), FLAT_GRID, sp).iter().zip(HERO_WASH_W) {
                     let lean = w * (1.0 - sp);
                     for (ch, s) in c.iter().zip(theme::SURFACE_APP) {
                         let budget = lean * s.max(1.0 - s);
@@ -2791,14 +2788,27 @@ mod tests {
 
         // the lean is a WEIGHT SCALE on the shared mix, not a brightness scale over it. Re-deriving
         // it as `dim(keyed(blur, W), lean)` would darken the surface itself and fails here.
-        assert_eq!(
-            wash_corners(Some(&bright), 0.5),
-            AmbientWash::keyed(bright.blur, HERO_WASH_W.map(|w| w * 0.5)),
-            "half-dived is half the lean toward the artwork, not half the brightness"
-        );
+        //
+        // Compared to a float epsilon rather than exactly, because the two spellings of the same
+        // algebra — the weight ramp on the right, the lerp between two finished targets on the left
+        // — associate their multiplies differently and land up to one ULP apart. The failure this
+        // guards against is a brightness scale, which is wrong by three and a half TIMES the budget
+        // asserted above, so an ULP of slack costs it nothing.
+        for (c, w) in wash_corners(Some(&bright), FLAT_GRID, 0.5)
+            .iter()
+            .zip(AmbientWash::keyed(bright.blur, HERO_WASH_W.map(|w| w * 0.5)))
+        {
+            for (a, b) in c.iter().zip(w) {
+                assert!(
+                    (a - b).abs() <= 1e-6,
+                    "half-dived is half the lean toward the artwork ({b}), not half the \
+                     brightness ({a})"
+                );
+            }
+        }
         // …and the lean does go TOWARD the artwork: a bright envelope lifts the panel off the
         // surface rather than sinking it.
-        let lit = wash_corners(Some(&bright), 0.0);
+        let lit = wash_corners(Some(&bright), FLAT_GRID, 0.0);
         assert!(
             lit[1][0] > theme::SURFACE_APP[0],
             "a white corner must brighten the ground it keys"
@@ -2807,6 +2817,72 @@ mod tests {
             lit[1][0] < 1.0,
             "…but never all the way: it is a wash, not the photograph"
         );
+    }
+
+    /// **The other end of the dive, which used to be nothing.** Home's ground was hero-scoped: the
+    /// lean fell to zero as the snap dove and the grid stood on the flat clear. It now carries the
+    /// focused shelf tile's ground down there instead, and the two ends must not bleed into each
+    /// other — the billboard is about the hero, the shelves are about the tile under the ring, and
+    /// a frame showing a mix of two subjects' colours is a frame about neither.
+    #[test]
+    fn the_grid_end_of_the_dive_is_the_focused_tiles_ground() {
+        let hero = blurred([[0.95, 0.1, 0.1]; 4]); // red billboard
+        let tile = AmbientWash::keyed([[0.1, 0.1, 0.95]; 4], PageGround::CARD_W); // blue shelf tile
+        // A lerp evaluated at its own endpoints lands one ULP off them, so these are graded to a
+        // float epsilon. The failure they guard against is a wash carrying the WRONG SUBJECT'S
+        // colours, which is a whole ground apart.
+        let same = |got: [[f32; 4]; 4], want: [[f32; 4]; 4], what: &str| {
+            for (c, w) in got.iter().zip(want) {
+                for (a, b) in c.iter().zip(w) {
+                    assert!((a - b).abs() <= 1e-6, "{what}: got {a}, wanted {b}");
+                }
+            }
+        };
+
+        // at the top the grid end contributes NOTHING…
+        same(
+            wash_corners(Some(&hero), tile, 0.0),
+            AmbientWash::keyed(hero.blur, HERO_WASH_W),
+            "the billboard is the hero's alone",
+        );
+        // …and in the grid the hero contributes nothing.
+        same(
+            wash_corners(Some(&hero), tile, 1.0),
+            tile,
+            "the shelves are the focused tile's alone",
+        );
+        // An overshooting snap cannot push past the tile's own ground either — the clamp that used
+        // to stop the lean going negative now stops the lerp extrapolating past the far end.
+        same(
+            wash_corners(Some(&hero), tile, 1.5),
+            tile,
+            "an overshooting snap",
+        );
+
+        // The grid end is still floored on the app surface, which is what keeps "no artwork" the
+        // flat clear down here exactly as it is up top — and keeps `is_flat` able to skip the pass
+        // on a library with no envelopes at all.
+        same(
+            wash_corners(Some(&hero), [theme::SURFACE_APP; 4], 1.0),
+            [theme::SURFACE_APP; 4],
+            "an artless shelf is the app's own ground, not a leftover hero tint",
+        );
+
+        // Halfway is halfway between the two grounds — a lerp, not a sum. Summing the two leans
+        // would make the middle of the dive the BRIGHTEST part of the animation, which is the one
+        // place neither subject is the page's.
+        for (c, (h, g)) in wash_corners(Some(&hero), tile, 0.5)
+            .iter()
+            .zip(AmbientWash::keyed(hero.blur, HERO_WASH_W).iter().zip(tile))
+        {
+            for (i, v) in c.iter().enumerate() {
+                let want = h[i] + (g[i] - h[i]) * 0.5;
+                assert!(
+                    (v - want).abs() <= 1e-6,
+                    "mid-dive corner channel is {v}, halfway between the two grounds is {want}"
+                );
+            }
+        }
     }
 
     /// The prefetch's index math: complete coverage of "what can be on screen next", never the page
@@ -3000,7 +3076,7 @@ mod tests {
                 "offset {} is not in progress",
                 m.resume_ms
             );
-            let cap = cw_caption(&m).expect("a Continue Watching episode always captions");
+            let cap = card_row::focused_caption(&m, true).expect("a Continue Watching episode always captions");
             assert!(
                 !cap.to_str().unwrap().contains("left"),
                 "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
@@ -3013,7 +3089,7 @@ mod tests {
             "20 minutes into 45 IS in progress"
         );
         assert_eq!(
-            cw_caption(&mid).unwrap().to_str().unwrap(),
+            card_row::focused_caption(&mid, true).unwrap().to_str().unwrap(),
             "Laura \u{00b7} 25 min left"
         );
     }
@@ -3042,28 +3118,42 @@ mod tests {
         chip.y + chip.h
     }
 
-    /// The DRAW-y of shelf `r`'s heading, for a grid of `nh` hubs scrolled to `scroll`, with `r`
-    /// focused (`lift`: the full focus-pop rise, the worst case — a magnified card sitting right
-    /// under it) or not (no rise; only the focused row lifts, per `Grid::update`).
+    /// The DRAW-y of shelf `r`'s heading with `focus_row` focused and the grid scrolled to
+    /// `scroll`. The focused row takes the full focus-pop rise (the worst case — a magnified card
+    /// sitting right under it); only the focused row lifts, per `Grid::update`.
+    ///
+    /// **`focus_row` is a parameter rather than a `bool` because a shelf's POSITION now depends on
+    /// it too**, not just its lift: the label band is open on exactly one shelf, so every shelf
+    /// below the focus sits [`card_row::BAND_OPEN`] lower than it otherwise would. Passing the two
+    /// separately let a caller grade shelf 0's heading at a scroll settled for shelf 1 while
+    /// placing it as though shelf 0 were focused, which is a position no frame ever draws.
     ///
     /// A scalar rather than a rect because that is the whole of what a clearance needs: the draw-y
     /// is the TEXTURE top, which already sits above the glyphs' cap line, so comparing it against
     /// the band over-states the collision — the safe direction. Measuring the run's height would
     /// need a font the host suite does not open.
-    fn heading_top(r: usize, scroll: f32, focused: bool) -> f32 {
-        let lift = if focused {
+    fn heading_top(r: usize, focus_row: usize, scroll: f32) -> f32 {
+        let lift = if r == focus_row {
             card_row::heading_lift_max(&RowStyle::HOME)
         } else {
             0.0
         };
-        heading_y(GRID_TOP_Y + r as f32 * ROW_PITCH - scroll, lift)
+        heading_y(GRID_TOP_Y + shelf_top_settled(r, focus_row) - scroll, lift)
     }
+
+    /// A deliberately GENEROUS ceiling on how tall a drawn heading can be, for the one arm of
+    /// [`no_shelf_heading_settles_inside_the_shared_top_band`] that needs a height at all. The host
+    /// suite opens no SDL_ttf, so this is not a measurement: `card_row::heading_flow`'s tallest run
+    /// is `theme::size::HEADLINE` and a line box cannot reach twice its point size, so twice it
+    /// bounds every heading this screen can draw with room to spare. Over-estimating is the safe
+    /// direction — it makes the arm HARDER to satisfy.
+    const HEADING_MAX_H: f32 = 2.0 * theme::size::HEADLINE as f32;
 
     /// Where the grid SETTLES with shelf `fr` of `nh` focused, reached from `cur` — the screen's own
     /// arithmetic, through the same [`card_row::reveal`] and [`grid_max_scroll`] `Grid::update`
     /// feeds its spring, so a test cannot grade a rule the screen does not run.
     fn settled_scroll(nh: usize, focus_row: usize, cur: f32) -> f32 {
-        let (lo, hi) = row_reveal_band(focus_row as f32 * ROW_PITCH);
+        let (lo, hi) = row_reveal_band(shelf_top_settled(focus_row, focus_row));
         card_row::reveal(cur, lo, hi, grid_max_scroll(nh))
     }
 
@@ -3083,7 +3173,7 @@ mod tests {
     /// 19px inside it, which is the simulator capture this fix was written against.
     #[test]
     fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
-        let y = heading_top(0, settled_scroll(5, 0, from_below(5)), true);
+        let y = heading_top(0, 0, settled_scroll(5, 0, from_below(5)));
         assert!(
             y >= top_band_bottom(),
             "the raised Continue Watching heading settles at {y} — inside the top band, which ends \
@@ -3108,10 +3198,23 @@ mod tests {
     /// The same rule over the whole space the screen can be in: every hub count the grid can
     /// address, every row, and every scroll a row can settle at.
     ///
-    /// **No shelf heading may SETTLE inside the shared top band** — every heading is either at or
-    /// below the band, or its allocated title band is above the panel entirely. The focused row
-    /// always satisfies the first arm (raised by the full pop and still clear); so do the rows BELOW
-    /// it, which are simply further down the page. Only the rows ABOVE it take the second arm.
+    /// **No shelf heading may SETTLE half-cut by the shared top band** — every heading comes to rest
+    /// either wholly BELOW the band or wholly BEHIND it (the grid is drawn first, so a heading
+    /// inside the band is occluded by the track, which for a row scrolled past the focus is simply
+    /// the document passing under fixed chrome). The focused row always satisfies the first arm
+    /// (raised by the full pop and still clear); so do the rows BELOW it, which are further down the
+    /// page. Only the rows ABOVE it take the second arm.
+    ///
+    /// **That second arm used to read `hi_y <= -TITLE_DY` — off the panel entirely — and it stopped
+    /// being reachable when the label band learned to collapse (2026-09-05).** An unfocused shelf
+    /// reserves [`card_row::LABEL_BAND_COLLAPSED`] where it used to reserve the whole
+    /// [`card_row::UNDER_LABEL_H`], so the row ABOVE the focused one now sits
+    /// [`card_row::BAND_OPEN`] = 74px lower, and at the bottom bound its heading rests at +26
+    /// instead of −48. Nothing about that is a defect: at +26 a 32px heading is entirely inside a
+    /// band that ends at 130 and is painted over. The old arm was the special case of this one
+    /// where the occluder happens to be the panel edge, and it had 14px of slack; stating the real
+    /// rule is what makes the tighter column legal, and it is still strictly a REST condition —
+    /// a heading travelling through the band is unaffected, as [`row_reveal_band`] argues.
     ///
     /// **Graded on the interval, not on its two ends.** The safe predicate is a DISJUNCTION, so two
     /// safe endpoints would not imply a safe middle — they could sit on opposite sides of the band.
@@ -3119,13 +3222,11 @@ mod tests {
     /// extrema TOGETHER (`min` below the band, or `max` above the panel) proves every value between
     /// them, which is what the disjunction needs.
     ///
-    /// **The upper arm grades the ALLOCATED title band, not the rasterized run.** `TITLE_DY` is the
-    /// heading's offset from its row origin, not the height of the texture drawn there, and the host
-    /// suite opens no SDL_ttf to measure one — so `y <= -TITLE_DY` says the heading's draw ORIGIN is
-    /// a whole title band above the panel edge. (It is not tight: the nearest value any settle can
-    /// reach is −54, a further 20px up, because the row above the focused one is a whole `ROW_PITCH`
-    /// higher.) The LOWER arm has no such gap — a draw-y at or below the band's bottom puts the
-    /// texture top there, and a run only paints downward from it.
+    /// **The upper arm needs a HEIGHT, and the host suite opens no SDL_ttf to measure one** — so it
+    /// uses [`HEADING_MAX_H`], a generous ceiling derived from the type token rather than from a
+    /// font, and over-estimating there makes the arm harder to satisfy. The LOWER arm needs none: a
+    /// draw-y at or below the band's bottom puts the texture top there, and a run only paints
+    /// downward from it.
     ///
     /// The LAST row of an `n >= 2` grid is the case [`grid_max_scroll`] decides rather than
     /// [`row_reveal_band`]'s `hi` (at `n == 1` the two coincide at 0), which is why the settle goes
@@ -3138,12 +3239,12 @@ mod tests {
                 let (s0, s1) = settle_range(nh, focus_row);
                 for r in 0..nh {
                     let (y0, y1) = (
-                        heading_top(r, s0, r == focus_row),
-                        heading_top(r, s1, r == focus_row),
+                        heading_top(r, focus_row, s0),
+                        heading_top(r, focus_row, s1),
                     );
                     let (lo_y, hi_y) = (y0.min(y1), y0.max(y1));
                     assert!(
-                        lo_y >= band || hi_y <= -TITLE_DY,
+                        lo_y >= band || hi_y + HEADING_MAX_H <= band,
                         "nh={nh} fr={focus_row}: shelf {r}'s heading settles anywhere in {lo_y}..{hi_y}, \
                          which crosses the top band (0 .. {band})"
                     );
@@ -3167,7 +3268,7 @@ mod tests {
             for focus_row in 0..nh {
                 let (s0, s1) = settle_range(nh, focus_row);
                 for scroll in [s0, s1] {
-                    let row_y = GRID_TOP_Y + focus_row as f32 * ROW_PITCH - scroll;
+                    let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - scroll;
                     let block_bottom = row_y + CARD_DY + CARD_H + card_row::UNDER_LABEL_H;
                     assert!(
                         block_bottom <= SCR_H - MARGIN_Y,
@@ -3199,11 +3300,11 @@ mod tests {
             "the first shelf's top bound IS its resting line"
         );
         assert_eq!(
-            row_reveal_band(3.0 * ROW_PITCH).1,
-            3.0 * ROW_PITCH,
+            row_reveal_band(shelf_top_settled(3, 3)).1,
+            shelf_top_settled(3, 3),
             "…and so is every other shelf's"
         );
-        let air = heading_top(0, 0.0, true) - top_band_bottom();
+        let air = heading_top(0, 0, 0.0) - top_band_bottom();
         assert!(
             air >= theme::space::XS,
             "the resting first hub title clears the top band by {air}px"
@@ -3231,7 +3332,7 @@ mod tests {
     /// Drive [`heading_flow`] with the synthetic metric; returns its total advance + every run.
     fn flow(title: &str, source: &str) -> (f32, Vec<Run>) {
         let mut runs: Vec<Run> = Vec::new();
-        let w = heading_flow(title, source, |s, dx, sz, bold, ink| {
+        let w = crate::ui::card_row::heading_flow(title, source, |s, dx, sz, bold, ink| {
             runs.push(Run {
                 text: s.to_string(),
                 dx,

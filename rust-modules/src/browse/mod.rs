@@ -207,10 +207,21 @@ pub(crate) struct BrowseSection {
     /// QUERY: with an unwatched filter on, that number describes what you are looking at and would
     /// misdescribe the library in a list whose whole job is naming libraries.
     pub(crate) count: i64,
-    /// Does this library feed **Home**? The design's one control. It governs Home and nothing
-    /// else: tabs, grid, sort and the A–Z rail all come from the GRANT, which is not a setting.
-    /// Your own libraries start pinned and a friend's start unpinned, which is the first-run state
-    /// the design specifies; the last pinned library cannot be turned off, or Home has nothing.
+    /// **Is this library a FAVOURITE?** The user's one control — *Favorite libraries* in the words
+    /// they read, `pinned` in the identifiers, which were deliberately not renamed with it (the
+    /// persisted `home_pins` key is a ROLLBACK hazard, not an upgrade one).
+    ///
+    /// **It governed Home ALONE until 2026-09-05 and this comment said so.** It now governs every
+    /// browsing surface: Home's shelves, whether this library's TYPE gets a tab pill at all
+    /// ([`tab_has_favorite`], so a type whose last favourite is switched off is out of the strip),
+    /// and the Library's own Sources picker ([`source_rows`]). What still comes from the GRANT and
+    /// not from this bit: access itself, the grid, sort and the A–Z rail — all downstream of a
+    /// library you have already chosen — and Search, which stays grant-wide and only RANKS
+    /// favourite-library hits first.
+    ///
+    /// Your own libraries start favourite and a friend's start favourite only where you own no
+    /// library of that type ([`crate::plex::pins::default_on`]); the last favourite cannot be
+    /// turned off, or the app has nothing.
     pub(crate) pinned: bool,
 }
 
@@ -261,9 +272,11 @@ pub(crate) enum SecFetch {
     Failed,
 }
 
+pub(crate) mod section_hubs;
+
 /// Per-section browse state: the current query, the server-driven menus, the sparse item
-/// store, and the remembered view (focus/scroll survive leaving the screen — state amnesia
-/// is the official app's loudest complaint).
+/// store, the library's own published shelves, and the remembered view (focus/scroll survive
+/// leaving the screen — state amnesia is the official app's loudest complaint).
 struct SecState {
     // query
     sort_idx: usize,
@@ -278,6 +291,11 @@ struct SecState {
     /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
     letters: Vec<(String, i64)>,
     letters_done: bool,
+    /// **The library's OWN shelves** — `Library Recommended`, as its server's owner arranged it.
+    /// A field here rather than a store of its own because this struct is already the per-section
+    /// aggregate; `section_hubs`' module doc argues it, and `reset()` clearing it on a profile
+    /// switch is the consequence that matters most.
+    hubs: section_hubs::SecHubs,
     // data
     fetch: SecFetch, // what the last page fetch for this section did
     total: i64,      // -1 = unknown (first fetch of this query still out)
@@ -299,6 +317,7 @@ impl Default for SecState {
             genres_done: false,
             letters: Vec::new(),
             letters_done: false,
+            hubs: Default::default(),
             fetch: SecFetch::Loading,
             total: -1,
             items: Vec::new(),
@@ -332,6 +351,11 @@ fn states() -> &'static Vec<SecState> {
 fn state_mut(i: usize) -> Option<&'static mut SecState> {
     unsafe { (&mut *addr_of_mut!(STATES)).get_mut(i) }
 }
+/// Every section's state, mutably — for a sweep that must touch all of them rather than the
+/// current one. [`section_hubs::tick_all`] is the only caller.
+fn states_mut() -> &'static mut Vec<SecState> {
+    unsafe { &mut *addr_of_mut!(STATES) }
+}
 fn cur_state() -> Option<&'static SecState> {
     states().get(cur())
 }
@@ -359,7 +383,13 @@ static SRC_FETCHING: AtomicBool = AtomicBool::new(false);
 /// take, so [`reset`] — which drops the mailboxes — must clear them too or the fetch stays
 /// latched forever and the screen wedges on a spinner. **Add a new flag here, not just above**,
 /// and `reset` picks it up for free.
-const IN_FLIGHT: [&AtomicBool; 4] = [&FETCHING, &GENRE_FETCHING, &LETTERS_FETCHING, &SRC_FETCHING];
+const IN_FLIGHT: [&AtomicBool; 5] = [
+    &FETCHING,
+    &GENRE_FETCHING,
+    &LETTERS_FETCHING,
+    &SRC_FETCHING,
+    &section_hubs::HUB_FETCHING,
+];
 /// Frames left before another page fetch may spawn after a FAILED one (main-thread; pump
 /// decrements). Stops a fast-failing network from spawning a worker per frame.
 static mut RETRY_CD: u32 = 0;
@@ -462,6 +492,9 @@ pub(crate) fn reset() {
         // on the switch. Carrying it would let the previous person's answer govern the next
         // person's Home for the frames before their own record is read (see [`RECORDED`]).
         *addr_of_mut!(RECORDED) = None;
+        // …and the strip's measured shape with it: the next read must count as a move, or a cache
+        // keyed on `tabs_gen` would serve the previous account's pills.
+        TAB_SHAPE = u32::MAX;
         CUR = 0;
         RETRY_CD = 0;
     }
@@ -924,52 +957,132 @@ fn apply_source_outcome(
 
 // ---- the TAB projection: which sections get a pill in the shared top strip -------------------
 //
-// **A pill is a TYPE, never a person.** Movies and TV Shows are permanent destinations; discovery
-// resolves each to an owned library first, then the first shared library of that type.
+// **A pill is a TYPE, never a person.** Discovery resolves each type to an owned library first,
+// then the first shared library of that type.
 //
 // The consequence is the property B was written for: the strip is a constant width at one friend
 // or at ten. Put source in the strip instead and three friends measure 2133px against a 1540 track.
+// Source lives in the Library chip instead, so adding people never reshapes this strip.
 //
-// Source lives in the toolbar chip one line below, so adding people never reshapes this strip.
+// **What DOES reshape it is the favourite switch, and that is the change of 2026-09-05.** Movies
+// and TV Shows were permanent destinations — `tab_count` was a constant 2 and `tabs_gen` a
+// constant 1 — because the switch governed Home alone. It governs the whole app now, so a type
+// whose last favourite library is switched off draws no pill: keeping the pill and drawing an
+// empty screen behind it is the "tab that leads to nothing" the design rejects, arrived at from
+// the other direction, and the switch is the user's own instruction not to be shown that content.
+//
+// The cost is that a strip POSITION is no longer a stable name for a destination. That is why
+// `ui::widgets::Pill::Section` carries a `SecKind` and not a tab index, and why anything holding a
+// strip cursor across frames must hold a `Pill` rather than a `usize`.
 
-const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
+/// Every type this product has a pill for, in strip order. A pill is only DRAWN when the
+/// favourite set can fill it — see [`tab_kinds`] — so this is the vocabulary, not the strip.
+pub(crate) const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 
-/// The generation of the invariant strip shape, used by the label + width cache.
+/// The generation of the strip's SHAPE — **and it is the shape's, not the table's.**
+///
+/// It returned a constant `1` for as long as the strip was invariant: two pills, always, for the
+/// life of the process. The favourite switch governs the strip now (`Library Screens.dc.html` B:
+/// "a type left with no ON library draws no pill"), so it has to move — but it must NOT simply
+/// follow `SECTIONS_GEN`. The table's generation moves on every append, and every borrowed film
+/// library that folds onto a *Movies* pill you already have moves it while changing nothing in the
+/// row. Keying the label + width cache on that re-measures every pill in the strip once per
+/// source, on Home's hot path, for a strip that has not moved. Those are two different questions
+/// and this answers the second.
+///
+/// So the shape is derived and compared: one bit per type in [`TAB_KINDS`], and the counter moves
+/// only when that mask does. Reading it can therefore bump it, which is unusual for a getter and
+/// deliberate — it is the one place that can observe the change at the moment it matters, it is
+/// main-thread only like every other static here, and the alternative (a `note_shape()` every
+/// writer must remember to call) is a bump somebody eventually forgets.
+///
+/// **Anything cached against this must be invalidated when it moves**, and the label/width cache in
+/// `ui::widgets` is not the only one: a stored strip CURSOR is keyed on it too, because a pill
+/// appearing or vanishing changes what a bare index MEANS. That is why [`crate::ui::widgets::Pill`]
+/// carries a `SecKind` rather than a tab index.
+static TABS_GEN: AtomicU32 = AtomicU32::new(1);
+/// The last shape [`tabs_gen`] observed — one bit per [`TAB_KINDS`] entry. `u32::MAX` is "not yet
+/// measured", which no real mask can be, so the first read after a reset always counts as a move.
+static mut TAB_SHAPE: u32 = u32::MAX;
 pub(crate) fn tabs_gen() -> u32 {
-    1 // the strip shape is deliberately invariant for the lifetime of the process
+    let mask = TAB_KINDS
+        .iter()
+        .enumerate()
+        .fold(0u32, |m, (i, &k)| {
+            if tab_has_favorite(k) {
+                m | (1 << i)
+            } else {
+                m
+            }
+        });
+    unsafe {
+        if mask != addr_of!(TAB_SHAPE).read() {
+            TAB_SHAPE = mask;
+            TABS_GEN.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    TABS_GEN.load(Ordering::SeqCst)
 }
 
-/// Pills in the strip (excluding Home, which the strip prepends itself).
+/// Does any FAVOURITE library of this type exist? The predicate behind the pill.
+///
+/// The grant is not enough on its own any more. A library that has been switched off contributes
+/// no shelves to Home, draws no row in the Library picker and — this — holds no pill: it is out of
+/// the app until it is switched back on, which is the whole content of the setting.
+pub(crate) fn tab_has_favorite(kind: SecKind) -> bool {
+    sections().iter().any(|s| s.kind == kind && s.pinned)
+}
+
+/// The types the strip actually DRAWS, in order. Never allocates: the vocabulary is two long.
+fn tab_kinds() -> impl Iterator<Item = SecKind> {
+    TAB_KINDS.into_iter().filter(|&k| tab_has_favorite(k))
+}
+
+/// Pills in the strip (excluding Home and Search, which the strip supplies itself).
 pub(crate) fn tab_count() -> usize {
-    TAB_KINDS.len()
+    tab_kinds().count()
 }
 pub(crate) fn tab_title(t: usize) -> &'static str {
-    match TAB_KINDS.get(t) {
+    match tab_kind(t) {
         Some(SecKind::Movie) => "Movies",
         Some(SecKind::Show) => "TV Shows",
         None => "",
     }
 }
+/// The type drawn at strip position `t`.
 pub(crate) fn tab_kind(t: usize) -> Option<SecKind> {
-    TAB_KINDS.get(t).copied()
+    tab_kinds().nth(t)
 }
-/// Resolve a type pill to an owned library first, then the first granted shared library.
+/// Where a type is drawn, or `None` when it has no favourite library and so no pill. The inverse
+/// of [`tab_kind`], and the reason a stored cursor can survive the strip reshaping under it.
+pub(crate) fn tab_of_kind(kind: SecKind) -> Option<usize> {
+    tab_kinds().position(|k| k == kind)
+}
+/// Resolve a type pill to a FAVOURITE library — an owned one first, then the first shared one.
+///
+/// The favourite filter is what makes the pill and the page agree. Without it a pill could be
+/// drawn (because some library of the type is granted) and land on a library the user has
+/// switched off, which is the "tab that leads to nothing" the design rejects from both directions.
 pub(crate) fn tab_section(t: usize) -> Option<usize> {
-    let kind = tab_kind(t)?;
+    section_of_kind(tab_kind(t)?)
+}
+/// The favourite library this type opens on — owned first, then the first shared. Split out
+/// because the last-favourite fallback ([`repoint_cur`]) asks the same question of a kind it did
+/// not get from a strip position.
+fn section_of_kind(kind: SecKind) -> Option<usize> {
     sections()
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.kind == kind)
+        .filter(|(_, s)| s.kind == kind && s.pinned)
         .min_by_key(|(_, s)| !sources().get(s.src).map(|x| x.owned).unwrap_or(false))
         .map(|(i, _)| i)
 }
-/// The pill that represents section `s`: its own when it has one, else the pill of the same TYPE —
-/// so browsing a friend's film library keeps the *Movies* pill lit, which is what "a pill is a
-/// type" means for the selection capsule. Falls back to 0, never out of range.
-pub(crate) fn tab_of_section(s: usize) -> usize {
-    section_kind(s)
-        .and_then(|kind| TAB_KINDS.iter().position(|&k| k == kind))
-        .unwrap_or(0)
+/// The pill that represents section `s`: the pill of its own TYPE — so browsing a friend's film
+/// library keeps the *Movies* pill lit, which is what "a pill is a type" means for the selection
+/// capsule. `None` when that type draws no pill, which a section being browsed while its type has
+/// just lost its last favourite can produce for exactly one frame before [`repoint_cur`] runs.
+pub(crate) fn tab_of_section(s: usize) -> Option<usize> {
+    section_kind(s).and_then(tab_of_kind)
 }
 
 /// Discovery state for a type that may not have produced a concrete section yet.
@@ -989,7 +1102,21 @@ pub(crate) fn kind_state(kind: SecKind) -> SecFetch {
     }
 }
 
-// ---- pinning: the ONE control, it governs Home only, and it is PER PROFILE -------------------
+// ---- favourites: the ONE control, it governs the WHOLE APP, and it is PER PROFILE ------------
+//
+// The user reads it as **Favorite libraries**; the identifier here stays `pinned` and the persisted
+// key stays `home_pins`, deliberately — renaming the key would break ROLLBACK rather than upgrade
+// (a serde alias reads the old name, but the next whole-`Session` write emits only the new one and
+// an older build then silently applies defaults).
+//
+// **It governed Home ALONE until 2026-09-05 and this header said so.** Owner's direction: the
+// setting affects the whole app. Three browsing surfaces read it now — Home's shelves
+// (`pms::item_pinned`), the top tab STRIP (`tab_has_favorite`: a type with no favourite draws no
+// pill at all) and the Library's own Sources picker (`source_rows`). `all_source_rows` stays
+// unscoped and is the Favorite libraries editor's list, which is the one way a non-favourite comes
+// back. Search deliberately stays GRANT-scoped and only RANKS by this: a browsing preference is not
+// an authorization boundary, and removing results would turn "I don't browse this often" into
+// "this does not exist".
 //
 // The rules are `plex::pins` — pure, host-graded, and deliberately holding no store. This half is
 // the plumbing: project the section table into what those rules take, apply what they answer, and
@@ -1024,6 +1151,16 @@ fn machine_of(sid: ServerId) -> String {
 
 /// The section table as the pin rules see it, in table order.
 fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
+    let srcs = sections();
+    let owns_type = |kind: SecKind| {
+        srcs.iter().any(|s| {
+            s.kind == kind
+                && sources()
+                    .get(s.src)
+                    .map(|c| c.owned)
+                    .unwrap_or(true)
+        })
+    };
     let srcs = sources();
     sections()
         .iter()
@@ -1036,6 +1173,9 @@ fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
                 machine_id,
                 key: s.key,
                 owned,
+                // The one fact `plex::pins` cannot work out for itself: it holds no types, by
+                // design (see `LibRef::own_type`), and the section table is what knows them.
+                own_type: owns_type(s.kind),
             }
         })
         .collect()
@@ -1061,10 +1201,23 @@ fn resolve_pins() {
         // pump). Cleared by [`reset`], so it can never outlive the profile that gave it.
         *addr_of_mut!(RECORDED) = rec.cloned();
         let secs = &mut *addr_of_mut!(SECTIONS);
+        let mut moved = false;
         for (i, on) in want.into_iter().enumerate() {
             if let Some(s) = secs.get_mut(i) {
+                moved |= s.pinned != on;
                 s.pinned = on;
             }
+        }
+        // **A re-derive can take the CURRENT section's favourite away, so it owes the same repoint
+        // an explicit edit does** (Codex review, 2026-09-05). `lib_refs` computes `own_type` from
+        // the sections that have LANDED, and discovery is asynchronous: a borrowed film library on
+        // an account that owns no films defaults ON, and then an owned film library arrives a
+        // second later and the same rule flips it OFF. `apply_pins` calls `repoint_cur` on exactly
+        // this transition; this path mutated the same bits and did not, leaving the Library paging
+        // a section its own picker no longer offers — and, once the strip follows favourites, one
+        // whose pill may not be drawn either.
+        if moved {
+            repoint_cur();
         }
     }
 }
@@ -1214,8 +1367,42 @@ pub(crate) fn apply_pins(edits: &[(usize, bool)]) {
     // `pinned_count()`/`section_count()` right after this returns regardless.
     record_pins(true);
     if changed {
+        repoint_cur();
         SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
         crate::ui::idle::invalidate();
+    }
+}
+
+/// Keep the browsed library inside the FAVOURITE set, and do it in the same breath as the edit
+/// that can take it out.
+///
+/// The never-empty floor is GLOBAL — `plex::pins` and the editor's draft forbid switching off the
+/// last favourite anywhere, not the last of each type — so switching off your only film library
+/// while a show library is still on is legal, and leaves `cur()` naming a library that is now out
+/// of the app. Everything downstream then disagrees for as long as it lasts: the grid pages a
+/// library the picker will not list, `tab_of_section` finds no pill for it, and the strip has
+/// nothing lit.
+///
+/// So the fallback is stated rather than left to whoever notices first: **the same type if it
+/// still has a favourite, otherwise the first favourite anywhere.** Same type first because a
+/// viewer switching off one film library of two means "not that one", not "leave the films"; the
+/// global fallback only runs when the type is gone entirely, and it cannot fail, because the floor
+/// guarantees at least one favourite exists.
+///
+/// Deliberately inside [`apply_pins`]'s `changed` arm rather than lazily at the next read: it must
+/// happen BEFORE `SECTIONS_GEN` moves, so the frame that observes the new strip observes a `cur()`
+/// that already agrees with it. A lazy repoint would let one frame draw a pill set and a page that
+/// contradict each other.
+fn repoint_cur() {
+    let c = cur();
+    if sections().get(c).map(|s| s.pinned).unwrap_or(false) {
+        return;
+    }
+    let want = section_kind(c)
+        .and_then(section_of_kind)
+        .or_else(|| sections().iter().position(|s| s.pinned));
+    if let Some(i) = want {
+        set_cur(i);
     }
 }
 /// Every library this profile has an ANSWER for as `(source index, section key, pinned)` — the
@@ -1241,6 +1428,38 @@ pub(crate) fn apply_pins(edits: &[(usize, bool)]) {
 /// honour a per-library pin: `/hubs` is a whole-SERVER request and answers with rows from every
 /// library on it, pinned or not. Without the key the finest gate available is "does this server
 /// feed Home at all", which is why unpinning one library of a two-library server changed nothing.
+/// **The favourite table as `(server, section key, favourite)`** — [`library_pins`]'s rows with
+/// their source INDEX resolved to a registry slot, which is the form a consumer holding an item can
+/// join against.
+///
+/// It lived in `pms.rs` as a private `library_pins_by_server` for as long as Home was the only
+/// surface that read the switch. Search needs the same table now (§6: favourites RANK results, they
+/// never remove one), and a second fold there would be a second place to fix when a source index
+/// stops mapping to a registry slot the way it does today. It is here rather than in `pms` because
+/// both of its inputs are this module's.
+///
+/// **It is a SNAPSHOT, and a worker must take it at the spawn site** (`plex/CLAUDE.md` rule 5): the
+/// section table moves under discovery and under every favourites edit, so a thread that asked what
+/// was current would be answering a question from a different moment than the one it was given.
+/// Is section `i` on a server somebody SHARED with us, rather than one of our own? `false` for an
+/// unknown index, which is the safe answer: the chip that reads this exists to name an owner, and
+/// naming one we cannot resolve would be worse than not offering it.
+pub(crate) fn section_sid_is_borrowed(i: usize) -> bool {
+    sections()
+        .get(i)
+        .and_then(|s| sources().get(s.src))
+        .map(|s| !s.owned)
+        .unwrap_or(false)
+}
+
+pub(crate) fn favorite_sections() -> Vec<(crate::plex::ServerId, i64, bool)> {
+    let srcs = sources();
+    library_pins()
+        .into_iter()
+        .filter_map(|(si, key, fav)| srcs.get(si).map(|s| (s.sid, key, fav)))
+        .collect()
+}
+
 pub(crate) fn library_pins() -> Vec<(usize, i64, bool)> {
     let mut out: Vec<(usize, i64, bool)> = sections()
         .iter()
@@ -1352,24 +1571,31 @@ fn cur_kind() -> Option<SecKind> {
 /// a source with no library of this type drops out of the panel entirely (`source_sections` already
 /// omits a group whose rows are all gone, so no empty header is drawn).
 ///
-/// Both LEVELS are scoped, not just Browse. The panel is one row set shown two ways, and a Browse
-/// level that listed four libraries while On Home listed six would read as two different lists. The
-/// cost is that pinning a TV library is done from the TV Shows tab; the tab bar is one press away,
-/// and `pinned`/`last_pinned` stay whole-roster facts so the "Home needs one library" refusal still
-/// counts every pin, not just the visible ones.
+/// **…and only the FAVOURITE ones, since 2026-09-05.** The panel is a picker: it lists the
+/// libraries that are switched on and nothing else, because a library list that holds only what
+/// you want to see is the point of the switch. A granted library that is switched off draws no row
+/// here, no pill in the strip and no shelf on Home — one place to change your mind, and it is not
+/// this one. [`all_source_rows`] is that place's list, and the only one that shows every grant.
+///
+/// The panel's second level went with the same change. It used to be one row set shown two ways
+/// (Browse ⟷ On Home) with a segment control to swap them; the switch is a Settings route now, so
+/// what is left here is one level and one tick. `pinned`/`last_pinned` stay whole-roster facts on
+/// the row regardless, because the never-empty refusal still counts every favourite rather than
+/// the visible ones.
 pub(crate) fn source_rows() -> Vec<SrcRow> {
     let Some(kind) = cur_kind() else {
         return Vec::new();
     };
-    rows_where(|s| s.kind == kind)
+    rows_where(|s| s.kind == kind && s.pinned)
 }
 
 /// **Every library, unscoped** — the first-run route's list (`Shared Sources.dc.html` §F).
 ///
-/// The panel's [`source_rows`] is scoped to the browsed TYPE because a chip in the toolbar must
-/// not silently navigate the tab above it. The route has no tab bar and no current library: it
-/// asks about the whole roster at once, which is the only shape in which "what goes on your Home?"
-/// is one question. Same rows, same projection, same row model on the other side — see
+/// The panel's [`source_rows`] is scoped to the browsed TYPE (and to the FAVOURITES of it) because
+/// a chip at the head of the Library must not silently navigate the tab above it. The route has no
+/// tab bar and no current library: it asks about the whole roster at once, which is the only shape
+/// in which "which libraries do you want?" is one question — and it is also why this is the ONE
+/// surface listing every granted library, so a switched-off one has a way back. Same rows, same projection, same row model on the other side — see
 /// `ui::source_list`.
 pub(crate) fn all_source_rows() -> Vec<SrcRow> {
     rows_where(|_| true)
@@ -1734,6 +1960,55 @@ pub(crate) fn sort_label() -> &'static str {
         .map(|s| s.title.as_str())
         .unwrap_or("Title")
 }
+/// Apply a sort by its stable SERVER KEY rather than by its position in the current section's
+/// menu, and say whether it landed.
+///
+/// A queued grid action can outlive the section it was chosen in — the Library keeps its controls
+/// live during a page transition, on the argument that a control which ignores a press is worse
+/// than one that acts a beat later. Sort menus are built per section from that section's own
+/// `/sorts`, so carrying an INDEX across would select a different value in the target, or silently
+/// no-op. The key is the same string on both.
+pub(crate) fn set_sort_by_key(key: &str, desc: bool) -> bool {
+    let Some(i) = sorts().iter().position(|s| s.key == key) else {
+        return false;
+    };
+    set_sort(i);
+    // `set_sort` toggles direction when the ACTIVE entry is re-picked, so the direction is stated
+    // rather than assumed: a queued action carries the direction the user chose, not a toggle.
+    if let Some(st) = state_mut(cur()) {
+        st.sort_desc = desc;
+    }
+    true
+}
+
+/// The active sort's stable key and direction — what a queued action carries.
+pub(crate) fn sort_key_now() -> (String, bool) {
+    let st = cur_state();
+    let key = sorts()
+        .get(sort_idx())
+        .map(|s| s.key.clone())
+        .unwrap_or_default();
+    (key, st.map(|s| s.sort_desc).unwrap_or(false))
+}
+
+/// Apply a genre by its stable TAG ID rather than by its position, for [`set_sort_by_key`]'s
+/// reason. `None` is "All genres", which needs no lookup.
+pub(crate) fn set_genre_by_id(id: Option<&str>) -> bool {
+    match id {
+        None => {
+            set_genre(None);
+            true
+        }
+        Some(want) => match genres().iter().position(|g| g.id == want) {
+            Some(i) => {
+                set_genre(Some(i));
+                true
+            }
+            None => false,
+        },
+    }
+}
+
 /// Apply a sort-menu pick: a NEW entry switches to it at its default direction; re-picking
 /// the ACTIVE entry toggles direction. Re-queries the listing either way.
 pub(crate) fn set_sort(idx: usize) {
@@ -2218,6 +2493,12 @@ pub(crate) fn pump() -> bool {
     sync_roster();
     land_discovery();
     maybe_discover();
+    // the library's own shelves: land whatever arrived and advance the publication machine. Both
+    // are inert until something calls `section_hubs::kick`, which nothing does yet — see that
+    // module's Dormant note. They are wired here rather than left for Landing 3 so the landing gate
+    // and the first-paint window live on the same frame clock as every other browse landing.
+    changed |= section_hubs::land();
+    changed |= section_hubs::tick_all();
     // menu-data landings (query-independent; epoch-gated inside land_directory so a pre-reset
     // fetch can't populate a new user's state at the same index)
     land_directory(&GENRE_FETCHING, &GENRE_RESULT, |st, list| {
@@ -2471,6 +2752,35 @@ pub(crate) fn seed_two_source_table_for_test() {
 /// landing does; a test that wrote `SECTIONS` directly would prove nothing about that bump.
 /// Same contract as [`seed_two_source_table_for_test`]: crate globals, so hold
 /// [`crate::testlock::serial`] and `reset()` afterwards.
+/// Give the CURRENT section a listing of `n` placeholder items, so a screen test has a real GRID
+/// under it rather than an empty page.
+///
+/// It exists because the Library's focus walk stopped being a fixed ladder: with the vertical
+/// transitions derived from what is actually DRAWN, a fixture with no items has nothing below the
+/// tab bar and every DOWN is correctly a no-op — which is the fix for parking focus on an undrawn
+/// control, and which silently turned two navigation tests into assertions about nothing. Seeding a
+/// grid is how those tests get their subject back.
+#[cfg(test)]
+pub(crate) fn seed_items_for_test(n: usize) {
+    let c = cur();
+    let sid = section_sid(c).unwrap_or_default();
+    if let Some(st) = state_mut(c) {
+        st.total = n as i64;
+        st.items = (0..n)
+            .map(|i| {
+                Some(crate::pms::PmsMovie {
+                    sid,
+                    rk: format!("{}", i + 1),
+                    title: format!("Item {i}"),
+                    thumb: format!("/t/{i}"),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        st.fetch = SecFetch::Ready;
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
     append_sections(src, vec![(key, title.into(), kind)]);
@@ -3325,6 +3635,12 @@ mod tests {
     #[test]
     fn a_source_arriving_late_appends_and_moves_no_existing_index() {
         let _g = crate::testlock::serial();
+        // A landing re-derives every row's favourite and, since 2026-09-05, REPOINTS `cur`
+        // when that takes the current section's away — so this test's own subject (an index
+        // holding still) is only well-defined against a known favourite set. Without a
+        // scratch session it grades whatever `auth.json` a neighbouring test left behind.
+        let _t = TempPins::new("late-append");
+        _t.watching("u-late-append");
         seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
@@ -3383,42 +3699,11 @@ mod tests {
     // around them, which is where the failures actually live: does an answer reach the disk, does
     // it come back, and does it come back to the person who gave it.
 
-    /// Redirect the session file at a directory of this test's own and seed a signed-in session
-    /// (an empty `client_id` makes `session::update` a no-op by design), taking both back on drop.
-    /// The caller must hold [`crate::testlock::serial`] for its whole body — see
-    /// `session::redirect_for_test`.
-    struct TempPins {
-        dir: std::path::PathBuf,
-    }
-    impl TempPins {
-        fn new(tag: &str) -> TempPins {
-            let dir =
-                std::env::temp_dir().join(format!("plxnative-pins-{}-{tag}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("a writable temp dir");
-            crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
-            crate::plex::session::save(&crate::plex::session::Session {
-                client_id: "cid-test".into(),
-                ..Default::default()
-            });
-            TempPins { dir }
-        }
-        /// Become `uuid` — the same call the profile switch makes, and what every read and write of
-        /// the selection keys on (`session::current_profile_key`).
-        fn watching(&self, uuid: &str) {
-            crate::plex::session::set_current(Some(crate::plex::session::UserRef {
-                uuid: uuid.into(),
-                ..Default::default()
-            }));
-        }
-    }
-    impl Drop for TempPins {
-        fn drop(&mut self) {
-            crate::plex::session::set_current(None);
-            crate::plex::session::redirect_for_test(None);
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
+    /// The session-isolation guard, under the name this module's tests have always called it.
+    /// It is `plex::session::TempSession` now — one guard rather than the three near-identical
+    /// copies that had grown here, in `ui::onboard` and in `auth`; the local alias is kept only so
+    /// the dozens of call sites below still read as pinning THIS module's per-profile answer.
+    use crate::plex::session::TempSession as TempPins;
 
     /// One account, two servers — seeded and discovered exactly as a boot does it.
     fn seed_two_servers() {
@@ -3700,6 +3985,60 @@ mod tests {
         reset();
     }
 
+    /// **The switch governs the strip, and a strip POSITION is not a name.**
+    ///
+    /// Both halves in one run, because they are the same fact seen twice. Switching off the last
+    /// favourite of a type removes its pill — the design's "a type left with no ON library draws
+    /// no pill" — and the moment that can happen, *TV Shows* stops being pill 1 and becomes pill
+    /// 0. Anything that stored the integer is now pointing at the wrong destination, which is why
+    /// `ui::widgets::Pill::Section` carries a `SecKind`.
+    ///
+    /// The pin state is SET rather than resolved, deliberately: `resolve_pins` consults this
+    /// machine's own signed-in session (`session::peek`), so a test that let it decide would be
+    /// asserting against whatever `home_pins` the developer happens to have recorded — green here
+    /// and red on a clean checkout, the shape `[[make-check-hides-host-assumptions]]` describes.
+    /// That hazard is older than this test and is not this landing's to fix; stating the intent is.
+    #[test]
+    fn switching_off_a_types_last_favourite_takes_its_pill_and_renumbers_the_rest() {
+        let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-reshape");
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
+        assert_eq!(tab_count(), 2, "both types have a favourite to start with");
+        assert_eq!(tab_of_kind(SecKind::Show), Some(1));
+
+        // …and this profile has since switched its film library off.
+        set_pinned_for_test(0, false);
+
+        assert_eq!(tab_count(), 1, "the type with no favourite left draws no pill");
+        assert_eq!(tab_title(0), "TV Shows");
+        assert_eq!(
+            tab_of_kind(SecKind::Movie),
+            None,
+            "a switched-off type has no position at all — not position 0"
+        );
+        assert_eq!(
+            tab_of_kind(SecKind::Show),
+            Some(0),
+            "…and the type that remains has MOVED, which is the whole hazard"
+        );
+        assert_eq!(
+            tab_section(0),
+            Some(1),
+            "the surviving pill opens the surviving library"
+        );
+        reset();
+    }
+
     /// **A pill is a TYPE, never a person.** The strip names your own libraries; a friend's film
     /// library gets no pill of its own (the toolbar chip under it says whose), but a type only they
     /// have does — otherwise that content is unreachable from the strip at all. And the selection
@@ -3707,6 +4046,10 @@ mod tests {
     #[test]
     fn the_tab_strip_grows_by_types_and_never_by_people() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-types");
         seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
@@ -3729,10 +4072,14 @@ mod tests {
         assert_eq!(tab_section(1), Some(2));
         assert_eq!(
             tab_of_section(1),
-            0,
+            Some(0),
             "their films ride YOUR Movies pill — same type, one level"
         );
-        assert_eq!(tab_of_section(2), 1, "their shows have a pill of their own");
+        assert_eq!(
+            tab_of_section(2),
+            Some(1),
+            "their shows have a pill of their own"
+        );
         reset();
     }
 
@@ -3747,6 +4094,10 @@ mod tests {
     #[test]
     fn a_friends_library_of_a_type_you_do_not_own_gets_its_own_pill() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-missing-type");
         seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
@@ -3768,10 +4119,14 @@ mod tests {
         assert_eq!(tab_title(1), "TV Shows");
         assert_eq!(
             tab_of_section(2),
-            1,
+            Some(1),
             "their shows are their own pill, NOT your Movies one"
         );
-        assert_eq!(tab_of_section(1), 0, "…while their films still ride yours");
+        assert_eq!(
+            tab_of_section(1),
+            Some(0),
+            "…while their films still ride yours"
+        );
         // the wire types this product has a level for — and the ones it deliberately does not, which
         // is what keeps an unplayable library out of the strip, the Sources panel and the grid at once
         assert_eq!(SecKind::from_wire("movie"), Some(SecKind::Movie));
@@ -3790,16 +4145,21 @@ mod tests {
         reset();
     }
 
-    /// **The deliverable, as an assertion**: the strip is a constant row however many friends
-    /// arrive. Its pill list — and therefore its width, which is a pure function of the labels —
-    /// does not move as the roster grows from one server to three, because every borrowed library
-    /// folds onto the pill of a type you already have. Only a MISSING type may widen it.
+    /// **The deliverable, as an assertion**: the strip does not grow by PEOPLE. Its pill list —
+    /// and therefore its width, which is a pure function of the labels — does not move as the
+    /// roster grows from one server to three, because every borrowed library folds onto the pill of
+    /// a type you already have. Only a type gaining its FIRST favourite library may widen it, which
+    /// is the second half below.
     ///
     /// The shape the design rejected is the control: a pill per section reaches eleven pills here,
     /// which is what measured 2133px against a 1540px track at three friends.
     #[test]
     fn the_strip_is_the_same_row_at_one_friend_and_at_three() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-width");
         seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
@@ -3821,7 +4181,11 @@ mod tests {
         // product's list down to two, the un-owned type has to be one of them.
         append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
         let alone = row();
-        assert_eq!(alone, vec!["Movies", "TV Shows"]);
+        assert_eq!(
+            alone,
+            vec!["Movies"],
+            "a type with no favourite library draws no pill: we hold no shows yet"
+        );
 
         for src in 1..=3 {
             append_sections(
@@ -3838,11 +4202,13 @@ mod tests {
             );
         }
         assert_eq!(section_count(), 7, "seven libraries…");
-        assert_eq!(tab_count(), 2, "…and the two permanent type pills");
+        assert_eq!(tab_count(), 1, "…and still the one pill they all fold onto");
 
         // …and a type NOBODY owns grows the row by exactly one however many people share it. Every
         // fixture above is a type we own, which is why this half needs saying separately: it is the
-        // only branch of the projection that can admit a borrowed library at all.
+        // only branch of the projection that can admit a borrowed library at all — a shared library
+        // of a type you have none of defaults ON (`pins::default_on`), so it really does arrive as
+        // a new pill rather than as a switched-off one nobody can reach.
         for src in 1..=3 {
             append_sections(src, vec![(9, "Their Shows".into(), SecKind::Show)]);
         }
@@ -3855,15 +4221,23 @@ mod tests {
         reset();
     }
 
-    /// A profile switch must not leave the previous account's pills on screen. `reset()` empties
-    /// the table, and the strip's generation is what the tab row's label cache keys on — so if the
-    /// projection's own memo were CLEARED here rather than merely invalidated, the comparison that
-    /// decides "did the row change" would be `[] != []`, i.e. false, and `draw_tab_row` (which
-    /// iterates the cache, not the live table) would go on drawing and hit-testing libraries the
-    /// new user cannot open until some later landing happened to change the row.
+    /// A profile switch must not leave the previous account's pills on screen — and now that the
+    /// strip is a projection of the FAVOURITE set rather than a permanent two, that is a statement
+    /// about the pills themselves and not only about a cache. `reset()` empties the table, so the
+    /// row it projects is EMPTY until the new account's own libraries are discovered; the pills
+    /// then come back one type at a time as they land.
+    ///
+    /// The generation is what the tab row's label cache keys on, so it has to move across the
+    /// reset too — otherwise `draw_tab_row` (which iterates the cache, not the live table) would go
+    /// on drawing and hit-testing libraries the new user cannot open until some later landing
+    /// happened to change the row.
     #[test]
     fn a_profile_switch_re_measures_the_strip_instead_of_keeping_the_last_accounts_pills() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-profile");
         seed_sources(vec![a_source("mac-mini", "", true)]);
         append_sections(
             0,
@@ -3873,10 +4247,24 @@ mod tests {
             ],
         );
         assert_eq!(tab_count(), 2);
+        let before = tabs_gen();
 
         reset(); // install_pms: a different account signs in
-        assert_eq!(tab_count(), 2, "the two type pills survive reset");
-        assert_eq!((tab_title(0), tab_title(1)), ("Movies", "TV Shows"));
+        assert_eq!(
+            tab_count(),
+            0,
+            "the previous account's pills are gone, not inherited"
+        );
+        assert_ne!(
+            tabs_gen(),
+            before,
+            "…and the row's generation moved, so the label cache cannot serve them"
+        );
+
+        // the new account's own libraries land and the row is rebuilt from THEM
+        seed_sources(vec![a_source("nas-home", "", true)]);
+        append_sections(0, vec![(4, "Films".into(), SecKind::Movie)]);
+        assert_eq!((tab_count(), tab_title(0)), (1, "Movies"));
     }
 
     /// The strip's own generation moves when the ROW changes and not when the TABLE does — which,
@@ -3887,6 +4275,10 @@ mod tests {
     #[test]
     fn only_a_changed_row_costs_the_tab_cache_a_re_measure() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-cache");
         seed_sources(vec![
             a_source("mac-mini", "", true),
             a_source("nas-home", "friend", true),
@@ -3909,9 +4301,22 @@ mod tests {
             "…and the row did not, so it must not re-measure"
         );
 
-        // A newly discovered type fills a permanent destination; it does not reshape the row.
+        // …and the other direction, which is the half that makes the generation worth having: a
+        // type gaining its FIRST favourite library really does reshape the row — a new pill — so
+        // this landing MUST cost a re-measure where the three above must not.
         append_sections(2, vec![(9, "Their Shows".into(), SecKind::Show)]);
-        assert_eq!(tabs_gen(), g0, "the permanent row never changes shape");
+        assert_ne!(
+            tabs_gen(),
+            g0,
+            "a new pill appeared: the cached labels and widths are stale"
+        );
+        let g1 = tabs_gen();
+        append_sections(2, vec![(10, "More Shows".into(), SecKind::Show)]);
+        assert_eq!(
+            tabs_gen(),
+            g1,
+            "…and the next one folds onto it again, costing nothing"
+        );
         reset();
     }
 
@@ -3927,6 +4332,10 @@ mod tests {
     #[test]
     fn the_sources_panel_offers_only_libraries_of_the_tab_being_browsed() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("picker-scope");
         reset();
         seed_sources(vec![
             a_source("mac-mini", "", true),
@@ -3946,6 +4355,12 @@ mod tests {
                 (2, "Their Shows".into(), SecKind::Show),
             ],
         );
+        // The friend's two libraries are types we own, so `pins::default_on` starts them OFF and
+        // the picker — which is favourite-scoped now — would not offer them at all. Favourite them
+        // explicitly: what is under test here is the TYPE scope, and it has to be graded on a
+        // roster where both servers have something to contribute to each tab.
+        set_pinned_for_test(2, true);
+        set_pinned_for_test(3, true);
 
         // browsing a FILM library: both servers' film libraries, and no show library from either
         set_cur(0);
@@ -3964,6 +4379,18 @@ mod tests {
             vec!["TV Shows", "Their Shows"],
             "both servers' shows: {shows:?}"
         );
+
+        // …and the picker is FAVOURITE-scoped as well as type-scoped: switching one off takes it
+        // out of the list, which is how a non-favourite library stops being reachable from here.
+        // Settings' own editor (`all_source_rows`) is the unscoped list that brings it back.
+        set_pinned_for_test(3, false);
+        let shows: Vec<String> = source_rows().iter().map(|r| r.title.clone()).collect();
+        assert_eq!(shows, vec!["TV Shows"], "a non-favourite is not offered");
+        assert!(
+            all_source_rows().iter().any(|r| r.title == "Their Shows"),
+            "…but Settings still lists it, or it could never come back"
+        );
+        set_pinned_for_test(3, true);
 
         // the decisive property: every row the panel can activate keeps the browsed TYPE, so the
         // tab derived from it cannot move. Stated over the section each row opens, not its title.
@@ -4268,6 +4695,10 @@ mod tests {
     #[test]
     fn one_source_resolves_both_permanent_type_destinations() {
         let _g = crate::testlock::serial();
+        // The strip reads the favourite set, and the favourite set is resolved against the
+        // RECORDED per-profile answer — so this test needs a session of its own, or it
+        // grades whatever the host machine happens to have on disk.
+        let _t = TempPins::new("strip-one-source");
         seed_sources(vec![a_source("mac-mini", "", true)]);
         append_sections(
             0,
@@ -4279,7 +4710,7 @@ mod tests {
         assert_eq!(tab_count(), section_count());
         for i in 0..section_count() {
             assert_eq!(tab_section(i), Some(i));
-            assert_eq!(tab_of_section(i), i);
+            assert_eq!(tab_of_section(i), Some(i));
             assert_eq!(tab_title(i), section_title(i));
         }
         assert_eq!(

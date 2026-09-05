@@ -84,12 +84,20 @@ The whole shared-source feature rests on keeping these apart:
 
 - **granted** — plex.tv's answer. `/api/v2/resources` says this account may use this server and
   hands over the `accessToken` that proves it. Not a setting of ours; it is the owner's decision.
-- **pinned** — the only thing the USER controls, it governs **Home only**, and it is **per Plex
-  Home PROFILE**. Tabs, the browse grid, sort, the A–Z rail and every other browsing surface come
-  from the grant; pinning decides whether a source's shelves merge into Home. The rules are
-  `pins.rs` (pure); the store is `Session::home_pins`, keyed by the profile's `uuid`; the first-run
-  route that asks the question once is `ui::onboard`. Owner's ruling, 2026-08-21 — "it is separate
-  for each profile" — and it hung off the whole `Session` (one per install) before that.
+- **pinned** — the only thing the USER controls, it governs **every browsing surface**, and it is
+  **per Plex Home PROFILE**. The user reads it as **Favorite libraries**; the identifier and the
+  persisted `Session::home_pins` key keep their names on purpose (renaming the key would break
+  rollback, not upgrade). It governed **Home alone** until 2026-09-05 and this paragraph said so;
+  the owner's direction was that the setting affects the whole app. What reads it: Home's shelves,
+  the top tab STRIP (a type with no favourite library draws no pill), and the Library's Sources
+  picker. What does NOT: the browse grid, sort, the A–Z rail and the item pages, which are all
+  downstream of a library you already chose — and **Search**, which stays grant-scoped and only
+  RANKS favourites first, because a browsing preference is not an authorization boundary and
+  removing results would invent a false negative for a film the user owns and can play. The
+  unscoped list survives as `browse::all_source_rows`, which is the Favorite libraries editor's, and
+  is the only way a non-favourite comes back. The rules are `pins.rs` (pure); the store is keyed by
+  the profile's `uuid`; the route that asks once is `ui::onboard`. Owner's ruling, 2026-08-21 — "it
+  is separate for each profile" — and it hung off the whole `Session` (one per install) before that.
 - **reachable** — a fact about NOW: something answered at one of its addresses, *as the right
   machine*. It changes while nobody touches anything, and it is never a reason to forget the grant
   or the pin.

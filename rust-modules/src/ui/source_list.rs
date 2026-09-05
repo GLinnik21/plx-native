@@ -1,11 +1,18 @@
 //! **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on two surfaces.
 //!
-//! The Library toolbar's Source panel (`ui::library`, deliverable A) and the first-run route that
-//! asks the same question before Home (`ui::onboard`, deliverable F) show the SAME list: your
-//! servers, each server's libraries, and whether each one feeds Home. The canvas says so in as
+//! The Library toolbar's Source panel (`ui::library`, deliverable A) and the Favorite libraries
+//! editor — first run, and its Settings twin (`ui::onboard`, deliverable F) — show the SAME list:
+//! your servers, each server's libraries, and which of them are favorites. The canvas says so in as
 //! many words — F "is the same list as A's On Home level, in the flow's own frame rather than a
-//! panel" — so it is one builder, and the two screens differ only in the frame around it and in
-//! whether the roster-refresh row rides along.
+//! panel" — so it is one builder, and the two screens differ only in the frame around it, in the
+//! LEVEL they ask for, and in whether the roster-refresh row rides along.
+//!
+//! **They no longer differ in a control.** The panel used to carry a `TabPill::segment` pair at its
+//! top swapping its own two levels; the levels are now a property of the SURFACE, one each and
+//! fixed — the panel is a picker, the editor is the switches — so there is nothing to swap and the
+//! pills are gone. That was never only a tidy-up: with the switch governing the whole app rather
+//! than Home alone, a picker that could turn into an editor would let a library be un-favourited
+//! from inside the list of favourites and then vanish out of it under the cursor.
 //!
 //! Building it twice would have been the ordinary thing to do and the wrong one: the two would
 //! have drifted on exactly the details that make the list readable — which column carries a mark,
@@ -19,16 +26,20 @@ use crate::browse::{SourceState, SrcGroup};
 use crate::plex::probe::Location;
 use crate::ui::table::{Row, Section};
 
-/// The two levels of the Sources panel, swapped by the pills at its top — the same swap the
-/// player's track menu makes between Audio and Subtitles.
+/// The two levels of the Sources list — **one per surface now, and not swappable from either.**
+/// They were the two halves of one panel, exchanged by segmented pills at its top; see the module
+/// doc for why that control is gone.
 ///
 /// They differ in MEDIUM as well as in position, and that is the design's rule: a **mark** says
 /// where you are, a **word** says what is set, and no row ever says both. So Browse draws one tick
-/// and no words, On Home draws every row's word and no ticks — neither level mirrors the other's
+/// and no words, OnHome draws every row's word and no ticks — neither level mirrors the other's
 /// marks.
 ///
-/// The first-run route is [`Level::OnHome`] and nothing else: it has no current library to point
-/// at, because it runs before there is a Library screen to have been on.
+/// The Library panel is [`Level::Browse`] and nothing else, and is scoped to the FAVOURITES of the
+/// type being browsed. The Favorite libraries editor is [`Level::OnHome`] and nothing else — it has
+/// no current library to point at, because first run happens before there is a Library screen to
+/// have been on, and it is the one surface that lists every granted library so a non-favourite has
+/// a way back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Level {
     /// a picker: one tick, on the library you are looking at; OK closes the panel
@@ -43,7 +54,7 @@ pub(crate) enum Level {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SrcAction {
     None,
-    /// browse (Browse level) or pin (On Home level) this section
+    /// browse (Browse level) or favourite (OnHome level) this section
     Library(usize),
     Recheck,
 }
@@ -196,7 +207,7 @@ pub(crate) fn sections(
                     // is the library that works.
                     .value_dim(r.last_pinned)
                     .detail(if r.last_pinned {
-                        "Home needs one library".to_string()
+                        "The app needs one library".to_string()
                     } else {
                         r.count_line.clone()
                     }),

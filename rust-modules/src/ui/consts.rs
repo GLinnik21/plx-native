@@ -64,6 +64,15 @@ pub const UNDER_LABEL_AIR: f32 = 22.0;
 /// shelf's own title. Replaces the old `CARD_H + ROW_TITLE_H + 144.0` — same 549px total
 /// (`34 + 26 + 375 + 92 + 22`), now built from the same two named constants Library's `PITCH` uses,
 /// instead of a bare `144` that silently baked in a DIFFERENT air than Library's `96` did.
+///
+/// **Since 2026-09-05 it is the pitch of a FOCUSED shelf — the maximum — rather than the pitch of
+/// every shelf.** The label block exists only while its shelf holds focus, and reserving all 92px
+/// of it on all of them spent most of a 1080 panel on emptiness; a shelf column is now a running
+/// sum of `card_row::ROW_PITCH_FIXED + card_row::under_band(e)`, which is exactly this at `e == 1`.
+/// Every screen that stacks shelves — Home, the Library, Search and the person page — accumulates
+/// it that way, and `card_row::settled_top` is the closed form a scroll target must use. What is
+/// unchanged is that this constant remains the ONE authority on a poster shelf's rhythm: the four
+/// screens differ in their fixed part (a landscape row, a typed search block), never in the band.
 pub const ROW_PITCH: f32 =
     TITLE_DY + CARD_DY + CARD_H + crate::ui::card_row::UNDER_LABEL_H + UNDER_LABEL_AIR;
 pub const CONTENT_Y: f32 = 200.0;

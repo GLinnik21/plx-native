@@ -30,10 +30,18 @@ its arm every one of them would have graded Home and passed.
 
 ### The pill goes LAST
 
-`ui/widgets.rs::search_pill()` is `tab_count() - 1`. The row is now permanently
-`Home | Movies | TV Shows | Search`; Movies and TV Shows are type destinations whose concrete
-owned/shared section is resolved later. Search therefore has one stable index independent of
-section discovery or roster changes.
+`ui/widgets.rs::search_pill()` is `tab_count() - 1` — Search is always the LAST pill, and since
+2026-09-05 that is the only thing about its position that holds still. The row is
+`Home`, then one pill per type that has a FAVOURITE library, then Search: two to four stops, because
+`browse::tab_count()` now counts `tab_kinds()`, and a type whose last favourite is switched off
+draws no pill. Movies and TV Shows are still type destinations whose concrete owned/shared section
+is resolved later.
+
+**So an INDEX is no longer a stable name for a destination** — this paragraph used to claim exactly
+that, and the claim was the load-bearing half. Store a `Pill` (`Pill::Section` carries a
+`browse::SecKind`) and resolve it on READ through `widgets::pill_of`, which answers `None` for a
+type that has no pill today. Every positional cursor in the app was converted for this: Search's own
+`STRIP`, `library::TAB_P`, Home's `HERO_PILL`, and `Nav::Home`'s pending focus.
 
 It is also the one pill that is a **mark instead of a word**, so it is square (60×60) and skips the
 label padding, inked through the same `TabPill::mixed_ink` the labels use so it travels under the

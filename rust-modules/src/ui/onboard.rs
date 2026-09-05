@@ -1,10 +1,18 @@
-//! **"What goes on your Home?"** — the first-run route, `Shared Sources.dc.html` deliverable F.
+//! **"Which libraries do you want?"** — the **Favorite libraries** route, `Shared Sources.dc.html`
+//! deliverable F. First run asks it once, after the profile picker and before Home; Settings hosts
+//! the same screen as the editor, titled with the setting's own name.
 //!
-//! One question, asked once, after the profile picker and before Home: which of the libraries this
-//! account can reach should merge into the front door. Your own arrive **On**; a friend's arrive
-//! **Off**, because the point of asking is not to put a stranger's shelves on your Home unannounced.
-//! Nothing here grants or blocks access — every library listed is browsable from the Library chip
-//! either way, which is what makes skipping a real answer rather than a deferral.
+//! One question: which of the libraries this account can reach are this television's favorites.
+//! Your own arrive **On**; a friend's arrives **Off** only when you already have a library of that
+//! TYPE — a shared library of a type you own none of arrives On, or answering the default would
+//! take the whole type off the strip before the user ever saw it (`plex::pins::default_on`).
+//!
+//! **It governs the whole app, not Home alone, and that changed on 2026-09-05.** Favorites fill
+//! Home's shelves, decide which type pills the top strip draws at all, and scope the Library's own
+//! Sources picker. Nothing here grants or blocks ACCESS — the grant is plex.tv's and is untouched,
+//! Search still reaches every granted library, and **this screen is the one surface that lists them
+//! all** (`browse::all_source_rows`), which is what makes a non-favourite recoverable rather than
+//! lost. That is also why skipping is a real answer rather than a deferral.
 //!
 //! ## It is a ROUTE, not a sheet
 //!
@@ -17,9 +25,10 @@
 //! ## The list is A's, not a second expression of it
 //!
 //! [`crate::ui::source_list`] builds it, exactly as the Library toolbar's Source panel does — same
-//! groups, same rows, same marks, same "Home needs one library" refusal. The two differences are
-//! stated as arguments and not as a second builder: this one lists EVERY library rather than the
-//! browsed type's (`browse::all_source_rows` — there is no tab bar here to be scoped to), and it
+//! groups, same rows, same marks, same "The app needs one library" refusal. The two differences are
+//! stated as arguments and not as a second builder: this one lists EVERY GRANTED library rather
+//! than the browsed type's FAVOURITES (`browse::all_source_rows` — there is no tab bar here to be
+//! scoped to, and a list that hid non-favourites could never turn one back on), and it
 //! carries no *Check for new shares* row, because a share arriving later must not reopen a
 //! first-run screen.
 //!
@@ -48,8 +57,8 @@ use std::ptr::{addr_of, addr_of_mut};
 
 /// The heading, and the one action. Both are the design's words: *Start watching* rather than
 /// *Continue*, "a verb that says what happens next rather than one that says nothing".
-pub(crate) const TITLE: &str = "What goes on your Home?";
-const SETTINGS_TITLE: &str = "What appears on Home?";
+pub(crate) const TITLE: &str = "Which libraries do you want?";
+const SETTINGS_TITLE: &str = "Favorite libraries";
 const ACTION: &std::ffi::CStr = c"Start watching";
 const DONE: &std::ffi::CStr = c"Done";
 const RETRY: &std::ffi::CStr = c"Try again";
@@ -517,15 +526,20 @@ fn body_copy() -> String {
 }
 
 fn body_copy_for(who: &[String]) -> String {
-    let tail =
-        " Pick the ones you want on your Home screen \u{2014} you can browse any of them from \
-                the Library chip whenever you like.";
+    // **The tail no longer promises the Library chip**, and that is a correction rather than a
+    // retune: it read "you can browse any of them from the Library chip whenever you like" while
+    // the switch governed Home alone. It governs the whole app now — a library that is not a
+    // favourite is not offered by the Library's own Sources picker either — so the old sentence
+    // would be telling the user something the product stopped doing on the same commit. Settings
+    // remains the one unscoped list, which is what the second sentence points at.
+    let tail = " Pick your favorites \u{2014} they are what Home and the Library show, and you \
+                can change them in Settings whenever you like.";
     match join_names(who) {
         // No owner handle says NOTHING about server count. The common one-server/two-library case
         // lands here too, so the fallback asks the screen's actual question without inventing a
         // second server or a person who shared it.
-        None => "Choose which libraries appear on your Home screen. Every available library \
-                 remains browsable from the Library chip."
+        None => "Choose the libraries this television shows. Your favorites fill Home's shelves \
+                 and the Library's own tabs; Settings lists every one you have."
             .to_string(),
         Some(names) => {
             let verb = if who.len() == 1 { "has" } else { "have" };
@@ -765,7 +779,7 @@ fn toggle_selected() {
     if let Some(SrcAction::Library(s)) = act {
         toggle_draft(s);
         // The words on every row can move, not just this one: turning a second library on releases
-        // the "Home needs one library" refusal that was dimming another.
+        // the "The app needs one library" refusal that was dimming another.
         rebuild(true);
     }
 }
@@ -918,30 +932,19 @@ mod tests {
         assert!(matches!(key(SDLK_ESCAPE, 0), Action::Back));
     }
 
-    /// Point the session file at a scratch directory for the whole test, and take it back on drop —
-    /// the same discipline `plex::session`'s own `TempSession` and `browse`'s own `TempPins`
-    /// document; duplicated here (not exported) because both of those are private to their own
-    /// modules' test blocks. A test using this must hold [`crate::testlock::serial`] for its whole
-    /// body — the redirected path is a crate global several modules reach indirectly.
+    /// **This screen's teardown, wrapped around the shared session guard.** The redirect itself is
+    /// `plex::session::TempSession` — which this comment used to CLAIM already existed while
+    /// duplicating it here, one of three copies. What is local is the second half of `Drop`: the
+    /// two globals this screen owns and must put back. A test using it must hold
+    /// [`crate::testlock::serial`] for its whole body, exactly as the inner guard requires.
     struct TempSession {
-        dir: std::path::PathBuf,
+        _inner: crate::plex::session::TempSession,
     }
     impl TempSession {
         fn new(tag: &str) -> TempSession {
-            let dir = std::env::temp_dir()
-                .join(format!("plxnative-onboard-session-{}-{tag}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("a writable temp dir");
-            crate::plex::session::redirect_for_test(Some(dir.join("auth.json")));
-            crate::plex::session::save(&crate::plex::session::Session {
-                client_id: "cid-onboard-test".into(),
-                ..Default::default()
-            });
-            crate::plex::session::set_current(Some(crate::plex::session::UserRef {
-                uuid: "u-test".into(),
-                ..Default::default()
-            }));
-            TempSession { dir }
+            let inner = crate::plex::session::TempSession::new(tag);
+            inner.watching("u-test");
+            TempSession { _inner: inner }
         }
     }
     /// **Cleanup lives here, not at the tail of each test, because a Drop guard is the only thing
@@ -955,9 +958,7 @@ mod tests {
         fn drop(&mut self) {
             finish_settings();
             crate::browse::reset();
-            crate::plex::session::set_current(None);
-            crate::plex::session::redirect_for_test(None);
-            let _ = std::fs::remove_dir_all(&self.dir);
+            // the inner guard's own Drop runs after this and takes the redirect back
         }
     }
 
@@ -1275,7 +1276,7 @@ mod tests {
         let copy = body_copy_for(&[]);
         assert_eq!(
             copy,
-            "Choose which libraries appear on your Home screen. Every available library remains browsable from the Library chip."
+            "Choose the libraries this television shows. Your favorites fill Home's shelves and the Library's own tabs; Settings lists every one you have."
         );
         assert!(!copy.contains("More than one server"));
     }

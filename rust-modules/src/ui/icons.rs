@@ -30,7 +30,9 @@ use crate::ui::{Painter, Rect};
 use std::os::raw::c_uint;
 use std::ptr::addr_of_mut;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+// `Debug` so a host test can name the glyph it expected: `widgets`' play-indicator table grades
+// an Option<Icon> per cell and an assertion that cannot print the two sides is one nobody reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
     /// Two people joined by one agreement line. A one-colour stroked mask that NanoSVG can
     /// rasterize at icon and artwork sizes without unsupported filters.

@@ -2709,9 +2709,13 @@ fn probe_bar_host(h: BarHost) -> crate::focusprobe::Host {
 enum Route {
     Login,    // plex.tv sign-in (QR) — shown when there's no usable session
     Profiles, // "who's watching" Plex Home picker
-    /// **"What goes on your Home?"** (`ui::onboard`) — the third and last onboarding screen, and
-    /// the only one that is not about credentials: which of the granted sources merge into Home,
-    /// asked once PER PROFILE and only when the roster holds more than one. Between the picker and
+    /// **"Which libraries do you want?"** — the *Favorite libraries* route (`ui::onboard`), the
+    /// third and last onboarding screen and the only one that is not about credentials: which of
+    /// the granted libraries this profile wants, asked once PER PROFILE and only when the roster
+    /// holds more than one. It asked "what goes on your Home?" until 2026-09-05, and both the words
+    /// and the SCOPE changed: favourites fill Home's shelves, decide which type pills the top strip
+    /// draws at all, and scope the Library's own Sources picker. The grant is untouched, and Search
+    /// still reaches every granted library. Between the picker and
     /// Home, so a household member answers for themselves rather than inheriting the answer of
     /// whoever set the television up.
     Onboard,
@@ -3510,10 +3514,22 @@ enum Nav {
     /// which is a different question from the pill Home SELECTS ([`Nav::select_pill`],
     /// always the Home pill). One word for both is why they were named apart: on the way
     /// back from the Library the selection moves to Home while focus stays on `Movies`.
-    Home { focus_pill: Option<usize> },
-    /// The Library browse grid on permanent TYPE tab `tab` (0-based, Home excluded). Discovery
-    /// later resolves it to an owned-first, then shared library of that type.
-    Library(usize),
+    ///
+    /// **An IDENTITY, not an index** (Codex review, 2026-09-05). It survives a `nav` fade, and a
+    /// pill can appear or disappear inside that window now that the favourite switch governs the
+    /// strip — so an index picked up on the press frame could name a different destination by the
+    /// time Home mounts. `Pill` cannot.
+    Home {
+        focus_pill: Option<crate::ui::widgets::Pill>,
+    },
+    /// The Library browse grid on a TYPE. Discovery later resolves it to an owned-first, then
+    /// shared FAVOURITE library of that type.
+    ///
+    /// It carried the strip position until 2026-09-05, which was safe only while the strip was
+    /// invariant. A pending navigation survives a page fade, and the favourite switch can remove a
+    /// pill during one — so an index queued before the change would arrive naming a different
+    /// type. The kind is what the destination actually is; see [`crate::ui::widgets::Pill`].
+    Library(crate::browse::SecKind),
     /// A page that STACKS — a detail page or a person page. The [`Node`] is BOTH what
     /// mounts at the floor (through the very `enter_node` a BACK pop uses, whose re-open
     /// guard means "the page you asked for is already the one loaded" costs nothing) and
@@ -3548,13 +3564,15 @@ impl Nav {
     /// (`library::view_section`) the moment it is mounted.
     fn select_pill(&self) -> Option<usize> {
         match self {
-            Nav::Home { .. } => Some(crate::ui::widgets::pill_of(Pill::Home)),
+            Nav::Home { .. } => crate::ui::widgets::pill_of(Pill::Home),
             // a TYPE-tab index, not a section index: Movies and TV Shows exist before discovery.
             // Placed through `pill_of` rather than by a `+1` here — where the type pills start in
             // the row is the strip's business, not this
             // enum's, and the two must agree with what a CLICK on that pill resolves to.
-            Nav::Library(tab) => Some(crate::ui::widgets::pill_of(Pill::Section(*tab))),
-            Nav::Search => Some(crate::ui::widgets::pill_of(Pill::Search)),
+            // `None` when that type's pill has just gone: nothing to select, and the strip's own
+            // clamp keeps focus somewhere that exists.
+            Nav::Library(kind) => crate::ui::widgets::pill_of(Pill::Section(*kind)),
+            Nav::Search => crate::ui::widgets::pill_of(Pill::Search),
             Nav::Open { .. } | Nav::Back { .. } => None,
         }
     }
@@ -4290,7 +4308,7 @@ unsafe fn home_activate(
             // that section's grid, through the page cross-fade: `library::enter` and the
             // route flip both land at the fade floor, while the selection capsule starts
             // travelling on THIS frame (`nav::view_tab`).
-            Pill::Section(tab) => nav_to(*route, Nav::Library(tab), nav),
+            Pill::Section(kind) => nav_to(*route, Nav::Library(kind), nav),
             // Home is the screen we are on, so OK on its pill is a deliberate no-op —
             // EXCEPT that it withdraws a section switch that is still fading out: the user
             // changed their mind inside the 70 ms window, and the capsule springs back on
@@ -4311,10 +4329,42 @@ unsafe fn home_activate(
     if rk.is_empty() {
         return;
     }
+    // **The DECK plays; every other shelf navigates.** `|| mm.kind == 3` used to be here, which
+    // made an episode play immediately from ANY shelf — so "Recently Released Episodes" started
+    // something the user was browsing. The rule the whole app now states is one sentence: a visual
+    // play indicator means the press plays, a progress bar means viewing progress, and a card with
+    // no play indicator navigates. Continue Watching is the surface that promises playback (it
+    // draws the amber ▶) and it is the surface that delivers it.
     let want_play = hf == 0
-        || (!hero_view
-            && (crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize)
-                || mm.kind == 3));
+        || (!hero_view && crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize));
+    activate_card(mt, mm, want_play, hud_ms, route, play_from, hud_nav, nav);
+}
+
+/// **What a card ACTIVATION does, once its screen has decided whether the press means PLAY.**
+///
+/// Extracted from `home_activate` on 2026-09-05, when the Library grew shelves of its own and
+/// therefore a Continue Watching deck of its own. Everything here is a property of the ITEM and of
+/// that one boolean — a movie or episode plays; a show or season opens its page and fires Play once
+/// the load has landed on the expected item; anything else opens a page, with a season selected
+/// where the row names one. None of it is a property of Home, which is why forking a second copy
+/// for the Library would have been two places to keep the "a failed fetch leaves the PREVIOUS
+/// detail in place, so do not blindly fire on_ok" rule correct in.
+///
+/// `want_play` is the caller's, because only the screen knows: on Home it is the hero's Play
+/// button, a deck row, or an episode tile; on the Library it is a tile on that library's own
+/// `*.inprogress.*` shelf.
+#[allow(clippy::too_many_arguments)]
+unsafe fn activate_card(
+    mt: &crate::task::MainThread,
+    mm: &crate::pms::PmsMovie,
+    want_play: bool,
+    hud_ms: u32,
+    route: &mut Route,
+    play_from: &mut Node,
+    hud_nav: &mut HudNav,
+    nav: &mut Option<NavReq>,
+) {
+    let rk = mm.rk.clone();
     if want_play {
         match mm.kind {
             0 | 3 => play_item_now(
@@ -4375,14 +4425,16 @@ unsafe fn home_activate(
             nav,
         );
     } else if mm.kind == 3 {
-        // an episode's page is its show's page — landed on the EPISODE'S season, so the
-        // item the hero/tile advertised is actually in view (mirrors the season arm)
-        nav_open(
-            *route,
-            to_detail(mm.sid, &mm.show_rk),
-            (mm.season_index > 0).then_some(mm.season_index),
-            nav,
-        );
+        // **An episode opens its OWN page**, which is the same page `item_menu`'s "Go to Episode"
+        // opens (`Action::GoToItem`) — `detail.rs` serves leaves. It used to open the SHOW's page
+        // with the episode's season selected, on the reasoning that the item the tile advertised
+        // should be in view; but a season tab is not the episode, and the tile the user pressed
+        // named one episode. With a press on a discovery shelf now MEANING "show me this", the
+        // most specific page that answers is the episode's.
+        //
+        // The show is still one press away: it is `item_menu`'s second navigation row, and the
+        // episode page's own BACK returns to the shelf.
+        nav_open(*route, to_detail(mm.sid, &rk), None, nav);
     } else {
         nav_open(*route, to_detail(mm.sid, &rk), None, nav);
     }
@@ -4430,12 +4482,20 @@ fn open_tile_menu(
     host: MenuHost,
     item: Option<&crate::pms::PmsMovie>,
     opener: Opener,
+    from_deck: bool,
 ) -> bool {
     let Some(m) = item else { return false };
     if !crate::ui::item_menu::has_actions(m) {
         return false;
     }
-    crate::ui::item_menu::open(m, false, opener);
+    // **`from_deck` is what puts *Remove from Continue Watching* in the panel**, and it was
+    // hard-wired `false` here — correct while none of these four surfaces HAD a deck, and wrong
+    // from the moment the Library grew the library's own Continue Watching shelf. The shelf
+    // arrived, `library::focused_from_deck` was written to answer for it, and nothing called it:
+    // the one row a section deck exists to offer was unreachable on the very hold that was added
+    // to reach it. It is a parameter now, so a caller with a deck has to say so and a caller
+    // without one says `false` in its own words.
+    crate::ui::item_menu::open(m, from_deck, opener);
     *route = Route::ItemMenu { over: host };
     true
 }
@@ -6117,13 +6177,13 @@ unsafe fn key_ok(
                 // the screen we are already on — a deliberate no-op, as Home's
                 // own pill is on Home
                 Pill::Search => {}
-                Pill::Section(tab) => nav_to(*route, Nav::Library(tab), nav),
+                Pill::Section(kind) => nav_to(*route, Nav::Library(kind), nav),
                 // focus lands on the Home pill, which is the pill Home selects
                 // anyway — the strip must not appear to move under the swap
                 Pill::Home => nav_to(
                     *route,
                     Nav::Home {
-                        focus_pill: Some(0),
+                        focus_pill: Some(crate::ui::widgets::Pill::Home),
                     },
                     nav,
                 ),
@@ -6150,6 +6210,21 @@ unsafe fn key_ok(
                     nav,
                 ),
                 crate::ui::library::Action::GoSearch => nav_to(*route, Nav::Search, nav),
+                // A SHELF tile, which the grid's own `Card` arm cannot serve: it is not in the
+                // paged store, and a tile on the library's own Continue Watching row must RESUME
+                // rather than open a page. Same `activate_card` Home's deck goes through.
+                crate::ui::library::Action::ShelfCard { from_deck } => {
+                    if let Some(mm) = crate::ui::library::focused_item() {
+                        // the DECK plays; every other shelf navigates — see `home_activate`
+                        let want_play = from_deck;
+                        unsafe {
+                            activate_card(
+                                mt, mm, want_play, HUD_LINGER_MS, route, play_from, &mut hud.nav,
+                                nav,
+                            )
+                        };
+                    }
+                }
                 crate::ui::library::Action::Card | crate::ui::library::Action::None => {}
             }
         }
@@ -8141,7 +8216,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     } else if matches!(route, Route::ItemMenu { .. }) {
                         crate::ui::item_menu::pointer_focus(mx, my);
                     } else if matches!(route, Route::Library) {
-                        crate::ui::library::pointer_focus(mx, my);
+                        // the same trade Detail makes below: hover that MOVES the focus stop
+                        // aborts a press armed on the stop it left, or the click commits — or the
+                        // press-and-hold menu opens — on a tile the user is no longer pressing
+                        if crate::ui::library::pointer_focus(mx, my) && ok_armed {
+                            crate::ui::press::cancel();
+                            ok_armed = false;
+                        }
                     } else if matches!(route, Route::Detail) {
                         // the detail page owns its own screen, so hover moves ITS focus (the rule
                         // above); it declines the moves that would scroll the page under a
@@ -8365,8 +8446,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             // the centered tab pills work from BOTH hero and grid views
                             match crate::ui::widgets::pill_at(i) {
                                 Pill::Search => nav_to(route, Nav::Search, &mut nav_pending),
-                                Pill::Section(tab) => {
-                                    nav_to(route, Nav::Library(tab), &mut nav_pending)
+                                Pill::Section(kind) => {
+                                    nav_to(route, Nav::Library(kind), &mut nav_pending)
                                 }
                                 // Home is the screen we are on, so a click there just parks focus
                                 // on the pill — in hero view, which is where the band's focus is
@@ -8432,13 +8513,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
                             match crate::ui::widgets::pill_at(i) {
                                 Pill::Search => {} // the screen we are already on
-                                Pill::Section(tab) => {
-                                    nav_to(route, Nav::Library(tab), &mut nav_pending)
+                                Pill::Section(kind) => {
+                                    nav_to(route, Nav::Library(kind), &mut nav_pending)
                                 }
                                 Pill::Home => nav_to(
                                     route,
                                     Nav::Home {
-                                        focus_pill: Some(0),
+                                        focus_pill: Some(crate::ui::widgets::Pill::Home),
                                     },
                                     &mut nav_pending,
                                 ),
@@ -8467,6 +8548,25 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             }
                             crate::ui::library::Action::Card => {
                                 open_library_card(route, &mut nav_pending);
+                            }
+                            // a CLICK on a shelf tile: same rule as the OK press above, and it
+                            // reaches the same `activate_card`, so the pointer and the remote
+                            // cannot disagree about what a deck tile does
+                            crate::ui::library::Action::ShelfCard { from_deck } => {
+                                if let Some(mm) = crate::ui::library::focused_item() {
+                                    // the DECK plays; every other shelf navigates — see `home_activate`
+                                    let want_play = from_deck;
+                                    activate_card(
+                                        mt,
+                                        mm,
+                                        want_play,
+                                        HUD_LINGER_MS,
+                                        &mut route,
+                                        &mut play_from,
+                                        &mut hud.nav,
+                                        &mut nav_pending,
+                                    );
+                                }
                             }
                             crate::ui::library::Action::None => {}
                         }
@@ -8754,15 +8854,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // dev: /tmp/plxnative-library[=N] boots straight into the Library browse grid on
                 // TAB PILL N (empty file = 0) — the deterministic entry for the library FPS scenes.
                 //
-                // N is a permanent TYPE pill, not a section index: 0=Movies, 1=TV Shows.
+                // N names a TYPE, not a section index: 0=Movies, 1=TV Shows. It is resolved
+                // against the vocabulary rather than against the DRAWN strip, so a set whose film
+                // libraries are all switched off still boots `=0` to Movies and lands on that
+                // type's read-out — a trigger that silently meant a different tab depending on the
+                // favourite set would make every library scene unreproducible.
                 if let Some(s) = crate::dev::read("library") {
-                    let tab = s.parse::<usize>().unwrap_or(0);
+                    let kind = match s.parse::<usize>().unwrap_or(0) {
+                        1 => crate::browse::SecKind::Show,
+                        _ => crate::browse::SecKind::Movie,
+                    };
                     // A HARD CUT, deliberately: a transition means "this screen replaced that one",
                     // and at boot there is no outgoing screen to replace. The fade-in that IS wanted
                     // here belongs to the screen (`enter`'s own `xf().mount()`); dipping the whole
                     // page would fade the tab bar up from nothing too, which reads as a slow app
                     // rather than a navigated one.
-                    crate::ui::library::enter(tab, crate::ui::library::Arrival::Cut);
+                    crate::ui::library::enter(kind, crate::ui::library::Arrival::Cut);
                     route = Route::Library;
                 }
                 // dev: /tmp/plxnative-search[=<query>] boots straight into Search, with the field
@@ -9320,6 +9427,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             {
                 refresh_hubs_at = 0;
                 crate::pms::request_refetch_hubs();
+                // …and every library's OWN shelves, for the same reason and at the same moment:
+                // a finished playback moves Continue Watching and watch state, and a section deck
+                // is as stale as the global one (`browse::section_hubs::invalidate_all`).
+                crate::browse::section_hubs::invalidate_all();
                 log("home: hubs refresh queued after playback");
             }
             // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
@@ -9613,6 +9724,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                         rect: crate::ui::detail::focused_related_rect(),
                                         redraw: crate::ui::detail::redraw_focused_related,
                                     },
+                                    false, // Related is a recommendation shelf, never a deck
                                 )
                         }
                         // …and the three other card surfaces, which armed this press already and
@@ -9627,6 +9739,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 rect: crate::ui::library::focused_card_rect(),
                                 redraw: crate::ui::library::redraw_focused_card,
                             },
+                            // …and THIS is the caller that has a deck: the library's own Continue
+                            // Watching shelf, which the A–Z grid below it never is.
+                            crate::ui::library::focused_from_deck(),
                         ),
                         Route::Search => open_tile_menu(
                             &mut route,
@@ -9636,6 +9751,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 rect: crate::ui::search::focused_tile_rect(),
                                 redraw: crate::ui::search::redraw_focused_tile,
                             },
+                            false, // results are a query's answer, not a deck
                         ),
                         Route::Person => open_tile_menu(
                             &mut route,
@@ -9645,6 +9761,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                 rect: crate::ui::person::focused_tile_rect(),
                                 redraw: crate::ui::person::redraw_focused_tile,
                             },
+                            false, // a filmography is a credit list, not a deck
                         ),
                         _ => false,
                     };
@@ -9699,7 +9816,34 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                                     &mut nav_pending,
                                 );
                             }
-                            Route::Library => open_library_card(route, &mut nav_pending),
+                            // Re-ASKED, not remembered, exactly as the Detail arm below does —
+                            // and it has to be asked now that the shelves arm this press too. The
+                            // grid's answer is `Card` (open the page); a SHELF tile's is
+                            // `ShelfCard`, which a section deck turns into a RESUME. Dispatching
+                            // both here rather than calling `open_library_card` unconditionally is
+                            // what stops a held-then-released press on a Continue Watching tile
+                            // opening the detail page the immediate path would have resumed past.
+                            Route::Library => match crate::ui::library::on_ok() {
+                                crate::ui::library::Action::ShelfCard { from_deck } => {
+                                    if let Some(mm) = crate::ui::library::focused_item() {
+                                        // the DECK plays; every other shelf navigates — see `home_activate`
+                                        let want_play = from_deck;
+                                        activate_card(
+                                            mt,
+                                            mm,
+                                            want_play,
+                                            HUD_LINGER_MS,
+                                            &mut route,
+                                            &mut play_from,
+                                            &mut hud.nav,
+                                            &mut nav_pending,
+                                        );
+                                    }
+                                }
+                                // the paged grid, and — for totality — the zones that cannot arm a
+                                // press at all (`focus_is_card` is Grid or Shelf only)
+                                _ => open_library_card(route, &mut nav_pending),
+                            },
                             // ONE arm for the page's cards AND its hero control row: `on_ok`
                             // already resolves which, exactly as it does on the immediate path.
                             Route::Detail => {
@@ -9960,7 +10104,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         )
                     }
                     Route::Detail => nav_back(route, &trail, &mut nav_pending),
-                    Route::Home => nav_to(route, Nav::Library(0), &mut nav_pending),
+                    // the FIRST TYPE the strip actually draws — not `Movies` by name, which a
+                    // set with no favourite film library does not have a pill for at all
+                    Route::Home => {
+                        if let Some(kind) = crate::browse::tab_kind(0) {
+                            nav_to(route, Nav::Library(kind), &mut nav_pending)
+                        }
+                    }
                     // pill 1 is that same first TAB — not "the first section", which stopped being
                     // the same thing when the strip became a projection of the table (`browse::tabs`):
                     // several libraries can share one pill. Home comes back in the hero view with the
@@ -9968,7 +10118,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Library => nav_to(
                         route,
                         Nav::Home {
-                            focus_pill: Some(1),
+                            // the pill this round trip started from — by TYPE, so the scene is a
+                            // loop whichever position that type's pill happens to occupy
+                            focus_pill: Some(crate::ui::widgets::pill_at(1)),
                         },
                         &mut nav_pending,
                     ),
@@ -10022,10 +10174,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             trail.push(Node::Search);
                             route = Route::Search;
                         }
-                        Nav::Library(sec) => {
+                        Nav::Library(kind) => {
                             // every teleport `enter` performs (the store swap, `restore_view`'s
                             // scroll jump, the focus band) happens HERE, at alpha 0, off screen
-                            crate::ui::library::enter(sec, crate::ui::library::Arrival::Faded);
+                            crate::ui::library::enter(kind, crate::ui::library::Arrival::Faded);
                             // The grid sits directly on Home. `home_activate` truncates on the press
                             // frame for the Home→Library case, but the strip is a row of PEERS and
                             // Search is now one of them that stands on the trail — so arriving from
@@ -10037,9 +10189,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             route = Route::Library;
                         }
                         Nav::Home { focus_pill } => {
-                            if let Some(i) = focus_pill {
-                                // keep the pill the user was standing on under focus, and put
-                                // Home in the view where the top band's focus is visible
+                            // keep the pill the user was standing on under focus, and put Home in
+                            // the view where the top band's focus is visible. Resolved HERE, at the
+                            // fade floor, against the strip as it is now — which is the whole point
+                            // of carrying an identity: the pill may have arrived or gone since the
+                            // press frame.
+                            if let Some(i) = focus_pill.and_then(crate::ui::widgets::pill_of) {
                                 crate::ui::home::set_hero_focus(
                                     crate::ui::home::hero_focus_for_pill(i),
                                 );
@@ -10156,12 +10311,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     && now.wrapping_sub(lib_osc_last) > 350
                 {
                     lib_osc_last = now;
-                    let sym = if (now / 3000) % 2 == 0 {
-                        SDLK_DOWN
-                    } else {
-                        SDLK_UP
-                    };
-                    crate::ui::library::move_focus(sym);
+                    // …but NOT on homeosc's 3s reversal: this document opens with the library chip
+                    // and one rung per shelf, so at 350ms a 12-shelf library reverses before it
+                    // ever reaches the grid — and the seam between the last shelf and the poster
+                    // wall is the thing this scene exists to sweep. `osc_step` reverses at the
+                    // document's own ends instead (`ui::library::osc_step`).
+                    crate::ui::library::osc_step();
                 }
                 // dev: libswitch cycles EVERY switch (tabs, sort menu, unwatched, filter) on a
                 // timer so the re-query + popover paths are FPS-gated too
@@ -10617,20 +10772,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             if route_wears_tab_bar(route) {
                                 crate::ui::widgets::tab_glass_prepare();
                             }
-                            // The scroll band's prototype material (`/tmp/plxnative-navglass`), on the
-                            // two routes that draw a `widgets::nav_scrim` at all. Self-gated on the
-                            // trigger, so a default build resolves nothing here.
-                            //
-                            // **This list is a duplicate of `nav_scrim`'s CALLER set** — `library::draw`
-                            // and `search::draw`, and nothing else — and unlike `route_wears_tab_bar`
-                            // above it a `matches!` cannot be exhaustive about it, so a third screen
-                            // that adopts the shared scrim would draw a glass surface nobody prepared:
-                            // no `blur_invalidate`, so the band frosts a snapshot one refresh stale.
-                            // `grep -rn nav_scrim rust-modules/src` is the check. Only reachable with
-                            // the trigger armed, which is why it is a comment and not a guard.
-                            if matches!(page_of(route), Route::Library | Route::Search) {
-                                crate::ui::widgets::nav_glass_prepare();
-                            }
+                            // The episode tiles' frosted label band — `/tmp/plxnative-tileglass`,
+                            // the 2026-09-05 experiment. Self-gated on the trigger, so a default
+                            // build resolves nothing here; unlike the two owners either side of it
+                            // this one is not routed at all, because the shelves it rides appear on
+                            // Home, the Library and Search and the trigger is the whole condition.
+                            crate::ui::widgets::tile_glass_prepare();
                             // The person page's bio alert, the other refreshing backdrop in the app.
                             // It needs the cadence resolved for the reason its own `POP` records: a
                             // CACHED snapshot would be taken on the frame it opened, with its scrim

@@ -504,6 +504,23 @@ fn draw_block(p: Painter, v: &View, rows: &[CString]) {
         return;
     }
 
+    // **This block is in the document too**, like the field above it and the shelves that replace
+    // it (2026-09-05). At rest the shift is zero and always will be for as long as the recents list
+    // is what is drawn — `super::scroll_frozen` holds the flow at zero whenever the shelves do not
+    // hold focus, and they cannot hold it while this region exists. What the translate is for is
+    // the frame the two regions CHANGE PLACES on: a store emptied under a scrolled screen (a
+    // profile switch, a re-query landing) re-seats focus to the field and springs the flow back to
+    // zero over the next few hundred ms, and a block pinned at `CONTENT_TOP` would appear at its
+    // resting place while the field it belongs under was still off the top of the panel.
+    //
+    // The rects are recorded through `note` so the shift is applied ONCE: a drawer that translated
+    // its painter and left `note_recent_rect` taking flow coordinates is the same defect one layer
+    // down — a row you can see here and click there.
+    let p = p.translate(0.0, -v.shift);
+    let note = |i: usize, r: Rect| {
+        super::note_recent_rect(i, Rect::new(r.x, r.y - v.shift, r.w, r.h));
+    };
+
     // The header: a step BELOW the rows it names, on its own fixed band.
     Label::new(HDR.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .draw(p, Rect::new(TEXT_X, super::CONTENT_TOP, 0.0, table::HDR_H));
@@ -526,7 +543,7 @@ fn draw_block(p: Painter, v: &View, rows: &[CString]) {
         // and the pill is only drawn when it is focused. Without this the recents list answered
         // to the d-pad alone — `mod.rs::hit` scans an array `draw` parks every frame and no
         // drawer ever filled, so every click missed.
-        super::note_recent_rect(i, Rect::new(BLOCK_X, ry, BLOCK_W, table::ROW_H));
+        note(i, Rect::new(BLOCK_X, ry, BLOCK_W, table::ROW_H));
         let ink = if focused {
             crate::ui::ACCENT_INK
         } else {
@@ -543,7 +560,7 @@ fn draw_block(p: Painter, v: &View, rows: &[CString]) {
     let cr = Rect::new(TEXT_X, by, clear_w(), CLEAR_H);
     // Clear sits at `MAX_RECENTS`, one past the last term it could ever follow — the index
     // `mod.rs` reserves for it whatever `shown` turns out to be.
-    super::note_recent_rect(super::MAX_RECENTS, cr);
+    note(super::MAX_RECENTS, cr);
     Button::new(CLEAR.as_ptr(), theme::size::BODY, cr)
         .focused(clear_focused(v, shown))
         .draw(&Env::inert(), p);

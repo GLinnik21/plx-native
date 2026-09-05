@@ -30,6 +30,36 @@ impl Client {
         )
     }
 
+    /// GET /hubs/sections/{sectionId}?count=… — **one LIBRARY's own shelves**, in the order the
+    /// server's owner arranged them in *Plex Web → Manage → Libraries → Library Recommended*.
+    ///
+    /// The sibling of [`Client::home_hubs`], one level down: that one is whole-SERVER and answers
+    /// with rows from every library, this one is scoped to a section and quotes the owner's own
+    /// table. Verified live against PMS 1.43.3 on 2026-09-05 — `docs/pms-api.md` §3a is the record,
+    /// and five of its findings contradict `docs/plex-openapi.json`. The three that decide code
+    /// here:
+    ///
+    /// * **Items are EMBEDDED** in each hub's `Metadata[]`. The spec's own example shows a nonzero
+    ///   `size` with an empty array, which would have meant a second request per shelf; that is an
+    ///   artifact of the example.
+    /// * **Empty hubs are still returned**, with `size: 0`, and on a sparse library that is most of
+    ///   them — one movie section answered with 6 hubs of which 5 were empty. A caller that draws
+    ///   what it is given draws five headings over nothing, so dropping them is required.
+    /// * **`onlyTransient` is a no-op on this server**, so it is not sent. `count` is
+    ///   items-per-hub (default 6) and never changes how many hubs come back.
+    ///
+    /// **And two hubs change identity between requests** — the genre and actor/director shelves
+    /// rotate their subject on every call, sometimes answering empty and vanishing from the drawn
+    /// set. A refetch legitimately returns a different shelf count and different ids with nothing
+    /// changed on the server, which is a fact about this endpoint rather than about any caller.
+    pub fn library_hubs(&self, section_key: i64, count: i64) -> Option<MediaContainer> {
+        self.get_json(
+            &QueryBuilder::new(&format!("/hubs/sections/{section_key}"))
+                .int("count", count)
+                .build(),
+        )
+    }
+
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
     pub fn continue_watching(&self, count: i64) -> Option<MediaContainer> {
         self.get_json(

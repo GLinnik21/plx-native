@@ -259,7 +259,7 @@ asked for is how to read what shipped.
 | 5 | **Persist the registry; boot from the hint.** `session.rs` gains `servers: Vec<ServerRec>` + `current_machine_id`, every field `#[serde(default)]`, legacy `ServerRef` still written for one release. A corrupt `servers` array must not fail the whole `Session` parse — that is a silent sign-out at every boot. No timestamps: this TV's wall clock is ~3 h skewed. | 1 d | Fast boot |
 | 6 **LANDED** | **TLS control plane.** Shipped as `rust-modules/src/http.rs`: `Scheme::Http` keeps the raw `stream.rs` arm, while `Scheme::Https` uses `net.rs`/libcurl. The curl request surface now carries per-call deadlines, a bounded response sink, body-less `CUSTOMREQUEST` PUT, HTTP(S)-only redirect policy for the public QR fetch, and one fresh easy handle per call so no request state can survive into the next. Probe ranking is TLS-first, status remains distinct from reachability, and every PMS/account request conditionally carries the validated inherited locale as `X-Plex-Language`. | 1–1½ d | Any https-only share browses |
 | 7 **LANDED** | **TLS media plane.** Shipped as `rust-modules/src/curlio.rs`: the second `dynlib!` table (seven `curl_multi_*`, device-probed PRESENT and inventory-confirmed on all 14 releases; `curl_multi_poll`/`curl_multi_wakeup` probed ABSENT and therefore banned — they first appear at 7.4.0, so binding them would have emptied the table on four of the nine gated releases), `AvioState`'s source enum, the `read_cb`/`seek_cb` dispatch, the preserved seek abort guard and the two extended abort-guard tests, all as this row asked. **One deviation, deliberate:** teardown is a **wake pipe** handed to `curl_multi_wait` as an application-owned extra fd, NOT `curl_multi` pumped from inside `read_cb`. The row's outcome — teardown collapses to "set the flag, join" — is preserved, and that is the reason: self-polling puts a 10–100 ms floor on every teardown, while a byte on a pipe wakes a blocked wait at once. The one gap the pipe cannot close is a thread already inside `curl_multi_perform` doing SYNCHRONOUS name resolution; the dev set reports `AsynchDNS`, and the designed fallback (our own `getaddrinfo` + `CURLOPT_RESOLVE`, hostname untouched so SNI and certificate identity survive) is written into `curlio`'s module doc and deliberately not built. With step 6 present, ordinary HTTPS browse/play now reaches this source; `plxnative-servers` and `plxnative-playurl` remain the isolation routes for device diagnosis. | 2–4 d | Any share plays |
-| 8 **LANDED** | **N servers live** — the Sources list is a library-toolbar chip with a two-level panel (§6), `sourceTitle` is the row subtitle, and attribution stays in **text not artwork**. Profile activation only installs prepared identity and queues catalog work; hubs and sections use per-source workers/mailboxes, lifecycle generations reject stale landings after a repoint, and a dead share no longer blocks the SDL loop or blanks another source. A failed catalog request also queues a single-flight `/resources` re-probe for that exact granted machine, so a Wi-Fi/LAN transition can publish a newly reachable origin without copying the account owner's token into a managed profile or changing its grants. Continue Watching is merged by `lastViewedAt`. | 2–4 d | The product |
+| 8 **LANDED** | **N servers live** — the Sources list is a chip at the head of the Library's document with a one-level picker panel (§6; it was a toolbar chip with a two-level panel until 2026-09-05), `sourceTitle` is the row subtitle, and attribution stays in **text not artwork**. Profile activation only installs prepared identity and queues catalog work; hubs and sections use per-source workers/mailboxes, lifecycle generations reject stale landings after a repoint, and a dead share no longer blocks the SDL loop or blanks another source. A failed catalog request also queues a single-flight `/resources` re-probe for that exact granted machine, so a Wi-Fi/LAN transition can publish a newly reachable origin without copying the account owner's token into a managed profile or changing its grants. Continue Watching is merged by `lastViewedAt`. | 2–4 d | The product |
 | 9 **LANDED, UNVERIFIABLE** | **Relay policy.** The relay clamps no bitrate: `maxVideoBitrate` is a literal on the re-encode branch only. (`TranscodeSpec` gained a `ceiling` field on 2026-08-23 for the USER's ladder — same mechanism, different input; the relay still names no rate.) Respecting relay's 2 Mbps means **forcing a transcode decision** in `build_stream` — a policy change, not a parameter. | ½–1 d | Correctness on relay |
 
 **Shortest path to seeing the share on screen: 0 → 1 → 4**, plus enough of 2/3 to keep the caches
@@ -293,10 +293,16 @@ not built, the strip has three pills, the headings carry no annotation.
 machine name (`nas-home`) only in the Sources list and the failure read-out.
 
 - **A — the Sources list is a LIBRARY TOOLBAR CHIP**, not a row in the account popover. `Library ·
-  Film Club  friend ▾`, opening a 640-wide panel with **two levels** switched by Browse / On Home
-  pills at the panel top (the track menu's own swap). **Browse** is a picker — one tick, OK closes.
-  **On Home** is a toggle — the word `On`/`Off` at the trailing edge, OK flips, the panel stays open.
-  Grouped by server: header = machine, accessory = person. The last pinned library uses `value_dim`;
+  Film Club  friend ▾`, opening a 640-wide panel. The canvas gave it **two levels** switched by
+  Browse / On Home pills at the panel top (the track menu's own swap); **the shipped panel has one**
+  — it is the picker, and nothing else. The second level became its own route on 2026-09-05, when
+  the switch stopped governing Home alone: *Favorite libraries* (`ui::onboard`), which is also the
+  only surface listing every GRANTED library, so a non-favourite has a way back. A picker that could
+  turn into an editor would let a library be un-favourited from inside the list of favourites and
+  then vanish out of it under the cursor. **Browse** is a picker — one tick, OK closes, scoped to
+  the FAVOURITES of the type being browsed. **On Home** is a toggle — the word `On`/`Off` at the
+  trailing edge, OK flips, the list stays open.
+  Grouped by server: header = machine, accessory = person. The last favourite library uses `value_dim`;
   an unreachable server's whole group dims at .52, header included. "Check for new shares" sits last
   under a separator. Rejecting the popover also withdraws both of the flags this doc raised about
   `account_menu.rs`'s static arrays and its close-before-acting OK.
@@ -320,9 +326,18 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   watching*, BACK skips. **LANDED — see §12, which also records the one place the OWNER's ruling
   overrides this canvas: the selection is per Plex Home PROFILE, not per install.**
 
-**PINNING is the new concept.** It governs **Home only** — tabs, grid, sort, A–Z rail and browsing
-all come from the grant, which is not a setting. Three orthogonal states: *granted* (plex.tv's
-answer), *pinned* (the only control), *reachable* (a fact about now).
+**PINNING is the new concept.** Three orthogonal states: *granted* (plex.tv's answer), *pinned*
+(the only control), *reachable* (a fact about now).
+
+**It governed Home ALONE until 2026-09-05, and this paragraph said so.** The switch is now called
+**Favorite libraries** and it governs every browsing surface: Home's shelves, **which type pills the
+top strip draws at all** (`browse::tab_has_favorite` — a type whose last favourite is switched off
+draws no pill), and the Library's own Sources picker (`browse::source_rows`). The identifiers did
+not move with the words: `BrowseSection::pinned`, `HomePins`, `plex/pins.rs` and the persisted
+`home_pins` key are all unchanged, deliberately — renaming the persisted key breaks ROLLBACK rather
+than upgrade. What still comes from the GRANT and not from the setting: access itself, the grid,
+sort, the A–Z rail, and Search, which stays grant-wide and only RANKS favourite-library hits first.
+The grant decides what you can reach; the favourite decides what the app offers.
 
 **Two divergences between the canvas and main, both because main moved while it was drawn**, neither
 requiring the design to change: its toolbar frames include an `Unwatched` chip that `0d9a4f6f`
@@ -487,15 +502,21 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   same worker/mailbox pump — sections, then the server's own `friendlyName`, then a `size=0` count
   probe per library — with a 10 s per-source backoff. Entering Library only selects a type and view
   state; it performs no HTTP. A dead share becomes a recoverable failed source without parking SDL.
-- **Pinning** is the design's one control and governs Home only: your own libraries start pinned, a
-  friend's start unpinned, and the last pinned one cannot be turned off. `pinned_libraries()` is its
-  read side, waiting for deliverable C.
-- **The tab strip has a permanent vocabulary:** `Home | Movies | TV Shows | Search`. A library pill
-  names a type, never a discovered row, so it survives reset and failed/delayed discovery. The
+- **Pinning** is the design's one control and, since 2026-09-05, governs the whole app rather than
+  Home alone (above): your own libraries start favourite, a friend's start favourite only if you
+  have no owned library of that type, and the last favourite cannot be turned off.
+  `pinned_libraries()` is its read side.
+- **The tab strip's vocabulary is permanent; its LENGTH is not.** A library pill names a type, never
+  a discovered row, so it survives reset and failed/delayed discovery — but a type with no favourite
+  library draws no pill at all, so the row is `Home … Search` with two to four stops in between.
+  Store a `Pill`, never a `usize`. The
   selected type resolves owned-first, then to the first usable shared section; the Source panel
   selects alternatives.
-- **The Source chip and its two-level panel** are `ui/library.rs`; the row model is pure and
-  host-tested. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
+- **The Source chip and its panel** are `ui/library.rs`; the row model is pure and host-tested. The
+  panel had two levels (`Browse` ⟷ `On Home`) until 2026-09-05 and is now a PICKER and nothing else
+  — one level, one tick, no words. The editor is its own route (*Favorite libraries*,
+  `ui::onboard`), which is the one surface listing every GRANTED library, so a non-favourite has a
+  way back. The chip itself now heads the Library's document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.
 - **The roster's own facts** (machine name, owner handle, owned) live beside the registry as
   `plex::ServerFacts`, merged rather than replaced so plex.tv and a server naming itself over `GET /`

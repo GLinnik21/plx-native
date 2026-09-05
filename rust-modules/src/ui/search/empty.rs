@@ -164,6 +164,9 @@ pub(crate) fn draw(p: Painter, v: &View) {
     let Some(say) = say(crate::search::state(), !crate::search::shelves().is_empty()) else {
         return;
     };
+    // In the document with everything else — see `recents::draw_block`'s note for the one frame
+    // this matters on. At rest the shift is zero here by construction.
+    let p = p.translate(0.0, -v.shift);
     let frame = band(v.editing);
 
     if say == Say::Fault {

@@ -80,6 +80,31 @@ pub(crate) fn clock(ms: i64) -> String {
 /// title. It lives here rather than as a `format!` beside its one caller because the two spellings
 /// have to stay one vocabulary: a page that said "S2, E3" while the HUD said "S2E3" for the same
 /// leaf is exactly the drift this module exists to prevent, and nothing but shared code enforces it.
+/// **An episode's ADDRESS — `S1 · E3`** — the identifier printed inside a still's artwork.
+///
+/// `Library Screens.dc.html` E is why it is the printed line rather than the episode's name: "four
+/// tiles of one show differ only by number, so the number cannot be the thing behind focus. The
+/// episode's *name* can: it distinguishes nothing until you have already picked a tile."
+///
+/// **Both parts are optional and the separator comes from what is PRESENT**, because a server that
+/// sent no season or episode index is an ordinary answer here rather than a broken one — a specials
+/// folder, a date-numbered series, an item mid-scan. With neither it is empty and the caller draws
+/// nothing, not a line of leftover dots.
+///
+/// The MIDDOT is what separates this from [`episode_ordinal`]'s `S1, E3`, and the two are kept
+/// apart deliberately: this one is a printed mark on artwork, sized and inked as its own line,
+/// while the ordinal is a run inside sentences elsewhere in the app.
+pub(crate) fn episode_address(season: i64, index: i64) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if season > 0 {
+        parts.push(format!("S{season}"));
+    }
+    if index > 0 {
+        parts.push(format!("E{index}"));
+    }
+    parts.join(" \u{b7} ")
+}
+
 pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
     format!("S{season}, E{index}")
 }

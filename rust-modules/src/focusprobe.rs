@@ -82,7 +82,7 @@ use crate::ui::player_hud::ControlSlot;
 pub(crate) enum Screen {
     Login,
     Profiles,
-    /// the first-run "what goes on your Home?" route (`ui::onboard`)
+    /// the first-run *Favorite libraries* route (`ui::onboard`)
     Onboard,
     /// the home hero + grid
     Home,
@@ -276,7 +276,11 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             push_sid(s, crate::ui::item_menu::item_sid());
         }
         Screen::Library => {
+            // the DRAWN index, resolved here rather than stored — the focus cursor is a `Pill`
+            // identity now, and a probe that printed a raw discriminant would report a number that
+            // is not the position anything on screen is at
             let pill = crate::ui::library::focused_pill()
+                .and_then(crate::ui::widgets::pill_of)
                 .map(|p| p as i64)
                 .unwrap_or(-1);
             let _ = write!(

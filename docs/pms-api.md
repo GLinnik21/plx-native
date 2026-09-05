@@ -228,6 +228,75 @@ and hub `key` + paging for "see all".
 
 ---
 
+## 3a. Per-library hubs — `/hubs/sections/{id}` (verified live 2026-09-05, PMS 1.43.3)
+
+```
+GET /hubs/sections/{sectionId}?count=12&X-Plex-Token=...
+```
+
+**This is the library's own shelf list, and it is the SERVER OWNER's setting, not ours.** It is
+the `Library Recommended` column of *Plex Web → Manage → Libraries*, in the order the owner
+arranged by dragging. Nine rows there is nine hubs here, in that order — verified by comparing a
+live response against the owner's own table on 2026-09-05, row for row.
+
+Measured on this server, and every one of these is a thing the OpenAPI spec does not say:
+
+* **Items ARE embedded** in each hub's `Metadata[]`. `docs/plex-openapi.json`'s example shows
+  hubs with a nonzero `size` and an EMPTY `Metadata` array, which would have meant a second
+  request per shelf; that is an artifact of the example, not the endpoint.
+* **Empty hubs are still returned**, with `size: 0` and no `Metadata`. On a sparse library that
+  is most of them — one movie section here answered with 6 hubs of which 5 were empty. **A
+  client that draws what it is given draws five headings over nothing**, so dropping an empty
+  hub is required, not a nicety.
+* **`count` defaults to 6** and is honoured up to at least 24. It is items-per-hub; it never
+  changes how many hubs come back.
+* **`onlyTransient` is a no-op on this server** — `0`, `1` and absent all returned the same nine
+  hubs. Do not send it and do not rely on it.
+* **`Accept: */*` returns XML here too**, like every other PMS route. The client's explicit
+  `Accept: application/json` is what makes this parse at all.
+* **A hub's `type` can be `mixed`** (`tv.recentlyadded.N`), so an item's own `type` is the only
+  thing worth reading. `pms::parse_item` already does that.
+* **Continue Watching is present, scoped to the section**, as `movie.inprogress.N` /
+  `tv.inprogress.N` with `key=/hubs/sections/N/continueWatching/items`. **It is NOT
+  `home.continue`**, so `pms::hub_is_continue`'s match does not carry over — a per-section
+  shelf is identified by the `*.inprogress.*` id or that `key`.
+* **A collection is a hub like any other** (`custom.collection.N.<id>.<id>`,
+  `key=/library/collections/{id}/children`), which is why the owner's table lists
+  "Toy Story Collection" in the same column as "Recently Added".
+
+**The trap worth carrying: two of these hubs CHANGE IDENTITY BETWEEN REQUESTS.** The genre and
+the actor/director shelves rotate their subject on every call — six consecutive requests
+returned `movie.genre.1.3897`, `.153`, `.48`, `.150`, `.152`, `.149`, and
+`movie.by.actor.or.director.1.<id>` likewise, sometimes answering with zero items and therefore
+vanishing from the drawn set entirely. So a refetch of one library can legitimately return a
+different SHELF COUNT and different shelf IDs with no change on the server. Anything that
+remembers a position by `hubIdentifier` needs a fallback for an id that simply is not there any
+more, and any UI that lays out below these shelves must not let a refresh move the ground under
+a viewer.
+
+Example shape (trimmed; one populated hub and one empty one):
+
+```json
+{"MediaContainer":{"size":9,"librarySectionID":1,"librarySectionTitle":"Movies","Hub":[
+  {"hubIdentifier":"movie.inprogress.1","title":"Continue Watching","type":"movie","size":2,
+   "more":false,"key":"/hubs/sections/1/continueWatching/items","Metadata":[
+     {"ratingKey":"1001","key":"/library/metadata/1001","type":"movie","title":"Alpha",
+      "year":2001,"thumb":"/library/metadata/1001/thumb/1","duration":6124864,
+      "librarySectionID":1,"viewOffset":1048421}]},
+  {"hubIdentifier":"movie.by.actor.or.director.1.3932","title":"Top Movies with …",
+   "type":"movie","size":0,"more":false,
+   "key":"/library/sections/1/all?unwatched=1&actor=3932&sort=audienceRating:desc"}
+]}}
+```
+
+**Not yet established**, and both need someone other than this server to answer: whether a
+**shared-library token** authorizes this route at all and what it returns when it does not, and
+a direct before/after proof that **reordering** a row in *Manage → Libraries* reorders the
+response (the order matching the owner's table exactly is strong evidence, not a controlled
+test).
+
+---
+
 ## 3b. Search — `/hubs/search` (verified live 2026-08-14, PMS 1.43.3)
 
 ```

@@ -89,6 +89,12 @@ pub struct PmsMovie {
     /// same one `fetch_detail` applies to a show — including the load-bearing `leaf_count > 0` half,
     /// without which a container the server sent no counts for is `0 >= 0` and reads as watched.
     pub(crate) watched: bool,
+    /// `originallyAvailableAt`, verbatim (`YYYY-MM-DD`) or empty — the RELEASE DATE an episode
+    /// shelf trails under a focused tile (`Library Screens.dc.html` E: "focus adds the episode's
+    /// name and its one trailing fact — time left on Continue Watching, release date on Recently
+    /// Released"). Formatted by [`crate::ui::fmt::pretty_date`], which already takes `year` as the
+    /// fallback for an item the server dated only to a year.
+    pub(crate) aired: String,
 }
 
 impl PmsMovie {
@@ -182,6 +188,7 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
         sec: it.library_section_id,
         ..Default::default()
     };
+    m.aired = clean(&it.originally_available_at);
     m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,
@@ -240,10 +247,16 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
     // Kept as a second field rather than resolved per caller because `parse_item` runs on a worker
     // and cannot know which shelf will draw the row. Empty on a movie, where `thumb` already IS
     // the item's own.
-    m.still = if it.grandparent_thumb.is_empty() {
-        String::new()
-    } else {
+    // **Keyed on the item BEING an episode, not on the show poster existing.** It used to be
+    // `grandparent_thumb.is_empty()`, which is a proxy that fails in the one direction that
+    // matters: an episode whose show has no poster kept its own 16:9 still ONLY in `thumb`, and
+    // `widgets::still_key` prefers `art` over `thumb` — so a landscape tile drew the show's shared
+    // backdrop while the episode's own still sat right there unused, which is the opposite of the
+    // documented still -> art -> poster chain.
+    m.still = if m.kind == 3 {
         clean(&it.thumb)
+    } else {
+        String::new()
     };
     m.art = clean(&it.art);
     m.summary = clean(&it.summary);
@@ -278,7 +291,7 @@ struct HubRow {
     /// Which SERVER this shelf's items came from, as the owner's handle ("friend") — empty
     /// whenever the row came from the signed-in user's own server, which is every row today.
     /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
-    /// separator and no second run at all for it (`ui::home::heading_flow`), so the annotation costs
+    /// separator and no second run at all for it (`ui::card_row::heading_flow`), so the annotation costs
     /// a single-server library nothing — no gap, no dot, no draw call. (The heading's INK changed in
     /// the same pass, which is a separate, deliberate harmonization; `heading_flow`'s doc has it.)
     /// Populated by the multi-server data layer when it lands.
@@ -939,7 +952,7 @@ const RETRY_MIN_S: f32 = 2.0;
 const RETRY_MAX_S: f32 = 30.0;
 
 /// Wait before attempt `fails + 1`: 2s, 4s, 8s, 16s, then 30s forever. Pure — host-tested.
-fn backoff_secs(fails: u32) -> f32 {
+pub(crate) fn backoff_secs(fails: u32) -> f32 {
     let steps = fails.saturating_sub(1).min(6); // 1<<6 already exceeds the cap; guards the shift
     (RETRY_MIN_S * (1u32 << steps) as f32).min(RETRY_MAX_S)
 }
@@ -997,20 +1010,18 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     pinned.is_empty() || pinned.contains(&sid) || !known.contains(&sid)
 }
 
-/// The pin table as `(server, section key, pinned)` — `browse`'s rows with their source index
-/// resolved to a registry slot, which is the form [`item_pinned`] can join an item against.
+/// The pin table as `(server, section key, pinned)` — the form [`item_pinned`] can join an item
+/// against.
 ///
-/// **The one projection.** There were three: this, plus a `servers_with_known_sections` and a
-/// `pinned_servers` that were the same index→slot fold with a different `browse` call feeding them
-/// — and each pulled its own `pub(crate)` out of `browse`, so a change to how a source index maps
-/// to a registry slot had to land in three places. Both are columns of this table:
-/// `known` is its `sid`s deduped, `pinned` is the same after `filter(pinned)`.
+/// **The one projection, and since 2026-09-05 it lives in `browse`.** There were three of them
+/// here: this, plus a `servers_with_known_sections` and a `pinned_servers` that were the same
+/// index→slot fold with a different `browse` call feeding them — and each pulled its own
+/// `pub(crate)` out of `browse`, so a change to how a source index maps to a registry slot had to
+/// land in three places. Both are columns of this table: `known` is its `sid`s deduped, `pinned` is
+/// the same after `filter(pinned)`. It moved because the switch stopped being Home's — `search`
+/// ranks by the same table now — and a copy there would have made it three again.
 fn library_pins_by_server() -> Vec<(ServerId, i64, bool)> {
-    let srcs = crate::browse::sources();
-    crate::browse::library_pins()
-        .into_iter()
-        .filter_map(|(si, key, pinned)| srcs.get(si).map(|s| (s.sid, key, pinned)))
-        .collect()
+    crate::browse::favorite_sections()
 }
 
 /// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
@@ -1470,6 +1481,62 @@ mod tests {
 
     fn sid(slot: u16) -> ServerId {
         ServerId::from_raw(slot)
+    }
+
+    /// **An episode keeps its OWN still even when its show has no poster.** `still` used to be
+    /// populated only when `grandparentThumb` was present — a proxy for "this is an episode" that
+    /// fails in the one direction that matters. With the show poster absent, the episode's own 16:9
+    /// frame survived only in `thumb`, and `widgets::still_key` prefers `art` over `thumb`, so a
+    /// landscape tile drew the show's shared backdrop while the episode's own still sat unused:
+    /// exactly the "every episode is the same picture" symptom the landscape row was built to end,
+    /// reappearing through a different door.
+    #[test]
+    fn an_episode_keeps_its_own_still_without_a_show_poster() {
+        let ep = |gp: &str| {
+            let it = crate::plex::Metadata {
+                kind: "episode".into(),
+                rating_key: "9".into(),
+                title: "The Meeting".into(),
+                thumb: "/ep/still".into(),
+                art: "/show/art".into(),
+                grandparent_thumb: gp.into(),
+                grandparent_title: "The Office".into(),
+                ..Default::default()
+            };
+            parse_item(&it, sid(0))
+        };
+
+        // the show HAS a poster: the poster substitution stands, and the still is kept beside it
+        let with = ep("/show/poster");
+        assert_eq!(with.thumb, "/show/poster", "a portrait card wants the poster");
+        assert_eq!(with.still, "/ep/still");
+        assert_eq!(crate::ui::widgets::still_key(&with), "/ep/still");
+
+        // …and with no show poster the still is STILL the episode's own frame, not the backdrop
+        let without = ep("");
+        assert_eq!(without.thumb, "/ep/still", "nothing to substitute");
+        assert_eq!(
+            without.still, "/ep/still",
+            "the episode's own frame, which the landscape tile is for"
+        );
+        assert_eq!(
+            crate::ui::widgets::still_key(&without),
+            "/ep/still",
+            "…and never the show's shared art, which is the same picture on every episode"
+        );
+
+        // a MOVIE carries no still: its `thumb` already IS its own artwork
+        let film = parse_item(
+            &crate::plex::Metadata {
+                kind: "movie".into(),
+                rating_key: "4".into(),
+                title: "Snatch".into(),
+                thumb: "/film/poster".into(),
+                ..Default::default()
+            },
+            sid(0),
+        );
+        assert!(film.still.is_empty());
     }
 
     /// One source of the table, seeded directly. `handle` empty = a server of our own.

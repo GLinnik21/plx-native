@@ -460,8 +460,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   Plex Discover/catalog results and optional `sectionId` scoping remain outside that surface.
 
 - **Library sections past the 4th were unreachable from Home** — **closed 2026-09-01.**
-  The global row is now permanently `Home | Movies | TV Shows | Search`; Movies and TV Shows name
-  types rather than individual Plex sections. The Library Source panel selects additional owned or
+  The global row is `Home`, one pill per type, then `Search`; Movies and TV Shows name
+  types rather than individual Plex sections. (Its VOCABULARY is permanent, its LENGTH is not: since
+  2026-09-05 a type with no favourite library draws no pill, so the row holds two to four stops and
+  a pill's index is not its identity — store a `Pill`.) The Library Source panel selects additional owned or
   shared sections of that type, so discovery no longer changes the row and no section is hidden by
   a tab cap.
 
@@ -489,8 +491,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **No persistent left navigation rail** — `minor` / `large`  
   The official client has an always-present left sidebar, collapsed to icons and expanding to labels on focus, holding avatar/username, Search, Home, Watchlist, libraries, Playlists, On Plex, Discover and More. We have a centered top pill row instead, and in grid view it is not reachable by D-pad at all: LEFT at column 0 is a no-op and UP at row 0 snaps back to the hero, so global navigation requires leaving the grid first.  
   *Where:* New rust-modules/src/ui/nav_rail.rs as a shared View, replacing/absorbing widgets.rs:540 draw_tab_row; focus entry from rust-modules/src/ui/home.rs (Grid::nav LEFT edge) and rust-modules/src/ui/library.rs. No new endpoint.  
-  *Verified:* Still open. The centered `Home | Movies | TV Shows | Search` row is the global
-  navigation; pointer access works from the grid, while D-pad access first returns through the hero.
+  *Verified:* Still open. The centered `Home … Search` row — one pill per type that has a favourite
+  library — is the global navigation; pointer access works from the grid, while D-pad access first
+  returns through the hero. (On the Library, since the one-scroll rewrite, UP is the one-press route
+  to the strip from any zone.)
 
 - **Hero metadata line lacks air date, runtime and the time-left chip** — `minor` / `small`  
   The official hero meta line reads 'S5 E25 - May 7, 2009 - 21m - TV-14 - [20 min left]', where the remaining time is a rounded chip. Ours reads either 'S1 E4 - Episode title' or 'Movie - YEAR - RATING'; no air date, no runtime, no content rating on the episode branch, and no time-left chip even though the item's resume point is already known (the Play pill switches to 'Continue' from it).  
@@ -790,9 +794,23 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* `browse.rs` (generalize `GenreEntry`/`genre` into a `(facet_key, value_id)` list and reuse `kick_directory` for any directory name), `ui/library.rs` (a Categories sub-tab: an axis list → value tiles → the existing grid with the filter applied), `plex/library.rs::section_directory` already covers the PMS side (`GET /library/sections/{k}/{genre|year|decade|director|actor|country|contentRating|studio}`).  
   *Verified:* CONFIRMED. `kick_directory` (browse.rs:350-383) is fully generic over the directory name, but `rg` shows exactly two callers: `kick_genres` with "genre" (browse.rs:404-410) and `kick_letters` with "firstCharacter" (browse.rs:436-441). `SecState` (browse.rs:56-76) holds a single `genre: Option<GenreEntry>` + `genres: Vec<GenreEntry>` — one axis, one value, single-select (browse.rs:339-344 REPLACES it). ui/library.rs:67-73 `enum Menu { None, Sort, Filter, Genre }`; the filter menu's only drill-down is Genre (ui/library.rs:545-561, 563-586). `plex::Client::section_directory` (plex/library.rs:51-5
 
-- **No per-section "Recommended" tab (the section's own hub rows)** — `major` / `large`  
-  The official Library screen opens on Recommended — the section's own hub shelves (Recently Added, Recently Released, Recently Played, Genres, Studios, By Decade…) — with Library (the grid) as a second tab. We drop the user straight into the flat grid; the section's hubs are never requested. Home fetches the GLOBAL `/hubs` only, which is a different set and is not section-scoped.  
-  *Where:* `plex/hubs.rs` (add `section_hubs(section_key, count)` → `GET /hubs/sections/{key}?count=`), a per-section hub store (either extend `browse.rs` or a sibling of `pms.rs`'s hub table), and `ui/library.rs` (a Recommended view mode rendering shelves via the shared `ui/card_row.rs` `CardRow`, the same component Home's `Grid` uses).  
+- **No per-section "Recommended" tab (the section's own hub rows)** — `major` / `large` —
+  **the SHELVES closed 2026-09-05; the VIEW MODE is what is still open.**
+  The library's own published hubs are fetched and drawn now: `plex::Client::library_hubs` →
+  `GET /hubs/sections/{key}?count=`, `browse/section_hubs.rs` as the per-section store (a field on
+  `SecState`, with a Fetching/Staged/Committed publication axis so a late landing cannot move a grid
+  the user is looking at), and `ui/library.rs` drawing them through the shared
+  `ui/card_row.rs` `CardRow` — in the owner's own *Manage → Libraries* order, verified against a
+  live server (`docs/pms-api.md` §3a). They are ABOVE the grid in ONE continuous scroll rather than
+  behind a second tab, which is a deliberate product ruling and not an omission: two screens is two
+  scroll positions and two BACK meanings for one library. What remains open is Plex's
+  Recommended/Library/Collections/Categories VIEW-MODE axis and the category browsing under it.
+  *Where (still):* the categories half — `browse` generalising its single genre facet, and a
+  value-tile level in `ui/library.rs`.
+  *Verified as of 2026-09-05:* `plex/hubs.rs` has five ops, the fifth being `library_hubs`;
+  `ui/library.rs`'s `enum Area` is eight variants including `Shelf`, built by `zones(&Layout)`;
+  `enter()` no longer parks in `Area::Grid` but at the document's first content zone.
+  **The paragraph below is the original 2026-07 finding, kept as the record of what was true then.**
   *Verified:* CONFIRMED. `rg -n "hubs/sections"` → zero matches. plex/hubs.rs has exactly four ops (home_hubs `/hubs`, continue_watching, promoted, search); none is section-scoped, and `home_hubs(12)` at pms.rs:234 is the ONLY hub fetch in the app. ui/library.rs:57-66 `enum Area { Tabs, Toolbar, Grid, Rail }` — no view-mode axis; `enter()` (ui/library.rs:178-191) always sets `AREA = Area::Grid`. PARTIAL worth noting: the global `/hubs` response already carries per-library shelves that Home renders — pms.rs:306-308 documents the identifiers it matches (`home.movies.recent`, `home.television.recent`, `promote
 
 - **The filter menu exposes exactly one facet (Genre) out of the server's ~27** — `major` / `medium`  
@@ -1045,7 +1063,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   `https://discover.provider.plex.tv/actions/addToWatchlist|removeFromWatchlist?ratingKey=…`;
   `net::request` already supports body-less custom verbs. Add a third control in `ui/detail.rs`
   `draw_buttons`/`on_ok`, plus a Watchlist tab and a grid reusing `ui/library.rs`.
-  *Verified:* Still open. The fixed Home/Movies/TV Shows/Search row has no Watchlist destination,
+  *Verified:* Still open. The Home/Movies/TV Shows/Search row (whose type pills follow the favourite set since 2026-09-05) has no Watchlist destination,
   and the detail action row has no Watchlist mutation.
 
 - **No user-facing server picker when the account has several servers** — `major` / `medium`
@@ -1103,7 +1121,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **Discover / "Movies & Shows on Plex" catalog is absent (adjacent-catalog feature)** — `minor` / `large`  
   ADJACENT CATALOG, not a library feature: the official client has a Discover destination browsing plex.tv's catalog of movies/shows that are not on your server — Trending, and free ad-supported streaming titles playable in-app. We have no notion of a non-server item at all: every screen indexes catalog rows fetched from the PMS.  
   *Where:* New `plex/discover.rs` on the net.rs HTTPS transport (plex.tv catalog endpoints), a Discover entry in the tab row (ui/widgets.rs:540-592), a grid screen reusing ui/library.rs/ui/card_row.rs, and a non-PMS item variant through pms::PmsMovie/ui/detail.rs. Playback of ad-supported titles would additionally need a non-PMS stream path in route.rs/stream.rs.  
-  *Verified:* Still open. The fixed top row contains no Discover/community destination; the item
+  *Verified:* Still open. The top row contains no Discover/community destination; the item
   and playback models remain PMS-shaped.
 
 - **Friend activity, Find Friends and social Profile tabs are absent (adjacent-catalog feature)** — `minor` / `large`  

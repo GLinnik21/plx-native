@@ -45,16 +45,21 @@
 //!
 //! ## Scroll
 //!
-//! One spring, and only the SHELVES ride it ([`View::shift`]): the field, the strip and the recents
-//! rows are chrome at fixed y. **The flow's whole shape lives in [`results`]** — this module owns
-//! the two FREEZES ([`scroll_frozen`]) and nothing else about it, and asks
-//! [`results::reveal_shelf`] for the rest.
+//! One spring, and the WHOLE DOCUMENT rides it ([`View::shift`]) — the query field and its scope
+//! line included, since 2026-09-05. Nothing on this screen is pinned any more: the head scrolls
+//! away with the shelves and the column passes under the shared glass tab track, which is the only
+//! thing still drawn over content and is a material rather than a cut. It is the Library's shape,
+//! arrived at one screen later and for the owner's own reason — *"it looks nicer and consistent
+//! with the library, and I think performance is better because we don't need to make any fades
+//! after that"* — and the performance half is real: the veil that used to dissolve the shelves
+//! under a fixed field (`widgets::nav_scrim`, now deleted with its last caller) was a full-width
+//! band redrawn every scrolled frame, and its prototype material was a blur-source pass.
+//! **The flow's whole shape lives in [`results`]** — this module owns the two FREEZES
+//! ([`scroll_frozen`]) and nothing else about it, and asks [`results::reveal_shelf`] for the rest.
 //!
 //! The rule is the shared minimal reveal (`card_row::reveal`, as the home grid, the person page and
 //! the Library grid all scroll), **not** the mock's pin of the focused block to [`CONTENT_TOP`];
-//! `results`' module doc carries that decision and the reasons. This paragraph used to describe the
-//! pin and to call the second freeze "forced rather than chosen: nothing clips the flow", which
-//! stopped being true when `results::draw` gained a real scissor at the field's bottom edge.
+//! `results`' module doc carries that decision and the reasons.
 //!
 //! So the freeze at zero whenever the shelves do not hold focus is now a CHOICE, and the reason it
 //! stays is the ▼ handoff: it lands on shelf **0** and not on the shelf last left, and it can only
@@ -134,15 +139,16 @@ pub(crate) const FIELD: Rect = Rect {
 /// A 72px line has no right-hand half to put a caption in, which is the whole reason it moved: the
 /// scope line used to sit at x=950 on the capsule's row, in the space the capsule did not use.
 pub(crate) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
-/// Where the app's own chrome ends and the result band begins — the scope line's bottom edge.
+/// The bottom edge of the document's HEAD — the scope line's, and the last thing above
+/// [`CONTENT_TOP`].
 ///
-/// It is the navigation scrim's OPAQUE floor: [`crate::ui::widgets::nav_scrim`] fills flat from the
-/// top of the panel down to here and only THEN ramps out to [`CONTENT_TOP`], so this is the line
-/// above which a scrolled shelf cannot be seen at all. Which makes it two things at once, and they
-/// must stay one number — the argument [`draw`] passes that function, and the floor
-/// [`results`] records its pointer rects against. A tile the user cannot see is a tile the pointer
-/// must not be able to reach.
-pub(crate) const CHROME_BOTTOM: f32 = SCOPE_Y + field::SCOPE_H;
+/// It was `CHROME_BOTTOM` and it was the navigation scrim's opaque floor: the line above which a
+/// scrolled shelf could not be seen at all, and therefore the floor `results` recorded its pointer
+/// rects against. **Neither is true since 2026-09-05** — the field scrolls with the shelves, there
+/// is no scrim and no cut, and the only thing still standing over the column is the tab track, so
+/// the visibility floor moved to [`crate::ui::widgets::TOP_BAR_BOTTOM`]. What is left here is what
+/// the name now says: where the head stops, which is what [`CONTENT_TOP`] has to clear.
+pub(crate) const HEAD_BOTTOM: f32 = SCOPE_Y + field::SCOPE_H;
 /// Terms kept. **Four**, which is the design's own number and its own arithmetic: with [`CONTENT_TOP`]
 /// at 300 the block runs 300 + header 58 + 4×60 + 24 + a 60 control = 682 against a raised panel
 /// whose top edge is at 756. It was five while `CONTENT_TOP` was 266 — the count is a consequence
@@ -225,8 +231,11 @@ pub(crate) struct View {
     /// `MAX_RECENTS` only once the list is full. With two terms stored it is 2, because focus must
     /// never rest on a row that was never drawn.
     pub(crate) recent: usize,
-    /// Vertical offset the shelves are drawn at (0 while the keyboard is up). POSITIVE moves the
-    /// content UP: a shelf whose block top is `t` draws at `t - shift`.
+    /// Vertical offset the whole document is drawn at (0 while the keyboard is up). POSITIVE moves
+    /// the content UP: anything whose flow top is `t` draws at `t - shift` — the shelves, and since
+    /// 2026-09-05 the field and scope line too ([`field::draw`]'s translate). One number for one
+    /// column; a region that reads it and a region that does not is how a screen comes to have two
+    /// scrolls nobody meant it to have.
     pub(crate) shift: f32,
     /// The insertion point, as a BYTE offset into `search::query()` — always on a char boundary
     /// (see [`caret`]). Meaningful only while `editing`.
@@ -254,10 +263,32 @@ static mut COL: usize = 0;
 static mut RECENT: usize = 0;
 /// The pill the strip cursor rests on while [`Zone::Strip`] holds focus. A cursor of its own — the
 /// screen does not own the pills, but it does own where the ring is standing among them.
-static mut STRIP: usize = 0;
+///
+/// **An IDENTITY rather than a position** (Codex review, 2026-09-05). It was a `usize` clamped to
+/// the row's length, which is not the same guarantee: with the strip at `[Home, Search]` and the
+/// cursor on 1, a Movies library landing leaves 1 IN RANGE and changes what it means, so the ring
+/// stays put while OK starts navigating somewhere the user never chose. This screen runs
+/// `browse::discover_pump()` immediately before its own update, so that landing genuinely can
+/// happen between two reads of the same frame.
+static mut STRIP: crate::ui::widgets::Pill = crate::ui::widgets::Pill::Search;
+
+/// The strip cursor's DRAWN index — the one place the identity becomes a position. A pill whose
+/// type lost its last favourite falls back to Search, which is this screen's own pill and the one
+/// that is always drawn here.
+fn strip_idx() -> usize {
+    crate::ui::widgets::pill_of(unsafe { addr_of!(STRIP).read() })
+        .unwrap_or_else(crate::ui::widgets::search_pill)
+        .min(strip_last())
+}
 /// The shelves' vertical scroll. A [`Spring`], so `ui::idle` hears the motion for free (both
 /// integrators report) and this screen owes the frame gate no clock of its own.
 static mut SCROLL: Spring = Spring::at(0.0);
+/// **The page ground** — the same item-keyed ambient wash the Library and the person page stand on
+/// ([`crate::ui::widgets::PageGround`]), keyed to whichever result tile holds focus. A people or
+/// collections row carries no artwork envelope and so HOLDS the ground rather than clearing it;
+/// so does the empty-query state, which is why typing a second query does not flash the page grey
+/// between the two answers.
+static mut GROUND: crate::ui::widgets::PageGround = crate::ui::widgets::PageGround::new();
 /// How far the field is into its FOCUSED face, 0…1 — the one spring the field's whole state
 /// machine rides. `field::draw`'s ink cross-fade reads it for both focused states
 /// (`field::ink_target` picks the endpoint, on `editing` alone); issue 22 (2026-09-03) briefly had
@@ -602,8 +633,34 @@ fn seat(row: usize, col: usize, lens: &[usize]) -> Option<(usize, usize)> {
 ///
 /// Pure for the same reason [`below_of`] is, and because this is where the ragged-grid arithmetic
 /// actually goes wrong: a column carried onto a shorter shelf.
-fn step_results(sym: c_uint, row: usize, col: usize, lens: &[usize]) -> Option<(usize, usize)> {
+fn step_results(
+    sym: c_uint,
+    row: usize,
+    col: usize,
+    lens: &[usize],
+    lat: impl Fn(usize) -> (f32, f32, f32),
+) -> Option<(usize, usize)> {
     let (r, c) = seat(row, col, lens)?;
+    // **A VERTICAL step follows the screen, not the index** (`card_row::column_near_x`). Shelves
+    // here hold independent horizontal scrolls AND different per-kind lattices — a person shelf's
+    // circular tiles are neither as wide nor as spaced as a poster's — so carrying the column
+    // across lands focus on a tile that can be most of a screen away, after which the destination
+    // row scrolls hard to reveal it. `seat`'s clamp stays underneath as the ragged-grid guard.
+    let vert = |to: usize| {
+        let (fs, fa, fw) = lat(r);
+        let (ts, ta, tw) = lat(to);
+        let x = crate::ui::card_row::tile_centre_x(c, crate::ui::consts::MARGIN_X, fa, fw, fs);
+        let k = crate::ui::card_row::column_near_x(
+            x,
+            crate::ui::consts::MARGIN_X,
+            ta,
+            tw,
+            ts,
+            lens[to],
+            c,
+        );
+        seat(to, k, lens)
+    };
     if sym == SDLK_LEFT {
         Some((r, c.saturating_sub(1)))
     } else if sym == SDLK_RIGHT {
@@ -612,10 +669,10 @@ fn step_results(sym: c_uint, row: usize, col: usize, lens: &[usize]) -> Option<(
         if r == 0 {
             None
         } else {
-            seat(r - 1, c, lens)
+            vert(r - 1)
         }
     } else if sym == SDLK_DOWN && r + 1 < lens.len() {
-        seat(r + 1, c, lens)
+        vert(r + 1)
     } else {
         Some((r, c))
     }
@@ -706,7 +763,7 @@ fn mount(seed: Option<&str>) {
         // lands where the eye already is. Re-seated on a RESUME too: the cursor may have been left
         // parked on the Home pill by the very press that took the user away, and a Search screen
         // drawing its focus ring on somebody else's pill is the one thing worse than losing it.
-        *addr_of_mut!(STRIP) = crate::ui::widgets::search_pill();
+        *addr_of_mut!(STRIP) = crate::ui::widgets::Pill::Search;
         (*addr_of_mut!(SCROLL)) = Spring::at(0.0);
         // SEATED, not sprung: the screen mounts with the field already focused, so there is no
         // state CHANGE to animate — gliding the fill up from idle on arrival would be a second
@@ -797,6 +854,15 @@ pub(crate) fn update(dt: f32) {
             xf().mount();
         }
     }
+    // The ground, LAST: `results::focused_blur` reads the seated cursor, and `clamp_focus` and the
+    // shelves' own step above are both allowed to move it this frame.
+    unsafe {
+        (*addr_of_mut!(GROUND)).key(
+            results::focused_blur(&view()),
+            crate::ui::widgets::PageGround::CARD_W,
+            dt,
+        )
+    };
 }
 
 /// Drain the keyboard and insert what it committed.
@@ -869,7 +935,8 @@ fn clamp_focus() {
                 *addr_of_mut!(RECENT) = addr_of!(RECENT).read().min(clear_index());
             }
             Zone::Strip => {
-                *addr_of_mut!(STRIP) = addr_of!(STRIP).read().min(strip_last());
+                // nothing to clamp any more: `strip_idx` resolves the identity against the row
+                // that is drawn, every time it is asked
             }
             // The chip is always drawn and has no cursor of its own, so there is nothing to clamp;
             // the field is the same. Spelled out rather than caught by a `_`, so a zone added later
@@ -891,10 +958,25 @@ pub(crate) fn draw() {
     );
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
+    // The GROUND, before anything else: opaque, standing in for the clear above, and on `p` rather
+    // than the content fade `pg` — the atmosphere belongs to the page, not to one answer, so it
+    // dissolves between queries on its own springs instead of being cross-faded out and back in.
+    unsafe { (*addr_of!(GROUND)).draw(p, Rect::FULL) };
     let v = view();
     // Drop last frame's hit rects BEFORE the regions record this frame's, so a row or a tile that
     // has stopped being drawn cannot still be clicked.
     unsafe { (*addr_of_mut!(HIT_R)).clear() };
+
+    // **The head of the document, drawn FIRST because that is where it is.** The field and its
+    // scope line ride `View::shift` like everything else on this screen now, so they are the top
+    // of one column rather than chrome standing over it — and a column that scrolls as one has no
+    // band to overlap, which is what retired the scrim that used to be drawn between these two
+    // calls. The tab track below is the only thing left standing over content, and it is drawn
+    // last so the column passes under its glass.
+    //
+    // It does NOT ride the content fade — see [`XF`]: you are typing into that control, and fading
+    // it out under your own keystroke would say the app had lost the query.
+    field::draw(p, &v);
 
     // Everything BELOW the field rides the content fade; the field itself does not (see [`XF`]).
     let pg = p.alpha(xf().alpha());
@@ -910,14 +992,6 @@ pub(crate) fn draw() {
     if has_query() {
         results::draw(pg, &v);
     }
-    // …THEN the navigation bar's scrim, THEN the chrome over it. The ORDER is the fix: this screen
-    // drew the field first and the shelves over it, so a poster crossing the capsule was stopped
-    // only by `results`' scissor — a razor edge in open ground, which is what got photographed.
-    // `widgets::nav_scrim` is the shared treatment (the Library's, and the design system's
-    // `route-screen` card); the scissor is a bound again, cutting inside the opaque band.
-    crate::ui::widgets::nav_scrim(p, CHROME_BOTTOM, CONTENT_TOP, v.shift);
-    field::draw(p, &v);
-
     // The chip's frame is `widgets`' own now, which retires this screen's last way of disagreeing
     // with the others about it: it was a literal 54 here while Home drew the same chip at 60, and
     // Home↔Search is a chrome-CONTINUOUS cross-fade, so the avatar visibly shrank mid-transition on
@@ -930,8 +1004,9 @@ pub(crate) fn draw() {
     crate::ui::widgets::profile_chip(pk);
 }
 
-/// Record the rect a recent-term row (or, at [`MAX_RECENTS`], the Clear control) was DRAWN at.
-/// Called by [`recents`] from its draw; see [`HIT_R`].
+/// Record the rect a recent-term row (or, at [`MAX_RECENTS`], the Clear control) was DRAWN at —
+/// on the PANEL, scroll included, exactly as [`note_tile_rect`] takes a tile's. Called by
+/// [`recents`] from its draw; see [`HIT_R`].
 ///
 /// An index past the Clear control is DROPPED, never clamped onto it: the store is documented to
 /// hold more terms than the screen has room for, so a drawer that looped the whole list would
@@ -1010,7 +1085,7 @@ pub(crate) fn move_focus(sym: c_uint) {
                 // is what sits under the whole bar.
                 if sym == SDLK_RIGHT {
                     *addr_of_mut!(ZONE) = Zone::Strip;
-                    *addr_of_mut!(STRIP) = 0;
+                    *addr_of_mut!(STRIP) = crate::ui::widgets::Pill::Home;
                 } else if sym == SDLK_DOWN {
                     *addr_of_mut!(ZONE) = Zone::Field;
                 }
@@ -1019,12 +1094,13 @@ pub(crate) fn move_focus(sym: c_uint) {
                 if sym == SDLK_LEFT {
                     // …and off the FIRST pill, ◀ reaches the profile chip beside it: the chip is a
                     // stop on this screen too now, not only on Home.
-                    match addr_of!(STRIP).read().checked_sub(1) {
-                        Some(i) => *addr_of_mut!(STRIP) = i,
+                    match strip_idx().checked_sub(1) {
+                        Some(i) => *addr_of_mut!(STRIP) = crate::ui::widgets::pill_at(i),
                         None => *addr_of_mut!(ZONE) = Zone::Chip,
                     }
                 } else if sym == SDLK_RIGHT {
-                    *addr_of_mut!(STRIP) = (addr_of!(STRIP).read() + 1).min(strip_last());
+                    *addr_of_mut!(STRIP) =
+                        crate::ui::widgets::pill_at((strip_idx() + 1).min(strip_last()));
                 } else if sym == SDLK_DOWN {
                     *addr_of_mut!(ZONE) = Zone::Field;
                 }
@@ -1032,7 +1108,7 @@ pub(crate) fn move_focus(sym: c_uint) {
             Zone::Field => {
                 if sym == SDLK_UP {
                     leave_field(Zone::Strip);
-                    *addr_of_mut!(STRIP) = crate::ui::widgets::search_pill();
+                    *addr_of_mut!(STRIP) = crate::ui::widgets::Pill::Search;
                 } else if sym == SDLK_DOWN {
                     // ONLY into something that is drawn — the rule this screen is built around.
                     match below() {
@@ -1074,7 +1150,13 @@ pub(crate) fn move_focus(sym: c_uint) {
             Zone::Results => {
                 let mut buf = [0usize; crate::search::KINDS.len()];
                 let lens = shelf_lens(&mut buf);
-                match step_results(sym, addr_of!(ROW).read(), addr_of!(COL).read(), lens) {
+                match step_results(
+                    sym,
+                    addr_of!(ROW).read(),
+                    addr_of!(COL).read(),
+                    lens,
+                    results::row_lattice,
+                ) {
                     Some((r, c)) => {
                         *addr_of_mut!(ROW) = r;
                         *addr_of_mut!(COL) = c;
@@ -1285,7 +1367,7 @@ pub(crate) fn top_focus() -> crate::ui::widgets::TopFocus {
     use crate::ui::widgets::TopFocus;
     match zone() {
         Zone::Chip => TopFocus::Chip,
-        Zone::Strip => TopFocus::Pill(unsafe { addr_of!(STRIP).read() }.min(strip_last())),
+        Zone::Strip => TopFocus::Pill(strip_idx()),
         _ => TopFocus::Away,
     }
 }
@@ -1329,11 +1411,26 @@ fn find_rect(rects: &[(Hit, Rect)], below: Below, mx: f32, my: f32) -> Option<Hi
 /// The one hit test, shared by hover and click. Every rect here was RECORDED at draw (or is a
 /// constant, for the field), `library.rs`'s discipline: what the pointer addresses and what the eye
 /// sees are the same rect rather than two derivations that agree by luck.
+/// The field's rect ON THE PANEL at scroll `shift`, cut to the part the user can actually see —
+/// or `None` when the whole control has gone under the tab track.
+///
+/// The field is drawn in flow coordinates now (`field::draw`'s own translate), so its hit rect is
+/// no longer the constant `FIELD`: scroll far enough and the pointer would otherwise find a query
+/// box in the top chrome, whose click raises the keyboard over results nobody was looking at.
+/// [`results::hit_band`] is the same trim the tiles get, against the same floor — one rule for the
+/// whole document, which is what the screen became.
+fn field_hit_rect(shift: f32) -> Option<Rect> {
+    results::hit_band(
+        Rect::new(FIELD.x, FIELD.y - shift, FIELD.w, FIELD.h),
+        crate::ui::widgets::TOP_BAR_BOTTOM,
+    )
+}
+
 fn hit(mx: f32, my: f32) -> Option<Hit> {
     if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
         return Some(Hit::Pill(i.min(strip_last())));
     }
-    if FIELD.contains(mx, my) {
+    if field_hit_rect(view().shift).is_some_and(|r| r.contains(mx, my)) {
         return Some(Hit::Field);
     }
     let rects = unsafe { addr_of!(HIT_R).as_ref() }?;
@@ -1361,7 +1458,7 @@ fn focus(h: Hit) {
             *addr_of_mut!(ZONE) = to;
         }
         match h {
-            Hit::Pill(i) => *addr_of_mut!(STRIP) = i,
+            Hit::Pill(i) => *addr_of_mut!(STRIP) = crate::ui::widgets::pill_at(i),
             Hit::Field => {}
             // The Clear control records itself at MAX_RECENTS whatever the list length; the cursor
             // addresses it at `clear_index`.
@@ -1451,7 +1548,7 @@ mod tests {
             *addr_of_mut!(ROW) = 0;
             *addr_of_mut!(COL) = 0;
             *addr_of_mut!(RECENT) = 0;
-            *addr_of_mut!(STRIP) = 0;
+            *addr_of_mut!(STRIP) = crate::ui::widgets::Pill::Home;
             *addr_of_mut!(SCROLL) = Spring::at(0.0);
             // Seated on its target, exactly as `enter` seats it — a reset screen is SETTLED by
             // definition, and a focus spring left at 0 under a focused field would report motion
@@ -1656,6 +1753,34 @@ mod tests {
 
     // ---- focus clamping ------------------------------------------------------------------------
 
+    /// Every shelf unscrolled and on one lattice — the shape the ragged-grid clamp is about, with
+    /// the geometry held still so those assertions stay about the clamp.
+    fn flat(_: usize) -> (f32, f32, f32) {
+        (0.0, crate::ui::consts::CARD_W + 40.0, crate::ui::consts::CARD_W)
+    }
+
+    /// **A vertical step follows the SCREEN, not the column index.** Two shelves at different
+    /// horizontal scrolls put the same index in wildly different places, and carrying it across is
+    /// what made a ▼ read as the page lurching sideways.
+    #[test]
+    fn a_vertical_step_between_shelves_keeps_the_visual_column() {
+        let lens = [20usize, 20, 20];
+        let adv = crate::ui::consts::CARD_W + 40.0;
+        // shelf 0 scrolled four tiles along, shelf 1 not scrolled at all
+        let lat = move |r: usize| {
+            (
+                if r == 0 { 4.0 * adv } else { 0.0 },
+                adv,
+                crate::ui::consts::CARD_W,
+            )
+        };
+        // standing on shelf 0's tile 6 — drawn at the third column on screen — ▼ lands on shelf
+        // 1's tile 2, which is drawn in that same column, NOT on its tile 6 half a screen away.
+        assert_eq!(step_results(SDLK_DOWN, 0, 6, &lens, lat), Some((1, 2)));
+        // …and ▲ back returns to the tile it came from rather than drifting.
+        assert_eq!(step_results(SDLK_UP, 1, 2, &lens, lat), Some((0, 6)));
+    }
+
     /// A column carried onto a SHORTER shelf, which is the ragged-grid arithmetic that actually
     /// goes wrong. Graded on the pure stepper, because the item vectors are a live server answer
     /// no host can seed.
@@ -1665,23 +1790,23 @@ mod tests {
         let lens = [8usize, 2, 5];
 
         // Standing on the 7th movie, ▼ lands inside a two-item shelf rather than off its end.
-        assert_eq!(step_results(SDLK_DOWN, 0, 6, &lens), Some((1, 1)));
+        assert_eq!(step_results(SDLK_DOWN, 0, 6, &lens, flat), Some((1, 1)));
         // …and ▼ again keeps the column it can now afford, NOT the 6 it started with: the cursor is
         // where the user last actually stood, not where they once were.
-        assert_eq!(step_results(SDLK_DOWN, 1, 1, &lens), Some((2, 1)));
+        assert_eq!(step_results(SDLK_DOWN, 1, 1, &lens, flat), Some((2, 1)));
         // ▲ back up re-seats the same way.
-        assert_eq!(step_results(SDLK_UP, 2, 4, &lens), Some((1, 1)));
+        assert_eq!(step_results(SDLK_UP, 2, 4, &lens, flat), Some((1, 1)));
 
         // The ends hold: ◀ at column 0, ▶ at the last item, ▼ on the last shelf.
-        assert_eq!(step_results(SDLK_LEFT, 0, 0, &lens), Some((0, 0)));
-        assert_eq!(step_results(SDLK_RIGHT, 0, 7, &lens), Some((0, 7)));
-        assert_eq!(step_results(SDLK_DOWN, 2, 0, &lens), Some((2, 0)));
+        assert_eq!(step_results(SDLK_LEFT, 0, 0, &lens, flat), Some((0, 0)));
+        assert_eq!(step_results(SDLK_RIGHT, 0, 7, &lens, flat), Some((0, 7)));
+        assert_eq!(step_results(SDLK_DOWN, 2, 0, &lens, flat), Some((2, 0)));
         // ▲ off shelf 0 leaves the shelves entirely — the field.
-        assert_eq!(step_results(SDLK_UP, 0, 3, &lens), None);
+        assert_eq!(step_results(SDLK_UP, 0, 3, &lens, flat), None);
         // So does any step in a set that has emptied under the cursor (every keystroke does this).
         for sym in [SDLK_UP, SDLK_DOWN, SDLK_LEFT, SDLK_RIGHT] {
             assert_eq!(
-                step_results(sym, 3, 9, &[]),
+                step_results(sym, 3, 9, &[], flat),
                 None,
                 "no shelves means no zone to be in"
             );
@@ -1690,7 +1815,7 @@ mod tests {
         // never trusted: (9,9) seats to the last shelf's last item (2,4), and ◀ then walks from
         // THERE rather than from an index that was never on screen.
         assert_eq!(seat(9, 9, &lens), Some((2, 4)));
-        assert_eq!(step_results(SDLK_LEFT, 9, 9, &lens), Some((2, 3)));
+        assert_eq!(step_results(SDLK_LEFT, 9, 9, &lens, flat), Some((2, 3)));
         assert_eq!(
             seat(0, 0, &[0]),
             Some((0, 0)),
@@ -2359,7 +2484,7 @@ mod tests {
         let gen = crate::search::query_gen();
         unsafe {
             *addr_of_mut!(ZONE) = Zone::Strip;
-            *addr_of_mut!(STRIP) = 0;
+            *addr_of_mut!(STRIP) = crate::ui::widgets::Pill::Home;
             *addr_of_mut!(ROW) = 2;
             *addr_of_mut!(COL) = 5;
             *addr_of_mut!(RECENT) = 3;
@@ -2406,7 +2531,7 @@ mod tests {
             "the field mounts focused and SEATED, or it reports motion on arrival"
         );
         assert_eq!(
-            unsafe { addr_of!(STRIP).read() },
+            strip_idx(),
             crate::ui::widgets::search_pill()
         );
 
@@ -2573,5 +2698,53 @@ mod tests {
         unsafe { *addr_of_mut!(ZONE) = Zone::Field };
         assert!(!focus_is_card(), "the field is never a card");
         crate::search::reset();
+    }
+
+    /// **The query field is a scrolling element with a hit rect to match** (2026-09-05).
+    ///
+    /// It was pinned, so `hit` could test the constant [`FIELD`] and be right forever. It is in the
+    /// document now, and a hit rect that stayed behind would put a query box in the top chrome:
+    /// clicking blank chrome would raise the television's keyboard over results nobody was looking
+    /// at. Three phases, and the middle one is the one a bare cull would get wrong — a field
+    /// halfway under the track is still pressable on the half you can see, exactly as a tile is
+    /// ([`results::hit_band`], the same floor and the same rule).
+    #[test]
+    fn the_fields_hit_rect_rides_the_scroll_and_stops_at_the_track() {
+        let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+
+        let at_rest = field_hit_rect(0.0).expect("at rest the field is a target");
+        assert_eq!(
+            (at_rest.y, at_rest.h),
+            (FIELD.y, FIELD.h),
+            "an unscrolled screen must cost nothing: this is FIELD itself",
+        );
+
+        // Far enough that the box straddles the track's bottom edge.
+        let part = FIELD.y - floor + 20.0;
+        let r = field_hit_rect(part).expect("the visible half is still a target");
+        assert_eq!(r.y, floor, "floored at the track, not dropped");
+        assert!(
+            (r.h - (FIELD.h - 20.0)).abs() < 0.001,
+            "only the part under the track is taken: y={} h={}",
+            r.y,
+            r.h,
+        );
+
+        assert!(
+            field_hit_rect(FIELD.y + FIELD.h - floor + 0.5).is_none(),
+            "once the whole box is behind the track it is not a target at all",
+        );
+    }
+
+    /// [`CONTENT_TOP`] has to clear the document's head, or shelf 0's heading would be drawn over
+    /// the scope line at rest. The head is the field plus that line, and both are measured off
+    /// [`FIELD`] — so this is the one assertion that keeps the three numbers agreeing when any of
+    /// them moves.
+    #[test]
+    fn the_content_line_clears_the_documents_head() {
+        assert!(
+            CONTENT_TOP > HEAD_BOTTOM,
+            "content starts at {CONTENT_TOP} inside a head that ends at {HEAD_BOTTOM}",
+        );
     }
 }

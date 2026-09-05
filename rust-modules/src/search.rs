@@ -39,6 +39,30 @@
 //! claim, its own retry backoff and its own mailbox, and [`State`] is `Failed` only when every one
 //! of them is.
 //!
+//! ## Favourites RANK here; they never filter
+//!
+//! The **Favorite libraries** switch governs every other browsing surface — Home's shelves, which
+//! type pills the top strip draws, the Library's Sources picker — and this screen is the deliberate
+//! exception. It stays **grant-scoped**: every library the account may reach is searched, and the
+//! favourites only decide the ORDER ([`merge`], favourites first, each pass stable so the server's
+//! own ranking survives inside it).
+//!
+//! The reason is that a favourite is a browsing preference, not an authorization boundary. Removing
+//! a non-favourite library's hits turns "I don't browse this often" into "this does not exist": a
+//! user searching by name for a film they own and can play gets nothing, with no explanation on
+//! screen and no control anywhere that obviously undoes it. Plex's own Favorite Libraries feature
+//! makes the same split.
+//!
+//! **Counts stay grant-wide**, and that is a second decision rather than a consequence: "12 films"
+//! must keep meaning every film the user can play, or the count becomes a quieter version of the
+//! same false negative. Two edges make it harder than it sounds and both are pinned by tests — the
+//! visible cap must not truncate the FOLD (the cap bounds what is DRAWN, not what is COUNTED), and
+//! a tag straddling a favourite and a non-favourite library ranks favourite with its whole count.
+//!
+//! The favourite table is a SNAPSHOT taken at the spawn site and watched by a second generation
+//! ([`FAV_GEN`]) beside the roster's — see that constant for why a change re-arms the query rather
+//! than re-sorting what is on screen.
+//!
 //! ## The idiom to copy
 //!
 //! `person.rs`, not `browse.rs`: generation + a **monotone** mailbox write + [`supersede`] + a
@@ -187,6 +211,18 @@ pub(crate) struct TagHit {
     pub(crate) key: String,
     /// How many items carry it, for the caption line.
     pub(crate) count: i64,
+    /// **Does any FAVOURITE library contribute to this tag?** Ranking only — it never removes a
+    /// row (§6: a browsing preference is not an authorization boundary), and it never touches
+    /// [`TagHit::count`], which stays grant-wide because "12 films" must keep meaning every film
+    /// the user can play.
+    ///
+    /// It has to be carried rather than derived, and that is the whole reason this field exists:
+    /// the wire's `Tag` has a `library_section_id` ([`crate::plex::Tag`]) and this projection drops
+    /// it, because a tag arrives once per SECTION and the two folds below — per response, then
+    /// across servers — sum those rows into one. After the fold there is no section left to ask
+    /// about. So the bit is attached before the first fold and **OR'd** at both: a person in one
+    /// favourite library and one non-favourite is favourite-ranked, which is the honest answer.
+    pub(crate) fav: bool,
 }
 
 #[derive(Clone)]
@@ -209,6 +245,38 @@ impl Item {
             Item::Media(m) => m.sid,
             Item::Tag(t) => t.sid,
         }
+    }
+
+    /// **Is this hit from a favourite library?** — the ranking key, and the two variants answer it
+    /// from different places for a reason worth knowing before "simplifying" it.
+    ///
+    /// A MEDIA hit keeps its own `librarySectionID` (`PmsMovie::sec`) all the way through, and
+    /// nothing folds two of them together, so the bit is derivable at merge time from the same
+    /// snapshot Home joins against. A TAG's section is destroyed by the fold, so its bit is
+    /// attached upstream in [`tag_hit`] and carried — see [`TagHit::fav`].
+    ///
+    /// Unknown ranks as a FAVOURITE, in both directions (`sec == 0`, or a library the section table
+    /// has not enumerated yet), which is [`crate::pms`]'s rule at the same join and for the same
+    /// reason: demoting what we cannot classify would push a user's own results down the shelf on
+    /// the frame the app boots.
+    pub(crate) fn is_fav(&self, favs: &[(ServerId, i64, bool)]) -> bool {
+        match self {
+            Item::Tag(t) => t.fav,
+            Item::Media(m) => section_is_fav(favs, m.sid, m.sec),
+        }
+    }
+}
+
+/// The one join: is `(sid, key)` a favourite library? `key == 0` is the server saying nothing about
+/// the row's library and an absent row is a library nobody has enumerated yet — both rank as
+/// favourite, for the reason [`Item::is_fav`] gives.
+pub(crate) fn section_is_fav(favs: &[(ServerId, i64, bool)], sid: ServerId, key: i64) -> bool {
+    if key == 0 {
+        return true;
+    }
+    match favs.iter().find(|(s, k, _)| *s == sid && *k == key) {
+        Some((_, _, fav)) => *fav,
+        None => true,
     }
 }
 
@@ -422,6 +490,36 @@ static GEN: AtomicU32 = AtomicU32::new(0);
 /// aimed at the previous origin/profile.
 static VISIBLE: AtomicU32 = AtomicU32::new(0);
 
+/// **The favourite table this result set was projected under**, taken once per query at the spawn
+/// site (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never filters.
+static FAVS: Mutex<Vec<(ServerId, i64, bool)>> = Mutex::new(Vec::new());
+
+/// `browse::sections_gen()` as of that snapshot — the second generation this store watches, beside
+/// [`VISIBLE`].
+///
+/// It is genuinely needed. Search watched the ROSTER generation alone, and the favourite answer
+/// moves without the roster moving at all: discovery appends a library and `apply_pins` records an
+/// edit, both bumping `SECTIONS_GEN` — and this screen deliberately runs discovery immediately
+/// before its own pump, so the answer really can change under a landed result set.
+///
+/// A change **supersedes and re-arms the whole resident query** rather than re-sorting what is on
+/// screen, and "re-sort" was never available: after the fold a [`TagHit`] no longer carries the
+/// section its bit came from, so a stored bit cannot be re-derived locally. The alternative is
+/// retaining full contributing-section provenance through both folds; re-arming is cheaper.
+static FAV_GEN: AtomicU32 = AtomicU32::new(0);
+
+/// Take the favourite snapshot and publish the generation it belongs to. Main thread only — it
+/// reads `browse`'s statics.
+fn snapshot_favs() {
+    FAV_GEN.store(crate::browse::sections_gen(), Ordering::SeqCst);
+    *FAVS.lock().unwrap_or_else(|e| e.into_inner()) = crate::browse::favorite_sections();
+}
+
+/// The snapshot, for the merge and for a worker about to be spawned.
+fn favs() -> Vec<(ServerId, i64, bool)> {
+    FAVS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// The claim that source `i`'s fetch is out. Released by the mailbox take — the only event that
 /// knows the fetch is over — so anything that ends one by another route must release it itself:
 /// [`supersede`] drops the mailbox the take would have come from, and a refused `spawn_small` never
@@ -570,6 +668,10 @@ fn land(i: usize, gen: u32, what: Option<Projection>) {
 /// keystroke calls. It does NOT stop the workers; see [`IN_FLIGHT`] for what that costs.
 fn supersede() {
     GEN.fetch_add(1, Ordering::SeqCst);
+    // A fresh favourite snapshot belongs to the fresh generation, and taking it HERE is what makes
+    // the staleness rule need no second mailbox field: a landing projected under the old table
+    // carries the old `gen`, and `pump` already discards those. One rejection rule, not two.
+    snapshot_favs();
     for i in 0..NSRC {
         *SLOT[i].lock().unwrap_or_else(|e| e.into_inner()) = None;
         IN_FLIGHT[i].store(false, Ordering::SeqCst);
@@ -589,6 +691,27 @@ pub(crate) fn pump(dt: f32) -> bool {
         // the credential it held before it was hidden.
         supersede();
         unsafe { (*addr_of_mut!(SHELVES)).clear() };
+    }
+    // **The second generation, and it moves without the first.** Discovery appending a library and
+    // a favourites edit both bump `SECTIONS_GEN`, and this screen runs discovery immediately before
+    // its own pump — so the ranking answer really can change under a landed result set.
+    //
+    // A resident query is SUPERSEDED AND RE-ARMED rather than re-sorted, because re-sorting is not
+    // available: after the fold a `TagHit` no longer carries the section its bit came from, so the
+    // bit cannot be re-derived locally (see [`FAV_GEN`]). With nothing resident there is nothing to
+    // invalidate and the snapshot is simply brought up to date, so the next query does not open by
+    // re-arming itself.
+    if FAV_GEN.load(Ordering::SeqCst) != crate::browse::sections_gen() {
+        if terms(query()).is_some() {
+            supersede();
+            unsafe {
+                (*addr_of_mut!(SHELVES)).clear();
+                *addr_of_mut!(SETTLE) = 0.0;
+                *addr_of_mut!(ARMED) = true;
+            }
+        } else {
+            snapshot_favs();
+        }
     }
     unsafe {
         if *addr_of!(ARMED) {
@@ -723,7 +846,7 @@ fn live_sources(live: &[usize]) -> Vec<&'static Source> {
 fn rebuild() {
     let live = slots();
     let sources = live_sources(&live);
-    let shelves = merge_refs(&sources);
+    let shelves = merge_refs(&sources, &favs());
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
     crate::log(&format!(
         "search: q[{}ch] shelves={} items={}",
@@ -735,14 +858,27 @@ fn rebuild() {
 }
 
 /// The merged result set: [`KINDS`] order, empty shelves omitted, sources taken **round robin** so
-/// no source can bury another (module doc). Pure, so the ordering rule is graded on the host rather
-/// than inferred from a screenshot with two servers plugged in.
-fn merge(sources: &[Source]) -> Vec<Shelf> {
+/// no source can bury another (module doc), then **favourite libraries first**. Pure, so both
+/// ordering rules are graded on the host rather than inferred from a screenshot with two servers
+/// plugged in.
+///
+/// **Favourites RANK; they never filter.** Removing a non-favourite library's hits would turn "I
+/// don't browse this often" into "this does not exist" for a film the user owns and can play, with
+/// no explanation on screen — so the whole granted roster is still here and only the order moves.
+/// The pass is STABLE, so each server's own ranking survives inside it: the only ranking any server
+/// hands over is the order of its own list, and re-sorting within a pass would throw that away.
+///
+/// **The fold runs to completion BEFORE the cap, and that ordering is load-bearing.** This used to
+/// `break` out of the fill the moment the shelf was full, which meant a later duplicate of an
+/// ALREADY DISPLAYED tag could no longer augment its count — so a person's "12 films" silently
+/// became however many the servers happened to report before the cap was reached. The cap bounds
+/// what is DRAWN; it must not bound what is COUNTED.
+fn merge(sources: &[Source], favs: &[(ServerId, i64, bool)]) -> Vec<Shelf> {
     let sources: Vec<&Source> = sources.iter().collect();
-    merge_refs(&sources)
+    merge_refs(&sources, favs)
 }
 
-fn merge_refs(sources: &[&Source]) -> Vec<Shelf> {
+fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)]) -> Vec<Shelf> {
     let mut out = Vec::new();
     for (k, kind) in KINDS.iter().enumerate() {
         // only a source that ANSWERED contributes: one still pending has nothing to say yet, and
@@ -754,7 +890,7 @@ fn merge_refs(sources: &[&Source]) -> Vec<Shelf> {
             .collect();
         let deepest = live.iter().map(|v| v.len()).max().unwrap_or(0);
         let mut items: Vec<Item> = Vec::new();
-        'fill: for d in 0..deepest {
+        for d in 0..deepest {
             for v in &live {
                 let Some(it) = v.get(d) else { continue };
                 // **The same person on two servers is one person.** `project` folds per RESPONSE,
@@ -770,6 +906,8 @@ fn merge_refs(sources: &[&Source]) -> Vec<Shelf> {
                         _ => None,
                     }) {
                         prev.count += t.count;
+                        // the SECOND fold, and the bit is OR'd here exactly as in `project`
+                        prev.fav |= t.fav;
                         if prev.thumb.is_empty() {
                             prev.thumb = t.thumb.clone();
                         }
@@ -777,11 +915,14 @@ fn merge_refs(sources: &[&Source]) -> Vec<Shelf> {
                     }
                 }
                 items.push(it.clone());
-                if items.len() >= SHELF_MAX {
-                    break 'fill;
-                }
             }
         }
+        // Favourites first, and `sort_by_key` is STABLE, so this is the two round-robin passes the
+        // design asks for expressed once rather than as two loops that would have to agree about
+        // folding. Truncation comes last: the favourite pass fills the shelf, and every fold above
+        // has already happened, so a tag that IS displayed carries its whole grant-wide count.
+        items.sort_by_key(|it| !it.is_fav(favs));
+        items.truncate(SHELF_MAX);
         if !items.is_empty() {
             out.push(Shelf { kind: *kind, items });
         }
@@ -858,6 +999,10 @@ fn maybe_spawn(i: usize) {
     // the time it was scheduled, and file the answers under this slot's id.
     let sid = ServerId::from_raw(i as u16);
     let gen = GEN.load(Ordering::SeqCst);
+    // …and so is the favourite table, for the same reason and by the same rule: a worker that asked
+    // `browse` what was current would answer with a table from a different moment than the query it
+    // was given. `pump` rejects a landing taken under a snapshot that has since moved.
+    let favs = favs();
     IN_FLIGHT[i].store(true, Ordering::SeqCst);
     crate::log(&format!(
         "search: q[{}ch] sid={i} asking limit={LIMIT}",
@@ -871,7 +1016,7 @@ fn maybe_spawn(i: usize) {
             // is deliberately account-wide: `sectionId` only RANKS (measured — every other
             // section's rows still come back), so it could not scope this even if we wanted it to.
             let mc = crate::plex::client_for(sid)?.search(&q, LIMIT, 0)?;
-            Some(project(&mc, sid))
+            Some(project(&mc, sid, &favs))
         })
         .unwrap_or(None);
         land(i, gen, what);
@@ -890,7 +1035,11 @@ fn maybe_spawn(i: usize) {
 /// empty — so anything that is not one of ours is dropped. `actor` and `director` both land on the
 /// Person shelf, in hub order, which is the ONE place the "one shelf, two hubs" rule of
 /// [`Kind::hubs`] is actually applied.
-fn project(mc: &crate::plex::MediaContainer, sid: ServerId) -> Projection {
+fn project(
+    mc: &crate::plex::MediaContainer,
+    sid: ServerId,
+    favs: &[(ServerId, i64, bool)],
+) -> Projection {
     let mut out: Projection = Default::default();
     for hub in &mc.hub {
         let Some(k) = kind_index(hub) else { continue };
@@ -901,7 +1050,7 @@ fn project(mc: &crate::plex::MediaContainer, sid: ServerId) -> Projection {
             out[k].push(Item::Media(parse_item(m, sid)));
         }
         for t in &hub.directory {
-            let hit = tag_hit(t, sid);
+            let hit = tag_hit(t, sid, favs);
             // **A tag arrives once per LIBRARY SECTION**, measured: a person in both the Movies and
             // the TV Shows library comes back as two rows with the same `id` and `tagKey`, each
             // carrying that section's own `count`. Drawn raw that is the same face twice; keeping
@@ -917,6 +1066,9 @@ fn project(mc: &crate::plex::MediaContainer, sid: ServerId) -> Projection {
             }) {
                 Some(e) => {
                     e.count += hit.count;
+                    // the FIRST of the two folds this bit has to survive — OR, never overwrite, so
+                    // a person in one favourite section and one non-favourite is favourite-ranked
+                    e.fav |= hit.fav;
                     // whichever row happened to carry artwork wins; a section that has none
                     // must not blank a face the other section supplied
                     if e.thumb.is_empty() {
@@ -964,9 +1116,10 @@ fn kind_index(hub: &crate::plex::Hub) -> Option<usize> {
 /// The numeric id is carried as a STRING and left empty when the server sent none, because 0 is
 /// "absent" on the wire (`Tag::id`) and a literal `"0"` downstream would address a person that does
 /// not exist — the same trap `Tag::is_person` documents from the other side.
-fn tag_hit(t: &crate::plex::Tag, sid: ServerId) -> TagHit {
+fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) -> TagHit {
     TagHit {
         sid,
+        fav: section_is_fav(favs, sid, t.library_section_id),
         name: t.tag.clone(),
         tag_key: t.tag_key.clone(),
         id: if t.id != 0 {
@@ -998,6 +1151,16 @@ pub(crate) fn reset() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **No library is enumerated**, which by [`section_is_fav`]'s unknown rule makes every hit a
+    /// favourite — so every test below that does not care about ranking grades the round-robin
+    /// merge exactly as it did before favourites existed. The ranking tests build their own table.
+    const NO_FAVS: &[(ServerId, i64, bool)] = &[];
+
+    /// [`merge`] with no favourite table, for the tests whose subject is the merge itself.
+    fn merge_favs(sources: &[Source]) -> Vec<Shelf> {
+        merge(sources, NO_FAVS)
+    }
     use crate::plex::{Hub, MediaContainer, Metadata, Tag};
 
     /// Take the crate-wide serialization lock, empty the server registry AND this store, so each
@@ -1214,7 +1377,7 @@ mod tests {
         // wire order: people first, then a film, then a hub with no shelf at all
         mc.hub = vec![actor, director, movie, album];
 
-        let p = project(&mc, ServerId::UNSET);
+        let p = project(&mc, ServerId::UNSET, NO_FAVS);
         assert_eq!(p[0].len(), 1, "Movies");
         assert!(p[1].is_empty() && p[2].is_empty(), "TV Shows / Episodes");
         assert_eq!(
@@ -1225,7 +1388,7 @@ mod tests {
         assert!(p[4].is_empty(), "Collections");
 
         // …and the drawn order is KINDS, whatever the wire said
-        let sh = merge(&[Source {
+        let sh = merge_favs(&[Source {
             status: Status::Answered,
             items: p,
             ..Source::EMPTY
@@ -1260,7 +1423,7 @@ mod tests {
             }
         };
         // Same guid, DIFFERENT local ids (they are server-local) and only one carries a face.
-        let sh = merge(&[mk(0, "921", "", 5), mk(1, "4471", "/t.jpg", 3)]);
+        let sh = merge_favs(&[mk(0, "921", "", 5), mk(1, "4471", "/t.jpg", 3)]);
         let people = &sh
             .iter()
             .find(|s| s.kind == Kind::Person)
@@ -1272,6 +1435,283 @@ mod tests {
         };
         assert_eq!(t.count, 8, "their credits across both servers");
         assert_eq!(t.thumb, "/t.jpg", "the server with a face supplies it");
+    }
+
+    /// **A favourite edit under a resident query supersedes it and re-arms the fetch.** Search
+    /// watched the ROSTER generation alone and the favourite answer moves without it — discovery
+    /// appending a library, and `apply_pins` recording an edit, both bump `SECTIONS_GEN`, and this
+    /// screen deliberately runs discovery immediately before its own pump.
+    ///
+    /// It re-ARMS rather than re-sorting, and that is not a preference: after the fold a `TagHit`
+    /// no longer carries the section its bit came from (`TagHit::fav`), so the bit cannot be
+    /// re-derived from what is on screen. Re-arming is cheaper than retaining full
+    /// contributing-section provenance through both folds.
+    #[test]
+    fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
+        let _g = fresh();
+        let _t = crate::plex::session::TempSession::new("search-favgen");
+        _t.watching("u-search-favgen");
+        register(1);
+        set_query("wallace");
+        hold_off();
+        pump(SETTLE_S + 0.1); // settles and takes the snapshot's generation
+        let gen0 = GEN.load(Ordering::SeqCst);
+        unsafe { *addr_of_mut!(ARMED) = false };
+
+        // …a library lands, which is what `apply_pins` and discovery both look like from here
+        crate::browse::seed_two_source_table_for_test();
+        hold_off();
+        pump(0.016);
+        assert_ne!(
+            GEN.load(Ordering::SeqCst),
+            gen0,
+            "the resident answer was superseded, so a landing under the old table is discarded"
+        );
+        assert!(
+            unsafe { *addr_of!(ARMED) },
+            "…and the query is owed a fresh fetch rather than left on stale shelves"
+        );
+        assert_eq!(
+            FAV_GEN.load(Ordering::SeqCst),
+            crate::browse::sections_gen(),
+            "the snapshot moved with it"
+        );
+
+        // …and a SECOND pump with nothing further changed must not re-arm again, or every frame
+        // after any edit would supersede the query it just started
+        hold_off();
+        let gen1 = GEN.load(Ordering::SeqCst);
+        pump(0.016);
+        assert_eq!(GEN.load(Ordering::SeqCst), gen1, "it settles");
+        crate::browse::reset();
+    }
+
+    /// The other half, and the one that costs nothing to get wrong until a user types: with NO
+    /// query resident there is nothing to invalidate, so the snapshot is merely brought up to date.
+    /// Superseding here would mean the first query after any library landing opened by discarding
+    /// itself.
+    #[test]
+    fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
+        let _g = fresh();
+        let _t = crate::plex::session::TempSession::new("search-favgen-idle");
+        _t.watching("u-search-favgen-idle");
+        register(1);
+        hold_off();
+        pump(0.016);
+        let gen0 = GEN.load(Ordering::SeqCst);
+
+        crate::browse::seed_two_source_table_for_test();
+        hold_off();
+        pump(0.016);
+        assert_eq!(
+            GEN.load(Ordering::SeqCst),
+            gen0,
+            "nothing was resident, so nothing was superseded"
+        );
+        assert_eq!(
+            FAV_GEN.load(Ordering::SeqCst),
+            crate::browse::sections_gen(),
+            "…but the snapshot is current, so the next query does not open by re-arming"
+        );
+        crate::browse::reset();
+    }
+
+    // ---- favourites RANK, and never filter (§6) --------------------------------------------
+    //
+    // The owner's direction was that the Favorite libraries switch affects the whole app, and the
+    // first reading of that was to REMOVE a non-favourite library's hits from Search. These grade
+    // the reading that shipped instead, and the four assertions are the argument for it: a
+    // non-favourite result is still here, it is merely later; its COUNT is untouched; a tag that
+    // straddles the two ranks favourite; and each server's own ranking survives the pass.
+
+    /// A media hit in a favourite library outranks one in a library switched off — **and the
+    /// switched-off one is still on the shelf.** Removing it would turn "I don't browse this
+    /// often" into "this does not exist" for a film the user owns and can play.
+    #[test]
+    fn a_non_favourite_library_is_ranked_later_and_never_removed() {
+        let sid = ServerId::from_raw(0);
+        let mk = |title: &str, sec: i64| {
+            Item::Media(PmsMovie {
+                sid,
+                sec,
+                title: title.into(),
+                ..Default::default()
+            })
+        };
+        let mut p: Projection = Default::default();
+        // the SERVER's own order puts the non-favourite first, which is what makes this a test of
+        // ranking rather than of the round robin
+        p[0].push(mk("Off Shelf", 9));
+        p[0].push(mk("Fav Shelf", 1));
+        let sources = [Source {
+            status: Status::Answered,
+            items: p,
+            ..Source::EMPTY
+        }];
+        let favs = [(sid, 1i64, true), (sid, 9i64, false)];
+        let sh = merge(&sources, &favs);
+        let titles: Vec<&str> = sh[0].items.iter().map(|i| i.title()).collect();
+        assert_eq!(
+            titles,
+            vec!["Fav Shelf", "Off Shelf"],
+            "the favourite is lifted and the other is still there"
+        );
+    }
+
+    /// **Within a pass the server's own ranking survives**, because the only ranking any server
+    /// hands over is the order of its own list. Two favourites from one server keep their order,
+    /// and the round robin between servers keeps its interleave — the sort is STABLE and must not
+    /// become a comparison that reorders inside a group.
+    #[test]
+    fn ranking_is_stable_so_each_servers_own_order_survives_the_pass() {
+        let mk = |sid: u16, title: &str, sec: i64| {
+            Item::Media(PmsMovie {
+                sid: ServerId::from_raw(sid),
+                sec,
+                title: title.into(),
+                ..Default::default()
+            })
+        };
+        // the source's OWN sid rides on each item; the store keys a slot by array position, which
+        // is what the two calls below stand in for
+        let src = |rows: Vec<Item>| {
+            let mut p: Projection = Default::default();
+            p[0] = rows;
+            Source {
+                status: Status::Answered,
+                items: p,
+                ..Source::EMPTY
+            }
+        };
+        let a = src(vec![mk(0, "A-off", 9), mk(0, "A-fav1", 1), mk(0, "A-fav2", 1)]);
+        let b = src(vec![mk(1, "B-fav", 1), mk(1, "B-off", 9)]);
+        let favs = [
+            (ServerId::from_raw(0), 1i64, true),
+            (ServerId::from_raw(0), 9i64, false),
+            (ServerId::from_raw(1), 1i64, true),
+            (ServerId::from_raw(1), 9i64, false),
+        ];
+        let sh = merge(&[a, b], &favs);
+        let titles: Vec<&str> = sh[0].items.iter().map(|i| i.title()).collect();
+        // round robin gives A-off, B-fav, A-fav1, B-off, A-fav2; the stable lift keeps that order
+        // inside each group
+        assert_eq!(
+            titles,
+            vec!["B-fav", "A-fav1", "A-fav2", "A-off", "B-off"],
+            "favourites first, each in the order the round robin produced them"
+        );
+    }
+
+    /// **A tag that straddles the two is favourite-ranked, and its count stays grant-wide.** The
+    /// bit is OR'd at both folds; the number is summed at both. Those are different operations on
+    /// one row and conflating them is how "12 films" would silently become 5.
+    #[test]
+    fn a_tag_in_a_favourite_and_a_non_favourite_library_ranks_favourite_and_keeps_its_whole_count()
+    {
+        let sid = ServerId::from_raw(0);
+        let tag = |section: i64, count: i64| crate::plex::Tag {
+            tag: "Wallace Shawn".into(),
+            tag_key: "gid-1".into(),
+            id: 921,
+            count,
+            library_section_id: section,
+            ..Default::default()
+        };
+        let mc = crate::plex::MediaContainer {
+            hub: vec![crate::plex::Hub {
+                hub_identifier: "actor".into(),
+                kind: "actor".into(),
+                directory: vec![tag(9, 5), tag(1, 3)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let favs = [(sid, 1i64, true), (sid, 9i64, false)];
+        let p = project(&mc, sid, &favs);
+        let people = &p[3];
+        assert_eq!(people.len(), 1, "one person, folded across the two sections");
+        let Item::Tag(t) = &people[0] else {
+            panic!("a person is a Tag row")
+        };
+        assert!(t.fav, "one favourite section is enough to rank the row");
+        assert_eq!(t.count, 8, "…and the count is every credit, both sections");
+    }
+
+    /// **The cap bounds what is DRAWN, not what is COUNTED.** The fill used to `break` out the
+    /// moment the shelf was full, so once the favourite pass had filled it a later duplicate could
+    /// no longer augment an already displayed tag — a person's total silently became however many
+    /// the servers reported before the cap. The fold now runs to completion and the truncation is
+    /// last.
+    #[test]
+    fn a_duplicate_past_the_shelf_cap_still_augments_a_displayed_tags_count() {
+        let sid = ServerId::from_raw(0);
+        let person = |name: &str, key: &str, count: i64| {
+            Item::Tag(TagHit {
+                sid,
+                name: name.into(),
+                tag_key: key.into(),
+                count,
+                fav: true,
+                ..Default::default()
+            })
+        };
+        // Server A leads with our subject, so it is certainly drawn, and fills out behind it.
+        let mut a: Projection = Default::default();
+        a[3].push(person("Wallace Shawn", "gid-1", 5));
+        for i in 1..SHELF_MAX {
+            a[3].push(person(&format!("A filler {i}"), &format!("gid-a{i}"), 1));
+        }
+        // Server B repeats the subject as its LAST row. The merge is round robin by DEPTH, so the
+        // shelf is full around depth `SHELF_MAX / 2` and this duplicate is not even LOOKED at until
+        // depth `SHELF_MAX - 1` — which is the whole point: under the old `break` the fill had long
+        // since stopped and this row was never folded at all.
+        let mut b: Projection = Default::default();
+        for i in 1..SHELF_MAX {
+            b[3].push(person(&format!("B filler {i}"), &format!("gid-b{i}"), 1));
+        }
+        b[3].push(person("Wallace Shawn", "gid-1", 3));
+        let src = |items: Projection| Source {
+            status: Status::Answered,
+            items,
+            ..Source::EMPTY
+        };
+        let sh = merge(&[src(a), src(b)], NO_FAVS);
+        let people = &sh
+            .iter()
+            .find(|s| s.kind == Kind::Person)
+            .expect("a Person shelf")
+            .items;
+        assert_eq!(people.len(), SHELF_MAX, "the shelf is capped as it always was");
+        let Item::Tag(t) = &people[0] else {
+            panic!("a person is a Tag row")
+        };
+        assert_eq!(
+            t.count, 8,
+            "the fold outlived the cap: 5 + 3, not the 5 a break would have left"
+        );
+    }
+
+    /// An unclassified row ranks as a FAVOURITE, in both directions — the server said nothing
+    /// about its library, or the section table has not enumerated it yet. Demoting what cannot be
+    /// classified would push a user's own results down the shelf on the frame the app boots, which
+    /// is the same trap `pms::item_pinned` documents at the same join.
+    #[test]
+    fn an_unclassified_row_ranks_as_a_favourite_rather_than_being_demoted() {
+        let sid = ServerId::from_raw(0);
+        let favs = [(sid, 1i64, true), (sid, 9i64, false)];
+        assert!(
+            section_is_fav(&favs, sid, 0),
+            "the server sent no librarySectionID"
+        );
+        assert!(
+            section_is_fav(&favs, sid, 77),
+            "a library nobody has enumerated yet"
+        );
+        assert!(!section_is_fav(&favs, sid, 9), "…and a known Off one is not");
+        assert!(
+            section_is_fav(&favs, ServerId::from_raw(1), 9),
+            "a section key is server-local: another server's 9 is not this one's"
+        );
     }
 
     /// **A person in two libraries is one person.** The server answers per library SECTION, so the
@@ -1311,7 +1751,7 @@ mod tests {
         ];
         mc.hub = vec![actor];
 
-        let p = project(&mc, ServerId::UNSET);
+        let p = project(&mc, ServerId::UNSET, NO_FAVS);
         assert_eq!(
             p[3].iter().map(|i| i.title()).collect::<Vec<_>>(),
             ["Wallace Shawn", "Dee Wallace"],
@@ -1358,7 +1798,7 @@ mod tests {
         movie.metadata = vec![meta("movie", "1971", "A Close Shave")];
         mc.hub = vec![people, movie];
 
-        let p = project(&mc, sid);
+        let p = project(&mc, sid, NO_FAVS);
         let Item::Media(m) = &p[0][0] else {
             panic!("a Metadata[] row must be a card")
         };
@@ -1399,7 +1839,7 @@ mod tests {
             answered(0, vec![media("theirs-1"), media("theirs-2")]),
             Source::EMPTY, // still pending
         ];
-        let sh = merge(&sources);
+        let sh = merge_favs(&sources);
         assert_eq!(sh.len(), 1, "an empty type draws nothing at all");
         assert_eq!(
             titles(&sh[0]),
@@ -1417,7 +1857,7 @@ mod tests {
                 .map(|i| media(&format!("{p}{i}")))
                 .collect::<Vec<_>>()
         };
-        let sh = merge(&[answered(0, many("a")), answered(0, many("b"))]);
+        let sh = merge_favs(&[answered(0, many("a")), answered(0, many("b"))]);
         assert_eq!(sh[0].items.len(), SHELF_MAX);
         // …and the cap falls on a ROUND boundary rather than on one source: both are represented
         assert_eq!(titles(&sh[0])[..4], ["a0", "b0", "a1", "b1"]);

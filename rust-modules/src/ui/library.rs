@@ -1,15 +1,49 @@
-//! The Library browse screen — a full-section poster wall with server-driven sort/filter.
+//! The Library — **ONE VERTICAL DOCUMENT**, from the library's own published shelves down to the
+//! A–Z poster wall, with server-driven sort and filter inside the same scroll.
 //!
-//! Layout (per the approved mock): the shared top bar (profile chip leading at the margin +
-//! CENTERED tab pills Home | Movies | TV Shows | Search, the tvOS tab-bar idiom — [`draw_tab_row`] is shared
-//! with Home), a toolbar of two menu chips (Sort · X / Filter · X, the latter naming every active filter) + item
-//! count), and a 6-across vertical grid of [`card_row`] leaf tiles fed by the `browse` paged
-//! store. Menus are Popover + TableView (the track-menu components), their contents entirely
+//! Layout, top to bottom (`Library Screens.dc.html` D, since 2026-09-05): the shared top bar
+//! (profile chip leading at the margin + CENTERED tab pills — [`draw_tab_row`] is shared with Home
+//! and Search) is the ONLY chrome standing over content; everything else scrolls. The document is
+//! the library chip at its head, then this library's own server-published shelves
+//! ([`crate::browse::section_hubs`], one [`card_row::CardRow`] each, in the owner's *Manage →
+//! Libraries* order), then the grid's heading with its Sort/Filter row a rung under it, then the
+//! 6-across grid of [`card_row`] leaf tiles fed by the `browse` paged store. There is no fixed
+//! toolbar and no top-chrome scrim any more — a control that scrolls away with the thing it acts
+//! on needs no rule about when it is drawn. (`widgets::nav_scrim` was the shared element that
+//! backed such a bar; Search became one document too on 2026-09-05 and it was deleted with its last
+//! caller.)
+//!
+//! **[`Layout`] is the one projection.** Every document or grid coordinate comes out of it —
+//! `shelf_origin`, `grid_block_top`, `row_y`, `doc_to_grid`, `visible_rows`, `max_scroll` — and the
+//! review rule is that none is derived from `SCROLL` by hand outside it. A second rule joined it
+//! on 2026-09-05, when the label band learned to collapse: a shelf's pitch is no longer fixed, so
+//! there are TWO documents each frame — [`layout`], where the bands are right now (the draw, the
+//! pointer, the visible-row window) and [`layout_settled`], where they are going (every scroll
+//! target, and nothing else). The grid's paging window
+//! and its row culling ask the same `visible_rows` on the same frame's document, which is what
+//! stops them disagreeing about which rows matter.
+//!
+//! Menus are Popover + TableView (the track-menu components), their contents entirely
 //! server-driven (`browse::sorts()` from `includeMeta=1`; genres from the value list).
 //!
-//! Focus model: three bands — Tabs, Toolbar, Grid — plus a modal menu state. BACK walks
-//! grid/toolbar → tab bar → (app.rs) Home: the Netflix-2025 escape rule, so the nav is always
-//! one press away at any scroll depth. Focus/scroll per section persist in the browse store.
+//! Focus model: **a projection, not a ladder.** [`zones`] lists the zones a given [`Layout`]
+//! actually DRAWS, in order, and UP, DOWN, BACK, pointer reachability and the async clamp are all
+//! derived from that one list — which is why an empty library cannot park focus on a Sort chip it
+//! does not draw. Eight [`Area`]s; the shelf RUN is one rung in the list with its own cursor, as
+//! the top bar's two stops are. **BACK from anywhere below the head returns to the head of the
+//! document** — a deep shelf is as far from the top as a deep grid row — and a second BACK leaves
+//! for Home (`app.rs`), which is the Netflix-2025 escape rule with the old "walk to the tab bar
+//! first" step retired: the track never hides here, so UP already reaches it in one press.
+//! Focus/scroll per section persist in the browse store.
+//!
+//! **An EPISODE shelf is a shelf of landscape stills and it labels itself differently**
+//! (`Library Screens.dc.html` E). A poster is a TITLED object — the show's name is printed inside
+//! the artwork, which is why every other tile in the app hides its caption until focus. A still is
+//! UNTITLED, so hiding the caption there gives a row of anonymous frames of television. The rule is
+//! therefore *whatever the poster prints, the still prints too*: the SHOW goes inside the artwork on
+//! every tile through `widgets::still_line` (which also carries the watch glyph, and suppresses the
+//! watched disc — one mark per tile), and FOCUS reveals the EPISODE below it, its title over its
+//! `S3 · E4` address, never the show again. One fact, one place.
 //!
 //! Reload choreography: every path that REPLACES the item set (tab, sort, unwatched, genre, and a
 //! profile switch wiping the store from underneath) is deferred through [`Xfade`] — fade the
@@ -32,7 +66,7 @@ use crate::ui::popover::{Opener, Popover};
 use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Pill, Spinner, StatusKind};
+use crate::ui::widgets::{Art, PageGround, Pill, Spinner, StatusKind};
 use crate::ui::xfade::Xfade;
 use crate::ui::{on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
@@ -58,6 +92,22 @@ const RAIL_BAND: f32 = RAIL_TRACK_W + theme::space::XS;
 const GRID_R: f32 = SCR_W - MARGIN_X - RAIL_BAND;
 /// 6×250 + 5×LGAP fills the space between the left margin and [`GRID_R`] exactly.
 const LGAP: f32 = (GRID_R - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
+/// **The poster grid's own row style.** `RowStyle::HOME`'s tile, motion and label budget — the grid
+/// is Home's shelf laid out in rows rather than a second kind of card — with the one thing that is
+/// this screen's alone: everything right of [`GRID_R`] is spoken for, so a focused card's label may
+/// not run into it. Every other screen's content edge IS the panel's, which is why the shared clamp
+/// assumed it and why this screen had to say otherwise.
+///
+/// **The reserve is `SCR_W - GRID_R` and not [`RAIL_BAND`]**, which is the same distinction the
+/// grid itself already makes: `GRID_R` gives up the rail's band AND the right margin, and the rail
+/// TRACK sits inside the first of those — so reserving the band alone still let a long caption
+/// reach 1852 against a track that starts at 1780. What is off-limits is the whole column to the
+/// right of the content, not the one element standing in it.
+///
+/// The asymmetry with the LEFT edge is deliberate and is what "reserve" means: a label may breathe
+/// into empty margin (`card_row`'s `EDGE_PAD` is the only bound there, well past `MARGIN_X`) and
+/// may not breathe into occupied margin.
+const GRID_STYLE: RowStyle = RowStyle::HOME.with_right_reserve(SCR_W - GRID_R);
 // TOOL_Y/GRID_TOP each moved down 18px on 2026-08-23 with `widgets::TOP_BAR_Y`, which dropped so the
 // tab track clears `consts::MARGIN_Y`. They are clearances under that bar (22px and, after the
 // chips, 28px), so they follow it — holding them still would have left the Sort chip 4px under the
@@ -66,10 +116,10 @@ const TOOL_Y: f32 = 152.0;
 const TOOL_H: f32 = 52.0;
 pub(crate) const GRID_TOP: f32 = 232.0;
 // The top-chrome scrim's own numbers used to live here — a knee at 188, its .40 alpha, and a 56px
-// scroll-linked appear. They are `widgets::nav_scrim`'s now, DERIVED from `GRID_TOP` rather than
-// spelled: the design system tokenises this treatment for every full-screen route that scrolls a
-// column under the bar (`--scrim-in`, `--scrim-knee-a`, a per-route content line), and both of its
-// routes agree on the shape these literals happened to be. Search draws the identical element.
+// scroll-linked appear. They moved to `widgets::nav_scrim`, the shared treatment for a column
+// scrolling under a FIXED bar, and they are gone with it: this screen stopped drawing a bar on
+// 2026-09-05 and Search followed the same day, which left that element with no caller at all. The
+// design system's `--scrim-in` / `--scrim-knee-a` / per-route content line go stale with them.
 //
 // What that shape buys, kept here because it is this screen's own measurement: the knee keeps the
 // toolbar chips (bottom y≈186) solidly backed while the tail crosses the RESTING popped card's top
@@ -82,8 +132,304 @@ pub(crate) const GRID_TOP: f32 = 232.0;
 /// the same two named constants instead of each hand-authoring its own air.
 const PITCH: f32 = CARD_H + crate::ui::card_row::UNDER_LABEL_H + crate::ui::consts::UNDER_LABEL_AIR;
 
+/// **The document's top edge on screen.** The whole column — chip, shelves, grid heading, grid —
+/// is drawn at `CONTENT_TOP - scroll`, so this is the one place a scroll offset becomes a y.
+///
+/// It is `consts::GRID_TOP_Y`, shared with Home's first shelf, because the two screens hang the
+/// same kind of column under the same tab track and a difference would read as the bar moving
+/// between them. The prototype's canvas says 176; the code constant wins (it moved to 194 on
+/// 2026-08-23 with `widgets::TOP_BAR_Y`, and the canvas did not follow).
+pub(crate) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
+
+/// The library CHIP's own block at the head of the scroll: the chip, then a region gap, then the
+/// first shelf heading's own lead. Zero when no chip is drawn — the shelves start at the top.
+///
+/// **The air is [`consts::CARD_DY`](crate::ui::consts::CARD_DY), the same rung the grid block uses
+/// under ITS control row** — so the chip stands off its first shelf exactly as Sort and Filter
+/// stand off the first grid row, and the two halves of one document are on one rhythm.
+///
+/// `Library Interactive.dc.html` spells the block as `52 + 62`, and 62px was taken from the canvas
+/// via the nearest `theme::space` rung (`XL` 64). On the panel it reads as a hole: the chip is a
+/// control row like any other, and every other control row in this document is followed by 26px.
+/// The canvas authored this block before the grid's own heading row existed to be consistent with.
+const HEADER_H: f32 = TOOL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
+
+/// The grid block's heading band: its title, air, the Sort/Filter control row, air. Everything
+/// above the first grid row and below the last shelf.
+///
+/// Sort and Filter live INSIDE the scroll now, under the grid's own heading, which is what deleted
+/// the visibility rule the old fixed toolbar spent two revisions on: a control that scrolls away
+/// with the thing it acts on needs no rule about when to show it.
+const GRID_HEAD: f32 =
+    crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY + TOOL_H + crate::ui::consts::CARD_DY;
+
+/// **THE projection: document scroll → every drawn coordinate.** Computed once per frame and
+/// passed to the draw, the hit test, the focus walk and the scroll rule alike.
+///
+/// The review rule is **"no grid-coordinate derivation from `SCROLL` outside `Layout`"** — not "no
+/// `SCROLL` read", which would be wrong: the spring step, the draw translate and view persistence
+/// all legitimately read the scroll value.
+///
+/// It exists because of one sharp bug in the first draft of this screen. `browse::want` computed
+/// its page window as `SCROLL / PITCH`, i.e. assuming scroll 0 is grid row 0. Under a document that
+/// also contains a header and N shelves, a 12-shelf library would ask `browse` for pages ~13 rows
+/// into the catalog while row 0's own slots sat unloaded — a grid that is permanently missing its
+/// own top. Every consumer of a grid coordinate goes through [`Layout::doc_to_grid`] for that
+/// reason: `want`, row culling, `cell_at`, `rail_jump`, `page`, `save_view`/`restore_view`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Layout {
+    /// Is the library chip drawn at the head?
+    chip: bool,
+    /// How many shelves the COMMITTED set holds. A staged landing is not in here — that is the
+    /// whole point of `section_hubs`' publication axis.
+    shelves: usize,
+    /// Grid rows, from the section's item total.
+    rows: usize,
+    /// Does the grid draw its heading and its Sort/Filter control row? True over a grid that has
+    /// items — the design's rule that a control acting on an empty grid is not drawn — and ALSO
+    /// mid-reload, while a grid-scoped `Xfade` is in flight ([`grid_block_reloading`]), where the
+    /// store is momentarily empty but the control row is the thing the user just pressed.
+    ///
+    /// **It does not answer for the rows or the rail.** [`zones`] gates `Area::Grid` and
+    /// `Area::Rail` on `rows > 0` on top of this, so `grid_head` can mean heading + control row
+    /// with no grid and no rail under them. Those two used to be one test, which was safe only
+    /// while `grid_head` implied `total() > 0`.
+    grid_head: bool,
+    /// Does the failure read-out stand where the grid would? The one zone that is neither a shelf
+    /// nor a grid control, and the reason this struct carries it: [`zones`] must be a pure function
+    /// of the layout, or a test can hand it a shape and get an answer about the live store.
+    status: bool,
+    /// **Each shelf's own vertical pitch.** Not one constant, on two axes. SHAPE: a poster shelf is
+    /// `consts::ROW_PITCH` and an EPISODE shelf is that less the difference between a poster's
+    /// height and a landscape still's. And BAND (2026-09-05): the focused label block exists only
+    /// while its shelf holds focus, so an unfocused shelf gives that room back
+    /// (`card_row::under_band`) and the shelves under it move up by the difference. Only the first
+    /// [`Layout::shelves`] entries mean anything.
+    pitch: [f32; MAX_SHELVES],
+}
+
+impl Layout {
+    /// Build from the screen's current state. Cheap and pure over its four inputs, so a test can
+    /// construct any shape without a section table.
+    fn new(chip: bool, shelves: usize, rows: usize, grid_head: bool) -> Layout {
+        Layout {
+            chip,
+            shelves,
+            pitch: [crate::ui::consts::ROW_PITCH; MAX_SHELVES],
+            rows,
+            grid_head,
+            status: false,
+        }
+    }
+    /// …with a PITCH per shelf, which is what a document holding rows of two shapes needs. A
+    /// landscape episode row is 236 tall where a poster row is 375, so a uniform pitch would leave
+    /// a 139px hole under every episode shelf. `new` keeps meaning "N poster rows", which is what
+    /// every geometry test wants to say.
+    fn with_pitches(chip: bool, pitches: &[f32], rows: usize, grid_head: bool) -> Layout {
+        let mut lay = Layout::new(chip, pitches.len().min(MAX_SHELVES), rows, grid_head);
+        for (slot, p) in lay.pitch.iter_mut().zip(pitches.iter()) {
+            *slot = *p;
+        }
+        lay
+    }
+    /// …the same, with the failure read-out standing in the content region.
+    fn failed(chip: bool, shelves: usize) -> Layout {
+        Layout {
+            status: true,
+            ..Layout::new(chip, shelves, 0, false)
+        }
+    }
+
+    fn header_h(&self) -> f32 {
+        if self.chip {
+            HEADER_H
+        } else {
+            0.0
+        }
+    }
+
+    /// Document y of shelf `i`'s ORIGIN — the same origin `home.rs` hangs a shelf from, so the
+    /// heading draws at `origin - TITLE_DY` and the cards at `origin + CARD_DY`. Sharing the origin
+    /// rather than the heading's y is what lets `card_row` draw here unchanged.
+    pub(crate) fn shelf_origin(&self, i: usize) -> f32 {
+        self.header_h() + self.pitch[..i.min(self.shelves)].iter().sum::<f32>()
+    }
+    /// Shelf `i`'s own pitch — its whole band, heading lead included.
+    pub(crate) fn shelf_pitch(&self, i: usize) -> f32 {
+        self.pitch
+            .get(i)
+            .copied()
+            .unwrap_or(crate::ui::consts::ROW_PITCH)
+    }
+
+    /// Document y where the grid BLOCK starts — its heading's own lead, not its first row.
+    pub(crate) fn grid_block_top(&self) -> f32 {
+        self.header_h() + self.pitch[..self.shelves].iter().sum::<f32>()
+    }
+
+    /// Document y of grid row 0's card top. The grid's own origin.
+    pub(crate) fn grid_top(&self) -> f32 {
+        self.grid_block_top()
+            + if self.grid_head { GRID_HEAD } else { 0.0 }
+    }
+
+    /// **Document scroll → GRID-LOCAL scroll**, the projection everything that thinks in rows must
+    /// go through. Negative while the viewport is still above the grid, which callers clamp; a
+    /// caller that wants "which rows are visible" wants this, never `SCROLL` itself.
+    pub(crate) fn doc_to_grid(&self, scroll: f32) -> f32 {
+        scroll - self.grid_top()
+    }
+
+    /// The document's full height, including the bottom margin a focused row's caption needs.
+    pub(crate) fn doc_h(&self) -> f32 {
+        self.grid_top() + self.rows as f32 * PITCH
+    }
+
+    /// The furthest the document may scroll.
+    ///
+    /// **This and [`Layout::row_reveal`] are ONE invariant and a test holds them to it**: if they
+    /// disagree the last row's caption sits off-panel, which is the bug the old
+    /// `max_y`/`lo` pair carried a paragraph about. Both are expressed here now, from one document
+    /// height, so they cannot drift.
+    pub(crate) fn max_scroll(&self) -> f32 {
+        (self.doc_h() - (SCR_H - CONTENT_TOP) + MARGIN_Y).max(0.0)
+    }
+
+    /// **Row snapping**: a focused grid row's scroll target is its OWN TOP EDGE, clamped to the
+    /// document. It replaces `card_row::reveal` for this grid — `reveal` keeps a row minimally
+    /// on screen, which is right for a shelf inside a page and wrong for the row you are walking
+    /// down a wall of posters. `card_row::reveal` is untouched and Home still uses it.
+    pub(crate) fn row_reveal(&self, row: usize) -> f32 {
+        // **ROW 0 IS THE EXCEPTION, and it is the canvas's own** (`Library Interactive.dc.html`:
+        // `f.i === 0 ? L.gridTop : …`). Every other row snaps to its own top edge, so the focused
+        // row starts exactly at the content edge and the row above is entirely gone. Row 0 has the
+        // grid's heading and its control row directly above it, which are that block's own head —
+        // snapping past them would scroll away the count and the two chips the moment focus
+        // entered the grid, and UP would have to bring them back.
+        let top = if row == 0 {
+            self.grid_block_top()
+        } else {
+            self.grid_top() + row as f32 * PITCH
+        };
+        // The clamp is what keeps the last row's caption on the panel, and it is the same
+        // `max_scroll` the spring is bounded by — one number, one invariant.
+        top.clamp(0.0, self.max_scroll())
+    }
+
+    /// The first zone that is CONTENT rather than chrome — where the head of the library is, and so
+    /// what BACK returns to. The canvas's `firstContent`: the library chip if it is drawn, else the
+    /// first shelf, else the grid's own heading block.
+    ///
+    /// Not the tab bar, which is the shared control ABOVE the page: focus resting there must leave
+    /// the scroll where it was (a walk up to the strip is not a request to go to the top), so the
+    /// bar cannot also be the thing BACK scrolls to.
+    fn first_content(&self) -> Option<Area> {
+        if self.chip {
+            Some(Area::LibChip)
+        } else if self.shelves > 0 {
+            Some(Area::Shelf)
+        } else if self.status {
+            Some(Area::Status)
+        } else if self.grid_head {
+            Some(Area::Toolbar)
+        } else {
+            None
+        }
+    }
+
+    /// **SCREEN y of grid row `row`** at a given document scroll — the ONE expression, shared by
+    /// the row loop and by the FOCUSED card's own frame.
+    ///
+    /// They were two until the simulator showed the focused tile vanishing the instant focus
+    /// entered the grid: `focused_card_base` still read the pre-rewrite constant `GRID_TOP`, which
+    /// is where the grid used to start when it WAS the screen. Under a document that begins with a
+    /// chip and N shelves the real origin is thousands of pixels further down, so the focused
+    /// card's `on_axis` test put it off-panel and pass 2 drew nothing at all — a grid whose only
+    /// visible tile disappeared when you focused it.
+    pub(crate) fn row_y(&self, row: usize, scroll: f32) -> f32 {
+        CONTENT_TOP + self.grid_top() + row as f32 * PITCH - scroll
+    }
+
+    /// A shelf's scroll target, on the same rule: its own origin's heading lead.
+    pub(crate) fn shelf_reveal(&self, i: usize) -> f32 {
+        (self.shelf_origin(i) - crate::ui::consts::TITLE_DY).clamp(0.0, self.max_scroll())
+    }
+
+    /// The head of the document — where BACK from anywhere below returns to.
+    pub(crate) fn head(&self) -> f32 {
+        0.0
+    }
+
+    /// **Which zone a RESTORED scroll was standing on** — the band's seat on re-entry, derived
+    /// rather than stored.
+    ///
+    /// `browse` remembers a section's scroll and its GRID index, which is all there was to remember
+    /// while the grid was the screen. Under one document those two can name different blocks: leave
+    /// while standing on a shelf and the scroll comes back at that shelf while the grid index comes
+    /// back as whatever row was last walked — so seating the band in the grid asked the spring for
+    /// a target thousands of pixels below the page that had just been drawn, and the document slid
+    /// out from under the viewer on the frame after re-entry.
+    ///
+    /// Derived, not stored, for a reason the probe made concrete: two of a library's hubs change
+    /// their SUBJECT between requests and sometimes drop out entirely, so a shelf INDEX kept across
+    /// a visit can name a different shelf or none. A scroll offset re-read through this frame's own
+    /// `Layout` cannot go stale that way — it answers "what was the document showing", which is the
+    /// question, through the same reveal targets the walk itself uses.
+    ///
+    /// `Grid` carries no index: the grid's own row survives in `browse`'s saved focus.
+    fn seat_for_scroll(&self, scroll: f32, gr: usize) -> Option<(Area, usize)> {
+        let first = self.first_content()?;
+        // at the head, the head — the common case (a first visit restores `(0, 0)`), and the one
+        // where a bare "nearest reveal" would be ambiguous with shelf 0, whose reveal is also 0
+        if scroll <= self.head() + 0.5 {
+            return Some((first, 0));
+        }
+        // otherwise the zone whose own reveal target is nearest what the document is showing
+        let mut best = (f32::INFINITY, first, 0usize);
+        for i in 0..self.shelves {
+            let d = (self.shelf_reveal(i) - scroll).abs();
+            if d < best.0 {
+                best = (d, Area::Shelf, i);
+            }
+        }
+        if self.grid_head {
+            // **The grid's saved row, then its own head, and the winner carries its ROW.** Both
+            // candidates matter and so does which one won: `row_reveal(0)` is `grid_block_top()`,
+            // which is ALSO the Toolbar's own scroll target, so a visit that left from Sort/Filter
+            // restores a scroll that names row 0 while `gr` still holds whatever deep row was last
+            // walked. Seating `Grid` and leaving `gr` alone then asked the spring for that deep
+            // row and slid the document thousands of pixels on the frame after re-entry — the same
+            // defect this function was written to remove, surviving inside it.
+            for r in [gr.min(self.rows.saturating_sub(1)), 0] {
+                let d = (self.row_reveal(r) - scroll).abs();
+                if d < best.0 {
+                    best = (
+                        d,
+                        if self.rows > 0 { Area::Grid } else { Area::Toolbar },
+                        r,
+                    );
+                }
+            }
+        }
+        Some((best.1, best.2))
+    }
+
+    /// The grid rows a viewport at `scroll` can see, with one row of lookahead each way. The ONE
+    /// answer behind both row culling and [`crate::browse::want`]'s page window, which is what
+    /// stops those two from disagreeing about which rows matter.
+    pub(crate) fn visible_rows(&self, scroll: f32) -> (usize, usize) {
+        if self.rows == 0 {
+            return (0, 0);
+        }
+        let g = self.doc_to_grid(scroll);
+        let lo = ((g - CARD_H) / PITCH).floor().max(0.0) as usize;
+        let hi = (((g + SCR_H - CONTENT_TOP) / PITCH).ceil().max(0.0) as usize + 1).min(self.rows);
+        (lo.min(hi), hi)
+    }
+}
+
 // ---- screen state (main-thread statics, same discipline as home.rs) -------------------------
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Area {
     /// The shared top bar's PROFILE CHIP, at the margin left of the pills. Not this screen's
     /// control — `widgets` owns its rect, its hit test and its unfurl — but this screen owns
@@ -95,6 +441,15 @@ enum Area {
     /// the geometry admits; DOWN leaves the band exactly as it does from [`Area::Tabs`].
     Chip,
     Tabs,
+    /// The **library chip** at the head of the scroll — `Library · <name> <handle> ▾`. It is the
+    /// first thing in the document now rather than a fixed toolbar entry, so it scrolls away with
+    /// everything else and is reachable by walking UP to the top of the page.
+    LibChip,
+    /// A tile on one of the library's own published shelves. `SHELF_F` is which shelf, `SHELF_C`
+    /// the column inside it.
+    Shelf,
+    /// The grid's own control row — Sort and Filter, under the grid heading and inside the scroll.
+    /// This was the fixed toolbar at `TOOL_Y`; the name survived the move.
     Toolbar,
     Grid,
     /// The A–Z letter rail on the right edge (RIGHT from the grid's last column). Jump, never
@@ -266,7 +621,9 @@ fn fail_test() -> Option<FailTest> {
 #[derive(Debug)]
 enum Menu {
     None,
-    /// The **Sources list** — every library on every granted server, in two levels (see [`Level`]).
+    /// The **Sources list** — a PICKER over the FAVOURITE libraries of the type being browsed
+    /// (`browse::source_rows`). One level, `Level::Browse`; the *On Home* level it used to swap to
+    /// belongs to the Favorite libraries route now (see [`Level`]).
     Source {
         /// The section-table generation ([`crate::browse::sections_gen`]) this panel was built
         /// from — its staleness key, and deliberately NOT a row count.
@@ -332,21 +689,67 @@ pub(crate) enum Action {
     GoSearch,
     /// A grid card was activated — open its detail page (app.rs owns routing).
     Card,
+    /// **A SHELF tile was activated**, and it carries what the grid's `Card` never had to: the
+    /// item itself, and whether the shelf it came from is the library's Continue Watching deck.
+    ///
+    /// Both halves are load-bearing and neither is derivable upstream. The item, because a shelf
+    /// tile is not in the grid's paged store and `focused_item` cannot reach it. And the deck flag,
+    /// because it decides two different things: a deck tile RESUMES rather than opening the detail
+    /// page, and a press-and-hold on one must pass `from_deck=true` to `item_menu`, which is what
+    /// makes *Remove from Continue Watching* appear at all. Library's activation hardcoded
+    /// `from_deck=false` for as long as it had no deck to show.
+    ShelfCard { from_deck: bool },
 }
 
 static mut AREA: Area = Area::Grid;
-static mut TAB_F: usize = 1; // focused pill while AREA==Tabs (0 = Home)
+/// **The focused pill while `AREA == Tabs`, as an IDENTITY rather than a position.**
+///
+/// It was a `usize`, and that was safe for exactly as long as the strip was a permanent four. Once
+/// the favourite switch can add or remove a type pill mid-session (`browse::tab_has_favorite`), a
+/// stored index silently changes what it MEANS: with the strip at `[Home, Search]` and the cursor
+/// on 1, a Movies library landing makes 1 mean Movies — the capsule stays where it is and OK
+/// navigates somewhere the user never chose. Codex review, 2026-09-05; the plan called for this
+/// audit and the first pass did only the `Pill::Section` half of it.
+///
+/// Never read raw: [`tab_idx`] resolves it against the strip that is DRAWN, so a pill that has
+/// disappeared falls back to Home rather than to whatever now occupies its slot.
+static mut TAB_P: Pill = Pill::Home;
 /// Where the toolbar cursor was last WALKED to. Never read directly — the row it indexes changes
 /// length without input, so every reader goes through [`tool_f`], which clamps it to the row that
 /// is drawn. (It is not a chip identity either: the row is two chips long with one source and
 /// three with two — see [`Chip`].)
 static mut TOOL_F: usize = 0;
+/// Which of the library's published shelves holds focus, and which column inside it. Index-based,
+/// with [`shelf_focus_survives`] re-resolving them whenever the shelf SET changes underneath —
+/// which on this endpoint is routine rather than exotic (`docs/pms-api.md` §3a: two hubs rotate
+/// their subject between requests).
+static mut SHELF_F: usize = 0;
+static mut SHELF_C: usize = 0;
+/// The identity of the tile focus is standing on — `(hub id, rating key)`, so a shelf reordering
+/// under focus keeps the cursor on the same FILM rather than on the same slot.
+static mut SHELF_ID: Option<(String, String)> = None;
+/// One [`card_row::CardRow`] per shelf — the SAME component Home's shelves and the detail page's
+/// Related row are built from, so the focus pop, the horizontal scroll spring, the heading lift and
+/// the label band are the shared ones rather than a fourth hand-rolled copy.
+static mut SHELF_ROWS: [card_row::CardRow; MAX_SHELVES] =
+    [const { card_row::CardRow::new() }; MAX_SHELVES];
+/// The document may draw at most this many shelves — [`crate::browse::section_hubs`]' own cap,
+/// named here because the row array is sized by it.
+const MAX_SHELVES: usize = 12;
 static mut GR: usize = 0; // grid focus row
 static mut GC: usize = 0; // grid focus col
 static mut SCROLL: Spring = Spring::at(0.0);
 static mut FOCUS_S: Spring = Spring::at(1.0); // focused cell pop
 static mut PREV_S: Spring = Spring::at(1.0); // previously-focused cell shrinking back
 static mut PREV_IDX: i64 = -1;
+/// **The page ground** — one ambient wash keyed to the item under the ring, wherever the ring is.
+/// [`focused_item`] already answers that across both halves of the document, so the shelves and the
+/// A-Z wall key the same ground and there is nothing here that knows which one focus is standing in.
+///
+/// A tile with no `UltraBlurColors` envelope HOLDS the ground rather than clearing it — the rule is
+/// [`PageGround`]'s, and it matters most here: a poster wall is where a single artless item sits
+/// between two coloured ones, and a page that flashed grey on the way past would read as a fault.
+static mut GROUND: PageGround = PageGround::new();
 /// The open menu, **and its build-time key** — the two are one value, see [`Menu`].
 static mut MENU: Menu = Menu::None;
 /// The chip menus' one popover. `caching_host` since 2026-09-03: the grid under an open Sort/Filter/
@@ -380,19 +783,72 @@ static mut TOOL_RECTS: [Rect; 3] = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
 /// marker cannot express that — the chip would relabel on the first press and then refuse to
 /// relabel back. `Sort` and `Genre` close their menu on the press, so they cannot be re-pressed
 /// inside the window and stay plain picks.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Pending {
-    None,
-    /// switch to section index i
-    Section(usize),
-    /// pick sort entry i (re-picking the ACTIVE one toggles direction — `browse::set_sort`)
-    Sort(usize),
-    /// set the unwatched filter to this value
-    Unwatched(bool),
-    /// pick genre index (None = All Genres)
-    Genre(Option<usize>),
+#[derive(Clone, PartialEq, Debug)]
+struct Pending {
+    /// The library to arrive in, when a page transition is queued.
+    /// The section to switch to, WITH the table epoch it was chosen against. The epoch is not
+    /// decoration: a bare index is not a name. `browse::reset` clears and renumbers the table on a
+    /// profile switch, so a switch queued before one and flushed after it lands on whatever library
+    /// now happens to hold that number — a different person's. The grid half carried its epoch from
+    /// the start and this one did not, which is the asymmetry a Codex pass found.
+    section: Option<SecReq>,
+    /// **A GRID action, SCOPED to the section it will be applied to and stated SEMANTICALLY.**
+    ///
+    /// Both halves are load-bearing and both were wrong when this was a bare index. The Library
+    /// keeps its grid controls live during a page transition — a control that ignores a press is
+    /// worse than one that acts a beat later — so a Sort chosen in library A can commit against
+    /// library B. Sort and genre menus are built per section from THAT section's own server
+    /// vectors, so an index means a different value there, or silently nothing. The `sec` is what
+    /// lets [`apply_pending`] refuse an action whose target is no longer the section it named, and
+    /// the epoch beside it is what makes that refusal survive a `browse::reset` renumbering the
+    /// table under both.
+    grid: Option<GridReq>,
 }
-static mut PENDING: Pending = Pending::None;
+
+/// **The two are ONE transaction and both fields are held at once, which is what this used to get
+/// wrong.** `Pending` was an enum, so a Sort pressed while a page transition was in flight
+/// REPLACED it: the section was never applied, and the grid action was then rejected too, because
+/// its target was not the section that (still) held the cursor. Both operations were silently lost
+/// by one press. The section commits first and the action is applied to the library it named.
+/// A queued SECTION switch and the table it was chosen against. See [`Pending::section`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct SecReq {
+    sec: usize,
+    epoch: u32,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct GridReq {
+    sec: usize,
+    /// [`crate::browse::table_epoch`] — the table's IDENTITY, not `query_gen`. It was the latter,
+    /// which moves on every ordinary re-query, so it could not be checked on its own; the guard
+    /// read `epoch != … && sec != cur()` and the epoch half was therefore dead. A `browse::reset`
+    /// renumbers the table, so index 0 after one is a DIFFERENT profile's library.
+    epoch: u32,
+    act: GridAct,
+}
+
+impl Pending {
+    const NONE: Pending = Pending {
+        section: None,
+        grid: None,
+    };
+    fn is_none(&self) -> bool {
+        self.section.is_none() && self.grid.is_none()
+    }
+}
+
+/// A grid action in the terms the SERVER uses, so it survives being carried to another section.
+#[derive(Clone, PartialEq, Debug)]
+enum GridAct {
+    /// the stable sort KEY plus the direction the user chose — never an index, and never a toggle
+    Sort { key: String, desc: bool },
+    /// the desired value, never a flip: two presses inside one fade must collapse to one answer
+    Unwatched(bool),
+    /// the stable tag ID (`None` = All genres) — never an index
+    Genre(Option<String>),
+}
+static mut PENDING: Pending = Pending::NONE;
 /// The grid's content cross-fade. The grid, its focused label, the empty line, the item count and
 /// the A–Z rail all draw under its alpha; the top chrome (scrim, chip, pills, toolbar, spinner,
 /// menus) does NOT — it is what persists across the swap.
@@ -406,42 +862,286 @@ static mut WANTED_KIND: crate::browse::SecKind = crate::browse::SecKind::Movie;
 fn xf() -> &'static mut Xfade {
     unsafe { &mut *addr_of_mut!(XF) }
 }
+/// The queued action, **CLONED**.
+///
+/// It was `addr_of!(PENDING).read()`, a bitwise copy, which was correct for exactly as long as
+/// `Pending` was `Copy`. It owns a `String` now (the stable sort key and genre id a scoped action
+/// carries), so a bitwise read duplicates ownership and the second drop is a double free — a
+/// SIGTRAP with no panic message, which is what this cost to find.
 fn pending() -> Pending {
-    unsafe { addr_of!(PENDING).read() }
+    unsafe { (*addr_of!(PENDING)).clone() }
+}
+
+/// **What a queued transition actually REPLACES** — the partial-update axis, and the reason a Sort
+/// no longer rebuilds the whole page.
+///
+/// This screen is two independent blocks stacked in one document: the library's own published
+/// shelves (`browse::section_hubs`, above) and its A–Z grid (`browse`'s paged store, below). A
+/// SECTION change replaces both. A sort, a genre or the unwatched switch replaces only the grid —
+/// the chip is the same library and the shelves are the same shelves — and fading them out and back
+/// in said otherwise: the whole column dissolved and rebuilt for a change that touched one block,
+/// which is what "sorting reloads the entire page" describes.
+///
+/// So the fader's alpha is applied per BLOCK rather than to the page, and which blocks it reaches
+/// is the scope of the transaction that armed it. There is no second fader and no second `Pending`
+/// — the scope is a property of the request that already exists, which is what stops the two from
+/// ever disagreeing about what is being replaced.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scope {
+    /// The whole document: a different library.
+    Page,
+    /// The grid block alone — its heading, its control row and its rows.
+    Grid,
+}
+
+/// The scope of the fade CURRENTLY RUNNING. Not read off [`PENDING`], which is emptied at the
+/// floor: the fade-in half has nothing queued and would otherwise read as `Grid` and pop the
+/// shelves back to full strength halfway through a page transition. Set when a fade is armed and
+/// left alone until the next one is.
+static mut SCOPE: Scope = Scope::Page;
+
+/// Arm the fader at `sc`. The one door, so a request cannot start a fade without saying what it
+/// replaces.
+fn fade(sc: Scope) {
+    unsafe { SCOPE = sc };
+    xf().reload();
+}
+
+/// Re-mount the fader for a whole-page replacement — route entry, a foreign `browse::reset`, a tab
+/// press with no section behind it. Always [`Scope::Page`]: there is no partial answer to "the
+/// store under this screen was replaced by something that is not this screen".
+fn remount() {
+    unsafe { SCOPE = Scope::Page };
+    xf().mount();
+}
+
+/// The alpha a block of `sc` scope should be drawn at this frame: the fader's for the blocks being
+/// replaced, full strength for the ones that are not.
+fn block_alpha(sc: Scope) -> f32 {
+    if sc == Scope::Grid || unsafe { addr_of!(SCOPE).read() } == Scope::Page {
+        xf().alpha()
+    } else {
+        1.0
+    }
 }
 
 /// Queue a reload and start the fade-out. The newest request WINS — see [`Pending`].
-fn request(p: Pending) {
-    unsafe { PENDING = p };
-    xf().reload();
+fn request_section(i: usize) {
+    unsafe {
+        // **A queued grid action does not travel to a NEW target.** `A → B`, queue `Sort(B)`, then
+        // supersede with `C`: B's action is discarded rather than applied to B off-screen or
+        // silently retargeted at C. An action already aimed at `i` survives — that is the ordinary
+        // "press Sort while the page is still arriving" case, not a supersede.
+        let keep = (*addr_of!(PENDING))
+            .grid
+            .clone()
+            .filter(|g| g.sec == i);
+        PENDING = Pending {
+            section: Some(SecReq {
+                sec: i,
+                epoch: crate::browse::table_epoch(),
+            }),
+            grid: keep,
+        };
+    }
+    fade(Scope::Page);
+}
+
+/// Queue a GRID action, scoped to the section it was chosen in. The one door for Sort, Filter and
+/// the unwatched switch.
+///
+/// **The precedence rule lives here**, and it is the row of §4's table that was easiest to get
+/// wrong: a grid action arriving while a SECTION transition is in flight does not supersede it. The
+/// page commits first and the action is carried to the TARGET, which is safe only because the
+/// action is semantic and scoped — a bare `Sort(2)` would have selected a different value there.
+fn request_grid(act: GridAct) {
+    // a page transition in flight: the action belongs to the library we are ARRIVING in, and the
+    // transition itself is left standing beside it rather than replaced
+    let target = pending().section.map(|r| r.sec).unwrap_or_else(crate::browse::cur);
+    let page = pending().section.is_some();
+    unsafe {
+        (*addr_of_mut!(PENDING)).grid = Some(GridReq {
+            sec: target,
+            epoch: crate::browse::table_epoch(),
+            act,
+        });
+    }
+    // **The SCOPE of the fade is the scope of the transaction.** A grid action arriving during a
+    // page transition does not shrink it to the grid — the page is still being replaced.
+    fade(if page { Scope::Page } else { Scope::Grid });
+}
+
+/// Withdraw a queued action without applying it — BACK before the fade's floor.
+///
+/// **A page transition, its target-scoped menu and its queued grid action are ONE transaction.**
+/// Queueing a semantic action created a way to strand one, so cancelling discards the action AND
+/// closes the menu it was built for: BACK already gives an open menu precedence, and the unwatched
+/// switch deliberately leaves its Filter menu open after the press, so a menu really can outlive
+/// the section it was built for.
+fn cancel_pending() -> bool {
+    if pending().is_none() {
+        return false;
+    }
+    take_pending();
+    xf().cancel();
+    if menu_open() {
+        close_menu();
+    }
+    true
+}
+
+/// **Is the DOCUMENT hidden right now** — the half of a staged shelf commit's permission that does
+/// not depend on where the viewer is standing.
+///
+/// Only a PAGE-scoped fade hides it. This read every `Xfade` as a hidden page, which is wrong for
+/// exactly the scope added beside it: a `Scope::Grid` fade dips the grid block alone and
+/// deliberately holds the library chip and the shelves at full alpha — and those are precisely what
+/// a shelf commit moves. A staged refresh could therefore publish in the middle of a sort, changing
+/// the shelf count and the pitches on screen and re-seating focus to the head, which is the reflow
+/// staging exists to prevent.
+fn hidden_page() -> bool {
+    (xf().is_swapping() && unsafe { addr_of!(SCOPE).read() } == Scope::Page)
+        || crate::ui::nav::page_alpha() < 0.99
+}
+
+/// **May a staged shelf set be published RIGHT NOW?** The whole permission, in one place, so the
+/// draw and the tests read the same rule.
+///
+/// Two cases, and they are different situations rather than one predicate. HIDDEN ([`hidden_page`])
+/// — the document is not on screen, so nothing can be SEEN to move. VISIBLE — the scroll is settled
+/// at the head AND no press is armed.
+///
+/// That second term is not decoration. A commit re-resolves focus onto the post-commit layout's
+/// first content zone, and [`at_document_head`] cannot tell "the head of a composed page" from
+/// "grid row 0 of a page that has no chip and no shelves yet": with neither drawn, row 0's own
+/// reveal IS zero. The viewport does not move in that case — the arriving first shelf reveals at 0
+/// too — so the visible effect is the ring stepping from the first poster onto the first shelf of a
+/// page that has just finished composing itself, which is accepted; the alternative starves a
+/// single-library household's shelves until it navigates away and back. What is NOT acceptable is
+/// doing it under an armed press, whose deferred activation would then resolve against the zone
+/// focus was moved TO rather than the card that was pressed. `ui::press`' "focus cannot move
+/// mid-press" contract, one more time.
+fn may_publish_shelves() -> bool {
+    hidden_page() || (at_document_head() && !crate::ui::press::is_live())
+}
+
+/// **A store replaced by something other than this screen** — `browse::reset()` on a profile
+/// switch, or the favourites editor re-pointing `cur()` while the Library is frozen under Settings.
+///
+/// Three things it does that the older inline version did not, each a Codex finding:
+///
+/// * **It acts during a fade.** It used to remount only `if !xf().is_swapping()`, which was how it
+///   told our own commit from a foreign one — and the price was that a full-document change
+///   arriving inside a grid reload was absorbed with no remount at all. [`apply_pending`] accounts
+///   for its own bump now, so this can be unconditional.
+/// * **It promotes to PAGE scope.** A foreign change replaces the whole column, not the grid, so a
+///   running `Scope::Grid` fade is the wrong shape for it; [`remount`] sets `Scope::Page`.
+/// * **It restores the NEW section's own coordinates.** It only faded before, so the incoming
+///   library was mounted using the outgoing one's focus and scroll.
+///
+/// Called twice a frame — before the pump and after it — because the pump can reset the roster,
+/// append sections and re-point `cur()`, and a change that lands there would otherwise reach that
+/// frame's draw before anything noticed.
+fn watch_foreign_store() {
+    let g = crate::browse::query_gen();
+    if g == unsafe { addr_of!(EPOCH).read() } {
+        return;
+    }
+    unsafe { EPOCH = g };
+    // **The queued transaction goes with the document it was queued against.** A section switch and
+    // its grid action both name the OLD table; `apply_pending`'s epoch guards would reject them one
+    // at a time, but leaving them queued spends the next fade floor on a rejection instead of on
+    // the page that is actually arriving. Cancelling says it once.
+    take_pending();
+    restore_view();
+    seat_from_restored_view();
+    remount();
+}
+
+/// Seat the focus band on the block the RESTORED scroll is showing. Shared by [`enter`] and by
+/// [`watch_foreign_store`], so a library arrived at and a library swapped in underneath are put on
+/// screen the same way.
+fn seat_from_restored_view() {
+    let lay = layout();
+    let scroll = unsafe { (*addr_of!(SCROLL)).pos };
+    if let Some((a, i)) = lay.seat_for_scroll(scroll, unsafe { addr_of!(GR).read() }) {
+        enter_zone(&lay, a, 1);
+        match a {
+            Area::Shelf => unsafe { SHELF_F = i },
+            // the ROW the restored scroll is showing, not whatever row was last walked — see
+            // `seat_for_scroll`'s note on the toolbar/row-0 coordinate they share
+            Area::Grid => unsafe {
+                GR = i;
+                GC = addr_of!(GC).read().min(COLS - 1);
+            },
+            _ => {}
+        }
+        clamp_focus();
+    }
 }
 
 /// Apply the queued reload. Called on exactly one frame — [`Xfade::tick`]'s commit frame — and by
 /// [`flush`]. Every scroll/focus teleport ([`grid_reset`], [`restore_view`]) happens HERE, at
 /// alpha 0, so the jump is never on screen.
 fn apply_pending() {
-    let p = pending();
-    unsafe { PENDING = Pending::None };
-    match p {
-        Pending::None => {}
-        Pending::Section(i) => apply_section(i),
-        Pending::Sort(i) => {
-            crate::browse::set_sort(i);
-            grid_reset();
+    // **Everything below is OURS, so account for the generation it moves.** The watchdog's whole
+    // job is spotting a store replaced by somebody else, and it used to tell ours apart by asking
+    // whether a fade happened to be running — true after our own commit, false after a foreign
+    // reset. That worked and cost the watchdog every other tool it needed: it could not fire during
+    // a fade at all, so a full-document change absorbed inside a grid reload went unnoticed. Owning
+    // the bump here is the direct statement, and it frees the watchdog to act unconditionally.
+    let account = |_: ()| unsafe { EPOCH = crate::browse::query_gen() };
+    let p = take_pending();
+    // **The SECTION first, so the grid action lands in the library it named.** They are one
+    // transaction; applying the action against the section that is still on screen — or dropping
+    // it because that section is not its target — is what the enum shape used to do.
+    if let Some(SecReq { sec, epoch }) = p.section {
+        // the same guard the grid half has always had: an index chosen against a table that has
+        // since been cleared and renumbered is not a name, it is a number
+        if epoch != crate::browse::table_epoch() {
+            account(());
+            return;
         }
-        Pending::Unwatched(v) => {
-            // the target, re-checked against the store: two presses inside one fade collapse to a
-            // no-op, and a no-op must NOT re-query (nor reset the scroll — nothing changed)
-            if crate::browse::unwatched() != v {
-                crate::browse::toggle_unwatched();
+        apply_section(sec);
+    }
+    if let Some(GridReq { sec, epoch, act }) = p.grid {
+        {
+            // **The scope check, by TABLE EPOCH and by index, and BOTH reject on their own.**
+            // `browse::reset` clears and redefines the table's indices, so a stale index would
+            // otherwise name a different profile's library. The epoch half used to be `&&`-ed with
+            // the index half, which made it dead: a reset that happens to leave the cursor on the
+            // same NUMBER passed the guard, and index 0 after a profile switch is exactly that case.
+            if epoch != crate::browse::table_epoch() || sec != crate::browse::cur() {
+                account(());
+                return;
+            }
+            let landed = match act {
+                GridAct::Sort { key, desc } => crate::browse::set_sort_by_key(&key, desc),
+                GridAct::Unwatched(v) => {
+                    // the target, re-checked against the store: two presses inside one fade
+                    // collapse to a no-op, and a no-op must NOT re-query (nor reset the scroll —
+                    // nothing changed)
+                    if crate::browse::unwatched() != v {
+                        crate::browse::toggle_unwatched();
+                        true
+                    } else {
+                        false
+                    }
+                }
+                GridAct::Genre(id) => crate::browse::set_genre_by_id(id.as_deref()),
+            };
+            if landed {
                 grid_reset();
             }
         }
-        Pending::Genre(g) => {
-            crate::browse::set_genre(g);
-            grid_reset();
-        }
     }
+    account(());
+}
+
+/// Take the queued action, leaving nothing behind. The ONE place `PENDING` is cleared, so a
+/// cancelled transition and a committed one cannot end up spelled differently.
+fn take_pending() -> Pending {
+    unsafe { std::mem::replace(&mut *addr_of_mut!(PENDING), Pending::NONE) }
 }
 
 /// Apply a queued reload NOW, without waiting for the fade — for the paths that LEAVE the screen
@@ -450,9 +1150,9 @@ fn apply_pending() {
 /// relabelled itself. The chrome lying about the listing is worse than the original no-fade cut.
 /// Re-mounts the fader so the (now different) content dissolves in rather than cutting.
 fn flush() {
-    if pending() != Pending::None {
+    if !pending().is_none() {
         apply_pending();
-        xf().mount();
+        remount();
     }
 }
 
@@ -470,26 +1170,27 @@ fn flush() {
 
 /// The section the chrome should read as current — the queued one while a tab switch is in flight.
 fn view_section() -> usize {
-    match pending() {
-        Pending::Section(i) => i,
-        _ => crate::browse::cur(),
-    }
+    pending()
+        .section
+        .map(|r| r.sec)
+        .unwrap_or_else(crate::browse::cur)
 }
 /// The unwatched-filter state the Filter menu's trailing `On`/`Off` read-out and the Filter chip's
 /// value should show — the QUEUED one while a switch is in flight. The switch row is rebuilt from
 /// this the frame OK lands, so the word flips under the finger while `browse` is still tearing the
 /// listing down and re-querying it; there is no mark in the leading column to flip instead.
 fn view_unwatched() -> bool {
-    match pending() {
-        Pending::Unwatched(v) => v,
+    match pending_grid() {
+        Some(GridAct::Unwatched(v)) => v,
         _ => crate::browse::unwatched(),
     }
 }
 /// The Sort chip's value token.
 fn view_sort_label() -> &'static str {
-    match pending() {
-        Pending::Sort(i) => crate::browse::sorts()
-            .get(i)
+    match pending_grid() {
+        Some(GridAct::Sort { key, .. }) => crate::browse::sorts()
+            .iter()
+            .find(|s| s.key == key)
             .map(|s| s.title.as_str())
             .unwrap_or("Title"),
         _ => crate::browse::sort_label(),
@@ -497,14 +1198,26 @@ fn view_sort_label() -> &'static str {
 }
 /// The Filter chip's value token.
 fn view_filter_label() -> &'static str {
-    match pending() {
-        Pending::Genre(None) => "All",
-        Pending::Genre(Some(i)) => crate::browse::genres()
-            .get(i)
+    match pending_grid() {
+        Some(GridAct::Genre(None)) => "All",
+        Some(GridAct::Genre(Some(id))) => crate::browse::genres()
+            .iter()
+            .find(|g| g.id == id)
             .map(|g| g.title.as_str())
             .unwrap_or("All"),
         _ => crate::browse::filter_label(),
     }
+}
+
+/// The queued grid action, if one is in flight — **and only while its TARGET is the section on
+/// screen**. That scope is what makes the chip read-outs honest during a page transition: what the
+/// user is looking at while the page fades is the library they are arriving in, so an action queued
+/// against a different one must not relabel this one's chips.
+fn pending_grid() -> Option<GridAct> {
+    pending()
+        .grid
+        .filter(|g| g.sec == crate::browse::cur())
+        .map(|g| g.act)
 }
 
 /// What the **Filter chip** reads — every active filter, not just the genre: `All`, `Comedy`,
@@ -526,11 +1239,351 @@ fn view_filter_value() -> String {
 }
 // ---- the toolbar's chip row -------------------------------------------------------------------
 
-/// Does the toolbar carry a Source chip? **With one source none of this is drawn** — not a bare
-/// suffix, not an empty slot, not a disabled chip: the toolbar is the two chips it has always been
-/// and the Sources list does not exist. Absence, not a branch that draws nothing visible.
+/// Does the LIBRARY CHIP head the scroll? **When there is nothing to switch to, none of this is
+/// drawn** — not a bare suffix, not an empty slot, not a disabled chip. Absence, not a branch that
+/// draws nothing visible.
+///
+/// **The design says "with one server the chip is not drawn" and this is deliberately WIDER than
+/// that.** The maintainer's single server publishes both `Movies` and a second film library: two
+/// libraries behind one *Movies* pill, unreachable from each other with no chip, on an account with
+/// exactly one server. Server COUNT is the wrong question — what the chip is for is having somewhere
+/// else to go, so it asks that directly: **more than one FAVOURITE library of the type being
+/// browsed, or the one you are in is BORROWED** (which the chip is also the only thing that names,
+/// since the strip's pill says only "Movies").
+fn lib_chip_on() -> bool {
+    // The original rule, kept as the FIRST term deliberately: the roster is known before any
+    // library has landed, so a second server draws the chip from the boot frame rather than popping
+    // it in when discovery finishes. Widening this predicate must not make the chrome flicker
+    // during startup.
+    if crate::browse::sources().len() > 1 {
+        return true;
+    }
+    // …the case the design's "with one server" rule misses: one server, two libraries of this type.
+    if crate::browse::source_rows().len() > 1 {
+        return true;
+    }
+    // …and a single BORROWED library still earns the chip: it is the only surface that says whose
+    // it is.
+    crate::browse::section_sid_is_borrowed(crate::browse::cur())
+}
+/// The old name, kept while the fixed toolbar's own callers are migrated onto the scroll.
 fn source_chip_on() -> bool {
-    crate::browse::sources().len() > 1
+    lib_chip_on()
+}
+
+/// **The ordered list of zones that are actually DRAWN this frame**, top to bottom — the
+/// projection UP, DOWN, BACK, pointer reachability and the async focus clamp are all derived from.
+///
+/// The first draft of this screen wrote those transitions out per zone, and parked focus on an
+/// undrawn control in two reachable states: an EMPTY library (no grid heading, no Sort, no Filter,
+/// no count, no rail — the design draws none of them over a grid with nothing in it) and a
+/// shelves-plus-empty-grid library. A ladder has to be right in five places at once; a projection
+/// is right in one. `sync_readout_focus` already worked this way for the read-out band and is the
+/// model.
+///
+/// The order IS the vertical walk. LEFT/RIGHT stay per-zone, because they mean something different
+/// in each one (pills, shelf columns, `[Sort, Filter]`, grid columns, and RIGHT off the last grid
+/// column into the rail).
+fn zones(lay: &Layout) -> Vec<Area> {
+    // **The profile chip is NOT a rung of its own.** It and the pills are two stops on ONE shared
+    // control — the top bar — reached from each other sideways, and DOWN off either must leave the
+    // band together or the chip reads as a different control from the pills beside it (which
+    // `the_profile_chip_is_the_bars_leftmost_stop` grades directly). `step` maps `Chip` onto `Tabs`
+    // before consulting this list, so the bar occupies one rung here.
+    let mut z = vec![Area::Tabs];
+    if lay.chip {
+        z.push(Area::LibChip);
+    }
+    // **The whole RUN of shelves is one rung, for the same reason the bar is and a harder one.**
+    // `Area` names a kind of zone rather than an instance, so N `Area::Shelf` entries are N entries
+    // `step_zone` cannot tell apart: `position` finds the first of them whatever shelf focus is on,
+    // and DOWN off the last shelf walks back to the first instead of leaving the run. Which shelf
+    // the band is on is `move_focus`'s cursor (`SHELF_F`), exactly as which COLUMN it is on is; the
+    // projection's job is only to say where the run begins and ends.
+    if lay.shelves > 0 {
+        z.push(Area::Shelf);
+    }
+    if lay.status {
+        // A failed source stands where the grid would, as ONE control. The chip and the strip above
+        // it are the way out, which is why the read-out spends no line saying so.
+        z.push(Area::Status);
+    } else if lay.grid_head {
+        // **The heading and its control row belong to the BLOCK; the grid rung belongs to the
+        // ROWS.** Those two used to be one test, which was harmless only because `grid_head` itself
+        // required `total() > 0` and `rows` is `ceil(total / 6)` — so the pair could never
+        // disagree. `grid_block_reloading` introduces the one state where they do: mid-re-query the
+        // store is empty, but the control row the user just pressed is still on screen and still
+        // theirs to stand on.
+        z.push(Area::Toolbar);
+        if lay.rows > 0 {
+            z.push(Area::Grid);
+            if rail_on() {
+                z.push(Area::Rail);
+            }
+        }
+    }
+    // …otherwise (loading, empty, or a grid with nothing in it) no heading, no controls, no rail:
+    // the page is its chip and its shelves, and that is a complete screen rather than a broken one.
+    z
+}
+
+/// The zone a vertical step lands on, or `None` at either end of the drawn list. `Rail` is skipped
+/// on the vertical walk — it is entered sideways off the grid's last column and left the same way,
+/// which is the one zone whose entry is horizontal.
+fn step_zone(lay: &Layout, from: Area, dir: i32) -> Option<Area> {
+    let z: Vec<Area> = zones(lay).into_iter().filter(|a| *a != Area::Rail).collect();
+    let i = z.iter().position(|a| *a == from)?;
+    let j = i as i32 + dir;
+    (j >= 0 && (j as usize) < z.len()).then(|| z[j as usize])
+}
+
+/// Move focus one zone DOWN, doing nothing at the foot of the drawn list. Every zone's DOWN goes
+/// through here rather than naming its own destination, which is what stops five arms from
+/// disagreeing about what is below them on an empty library.
+fn step_down(lay: &Layout) {
+    step(lay, 1);
+}
+/// …and UP, the same way.
+fn step_up(lay: &Layout) {
+    step(lay, -1);
+}
+fn step(lay: &Layout, dir: i32) {
+    // the bar is one rung; see `zones`
+    let from = if area() == Area::Chip {
+        Area::Tabs
+    } else {
+        area()
+    };
+    let Some(to) = step_zone(lay, from, dir) else {
+        return;
+    };
+    enter_zone(lay, to, dir);
+}
+
+/// Put focus IN a zone, seating whatever cursor that zone owns. Entering from ABOVE lands on the
+/// zone's first stop, from BELOW on the one nearest where you left — the ordinary television rule,
+/// and the reason this is one function rather than an assignment at each call site.
+fn enter_zone(lay: &Layout, to: Area, dir: i32) {
+    unsafe {
+        AREA = to;
+        match to {
+            Area::Tabs => set_tab_p(own_pill_id()),
+            // the control row's FIRST stop, which is not index 0 when the head chip shares the array
+            Area::Toolbar => TOOL_F = control_lo(chips()),
+            Area::Shelf => {
+                // walking DOWN into the run of shelves lands on the first, walking UP on the last
+                SHELF_F = if dir > 0 {
+                    0
+                } else {
+                    lay.shelves.saturating_sub(1)
+                };
+                SHELF_C = SHELF_C.min(shelf_len(SHELF_F).saturating_sub(1));
+                note_shelf_id();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// **Which tile of shelf `to` sits under the one focused in shelf `from`** — the shared
+/// [`card_row::column_near_x`] rule, applied to this screen's two shelf rows.
+///
+/// The walk used to carry the COLUMN INDEX across and clamp it, which is right only while both rows
+/// hold the same horizontal scroll. They routinely do not: walk one shelf sideways until it
+/// scrolls, press DOWN, and the index lands on a tile that can be most of a screen away — after
+/// which `scroll_into_view` drags the destination row hard to reveal it, so a vertical press reads
+/// as the page lurching sideways. Directional navigation follows where the user SEES a tile.
+fn shelf_column_near(from: usize, col: usize, to: usize) -> usize {
+    let rows = unsafe { &*addr_of!(SHELF_ROWS) };
+    let (fs, ts) = (shelf_style(from), shelf_style(to));
+    let x = card_row::tile_centre_x(col, MARGIN_X, fs.w + fs.gap, fs.w, rows[from].scroll_x());
+    card_row::column_near_x(
+        x,
+        MARGIN_X,
+        ts.w + ts.gap,
+        ts.w,
+        rows[to].scroll_x(),
+        shelf_len(to),
+        col,
+    )
+}
+
+/// **Shelf `i`'s style** — the ONE answer, read by the draw, the update, the hit test, the focus
+/// anchor and the vertical walk alike. A row of episodes is landscape and everything that reasons
+/// about where its tiles are has to know that, or the picture and the pointer disagree.
+fn shelf_style(i: usize) -> &'static RowStyle {
+    let landscape = crate::browse::section_hubs::shelves(crate::browse::cur())
+        .get(i)
+        .map(|s| s.landscape)
+        .unwrap_or(false);
+    if landscape {
+        &RowStyle::EPISODE
+    } else {
+        &RowStyle::HOME
+    }
+}
+
+/// How many tiles shelf `i` holds. Zero for a shelf that is not there, which is the answer every
+/// clamp below wants.
+fn shelf_len(i: usize) -> usize {
+    crate::browse::section_hubs::shelves(crate::browse::cur())
+        .get(i)
+        .map(|s| s.items.len())
+        .unwrap_or(0)
+}
+
+/// Record WHICH FILM the shelf cursor is standing on, so a shelf that changes underneath can put
+/// focus back on the same one rather than the same slot.
+///
+/// It has to be an identity rather than an index because on this endpoint a shelf changing under
+/// the cursor is ROUTINE: `docs/pms-api.md` §3a measured the genre and actor/director rows rotating
+/// their subject on every request, and Mark Watched and *Remove from Continue Watching* both delete
+/// a tile out from under the user.
+fn note_shelf_id() {
+    unsafe {
+        SHELF_ID = crate::browse::section_hubs::shelves(crate::browse::cur())
+            .get(SHELF_F)
+            .and_then(|s| s.items.get(SHELF_C).map(|m| (s.id.clone(), m.rk.clone())));
+    }
+}
+
+/// Put the shelf cursor back after the shelf SET changed. **Same shelf, same column, clamped**; if
+/// the whole shelf is gone, the nearest surviving shelf at the same column; if none survives, the
+/// caller's zone clamp takes focus somewhere drawn.
+///
+/// Identity alone does not cover disappearance, which is why the rule has three rungs rather than
+/// one lookup.
+fn shelf_focus_survives() {
+    let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+    if shelves.is_empty() {
+        return;
+    }
+    unsafe {
+        // 1. the same FILM, wherever it moved to
+        if let Some((id, rk)) = addr_of!(SHELF_ID).as_ref().and_then(|o| o.clone()) {
+            if let Some((si, ci)) = shelves.iter().enumerate().find_map(|(si, s)| {
+                (s.id == id)
+                    .then(|| s.items.iter().position(|m| m.rk == rk).map(|ci| (si, ci)))
+                    .flatten()
+            }) {
+                SHELF_F = si;
+                SHELF_C = ci;
+                return;
+            }
+        }
+        // 2. the same shelf, same column, clamped — the tile was deleted but the row survives
+        if let Some(s) = shelves.get(SHELF_F) {
+            SHELF_C = SHELF_C.min(s.items.len().saturating_sub(1));
+            note_shelf_id();
+            return;
+        }
+        // 3. the shelf itself is gone: the nearest surviving one at the same column
+        SHELF_F = shelves.len() - 1;
+        SHELF_C = SHELF_C.min(shelves[SHELF_F].items.len().saturating_sub(1));
+        note_shelf_id();
+    }
+}
+
+/// Is `a` drawn this frame? The ONE test behind the async clamp — a landing that takes a zone away
+/// (a source fails, a library empties, shelves commit) must not leave focus on it for a frame.
+fn zone_drawn(lay: &Layout, a: Area) -> bool {
+    // the bar is always drawn, and it is one rung in `zones` — so its two stops answer for it
+    a == Area::Chip || zones(lay).contains(&a)
+}
+
+/// **This frame's [`Layout`], from live state.** Call it once and pass it down; every function that
+/// needs a document coordinate takes it as an argument rather than rebuilding one, so the draw and
+/// the hit test can never be looking at two different documents in the same frame.
+///
+/// The shelf count is the COMMITTED set (`section_hubs`), never the staged one — publishing is what
+/// moves this geometry, which is the whole reason that module has a publication axis.
+fn layout() -> Layout {
+    layout_with(|i| unsafe { (*addr_of!(SHELF_ROWS))[i].band_expand() })
+}
+
+/// **The document as it will be once the springs settle** — the same shape, with every shelf's
+/// label band at its DESTINATION (open on the focused shelf, closed everywhere else) instead of
+/// wherever it is this frame.
+///
+/// Only the scroll TARGET may be computed from this, and it must be: the band and the scroll are
+/// two springs at one rate, so a target derived from the live band moves every frame while the
+/// band chases it and the row arrives and then drifts. `card_row::settled_top` carries the full
+/// argument. Everything that describes what is on screen right now — the draw, the pointer, the
+/// visible-row window — reads [`layout`].
+fn layout_settled() -> Layout {
+    let f = (area() == Area::Shelf).then(|| unsafe { SHELF_F });
+    layout_with(|i| (f == Some(i)) as i32 as f32)
+}
+
+/// The shared body of the two: `band(i)` gives shelf `i`'s label-band expansion, 0 collapsed → 1.
+fn layout_with(band: impl Fn(usize) -> f32) -> Layout {
+    let read = readout();
+    let sh = crate::browse::section_hubs::shelves(crate::browse::cur());
+    let shelves = sh.len();
+    // one pitch per shelf, from the shape that shelf is actually drawn in AND how much of its
+    // focused label block it is currently reserving
+    let mut pitch = [crate::ui::consts::ROW_PITCH; MAX_SHELVES];
+    for (i, (slot, s)) in pitch.iter_mut().zip(sh.iter()).enumerate() {
+        *slot = shelf_pitch_of(s.landscape, card_row::under_band(band(i)));
+    }
+    if read == Readout::Failed {
+        return Layout {
+            pitch,
+            ..Layout::failed(lib_chip_on(), shelves)
+        };
+    }
+    Layout {
+        pitch,
+        ..Layout::new(
+        lib_chip_on(),
+        shelves,
+        n_rows(),
+        // the grid's heading and its Sort/Filter row draw over a grid that has items — the
+        // design's rule that a control acting on nothing is not drawn — OR mid-reload, the one
+        // case where the control row outlives an empty store because it IS what was just pressed
+        (read == Readout::Grid && total() > 0) || grid_block_reloading(),
+    )
+    }
+}
+
+/// **Is the grid block being REPLACED rather than removed?** — i.e. is a grid-scoped transition in
+/// flight right now.
+///
+/// This is the difference the focus clamp could not see, and it is the whole of the "sorting throws
+/// you back to the top" report. `browse::requery` empties the store synchronously on the press, so
+/// for the length of the fade `total()` is 0 and the grid heading, its Sort/Filter row and the rail
+/// are all "controls acting on nothing" — the async clamp in [`sync_readout_focus`] then correctly
+/// observes that the zone focus is standing in is not drawn and moves it to the head of the
+/// document. Which is the library chip, at the top of the page, above every shelf: the user pressed
+/// Sort and was returned to the recommendations.
+///
+/// The control row is not GONE, though. It is the thing they just pressed, it is still on screen
+/// (the fader dips it, it does not remove it), and its chips are deliberately live and already
+/// showing the QUEUED value (`view_sort_label`). So the block is drawn for the length of its own
+/// replacement, and focus has somewhere legitimate to stay.
+///
+/// Deliberately NOT "any fade": a SECTION transition really does replace the whole document, and
+/// focus belongs at the head of the library being arrived in.
+fn grid_block_reloading() -> bool {
+    unsafe { addr_of!(SCOPE).read() == Scope::Grid && xf().is_swapping() }
+}
+
+/// A shelf's whole vertical band, by the shape it is drawn in and by how much of its focused label
+/// block it is reserving. `consts::ROW_PITCH` is authored for a poster (`CARD_H` + the focused
+/// under-label block + air); a landscape row is the same band with a shorter tile in it, so it is
+/// that pitch less the height the tile does not use.
+///
+/// **`band` is the second axis and the reason this is no longer a constant per shape** — the label
+/// block exists only while the shelf holds focus, so an unfocused one reserves
+/// `card_row::LABEL_BAND_COLLAPSED` in its place (`card_row::under_band`). At `band ==
+/// card_row::UNDER_LABEL_H` this is byte-identical to what it returned before the band could close.
+fn shelf_pitch_of(landscape: bool, band: f32) -> f32 {
+    let shape = if landscape {
+        crate::ui::consts::ROW_PITCH - (CARD_H - RowStyle::EPISODE.h)
+    } else {
+        crate::ui::consts::ROW_PITCH
+    };
+    shape - card_row::UNDER_LABEL_H + band
 }
 const CHIPS_NONE: [Chip; 0] = [];
 const CHIPS_SOURCE_ONLY: [Chip; 1] = [Chip::Source];
@@ -576,8 +1629,31 @@ fn chips() -> &'static [Chip] {
 /// (the source answered again) returns focus to the chip the user actually walked to instead of
 /// dumping it at 0.
 fn tool_f() -> usize {
-    let n = chips().len();
-    unsafe { addr_of!(TOOL_F).read() }.min(n.saturating_sub(1))
+    let row = chips();
+    unsafe { addr_of!(TOOL_F).read() }
+        .min(row.len().saturating_sub(1))
+        .max(control_lo(row))
+}
+
+/// **The first index of the GRID'S CONTROL ROW inside [`chips`].**
+///
+/// One array holds both, because they share their strings, their measured widths and their drawn
+/// rects — but they are TWO zones now: [`Chip::Source`] heads the document as [`Area::LibChip`] and
+/// the rest are the row under the grid's heading. So the toolbar's cursor may not rest on index 0
+/// when Source is there. It did until this was written: [`enter_zone`] seated `TOOL_F = 0`, the
+/// draw skips Source in the control row, and the result was a toolbar you could walk into where
+/// NOTHING was focused — visible in the simulator as a page whose Sort and Filter never light up.
+///
+/// Pure over the row so the four shapes are gradeable without a section table.
+fn control_lo(row: &[Chip]) -> usize {
+    row.iter().position(|&c| c != Chip::Source).unwrap_or(0)
+}
+
+/// …and how many chips that row actually has. NOT `chips().len()`, which counts the head chip too:
+/// a one-library page whose listing failed keeps its Source chip and has no controls at all, and
+/// [`below_top_bar`] and [`sync_readout_focus`] both need that to read as ZERO.
+fn control_n(row: &[Chip]) -> usize {
+    row.iter().filter(|&&c| c != Chip::Source).count()
 }
 
 /// The chip holding toolbar focus, or `None` when the row is EMPTY — which it is on a one-source
@@ -641,6 +1717,10 @@ fn chip_value(c: Chip) -> (&'static str, String) {
 // ---- per-frame draw caches (rebuilt only when their source state changes; building CStrings
 // + re-measuring text every frame was a review-confirmed waste — same rationale as TAB_CACHE) --
 struct ChipStrs {
+    /// WHICH chip this is. The row is built from `chips()`, whose length and order both move, and
+    /// the document draws the Source chip in a different place from the grid's own controls — so a
+    /// position is not an identity here any more than it is at the activation.
+    kind: Chip,
     name: CString,
     val: CString,
     /// The Source chip's owner annotation — the handle, a rung down and at 62% of the label's ink.
@@ -744,7 +1824,7 @@ fn content_region() -> Rect {
 /// design's rejected column ("they act on a grid that has no items") and clearing the user's filter
 /// behind their back is worse than either, so this stands.
 fn toolbar_n() -> usize {
-    chips().len()
+    control_n(chips())
 }
 
 /// The failure read-out's verdict + reason — the machine that failed, and the person who shared it.
@@ -890,6 +1970,30 @@ fn sync_readout_focus() {
             AREA = Area::Grid;
         }
     }
+    // **…and then the general rule, which the three special cases above are instances of.** A
+    // landing can take ANY zone away — a source fails, a library empties, a staged shelf set
+    // commits, the last favourite of a type is switched off — and focus must not spend a frame on
+    // something that is not drawn. Derived from the same projection the walk uses, so a zone can
+    // never be reachable-but-undrawn or drawn-but-unreachable.
+    let lay = layout();
+    unsafe {
+        if !zone_drawn(&lay, AREA) {
+            // the head of the document — the first CONTENT zone, not the first drawn one. Those
+            // differ by exactly the tab bar, which is the shared control ABOVE the page: landing
+            // focus there on every async landing would read as the page throwing you out of it.
+            // `first_content` is `None` only when the content region really is empty, and then the
+            // bar is the honest answer.
+            AREA = lay.first_content().unwrap_or(Area::Tabs);
+            enter_zone(&lay, AREA, 1);
+        }
+        // …and inside the shelves, the CURSOR needs the same treatment for the same reason: the
+        // shelf set changes under it routinely on this endpoint (two hubs rotate their subject
+        // between requests), and Mark Watched and Remove from Continue Watching both delete a tile
+        // out from under the user.
+        if AREA == Area::Shelf {
+            shelf_focus_survives();
+        }
+    }
 }
 
 fn table() -> &'static mut TableView {
@@ -926,10 +2030,26 @@ fn area() -> Area {
 /// highlighting.
 fn tab_focus() -> c_int {
     if area() == Area::Tabs && !menu_open() {
-        unsafe { addr_of!(TAB_F).read() as c_int }
+        tab_idx() as c_int
     } else {
         -1
     }
+}
+
+/// The focused pill's identity, and the DRAWN index it resolves to today.
+fn tab_p() -> Pill {
+    unsafe { addr_of!(TAB_P).read() }
+}
+fn set_tab_p(p: Pill) {
+    unsafe { TAB_P = p }
+}
+/// **The drawn index of the focused pill — the one place the identity becomes a position.**
+///
+/// A pill whose type lost its last favourite is no longer in the strip, and the honest answer then
+/// is Home: the one pill that is always drawn. Resolving on READ rather than remapping on change is
+/// what makes this correct without anything having to notice the change.
+fn tab_idx() -> usize {
+    crate::ui::widgets::pill_of(tab_p()).unwrap_or(0)
 }
 
 /// The band DOWN off the shared top bar lands in — the toolbar normally, the failure read-out when
@@ -968,8 +2088,22 @@ fn own_pill() -> usize {
     // bailing out of `enter` before it had a table. It used to be spelled `search_pill() - 1` here,
     // which meant "the last pill that is a library" only because Search happens to sit last — a
     // fact about the strip that now lives in the strip.
-    let p = crate::ui::widgets::pill_of(Pill::Section(wanted_tab()));
+    // `None` when this type's pill has just been switched off under us — one frame at most, since
+    // `browse::repoint_cur` moves `cur()` in the same breath as the edit. Home is the honest
+    // answer meanwhile: it is the one pill that is always drawn.
+    let p = crate::ui::widgets::pill_of(Pill::Section(unsafe { WANTED_KIND })).unwrap_or(0);
     p.min(crate::ui::widgets::last_section_pill())
+}
+
+/// The same answer as [`own_pill`], as an IDENTITY — what a cursor stores. `Pill::Home` when this
+/// type has no pill today, which is [`own_pill`]'s own `unwrap_or(0)` said in the other vocabulary.
+fn own_pill_id() -> Pill {
+    let kind = unsafe { WANTED_KIND };
+    if crate::ui::widgets::pill_of(Pill::Section(kind)).is_some() {
+        Pill::Section(kind)
+    } else {
+        Pill::Home
+    }
 }
 
 /// The tab pill holding focus, as a plain index — what a route change LEAVING this screen carries
@@ -977,8 +2111,8 @@ fn own_pill() -> usize {
 /// Without it the SELECTION capsule travels to Home while the FOCUS capsule snaps back to wherever
 /// Home was last left, which reads as two objects rather than one bar crossing a boundary. `None`
 /// whenever the tab row is not what holds focus (a menu, the grid, the toolbar, the rail).
-pub(crate) fn focused_pill() -> Option<usize> {
-    (tab_focus() >= 0).then(|| unsafe { addr_of!(TAB_F).read() })
+pub(crate) fn focused_pill() -> Option<Pill> {
+    (tab_focus() >= 0).then(tab_p)
 }
 
 // ---- derived grid facts ---------------------------------------------------------------------
@@ -1018,8 +2152,34 @@ fn clamp_focus() {
     }
 }
 /// The focused grid item (None while its page is still loading).
+/// **The item focus is standing on, wherever it is standing.** The grid's paged store, or — since
+/// the library grew shelves of its own — a tile on one of them.
+///
+/// One function rather than a second `focused_shelf_item`, because every consumer asks the same
+/// question: `app.rs`'s activation, its context-menu open, and the poster prefetch all want "the
+/// item under the ring" and none of them should have to know which half of the page it came from.
 pub(crate) fn focused_item() -> Option<&'static PmsMovie> {
+    if area() == Area::Shelf {
+        return unsafe {
+            crate::browse::section_hubs::shelves(crate::browse::cur())
+                .get(SHELF_F)
+                .and_then(|s| s.items.get(SHELF_C))
+        };
+    }
     crate::browse::item(focus_idx())
+}
+
+/// Is the focused card on this library's own Continue Watching shelf? **The half `open_tile_menu`
+/// used to hardcode as `false`** — it is what makes *Remove from Continue Watching* appear, and
+/// the Library had no deck to show for as long as it had no shelves.
+pub(crate) fn focused_from_deck() -> bool {
+    area() == Area::Shelf
+        && unsafe {
+            crate::browse::section_hubs::shelves(crate::browse::cur())
+                .get(SHELF_F)
+                .map(|s| s.is_continue)
+                .unwrap_or(false)
+        }
 }
 pub(crate) fn menu_open() -> bool {
     !matches!(menu(), Menu::None)
@@ -1050,11 +2210,9 @@ pub(crate) enum Arrival {
 /// Everything here TELEPORTS something the user can see — the store swap, the restored grid scroll,
 /// the focus band — so on the `Faded` arrival it is called from the page fade's floor, at alpha 0,
 /// rather than on the press frame.
-pub(crate) fn enter(tab: usize, arrival: Arrival) {
+pub(crate) fn enter(kind: crate::browse::SecKind, arrival: Arrival) {
     flush(); // a reload queued on the way out is applied, not dropped (see [`flush`])
-    if let Some(kind) = crate::browse::tab_kind(tab) {
-        unsafe { WANTED_KIND = kind };
-    }
+    unsafe { WANTED_KIND = kind };
     // A table that could not be FETCHED used to return here, before a single line of screen state
     // was set — which left the focus band wherever the last visit had parked it, on a screen that
     // now has no grid and no chips. The discovery failing is a state this screen draws (the read-out
@@ -1071,25 +2229,40 @@ pub(crate) fn enter(tab: usize, arrival: Arrival) {
         // frame — but only on a CUT;
         // see `Arrival::Faded` for why a jump is both wrong and redundant under a travelling capsule.
         if matches!(arrival, Arrival::Cut) {
-            crate::ui::widgets::tab_row_reveal(
-                crate::browse::tab_of_section(crate::browse::cur()) + 1,
-            );
+            // `pill_of` rather than a hand-rolled `+ 1`: the Home offset is the strip's fact, and
+            // this was one of the six sites that used to spell the ladder out (see `Pill`'s doc).
+            if let Some(p) = crate::browse::tab_of_section(crate::browse::cur())
+                .and_then(|t| crate::ui::widgets::pill_of(Pill::Section(crate::browse::tab_kind(t)?)))
+            {
+                crate::ui::widgets::tab_row_reveal(p);
+            }
         }
     }
     set_menu(Menu::None);
     unsafe {
+        // **Where the band lands is a function of the RESTORED SCROLL, not a constant.** This used
+        // to be `Area::Grid` unconditionally, which was right while the grid WAS the screen and is
+        // wrong now that it is the document's last block: a first visit restores `(0, 0)`, so focus
+        // sat on grid row 0 while the page showed its head, and the scroll target that focus asks
+        // for immediately dragged the document past every shelf the library publishes. At the head
+        // the band belongs on the first CONTENT zone; a returning visit that was scrolled into the
+        // grid still comes back to the grid.
         AREA = Area::Grid;
         TOOL_F = 0;
-        PENDING = Pending::None; // whatever was queued before we left has just been flushed
+        PENDING = Pending::NONE; // whatever was queued before we left has just been flushed
         EPOCH = crate::browse::query_gen(); // AFTER `set_cur` above, so our own bump isn't foreign
     }
+    // …and then the band is seated on the zone the RESTORED SCROLL is actually showing — the head
+    // on a first visit, the shelf you left from, the grid if that is where you were. Seated through
+    // `enter_zone` so a shelf gets its cursor like any other entry from above.
+    seat_from_restored_view();
     // ...and then the read-out takes the band if it owns the content region, so an entry onto a
     // dead source opens ON Try again rather than on the frame after it
     sync_readout_focus();
     // Route entry has NO outgoing content: park at 0 and fade in once the listing exists (the very
     // next frame for a section whose store is still resident). This is also the ONE recovery for a
     // fader left mid-phase by leaving the screen — only this route steps it.
-    xf().mount();
+    remount();
 }
 
 fn restore_view() {
@@ -1108,10 +2281,19 @@ fn restore_view() {
 /// Deliberately does NOT touch the focus band: toggling the unwatched filter must leave focus
 /// on that chip, not warp it into the grid.
 fn grid_reset() {
+    // **To the GRID's top, not the document's.** `jump(0.0)` was right for exactly as long as
+    // scroll 0 WAS grid row 0; under one continuous document it is the head of the page — the
+    // library chip and the shelves — so choosing a sort threw the viewer all the way back up to the
+    // recommendations and made them navigate down to All again to see the result of the sort they
+    // had just picked. The listing is what changed; the reader's place in the document is not.
+    //
+    // `row_reveal(0)` rather than `grid_top()`: it is the same clamped target the focus rule uses,
+    // so the reset lands exactly where walking into row 0 would, heading and control row included.
+    let want = layout_settled().row_reveal(0);
     unsafe {
         GR = 0;
         GC = 0;
-        (*addr_of_mut!(SCROLL)).jump(0.0);
+        (*addr_of_mut!(SCROLL)).jump(want);
         PREV_IDX = -1;
     }
 }
@@ -1120,18 +2302,15 @@ fn grid_reset() {
 /// ([`apply_section`]); the PILL moves now (every chrome reader goes through [`view_section`]).
 ///
 /// A pill is a TYPE, not a library, so the strip's index space is not the table's — see
-/// `browse::tab_section`. Everything downstream of here speaks SECTION indices.
-fn switch_tab(t: usize) {
-    if t >= crate::browse::tab_count() {
-        return;
-    }
-    if let Some(kind) = crate::browse::tab_kind(t) {
-        unsafe { WANTED_KIND = kind };
-    }
-    if let Some(section) = crate::browse::tab_section(t) {
+/// `browse::tab_section`. Everything downstream of here speaks SECTION indices. It takes the KIND
+/// rather than the strip position for the reason [`Pill::Section`] carries one: the position is
+/// not a stable name for a destination now that the favourite switch can add or remove a pill.
+fn switch_tab(kind: crate::browse::SecKind) {
+    unsafe { WANTED_KIND = kind };
+    if let Some(section) = crate::browse::tab_of_kind(kind).and_then(crate::browse::tab_section) {
         switch_to_section(section);
     } else {
-        xf().mount();
+        remount();
         crate::ui::idle::invalidate();
     }
 }
@@ -1142,7 +2321,7 @@ fn switch_to_section(i: usize) {
     if i >= crate::browse::section_count() || i == view_section() {
         return;
     }
-    request(Pending::Section(i));
+    request_section(i);
 }
 
 /// The committed half of [`switch_section`] — runs at alpha 0. The guard is re-checked against
@@ -1170,8 +2349,26 @@ fn rail_on() -> bool {
 /// failed, so `rail_on` alone would happily draw a rail into an empty region — and, worse, let
 /// RIGHT park focus on it, since with no items `cols_in_row` is 0 and RIGHT always falls through.
 fn rail_drawn() -> bool {
-    rail_on() && !menu_open() && readout() == Readout::Grid
+    // …and it is the GRID's rail, so it is drawn only while focus is in the grid REGION. It
+    // indexes the alphabet of a poster wall; hanging on the right edge while the user is walking a
+    // shelf would be a control pointing at something they are not looking at.
+    //
+    // An alpha spring fades it rather than cutting it, and that spring reports to `ui::idle` like
+    // every other — see `RAIL_A`.
+    rail_on() && !menu_open() && readout() == Readout::Grid && rail_region()
 }
+
+/// Is focus in the region the rail indexes? The grid, its control row (which acts on the same
+/// grid), or the rail itself.
+fn rail_region() -> bool {
+    matches!(area(), Area::Grid | Area::Rail | Area::Toolbar)
+}
+
+/// The rail's own fade, 0…1. It exists so the rail DISSOLVES as focus leaves the grid region
+/// instead of blinking out, and it is a `Spring`, so `ui::idle` hears the motion for free — an
+/// animator that reported nothing would either freeze on screen or hold the panel presenting
+/// forever, which are opposite failures and each invisible to the other's gate.
+static mut RAIL_A: Spring = Spring::at(0.0);
 /// The rail letter whose range contains item `idx`. Clamped to the drawn set, since it also
 /// indexes [`RAIL_RECTS`] by way of [`RAIL_F`].
 fn letter_of(idx: usize) -> usize {
@@ -1239,14 +2436,54 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
         "library grid, last column",
         Rect::new(last, GRID_TOP, CARD_W, CARD_H),
     ));
+    // **Every block of the document, at the head of the scroll** — where each is drawn when the
+    // page is at `scroll == 0`, which is the position they are furthest UP the panel and so the
+    // only one that can violate the top of the safe frame. Deeper in the document they can only
+    // move down.
+    let head = Layout::new(true, 1, 40, true);
     out.push((
-        "library toolbar, leading chip",
-        Rect::new(MARGIN_X, TOOL_Y, 200.0, TOOL_H),
+        "library chip (document head)",
+        Rect::new(MARGIN_X, CONTENT_TOP, 200.0, TOOL_H),
     ));
-    // the count is right-ALIGNED on this edge, so the rect is degenerate on purpose
     out.push((
-        "library item count (right edge)",
-        Rect::new(SCR_W - MARGIN_X, TOOL_Y, 0.0, TOOL_H),
+        "library shelf heading (first)",
+        Rect::new(
+            MARGIN_X,
+            CONTENT_TOP + head.shelf_origin(0) - crate::ui::consts::TITLE_DY,
+            400.0,
+            crate::ui::consts::TITLE_DY,
+        ),
+    ));
+    out.push((
+        "library shelf tile (first)",
+        Rect::new(
+            MARGIN_X,
+            CONTENT_TOP + head.shelf_origin(0) + crate::ui::consts::CARD_DY,
+            CARD_W,
+            CARD_H,
+        ),
+    ));
+    // …and the same three with NO chip and NO shelves, which is the shortest document and puts the
+    // grid's own heading highest on the panel
+    let bare = Layout::new(false, 0, 40, true);
+    out.push((
+        "library grid heading (no chip, no shelves)",
+        Rect::new(
+            MARGIN_X,
+            CONTENT_TOP + bare.grid_block_top(),
+            400.0,
+            crate::ui::consts::TITLE_DY,
+        ),
+    ));
+    out.push((
+        "library grid control row (no chip, no shelves)",
+        Rect::new(
+            MARGIN_X,
+            CONTENT_TOP + bare.grid_block_top() + crate::ui::consts::TITLE_DY
+                + crate::ui::consts::CARD_DY,
+            200.0,
+            TOOL_H,
+        ),
     ));
     out.push(("library failure read-out band", content_region()));
 }
@@ -1302,30 +2539,30 @@ pub(crate) fn update(dt: f32) {
     if xf().tick(dt, ready) {
         apply_pending();
     }
-    // Watchdog: a store replaced by something other than this screen (`browse::reset()` on a
-    // profile switch) still gets a fade rather than a cut. Read AFTER the commit, so our own
-    // `bump_gen` is never mistaken for a foreign one.
-    let g = crate::browse::query_gen();
-    if g != unsafe { addr_of!(EPOCH).read() } {
-        unsafe { EPOCH = g };
-        if !xf().is_swapping() {
-            xf().mount();
-        }
-    }
+    // Watchdog. Read AFTER the commit above, which accounts for its own bump.
+    watch_foreign_store();
 
     unsafe {
         // wanted window BEFORE pump (its maybe_spawn reads it — after a tab switch the first
-        // fetch must target THIS section's restored scroll, not the previous frame's)
-        let sc = (*addr_of!(SCROLL)).pos;
-        let lo_row = (((sc - CARD_H) / PITCH).floor().max(0.0)) as usize;
-        let hi_row = (((sc + SCR_H - GRID_TOP) / PITCH).ceil().max(0.0)) as usize + 1;
+        // fetch must target THIS section's restored scroll, not the previous frame's).
+        //
+        // **Through `Layout`, which is the fix for this screen's sharpest geometry bug.** This used
+        // to derive rows straight from `SCROLL`, i.e. assuming scroll 0 is grid row 0. With a
+        // header and N shelves above the grid, a 12-shelf library asked `browse` for pages ~13 rows
+        // into the catalog while row 0's own slots sat unloaded.
+        let (lo_row, hi_row) = layout().visible_rows((*addr_of!(SCROLL)).pos);
         crate::browse::want(lo_row.saturating_sub(1) * COLS, (hi_row + 1) * COLS);
     }
     if crate::browse::pump() {
         clamp_focus();
     }
+    // …and AGAIN, because `pump` is one of the things that can replace the store under us: it
+    // resets the roster, appends sections and can re-point `cur()`. Sampled only before it, a
+    // change landing here reached this frame's own draw before anything noticed. The compare is
+    // one atomic read when nothing moved.
+    watch_foreign_store();
     let wanted = unsafe { WANTED_KIND };
-    if pending() == Pending::None
+    if pending().is_none()
         && crate::browse::section_kind(crate::browse::cur()) != Some(wanted)
     {
         if let Some(section) = crate::browse::tab_section(wanted_tab()) {
@@ -1334,6 +2571,45 @@ pub(crate) fn update(dt: f32) {
             restore_view();
             unsafe { EPOCH = crate::browse::query_gen() };
         }
+    }
+    // **Ask this library for its own shelves.** The one call that takes `section_hubs` out of
+    // dormancy, and it is idempotent — armed once, then owed a fetch only when something
+    // invalidates it.
+    crate::browse::section_hubs::kick(crate::browse::cur());
+    // …and publish a staged set when the ground may move. TWO cases, and they are different
+    // situations rather than one predicate:
+    //
+    //   1. HIDDEN — a route or section transition is mid-fade, so the page is not on screen and
+    //      nothing can be SEEN to move.
+    //   2. VISIBLE — only once a BACK-driven head transition has SETTLED, which is
+    //      `at_document_head`, shared with `back` so the two rules cannot drift apart.
+    //
+    // A commit re-resolves focus against the POST-commit layout, which the drawable-zone clamp
+    // alone does not cover: a zero-shelf library sitting on its `GridTool` is standing on a zone
+    // that stays DRAWN when shelves arrive but moves thousands of pixels down the document.
+    // **HIDDEN means the PAGE is hidden, and only a PAGE-scoped fade does that.** This read every
+    // `Xfade` as a hidden page, which is wrong for exactly the scope that was added beside it: a
+    // `Scope::Grid` fade dips the grid block alone and deliberately holds the library chip and the
+    // shelves at full alpha — and those are precisely what a shelf commit moves. So a staged
+    // refresh could publish DURING a sort, changing the shelf count and pitches on screen and
+    // re-seating focus to the document head, which is the reflow staging exists to prevent.
+    // **…and a VISIBLE commit must not land inside a press.** At the head, a commit re-resolves
+    // focus onto the new first content zone, and `at_document_head` cannot tell "the head of a
+    // composed page" from "grid row 0 of a page that has no chip and no shelves yet" — with
+    // neither drawn, row 0's own reveal IS zero. The viewport does not move there (the new first
+    // shelf reveals at 0 too), so the visible effect is only the ring stepping from the first
+    // poster onto the first shelf of a page that has just finished composing itself, which is
+    // accepted: the alternative starves a single-library household's shelves until it navigates
+    // away and back. What is NOT acceptable is doing it under an armed press, whose deferred
+    // activation would then resolve against the zone focus was moved TO rather than the card that
+    // was pressed. `ui::press`' "focus cannot move mid-press" contract, one more time.
+    if crate::browse::section_hubs::commit_staged(crate::browse::cur(), may_publish_shelves()) {
+        let lay = layout();
+        unsafe {
+            AREA = lay.first_content().unwrap_or(Area::Tabs);
+            enter_zone(&lay, AREA, 1);
+        }
+        crate::ui::idle::invalidate();
     }
     // AFTER the pump: a landing is exactly what turns the grid into a read-out (or back), and the
     // focus band must not spend a frame on the one that is no longer drawn.
@@ -1349,31 +2625,67 @@ pub(crate) fn update(dt: f32) {
     unsafe {
         // springs: focused pop + the one shrinking previous cell (NOT a spring per cell — a
         // paged grid has unbounded rows; two springs give the same read on the A53 budget)
-        (*addr_of_mut!(FOCUS_S)).step(RowStyle::HOME.focus_scale, K_SCALE, dt);
+        (*addr_of_mut!(HEAD_S)).step(grid_head_lift_target(), K_SCALE, dt);
+        // **The target is the focus scale only while the GRID actually holds the band.** It was
+        // unconditional, so the spring sat at full magnification the whole time focus was on the
+        // chip, the strip or the Sort/Filter row — and the first grid tile focus landed on was
+        // therefore drawn already popped, with no transition, while every tile-to-tile step
+        // animated normally (`grid_focus_moved` reseats it at 1.0). Relaxing it while the grid is
+        // not focused costs nothing and is invisible: `focused_card_drawn` draws no focused card in
+        // those zones at all. The shelves never had the fault — `CardRow::update` is handed
+        // `None` for an unfocused row and relaxes every cell for free.
+        let focus_target = if matches!(area(), Area::Grid | Area::Rail) {
+            RowStyle::HOME.focus_scale
+        } else {
+            1.0
+        };
+        (*addr_of_mut!(FOCUS_S)).step(focus_target, K_SCALE, dt);
         (*addr_of_mut!(PREV_S)).step(1.0, K_SCALE, dt);
         if (*addr_of!(PREV_S)).pos < 1.003 {
             PREV_IDX = -1;
         }
 
-        // vertical scroll: reveal the focused row (label band included), never above its slot
-        let row_top = GR as f32 * PITCH;
-        // The scroll CEILING carries the same bound as `lo` below, or the last row cannot reach it:
-        // `reveal` clamps its target to `max_y`, so a trailing air of 20 pinned the final row's
-        // caption 20px off the panel however much the reveal asked for. It is the pair that has to
-        // agree, which is why this line moved with that one.
-        let max_y = (n_rows() as f32 * PITCH - (SCR_H - GRID_TOP) + MARGIN_Y).max(0.0);
-        // …and the reveal leaves the card + its label band a MARGIN_Y clear of the bottom edge: a
-        // focused tile's caption used to settle 16px off the panel, i.e. inside the overscan frame.
-        // `CARD_H + 96.0` used to be re-typed here instead of read off `PITCH`, even though the two
-        // were the same value by construction (item 11) — one row's span IS card + label + air.
-        let lo = row_top + PITCH - (SCR_H - GRID_TOP - MARGIN_Y);
-        let hi = row_top;
-        let want = if matches!(area(), Area::Grid | Area::Rail) {
-            card_row::reveal((*addr_of!(SCROLL)).pos, lo, hi, max_y) // rail jumps scroll the grid too
-        } else {
-            (*addr_of!(SCROLL)).pos
+        // **Vertical scroll: ROW SNAPPING, through `Layout`.** A focused row's target is its own
+        // top edge rather than the minimal reveal `card_row::reveal` performs — which is right for
+        // a shelf inside a page and wrong for a wall of posters you walk down. `card_row::reveal`
+        // is untouched and Home still uses it.
+        //
+        // The bottom-clearance invariant the old `max_y`/`lo` pair spent a paragraph on is now
+        // `Layout`'s: both the clamp and the target come out of one document height, so the last
+        // row's caption cannot end up off-panel because two expressions drifted.
+        // **The scroll target is a function of the zone focus is in** — which is what makes BACK's
+        // head-of-document move a focus change and nothing more.
+        // …and it reads the SETTLED document, never `lay`: `lay` is where the bands are THIS
+        // frame, and a target chasing a moving document is a row that arrives and then drifts.
+        let slay = layout_settled();
+        let want = match area() {
+            // rail jumps scroll the grid too
+            Area::Grid | Area::Rail => slay.row_reveal(GR),
+            Area::Shelf => slay.shelf_reveal(SHELF_F),
+            // the grid's own control row: show the grid block from its heading down
+            Area::Toolbar => (slay.grid_block_top()).clamp(0.0, slay.max_scroll()),
+            // the library chip heads the document, and the read-out stands in for the whole
+            // content region — both are the top of the page
+            Area::LibChip | Area::Status => slay.head(),
+            // **The shared top BAR does not scroll the page.** Walking up to the strip is not a
+            // request to go to the top of the library, and the canvas keeps `scrollY` unchanged for
+            // exactly this zone (`setFocus`: `f.zone === "tabs" ? this.state.scrollY : …`). BACK is
+            // what returns to the head, and it does it by moving focus to the first CONTENT zone.
+            Area::Chip | Area::Tabs => (*addr_of!(SCROLL)).pos,
         };
         (*addr_of_mut!(SCROLL)).step(want, K_SCROLL, dt);
+
+        // every shelf's own springs — the focus pop, its horizontal scroll and its heading lift.
+        // ALL of them every frame, not just the focused one: a row being left keeps animating
+        // after it has stopped being the focused one, which is `CtlPop`'s rule and `CardRow`'s.
+        let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+        for i in 0..MAX_SHELVES {
+            let n = shelves.get(i).map(|s| s.items.len()).unwrap_or(0);
+            let focused = (area() == Area::Shelf && SHELF_F == i).then_some(SHELF_C);
+            // its OWN style: the slot pitch and the tile width feed `scroll_into_view`, so a
+            // landscape row stepped as a poster row scrolls to the wrong place
+            (*addr_of_mut!(SHELF_ROWS))[i].update(n, focused, shelf_style(i), dt);
+        }
 
         // the letter rail's own scroll, for the sections whose alphabet does not fit at
         // `RAIL_PITCH`. Same reveal rule as the grid above, in letter units: keep the driving
@@ -1386,6 +2698,13 @@ pub(crate) fn update(dt: f32) {
         let ln = crate::browse::letters().len().min(MAX_LETTERS);
         let want_rs = rail_scroll_target((*addr_of!(RAIL_SCROLL)).pos, drive, ln);
         (*addr_of_mut!(RAIL_SCROLL)).step(want_rs, K_SCROLL, dt);
+        // …and the rail's own presence, which now follows the REGION focus is in
+        let rail_want = if rail_on() && !menu_open() && readout() == Readout::Grid && rail_region() {
+            1.0
+        } else {
+            0.0
+        };
+        (*addr_of_mut!(RAIL_A)).step(rail_want, K_SCROLL, dt);
 
         // remember the view for re-entry (state amnesia is the official app's #2 complaint)
         crate::browse::save_view(focus_idx(), (*addr_of!(SCROLL)).pos);
@@ -1424,6 +2743,21 @@ pub(crate) fn update(dt: f32) {
             }
         }
     }
+    // ---- the page ground, LAST and OUTSIDE every branch above: it keys off [`focused_item`], and
+    // everything before it can move the focus this frame (the fade's commit teleports GR/GC, the
+    // pump lands the page the ring is standing on, a shelf step moves the column). Keyed earlier it
+    // would spend a frame on the item focus was leaving; keyed inside one of those branches — which
+    // is where it first went, inside `if menu_open()` — it would only ever run with a menu up, and
+    // the page would simply have no ground. That failure is invisible on the host and silent in the
+    // log: the wash stays flat, `is_flat` skips the pass, and the screen looks exactly as it did
+    // before the feature existed.
+    unsafe {
+        (*addr_of_mut!(GROUND)).key(
+            focused_item().filter(|m| m.has_blur).map(|m| m.blur),
+            PageGround::CARD_W,
+            dt,
+        )
+    };
 }
 
 // ---- input: D-pad ---------------------------------------------------------------------------
@@ -1439,6 +2773,7 @@ pub(crate) fn move_focus(sym: c_uint) {
         crate::ui::popover::note_own_damage();
         return;
     }
+    let lay = layout();
     unsafe {
         match area() {
             Area::Chip => {
@@ -1447,46 +2782,91 @@ pub(crate) fn move_focus(sym: c_uint) {
                 // [`below_top_bar`] call, not a restatement of it, so the two exits cannot drift.
                 if sym == SDLK_RIGHT {
                     AREA = Area::Tabs;
-                    TAB_F = 0;
+                    set_tab_p(Pill::Home);
                 } else if sym == SDLK_DOWN {
-                    AREA = below_top_bar();
+                    step_down(&lay);
                 }
             }
             Area::Tabs => {
                 // Home + every section: the row scrolls the far pills into view, so focus may
                 // walk to the last one (it used to stop at a hard cap of 4 sections)
                 let n = crate::ui::widgets::tab_count();
+                // the walk is by POSITION and the result is stored as an IDENTITY: stepping is a
+                // question about the row drawn right now, and only the answer outlives the frame
+                let i = tab_idx();
                 if sym == SDLK_LEFT {
                     // …and off the FIRST pill, LEFT reaches the profile chip beside it — the same
                     // walk Home has always had, now that the chip is a stop here too
-                    if TAB_F > 0 {
-                        TAB_F -= 1;
+                    if i > 0 {
+                        set_tab_p(crate::ui::widgets::pill_at(i - 1));
                     } else {
                         AREA = Area::Chip;
                     }
-                } else if sym == SDLK_RIGHT && TAB_F + 1 < n {
-                    TAB_F += 1;
+                } else if sym == SDLK_RIGHT && i + 1 < n {
+                    set_tab_p(crate::ui::widgets::pill_at(i + 1));
                 } else if sym == SDLK_DOWN {
-                    AREA = below_top_bar();
+                    step_down(&lay);
+                }
+            }
+            Area::LibChip => {
+                // ONE control at the head of the document: nothing sideways, and the vertical walk
+                // is the projection's — which is what makes an empty library (no grid, no controls)
+                // land DOWN on nothing rather than on an undrawn Sort chip.
+                if sym == SDLK_UP {
+                    AREA = Area::Tabs;
+                    set_tab_p(own_pill_id());
+                } else if sym == SDLK_DOWN {
+                    step_down(&lay);
+                }
+            }
+            Area::Shelf => {
+                let n = shelf_len(SHELF_F);
+                if sym == SDLK_LEFT && SHELF_C > 0 {
+                    SHELF_C -= 1;
+                    note_shelf_id();
+                } else if sym == SDLK_RIGHT && SHELF_C + 1 < n {
+                    SHELF_C += 1;
+                    note_shelf_id();
+                } else if sym == SDLK_UP || sym == SDLK_DOWN {
+                    // UP and DOWN walk the SHELVES, and the projection is what carries focus off
+                    // the last one into the grid block below or back up to the chip above — the
+                    // shelf list is a run of identical zones in it, so the index moves here and the
+                    // zone changes only at either end.
+                    let up = sym == SDLK_UP;
+                    if up && SHELF_F > 0 {
+                        SHELF_C = shelf_column_near(SHELF_F, SHELF_C, SHELF_F - 1);
+                        SHELF_F -= 1;
+                        note_shelf_id();
+                    } else if !up && SHELF_F + 1 < lay.shelves {
+                        SHELF_C = shelf_column_near(SHELF_F, SHELF_C, SHELF_F + 1);
+                        SHELF_F += 1;
+                        note_shelf_id();
+                    } else if up {
+                        step_up(&lay);
+                    } else {
+                        step_down(&lay);
+                    }
                 }
             }
             Area::Toolbar => {
                 // walk from the DRAWN index (`tool_f`), never from the raw static: a step taken
                 // from a stale one moves the ring by more than one chip, or by none at all
                 let f = tool_f();
-                if sym == SDLK_LEFT && f > 0 {
+                if sym == SDLK_LEFT && f > control_lo(chips()) {
                     TOOL_F = f - 1;
                 } else if sym == SDLK_RIGHT && f + 1 < chips().len() {
                     TOOL_F = f + 1;
+                } else if sym == SDLK_RIGHT && rail_drawn() {
+                    // **RIGHT off the LAST chip reaches the alphabet**, exactly as RIGHT off the
+                    // grid's last column does. The rail is already drawn here — `rail_region`
+                    // counts the control row, because Sort and Filter act on the grid the rail
+                    // indexes — so it was a control the user could SEE and could not reach without
+                    // first going down into the grid and back out sideways.
+                    enter_rail(Area::Toolbar);
                 } else if sym == SDLK_UP {
-                    AREA = Area::Tabs;
-                    TAB_F = own_pill();
+                    step_up(&lay);
                 } else if sym == SDLK_DOWN {
-                    if readout() == Readout::Failed {
-                        AREA = Area::Status;
-                    } else if total() > 0 {
-                        AREA = Area::Grid;
-                    }
+                    step_down(&lay);
                 }
             }
             Area::Grid => {
@@ -1498,15 +2878,14 @@ pub(crate) fn move_focus(sym: c_uint) {
                         GC += 1;
                     } else if rail_drawn() {
                         // RIGHT off the last column enters the letter rail at the current letter
-                        AREA = Area::Rail;
-                        RAIL_F = letter_of(focus_idx());
+                        enter_rail(Area::Grid);
                         return;
                     }
                 } else if sym == SDLK_UP {
                     if GR > 0 {
                         GR -= 1;
                     } else {
-                        AREA = Area::Toolbar;
+                        step_up(&lay);
                         return;
                     }
                 } else if sym == SDLK_DOWN && GR + 1 < n_rows() {
@@ -1524,7 +2903,10 @@ pub(crate) fn move_focus(sym: c_uint) {
                 } else if sym == SDLK_DOWN && RAIL_F + 1 < n {
                     rail_jump(RAIL_F + 1);
                 } else if sym == SDLK_LEFT {
-                    AREA = Area::Grid; // back into the grid at the jumped position
+                    // back where the rail was entered from — the grid at the jumped position, or
+                    // the control row if that is where RIGHT was pressed. A rail entered from the
+                    // chips that only ever exits into the grid is a one-way door.
+                    AREA = addr_of!(RAIL_FROM).read();
                 }
             }
             Area::Status => {
@@ -1533,16 +2915,51 @@ pub(crate) fn move_focus(sym: c_uint) {
                 // a chip to hold, else the tab strip. The read-out therefore spends no line telling
                 // the user how to get out: every exit is a control they can already see.
                 if sym == SDLK_UP {
-                    if toolbar_n() > 0 {
-                        AREA = Area::Toolbar;
-                        TOOL_F = 0;
-                    } else {
-                        AREA = Area::Tabs;
-                        TAB_F = own_pill();
-                    }
+                    step_up(&lay);
                 }
             }
         }
+    }
+}
+
+/// **One step of the `libosc` sweep, reversing at the DOCUMENT's own ends rather than on a clock.**
+///
+/// `homeosc` and `searchosc` flip direction every 3 s, which is right for a shelf column whose
+/// whole extent is a few presses. It is wrong here and became wrong with this screen: the document
+/// now opens with the library chip and one rung per shelf before the grid begins, so at the
+/// oscillator's 350 ms cadence a 12-shelf library spends more than four seconds reaching the grid
+/// and reverses before it gets there. The scene that exists to sweep the seam between the last
+/// shelf and the poster wall would then never cross it, and an FPS floor over a sweep that cannot
+/// reach the thing it grades approves nothing.
+///
+/// The end test is the walk's own answer rather than a second expression for "the bottom": take the
+/// focus signature, step, and if nothing moved we are against an end — flip and step again. That
+/// cannot disagree with the projection, and it needs no endpoint arithmetic that would have to be
+/// kept in step with `Layout`.
+pub(crate) fn osc_step() {
+    static mut DOWN: bool = true;
+    // every cursor the walk can move, so "nothing moved" is a statement about focus and not about
+    // one zone's idea of it
+    fn sig() -> (Area, usize, usize, usize, usize, usize, usize) {
+        unsafe {
+            (
+                area(),
+                SHELF_F,
+                SHELF_C,
+                tool_f(),
+                GR,
+                GC,
+                addr_of!(RAIL_F).read(),
+            )
+        }
+    }
+    let sym = |down: bool| if down { SDLK_DOWN } else { SDLK_UP };
+    let before = sig();
+    let down = unsafe { addr_of!(DOWN).read() };
+    move_focus(sym(down));
+    if sig() == before {
+        unsafe { DOWN = !down };
+        move_focus(sym(!down));
     }
 }
 
@@ -1580,7 +2997,13 @@ fn grid_focus_moved(old_idx: usize) {
 // ---- input: OK / BACK -----------------------------------------------------------------------
 
 pub(crate) fn focus_is_card() -> bool {
-    !menu_open() && area() == Area::Grid && focused_item().is_some()
+    // **The shelves count, and they have to.** `app.rs` ARMS the press-and-hold from this
+    // predicate (`press::arm`'s `Route::Library` term), so a surface it excludes never becomes a
+    // hold at all — the key-up arrives as an ordinary tap and the tile opens Detail. That is what a
+    // held OK on a shelf tile did on the television until this said Shelf as well: the item menu
+    // was unreachable there, and with it *Remove from Continue Watching*, which is the one row a
+    // section deck exists to offer.
+    !menu_open() && matches!(area(), Area::Grid | Area::Shelf) && focused_item().is_some()
 }
 
 /// What a press on strip pill `i` means for this screen. ONE function for the OK key and the
@@ -1594,8 +3017,8 @@ fn tab_pill_action(i: usize) -> Action {
         Pill::Search => Action::GoSearch,
         // a TAB, not a section: `switch_tab` resolves it through `browse::tabs`, because several
         // libraries can share one pill
-        Pill::Section(tab) => {
-            switch_tab(tab);
+        Pill::Section(kind) => {
+            switch_tab(kind);
             Action::None
         }
     }
@@ -1612,7 +3035,7 @@ pub(crate) fn on_ok() -> Action {
         // is the account menu wherever you are standing, unlike a pill, whose destination depends
         // on the screen. This arm is therefore unreachable in practice and stays for totality.
         Area::Chip => Action::None,
-        Area::Tabs => tab_pill_action(unsafe { addr_of!(TAB_F).read() }),
+        Area::Tabs => tab_pill_action(tab_idx()),
         Area::Toolbar => {
             // matched on the CHIP, never on its index: the row is two chips long with one source
             // and three with two, so position is not identity
@@ -1624,6 +3047,20 @@ pub(crate) fn on_ok() -> Action {
             Action::None
         }
         Area::Grid => Action::Card,
+        // ONE control at the head of the document: OK opens the Sources picker, which is the only
+        // thing the chip does.
+        Area::LibChip => {
+            open_chip_menu(Chip::Source);
+            Action::None
+        }
+        Area::Shelf => Action::ShelfCard {
+            from_deck: unsafe {
+                crate::browse::section_hubs::shelves(crate::browse::cur())
+                    .get(SHELF_F)
+                    .map(|s| s.is_continue)
+                    .unwrap_or(false)
+            },
+        },
         Area::Rail => {
             unsafe { AREA = Area::Grid }; // OK on a letter lands in the grid at that title
             Action::None
@@ -1643,32 +3080,81 @@ pub(crate) fn back() -> bool {
             open_filter_menu(true);
             return true;
         }
-        // the Sources panel has no drill-in level to walk back through: its two levels are peers,
-        // reached sideways, so BACK dismisses the panel from either one
+        // the Sources panel has no level to walk back through at all any more — it is the picker
+        // and nothing else, so BACK dismisses it exactly as it does the other two
         Menu::Source { .. } | Menu::Sort { .. } | Menu::Filter => {
             close_menu();
             return true;
         }
         Menu::None => {}
     }
-    // No menu is being dismissed, so this BACK either walks out of the screen or up to the tab bar
-    // — either way the queued reload must land now rather than be dropped by a route change (and
-    // the tab-bar walk below reads `cur()`, which [`flush`] has just made agree with the chrome).
+    // **BEFORE the commit, BACK CANCELS and is consumed; after it, BACK is the ordinary
+    // head-of-library move.** The rule is temporal rather than spatial — "above/below the floor"
+    // was the loose way to say it. Below the floor the outgoing content is already gone, so
+    // cancelling would restore a page the user has left; before it, the user changed their mind
+    // inside the window and nothing has happened yet.
+    //
+    // The whole transaction goes: the queued action, the fade, and the menu it was built for.
+    if xf().is_swapping() && cancel_pending() {
+        return true;
+    }
+    // Nothing to cancel, so this BACK either walks out of the screen or to the head of the
+    // document — either way a queued reload must land now rather than be dropped by a route change
+    // (and the walk below reads `cur()`, which [`flush`] has just made agree with the chrome).
     flush();
     if area() == Area::Rail {
         unsafe { AREA = Area::Grid };
         return true;
     }
-    // …and the CHIP counts as the tab bar for this rule: it is a stop on the same shared control,
-    // so a BACK from it is already "focus is up in the chrome" and the next one leaves.
-    if !matches!(area(), Area::Tabs | Area::Chip) {
+    // **BACK is a move to the HEAD OF THE DOCUMENT, not a walk up a ladder of zones.**
+    //
+    // One deliberate widening of the canvas, which handles only `grid` and `gridtool`: a SHELF gets
+    // the same move. A deeply scrolled shelf is as far from the top of the page as a grid row is,
+    // and D's rule is about the document rather than about which block you happen to be standing
+    // in — a BACK that worked in the grid and did nothing two shelves up would read as the key
+    // being broken there.
+    //
+    // With one continuous scroll the old "walk to the tab bar first" step is the wrong shape: a
+    // deeply scrolled SHELF is as far from the top of the page as a grid row is, and D's rule is
+    // about the document rather than about which block you happen to be in. So anything below the
+    // head returns to it — animated on the scroll spring, never cut — and only a BACK taken AT the
+    // head leaves for Home.
+    //
+    // The Status read-out is the one zone with no head to return to: it stands in for the whole
+    // content region, and C already says the chip and the strip above it are the way out.
+    let lay = layout();
+    // the head of the LIBRARY is its first content zone, never the shared bar above it
+    let head = lay.first_content();
+    let at_head = matches!(area(), Area::Tabs | Area::Chip | Area::Status)
+        || head.is_none()
+        || (Some(area()) == head && at_document_head());
+    if !at_head {
         unsafe {
-            AREA = Area::Tabs;
-            TAB_F = own_pill(); // `flush` above has made the chrome and the store agree
+            AREA = head.unwrap_or(Area::Tabs);
+            if AREA == Area::Tabs {
+                set_tab_p(own_pill_id()); // `flush` above has made the chrome and the store agree
+            }
+            enter_zone(&lay, AREA, 1);
+            // the scroll follows on its own spring — D: "animated, not cut". It is `update`'s
+            // rule that carries it there: the target is a function of the zone focus is IN, so
+            // moving focus to the head IS the scroll instruction. One rule, not two that must
+            // agree about where the top of the page is.
         }
         return true;
     }
     false
+}
+
+/// **Is the document SETTLED at its head?** The shared predicate, read by [`back`] and by
+/// `section_hubs`' visible staged-commit rule, so the two can never drift into disagreeing about
+/// when the page is at the top.
+///
+/// It reads the settled target and velocity rather than a bare `scroll == 0.0`, which a fast scroll
+/// passes straight THROUGH on its way past — committing a set of shelves in that instant would move
+/// the ground under a reader who never stopped.
+pub(crate) fn at_document_head() -> bool {
+    let sp = unsafe { addr_of!(SCROLL).read() };
+    sp.pos.abs() < 1.0 && sp.vel.abs() < 1.0
 }
 
 // ---- menus (Popover + TableView, all server-driven) -----------------------------------------
@@ -1678,11 +3164,63 @@ const MENU_W: f32 = 470.0;
 /// The Sources panel is wider **because its rows are two-line**: a library's name over its size,
 /// under a machine-name header carrying an owner. 470 elides all three.
 const SRC_W: f32 = 640.0;
+/// The open panel's frame — **anchored under the chip it was opened FROM**, which now scrolls.
+///
+/// It hung off a constant `TOOL_Y + TOOL_H + 18`, correct while every chip sat on a fixed toolbar.
+/// With the controls inside the document a menu anchored there would float away from its own chip
+/// the moment the page moved — the panel is what the chevron points at, so it has to follow it.
+///
+/// `TOOL_RECTS` holds where each chip was DRAWN this frame; the fallback is the old constant, for
+/// the frame before anything has been drawn.
 fn panel_rect() -> Rect {
     let w = if source_menu_open() { SRC_W } else { MENU_W };
     let ph = table().measured_height().clamp(120.0, SCR_H - 280.0);
-    Rect::new(MARGIN_X, TOOL_Y + TOOL_H + 18.0, w, ph)
+    let anchor = menu_anchor();
+    // …and clamped into the panel: a chip scrolled near the bottom edge must not push its own menu
+    // off the screen, which is the one thing a fixed anchor could never do wrong.
+    let y = anchor.1.min(SCR_H - MARGIN_Y - ph);
+    Rect::new(anchor.0, y.max(crate::ui::widgets::TOP_BAR_BOTTOM), w, ph)
 }
+
+/// **Where the open menu hangs from — LATCHED at open, and deliberately not re-read after.**
+///
+/// The chip is inside the scroll on this screen, so it MOVES: applying a filter re-queries the
+/// grid, the document re-seats, and the toolbar travels down the page. Re-reading it every frame
+/// sprang the panel after it — measured in the simulator at 529 → 671 → 808 over about twenty
+/// frames — while the table laid its rows against the rect it had, so the panel's glass body and
+/// its own rows came apart in flight. Photographed on the television 2026-09-05: *"during
+/// filtering, menu explodes"*.
+///
+/// **Following the chip could never have been right, and the reason is the host snapshot.** This
+/// popover is `caching_host`: the page behind the scrim is FROZEN at the moment the menu opened, so
+/// the chip the viewer is looking at is at its old place and the live one the anchor was tracking
+/// is not on the screen at all. A panel that chases the live chip walks away from the only chip
+/// anybody can see. Freezing the anchor is the same statement as freezing the page.
+///
+/// The latch is keyed by the CHIP, not by a bare open flag, because Filter drills into Genre
+/// without closing (they share `Chip::Filter`, so the submenu correctly keeps the panel in place)
+/// while Sort and Sources are different chips and must re-anchor. Dropped by [`close_menu`], and
+/// re-taken lazily on the first read of the next menu — so nothing has to remember to arm it.
+fn menu_anchor() -> (f32, f32) {
+    let chip = menu_chip();
+    if let Some((c, x, y)) = unsafe { addr_of!(MENU_ANCHOR).read() } {
+        if Some(c) == chip {
+            return (x, y);
+        }
+    }
+    let a = chip
+        .and_then(|i| unsafe { addr_of!(TOOL_RECTS).read() }.get(i).copied())
+        .filter(|r| r.w > 0.5)
+        .map(|r| (r.x, r.y + r.h + 18.0))
+        .unwrap_or((MARGIN_X, CONTENT_TOP + TOOL_H + 18.0));
+    if let Some(c) = chip {
+        unsafe { *addr_of_mut!(MENU_ANCHOR) = Some((c, a.0, a.1)) };
+    }
+    a
+}
+
+/// The latched anchor: `(chip index, x, y)`. See [`menu_anchor`].
+static mut MENU_ANCHOR: Option<(usize, f32, f32)> = None;
 fn table_rect() -> Rect {
     panel_rect()
 }
@@ -1691,6 +3229,9 @@ fn table_rect() -> Rect {
 /// nobody can see any more; it is the absence of them.
 fn close_menu() {
     set_menu(Menu::None);
+    // The anchor goes with it — see [`menu_anchor`]. Dropped here rather than re-derived on open,
+    // so a menu that is never opened again leaves nothing behind.
+    unsafe { *addr_of_mut!(MENU_ANCHOR) = None };
     pop().close();
 }
 
@@ -1905,14 +3446,29 @@ fn menu_commit(sel: i32) {
             // variant first: `close_menu` below drops the menu this key belongs to.
             let built = *built;
             if built > 0 && sel >= 0 && (sel as usize) < built {
-                request(Pending::Sort(sel as usize));
+                // the stable KEY and the direction the press produces, resolved HERE against the
+                // menu the user is looking at — never an index carried to another section
+                if let Some(e) = crate::browse::sorts().get(sel as usize) {
+                    let (cur_key, cur_desc) = crate::browse::sort_key_now();
+                    // re-picking the ACTIVE entry flips the direction; picking another takes its
+                    // own default. `browse::set_sort`'s rule, stated rather than inherited.
+                    let desc = if e.key == cur_key {
+                        !cur_desc
+                    } else {
+                        e.default_desc
+                    };
+                    request_grid(GridAct::Sort {
+                        key: e.key.clone(),
+                        desc,
+                    });
+                }
             }
             close_menu(); // the panel closes NOW; the grid dissolves under it
         }
         Menu::Filter => {
             let (unwatched_row, genre_row) = filter_rows();
             if sel == unwatched_row {
-                request(Pending::Unwatched(!view_unwatched()));
+                request_grid(GridAct::Unwatched(!view_unwatched()));
                 open_filter_menu(true); // rebuilt from `view_unwatched()` — its `On`/`Off` flips at once
                 table().sel = unwatched_row;
             } else if sel == genre_row {
@@ -1922,10 +3478,13 @@ fn menu_commit(sel: i32) {
         Menu::Genre { .. } => {
             let genres_n = crate::browse::genres().len();
             if sel == 0 {
-                request(Pending::Genre(None));
+                request_grid(GridAct::Genre(None));
                 close_menu();
             } else if !crate::browse::genres().is_empty() && (sel as usize) <= genres_n {
-                request(Pending::Genre(Some(sel as usize - 1)));
+                let id = crate::browse::genres()
+                    .get(sel as usize - 1)
+                    .map(|g| g.id.clone());
+                request_grid(GridAct::Genre(id));
                 close_menu();
             }
         }
@@ -1935,37 +3494,69 @@ fn menu_commit(sel: i32) {
 
 // ---- pointer --------------------------------------------------------------------------------
 
-pub(crate) fn pointer_focus(mx: f32, my: f32) {
+/// Hover. **Returns whether the focus STOP moved**, which is what an armed press has to know:
+/// `ui::press`'s contract is that focus cannot move mid-press, the nav keys pay it by calling
+/// `press::cancel`, and hover owes the same. Without it, arming a press on a card and then sliding
+/// the Magic Remote's pointer onto another one committed the click — or opened the press-and-hold
+/// menu — on a tile the user was no longer pressing. `detail::pointer_focus` is the precedent and
+/// the shape is deliberately identical; the other hovering screens (`home`, `person`, `search`)
+/// still return nothing and carry the same gap, which is a wider change than this branch.
+pub(crate) fn pointer_focus(mx: f32, my: f32) -> bool {
     if menu_open() {
         if let Some(gi) = table().hit_row(table_rect(), mx, my) {
             table().sel = gi;
             crate::ui::popover::note_own_damage();
         }
-        return;
+        return false;
     }
+    let before = (area(), unsafe {
+        (addr_of!(SHELF_F).read(), addr_of!(SHELF_C).read())
+    }, focus_idx());
+    let moved = |b: (Area, (usize, usize), usize)| {
+        b != (area(), unsafe {
+            (addr_of!(SHELF_F).read(), addr_of!(SHELF_C).read())
+        }, focus_idx())
+    };
     unsafe {
         if let Some(i) = crate::ui::widgets::tab_pill_at(mx, my) {
             AREA = Area::Tabs;
-            TAB_F = i;
-            return;
+            set_tab_p(crate::ui::widgets::pill_at(i));
+            return moved(before);
         }
         let tools = addr_of!(TOOL_RECTS).read();
         // `w > 0.5` rather than a slice by the row's length: a chip that is not drawn parks its
         // rect, so the geometry itself says what is hittable and the scan cannot outlive a shorter
         // row (the failure read-out drops Sort and Filter — see `chips`).
+        //
+        // The LIBRARY chip records its rect in the same array and is its own zone, because it heads
+        // the document rather than sitting in the grid's control row.
         if let Some(i) = tools.iter().position(|r| r.w > 0.5 && r.contains(mx, my)) {
-            AREA = Area::Toolbar;
+            AREA = if chips().get(i) == Some(&Chip::Source) {
+                Area::LibChip
+            } else {
+                Area::Toolbar
+            };
             TOOL_F = i;
-            return;
+            return moved(before);
+        }
+        // …and the shelves, which had no hit test at all: a Magic Remote user could SEE rows they
+        // had no way to reach.
+        if let Some((i, k)) = shelf_at(mx, my) {
+            AREA = Area::Shelf;
+            SHELF_F = i;
+            SHELF_C = k;
+            note_shelf_id();
+            crate::ui::idle::invalidate();
+            return moved(before);
         }
         if status_btn_at(mx, my) {
             AREA = Area::Status;
-            return;
+            return moved(before);
         }
         if let Some(i) = rail_at(mx, my) {
             AREA = Area::Rail;
             RAIL_F = i; // hover focuses the letter; the click jumps
-            return;
+            return moved(before);
         }
         if let Some((r, c)) = cell_at(mx, my) {
             let old = focus_idx();
@@ -1977,6 +3568,9 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) {
             }
         }
     }
+    // a MISS leaves focus where it was, so it is not a move and must not abort a press — the same
+    // trade `onboard::pointer_hold` makes for dead space
+    moved(before)
 }
 
 /// The grid cell under the pointer, with home's fly-away guard: a partially-visible row is not
@@ -1984,15 +3578,21 @@ pub(crate) fn pointer_focus(mx: f32, my: f32) {
 /// pointer).
 fn cell_at(mx: f32, my: f32) -> Option<(usize, usize)> {
     let sc = unsafe { addr_of!(SCROLL).read() }.pos;
+    let lay = layout();
+    // **Through `Layout`, the same projection the draw used.** It read `my - GRID_TOP` — the grid's
+    // own origin as a screen constant — which stops being true the moment a header and N shelves
+    // sit above it: every click would land on a row `shelves * ROW_PITCH / PITCH` too far down.
+    let g = lay.doc_to_grid(sc + my - CONTENT_TOP);
     // O(visible): only the two rows that can straddle the pointer's y, not the whole section
-    let r_lo = (((sc + my - GRID_TOP - CARD_H) / PITCH).floor().max(0.0)) as usize;
-    let r_hi = ((((sc + my - GRID_TOP) / PITCH).floor()).max(0.0) as usize + 1).min(n_rows());
+    let r_lo = ((g - CARD_H) / PITCH).floor().max(0.0) as usize;
+    let r_hi = ((g / PITCH).floor().max(0.0) as usize + 1).min(n_rows());
     for r in r_lo..r_hi.min(n_rows()) {
-        let y = GRID_TOP + r as f32 * PITCH - sc;
+        let y = lay.row_y(r, sc);
         if my < y || my > y + CARD_H {
             continue;
         }
-        let fully_visible = y >= GRID_TOP - 8.0 && y + CARD_H <= SCR_H - 20.0;
+        let fully_visible =
+            y >= crate::ui::widgets::TOP_BAR_BOTTOM && y + CARD_H <= SCR_H - 20.0;
         if !fully_visible && r != unsafe { addr_of!(GR).read() } {
             continue;
         }
@@ -2000,6 +3600,35 @@ fn cell_at(mx: f32, my: f32) -> Option<(usize, usize)> {
             let x = MARGIN_X + c as f32 * (CARD_W + LGAP);
             if mx >= x && mx <= x + CARD_W {
                 return Some((r, c));
+            }
+        }
+    }
+    None
+}
+
+/// A SHELF tile under the pointer, as `(shelf, column)`. The document's other half, and it did not
+/// exist before: a Magic Remote user could see shelves they had no way to click.
+///
+/// Built from the same `Layout` and the same per-row horizontal scroll the draw used, so a tile
+/// that is drawn is a tile that is hittable — including the partially-scrolled ones at either end of
+/// a shelf.
+fn shelf_at(mx: f32, my: f32) -> Option<(usize, usize)> {
+    let sc = unsafe { addr_of!(SCROLL).read() }.pos;
+    let lay = layout();
+    let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+    for (i, sh) in shelves.iter().take(MAX_SHELVES).enumerate() {
+        let sty = shelf_style(i);
+        let top = doc_y(&lay, lay.shelf_origin(i), sc) + crate::ui::consts::CARD_DY;
+        if my < top || my > top + sty.h {
+            continue;
+        }
+        // the row's OWN scroll, so a shelf scrolled halfway still hits the tile that is drawn
+        let sx = unsafe { (*addr_of!(SHELF_ROWS))[i].scroll_x() };
+        let n = sh.items.len().min(card_row::MAX_ROW_ITEMS);
+        for k in 0..n {
+            let x = MARGIN_X + k as f32 * (sty.w + sty.gap) - sx;
+            if mx >= x && mx <= x + sty.w {
+                return Some((i, k));
             }
         }
     }
@@ -2038,6 +3667,11 @@ pub(crate) fn click(mx: f32, my: f32) -> Action {
     }
     if status_btn_at(mx, my) {
         return on_ok(); // `pointer_focus` above has already parked the band on the pill
+    }
+    // a shelf tile: `pointer_focus` has parked focus on it, so `on_ok` resolves the same tile and
+    // the same deck flag the remote would — one activation, two input paths
+    if shelf_at(mx, my).is_some() {
+        return on_ok();
     }
     if let Some(i) = rail_at(mx, my) {
         rail_jump(i); // pointer click on a letter = the jump
@@ -2123,6 +3757,7 @@ fn chip_strs() -> &'static [ChipStrs] {
                     .unwrap_or(0.0);
                 let w = CHIP_PAD + nw + vw + hw + 10.0 + CHIP_ISZ + CHIP_PAD;
                 ChipStrs {
+                    kind: c,
                     name: name_c,
                     val: val_c,
                     note,
@@ -2141,9 +3776,11 @@ fn chip_strs() -> &'static [ChipStrs] {
 /// always a chevron: the third chip — a value-less capsule that WAS its own toggle, wearing an
 /// amber disc when on — is gone (2026-08-13), because the Filter menu it sat beside already
 /// carries "Unwatched only" as a SWITCH row, and one state deserves one control.
-fn toolbar_chip(p: Painter, x: f32, cs: &ChipStrs, icon: Icon, focused: bool) -> Rect {
+/// One chip of the grid's control row, or the library chip at the head of the document. **`y` is a
+/// parameter now**: both of those scroll, where the old fixed toolbar sat at a constant `TOOL_Y`.
+fn toolbar_chip_at(p: Painter, x: f32, y: f32, cs: &ChipStrs, icon: Icon, focused: bool) -> Rect {
     let sz = theme::size::LABEL;
-    let r = Rect::new(x, TOOL_Y, cs.w, TOOL_H);
+    let r = Rect::new(x, y, cs.w, TOOL_H);
     let (bg, bright_ink, dim_ink) = if focused {
         (
             crate::ui::ACCENT,
@@ -2207,8 +3844,22 @@ pub(crate) fn draw() {
     // `icons::draw` — so no per-tile work is needed and nothing can escape either fade.
     let p = Painter::root().alpha(crate::ui::nav::page_alpha());
     let pk = Painter::root().alpha(crate::ui::nav::chrome_alpha());
-    let pg = p.alpha(xf().alpha());
+    // **Two content painters, one per BLOCK** — see [`Scope`]. `pg` fades the grid block, which
+    // every re-query replaces; `ph` fades the document's HEAD (the library chip and the library's
+    // own shelves) only when the whole page is being replaced. A sort used to dissolve and rebuild
+    // both, for a change that touched one.
+    let pg = p.alpha(block_alpha(Scope::Grid));
+    let ph = p.alpha(block_alpha(Scope::Page));
+    // The GROUND, standing in for the flat clear above — opaque, so it goes down before anything
+    // else and the glass tab track samples it like any other page content. On `p` rather than `ph`:
+    // the ground is the PAGE's, not the head block's, so a sort that dissolves the grid must not
+    // also dissolve the atmosphere the grid is standing on. It skips itself when it has resolved
+    // to the clear colour anyway (a library with no artwork colours draws no extra pass at all).
+    unsafe { (*addr_of!(GROUND)).draw(p, Rect::FULL) };
     let sc = unsafe { addr_of!(SCROLL).read() }.pos;
+    // ONE layout for the whole frame, shared by the document draw, the grid cull and the hit test
+    // recorded inside them — so the picture and the pointer can never be looking at two documents.
+    let lay = layout();
     let focused_i = focus_idx();
 
     // ---- the content region: a grid, or the ONE read-out that stands in for it ----------------
@@ -2273,14 +3924,16 @@ pub(crate) fn draw() {
     // `n_rows()` is 0 — but it is true by ARITHMETIC, not by construction, which is exactly the
     // kind of agreement that stops holding the moment something else decides the state (the
     // `libfail` boot). It costs no poster fetch: there are no tiles to resolve in those states.
-    let r_lo = (((sc - CARD_H - GLOW_PAD) / PITCH).floor().max(0.0)) as usize; // loose; per-row cull is exact
-    let r_hi = ((((sc + SCR_H - GRID_TOP) / PITCH).ceil()).max(0.0) as usize + 1).min(n_rows());
+    // **Through `Layout`**, so the rows drawn and the rows `browse::want` asked for are the same
+    // rows: both call `visible_rows` on this frame's document. They used to be two expressions over
+    // `SCROLL` that agreed only while the grid started at scroll 0.
+    let (r_lo, r_hi) = lay.visible_rows(sc);
     for r in r_lo..r_hi {
         if read != Readout::Grid {
             break;
         }
-        let y = GRID_TOP + r as f32 * PITCH - sc;
-        if !on_axis(y, CARD_H, SCR_H, GLOW_PAD) || y + CARD_H < 150.0 {
+        let y = lay.row_y(r, sc);
+        if !block_on_screen(y, CARD_H) {
             continue;
         }
         for c in 0..cols_in_row(r) {
@@ -2309,17 +3962,16 @@ pub(crate) fn draw() {
         draw_focused_card(pg);
     }
 
-    // ---- top chrome: scrim under it once the grid has scrolled, then chip + pills + toolbar --
-    // (drawn AFTER the focused card, so the whole band — scrim included — covers it)
-    // The SHARED navigation-bar scrim — this screen's own three bands, hoisted into
-    // `widgets::nav_scrim` so Search draws the identical treatment instead of a second copy of it.
-    // The numbers are unchanged: that function derives `170 / 188` from `GRID_TOP` by the design
-    // system's own shape (`top − 44` and `top − 26`), which is what these literals always were.
-    // The fade starts BELOW the toolbar, not 44px above the grid: at the old fixed length it began
-    // at 170, sixteen pixels above the chips' own bottom edge, so a chip's lower half sat on ground
-    // that was already fading out from under it — visible on the panel. `TOOL_Y + TOOL_H` is the
-    // lowest thing this bar draws, which is exactly what the shared element wants.
-    crate::ui::widgets::nav_scrim(p, TOOL_Y + TOOL_H, GRID_TOP, sc);
+    // ---- the document's own chrome: the library chip, the shelves, the grid's heading row -----
+    //
+    // **All of it INSIDE the scroll**, which is deliverable D: one continuous column, and the tab
+    // track the only chrome standing over content. The fixed toolbar at `TOOL_Y` is gone and so is
+    // the `widgets::nav_scrim` that backed it — a scrim exists to keep a FIXED bar legible over
+    // moving content, and there is no fixed bar under the track any more. `nav_scrim` is DELETED
+    // now: Search, its only other caller, became one document too on 2026-09-05.
+    draw_document(pg, ph, &lay, sc);
+
+    // ---- top chrome: the shared bar, which is all that is left standing over the page ---------
     // the shared bar, both stops: the centred pills, and then the chip — which unfurls when THIS
     // screen's focus is on it, where it used to be drawn with a hard-coded `expand: 0.0` because it
     // could not be focused here at all.
@@ -2331,56 +3983,6 @@ pub(crate) fn draw() {
     // the other one only while the chip here was frozen shut.
     crate::ui::widgets::draw_tab_row(pk);
     crate::ui::widgets::profile_chip(pk);
-
-    // the focused index comes from `tool_f` — the same clamped authority `focused_chip` reads, so
-    // the chip wearing the ring and the chip OK activates are one chip
-    let tool_i = tool_f();
-    let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && tool_i == i;
-    let strs = chip_strs();
-    let mut x = MARGIN_X;
-    let mut rects = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
-    for (i, cs) in strs.iter().enumerate() {
-        // every chip on this toolbar OPENS A MENU, which is why the trailing glyph is always a
-        // chevron — including Source's
-        let r = toolbar_chip(p, x, cs, Icon::ChevronDown, tool_focus(i));
-        rects[i] = r;
-        x = r.x + r.w + 20.0;
-    }
-    unsafe { *addr_of_mut!(TOOL_RECTS) = rects };
-
-    // Item count, right-aligned on the toolbar line (cached — changes only on re-query). It counts
-    // what the GRID holds, so it goes with the grid: absent on the failure (the design's rule —
-    // there is nothing to count) and absent beside the empty read-out too, which already says the
-    // same thing in words and does not need "0 films" agreeing with it.
-    let tot = crate::browse::total();
-    if tot >= 0 && read == Readout::Grid {
-        let noun = crate::browse::section_kind(crate::browse::cur())
-            .map(|k| k.noun())
-            .unwrap_or("items");
-        let cache = unsafe { &mut *addr_of_mut!(COUNT_C) };
-        if cache
-            .as_ref()
-            .map(|(ct, cn, _)| *ct != tot || *cn != noun)
-            .unwrap_or(true)
-        {
-            *cache = Some((
-                tot,
-                noun,
-                CString::new(format!("{tot} {noun}")).unwrap_or_default(),
-            ));
-        }
-        let cs = &cache.as_ref().unwrap().2;
-        let ty = crate::text::text_vcenter_y(theme::size::CAPTION, 0, TOOL_Y + TOOL_H * 0.5);
-        pg.text(
-            cs.as_ptr(),
-            SCR_W - MARGIN_X,
-            ty,
-            theme::size::CAPTION,
-            theme::TEXT_TERTIARY,
-            2,
-            0,
-        );
-    }
 
     // ---- letter rail (right edge; only on the unfiltered ascending-title listing) ------------
     // faded WITH the grid it indexes. Its `RAIL_RECTS` stay live at α≈0 for the ~210 ms of a
@@ -2425,6 +4027,345 @@ pub(crate) fn draw() {
         });
     }
 }
+/// The zone RIGHT was pressed in to reach the rail, so LEFT can undo it. Both doors into the rail
+/// go through [`enter_rail`]; nothing else writes this.
+static mut RAIL_FROM: Area = Area::Grid;
+
+/// Enter the letter rail from `from`, seating it on the letter the grid is currently showing.
+///
+/// One door for both entries — the grid's last column and the control row's last chip — because
+/// they must seat the rail identically and must both be undoable by LEFT.
+fn enter_rail(from: Area) {
+    unsafe {
+        RAIL_FROM = from;
+        AREA = Area::Rail;
+        RAIL_F = letter_of(focus_idx());
+    }
+}
+
+/// How far the head of the document rises for a magnified tile in the first shelf — that shelf's
+/// own [`card_row::CardRow::lift`], and nothing new.
+fn head_lift(lay: &Layout) -> f32 {
+    if lay.shelves == 0 {
+        return 0.0;
+    }
+    unsafe { (*addr_of!(SHELF_ROWS))[0].lift() }
+}
+
+/// The grid heading block's lift — the same [`card_row::heading_clearance`] rule a shelf's heading
+/// uses, held on a spring here because the grid has no `CardRow` to hold one for it.
+///
+/// A spring rather than the raw clearance for `CardRow`'s own reason: the value is a DESTINATION,
+/// and reading it straight would drop the whole lift in the frame focus moves and spring it back.
+static mut HEAD_S: Spring = Spring::at(0.0);
+fn grid_head_lift() -> f32 {
+    unsafe { (*addr_of!(HEAD_S)).pos }
+}
+/// The lift the block is heading for: full clearance while a tile in grid ROW 0 is magnified,
+/// tapered by the same proximity ramp a shelf uses (a popped card in the last column is nowhere
+/// near a left-aligned heading), and zero otherwise.
+fn grid_head_lift_target() -> f32 {
+    let focused = (matches!(area(), Area::Grid | Area::Rail) && unsafe { GR } == 0 && !menu_open())
+        .then(|| unsafe { GC });
+    // scroll 0: the grid does not scroll horizontally, so a column IS its distance from the margin
+    card_row::heading_clearance(focused, &RowStyle::HOME, 0.0)
+}
+
+/// **The content column's right boundary for TEXT** — the A–Z rail's band, treated as an edge.
+///
+/// The rail occupies the right of this screen's content region, and it is drawn OVER the document,
+/// so a heading laid out to the panel margin runs underneath the letters. That is not something the
+/// rail can fix from its own side; the text has to respect the boundary, exactly as it respects the
+/// screen edge.
+///
+/// [`GRID_R`] is that boundary and it already exists: the grid gives the band up unconditionally so
+/// its six columns never reflow between two sections of one library. Text takes the same edge for
+/// the same reason — a heading that changed width when the rail appeared would be worse than one
+/// that is always a little short — and this is deliberately NOT a narrowing of the content column
+/// anywhere else: Home passes `INFINITY`, because nothing sits on the right of that screen.
+fn heading_max_w() -> f32 {
+    GRID_R - MARGIN_X
+}
+
+/// **Is a block `h` tall, whose top edge is at screen `y`, worth drawing this frame?** ONE rule,
+/// for the shelves and for the grid rows alike.
+///
+/// They were two, and the grid's carried a second term: `y + CARD_H < TOP_BAR_BOTTOM` also culled a
+/// row whose bottom edge had climbed above the tab track. That was correct — free, even — for as
+/// long as an OPAQUE scrim covered the band between the track and the content edge, which is what
+/// the fixed toolbar sat on. The one-scroll rewrite deleted the toolbar and the scrim with it, and
+/// the tab track is a CENTRED PILL rather than a full-width bar: everything to its left and right
+/// at that height is open screen. So the term stopped meaning "hidden anyway" and started meaning
+/// "vanishes in plain sight" — cards popping out of existence 130px from the top edge while
+/// scrolling, in the two columns either side of the track, which is exactly what was reported. The
+/// shelves never had the term and never showed the fault, which is what localised it.
+///
+/// `GLOW_PAD` is the focus glow's spill, so a row is kept a little past its own edges.
+fn block_on_screen(y: f32, h: f32) -> bool {
+    on_axis(y, h, SCR_H, GLOW_PAD)
+}
+
+/// Document y → screen y. The ONE conversion, so nothing derives a screen coordinate from `SCROLL`
+/// by hand.
+fn doc_y(_lay: &Layout, y: f32, scroll: f32) -> f32 {
+    CONTENT_TOP + y - scroll
+}
+
+/// **The scrolling column: the library chip, the library's own shelves, and the grid's heading
+/// row.** Everything that used to be fixed chrome under the tab track (deliverable D).
+///
+/// Drawn on `pg` — the page fade times the grid's content cross-fade — because every part of it is
+/// a function of the LISTING: change library and the chip's name, the shelves and the count all
+/// belong to the new one.
+fn draw_document(pg: Painter, ph: Painter, lay: &Layout, sc: f32) {
+    // ---- the library chip, at the head ----
+    let mut tool_rects = [Rect::new(0.0, 0.0, 0.0, 0.0); 3];
+    if lay.chip {
+        // **The chip rides the lift of the block BELOW it**, which is the same rule Home's headings
+        // have always followed and the reason `card_row` owns it. A magnified tile in the first
+        // shelf raises that shelf's heading (`CardRow::lift`); leaving the chip behind opens the
+        // gap between them by the whole lift, which is what "the pills stay where they were,
+        // leaving an awkward amount of spacing" describes. Moving with it holds the gap constant.
+        let y = doc_y(lay, 0.0, sc) - head_lift(lay);
+        if on_axis(y, TOOL_H, SCR_H, 0.0) {
+            let strs = chip_strs();
+            if let Some(cs) = strs.iter().find(|c| c.kind == Chip::Source) {
+                toolbar_chip_at(
+                    ph,
+                    MARGIN_X,
+                    y,
+                    cs,
+                    Icon::ChevronDown,
+                    area() == Area::LibChip && !menu_open(),
+                );
+            }
+        }
+    }
+
+    // ---- the library's own shelves ----
+    let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+    for (i, sh) in shelves.iter().take(MAX_SHELVES).enumerate() {
+        let origin = doc_y(lay, lay.shelf_origin(i), sc);
+        // one shelf's whole band: heading above the origin, cards below it
+        if !block_on_screen(origin - crate::ui::consts::TITLE_DY, lay.shelf_pitch(i)) {
+            continue;
+        }
+        // **A row of EPISODES is drawn landscape** — its own style, its own art variant and its own
+        // slot pitch, all three from the one flag the parse set. Everything else about it is the
+        // shared shelf: the same `CardRow` springs, the same heading and lift, the same focus ring,
+        // the same resume bar, the same watched disc, the same walk.
+        let sty = if sh.landscape {
+            &RowStyle::EPISODE
+        } else {
+            &RowStyle::HOME
+        };
+        let row = unsafe { &(*addr_of!(SHELF_ROWS))[i] };
+        let focused = (area() == Area::Shelf && unsafe { SHELF_F } == i && !menu_open())
+            .then(|| unsafe { SHELF_C });
+        // the heading rides the row's own LIFT, exactly as Home's does — the adjacency rule
+        // `card_row::heading_clearance` implements, so a focused tile never crowds its title
+        crate::ui::card_row::draw_heading(
+            ph,
+            &sh.title,
+            "",
+            MARGIN_X,
+            origin - crate::ui::consts::TITLE_DY - row.lift(),
+            heading_max_w(),
+        );
+        let n = sh.items.len().min(card_row::MAX_ROW_ITEMS);
+        card_row::strip(
+            ph,
+            row,
+            n,
+            focused.map(|c| c as c_int).unwrap_or(-1),
+            origin + crate::ui::consts::CARD_DY,
+            (sty.w, sty.h),
+            sty.w + sty.gap,
+            sty,
+            SCR_W,
+            // `Art::Still` and not `Art::Thumb`: it carries the ROW, which is what `still_key`'s
+            // fallback chain and the resume bar are both resolved from. A `Thumb` is a path and a
+            // size and can answer neither — the mistake `detail`'s Related shelf made for months.
+            //
+            // It does NOT carry it for the watched DISC any more, which is what this comment used
+            // to say: a landscape tile's watch state is the tick inside its state line, and one
+            // mark per tile is the rule (`widgets::still_line`, `Library Screens.dc.html` E).
+            |k| {
+                if sh.landscape {
+                    Art::Still(sh.items.get(k))
+                } else {
+                    Art::Poster(sh.items.get(k))
+                }
+            },
+            // a LANDSCAPE shelf draws its own bar in `extra`, after the scrim — see
+            // `widgets::still_overlay`. A poster shelf keeps `card_row`'s.
+            |k| {
+                (!sh.landscape)
+                    .then(|| sh.items.get(k).and_then(PmsMovie::resume_frac))
+                    .flatten()
+            },
+            |k| shelf_label(sh, k),
+            // …and the label INSIDE the artwork, on every tile whether focused or not — the one
+            // thing that separates a shelf of stills from a row of anonymous frames. `extra` is
+            // handed the tile's unscaled x and whether it is the focused one, so the line is
+            // rebuilt on the rect actually drawn and rides the focus pop without resizing.
+            |pe, k, x, foc| {
+                if !sh.landscape {
+                    return;
+                }
+                let Some(m) = sh.items.get(k) else { return };
+                let sc = if foc {
+                    row.scale(k) * crate::ui::press::scale()
+                } else {
+                    row.scale(k)
+                };
+                let card = Rect::new(x, origin + crate::ui::consts::CARD_DY, sty.w, sty.h)
+                    .scaled(sc);
+                crate::ui::widgets::still_overlay(
+                    pe,
+                    m,
+                    card,
+                    sty.tile_radius(card, sc),
+                    sh.is_continue,
+                );
+            },
+        );
+    }
+
+    // ---- the grid's heading row: its title, then Sort and Filter, then the count ----
+    //
+    // Inside the scroll, under the grid's own heading — which is what DELETED the visibility rule
+    // the fixed toolbar spent two revisions on. A control that scrolls away with the thing it acts
+    // on needs no rule about when it is drawn; it needs only not to be drawn when there is nothing
+    // to act on, which `Layout::grid_head` already answers.
+    if lay.grid_head {
+        // …and the grid's heading BLOCK — its title and its Sort/Filter row, which are one block —
+        // rides the lift of grid row 0 the same way. Both parts move together: a heading that rose
+        // while the chips under it stood still would open the same gap one rung lower down.
+        let top = doc_y(lay, lay.grid_block_top(), sc) - grid_head_lift();
+        if on_axis(top, GRID_HEAD, SCR_H, GLOW_PAD) {
+            // the heading reads "All films · 185 films · A–Z" — one line, the count folded into it
+            // rather than floated at the far right of a bar that no longer exists
+            let (head, note) = grid_heading();
+            crate::ui::card_row::draw_heading(pg, &head, &note, MARGIN_X, top, heading_max_w());
+            // …and the control row a rung below it
+            let cy = top + crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
+            let tool_i = tool_f();
+            let tool_focus = |i: usize| area() == Area::Toolbar && !menu_open() && tool_i == i;
+            let strs = chip_strs();
+            let mut x = MARGIN_X;
+            for (i, cs) in strs.iter().enumerate() {
+                if cs.kind == Chip::Source {
+                    continue; // the Source chip heads the document; it is not a grid control
+                }
+                let r = toolbar_chip_at(pg, x, cy, cs, Icon::ChevronDown, tool_focus(i));
+                tool_rects[i] = r;
+                x = r.x + r.w + 20.0;
+            }
+        }
+    }
+    unsafe { *addr_of_mut!(TOOL_RECTS) = tool_rects };
+}
+
+/// The grid block's own heading — `All films · 185 films · A–Z`, the design's line. One string, so
+/// the count travels with the words instead of being right-aligned on a bar that is gone.
+fn grid_heading() -> (String, String) {
+    let noun = crate::browse::section_kind(crate::browse::cur())
+        .map(|k| k.noun())
+        .unwrap_or("items");
+    let tot = crate::browse::total();
+    // **The count is part of the HEADING, not a control** (`Library Interactive.dc.html`): it
+    // describes the rows under it, it is a fact rather than something you press, and it needs no
+    // face of its own. It used to be right-aligned on the toolbar bar that is gone.
+    //
+    // Two runs, not one string: the shared `draw_heading` puts the title at `size::HEADLINE` in
+    // `TEXT_HEADING` and the annotation a rung down in `TEXT_TERTIARY`, which is the canvas's own
+    // pairing — and is why this is not simply formatted into the title.
+    let title = view_filter_value();
+    let sort = view_sort_label();
+    let note = if tot >= 0 {
+        format!("{tot} {noun} \u{b7} {sort}")
+    } else {
+        sort.to_string()
+    };
+    (title, note)
+}
+
+/// One shelf tile's label block — what FOCUS reveals under the tile.
+///
+/// **On a landscape shelf this is the EPISODE's NAME and its one trailing FACT, and it repeats
+/// neither printed line** (`Library Screens.dc.html` E, revised 2026-09-05: "focus adds the
+/// episode's name and its one trailing fact — time left on Continue Watching, release date on
+/// Recently Released. Neither printed line is repeated below: one fact, one place").
+///
+/// The artwork already carries the show AND the address, both on every tile focused or not
+/// ([`crate::ui::widgets::still_overlay`]), so this block owes the two things that are NOT up
+/// there. The address was the caption rung until this revision, and moving it onto the artwork is
+/// the whole of that revision: four tiles of one show differ only by number, so the number cannot
+/// be the thing behind focus — the NAME can, because it distinguishes nothing until you have
+/// already picked a tile.
+///
+/// The trailing fact is chosen by the SHELF and not by the item: a part-watched episode on
+/// Continue Watching trails "24 min left" because that is the fact you came for, while a discovery
+/// shelf trails the release date. An episode with neither a title nor a fact falls back rather than
+/// drawing an empty rung.
+/// **The one fact an episode tile trails under its focused artwork**, chosen by the SHELF.
+///
+/// `Library Screens.dc.html` E: "time left on Continue Watching, release date on Recently
+/// Released". Both are facts the printed pair above cannot carry — the artwork prints the show and
+/// the address, and the caption rung is the only place left for something that changes with the
+/// item's own state.
+///
+/// **The shelf decides, not the item**, which is what keeps a row consistent: a deck tile with no
+/// resume point (a next-up episode) still belongs to the deck, and answering with its air date
+/// there would put one dated tile in a row of durations. It falls back to the date rather than to
+/// nothing, because a deck tile that has genuinely never been started has no time left to report.
+///
+/// Empty is an ordinary answer — a server that sent neither a date nor a year — and the caller
+/// draws one rung instead of two rather than an empty second line.
+fn still_trailing_fact(m: &PmsMovie, is_continue: bool) -> String {
+    if is_continue {
+        if let Some(_) = m.resume_frac() {
+            return crate::ui::fmt::time_left(m.dur_ns / 1_000_000 - m.resume_ms);
+        }
+    }
+    if m.aired.is_empty() && m.year <= 0 {
+        return String::new();
+    }
+    crate::ui::fmt::pretty_date(&m.aired, m.year as i64)
+}
+
+fn shelf_label(sh: &crate::browse::section_hubs::Shelf, k: usize) -> card_row::TileLabel {
+    let Some(m) = sh.items.get(k) else {
+        return card_row::TileLabel::title("");
+    };
+    if sh.landscape {
+        let name = if m.title.is_empty() || m.title == m.show_title {
+            crate::ui::fmt::episode_address(m.season_index as i64, m.ep_index as i64)
+        } else {
+            m.title.clone()
+        };
+        let fact = still_trailing_fact(m, sh.is_continue);
+        return if fact.is_empty() {
+            card_row::TileLabel::title(&name)
+        } else {
+            card_row::TileLabel::titled(&name, &fact)
+        };
+    }
+    // A POSTER shelf: the amber play triangle on the deck's tiles, exactly as Home's — one
+    // vocabulary for "this one resumes", whichever screen the shelf is on — and, on every shelf,
+    // the SHARED trailing fact under it (`card_row::focused_caption`). This screen passed a bare
+    // title until 2026-09-05 and so reserved a two-rung block to draw one rung into it, which is
+    // the ragged row the owner reported; Home had carried the caption all along, so the fix was to
+    // share its rule rather than to shrink this screen's box.
+    let mut l = if sh.is_continue {
+        card_row::TileLabel::played(&m.title)
+    } else {
+        card_row::TileLabel::title(&m.title)
+    };
+    l.caption = card_row::focused_caption(m, sh.is_continue);
+    l
+}
 
 /// **Is the grid's PASS 2 — the focused card — drawn at all this frame?**
 ///
@@ -2449,7 +4390,8 @@ fn focused_card_drawn(read: Readout, total: usize) -> bool {
 fn focused_card_base() -> Option<Rect> {
     let (r, c) = unsafe { (addr_of!(GR).read(), addr_of!(GC).read()) };
     let sc = unsafe { addr_of!(SCROLL).read() }.pos;
-    let y = GRID_TOP + r as f32 * PITCH - sc;
+    // through `Layout`, not the pre-rewrite constant — see `Layout::row_y`
+    let y = layout().row_y(r, sc);
     if !on_axis(y, CARD_H, SCR_H, GLOW_PAD) {
         return None;
     }
@@ -2468,7 +4410,33 @@ fn focused_card_base() -> Option<Rect> {
 /// opens the menu cancels the press in the same breath, so anchoring off the transient dip would
 /// leave the panel beside a card that springs back out from under it.
 pub(crate) fn focused_card_rect() -> Option<Rect> {
+    if area() == Area::Shelf {
+        return focused_shelf_base();
+    }
     Some(focused_card_base()?.scaled(unsafe { addr_of!(FOCUS_S).read() }.pos))
+}
+
+/// The focused SHELF tile's frame at its own magnification, or `None` while it is off-panel.
+///
+/// Built from the same three numbers the shelf's draw uses — the layout's origin, the row's own
+/// horizontal scroll and `CardRow`'s per-tile scale — because the context menu is anchored beside
+/// the tile that is DRAWN. `shelf_at` is the same geometry read the other way round, for the
+/// pointer.
+fn focused_shelf_base() -> Option<Rect> {
+    let (i, k) = unsafe { (SHELF_F, SHELF_C) };
+    let sc = unsafe { addr_of!(SCROLL).read() }.pos;
+    let lay = layout();
+    if i >= lay.shelves || k >= shelf_len(i) {
+        return None;
+    }
+    let row = unsafe { &(*addr_of!(SHELF_ROWS))[i] };
+    let sty = shelf_style(i);
+    let y = doc_y(&lay, lay.shelf_origin(i), sc) + crate::ui::consts::CARD_DY;
+    if !on_axis(y, sty.h, SCR_H, GLOW_PAD) {
+        return None;
+    }
+    let x = MARGIN_X + k as f32 * (sty.w + sty.gap) - row.scroll_x();
+    Some(Rect::new(x, y, sty.w, sty.h).scaled(row.scale(k.min(card_row::MAX_ROW_ITEMS - 1))))
 }
 
 /// The grid's PASS 2 — the focused card and its under-label, over its neighbours.
@@ -2483,14 +4451,18 @@ fn draw_focused_card(pg: Painter) {
     let s = unsafe { addr_of!(FOCUS_S).read() }.pos * crate::ui::press::scale();
     let rect = base.scaled(s);
     let m = crate::browse::item(focus_idx());
+    // The grid's own trailing fact, through the shared rule rather than a private year match: the
+    // shelves above it now use the same one, and a grid that answered "1994" where a shelf answered
+    // "S1 • E8" would be the same object captioned two ways on one screen.
     let label = m
-        .map(|mm| match mm.year {
-            y if y > 0 => card_row::TileLabel::titled(&mm.title, &y.to_string()),
-            _ => card_row::TileLabel::title(&mm.title),
+        .map(|mm| {
+            let mut l = card_row::TileLabel::title(&mm.title);
+            l.caption = card_row::focused_caption(mm, false);
+            l
         })
         .unwrap_or_default();
     let resume = m.and_then(PmsMovie::resume_frac);
-    card_row::draw_focused(pg, Art::Poster(m), rect, s, &RowStyle::HOME, resume, &label);
+    card_row::draw_focused(pg, Art::Poster(m), rect, s, &GRID_STYLE, resume, &label);
 }
 
 /// Re-draw the focused grid card ON TOP of a modal scrim — this screen's half of
@@ -2501,6 +4473,13 @@ fn draw_focused_card(pg: Painter) {
 /// the grid it belongs to.
 pub(crate) fn redraw_focused_card() {
     crate::ui::guard(|| {
+        // A SHELF tile is lifted from the shelf's own draw, not the grid's pass 2 — same card
+        // component, different geometry and a different predicate, so it gets its own branch rather
+        // than being squeezed through `focused_card_drawn`.
+        if area() == Area::Shelf {
+            redraw_focused_shelf_tile();
+            return;
+        }
         // The page's OWN pass-2 predicate, asked again rather than approximated: a lift is only
         // ever the card the page drew, so the two must be one rule.
         if !focused_card_drawn(readout(), total()) {
@@ -2511,13 +4490,67 @@ pub(crate) fn redraw_focused_card() {
         // BEFORE the toolbar precisely so a focused card scrolling through the top band slides
         // beneath the Sort/Filter chips instead of popping over them, and a lift drawn after
         // everything would invert exactly that. `TOOL_Y + TOOL_H` is the lowest thing the top bar
-        // draws — the same line `nav_scrim` fades from. Set and cleared in one breath, as
+        // draws — the same line the retired `nav_scrim` used to fade from. Set and cleared in one
+        // breath, as
         // `Painter::clip`'s global GL state requires.
         let cut = TOOL_Y + TOOL_H;
         p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
         draw_focused_card(p);
         p.clip_clear();
     });
+}
+
+/// The focused SHELF tile, drawn again over the item menu's scrim — the shelf half of
+/// [`redraw_focused_card`]. Same `card_row::draw_focused` the shelf itself ran, on the same
+/// geometry, so the lifted copy is the tile the page drew.
+fn redraw_focused_shelf_tile() {
+    let Some(rect) = focused_shelf_base() else {
+        return;
+    };
+    let Some(m) = focused_item() else {
+        return;
+    };
+    let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+    let Some(sh) = shelves.get(unsafe { SHELF_F }) else {
+        return;
+    };
+    let p = Painter::root().alpha(crate::ui::nav::page_alpha() * block_alpha(Scope::Page));
+    // cut at the shared TAB TRACK, which is the only chrome left standing over this page — it was
+    // `TOOL_Y + TOOL_H`, the bottom of a fixed toolbar the one-scroll rewrite deleted
+    let cut = crate::ui::widgets::TOP_BAR_BOTTOM;
+    p.clip(Rect::new(0.0, cut, SCR_W, SCR_H - cut));
+    let i = unsafe { SHELF_F };
+    card_row::draw_focused(
+        p,
+        if sh.landscape {
+            Art::Still(Some(m))
+        } else {
+            Art::Poster(Some(m))
+        },
+        rect,
+        unsafe { (*addr_of!(SHELF_ROWS))[i].scale(SHELF_C.min(card_row::MAX_ROW_ITEMS - 1)) },
+        shelf_style(i),
+        // …and the same split the shelf itself makes: a landscape tile's bar is drawn by
+        // `widgets::still_overlay` below, AFTER its scrim, or the gradient darkens it
+        (!sh.landscape).then(|| m.resume_frac()).flatten(),
+        &shelf_label(sh, unsafe { SHELF_C }),
+    );
+    // **…and its state line, or the lift is not the tile the page drew.** On a landscape shelf the
+    // show's name and its watch glyph live INSIDE the artwork, so a lifted copy without them is an
+    // anonymous frame of television — on the one frame where it is the only thing on screen at full
+    // strength, which is exactly what `popover::Opener` exists to prevent. `rect` is already the
+    // SCALED rect (`focused_shelf_base`), the same one `draw_focused` just used.
+    if sh.landscape {
+        let s = unsafe { (*addr_of!(SHELF_ROWS))[i].scale(SHELF_C.min(card_row::MAX_ROW_ITEMS - 1)) };
+        crate::ui::widgets::still_overlay(
+            p,
+            m,
+            rect,
+            shelf_style(i).tile_radius(rect, s),
+            sh.is_continue,
+        );
+    }
+    p.clip_clear();
 }
 
 /// The toolbar chip an open chip menu hangs off — its index in [`chips`], or None when no menu is
@@ -2563,25 +4596,20 @@ fn redraw_menu_chip() {
             return; // never drawn this frame (the read-out collapsed the row) — nothing to lift
         }
         let p = Painter::root().alpha(crate::ui::nav::page_alpha());
-        toolbar_chip(p, r.x, cs, Icon::ChevronDown, false);
+        // `r` is where the chip was DRAWN this frame, y included — the control row scrolls now, so
+        // the lift cannot re-derive a fixed `TOOL_Y` the way it used to
+        toolbar_chip_at(p, r.x, r.y, cs, Icon::ChevronDown, false);
     });
 }
 
-/// The Sources panel's level switch: two segmented pills at the panel top, the shared
-/// [`TabPill`](crate::ui::widgets::TabPill) in its boolean `segment` model — a selected segment is
-/// a subtle pill and an unselected one is dim text with no pill. That model exists for a segmented
-/// control that is NOT in a strip, which is exactly this: two fixed segments with nothing to travel
-/// between.
-///
-/// **Exactly one focus in the panel.** The pills are a focus stop, and while they hold it the table
-/// draws no selection pill at all ([`TableView::list_focused`]) — that pairing is the fix for the
-/// owner-reported "two items are at focus", where the pill row took the bright capsule while the
-/// table went on painting its selection, which a table always did.
 /// The A–Z rail: only the letters that EXIST (the server's `/firstCharacter` index), vertically
 /// centered in the grid band on the right edge. The letter holding rail focus is a snow disc;
 /// the letter containing the current grid focus reads primary; the rest tertiary.
 fn draw_rail(p: Painter) {
-    if !rail_drawn() {
+    // the fade is the rail's own; `rail_drawn` is the PRESENCE test the walk and the hit test share
+    let a = unsafe { addr_of!(RAIL_A).read() }.pos;
+    let p = p.alpha(a);
+    if !rail_drawn() && a <= 0.01 {
         unsafe { RAIL_N = 0 };
         return;
     }
@@ -2707,10 +4735,10 @@ pub(crate) fn switch_step(k: u32) {
     match k % 14 {
         0 => {
             if crate::browse::tab_count() > 1 {
-                switch_tab(1);
+                switch_tab(crate::browse::SecKind::Show);
             }
         }
-        1 => switch_tab(0),
+        1 => switch_tab(crate::browse::SecKind::Movie),
         2 => open_sort_menu(),
         3 => table().move_sel(1),
         4 => {
@@ -2718,7 +4746,7 @@ pub(crate) fn switch_step(k: u32) {
         }
         // the scene fires every 1400 ms — far longer than the ~210 ms transition — so every
         // switch still commits, and the scene now FPS-gates the cross-fade too
-        5 | 6 => request(Pending::Unwatched(!view_unwatched())),
+        5 | 6 => request_grid(GridAct::Unwatched(!view_unwatched())),
         7 => open_filter_menu(false),
         8 => table().move_sel(1),
         9 => menu_commit(1), // → the Genre value list (fetches it the first time)
@@ -2750,7 +4778,7 @@ mod tests {
     /// Put the screen's queue + fader back the way a fresh boot has them, so ordering between
     /// tests cannot matter.
     fn clear() {
-        unsafe { PENDING = Pending::None };
+        unsafe { PENDING = Pending::NONE };
         *xf() = Xfade::new();
     }
 
@@ -2768,9 +4796,9 @@ mod tests {
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         crate::browse::reset();
-        switch_tab(1);
+        switch_tab(crate::browse::SecKind::Show);
         assert_eq!(unsafe { WANTED_KIND }, crate::browse::SecKind::Show);
-        assert!(crate::browse::tab_section(1).is_none());
+        assert!(crate::browse::tab_of_kind(crate::browse::SecKind::Show).is_none());
         assert_eq!(readout(), Readout::Loading);
     }
 
@@ -2797,18 +4825,25 @@ mod tests {
     fn the_newest_queued_reload_supersedes_the_one_before_it() {
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
-        request(Pending::Sort(3));
-        request(Pending::Section(2));
+        request_grid(GridAct::Sort {
+            key: "titleSort".into(),
+            desc: false,
+        });
+        request_section(2);
         assert_eq!(
-            pending(),
-            Pending::Section(2),
+            pending().section.map(|r| r.sec),
+            Some(2),
             "the newer request must replace the older one"
+        );
+        assert_eq!(
+            pending().grid,
+            None,
+            "…and a grid action aimed at the library being LEFT is discarded, not carried"
         );
         assert!(xf().is_swapping(), "a request arms the fade-out");
         apply_pending();
-        assert_eq!(
-            pending(),
-            Pending::None,
+        assert!(
+            pending().is_none(),
             "the commit drains the queue — one press, one swap"
         );
         clear();
@@ -2824,17 +4859,17 @@ mod tests {
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         let committed = crate::browse::unwatched();
-        request(Pending::Unwatched(!committed));
+        request_grid(GridAct::Unwatched(!committed));
         assert_eq!(
             view_unwatched(),
             !committed,
             "the chrome flips on the press, not on the commit"
         );
         // a second press inside the same fade cancels the first: the chip must be able to say so
-        request(Pending::Unwatched(committed));
+        request_grid(GridAct::Unwatched(committed));
         assert_eq!(view_unwatched(), committed);
 
-        request(Pending::Section(2));
+        request_section(2);
         assert_eq!(
             view_section(),
             2,
@@ -2857,22 +4892,26 @@ mod tests {
     /// `home::set_hero_focus` at the page fade's floor), so a wrong answer parks Home's focus
     /// somewhere the user never was. It must report the pill only while the tab row is genuinely
     /// what holds focus — not the grid, not the toolbar, not the rail, and not under a menu, where
-    /// `TAB_F` is merely the value the row was last left on.
+    /// `TAB_P` is merely the identity the row was last left on.
     #[test]
     fn the_pill_the_user_is_holding_is_what_leaves_the_screen() {
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
-        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_F).read()) };
+        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_P).read()) };
         let menu0 = take_menu();
 
+        // Search, whatever position it occupies: the cursor is an IDENTITY now, so this test says
+        // WHICH pill rather than which slot — which is the property that broke when the strip
+        // stopped being a permanent four.
+        let want = crate::ui::widgets::Pill::Search;
         unsafe {
             AREA = Area::Tabs;
-            TAB_F = 3
+            TAB_P = want
         };
         set_menu(Menu::None);
         assert_eq!(
             focused_pill(),
-            Some(3),
+            Some(want),
             "the row holds focus — that pill crosses to Home"
         );
 
@@ -2900,7 +4939,7 @@ mod tests {
 
         unsafe {
             AREA = area0;
-            TAB_F = tab0
+            TAB_P = tab0
         };
         set_menu(menu0);
         clear();
@@ -2917,19 +4956,23 @@ mod tests {
     ///
     /// Graded through [`top_focus`] — the value `widgets::tab_row_update` animates the bar from and
     /// `app.rs` routes OK on — so "the chip is focused" cannot mean one thing to the unfurl and
-    /// another to the press. Takes `PEND` like its neighbours: it moves `AREA`/`TAB_F`.
+    /// another to the press. Takes `PEND` like its neighbours: it moves `AREA`/`TAB_P`.
     #[test]
     fn the_profile_chip_is_the_bars_leftmost_stop() {
         use crate::ui::widgets::TopFocus;
+        // It seeds `browse`'s section table now (the vertical walk is derived from what is DRAWN,
+        // so an empty page has nothing below the bar) — and anything touching a crate global owes
+        // `testlock::serial()`, not just this module's own `PEND`.
+        let _s = crate::testlock::serial();
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
-        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_F).read()) };
+        let (area0, tab0) = unsafe { (addr_of!(AREA).read(), addr_of!(TAB_P).read()) };
         let menu0 = take_menu();
         set_menu(Menu::None);
 
         unsafe {
             AREA = Area::Tabs;
-            TAB_F = 0
+            TAB_P = Pill::Home
         };
         assert_eq!(
             top_focus(),
@@ -2960,6 +5003,13 @@ mod tests {
 
         // DOWN out of the band, from BOTH stops, lands in the same place — the one thing that
         // would read as the chip being a different control from the pills beside it.
+        //
+        // **The page needs a GRID under it for that to be a question at all.** The vertical walk is
+        // derived from what is DRAWN now, so on an empty library every DOWN is correctly a no-op —
+        // which is the fix for parking focus on an undrawn control, and which would quietly turn
+        // this into an assertion about nothing.
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(12);
         unsafe { AREA = Area::Tabs };
         move_focus(SDLK_DOWN);
         let from_pills = area();
@@ -2974,6 +5024,7 @@ mod tests {
             TopFocus::Away,
             "…and off the bar entirely — neither chip nor pill"
         );
+        crate::browse::reset();
 
         // A menu owns the frame, so the bar underneath holds nothing — the chip's half of the rule
         // `focused_pill` already keeps for the pills.
@@ -2988,7 +5039,7 @@ mod tests {
         set_menu(menu0);
         unsafe {
             AREA = area0;
-            TAB_F = tab0
+            TAB_P = tab0
         };
         clear();
     }
@@ -3282,7 +5333,10 @@ mod tests {
             .collect()
     }
 
-    /// THE row model, and the rule that makes the two levels readable as one panel: **a mark says
+    /// THE shared row model, graded at both `Level`s — which since 2026-09-05 belong to two
+    /// DIFFERENT screens rather than to two halves of this panel (this one is `Browse` only; the
+    /// Favorite libraries editor is `OnHome`). The rule is what keeps them readable as one list
+    /// across those two screens: **a mark says
     /// where you are, a word says what is set, and no row says both.** Browse draws one tick and no
     /// words; On Home draws every row's word and no ticks. Neither level mirrors the other's marks.
     #[test]
@@ -3375,7 +5429,7 @@ mod tests {
         );
         assert_eq!(last.toggle, Some(true));
         assert_eq!(
-            last.detail, "Home needs one library",
+            last.detail, "The app needs one library",
             "the sub-line says why"
         );
         assert_eq!(
@@ -3534,8 +5588,25 @@ mod tests {
         let _s = crate::testlock::serial();
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         let menu0 = take_menu();
+        // The guard comes BEFORE the seed: `append_sections` resolves each row's
+        // default the moment it lands, against whatever session file is live at that
+        // instant — so a redirect installed afterwards grades pins already decided
+        // against the developer's own `auth.json`.
+        let _t = crate::plex::session::TempSession::new("panel-rebuild");
+        _t.watching("u-panel-rebuild");
         crate::browse::reset();
         crate::browse::seed_two_source_table_for_test();
+        // The panel is FAVOURITE-scoped now, and under `pins::default_on` a shared library of a
+        // type you already own starts OFF — so the friend's two libraries would not be offered at
+        // all and this fixture would collapse to one row. Favourite them explicitly: what is under
+        // test here is the panel's LEVEL and its row identities, not the default.
+        //
+        // Through the REAL `apply_pins`, not `set_pinned_for_test`, and the difference is the whole
+        // reason this note exists: the direct setter writes the live flag and records nothing, so
+        // the next landing's `resolve_pins` re-derives the row's default and puts it straight back
+        // to OFF. A recorded decision is what survives a library arriving under an open panel,
+        // which is exactly the case the second half of this test drives.
+        crate::browse::apply_pins(&[(2, true), (3, true)]);
 
         // THE SHAPE THAT BROKE IT: the panel lists one kind, the section table holds two.
         assert_eq!(
@@ -3565,7 +5636,11 @@ mod tests {
             );
         }
 
-        // a source's libraries landing IS what this rebuild exists for, and still fires
+        // a source's libraries landing IS what this rebuild exists for, and still fires — even
+        // when the library it brought is not one the panel will OFFER. A shared film library on an
+        // account that already owns films defaults OFF (`pins::default_on`), so this landing adds
+        // no row; the guard must still notice it, because the same generation carries the landings
+        // that DO change the list and the panel cannot tell them apart without rebuilding.
         crate::browse::append_section_for_test(
             1,
             5,
@@ -3580,8 +5655,24 @@ mod tests {
         assert!(!menu_stale(), "…once, and then settle again");
         assert_eq!(
             src_acts_len(),
+            rows0,
+            "…and a non-favourite landing is not a row: rebuilt, same list"
+        );
+
+        // …while a landing the panel DOES offer proves the rebuild is real rather than a quieted
+        // guard. Your own libraries are favourites by default, so this one arrives as a row.
+        crate::browse::append_section_for_test(
+            0,
+            6,
+            "Home Movies",
+            crate::browse::SecKind::Movie,
+        );
+        assert!(menu_stale(), "the second landing is seen too");
+        build_source_menu(true);
+        assert_eq!(
+            src_acts_len(),
             rows0 + 1,
-            "the rebuild is real — the new library is a row, not just a quieted guard"
+            "the rebuild is real — the new library is a row"
         );
 
         // …and the key is the panel's, not the screen's: closing takes the action list with it, so
@@ -3604,8 +5695,25 @@ mod tests {
         let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         let menu0 = take_menu();
+        // The guard comes BEFORE the seed: `append_sections` resolves each row's
+        // default the moment it lands, against whatever session file is live at that
+        // instant — so a redirect installed afterwards grades pins already decided
+        // against the developer's own `auth.json`.
+        let _t = crate::plex::session::TempSession::new("picker-level");
+        _t.watching("u-picker-level");
         crate::browse::reset();
         crate::browse::seed_two_source_table_for_test();
+        // The panel is FAVOURITE-scoped now, and under `pins::default_on` a shared library of a
+        // type you already own starts OFF — so the friend's two libraries would not be offered at
+        // all and this fixture would collapse to one row. Favourite them explicitly: what is under
+        // test here is the panel's LEVEL and its row identities, not the default.
+        //
+        // Through the REAL `apply_pins`, not `set_pinned_for_test`, and the difference is the whole
+        // reason this note exists: the direct setter writes the live flag and records nothing, so
+        // the next landing's `resolve_pins` re-derives the row's default and puts it straight back
+        // to OFF. A recorded decision is what survives a library arriving under an open panel,
+        // which is exactly the case the second half of this test drives.
+        crate::browse::apply_pins(&[(2, true), (3, true)]);
 
         open_source_menu();
         assert!(matches!(menu(), Menu::Source { .. }));
@@ -3731,6 +5839,1414 @@ mod tests {
             menu_chip_of(&Menu::None, &CHIPS_MANY),
             None,
             "no menu, nothing to lift"
+        );
+    }
+    // ---- Layout: the ONE document projection ------------------------------------------------
+
+    /// The blocks stack in the order the design draws them, and each one's origin is the sum of
+    /// what is above it. Graded across the shapes a real library takes: with and without the chip,
+    /// with 0 / 1 / 12 shelves.
+    #[test]
+    fn the_document_stacks_chip_then_shelves_then_the_grid() {
+        let bare = Layout::new(false, 0, 40, true);
+        assert_eq!(bare.grid_block_top(), 0.0, "no chip, no shelves: the grid heads the page");
+        assert_eq!(bare.grid_top(), GRID_HEAD, "…under its own heading row");
+
+        let chipped = Layout::new(true, 0, 40, true);
+        assert_eq!(chipped.grid_block_top(), HEADER_H, "the chip's block leads");
+
+        let shelved = Layout::new(true, 12, 40, true);
+        assert_eq!(
+            shelved.grid_block_top(),
+            HEADER_H + 12.0 * crate::ui::consts::ROW_PITCH,
+            "twelve shelves push the grid exactly twelve pitches down"
+        );
+        // …and a shelf's own origin is the one Home hangs a shelf from, so `card_row` draws here
+        // unchanged: heading at origin − TITLE_DY, cards at origin + CARD_DY
+        assert_eq!(shelved.shelf_origin(0), HEADER_H);
+        assert_eq!(
+            shelved.shelf_origin(3) - shelved.shelf_origin(2),
+            crate::ui::consts::ROW_PITCH
+        );
+
+        // a grid with nothing in it draws no heading and no control row, so the block IS the grid
+        let empty = Layout::new(true, 2, 0, false);
+        assert_eq!(empty.grid_top(), empty.grid_block_top());
+    }
+
+    /// **`doc_to_grid` is the fix for this screen's sharpest geometry bug.** `browse::want` derived
+    /// its page window straight from `SCROLL`, i.e. assuming scroll 0 is grid row 0 — so under a
+    /// document with a header and twelve shelves it asked for pages thirteen rows into the catalog
+    /// while row 0's own slots sat unloaded.
+    #[test]
+    fn the_page_window_is_grid_local_whatever_is_above_the_grid() {
+        let rows = 1667; // a 10k-item section
+        let flat = Layout::new(false, 0, rows, true);
+        let deep = Layout::new(true, 12, rows, true);
+
+        // at each document's own head, both ask for row 0 — the bug was that only the flat one did
+        assert_eq!(flat.visible_rows(0.0).0, 0);
+        assert_eq!(deep.visible_rows(0.0).0, 0);
+        assert_eq!(
+            deep.visible_rows(deep.grid_top()).0,
+            0,
+            "scrolled exactly to the grid's top, the first wanted row is still 0"
+        );
+        // …and one pitch further down, both have moved by exactly one row
+        assert_eq!(
+            deep.visible_rows(deep.grid_top() + PITCH).0,
+            flat.visible_rows(flat.grid_top() + PITCH).0
+        );
+        // the window never runs past the catalog
+        assert!(deep.visible_rows(1.0e9).1 <= rows);
+    }
+
+    /// **`max_scroll` and `row_reveal` are ONE invariant**, and this is the test that holds them to
+    /// it: if they disagree the last row's caption sits off the panel, which is the bug the old
+    /// hand-written `max_y`/`lo` pair carried a paragraph about.
+    #[test]
+    fn the_last_row_can_always_reach_its_own_caption() {
+        for shelves in [0usize, 1, 12] {
+            for rows in [1usize, 2, 40, 1667] {
+                let lay = Layout::new(true, shelves, rows, true);
+                let last = lay.row_reveal(rows - 1);
+                assert!(
+                    last <= lay.max_scroll() + 0.001,
+                    "row_reveal must never ask past max_scroll ({shelves} shelves, {rows} rows)"
+                );
+                // the whole last row — card, label band and the air under it — is on the panel
+                let bottom = CONTENT_TOP + lay.grid_top() + rows as f32 * PITCH - last;
+                assert!(
+                    bottom <= SCR_H + 0.001,
+                    "the last row's caption is off the panel ({shelves} shelves, {rows} rows): {bottom}"
+                );
+            }
+        }
+    }
+
+    /// Row snapping puts the focused row's OWN TOP EDGE at the viewport, clamped — not the minimal
+    /// reveal `card_row::reveal` performs, which is right for a shelf inside a page and wrong for a
+    /// wall of posters you walk down.
+    #[test]
+    fn row_snapping_targets_the_rows_own_top_edge() {
+        let lay = Layout::new(false, 0, 40, true);
+        // **Row 0 is the canvas's own exception**: its target is the grid BLOCK's top, so the
+        // heading and the two chips directly above it stay on screen. Snapping past them would
+        // scroll away the count and the controls the moment focus entered the grid.
+        assert_eq!(lay.row_reveal(0), lay.grid_block_top());
+        assert_ne!(
+            lay.row_reveal(0),
+            lay.grid_top(),
+            "…which is NOT the row's own top edge — every other row is"
+        );
+        assert_eq!(lay.row_reveal(3), lay.grid_top() + 3.0 * PITCH);
+        // …and the clamp is the document's, so the last rows share one resting scroll
+        assert_eq!(lay.row_reveal(39), lay.max_scroll());
+    }
+
+    // ---- the focus projection ----------------------------------------------------------------
+
+    /// **The zones a page actually DRAWS, across the shapes that broke the first draft's ladder.**
+    /// An empty library draws no grid heading, no Sort, no Filter, no count and no rail, so a
+    /// vertical walk must not be able to park on any of them.
+    #[test]
+    fn the_zone_projection_never_offers_an_undrawn_control() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("zones");
+        _t.watching("u-zones");
+        crate::browse::reset();
+
+        // nothing discovered at all: the bar, and nothing else
+        let bare = Layout::new(false, 0, 0, false);
+        assert_eq!(zones(&bare), vec![Area::Tabs]);
+        assert_eq!(step_zone(&bare, Area::Tabs, 1), None, "DOWN has nowhere to go");
+
+        // shelves but an empty grid — the design draws no heading over nothing
+        let shelves_only = Layout::new(true, 2, 0, false);
+        let z = zones(&shelves_only);
+        assert_eq!(
+            z,
+            vec![Area::Tabs, Area::LibChip, Area::Shelf],
+            "the bar, the chip, then the shelf RUN as one rung"
+        );
+        assert!(!zone_drawn(&shelves_only, Area::Toolbar), "no Sort over an empty grid");
+        assert!(!zone_drawn(&shelves_only, Area::Grid));
+        assert!(!zone_drawn(&shelves_only, Area::Rail));
+
+        // …and the full page. `zones` is a pure function of the LAYOUT — that is what lets this
+        // hand it a shape and grade the answer, instead of the answer depending on whatever the
+        // live store happens to hold.
+        let full = Layout::new(true, 1, 40, true);
+        let z = zones(&full);
+        assert_eq!(z[0], Area::Tabs);
+        assert_eq!(z[1], Area::LibChip);
+        assert_eq!(z[2], Area::Shelf);
+        assert!(z.contains(&Area::Toolbar) && z.contains(&Area::Grid));
+
+        // **The run of shelves is ONE rung too, and for a harder reason than the bar's.** `Area`
+        // names a KIND of zone, not an instance, so a list holding N `Area::Shelf` entries is a
+        // list `step_zone` cannot walk: `position` finds the first of them whatever shelf focus is
+        // actually on, and DOWN off the LAST shelf lands back on the FIRST instead of leaving the
+        // run. Device-visible as a walk that never reaches the grid. The shelf INDEX is
+        // `move_focus`'s to move; this projection only says where the run begins and ends.
+        assert_eq!(
+            step_zone(&full, Area::Shelf, 1),
+            Some(Area::Toolbar),
+            "DOWN off the last shelf leaves the run"
+        );
+        assert_eq!(
+            step_zone(&shelves_only, Area::Shelf, 1),
+            None,
+            "…and with no grid under them, the run is the foot of the page"
+        );
+        assert_eq!(step_zone(&full, Area::Shelf, -1), Some(Area::LibChip));
+
+        // the bar is ONE rung: the chip and the pills leave it together
+        assert!(zone_drawn(&bare, Area::Chip), "the bar is always drawn");
+        assert_eq!(
+            step_zone(&full, Area::Tabs, 1),
+            Some(Area::LibChip),
+            "DOWN off the bar reaches the head of the document"
+        );
+        // the failure read-out replaces the grid's whole region and offers exactly one control
+        let dead = Layout::failed(true, 2);
+        let zf = zones(&dead);
+        assert!(zf.contains(&Area::Status), "the read-out is a zone");
+        assert!(!zf.contains(&Area::Grid) && !zf.contains(&Area::Toolbar));
+        assert!(
+            zf.contains(&Area::LibChip),
+            "…and the chip survives it: navigation is how you leave a dead source"
+        );
+        crate::browse::reset();
+    }
+
+    /// **The play triangle is a PROMISE, and only a deck keeps it.** The app's one rule: a visual
+    /// play indicator means the press starts the video, a progress bar means viewing progress, and
+    /// a card with no play indicator navigates. Before it, `want_play` was
+    /// `from_deck || kind == 3`, so an episode played immediately from ANY shelf — pressing a
+    /// "Recently Released Episodes" tile started something the viewer was only browsing — while
+    /// every landscape tile drew the amber ▶ whatever its press did.
+    #[test]
+    fn only_a_deck_promises_playback() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("promise");
+        _t.watching("u-promise");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(12);
+        crate::browse::section_hubs::seed_shelves_for_test(
+            crate::browse::cur(),
+            // a deck and a discovery shelf, side by side in one library
+            &["movie.inprogress.1", "tv.recentlyreleased.1"],
+            3,
+        );
+        crate::browse::section_hubs::seed_landscape_for_test(crate::browse::cur(), "The Bear");
+        let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+        assert!(shelves[0].is_continue, "shelf 0 is the deck");
+        assert!(!shelves[1].is_continue, "shelf 1 is a discovery shelf");
+
+        // the ACTIVATION half: only the deck's tile reports `from_deck`, which is the one thing
+        // `app.rs` turns into a play
+        let lay = layout();
+        enter_zone(&lay, Area::Shelf, 1);
+        unsafe {
+            SHELF_F = 0;
+            SHELF_C = 0;
+        }
+        assert!(focused_from_deck(), "a deck tile plays");
+        unsafe { SHELF_F = 1 };
+        assert!(
+            !focused_from_deck(),
+            "…and a discovery tile navigates, however much it looks like the same object"
+        );
+
+        // the DRAW half reads the same flag, so the promise and the behaviour cannot disagree
+        assert!(shelves[0].is_continue && !shelves[1].is_continue);
+        crate::browse::reset();
+    }
+
+    /// **A queued SECTION switch is scoped to the table it was chosen against.** The grid half
+    /// carried its `table_epoch` from the start; the section half was a bare index, and a bare index
+    /// is not a name — `browse::reset` clears and RENUMBERS the table on a profile switch, so a
+    /// switch queued before one and flushed after it lands on whatever library now happens to hold
+    /// that number, which is a different person's.
+    #[test]
+    fn a_queued_section_switch_does_not_survive_the_table_being_renumbered() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("secepoch");
+        _t.watching("u-secepoch");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(12);
+
+        // a control leg first: within ONE table the switch commits
+        let here = crate::browse::cur();
+        let other = (0..crate::browse::section_count())
+            .find(|i| *i != here)
+            .expect("the seeded table has more than one library");
+        request_section(other);
+        apply_pending();
+        assert_eq!(crate::browse::cur(), other, "an ordinary switch lands");
+
+        // …and now the same press across a profile change. Queue a switch to a DIFFERENT library
+        // than the cursor will hold after the reset, so the guard and its absence are observable:
+        // `apply_section` no-ops on an index that already equals `cur`, which is how the first
+        // version of this test managed to pass against the missing guard.
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(12);
+        let before = crate::browse::cur();
+        let away = (0..crate::browse::section_count())
+            .find(|i| *i != before)
+            .expect("more than one library");
+        request_section(away);
+        assert!(pending().section.is_some());
+
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        assert_eq!(crate::browse::cur(), before, "the cursor is back at the head");
+        apply_pending();
+        assert_eq!(
+            crate::browse::cur(),
+            before,
+            "an index chosen against the OLD table may not move the cursor in the new one"
+        );
+
+        // **Reset on the way OUT.** `request_section` arms the fader, and `apply_pending` does not
+        // stop it — a fader left mid-phase is process-global state another module's test reads
+        // (`a_shelf_commit_waits_for_an_armed_press_to_finish` asks `hidden_page()`, which is
+        // exactly "is a PAGE-scoped fade running"). It passed alone and failed in the suite, which
+        // is this module's documented pollution shape.
+        clear();
+        crate::browse::reset();
+    }
+
+    /// **The LIFTED copy of a focused shelf tile is the tile the page drew.** `popover::Opener`'s
+    /// whole contract: the item context menu re-draws the card it was opened on over its own scrim,
+    /// so the one thing on screen at full strength is the thing the menu is about. A landscape
+    /// tile's identity — the show's name and its watch glyph — lives INSIDE the artwork, so a lift
+    /// that skipped the state line put an anonymous frame of television there instead.
+    ///
+    /// Graded on the two draws sharing ONE geometry and one predicate, which is what the defect
+    /// was: `draw_focused` ran on the lifted rect and the line did not run at all.
+    #[test]
+    fn the_lifted_shelf_tile_carries_its_state_line() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("lift");
+        _t.watching("u-lift");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(12);
+        crate::browse::section_hubs::seed_shelves_for_test(
+            crate::browse::cur(),
+            &["movie.inprogress.1"],
+            3,
+        );
+        // make it a LANDSCAPE shelf, which is the case with a line to lose
+        crate::browse::section_hubs::seed_landscape_for_test(crate::browse::cur(), "The Bear");
+
+        let lay = layout();
+        enter_zone(&lay, Area::Shelf, 1);
+        unsafe {
+            SHELF_F = 0;
+            SHELF_C = 1;
+            (*addr_of_mut!(SCROLL)).jump(lay.shelf_reveal(0));
+        }
+
+        // the lift draws from this rect, and it is the SCALED one — the same `draw_focused` uses,
+        // so the line composed on it lands on the artwork rather than beside it
+        let base = focused_shelf_base().expect("a focused shelf tile has a rect");
+        assert!(base.w > 0.0 && base.h > 0.0);
+        assert!(
+            shelf_style(0).w <= base.w,
+            "the base is the scaled rect: a focused tile is at or above its resting width"
+        );
+
+        // …and the shelf really is the landscape kind, which is the branch that owes a line
+        let shelves = crate::browse::section_hubs::shelves(crate::browse::cur());
+        assert!(shelves[0].landscape, "a landscape shelf");
+        assert!(
+            focused_item().is_some(),
+            "…and the lift has the row its line is built from"
+        );
+        crate::browse::reset();
+    }
+
+    /// **What an episode tile says, and where.** The design's ruling (`Library Screens.dc.html` E)
+    /// is that a still is the one tile in the app carrying no title of its own, so *whatever the
+    /// poster prints, the still prints too*: the SHOW goes inside the artwork on every tile, and
+    /// FOCUS reveals the EPISODE — its title over its `S3 · E4` address, never the show again.
+    /// "One fact, one place", and it is also what keeps the shelf's own labels from disagreeing:
+    /// the earlier build put the show on the focused rung and the episode under it, so an unfocused
+    /// tile named nothing at all.
+    #[test]
+    fn a_focused_episode_tile_reveals_the_episode_and_not_the_show() {
+        let ep = |s: c_int, e: c_int, title: &str, show: &str| PmsMovie {
+            kind: 3,
+            season_index: s,
+            ep_index: e,
+            title: title.into(),
+            show_title: show.into(),
+            ..Default::default()
+        };
+        let shelf = |items: Vec<PmsMovie>| crate::browse::section_hubs::Shelf {
+            id: "tv.recentlyreleased".into(),
+            title: "Recently Released Episodes".into(),
+            is_continue: false,
+            landscape: true,
+            items,
+        };
+
+        // `TileLabel` holds `CString`s for the draw; these read them back as text
+        let title = |l: &card_row::TileLabel| {
+            l.title
+                .as_ref()
+                .map(|c| c.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let caption = |l: &card_row::TileLabel| {
+            l.caption
+                .as_ref()
+                .map(|c| c.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+
+        let dated = |m: PmsMovie| PmsMovie {
+            aired: "2026-09-11".into(),
+            ..m
+        };
+
+        let sh = shelf(vec![dated(ep(3, 4, "Violet", "The Bear"))]);
+        let l = shelf_label(&sh, 0);
+        assert_eq!(title(&l), "Violet", "the EPISODE's NAME takes the title rung");
+        assert_eq!(
+            caption(&l),
+            "11 Sep 2026",
+            "…over its one trailing FACT, which on a discovery shelf is the release date",
+        );
+        assert!(
+            !title(&l).contains("The Bear") && !caption(&l).contains("The Bear"),
+            "the show is printed on the artwork and must not be repeated below it"
+        );
+        assert!(
+            !caption(&l).contains("S3") && !caption(&l).contains("E4"),
+            "…and NEITHER is the address, which moved onto the artwork on 2026-09-05: four tiles \
+             of one show differ only by number, so the number cannot be the thing behind focus"
+        );
+
+        // **Continue Watching trails time left instead**, because for a part-watched episode that
+        // is the fact you came for. The shelf decides and not the item.
+        let mut deck = shelf(vec![PmsMovie {
+            dur_ns: 30 * 60 * 1_000_000_000,
+            resume_ms: 6 * 60 * 1000,
+            ..dated(ep(3, 4, "Violet", "The Bear"))
+        }]);
+        deck.is_continue = true;
+        assert_eq!(caption(&shelf_label(&deck, 0)), "24 min left");
+        // …and a deck tile never started has no time to report, so it falls back to the date
+        // rather than to an empty rung.
+        let mut next_up = shelf(vec![dated(ep(3, 5, "Ice Chips", "The Bear"))]);
+        next_up.is_continue = true;
+        assert_eq!(caption(&shelf_label(&next_up, 0)), "11 Sep 2026");
+
+        // …an episode the server dated to nothing at all draws ONE rung, not an empty second one
+        let sh = shelf(vec![ep(3, 4, "Violet", "The Bear")]);
+        let l = shelf_label(&sh, 0);
+        assert_eq!(title(&l), "Violet");
+        assert_eq!(caption(&l), "");
+        // …and an episode with no title of its own falls back to its address on the title rung
+        let sh = shelf(vec![dated(ep(3, 4, "", "The Bear"))]);
+        assert_eq!(title(&shelf_label(&sh, 0)), "S3 \u{b7} E4");
+        // an episode whose title IS the show's says it once, as the address
+        let sh = shelf(vec![dated(ep(2, 1, "X", "X"))]);
+        assert_eq!(title(&shelf_label(&sh, 0)), "S2 \u{b7} E1");
+
+        // …and a POSTER shelf is untouched: its tiles still name the item on focus
+        let mut poster = shelf(vec![dated(ep(3, 4, "Violet", "The Bear"))]);
+        poster.landscape = false;
+        assert_eq!(title(&shelf_label(&poster, 0)), "Violet");
+    }
+
+    /// A landscape row is a SHORTER band, and the document has to know: a uniform pitch would leave
+    /// a 139px hole under every episode shelf.
+    #[test]
+    fn an_episode_shelf_takes_a_shorter_band_than_a_poster_shelf() {
+        use crate::ui::consts::ROW_PITCH;
+        // graded at the FOCUSED band, where the two shapes' difference is the tile height alone
+        let open = card_row::UNDER_LABEL_H;
+        let poster = shelf_pitch_of(false, open);
+        let landscape = shelf_pitch_of(true, open);
+        assert_eq!(poster, ROW_PITCH);
+        assert!(landscape < poster, "a landscape row is shorter");
+        assert_eq!(poster - landscape, CARD_H - RowStyle::EPISODE.h);
+
+        // …and the document sums the ACTUAL pitches, so a mixed page puts the grid where the
+        // shelves above it really end
+        let mixed = Layout::with_pitches(true, &[landscape, poster, landscape], 40, true);
+        assert_eq!(mixed.shelf_origin(0), mixed.header_h());
+        assert_eq!(mixed.shelf_origin(1), mixed.header_h() + landscape);
+        assert_eq!(mixed.shelf_origin(2), mixed.header_h() + landscape + poster);
+        assert_eq!(
+            mixed.grid_block_top(),
+            mixed.header_h() + 2.0 * landscape + poster
+        );
+        // the uniform case is unchanged, which is what every other geometry test asserts
+        let uniform = Layout::new(true, 3, 40, true);
+        assert_eq!(uniform.grid_block_top(), uniform.header_h() + 3.0 * poster);
+    }
+
+    /// **A card near the top edge is DRAWN, not culled.** The grid used to cull any row whose
+    /// bottom edge had climbed above the tab track, which was free while an opaque scrim covered
+    /// that band — the fixed toolbar's. With the toolbar gone and the track a CENTRED pill, the
+    /// screen either side of it at that height is open, so the term made cards vanish in plain
+    /// sight while scrolling. The shelves never had it and never showed the fault.
+    #[test]
+    fn a_card_climbing_past_the_tab_track_is_still_drawn() {
+        use crate::ui::widgets::TOP_BAR_BOTTOM;
+        // a grid row whose BOTTOM edge is above the track's bottom but still on the panel: the
+        // exact band the old term threw away
+        let y = TOP_BAR_BOTTOM - CARD_H - 8.0;
+        assert!(y + CARD_H < TOP_BAR_BOTTOM, "…this is that band");
+        assert!(y + CARD_H > 0.0, "…and it is still on the panel");
+        assert!(
+            block_on_screen(y, CARD_H),
+            "a card the viewer can see must be drawn"
+        );
+
+        // …and a shelf band at the same height answers identically, which is the whole point of
+        // there being one rule
+        assert!(block_on_screen(y, crate::ui::consts::ROW_PITCH));
+
+        // the rule still culls what is genuinely gone, above and below
+        assert!(!block_on_screen(-CARD_H - GLOW_PAD - 1.0, CARD_H));
+        assert!(!block_on_screen(SCR_H + GLOW_PAD + 1.0, CARD_H));
+    }
+
+    /// **A shelf tile is a CARD surface**, which is what arms the press-and-hold. It was not, and
+    /// the consequence was invisible from here and obvious on the television: `app.rs` arms the
+    /// press from `focus_is_card`, so a held OK on a shelf tile never became a hold — the key-up
+    /// arrived as an ordinary tap and the tile opened its detail page. The item context menu was
+    /// unreachable on the shelves, and with it *Remove from Continue Watching*, which is the one
+    /// row a section deck exists to offer.
+    #[test]
+    fn a_shelf_tile_arms_the_hold_and_anchors_the_menu() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("shelf-hold");
+        _t.watching("u-shelf-hold");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(12);
+        crate::browse::section_hubs::seed_shelves_for_test(
+            crate::browse::cur(),
+            &["movie.inprogress.1", "movie.recentlyadded.1"],
+            3,
+        );
+        let lay = layout();
+
+        // the deck row first: a card, and one whose activation carries the deck flag
+        enter_zone(&lay, Area::Shelf, 1);
+        assert!(focus_is_card(), "a shelf tile arms the press");
+        assert!(focused_item().is_some());
+        assert!(
+            focused_from_deck(),
+            "…and the section's Continue Watching row says so, which is what puts Remove in the menu"
+        );
+        assert!(
+            focused_card_rect().is_some(),
+            "…and the menu has a tile to anchor beside"
+        );
+
+        // the second shelf is NOT a deck, so the same press must not claim it is
+        unsafe { SHELF_F = 1 };
+        assert!(focus_is_card());
+        assert!(!focused_from_deck());
+
+        // and the chrome is not a card surface, which is what keeps a press off the chip and pills
+        enter_zone(&lay, Area::Tabs, 1);
+        assert!(!focus_is_card(), "the tab strip arms nothing");
+        crate::browse::reset();
+    }
+
+    /// **A store replaced by somebody else remounts the PAGE and lands on the new library's own
+    /// coordinates.** The watchdog used to remount only `if !xf().is_swapping()`, which was how it
+    /// told our own commit from a foreign one — at the price of being unable to act during a fade
+    /// at all, so a full-document change absorbed inside a grid reload was never noticed. And when
+    /// it did fire it only faded: the incoming library was mounted using the OUTGOING one's focus
+    /// and scroll. Reachable when the favourites editor re-points `cur()` while the Library is
+    /// frozen under Settings.
+    #[test]
+    fn a_foreign_store_change_remounts_the_whole_page() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("foreign");
+        _t.watching("u-foreign");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+        unsafe { EPOCH = crate::browse::query_gen() };
+
+        // deep in the grid, and a GRID-scoped reload running — the case that used to be absorbed
+        let lay = layout();
+        enter_zone(&lay, Area::Grid, 1);
+        unsafe {
+            GR = 9;
+            (*addr_of_mut!(SCROLL)).jump(lay.row_reveal(9));
+        }
+        request_grid(GridAct::Unwatched(true));
+        assert_eq!(unsafe { addr_of!(SCOPE).read() }, Scope::Grid);
+        assert!(xf().is_swapping());
+
+        // …and somebody else replaces the store underneath
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        assert_ne!(
+            crate::browse::query_gen(),
+            unsafe { addr_of!(EPOCH).read() },
+            "the store really did move"
+        );
+
+        watch_foreign_store();
+
+        assert_eq!(
+            unsafe { addr_of!(SCOPE).read() },
+            Scope::Page,
+            "a foreign change replaces the whole column, not the grid"
+        );
+        assert_eq!(
+            unsafe { addr_of!(EPOCH).read() },
+            crate::browse::query_gen(),
+            "…and it is accounted for, so it fires exactly once"
+        );
+        // the new library's own view, not the old one's deep row
+        assert_eq!(unsafe { addr_of!(GR).read() }, 0);
+        assert!(unsafe { (*addr_of!(SCROLL)).pos } < 1.0);
+
+        // …and a frame with nothing foreign in it does nothing at all
+        let before = unsafe { addr_of!(SCOPE).read() };
+        unsafe { SCOPE = Scope::Grid };
+        watch_foreign_store();
+        assert_eq!(
+            unsafe { addr_of!(SCOPE).read() },
+            Scope::Grid,
+            "a quiet frame is not a remount"
+        );
+        let _ = before;
+
+        take_pending();
+        crate::browse::reset();
+    }
+
+    /// **A shelf commit does not land inside a press.** At the head a commit re-resolves focus onto
+    /// the new first content zone, and `at_document_head` cannot tell "the head of a composed page"
+    /// from "grid row 0 of a page that has no chip and no shelves yet" — with neither drawn, row
+    /// 0's own reveal IS zero. The viewport does not move there, so the visible effect is only the
+    /// ring stepping onto the first shelf of a page that has just composed itself, which is
+    /// accepted. What is not is doing it under an ARMED press, whose deferred activation would then
+    /// resolve against the zone focus was moved to rather than the card that was pressed.
+    #[test]
+    fn a_shelf_commit_waits_for_an_armed_press_to_finish() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("commitpress");
+        _t.watching("u-commitpress");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+        crate::ui::press::cancel();
+
+        // the page a single-library household actually has on arrival: no chip, no shelves yet,
+        // focus in the grid block at scroll 0 — where the head and grid row 0 are ONE coordinate
+        let lay = layout();
+        assert_eq!(lay.shelves, 0, "nothing has landed yet");
+        enter_zone(&lay, Area::Grid, 1);
+        unsafe { (*addr_of_mut!(SCROLL)).jump(0.0) };
+        assert!(at_document_head());
+        assert!(!hidden_page(), "the page is on screen");
+
+        assert!(
+            may_publish_shelves(),
+            "a settled head with no press is when the page may compose itself"
+        );
+
+        // …and with a press armed on the card under the ring, it waits
+        crate::ui::press::begin(0);
+        assert!(crate::ui::press::is_live());
+        assert!(
+            !may_publish_shelves(),
+            "the deferred activation would resolve against the zone focus was moved TO"
+        );
+
+        crate::ui::press::cancel();
+        assert!(may_publish_shelves(), "…and once the press is over, it may");
+        crate::browse::reset();
+    }
+
+    /// **A grid-scoped fade does NOT authorise a visible shelf commit.** The permission read every
+    /// `Xfade` as a hidden page, which is wrong for exactly the scope that was added beside it: a
+    /// `Scope::Grid` fade dips the grid block alone and holds the library chip and the shelves at
+    /// full alpha — and those are what a shelf commit moves. So a staged refresh could publish in
+    /// the middle of a sort, changing the shelf count and the pitches on screen.
+    #[test]
+    fn only_a_page_scoped_fade_counts_as_a_hidden_page() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("hiddenscope");
+        _t.watching("u-hiddenscope");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+
+        // a grid-scoped transaction: the shelves and the chip are still on screen
+        request_grid(GridAct::Unwatched(true));
+        assert!(xf().is_swapping());
+        assert_eq!(unsafe { addr_of!(SCOPE).read() }, Scope::Grid);
+        assert!(!hidden_page(), "the document is visible during a grid reload");
+
+        // …and a page-scoped one really does replace the whole column
+        take_pending();
+        xf().cancel();
+        request_section(crate::browse::cur());
+        assert_eq!(unsafe { addr_of!(SCOPE).read() }, Scope::Page);
+        assert!(hidden_page(), "a section transition replaces the document");
+
+        take_pending();
+        crate::browse::reset();
+    }
+
+    /// **A heading stops where the alphabet index begins, with the rail's own air between them.**
+    /// The report was text rendering UNDER the letters; the fix is a right boundary rather than a
+    /// narrower page, so this grades the boundary against the rail's drawn track rather than
+    /// against a chosen inset. Nothing here can measure a STRING — `text::elide` reaches
+    /// SDL2_ttf, which the host suite cannot link — so the pixel proof is the simulator's; what a
+    /// host test can hold is that the number the draw is bounded by really is outside the rail.
+    #[test]
+    fn a_bounded_heading_stops_short_of_the_rail() {
+        let right = MARGIN_X + heading_max_w();
+        assert!(
+            right <= SCR_W - MARGIN_X - RAIL_TRACK_W,
+            "the heading's right edge ({right}) is inside the rail's track"
+        );
+        assert!(
+            SCR_W - MARGIN_X - RAIL_TRACK_W - right >= theme::space::XS,
+            "…and there is a rung of air between them, not a touching edge"
+        );
+        // …and it is not a GLOBAL narrowing: the bound IS the grid's own content column, the same
+        // one the six poster columns fill exactly, so nothing outside the rail's band was given up
+        assert!(
+            (right - GRID_R).abs() < 0.01,
+            "the bound is the content column's own edge"
+        );
+    }
+
+    /// **A hover that moves the focus stop says so, so an armed press can be aborted.**
+    /// `ui::press`'s contract is that focus cannot move mid-press; the nav keys pay it by calling
+    /// `press::cancel` and hover owed the same. On this screen it did not: the Magic Remote's
+    /// pointer wakes on the smallest movement, so drifting from one card to another during a press
+    /// committed the click — or opened the press-and-hold menu — on a tile that was no longer the
+    /// one being pressed.
+    #[test]
+    fn a_hover_that_moves_the_focus_stop_reports_it() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("hovermove");
+        _t.watching("u-hovermove");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+        crate::browse::section_hubs::seed_shelves_for_test(crate::browse::cur(), &["a", "b"], 4);
+
+        // stand on a grid tile, then hover the one beside it: the stop moved
+        let lay = layout();
+        enter_zone(&lay, Area::Grid, 1);
+        unsafe {
+            GR = 0;
+            GC = 0;
+            // the walk sets a TARGET; the pointer reads the drawn frame, so park the document
+            // where a stepped spring would have taken it
+            (*addr_of_mut!(SCROLL)).jump(lay.row_reveal(0));
+        }
+        let (x, y) = {
+            let r = focused_card_base().expect("a focused tile has a rect");
+            (r.x + r.w + LGAP + 4.0, r.y + 4.0)
+        };
+        assert!(
+            pointer_focus(x, y),
+            "hovering the next card moves the stop, and a press armed on the last one must die"
+        );
+
+        // …and hovering the SAME card again is not a move, so it may not abort a live press
+        let (x, y) = {
+            let r = focused_card_base().expect("a focused tile has a rect");
+            (r.x + 4.0, r.y + 4.0)
+        };
+        assert!(!pointer_focus(x, y), "staying put is not a move");
+
+        // …nor is dead space: a miss leaves focus where it was
+        assert!(!pointer_focus(2.0, SCR_H - 2.0), "a miss is not a move");
+
+        crate::browse::reset();
+    }
+
+    /// **Coming back to a shelf comes back to the SHELF, not to the grid at the same scroll.**
+    /// `browse` remembers a section's scroll and its GRID index — all there was to remember while
+    /// the grid was the screen. Under one document those two name different blocks whenever the
+    /// visitor left from a shelf: the scroll returned to the shelf while the band was seated in the
+    /// grid, whose reveal target is thousands of pixels further down, so the page slid out from
+    /// under the viewer on the frame after re-entry.
+    ///
+    /// The red here was SIMULATED rather than historical: the rule this grades is a new pure
+    /// function, so the test cannot be compiled against the code that lacked it. Neutralised to the
+    /// old behaviour (`scroll <= 0.5 ? first_content : Grid`) it fails on every shelf leg.
+    #[test]
+    fn re_entry_lands_on_the_block_the_restored_scroll_is_showing() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("reenter");
+        _t.watching("u-reenter");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+        crate::browse::section_hubs::seed_shelves_for_test(
+            crate::browse::cur(),
+            &["a", "b", "c", "d"],
+            4,
+        );
+        let lay = layout();
+        assert_eq!(lay.shelves, 4);
+
+        // the head: a first visit restores `(0, 0)` and must open on the head of the document,
+        // never on grid row 0 — whose target would drag the page past every shelf
+        assert_eq!(
+            lay.seat_for_scroll(0.0, 0).map(|(a, _)| a),
+            lay.first_content(),
+            "a first visit opens at the head"
+        );
+
+        // a shelf: the scroll the walk itself would have parked at, so the seat is that shelf and
+        // its own index — and NOT the stale grid row saved beside it
+        for i in 1..lay.shelves {
+            assert_eq!(
+                lay.seat_for_scroll(lay.shelf_reveal(i), 11),
+                Some((Area::Shelf, i)),
+                "shelf {i} comes back as shelf {i}"
+            );
+        }
+
+        // …and a visit that really was in the grid still comes back to the grid, ON THAT ROW
+        assert_eq!(
+            lay.seat_for_scroll(lay.row_reveal(7), 7),
+            Some((Area::Grid, 7)),
+            "a grid row comes back to the grid"
+        );
+
+        // **The toolbar and grid row 0 SHARE a scroll coordinate** — `row_reveal(0)` IS
+        // `grid_block_top()`, which is the Toolbar's own target. A visit that left from Sort/Filter
+        // therefore restores a scroll naming row 0 while the saved grid row is still whatever deep
+        // row was last walked; seating `Grid` and keeping that row asked the spring for it and slid
+        // the document thousands of pixels on the frame after re-entry. The seat carries the row
+        // the SCROLL is showing, so the answer does not move.
+        assert_eq!(
+            lay.seat_for_scroll(lay.grid_block_top(), 11),
+            Some((Area::Grid, 0)),
+            "a scroll showing the grid's head seats row 0, not the stale deep row"
+        );
+
+        crate::browse::reset();
+    }
+
+    /// **Changing Sort must not throw the page back to the recommendations.** The reported
+    /// symptom, verbatim: "Changing Sort in All currently appears to reload/rebuild the entire
+    /// table/page. As a result, the user is thrown all the way back to the top/recommendations and
+    /// has to navigate back to All just to see the result of the sort they selected."
+    ///
+    /// The partial-update transaction alone does not fix it, which is what makes this test worth
+    /// having. `browse::requery` empties the store synchronously on the press, so for the length of
+    /// the fade the grid heading, its control row and the rail are all "controls acting on
+    /// nothing" — and [`sync_readout_focus`]'s general clamp then correctly moves focus off a zone
+    /// that is not drawn, to the head of the document, which is the library chip above every
+    /// shelf. The scroll spring follows focus, and the page flies to the top.
+    #[test]
+    fn changing_sort_leaves_you_standing_on_the_control_row() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("sort-holds");
+        _t.watching("u-sort-holds");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+        crate::browse::section_hubs::seed_shelves_for_test(
+            crate::browse::cur(),
+            &["movie.inprogress.1", "movie.recentlyadded.1", "movie.genre.1"],
+            4,
+        );
+
+        // stand on the grid's own Sort/Filter row, the way a user reaching Sort does
+        let lay = layout();
+        enter_zone(&lay, Area::Toolbar, 1);
+        assert_eq!(area(), Area::Toolbar);
+
+        // press Sort. The request arms a GRID-scoped fade…
+        request_grid(GridAct::Sort {
+            key: "titleSort".into(),
+            desc: false,
+        });
+        assert_eq!(unsafe { addr_of!(SCOPE).read() }, Scope::Grid);
+        assert!(xf().is_swapping(), "the grid is dissolving");
+
+        // …and the re-query empties the store in the same breath, which is the state the clamp
+        // then sees. (`requery` itself needs a live client; the wipe is what matters here.)
+        crate::browse::seed_items_for_test(0);
+        assert_eq!(crate::browse::total(), 0);
+
+        sync_readout_focus();
+
+        assert_eq!(
+            area(),
+            Area::Toolbar,
+            "the control row is being REPLACED, not removed — focus must not be sent to the head \
+             of the document, which is what threw the user back to the recommendations"
+        );
+
+        // and the block whose chrome that focus stands on is still part of the layout, so the
+        // scroll target is the grid rather than the page head
+        let mid = layout();
+        assert!(
+            mid.grid_head,
+            "the grid block keeps its heading and control row for the length of its own reload"
+        );
+        assert!(
+            mid.grid_block_top() > mid.head(),
+            "the grid really is below the recommendations, so the two targets differ"
+        );
+
+        // the commit then lands the page on the SORTED grid's first row — not on the head of the
+        // document, which is the whole of the report
+        crate::browse::seed_items_for_test(120);
+        grid_reset();
+        let lay = layout();
+        assert!(
+            (unsafe { addr_of!(SCROLL).read() }.pos - lay.row_reveal(0)).abs() < 0.5,
+            "the sorted grid is shown from its first row"
+        );
+        assert!(
+            unsafe { addr_of!(SCROLL).read() }.pos > lay.head() + 1.0,
+            "…which is not the top of the page"
+        );
+
+        crate::browse::reset();
+    }
+
+    /// **The `libosc` sweep really does cross the shelf/grid seam.** It could not before: the
+    /// oscillator reversed on a 3 s clock at a 350 ms cadence, i.e. about eight presses a leg,
+    /// while this document now spends one press on the chip and one per shelf before the grid
+    /// begins. A twelve-shelf library therefore turned round in the middle of the shelves, and the
+    /// `fps:library-scroll` scene — whose whole purpose is to sweep the seam between the last shelf
+    /// and the poster wall — graded a sweep that never reached it.
+    #[test]
+    fn the_library_sweep_reaches_the_grid_and_comes_back() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("libosc");
+        _t.watching("u-libosc");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(120);
+        crate::browse::section_hubs::seed_shelves_for_test(
+            crate::browse::cur(),
+            &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"],
+            4,
+        );
+        assert_eq!(layout().shelves, 12, "the document really has a shelf run");
+
+        // start where `enter` leaves the band: the head of the document
+        let lay = layout();
+        enter_zone(&lay, lay.first_content().expect("a page with content"), 1);
+
+        // …and sweep. The cap is generous but FINITE: a sweep that cannot reach the grid is
+        // exactly the defect, and a sweep that never turns round is the other one.
+        let mut saw_grid = false;
+        let mut back_at_head = false;
+        for _ in 0..200 {
+            osc_step();
+            if area() == Area::Grid {
+                saw_grid = true;
+            }
+            if saw_grid && area() == lay.first_content().unwrap() {
+                back_at_head = true;
+                break;
+            }
+        }
+        assert!(saw_grid, "the sweep crossed the seam into the grid");
+        assert!(back_at_head, "…and reversed at the foot and returned to the head");
+        crate::browse::reset();
+    }
+
+    /// **The grid's rows and its FOCUSED card come out of one expression.** They did not: the
+    /// focused card kept the pre-rewrite `GRID_TOP` constant, so under a document that opens with a
+    /// chip and shelves its `on_axis` test put it off-panel and the tile you were standing on was
+    /// the one tile not drawn. Caught in the simulator, not by any assertion here — which is why
+    /// there is now one.
+    #[test]
+    fn the_focused_card_and_its_row_are_the_same_row() {
+        // a plain grid: the row sits at the content edge when scrolled to its own top
+        let flat = Layout::new(false, 0, 40, true);
+        assert_eq!(flat.row_y(0, flat.grid_top()), CONTENT_TOP);
+
+        // …and a document with a chip and three shelves above the grid answers the SAME way,
+        // which the legacy constant could not: it is ~1.7k pixels short of this grid's origin.
+        let deep = Layout::new(true, 3, 40, true);
+        assert_eq!(deep.row_y(0, deep.grid_top()), CONTENT_TOP);
+        assert!(
+            deep.grid_top() - GRID_TOP > 1000.0,
+            "the shelves really do move the grid's origin off the old constant"
+        );
+        // the legacy expression at the same scroll is far off the top of the panel — i.e. exactly
+        // the `on_axis` rejection that made the focused card vanish
+        let legacy = GRID_TOP - deep.grid_top();
+        assert!(legacy < -CARD_H, "the old expression puts the focused row off-panel");
+
+        // every row is one pitch below the last, in both documents
+        assert_eq!(deep.row_y(1, 0.0) - deep.row_y(0, 0.0), PITCH);
+        assert_eq!(flat.row_y(1, 0.0) - flat.row_y(0, 0.0), PITCH);
+    }
+
+    /// **The head chip and the grid's control row share one array and are TWO zones.** The
+    /// toolbar's cursor may never rest on [`Chip::Source`]: the control row's draw skips it (it is
+    /// drawn at the head of the document instead), so a `TOOL_F` of 0 with Source present is a
+    /// toolbar with focus in it and nothing lit — which is exactly what the simulator showed
+    /// before this, a page where DOWN off the last shelf reached Sort and Filter and neither
+    /// responded.
+    #[test]
+    fn the_control_rows_cursor_never_rests_on_the_head_chip() {
+        // two libraries: the head chip is present, so the row is [Source, Sort, Filter]
+        assert_eq!(control_lo(&CHIPS_MANY), 1, "the first CONTROL is past the head chip");
+        assert_eq!(control_n(&CHIPS_MANY), 2, "…and there are two of them, not three");
+        assert_eq!(&CHIPS_MANY[control_lo(&CHIPS_MANY)], &Chip::Sort);
+
+        // one library: no head chip in the array at all, so the row starts where it looks like it
+        assert_eq!(control_lo(&CHIPS_ONE), 0);
+        assert_eq!(control_n(&CHIPS_ONE), 2);
+
+        // a failed listing keeps the chip that navigates AWAY from it and drops both controls —
+        // `below_top_bar` and `sync_readout_focus` read this as an empty toolbar and send focus to
+        // the read-out instead. `chips().len()` would have said 1 here and parked focus on a
+        // control row that does not exist.
+        assert_eq!(control_n(&CHIPS_SOURCE_ONLY), 0);
+        assert_eq!(control_lo(&CHIPS_SOURCE_ONLY), 0, "…and degrades to 0 rather than panicking");
+        assert_eq!(control_n(&CHIPS_NONE), 0);
+    }
+
+    /// The shelf cursor survives its shelf changing underneath — which on this endpoint is the
+    /// ORDINARY refresh, not an edge case (`docs/pms-api.md` §3a: two hubs rotate their subject
+    /// between requests), and which Mark Watched and Remove from Continue Watching also produce.
+    #[test]
+    fn the_shelf_cursor_follows_the_film_and_then_the_slot() {
+        let _g = crate::testlock::serial();
+        let _t = crate::plex::session::TempSession::new("shelf-focus");
+        _t.watching("u-shelf-focus");
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+
+        // no shelves at all: the rule is a no-op rather than a panic or a reset to 0
+        unsafe {
+            SHELF_F = 2;
+            SHELF_C = 3;
+        }
+        shelf_focus_survives();
+        assert_eq!(unsafe { (SHELF_F, SHELF_C) }, (2, 3), "nothing to re-resolve");
+        crate::browse::reset();
+    }
+
+    // ---- the fade coordinator's precedence table ---------------------------------------------
+
+    /// **A grid action queued during a page transition is carried to the TARGET, semantically.**
+    ///
+    /// The Library keeps its grid controls live while a page fades — a control that ignores a press
+    /// is worse than one that acts a beat later — so a Sort chosen in library A really can commit
+    /// against library B. That is only safe because the action names a stable server KEY and the
+    /// section it is for: sort and genre menus are built per section from that section's own
+    /// vectors, so an INDEX would select a different value there or silently no-op.
+    #[test]
+    fn a_grid_action_queued_during_a_page_fade_is_scoped_to_the_target() {
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        request_section(2);
+        request_grid(GridAct::Sort {
+            key: "addedAt".into(),
+            desc: true,
+        });
+        let p = pending();
+        let g = p.grid.clone().expect("a scoped grid action");
+        assert_eq!(g.sec, 2, "the action belongs to the library we are arriving in");
+        assert_eq!(
+            g.act,
+            GridAct::Sort {
+                key: "addedAt".into(),
+                desc: true
+            },
+            "…stated as a server key, not as a position in the OLD section's menu"
+        );
+        // **…and the SECTION SWITCH is still queued beside it.** A grid action arriving during a
+        // page transition used to REPLACE it, so both were lost: the section was never applied, and
+        // the action was then refused because its target was not the section still on screen.
+        assert_eq!(
+            p.section.map(|r| r.sec),
+            Some(2),
+            "the page transition survives the action queued against it"
+        );
+        clear();
+    }
+
+    /// …and the chip read-outs are scoped with it: what the user is looking at while the page fades
+    /// is the library they are ARRIVING in, so an action queued against a different section must not
+    /// relabel the one still on screen.
+    #[test]
+    fn a_queued_action_for_another_section_does_not_relabel_this_ones_chips() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let committed = crate::browse::unwatched();
+        // queued against a section that is not the one on screen
+        unsafe {
+            PENDING = Pending {
+                section: None,
+                grid: Some(GridReq {
+                    sec: crate::browse::cur() + 7,
+                    epoch: crate::browse::table_epoch(),
+                    act: GridAct::Unwatched(!committed),
+                }),
+            }
+        };
+        assert_eq!(
+            view_unwatched(),
+            committed,
+            "the chip still describes the library it is drawn over"
+        );
+        clear();
+    }
+
+    /// **BACK before the floor CANCELS the transaction** — the queued action and the fade
+    /// together. The rule is TEMPORAL, not spatial: before the commit nothing has happened and the
+    /// user has changed their mind; after it the outgoing content is already gone, so cancelling
+    /// would restore a page they have left, and BACK is the ordinary head-of-document move instead.
+    #[test]
+    fn back_before_the_floor_cancels_the_action_and_the_fade() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let menu0 = take_menu();
+        set_menu(Menu::None);
+        request_section(2);
+        request_grid(GridAct::Sort {
+            key: "addedAt".into(),
+            desc: true,
+        });
+        assert!(xf().is_swapping(), "the fade is out and has not committed");
+
+        assert!(back(), "BACK is consumed by the cancellation");
+        assert!(pending().is_none(), "the queued action is discarded");
+        clear();
+        set_menu(menu0);
+    }
+
+    /// …and an OPEN MENU still takes BACK first, which is the existing precedence and is right: the
+    /// unwatched switch deliberately leaves its Filter menu up after the press, so dismissing that
+    /// menu is not the same gesture as withdrawing the switch. The action survives the menu.
+    ///
+    /// It is worth pinning because the two rules are one keypress apart and the wrong order would
+    /// silently eat a press the user already saw acknowledged (`view_unwatched` flips on the press
+    /// frame).
+    #[test]
+    fn an_open_menu_takes_back_first_and_the_queued_action_survives_it() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let menu0 = take_menu();
+        let committed = crate::browse::unwatched();
+        request_grid(GridAct::Unwatched(!committed));
+        set_menu(Menu::Filter);
+
+        assert!(back(), "the menu consumes it");
+        assert!(!menu_open(), "…and closes");
+        assert!(
+            !pending().is_none(),
+            "the switch the user already watched flip is still queued"
+        );
+        clear();
+        set_menu(menu0);
+    }
+
+    /// An action whose target section is no longer the one on screen is REFUSED at the floor rather
+    /// than applied to whatever now sits at that index — which is what `browse::reset` renumbering
+    /// the table under a queued action would otherwise mean.
+    #[test]
+    fn an_action_whose_target_moved_is_refused_rather_than_misapplied() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let before = crate::browse::unwatched();
+        unsafe {
+            PENDING = Pending {
+                section: None,
+                grid: Some(GridReq {
+                    sec: crate::browse::cur() + 5,
+                    epoch: crate::browse::table_epoch(),
+                    act: GridAct::Unwatched(!before),
+                }),
+            }
+        };
+        apply_pending();
+        assert_eq!(
+            crate::browse::unwatched(),
+            before,
+            "a foreign target must change nothing here"
+        );
+        assert!(pending().is_none(), "…and the queue is drained either way");
+        clear();
+    }
+
+    /// **A stale TABLE EPOCH is refused on its own**, even when the section index still matches.
+    /// The guard read `epoch != … && sec != cur()`, which made the epoch half dead: `browse::reset`
+    /// renumbers the table, and an action queued against index 0 before a profile switch names a
+    /// DIFFERENT library at index 0 after it — the one case the index can never catch.
+    #[test]
+    fn a_queued_action_does_not_survive_the_table_being_renumbered() {
+        let _s = crate::testlock::serial();
+        let _g = PEND.lock().unwrap_or_else(|e| e.into_inner());
+        let _t = crate::plex::session::TempSession::new("lib-epoch");
+        _t.watching("u-lib-epoch");
+        crate::browse::reset();
+        // a REAL table, or the toggle below is a no-op and the assertion grades nothing — which is
+        // exactly what the first version of this test did: it passed against the broken guard too.
+        crate::browse::seed_two_source_table_for_test();
+        clear();
+        let before = crate::browse::unwatched();
+
+        // the control leg FIRST: with a live epoch the same action really does land, so the
+        // rejection below is the guard and not the seeding
+        unsafe {
+            PENDING = Pending {
+                section: None,
+                grid: Some(GridReq {
+                    sec: crate::browse::cur(),
+                    epoch: crate::browse::table_epoch(),
+                    act: GridAct::Unwatched(!before),
+                }),
+            }
+        };
+        apply_pending();
+        assert_eq!(
+            crate::browse::unwatched(),
+            !before,
+            "control: a live action applies"
+        );
+        crate::browse::toggle_unwatched(); // back to where we started
+
+        unsafe {
+            PENDING = Pending {
+                section: None,
+                grid: Some(GridReq {
+                    // the section on screen, so the INDEX guard cannot save us…
+                    sec: crate::browse::cur(),
+                    // …and an epoch from a table that no longer exists
+                    epoch: crate::browse::table_epoch().wrapping_sub(1),
+                    act: GridAct::Unwatched(!before),
+                }),
+            }
+        };
+        apply_pending();
+        assert_eq!(
+            crate::browse::unwatched(),
+            before,
+            "an action from a renumbered table must not be applied to whatever holds that index now"
+        );
+        clear();
+        crate::browse::reset();
+    }
+
+
+    /// **The focused card's label must not enter the A–Z rail's band.** Photographed on the
+    /// television 2026-09-05 and reported as *"does not respect the A–Z view"*: the last grid
+    /// column's caption — `Wallace & Gromit: Vengeance Most Fowl` — ran straight through the rail's
+    /// letters and off the panel's right edge.
+    ///
+    /// The grid itself always respected the band ([`GRID_R`] is derived from it, and
+    /// `the_grid_fills_the_column_between_the_margin_and_the_rail` grades that). What did not was
+    /// the LABEL, which is deliberately wider than the tile it sits under — `card_row`'s
+    /// `under_budget` reserves two tiles and two gaps so a long title has somewhere to go — and was
+    /// clamped only against the PANEL. On every other screen those two edges are the same line. On
+    /// this one they are not, and this screen never said so.
+    ///
+    /// Graded through [`card_row::label_band`], the expression the draw itself uses, at both ends
+    /// of the row: the last column must clear the rail, and the first must be unmoved, because a
+    /// bound applied to the wrong edge would fix the photograph and shift every other label.
+    #[test]
+    fn the_focused_cards_label_stays_out_of_the_rails_band() {
+        let p = crate::ui::Painter::root();
+        let card = |c: usize| {
+            Rect::new(
+                MARGIN_X + c as f32 * (CARD_W + LGAP),
+                GRID_TOP,
+                CARD_W,
+                CARD_H,
+            )
+        };
+
+        let (x, w) = card_row::label_band(p, card(COLS - 1), &GRID_STYLE);
+        assert!(
+            x + w <= GRID_R + 0.01,
+            "the last column's label runs to {} against a content edge of {GRID_R} — the rail's \
+             band is {RAIL_BAND}px of it",
+            x + w,
+        );
+
+        // …and the first column is untouched: the clamp binds on the right edge alone.
+        let (x0, w0) = card_row::label_band(p, card(0), &GRID_STYLE);
+        let (h0, _) = card_row::label_band(p, card(0), &RowStyle::HOME);
+        assert_eq!(
+            x0, h0,
+            "a right-edge reserve must not move a left-edge label: {x0} vs {h0}",
+        );
+        assert!(x0 >= 0.0 && x0 + w0 <= GRID_R + 0.01);
+    }
+
+    /// **An open menu must not chase a chip the user cannot see.** Reported from the television
+    /// 2026-09-05 as *"during filtering, menu explodes"*, with a photograph of the Filter panel's
+    /// rows in one place and its glass body in another.
+    ///
+    /// The mechanism, from a `panel_rect` trace in the simulator: pressing *Unwatched only*
+    /// re-queries the grid, the document re-seats, and the toolbar — which is INSIDE the scroll
+    /// since this screen became one column — travels down the page. `panel_rect` re-read the chip
+    /// every frame, so the panel sprang after it (529 → 671 → 808 over ~20 frames) while the table
+    /// laid its rows out against the rect it had, and the two came apart mid-flight.
+    ///
+    /// **The reason it can never be right to follow is that the host page is FROZEN.** This
+    /// popover is `caching_host`, so what is behind the scrim is a snapshot taken when the menu
+    /// opened: the chip the viewer is looking at is at its OLD place, and the live one the anchor
+    /// was tracking is not on the screen at all. A panel that follows the live chip walks away
+    /// from the only chip anybody can see.
+    ///
+    /// So the anchor is latched at open. Graded by moving the chip out from under an open menu and
+    /// asserting the panel does not move — and by checking the latch is dropped on close, or the
+    /// next menu would open where the last one was.
+    #[test]
+    fn an_open_menus_anchor_does_not_follow_a_chip_that_scrolls_away() {
+        let _g = crate::testlock::serial();
+        unsafe {
+            (*addr_of_mut!(TOOL_RECTS))[1] = Rect::new(MARGIN_X, 459.0, 300.0, TOOL_H);
+            MENU = Menu::Filter;
+        }
+        let opened = panel_rect();
+        assert!(
+            (opened.y - (459.0 + TOOL_H + 18.0)).abs() < 0.01,
+            "a menu opens under its chip: {} vs {}",
+            opened.y,
+            459.0 + TOOL_H + 18.0,
+        );
+
+        // …the grid re-queries under it and the toolbar travels down the document.
+        unsafe { (*addr_of_mut!(TOOL_RECTS))[1] = Rect::new(MARGIN_X, 738.0, 300.0, TOOL_H) };
+        assert_eq!(
+            panel_rect().y,
+            opened.y,
+            "the panel followed the chip out from under the frozen page it is drawn on",
+        );
+
+        // …and the latch is released, or the NEXT menu opens where this one was.
+        unsafe { MENU = Menu::None };
+        close_menu();
+        unsafe { MENU = Menu::Filter };
+        assert!(
+            (panel_rect().y - (738.0 + TOOL_H + 18.0)).abs() < 0.01,
+            "a menu opened after the close must anchor to where the chip is NOW",
+        );
+        unsafe {
+            MENU = Menu::None;
+            (*addr_of_mut!(TOOL_RECTS))[1] = Rect::new(0.0, 0.0, 0.0, 0.0);
+        }
+    }
+
+    /// **Every focused tile fills the two rungs the row reserves for it.** Reported from the
+    /// television 2026-09-05: *"some rows have only one text label without detail label. We should
+    /// either add something there or shrink row spacing."*
+    ///
+    /// It is the FIRST of those, and the reason is that the box is not this screen's to shrink:
+    /// `consts::ROW_PITCH` reserves `card_row::UNDER_LABEL_H` — the two-rung block — for every
+    /// shelf on Home and here, so a per-shelf shrink would make two rows of the same object
+    /// different heights and leave this screen's grid disagreeing with the shelves above it. What
+    /// was actually missing is that Home had carried a caption on every focused poster all along
+    /// (`focused_caption`/`cw_caption`, private to that file) and the Library passed a bare title.
+    ///
+    /// The SHOW case is the one that needed more than a promotion, and it is why this test names
+    /// three kinds: Home's rule gave the year to `kind == 0` alone, so a show — the whole of a TV
+    /// library's *Recently Added* — captioned nothing on either screen. The grid on this very page
+    /// has always captioned a show with its year, so widening the fallback makes one object read
+    /// one way on one screen rather than inventing a rule for it.
+    #[test]
+    fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
+        let caption = |l: &card_row::TileLabel| {
+            l.caption
+                .as_ref()
+                .map(|c| c.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let poster = |m: PmsMovie, is_continue: bool| {
+            let sh = crate::browse::section_hubs::Shelf {
+                id: "x".into(),
+                title: "Recently Added".into(),
+                is_continue,
+                landscape: false,
+                items: vec![m],
+            };
+            caption(&shelf_label(&sh, 0))
+        };
+
+        // a SHOW — the case Home's own rule left blank, and the one in the report
+        assert_eq!(
+            poster(
+                PmsMovie {
+                    kind: 1,
+                    title: "The Bear".into(),
+                    year: 2022,
+                    ..Default::default()
+                },
+                false
+            ),
+            "2022",
+            "a show's poster reserved a caption rung and drew nothing into it",
+        );
+        // …a film, which Home already captioned
+        assert_eq!(
+            poster(
+                PmsMovie {
+                    kind: 0,
+                    title: "Stardust".into(),
+                    year: 2007,
+                    ..Default::default()
+                },
+                false
+            ),
+            "2007",
+        );
+        // …and a DECK tile, which says what it is for instead: how much is left
+        assert_eq!(
+            poster(
+                PmsMovie {
+                    kind: 0,
+                    title: "Stardust".into(),
+                    year: 2007,
+                    dur_ns: 60 * 60 * 1_000_000_000,
+                    resume_ms: 35 * 60 * 1000,
+                    ..Default::default()
+                },
+                true
+            ),
+            "25 min left",
+        );
+        // an item the server dated to nothing at all is still one rung, and that is honest
+        assert_eq!(
+            poster(
+                PmsMovie {
+                    kind: 1,
+                    title: "Untitled".into(),
+                    ..Default::default()
+                },
+                false
+            ),
+            "",
         );
     }
 }

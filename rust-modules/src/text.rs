@@ -1050,7 +1050,7 @@ pub(crate) fn text_vcenter_y(sz: c_int, bold: c_int, cy: f32) -> f32 {
 ///
 /// The two band bottoms are subtracted from EACH OTHER before `on_y` is touched, deliberately: a
 /// run measured against its own tokens then returns `on_y` bit-for-bit, so a caller that resolves
-/// every run of a flow through this (`ui::home::draw_heading`) does not nudge its reference run by
+/// every run of a flow through this (`ui::card_row::draw_heading`) does not nudge its reference run by
 /// an ULP for the privilege.
 pub(crate) fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, on_y: f32) -> f32 {
     // The same-token case is the COMMON one — a flow resolves its own reference run through here

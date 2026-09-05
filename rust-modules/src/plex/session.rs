@@ -97,6 +97,69 @@ pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
 }
 
+/// **A signed-in session at a scratch path, taken back on drop — THE guard, not one of several.**
+///
+/// Any test that reads or writes a per-profile decision (the favourite libraries above all, since
+/// the tab strip is a projection of them now) is otherwise graded against whatever `auth.json`
+/// happens to be on the developer's own machine — and worse, WRITES its fixtures there: `make
+/// check` was seeding this household's real session file with machines called `mac-mini` and
+/// `nas-home` and then reading them back one test later, which is how a strip that resolves
+/// `[Movie, Show]` on the maintainer's Mac resolves something else on a runner.
+///
+/// Three near-identical copies of this existed — `browse`'s `TempPins`, `ui::onboard`'s
+/// `TempSession` and an inline one in `auth` — and `onboard`'s own doc comment already said this
+/// module owned the original, which it did not. It does now. A screen with its own globals to put
+/// back wraps this one and adds its teardown to the wrapper's `Drop` (see `ui::onboard`), rather
+/// than forking the redirect a fourth time.
+///
+/// **The caller must hold [`crate::testlock::serial`] for its whole body** — the redirected path is
+/// a crate global that several modules reach indirectly, so two of these at once is one test
+/// reading the other's fixtures.
+#[cfg(test)]
+pub(crate) struct TempSession {
+    dir: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl TempSession {
+    /// A session with a `client_id` and **no current profile**. An empty `client_id` makes
+    /// [`update`] a silent no-op by design, so seeding one is what makes a per-profile write
+    /// observable at all; leaving the profile unset is the neutral start, since a test that cares
+    /// which profile it is says so with [`TempSession::watching`].
+    pub(crate) fn new(tag: &str) -> TempSession {
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-session-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp dir");
+        redirect_for_test(Some(dir.join("auth.json")));
+        save(&Session {
+            client_id: "cid-test".into(),
+            ..Default::default()
+        });
+        TempSession { dir }
+    }
+
+    /// Become `uuid` — the same call the profile switch makes, and what every read and write of a
+    /// per-profile decision keys on ([`current_profile_key`]).
+    pub(crate) fn watching(&self, uuid: &str) {
+        set_current(Some(UserRef {
+            uuid: uuid.into(),
+            ..Default::default()
+        }));
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempSession {
+    fn drop(&mut self) {
+        set_current(None);
+        redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Session {
@@ -472,9 +535,13 @@ pub struct PinnedLib {
     pub key: i64,
 }
 
-/// **One profile's answer to "what goes on your Home?"** — the first-run route's record
-/// (`Shared Sources.dc.html` deliverable F), and what the Library's Sources panel writes back
-/// every time a switch is flipped.
+/// **One profile's FAVOURITE libraries** — the first-run route's record (`Shared Sources.dc.html`
+/// deliverable F), and what the Library's Sources panel writes back every time a switch is flipped.
+///
+/// It recorded the answer to "what goes on your Home?" until 2026-09-05 and the persisted key is
+/// still `home_pins`, deliberately: renaming it would break ROLLBACK rather than upgrade, since the
+/// next whole-`Session` write under an older build would emit only the new name and that build
+/// would silently apply defaults. The SCOPE is what widened — see `browse::BrowseSection::pinned`.
 ///
 /// **Both sides are recorded, and that is the field this type exists for.** A single "these are
 /// pinned" list cannot tell *turned off* from *not answered about*, and the two must not be one

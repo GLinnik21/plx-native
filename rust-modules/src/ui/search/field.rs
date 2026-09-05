@@ -89,7 +89,7 @@ const GHOST_GAP: f32 = 28.0;
 const RUN_SZ: c_int = theme::size::HERO;
 /// The scope block's own height: exactly one caption line. The minimum-query instruction belongs
 /// to the field above, so reserving a second line here would move the scope away from its token.
-/// [`super::CHROME_BOTTOM`] is measured off it, so this is the number that says where the app's
+/// [`super::HEAD_BOTTOM`] is measured off it, so this is the number that says where the app's
 /// chrome stops and the result band begins.
 pub(crate) const SCOPE_H: f32 = theme::size::CAPTION as f32 * 1.35;
 /// …and how much room it gets: the rest of the row, out to the app's own right margin. It is the
@@ -110,6 +110,16 @@ const UNNAMED_OWN: &str = "your server";
 const UNNAMED_SHARE: &str = "a shared server";
 
 pub(crate) fn draw(p: Painter, v: &View) {
+    // **The field is IN the document** (2026-09-05). It was pinned — drawn at a fixed `FIELD.y`
+    // over a scrim that dissolved the shelves as they rose behind it — and now it rides the one
+    // scroll everything else on this screen rides, exactly as the Library's chip and control row
+    // do. Everything below is authored in FLOW coordinates against `FIELD`/`super::SCOPE_Y` and
+    // this one translate is what puts it on the panel, `p.clip` included (the cascade translate is
+    // folded into the scissor). `super::hit` applies the same shift to the field's hit rect.
+    //
+    // At `shift == 0` the result is byte-identical to the pinned draw, which is the whole of the
+    // screen the keyboard is up over: `super::scroll_frozen` holds the flow at zero while editing.
+    let p = p.translate(0.0, -v.shift);
     // **Focus is carried by ink alone — permanently.** Issue 22's flat `ACCENT` plate lived here for
     // one day (2026-09-03) and the owner rejected it on sight: "you made the search bar background
     // white, while I wanted text to be white". It is gone, along with the discrete-flip machinery
@@ -182,7 +192,7 @@ pub(crate) fn draw(p: Painter, v: &View) {
     // metric): a click landing in that sliver — past `FIELD`'s own bottom edge but still inside the
     // clipped glyph's own descent — reads as a miss rather than a field hit. Left as a known,
     // recorded gap rather than silently ignored: the pad is small (≈3.5px on the shipped face) and
-    // growing `FIELD` itself was rejected, because `SCOPE_Y`/`CHROME_BOTTOM` are measured off it and
+    // growing `FIELD` itself was rejected, because `SCOPE_Y`/`HEAD_BOTTOM` are measured off it and
     // moving them for a font-metric sliver is a bigger change than this bug earns.
     let (cap_top, cap_base) = crate::text::text_cap_band(RUN_SZ, 1);
     let pad = descent_pad(

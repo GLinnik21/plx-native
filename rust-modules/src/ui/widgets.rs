@@ -525,6 +525,16 @@ pub(crate) fn warm_tex_on(
 /// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
 pub(crate) enum Art<'a> {
     Poster(Option<&'a PmsMovie>),
+    /// **A landscape tile of a real catalog row** — an episode's own still, with the watched disc
+    /// and (through `card_row::resume_bar`) the resume bar a poster wears.
+    ///
+    /// Carries the ROW rather than a path, which is the whole difference from [`Art::Thumb`] and is
+    /// what lets it wear the state marks at all. The artwork it resolves is a FALLBACK CHAIN, and
+    /// the order matters: the episode's own still, then the show's backdrop, then the show poster.
+    /// A shelf of recently released episodes is exactly where "then the show poster" must be the
+    /// LAST resort — several episodes of one show all substituting the same poster is the picture
+    /// this variant exists to stop drawing.
+    Still(Option<&'a PmsMovie>),
     /// `sid` is the server `key` is a path on — an image-transcode path embeds a server-local
     /// ratingKey, so a still or a poster fetched from another machine is a 404 or, worse, a
     /// different item's picture. Every variant here carries one for that reason.
@@ -549,6 +559,261 @@ pub(crate) enum Art<'a> {
 /// ([`Painter::tex_carded`]): texture + 1px edge-sheen + the soft drop-shadow that GROWS with the pop
 /// factor `f` (0 = resting/close to the shelf, 1 = fully lifted), all in ONE pass. The caller supplies
 /// `f` (the shelves compute it from their per-cell spring; the episode/chapters strips from `scale`).
+/// The size a landscape still is transcoded at — [`crate::ui::card_row::RowStyle::EPISODE`]'s tile,
+/// so the server scales once and the texture is 1:1 on the panel.
+const STILL_RES: (c_int, c_int) = (420, 236);
+
+/// **Which artwork a landscape tile draws, in order of preference.** The episode's own still, the
+/// show's backdrop, then the show's poster.
+///
+/// `PmsMovie::still` is empty on anything that is not an episode and on an episode whose server
+/// sent no thumb of its own, and BOTH of those must fall through to something 16:9-ish before they
+/// reach `thumb` — which for an episode is the SHOW POSTER, i.e. the identical-tiles picture this
+/// whole tile exists to replace. Falling back to it at all is still right for the last resort: a
+/// letterboxed poster answers "which show" even when it cannot answer "which episode".
+pub(crate) fn still_key(m: &PmsMovie) -> &str {
+    if !m.still.is_empty() {
+        &m.still
+    } else if !m.thumb.is_empty() {
+        // **The show's POSTER before its backdrop** (`Library Screens.dc.html` E): "where an
+        // episode has no still, the tile falls back to the show's poster in the same frame,
+        // cover-fitted, label and all — a crop is better than a row of mixed tile shapes." For an
+        // episode `thumb` IS `grandparentThumb`, the show poster (`pms::parse_item`); for anything
+        // else it is the item's own artwork, which also outranks a shared backdrop. `art` stays as
+        // the last resort rather than the second.
+        &m.thumb
+    } else {
+        &m.art
+    }
+}
+
+/// **The state label a landscape STILL wears on its scrim** — up to TWO lines, drawn directly on
+/// the artwork with no capsule behind it. Draw [`art_scrim`] first; that is what makes text on a
+/// picture safe.
+///
+/// `label` is the upper line (`size::LABEL` bold, primary) and `sub` the lower one
+/// (`size::CAPTION`, `TEXT_SECONDARY`) with the action glyph at its head. **The hierarchy is size
+/// and ink rather than position**, which is what makes the pair read as one label instead of two
+/// things — `Library Screens.dc.html` E, revised 2026-09-05, and secondary rather than tertiary
+/// because 24px at ten feet needs the contrast.
+///
+/// An empty `label` collapses the pair to the sub line alone, which is not a degenerate case but
+/// the detail filmstrip's own shape: it is inside one season of one show, in order, under the
+/// show's name in 72px type, so it has nothing to disambiguate and prints only its runtime.
+///
+/// `has_bar` lifts the whole block from 14px off the bottom to 22 so a resume bar keeps its own
+/// band clear. It is a parameter and not a look at the item, because [`still_overlay`] is the one
+/// place that knows whether a bar is about to be drawn.
+///
+/// It was `detail::ep_state_line`, private to the episode filmstrip, until the Library grew a shelf
+/// of the same object. Promoted rather than copied — `ui/CLAUDE.md`'s improve-don't-fork rule, and
+/// the same reasoning that made the resume bar `card_row::resume_bar`'s: two screens drawing "how
+/// far into this am I" as two different objects is exactly the drift this system exists to kill.
+///
+/// **The callers pass different LABELS by SURFACE and that is the design, not drift** — name the
+/// rule rather than counting them, because the count has already gone stale once. The detail
+/// filmstrip's line carries the runtime (`▶ 48 min`), because on a page that already names the show
+/// in 72px type the missing fact is how long the episode is. Every SHELF surface — the Library's
+/// episode shelves and Search's episode tiles — carries the SHOW NAME instead, because there a
+/// still is the one tile in the app with no title of its own: a poster prints its show's name inside
+/// the artwork, so the still must too, or the shelf is a row of anonymous frames of television
+/// (`Library Screens.dc.html` E).
+///
+/// `card` is the rect actually DRAWN — the scaled one while the tile is popped — so the line rides
+/// the focus pop without resizing.
+///
+/// **`press_plays` is the whole of the app's play-indicator rule, at this one draw**, and
+/// [`still_glyph`] is the rule itself: the amber ▶ is a PROMISE — this press starts the video — so
+/// it is drawn on a surface whose press does that and on no other. A Continue Watching deck and the
+/// detail page's episode filmstrip play; a discovery shelf ("Recently Released Episodes", "Recently
+/// Added…") and a Search result NAVIGATE to the episode, so they draw no triangle and the line is
+/// the show's name alone.
+///
+/// The other two marks are not promises. `✓` is a STATE — this episode is finished — and the resume
+/// BAR is a fact about how far in you are, drawn wherever there is progress to report, on a shelf
+/// that plays and a shelf that does not: hiding it would hide something true, and it was never the
+/// thing that read as "this will play". The triangle beside it was. Which is exactly why the bar
+/// cannot stand IN for the triangle either — see [`still_glyph`] for the cell where it tried to.
+/// The leading glyph on a [`still_line`], as a pure decision — one slot, two things that want it.
+///
+/// Both are plain masks in ONE box, and the tick takes the line's own ink rather than a hue:
+/// a watched line is a statement about the past while an unstarted one is an invitation, and only
+/// the invitation earns the amber.
+///
+/// **The ACTION wins the slot when there is one**, which is the rule the owner asked for on
+/// 2026-09-05 stated as a biconditional: *a play indicator means the press plays, a progress bar
+/// means progress, and a card with no play indicator navigates.* This function used to hand the
+/// slot to `PosterMark` first and consult `press_plays` only in the `None` arm — so an IN-PROGRESS
+/// tile drew no glyph at all, and on a shelf that plays (the Library's Continue Watching deck,
+/// where nearly every tile is in progress) that is a card announcing nothing and then playing. The
+/// resume bar under it is not the announcement: that bar is drawn on shelves that navigate too,
+/// which is exactly the conflation being removed.
+///
+/// **`Watched` is the one exception and it is bounded rather than forgotten.** The tick is the only
+/// carrier of "you have seen this" — the bar is absent by definition and the dimmed run is a hint,
+/// not a statement — so it keeps the slot even where the press plays. The residual is a watched
+/// tile on a playing shelf showing no ▶, and it is reachable on exactly one surface: the detail /
+/// season episode filmstrip, where EVERY row plays and no navigating card is drawn beside it, so
+/// there is no pair for a viewer to confuse. On the surface that does mix the two kinds — the
+/// Library, deck shelf above discovery shelf — a watched item in Continue Watching is not a state
+/// the server produces.
+fn still_glyph(mark: PosterMark, press_plays: bool) -> Option<(crate::ui::icons::Icon, [f32; 4])> {
+    match mark {
+        // the bounded exception, above the action: see the note above
+        PosterMark::Watched => Some((crate::ui::icons::Icon::Check, theme::TEXT_SECONDARY)),
+        // the invitation, wherever the press accepts it — progress does not withdraw it
+        _ if press_plays => Some((crate::ui::icons::Icon::Play, theme::RESUME_FILL)),
+        PosterMark::None | PosterMark::InProgress => None,
+    }
+}
+
+pub(crate) fn still_line(
+    p: Painter,
+    card: Rect,
+    mark: PosterMark,
+    label: &str,
+    sub: &str,
+    press_plays: bool,
+    has_bar: bool,
+) {
+    // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
+    // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
+    let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
+    let (sct, scb) = crate::text::text_cap_band(ssz, 0);
+    let (_, lcb) = crate::text::text_cap_band(lsz, 1);
+    let bot = if has_bar {
+        STILL_LINE_BOT_BAR
+    } else {
+        STILL_LINE_BOT
+    };
+    let sy = card.y + card.h - bot - scb;
+    let x0 = card.x + STILL_LINE_INSET;
+    let right = card.x + card.w - STILL_LINE_INSET;
+
+    // The SHOW, above: LABEL bold in primary ink, elided to the tile's own right inset.
+    if !label.is_empty() {
+        // `line-height: 1.15` on the sub, then the design's 2px gap, then this run's own descent —
+        // measured through the cap bands rather than a literal, so a font swap cannot silently
+        // close the pair up.
+        let ly = sy - sct - STILL_PAIR_GAP - lcb;
+        let run = crate::text::elide(label, right - x0, lsz, 1, false);
+        if let Ok(lc) = std::ffi::CString::new(run) {
+            p.text(lc.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
+        }
+    }
+
+    // …and the IDENTIFIER under it, with the action glyph at its head.
+    let mut lx = x0;
+    if let Some((icon, tint)) = still_glyph(mark, press_plays) {
+        let cy = sy + (sct + scb) * 0.5;
+        crate::ui::icons::draw(
+            p,
+            icon,
+            Rect::new(lx, cy - STILL_GLYPH_D * 0.5, STILL_GLYPH_D, STILL_GLYPH_D),
+            tint,
+        );
+        lx += STILL_GLYPH_D + STILL_LINE_GAP;
+    }
+    if sub.is_empty() {
+        return;
+    }
+    let run = crate::text::elide(sub, right - lx, ssz, 0, false);
+    if let Ok(sc) = std::ffi::CString::new(run) {
+        p.text(sc.as_ptr(), lx, sy, ssz, theme::TEXT_SECONDARY, 0, 0);
+    }
+}
+
+/// **A landscape still's WHOLE overlay, in the one order that composes** — scrim, then the state
+/// line, then the resume bar. Every surface that draws an episode still calls this and none of them
+/// spells the three out again.
+///
+/// The order is `detail.rs`'s and is load-bearing: the bar belongs to the card's own bottom EDGE
+/// rather than to the scrim above it, so it goes LAST or the 78%-black gradient darkens it. That is
+/// also why a caller passes `None` for `card_row::strip`'s own `resume` closure and lets this draw
+/// the bar — `strip` runs the `extra` hook after the tile is complete, so a shelf that let
+/// `card_row` draw the bar and then painted the scrim from the hook had them the wrong way round.
+///
+/// **It exists because the composition had already drifted twice, and both times in the same
+/// place**: a screen draws its shelf through one path and re-draws the FOCUSED tile through another
+/// when a modal opens over it (`popover::Opener`), and the second path is the one that forgets.
+/// The Library lost the show name and the tick off its lifted tile that way, and Search lost them
+/// the same way one commit later — neither visible to a host test, which cannot observe a painter,
+/// nor to an FPS scene, which never opens the popover. One function is the fix that generalises;
+/// remembering harder is not.
+///
+/// `rad` is the tile's OWN radius at its current scale (`RowStyle::tile_radius`), not a constant:
+/// `card_row` scales the corner with the focus pop, so a fixed 14 clips the scrim to a different
+/// silhouette than the artwork under it at 1.09.
+///
+/// The label is the SHOW's name, falling back to the item's own title when the server sent none —
+/// see [`still_line`] for why a shelf surface names the show rather than the episode.
+pub(crate) fn still_overlay(
+    p: Painter,
+    m: &crate::pms::PmsMovie,
+    card: Rect,
+    rad: f32,
+    press_plays: bool,
+) {
+    let show = if m.show_title.is_empty() {
+        m.title.as_str()
+    } else {
+        m.show_title.as_str()
+    };
+    let bar = m.resume_frac();
+    still_ground(
+        p,
+        card,
+        rad,
+        if show.is_empty() {
+            STILL_SCRIM_H_1
+        } else {
+            STILL_SCRIM_H
+        },
+        STILL_SCRIM_A,
+    );
+    still_line(
+        p,
+        card,
+        poster_mark(m),
+        show,
+        &crate::ui::fmt::episode_address(m.season_index as i64, m.ep_index as i64),
+        press_plays,
+        bar.is_some(),
+    );
+    if let Some(frac) = bar {
+        crate::ui::card_row::resume_bar(p, card, frac, rad);
+    }
+}
+
+/// The gradient a [`still_line`] is read against — height and peak alpha.
+///
+/// **112 for the PAIR since 2026-09-05**, and the revision states its own reason: "the system's
+/// 88px was measured for ONE line; two lines need the extra band, and the density is what the
+/// contract was actually about". The peak is unchanged, which is the half that WAS the contract —
+/// still a gradient, still full width, still never a pill.
+///
+/// [`STILL_SCRIM_H_1`] is the one-line band, kept rather than folded into the bigger number: the
+/// detail filmstrip prints its runtime alone, and giving it the pair's gradient would darken a
+/// third of every still to clear a line that is not there. [`still_overlay`] picks between them by
+/// what it is actually about to draw, so the two can never disagree with the label above them.
+pub(crate) const STILL_SCRIM_H: f32 = 112.0;
+pub(crate) const STILL_SCRIM_H_1: f32 = 88.0;
+pub(crate) const STILL_SCRIM_A: f32 = 0.78;
+/// The pair's left inset, and the SUB line's baseline distance from the tile's bottom edge.
+pub(crate) const STILL_LINE_INSET: f32 = 16.0;
+pub(crate) const STILL_LINE_BOT: f32 = 14.0;
+/// …and the same distance on a tile that also carries a resume BAR. `Library Screens.dc.html` E:
+/// "the label sits 22 from the bottom instead of 14 so the bar keeps its own 5px band clear".
+/// Two numbers rather than a conditional at each call site, because the lift is a property of the
+/// tile's contents and every surface that draws one owes it.
+pub(crate) const STILL_LINE_BOT_BAR: f32 = 22.0;
+/// The air between the show's line and the identifier under it — the design's 2px, on top of what
+/// the two cap bands already leave.
+pub(crate) const STILL_PAIR_GAP: f32 = 2.0;
+/// The leading glyph's box, and the air between it and the run.
+pub(crate) const STILL_GLYPH_D: f32 = 20.0;
+pub(crate) const STILL_LINE_GAP: f32 = 8.0;
+
 /// A not-yet-loaded skeleton falls back to a rimmed fill (no shadow until the art arrives).
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
     let r = if focused { frame.scaled(scale) } else { frame };
@@ -608,6 +873,32 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
+        }
+        // A LANDSCAPE tile of a real catalog row: the item's own 16:9 art, and the same state
+        // language every poster wears. It is `Poster`'s twin and deliberately not `Thumb` — see
+        // the paragraph in the `Poster` arm above, which says exactly this: a `Thumb` is a path and
+        // a size, so only a variant carrying the ROW can derive a mark from it, and Related wore no
+        // mark for months for precisely that reason. A shelf of episodes needs the mark as much as
+        // a shelf of films does.
+        Art::Still(m) => {
+            let t = m
+                .map(|m| resolve_tex_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0))
+                .unwrap_or(0);
+            if t != 0 {
+                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
+            } else {
+                p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
+            }
+            // **No watched DISC.** `Library Screens.dc.html` E: "the watched disc is suppressed
+            // whenever a stateLine is present — one mark per tile, and the line is it." Every
+            // landscape still in the app wears one (the filmstrip's runtime, the Library shelf's
+            // show name), and its tick sits inside that line, so a disc in the corner would be the
+            // same fact twice — in two different vocabularies, on a tile with room for neither.
+            //
+            // The row is still carried rather than dropped back to `Art::Thumb`: `still_key`'s
+            // fallback chain is a property of the ITEM, and the resume bar the caller draws needs
+            // it too.
+            let _ = m;
         }
         Art::Person { sid, key, res } => {
             let t = resolve_tex_on(sid, key, res.0, res.1, 0);
@@ -1518,6 +1809,88 @@ pub(crate) fn tracked_run(
     (bx - track - x).max(0.0)
 }
 
+crate::dev::latched_flag!(
+    /// **`/tmp/plxnative-tileglass` — an episode still's label band as a frosted MATERIAL instead
+    /// of a black gradient.** An EXPERIMENT, default off, and it exists to be measured rather than
+    /// to be shipped by whoever finds it.
+    ///
+    /// The idea is the reference client's (owner, 2026-09-05, with a photograph of Apple TV's
+    /// Continue Watching row): a blurred strip across the bottom of the card instead of a scrim, so
+    /// the label can sit lower and the artwork it stands on is dimmed rather than hidden. The band
+    /// carries the same two lines and the same glyph; only its GROUND changes.
+    ///
+    /// **The arithmetic says this is the worst shape this hardware has** — see
+    /// `docs/glass-hardware-budget.md` §8: a glass surface is charged for its rect grown 88px a
+    /// side and UNIONED across every glass surface in the frame, a wide thin strip pays for a
+    /// region far larger than itself, and a row of them spread across the panel unions into one
+    /// full-width band. §8's own measurement puts a single 1148x76 bar at 46 fps once its backdrop
+    /// refreshes, and this band's backdrop is artwork that MOVES with the shelf, so it cannot be
+    /// cached at all.
+    ///
+    /// **And the arithmetic has already been wrong here once, by a lot** (§11: predicted 45,
+    /// measured 58), which is exactly why this is a trigger and not a rejection. Arm it, run the
+    /// fps scenes with a control leg, and put the number in §12.
+    fn tile_glass_armed = "tileglass";
+);
+
+/// The shared cadence state for every tile band in a frame — ONE, because there is one blur cache
+/// and every glass surface in a frame converges on one grab. Per-tile state would buy nothing and
+/// would let two tiles disagree about whether this present's snapshot is stale.
+static mut TILE_GLASS: GlassState = GlassState::new();
+
+/// Resolve the tile bands' glass cadence BEFORE the page they sit on draws — `Glass::prepare`'s
+/// contract, exactly as the tab track and the person page's bio panel do. A no-op unless the
+/// experiment is armed.
+pub(crate) fn tile_glass_prepare() {
+    if !tile_glass_armed() || crate::gfx::blur_source_pass() {
+        return;
+    }
+    let state = unsafe { &mut *std::ptr::addr_of_mut!(TILE_GLASS) };
+    Glass::DYNAMIC_BACKDROP.prepare(
+        state,
+        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
+    );
+}
+
+/// **The GROUND a still's state label is read against** — the black gradient by default, and the
+/// frosted band when [`tile_glass_armed`] is armed.
+///
+/// One function so the A/B is a ground swap and nothing else: the same band height, the same label
+/// above it, the same bar below it, so an fps difference between two runs is this material and not
+/// a second layout. The `bool` it returns is unused by design — a caller draws its label either
+/// way — and the fallback when the driver has no render target is the gradient, which is what every
+/// other glass surface in this app does.
+pub(crate) fn still_ground(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
+    if !tile_glass_armed() {
+        art_scrim(p, card, rad, h, a);
+        return;
+    }
+    let h = h.min(card.h);
+    if h <= 0.0 {
+        return;
+    }
+    let band = Rect::new(card.x, card.y + card.h - h, card.w, h);
+    // `Standing` and `UltraThin` are the cheapest container the material has — one fetch, no
+    // widened re-sample. If the measurement fails at this weight it fails at every weight.
+    if Glass::DYNAMIC_BACKDROP.backdrop(
+        p,
+        band,
+        0.0,
+        rad,
+        [1.0, 1.0, 1.0, 1.0],
+        crate::gfx::GlassRim::Standing,
+        crate::gfx::GlassFace::NONE,
+        theme::Material::UltraThin,
+    ) {
+        // The frost the LABEL is read against. A blur alone is not legibility — a bright still
+        // blurred is still bright — so the band keeps a fraction of the gradient's own ink,
+        // flat rather than ramped because the band has a hard top edge of its own now.
+        p.rect(band, rad, theme::scrim(a * 0.45), theme::scrim(a * 0.55), 0.0);
+    } else {
+        art_scrim(p, card, rad, h, a);
+    }
+}
+
 /// The **bottom scrim** on a piece of artwork: `h` px of near-black fading upward to nothing, clipped
 /// to the card's own rounded silhouette. This is what lets text sit directly ON a still with no chip
 /// or capsule behind it (`Details Screen.dc.html`'s episode tiles) — a plain label over an arbitrary
@@ -1950,252 +2323,24 @@ pub(crate) fn profile_chip_at(mx: f32, my: f32) -> bool {
     CHIP_FRAME.contains(mx, my)
 }
 
-// ---- the navigation bar's scrim ---------------------------------------------------------------
+// ---- the navigation bar's scrim: RETIRED 2026-09-05 -------------------------------------------
+//
+// `nav_scrim` was the shared treatment for a scrolling column dissolving under FIXED top chrome —
+// the design system's `route-screen` card. It had two callers and has none: the Library became one
+// continuous document on 2026-09-05 and Search followed it the same day, and a screen whose head
+// scrolls with its content has nothing for a veil to stand on. Deleted rather than kept warm,
+// because a shared element with no consumer is a second, unexercised opinion about a problem the
+// document shape no longer has; `git log -S nav_scrim` is the recipe if a route ever grows a fixed
+// bar again.
+//
+// It took `/tmp/plxnative-navglass` with it — the frosted-material prototype of the same band. The
+// idea (content should FROST under the top chrome rather than dissolve into flat grey) keeps coming
+// back, and the reason it lost is a television measurement, not a taste: both screens held a
+// flawless 60 fps with nothing over 20.6 ms, and the material put every second's worst frame at
+// ~26. **That measurement is `docs/glass-hardware-budget.md` §11**, which is where it always lived
+// — this comment only says the trigger is gone, so the reproduction now needs the surface rebuilt
+// rather than a flag armed.
 
-/// How much scroll fully establishes the scrim — the design system's `--scrim-in`. It FADES IN
-/// over the first pixels rather than popping on at a 1px threshold, and because scroll here is
-/// spring-driven the appear inherits the spring's easing for free and cannot desync.
-const NAV_SCRIM_IN: f32 = 56.0;
-/// The alpha the ramp bends at — `--scrim-knee-a`.
-const NAV_SCRIM_KNEE_A: f32 = 0.40;
-/// Where the ramp bends, as a FRACTION of the gap between the chrome and the content: a steep fall
-/// to the knee over the first part, then a long gentle tail to nothing. The design system spells the
-/// two lines per route and both of its routes agree on the proportion — Library `170 / 188 / 214`
-/// and the full-screen list route `106 / 124 / 150` are each an 18px steep segment and a 26px tail,
-/// so the knee lands at `18/44` of the way down.
-///
-/// A FRACTION and not those two lengths, because the gap is the caller's: it is the air between the
-/// bottom of what the bar draws and the top of what scrolls, and the two screens do not have the
-/// same amount of it (the Library keeps 28px under its toolbar chips, Search 40 under its field).
-/// Spelled as a length, the ramp would start wherever `content_top − 44` happened to fall — which on
-/// the Library is 170, sixteen pixels ABOVE the chips' own bottom edge, so the chips sat on the
-/// fading part of their own backing instead of on solid ground. Visible on the panel and reported
-/// from the couch; the mock's Library numbers have it too.
-const NAV_SCRIM_KNEE_F: f32 = 18.0 / 44.0;
-
-/// **The navigation bar's scrim: content dissolving under the top chrome.** One element, because
-/// every full-screen route that scrolls a column under the bar needs exactly this and the design
-/// system already tokenises it that way (`--scrim-in`, `--scrim-knee-a`, and a per-route content
-/// line — `components/panels/route-screen.card.html` is its reference drawing).
-///
-/// Two lines and a scroll. `chrome_bottom` is the lowest thing the BAR draws — the Library's toolbar
-/// chips, Search's query/scope chrome — and everything above it stays solidly backed, so a control never
-/// sits on ground that is fading out from under it. `content_top` is where the caller's own scrolling
-/// content begins, and the veil has reached nothing by then. `scroll` is how far that content has
-/// travelled; nothing is drawn at rest, which keeps a settled screen free of it entirely.
-///
-/// **It starts at y=0 and is OPAQUE for most of its height**, and that is the part that is easy to
-/// get wrong: the band is not a gradient hung under the bar, it is the bar's whole ground, with a
-/// ramp on its bottom edge. Starting it lower leaves a strip of live content above it — a poster's
-/// top edge appearing over the chrome, which is what the first version of this did on Search.
-///
-/// **That has now been tried a second time, for a reason that sounded better, and it still loses.**
-/// The design system asks for the grid to pass BEHIND the glass track — cutting the content at the
-/// chrome line and then reporting that the material shows nothing is circular, and the argument is
-/// right. It does not survive this screen's arithmetic. The grid's rest positions are fixed modulo
-/// [`library::PITCH`], and at every one of them the track lands in the `UNDER_LABEL_H + UNDER_LABEL_AIR` band BETWEEN two rows (114px since
-/// the Home/Library pitch was unified, 2026-09-02; the figures below were measured at the old 96,
-/// re-measure before quoting a y): in the simulator at 1920x1080 the row above ended at y=26 and
-/// the track occupied 36 to 112, so the material has flat app grey behind it at rest no matter how far you scroll. What the
-/// change actually bought was a permanent ~26px strip of cut-off poster bottoms along the top of
-/// the frame. The emptiness behind the bar is not a choice anybody made — it is the row pitch, and
-/// moving the scrim cannot reach it. Reinstated, with the measurement, so the next reader gets the
-/// answer instead of the idea.
-///
-/// The caller draws it AFTER its content and BEFORE its chrome, which is the order that lets it be
-/// opaque; `library::draw` has always used that order and it is why its scissor is a bound rather
-/// than a treatment.
-///
-/// **And the obvious idea — make it a BLUR rather than a grey — was built, measured and refused.**
-/// `/tmp/plxnative-navglass` is that build, still here and still off: the whole band becomes a
-/// backdrop-blurred surface and these three rects become its frost at [`NAV_GLASS_FROST`] of their
-/// weight. It looks like what it should look like, on the Library. It is also **far cheaper than
-/// the region arithmetic says** — 58 fps where `docs/glass-hardware-budget.md`'s law predicted 45
-/// — and it still loses, on the one number that answers the question: these two screens hold a
-/// flawless 60 today with no frame over 20.6 ms, and with the material every second's worst frame
-/// is ~26 ms. Numbers, both screens, both ways, and what the harness scenes could NOT see:
-/// `docs/glass-hardware-budget.md` §11. Reach for the trigger before proposing it again; do not
-/// reach for it to ship it.
-pub(crate) fn nav_scrim(p: Painter, chrome_bottom: f32, content_top: f32, scroll: f32) {
-    let a = (scroll / NAV_SCRIM_IN).clamp(0.0, 1.0);
-    let gap = content_top - chrome_bottom;
-    if a <= 0.004 || gap <= 0.0 {
-        return;
-    }
-    // The prototype material draws NOTHING into a blur source pass — the same rule
-    // [`draw_tab_row`] follows, and for the same reason: the snapshot this band frosts must be the
-    // live page, not a grey copy of the band itself. Left in, the band would blur its own veil and
-    // the material would show a flat wash however far the grid had scrolled.
-    if crate::gfx::blur_source_pass() && nav_glass_wanted() {
-        return;
-    }
-    let ps = p.alpha(a); // the appear rides the cascade — all three bands together
-    let frost = if nav_glass_on() && nav_glass_backdrop(ps, content_top) {
-        NAV_GLASS_FROST
-    } else {
-        1.0
-    };
-    nav_scrim_bands(ps, chrome_bottom, content_top, frost);
-}
-
-/// The three bands, at `frost` of their full weight — 1.0 for the opaque treatment, and
-/// [`NAV_GLASS_FROST`] over a live backdrop.
-///
-/// One function for both paths so the two can never become two different curves: the glass path is
-/// the flat path's own ramp scaled, which is what makes "the material is the same shape, lighter"
-/// an executable statement rather than a claim (`nav_scrim_stops` and its test).
-fn nav_scrim_bands(ps: Painter, chrome_bottom: f32, content_top: f32, frost: f32) {
-    let (base, knee_col, clear) = nav_scrim_stops(frost);
-    let knee = chrome_bottom + (content_top - chrome_bottom) * NAV_SCRIM_KNEE_F;
-    let w = crate::ui::consts::SCR_W;
-    ps.rect(Rect::new(0.0, 0.0, w, chrome_bottom), 0.0, base, base, 0.0);
-    ps.rect(
-        Rect::new(0.0, chrome_bottom, w, knee - chrome_bottom),
-        0.0,
-        base,
-        knee_col,
-        0.0,
-    );
-    ps.rect(
-        Rect::new(0.0, knee, w, content_top - knee),
-        0.0,
-        knee_col,
-        clear,
-        0.0,
-    );
-}
-
-/// The band's three colour stops at `frost` of full weight — solid, knee, nothing.
-fn nav_scrim_stops(frost: f32) -> ([f32; 4], [f32; 4], [f32; 4]) {
-    let base = theme::SURFACE_APP;
-    (
-        theme::with_a(base, frost),
-        theme::with_a(base, NAV_SCRIM_KNEE_A * frost),
-        theme::with_a(base, 0.0),
-    )
-}
-
-latched_flag!(
-    /// **`/tmp/plxnative-navglass` — the scroll band as a frosted MATERIAL instead of an opaque
-    /// grey one.** Default OFF, and it stays off: see [`nav_glass_rect`] for the arithmetic and
-    /// `docs/glass-hardware-budget.md` §11 for the television measurement that decided it.
-    ///
-    /// The idea is the obvious one — content scrolling under the top chrome should FROST rather
-    /// than dissolve into flat grey — and it is behind a trigger because the question it raises is
-    /// not a taste question. Measured on the set: the Library grid goes from a flawless 60 fps to
-    /// 58, and its worst frame each second from ~19 ms to ~26. Arm this and look at it before
-    /// proposing the idea again; do not arm it to ship it.
-    fn nav_glass_armed = "navglass";
-);
-
-/// How much of the flat treatment's weight the material keeps.
-///
-/// The band's whole job is to be legible ground for the chrome standing on it, and at `frost = 0`
-/// the tab pills' [`theme::TEXT_TERTIARY`] labels would sit on whatever poster happened to be
-/// passing. The density wanted is between the bar's own [`theme::Material::UltraThin`] 0.28 and a
-/// popover's 0.72 — a container you look PAST, but one carrying the app's only navigation — and
-/// that is [`theme::Material::Regular`], the rung the ladder already puts there. It was written out
-/// as a bare `0.62`, which is the same weight to within two percent of alpha and a fourth
-/// un-tokenised density in a system whose whole point is that there are five.
-///
-/// **The frost and the sample radius come from DIFFERENT rungs here, and that is deliberate rather
-/// than a drift.** `Material` is meant to hand over both halves from one name ([`panel_material`]
-/// says so in as many words), and this surface breaks that on purpose: [`nav_glass_backdrop`]
-/// passes `UltraThin` so the backdrop takes the CHEAPEST fetch there is — the measurement had to be
-/// a floor, not a representative sample — while the frost is the weight the chrome actually needs
-/// to stand on. If this were ever unrefused the two would have to be reconciled to one name, and
-/// the cost re-measured at that name.
-///
-/// It scales all three stops rather than replacing them, so the ramp keeps its knee — see
-/// [`nav_scrim_bands`].
-const NAV_GLASS_FROST: f32 = theme::Material::Regular.frost();
-
-/// How far past the panel the band's geometry is pushed on its three off-screen sides.
-///
-/// `fs_glass` puts its chamfer, lens and specular hairline within the rim's reach of every edge,
-/// and a band that spans the frame must not be ringed by a lit border down its left and right. Only
-/// the BOTTOM edge is meant to be seen, so only that one stays on the panel. The bleed costs nothing
-/// in region — `gfx::blur_region` clamps to the screen — which is exactly why it is free to use.
-/// Same trick, same reason, as `glassload`'s `NAV_BLEED`.
-const NAV_GLASS_BLEED: f32 = 80.0;
-
-static mut NAV_GLASS_STATE: GlassState = GlassState::new();
-
-/// Will this band wear the material this frame, ignoring the source pass?
-///
-/// **A popover takes it away**, on the tab track's argument one size larger: two glass surfaces in
-/// a frame converge on ONE grab, and a band across the top unioned with a panel in the middle is the
-/// whole-screen capture the region limit exists to avoid.
-fn nav_glass_wanted() -> bool {
-    nav_glass_armed() && !crate::ui::popover::any_open()
-}
-
-/// …and the source-pass clause: a page being drawn AS a blur source never wears the material it is
-/// producing.
-fn nav_glass_on() -> bool {
-    nav_glass_wanted() && !crate::gfx::blur_source_pass()
-}
-
-/// **The rectangle the band is charged for — and the number that turned out NOT to decide it.**
-///
-/// A glass surface costs its rect grown `gfx::BLUR_MARGIN` on every side, clamped to the panel.
-/// This one spans the full width, so the growth that matters is vertical only: the Library's
-/// `content_top` of 214 prices at 1920 x 302 = 579,840 px², and Search's 248 at 1920 x 336 =
-/// 645,120, against a `gfx::GLASS_REGION_BUDGET` of 300,000. Both are about twice over, which
-/// `docs/glass-hardware-budget.md`'s region law calls 45 fps at best.
-///
-/// **On the television it measured 58, and that prediction is now retired** — the law was taken on
-/// the capture path and the DIRECT source path renders the page again at quarter scale, which makes
-/// the region term about 4x cheaper (NOT a sixteenth: the chain's up pass is `region / 4` and is the
-/// largest thing that path writes — §11 has the pass table). What is left binding is the COMPOSITE,
-/// charged at the surface at full resolution and discounted by neither path, and this band's
-/// 1920 x 214 is 4.7x the largest area anything in that document ever measured. It is why the
-/// arithmetic below is kept as a test and NOT as the price: it counts the term that turned out not
-/// to decide. The band was refused on what it actually costs (§11): the two screens hold a flawless
-/// 60 with nothing over 20.6 ms today, and the material puts 206 frames a run past 20 ms and every
-/// second's worst frame at ~26. The test below keeps the ARITHMETIC honest; the doc keeps the
-/// measurement.
-fn nav_glass_rect(content_top: f32) -> Rect {
-    let b = NAV_GLASS_BLEED;
-    Rect::new(-b, -b, crate::ui::consts::SCR_W + 2.0 * b, content_top + b)
-}
-
-/// The band's backdrop. `false` — a driver with no render target — leaves the caller its opaque
-/// ground, which is the same fallback every other glass surface here takes.
-fn nav_glass_backdrop(ps: Painter, content_top: f32) -> bool {
-    Glass::DYNAMIC_BACKDROP.backdrop(
-        ps,
-        nav_glass_rect(content_top),
-        0.0,
-        0.0,
-        [1.0, 1.0, 1.0, 1.0],
-        // A container, like the track and the panel: the shallow chamfer and the long lens. Only
-        // the bottom edge is on the panel, so this is what defines the line the blur stops at —
-        // the material cannot RAMP its own blur, so it has to end at an edge somebody drew.
-        crate::gfx::GlassRim::Standing,
-        // The three bands above are the face, and they are a vertical ramp with a knee that a
-        // two-stop `GlassFace` cannot express.
-        crate::gfx::GlassFace::NONE,
-        // The band is chrome you look past, and this is also the CHEAPEST material there is (one
-        // fetch, no widened re-sample). If the measurement fails here it fails everywhere.
-        theme::Material::UltraThin,
-    )
-}
-
-/// Resolve the band's glass cadence BEFORE the page it sits on draws — `Glass::prepare`'s contract,
-/// exactly as [`tab_glass_prepare`] does for the track. Both step the one shared `DynamicClock`, and
-/// a second call in a present is a no-op by construction, so the two owners cannot multiply the
-/// snapshot rate between them.
-pub(crate) fn nav_glass_prepare() {
-    if !nav_glass_on() {
-        return;
-    }
-    let state = unsafe { &mut *std::ptr::addr_of_mut!(NAV_GLASS_STATE) };
-    Glass::DYNAMIC_BACKDROP.prepare(
-        state,
-        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
-    );
-}
 
 /// The band's face, weighted by how far the chip has unfurled — every alpha, not just the tint's.
 ///
@@ -3067,6 +3212,124 @@ impl AmbientWash {
             self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]),
             dither,
         );
+    }
+}
+
+// ---- PageGround: the item-keyed ground a BROWSING screen stands on. ----
+
+/// **The page ground under a browsing surface** — one [`AmbientWash`] dissolving toward the colours
+/// of whatever item is under the focus ring, so a screen full of other people's artwork says which
+/// one you are standing on without drawing anything extra to say it.
+///
+/// [`AmbientWash`] is the gradient and the dissolve; this is the POLICY three screens were about to
+/// write three times over. It owns exactly the parts that are not obvious and that a screen gets
+/// wrong quietly:
+///
+/// * **An item with no `UltraBlurColors` envelope HOLDS the ground where it is** rather than
+///   dissolving to the flat surface. One artless poster in a row of colour would otherwise flash the
+///   whole page grey and back on the way past — the person page states this rule in prose and this
+///   is it as code, which is why that screen now shares this type.
+/// * **A ground that has resolved to the app's own clear colour is not drawn.** It is a
+///   ~2M-fragment full-screen pass that changes nothing; `AmbientWash::is_flat` is the test and
+///   forgetting it costs a whole screen's fill-rate headroom for an invisible gradient.
+/// * **The dither is spent only on a ground that is being LOOKED at.** The noise is ~2.5M GPU
+///   cycles a frame at full screen (`gfx::draw_ambient`) and buys nothing under moving content;
+///   `gfx::page_wash_dither` is the shared gate and [`draw_moving`](Self::draw_moving) is how a
+///   screen says its page is in motion.
+///
+/// What stays the screen's business is the per-corner SHAPE — how far each corner leans — for the
+/// reason [`AmbientWash::GROUND_W`] gives: one strength, many arrangements. [`CARD_W`](Self::CARD_W)
+/// is the arrangement every item-keyed page ground shares.
+pub(crate) struct PageGround {
+    wash: AmbientWash,
+    /// The last target actually keyed from artwork — what [`key`](Self::key) holds when the item
+    /// under the ring carries no envelope. Starts at the app's own surface, so a page whose first
+    /// item has no colours is simply the flat ground it already was.
+    target: [[f32; 4]; 4],
+}
+
+impl PageGround {
+    /// The corner arrangement every item-keyed page ground leans by: [`AmbientWash::GROUND_W`]
+    /// across the top, nearly gone by the bottom. Strongest where the page's own subject is and
+    /// faint under the content rows, which is what keeps it atmosphere rather than a tint.
+    ///
+    /// One constant rather than one per screen: the STRENGTH is already shared
+    /// ([`AmbientWash::GROUND_W`]), and two browsing screens leaning it in two different directions
+    /// would read as two products. Home's billboard has its own, deliberately stronger arrangement
+    /// (`home::HERO_WASH_W`) because there the wash stands in for a missing photograph rather than
+    /// grounding body text.
+    pub(crate) const CARD_W: [f32; 4] = [
+        AmbientWash::GROUND_W,
+        AmbientWash::GROUND_W,
+        0.08,
+        0.08,
+    ];
+
+    /// A ground resting on the app's own surface — what a screen mounts with, and what it stays
+    /// until something focused hands it colours.
+    pub(crate) const fn new() -> Self {
+        PageGround {
+            wash: AmbientWash::flat(theme::SURFACE_APP),
+            target: [theme::SURFACE_APP; 4],
+        }
+    }
+
+    /// Dissolve toward the focused item's colours. `src` is that item's `UltraBlurColors` corners
+    /// (`PmsMovie::blur`) or `None` when nothing focused carries any — **which holds the ground
+    /// rather than clearing it**, per the type's doc.
+    ///
+    /// Called once per frame from a screen's update, before anything reads the ground.
+    pub(crate) fn key(&mut self, src: Option<[[f32; 3]; 4]>, w: [f32; 4], dt: f32) {
+        if let Some(b) = src {
+            self.target = AmbientWash::keyed(b, w);
+        }
+        self.wash.step(self.target, AmbientWash::K, dt);
+    }
+
+    /// Dissolve toward an ALREADY-MIXED target — for a screen whose no-artwork state is a palette
+    /// token rather than the flat surface (the person page's warm header tint), so "hold the last
+    /// colour" is not the right answer there and the screen resolves both states itself. Takes an
+    /// [`AmbientWash::target`] / [`AmbientWash::keyed`] result.
+    pub(crate) fn key_target(&mut self, target: [[f32; 4]; 4], dt: f32) {
+        self.target = target;
+        self.wash.step(self.target, AmbientWash::K, dt);
+    }
+
+    /// [`key_target`](Self::key_target) without the dissolve — for a page that has just changed
+    /// SUBJECT, where the previous subject's colours must not wash across the new one. Mount-time
+    /// only; a jump on a page already on screen is a hard colour cut.
+    pub(crate) fn jump_target(&mut self, target: [[f32; 4]; 4]) {
+        self.target = target;
+        self.wash.jump(self.target);
+    }
+
+    /// Paint the ground under everything, standing in for the flat clear — **skipped when it has
+    /// resolved to that clear anyway**, which is the whole fill-rate argument in the type's doc.
+    ///
+    /// **Dithered, through the shared `gfx::page_wash_dither` gate.** Home's hero ground can drop
+    /// the noise because its wash is only ever seen THROUGH a moving photograph; a browsing screen's
+    /// is not — it is directly visible in every gutter of the grid standing on it, at rest and while
+    /// it dissolves, and an undithered gradient there bands in slow diagonal treads that CRAWL as
+    /// the ground moves. So the choice is not the caller's here, and the type does not offer it.
+    pub(crate) fn draw(&self, p: Painter, r: Rect) {
+        if self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
+            return;
+        }
+        self.wash
+            .draw_with(p, r, crate::gfx::page_wash_dither(true));
+    }
+
+    /// Has the ground resolved to the app's own surface? The screens' own tests ask this; the draw
+    /// path asks it for itself.
+    #[cfg(test)]
+    pub(crate) fn is_flat(&self) -> bool {
+        self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
+    }
+
+    /// The ground's live corners, for a test that wants to see WHERE it got to.
+    #[cfg(test)]
+    pub(crate) fn corners(&self) -> [[f32; 3]; 4] {
+        self.wash.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos])
     }
 }
 
@@ -4218,16 +4481,25 @@ impl TabStrip {
     }
 }
 
-// ---- The shared top tab row: profile chip leads at the margin, the four destinations
+// ---- The shared top tab row: profile chip leads at the margin, the global destinations
 // (Home | Movies | TV Shows | Search) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
 // Library screen so they read as one global tab bar; the pill rects live here so both
 // screens' pointer paths share [`tab_pill_at`]. ----
-/// The four global destinations. Movies and TV Shows are TYPE pills rather than discovered Plex
-/// sections, so discovery, failure, and roster changes never remove or reorder navigation.
+/// The global destinations: **Home, then a pill per type that HAS a favourite library, then
+/// Search** — two to four of them.
+///
+/// Movies and TV Shows are still TYPE pills rather than discovered Plex sections, so discovery,
+/// failure and roster changes never REORDER navigation and a friend's tenth film library never adds
+/// a stop. **What changed on 2026-09-05 is that they can be REMOVED**: the Favorite libraries
+/// switch governs the strip, so a type left with no favourite draws no pill at all
+/// (`browse::tab_has_favorite`). This doc said "never remove or reorder"; half of it is still the
+/// deliverable and half of it is now the opposite, which is why [`Pill::Section`] carries a
+/// `SecKind` — a bare index means something different once a pill can vanish.
 pub(crate) fn tab_count() -> usize {
-    1 + crate::browse::tab_count() + 1 // Home, Movies + TV Shows, then Search
+    1 + crate::browse::tab_count() + 1 // Home, the favourited type pills, then Search
 }
-/// The index of the Search pill: always the LAST one in the fixed four-destination vocabulary.
+/// The index of the Search pill: always the LAST one, in a strip whose length now varies with the
+/// favourite set (two destinations to four).
 pub(crate) fn search_pill() -> usize {
     tab_count() - 1
 }
@@ -4255,9 +4527,17 @@ pub(crate) fn is_search_pill(pill: usize) -> bool {
 pub(crate) enum Pill {
     /// pill 0 — always present, the strip's one fixed member
     Home,
-    /// a TAB index into `browse::tabs` (0-based, Home already subtracted), NOT a section index:
-    /// several libraries can share one pill, and `browse::tab_section` is what resolves it
-    Section(usize),
+    /// A TYPE — never a section index and, since 2026-09-05, never a strip POSITION either.
+    ///
+    /// It carried the tab index for as long as the strip was invariant, and that was safe only
+    /// because it was: two pills, always, for the life of the process. The favourite switch
+    /// governs the strip now, so a type whose last favourite library is switched off draws no
+    /// pill — and the moment a pill can appear or vanish, an integer stops naming a destination.
+    /// The same `1` means *Movies* before the change and *TV Shows* after it, so any cursor
+    /// stored across that frame silently points somewhere else. Carrying the KIND is what makes a
+    /// stored `Pill` survive the strip reshaping under it; `browse::tab_of_kind` resolves it back
+    /// to wherever it is drawn today, or to nothing when it is no longer drawn at all.
+    Section(crate::browse::SecKind),
     /// the last pill (see [`search_pill`])
     Search,
 }
@@ -4268,17 +4548,28 @@ pub(crate) enum Pill {
 /// Resolve a strip index. The ladder, written ONCE — [`Pill`]'s doc has the argument for why it is
 /// written once here rather than six times at the call sites.
 pub(crate) fn pill_at(i: usize) -> Pill {
-    pill_in(i, search_pill())
+    pill_in(i, search_pill(), crate::browse::tab_kind)
 }
-/// [`pill_at`] on a strip whose Search pill is at `search`.
+/// [`pill_at`] on a strip whose Search pill is at `search` and whose section pills resolve through
+/// `kind_at`.
 ///
-/// Total for the indices the fixed strip can produce. Callers clamp focus/hit-testing to
-/// [`tab_count`], so an out-of-range value is not a user-reachable destination.
-fn pill_in(i: usize, search: usize) -> Pill {
+/// The resolver is a parameter rather than a direct `browse::tab_kind` call so this half stays
+/// PURE and host-gradeable: the ladder is where the "a pill this has never heard of opens a
+/// library" bug lived, and it is worth testing without a section table in the process.
+///
+/// Total for the indices the strip's CURRENT shape can produce — which moves, since the favourite
+/// set decides how many type pills there are. Callers clamp focus/hit-testing to [`tab_count`], so
+/// an out-of-range value is not a user-reachable destination — and a section slot the strip no
+/// longer draws answers `Home`, which is the one pill that is always there.
+fn pill_in(
+    i: usize,
+    search: usize,
+    kind_at: impl Fn(usize) -> Option<crate::browse::SecKind>,
+) -> Pill {
     if i == search {
         Pill::Search
     } else if let Some(sec) = i.checked_sub(1) {
-        Pill::Section(sec)
+        kind_at(sec).map(Pill::Section).unwrap_or(Pill::Home)
     } else {
         Pill::Home
     }
@@ -4286,15 +4577,26 @@ fn pill_in(i: usize, search: usize) -> Pill {
 
 /// The index a [`Pill`] is drawn at — the inverse of [`pill_at`], for the places that name a
 /// destination and need the strip position it selects (`app.rs`'s `Nav::select_pill`).
-pub(crate) fn pill_of(p: Pill) -> usize {
-    pill_index(p, search_pill())
+///
+/// **`None` means "that type has no pill today"**, which a stored cursor can genuinely name for a
+/// frame: switching off a type's last favourite library removes its pill, and whoever was standing
+/// on it is holding a `Pill::Section` that no longer resolves. Returning an index anyway would put
+/// focus on whatever moved into that slot — the exact substitution `Pill::Section` was given a
+/// kind to prevent.
+pub(crate) fn pill_of(p: Pill) -> Option<usize> {
+    pill_index(p, search_pill(), crate::browse::tab_of_kind)
 }
-/// [`pill_of`] on a strip whose Search pill is at `search`.
-fn pill_index(p: Pill, search: usize) -> usize {
+/// [`pill_of`] on a strip whose Search pill is at `search` and whose types resolve through
+/// `tab_of`. Pure, for the same reason [`pill_in`] is.
+fn pill_index(
+    p: Pill,
+    search: usize,
+    tab_of: impl Fn(crate::browse::SecKind) -> Option<usize>,
+) -> Option<usize> {
     match p {
-        Pill::Home => 0,
-        Pill::Section(tab) => tab + 1,
-        Pill::Search => search,
+        Pill::Home => Some(0),
+        Pill::Section(kind) => tab_of(kind).map(|t| t + 1),
+        Pill::Search => Some(search),
     }
 }
 
@@ -7313,97 +7615,6 @@ mod tests {
         }
     }
 
-    /// **The scroll band's glass is about TWICE the region a moving host can carry, on both of the
-    /// screens that draw one** — the arithmetic that closed `/tmp/plxnative-navglass`, written as a
-    /// test so nobody re-derives it optimistically.
-    ///
-    /// A glass surface is charged for its rect grown [`crate::gfx::BLUR_MARGIN`] a side and clamped
-    /// to the panel. This band spans the full width, so only the vertical growth is left to pay
-    /// for, and there is nothing a design can do about it: the band's height IS the chrome it backs.
-    ///
-    /// The measurement that follows the arithmetic is in `docs/glass-hardware-budget.md` §11.
-    #[test]
-    fn the_scroll_band_is_twice_the_glass_region_budget_on_both_screens() {
-        let area = |content_top: f32| {
-            let r = nav_glass_rect(content_top);
-            let reg = crate::gfx::blur_region(r.x, r.y, r.w, r.h);
-            reg[2] * reg[3]
-        };
-        let lib = area(crate::ui::library::GRID_TOP);
-        let search = area(crate::ui::search::CONTENT_TOP);
-        assert_eq!(
-            lib,
-            1920.0 * 320.0,
-            "the Library band: 1920 wide, 0..232 grown 88 below"
-        );
-        assert_eq!(
-            search,
-            1920.0 * 388.0,
-            "Search's content starts 68px lower, and the band with it"
-        );
-        for (name, a) in [("library", lib), ("search", search)] {
-            assert!(
-                a > 1.9 * crate::gfx::GLASS_REGION_BUDGET,
-                "{name}: {a} px^2 against a {} budget — the arithmetic that made this look \
-                 hopeless before it was built. What refused it is the MEASUREMENT in \
-                 docs/glass-hardware-budget.md §11, not this ratio; §11 also records that the \
-                 direct source path makes the region term about 4x cheaper than the budget \
-                 assumes, and that what actually binds is the SURFACE's composite, not this.",
-                crate::gfx::GLASS_REGION_BUDGET,
-            );
-        }
-    }
-
-    /// **The material is the flat treatment's own ramp, scaled** — one curve, two weights.
-    ///
-    /// The knee is the part worth pinning. A band whose stops were solved independently for the two
-    /// paths could hold its chrome legible in one and not the other, and only the television would
-    /// say which.
-    #[test]
-    fn the_glass_band_is_the_opaque_band_scaled_by_its_frost() {
-        let (base, knee, clear) = nav_scrim_stops(1.0);
-        assert_eq!(
-            base,
-            theme::SURFACE_APP,
-            "the flat path is untouched: a solid app-grey floor"
-        );
-        assert_eq!(knee[3], NAV_SCRIM_KNEE_A);
-        assert_eq!(clear[3], 0.0);
-
-        let (gbase, gknee, gclear) = nav_scrim_stops(NAV_GLASS_FROST);
-        assert_eq!(gbase[3], NAV_GLASS_FROST);
-        assert_eq!(gknee[3], NAV_SCRIM_KNEE_A * NAV_GLASS_FROST);
-        assert_eq!(
-            gclear[3], 0.0,
-            "both paths reach nothing at the content line"
-        );
-        assert_eq!(
-            gknee[3] / gbase[3],
-            knee[3] / base[3],
-            "the knee sits at the same FRACTION of the floor in both materials",
-        );
-        for i in 0..3 {
-            assert_eq!(
-                gbase[i], base[i],
-                "channel {i}: the same grey, only lighter"
-            );
-        }
-    }
-
-    /// The trigger is OFF in a build nobody armed, which is the whole promise the item was left on.
-    #[test]
-    fn the_scroll_band_material_is_off_unless_its_trigger_is_armed() {
-        assert!(
-            !crate::dev::flag("navglass"),
-            "the host suite must not be run with /tmp/plxnative-navglass armed",
-        );
-        assert!(
-            !nav_glass_wanted(),
-            "default OFF: nothing changes for anyone"
-        );
-        assert!(!nav_glass_on());
-    }
-
     /// The band's blurred region, in authored px^2, for a track `w` wide with the chip unfurled
     /// beside it — through **`gfx`'s own `blur_region` and `blur_region_union`**, not a copy of them.
     ///
@@ -7932,32 +8143,66 @@ mod tests {
     /// no `Section` in it at all.
     #[test]
     fn every_strip_index_round_trips_through_the_typed_pill() {
+        // A stub strip of `n` types, so the ladder is graded with no section table in the
+        // process — `kinds[t]` is what `browse::tab_kind` would answer, and `pos` its inverse.
+        fn kinds(n: usize) -> Vec<crate::browse::SecKind> {
+            [crate::browse::SecKind::Movie, crate::browse::SecKind::Show]
+                .into_iter()
+                .cycle()
+                .take(n)
+                .collect()
+        }
         for search in 1..8usize {
+            let ks = kinds(search.saturating_sub(1));
+            let at = |t: usize| ks.get(t).copied();
+            let pos = |k: crate::browse::SecKind| ks.iter().position(|&x| x == k);
             assert_eq!(
-                pill_in(0, search),
+                pill_in(0, search, at),
                 Pill::Home,
                 "pill 0 is Home on every strip"
             );
             assert_eq!(
-                pill_in(search, search),
+                pill_in(search, search, at),
                 Pill::Search,
                 "the last pill is never a library"
             );
             for sec in 0..search.saturating_sub(1) {
                 assert_eq!(
-                    pill_in(sec + 1, search),
-                    Pill::Section(sec),
-                    "a TAB index, Home already subtracted"
+                    pill_in(sec + 1, search, at),
+                    Pill::Section(ks[sec]),
+                    "a TYPE, Home already subtracted"
                 );
             }
             for i in 0..=search {
-                assert_eq!(
-                    pill_index(pill_in(i, search), search),
-                    i,
-                    "pill {i} of {search} did not round trip"
-                );
+                // Only the FIRST occurrence of a kind round trips, because `cycle()` repeats them
+                // past two — the real strip never does, so the round trip is asserted over the
+                // vocabulary's own length.
+                if i == 0 || i == search || i <= 2 {
+                    assert_eq!(
+                        pill_index(pill_in(i, search, at), search, pos),
+                        Some(i),
+                        "pill {i} of {search} did not round trip"
+                    );
+                }
             }
         }
+        // A type the strip no longer draws resolves to NOTHING rather than to whatever moved into
+        // its slot — the whole reason `Pill::Section` carries a kind (see its doc).
+        assert_eq!(
+            pill_index(
+                Pill::Section(crate::browse::SecKind::Show),
+                2,
+                |_| None
+            ),
+            None,
+            "a switched-off type has no pill, and must not borrow another's index"
+        );
+        // …and a strip slot with no type behind it answers Home, never a library.
+        assert_eq!(
+            pill_in(1, 3, |_| None),
+            Pill::Home,
+            "an unfilled section slot is Home, not a library"
+        );
     }
 
     /// [`last_section_pill`]'s two answers. The interesting one is the SECOND: a strip with no
@@ -7967,9 +8212,14 @@ mod tests {
     fn the_section_ceiling_is_the_pill_before_search_and_falls_back_to_home() {
         for search in 2..8usize {
             let last = last_section_in(search);
+            let ks = [crate::browse::SecKind::Movie, crate::browse::SecKind::Show]
+                .into_iter()
+                .cycle()
+                .take(search.saturating_sub(1))
+                .collect::<Vec<_>>();
             assert_eq!(
-                pill_in(last, search),
-                Pill::Section(search - 2),
+                pill_in(last, search, |t| ks.get(t).copied()),
+                Pill::Section(ks[search - 2]),
                 "the last pill that IS a library"
             );
             assert!(last < search, "…and never Search itself");
@@ -7981,7 +8231,7 @@ mod tests {
             "with no sections the ceiling is HOME…"
         );
         assert_eq!(
-            pill_in(last_section_in(1), 1),
+            pill_in(last_section_in(1), 1, |_| None),
             Pill::Home,
             "…so the clamp can never land on nothing"
         );
@@ -8329,6 +8579,92 @@ mod tests {
         assert!(
             w.is_flat(theme::SURFACE_APP, EPS),
             "a second of dissolve must land back on the ground"
+        );
+    }
+
+    // ── PageGround: the policy every browsing screen shares ────────────────────────────────────
+    //
+    // Pure over `theme` tokens and the real corner springs, as the block above is.
+
+    /// **The rule the type exists for**: an item with no `UltraBlurColors` envelope must leave the
+    /// ground where it is, not clear it. Without this, one artless poster between two coloured ones
+    /// flashes the whole page grey and back on the way past — and the failure is invisible on a
+    /// library whose artwork all carries envelopes, which is most of them.
+    #[test]
+    fn an_item_with_no_envelope_holds_the_ground_instead_of_clearing_it() {
+        let dt = 1.0 / 60.0;
+        let red = [[0.9, 0.1, 0.1]; 4];
+        let (mut held, mut control) = (PageGround::new(), PageGround::new());
+        assert!(held.is_flat(), "a ground mounts on the app's own surface");
+
+        for _ in 0..30 {
+            held.key(Some(red), PageGround::CARD_W, dt);
+            control.key(Some(red), PageGround::CARD_W, dt);
+        }
+        assert!(!held.is_flat(), "half a second on a coloured tile keys the ground");
+
+        // …and now the ring walks across artless tiles for a second, while the control's tile keeps
+        // its envelope. The two must be indistinguishable: `None` is "nothing new to say", not
+        // "there is nothing here". Graded against a still-converging control rather than against a
+        // frozen snapshot, because the spring is *supposed* to keep closing on the held target.
+        for _ in 0..60 {
+            held.key(None, PageGround::CARD_W, dt);
+            control.key(Some(red), PageGround::CARD_W, dt);
+        }
+        for (a, b) in held.corners().iter().flatten().zip(control.corners().iter().flatten()) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "an artless tile moved the ground to {a}, where holding gives {b}"
+            );
+        }
+        assert!(!held.is_flat(), "…and it is certainly not back on the flat clear");
+    }
+
+    /// A ground that has resolved to the app's own clear colour must report itself flat, because
+    /// `draw` skips it there and that skip IS this component's fill-rate story: a full-screen
+    /// ambient pass is ~2M fragments for a gradient identical to the `frame_clear` under it.
+    #[test]
+    fn a_ground_keyed_to_nothing_is_a_pass_the_screen_can_skip() {
+        let mut g = PageGround::new();
+        assert!(g.is_flat(), "nothing keyed, nothing to draw");
+        // an explicit target of the surface itself resolves back to skippable
+        let blue = AmbientWash::keyed([[0.1, 0.2, 0.9]; 4], PageGround::CARD_W);
+        for _ in 0..60 {
+            g.key_target(blue, 1.0 / 60.0);
+        }
+        assert!(!g.is_flat(), "a keyed ground is drawn");
+        for _ in 0..60 {
+            g.key_target([theme::SURFACE_APP; 4], 1.0 / 60.0);
+        }
+        assert!(g.is_flat(), "a second of dissolve back to the surface is skippable again");
+    }
+
+    /// [`PageGround::jump_target`] is for a page that has changed SUBJECT: the previous subject's
+    /// colours must be gone on the frame the new one mounts, not dissolving across it.
+    #[test]
+    fn a_page_changing_subject_jumps_rather_than_washing_the_old_one_across_it() {
+        let mut g = PageGround::new();
+        let red = AmbientWash::keyed([[0.9, 0.1, 0.1]; 4], PageGround::CARD_W);
+        let green = AmbientWash::keyed([[0.1, 0.9, 0.1]; 4], PageGround::CARD_W);
+        g.jump_target(red);
+        g.jump_target(green);
+        for (c, t) in g.corners().iter().zip(green) {
+            for (a, b) in c.iter().zip(t) {
+                assert_eq!(*a, b, "a jump lands ON the target, with nothing in between");
+            }
+        }
+    }
+
+    /// The shared arrangement is the shared STRENGTH across the top — one number, so two browsing
+    /// screens cannot lean their grounds by two different amounts and read as two products.
+    #[test]
+    fn the_shared_card_arrangement_leans_by_the_shared_ground_strength() {
+        assert_eq!(PageGround::CARD_W[0], AmbientWash::GROUND_W);
+        assert_eq!(PageGround::CARD_W[1], AmbientWash::GROUND_W);
+        assert!(
+            PageGround::CARD_W[2] < PageGround::CARD_W[0]
+                && PageGround::CARD_W[3] < PageGround::CARD_W[1],
+            "…and fades toward the bottom, where the content rows are"
         );
     }
 
@@ -9560,6 +9896,51 @@ mod tests {
         assert!(
             was > 9.0,
             "the flat capsule this replaced cleared every ground: {was:.2}:1"
+        );
+    }
+
+    /// **The play indicator is a biconditional, and this grades every cell of it.**
+    ///
+    /// The owner's rule, 2026-09-05: *"visual play indicators mean immediate playback, progress
+    /// bars mean viewing progress, and cards without a play indicator navigate to details."* Two of
+    /// those three clauses are about what is ABSENT, which is why an exhaustive table is the only
+    /// honest test — the defect this was written for was a cell nobody looked at (in-progress on a
+    /// shelf that plays), and it was invisible to every screen test because it is a missing draw
+    /// call rather than a wrong one.
+    #[test]
+    fn the_play_glyph_appears_exactly_where_the_press_plays() {
+        use crate::ui::icons::Icon;
+        let g = |m, plays| still_glyph(m, plays).map(|(i, _)| i);
+
+        // navigating shelves: never a play indicator, whatever the watch state
+        assert_eq!(g(PosterMark::None, false), None);
+        assert_eq!(g(PosterMark::InProgress, false), None);
+        assert_eq!(
+            g(PosterMark::Watched, false),
+            Some(Icon::Check),
+            "a tick is a statement about the past, not a promise about the press",
+        );
+
+        // shelves that play: the action takes the slot, IN PROGRESS INCLUDED
+        assert_eq!(g(PosterMark::None, true), Some(Icon::Play));
+        assert_eq!(
+            g(PosterMark::InProgress, true),
+            Some(Icon::Play),
+            "the Continue Watching deck is almost entirely in-progress tiles — this is the cell \
+             that made the whole deck announce nothing and then play",
+        );
+        assert_eq!(
+            g(PosterMark::Watched, true),
+            Some(Icon::Check),
+            "the bounded exception: the tick is the only carrier of watched-ness, and the one \
+             surface it is reachable on draws no navigating card beside it",
+        );
+
+        // the amber is the action's and nothing else's
+        assert_eq!(still_glyph(PosterMark::None, true).map(|(_, c)| c), Some(theme::RESUME_FILL));
+        assert_eq!(
+            still_glyph(PosterMark::Watched, false).map(|(_, c)| c),
+            Some(theme::TEXT_SECONDARY),
         );
     }
 }

@@ -50,7 +50,7 @@ use crate::ui::consts::*;
 use crate::ui::label::{HAlign, Label, VAlign};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{AmbientWash, Art, Spinner, StatusKind, StatusOverlay};
+use crate::ui::widgets::{AmbientWash, Art, PageGround, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{card_row::reveal, Column, Env, Painter, Rect, ScrollColumn, Spring, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -145,10 +145,10 @@ const K_COND: f32 = K_SCROLL;
 /// `ACCENT` wash, strongest top-left (the mock's `radial at 18% 0%`). Card state: the focused
 /// poster's UltraBlur corners, strong across the top and nearly gone by the bottom (the mock's
 /// `.30 → .07` stops, trimmed a step on-device because our wash is opaque, not additive) — the
-/// top pair is [`AmbientWash::GROUND_W`], the one strength every item-keyed wash in the app leans
-/// by, spelled as the shared constant rather than as its value so the two cannot drift apart.
+/// card arrangement is [`PageGround::CARD_W`] now, the one every item-keyed page ground in the app
+/// leans by, named rather than spelt out so this page and the browsing screens cannot drift apart.
 const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
-const AMB_CARD_W: [f32; 4] = [AmbientWash::GROUND_W, AmbientWash::GROUND_W, 0.08, 0.08];
+const AMB_CARD_W: [f32; 4] = PageGround::CARD_W;
 
 // ---- screen state ----------------------------------------------------------------------------
 
@@ -178,7 +178,7 @@ struct Scene {
     /// The ambient wash, dissolving toward [`amb_target`] — what makes a focus change wash over the
     /// page instead of cutting. The springs and the "a wash cannot be alpha-faded" reasoning live in
     /// the shared [`AmbientWash`], not here.
-    amb: AmbientWash,
+    amb: PageGround,
     spin_ms: f32,
     /// a cast headshot was just activated; app.rs takes this and routes (see [`take_request`])
     requested: bool,
@@ -209,7 +209,7 @@ impl Scene {
             shelves: [CardRow::new(); NSHELF],
             column: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
             cond: Spring::at(0.0),
-            amb: AmbientWash::flat(theme::SURFACE_APP),
+            amb: PageGround::new(),
             spin_ms: 0.0,
             requested: false,
             name_c: CString::default(),
@@ -292,7 +292,9 @@ impl Column for Scene {
         if i == 0 {
             self.band_h()
         } else {
-            shelf_block_h()
+            // …at this shelf's LIVE label band: the block is only there while the shelf holds
+            // focus, so an unfocused one gives the space back (`card_row::under_band`).
+            shelf_block_h_at(self.shelves[i - 1].under_band())
         }
     }
     fn gap_before(&self, _i: usize) -> f32 {
@@ -494,10 +496,10 @@ fn cstr_elide(s: &str, w: f32, sz: c_int, bold: c_int) -> CString {
 }
 
 /// Total flowed content height (last child's bottom + the bottom air).
-fn content_h(sc: &Scene) -> f32 {
+fn content_h(sc: &Scene, c: &impl Column) -> f32 {
     let col = sc.column;
-    let last = sc.len().saturating_sub(1);
-    col.child_top(sc, last) + sc.height(last) + BOTTOM_PAD
+    let last = c.len().saturating_sub(1);
+    col.child_top(c, last) + c.height(last) + BOTTOM_PAD
 }
 
 /// A shelf block's flowed height: heading + poster row + the focused tile's label band.
@@ -509,7 +511,18 @@ fn content_h(sc: &Scene) -> f32 {
 /// a hand-authored 112 did here, because it assumed the mock's 24px poster→title drop where the
 /// shared code uses 30.
 fn shelf_block_h() -> f32 {
-    SHELF_LABEL_H + CARD_H + card_row::TileLabel::height(true)
+    shelf_block_h_at(card_row::UNDER_LABEL_H)
+}
+
+/// …the same, at an arbitrary label band — the collapsing half of the rule above. A shelf that does
+/// not hold focus draws no label block at all, so it reserves `card_row::LABEL_BAND_COLLAPSED`
+/// instead of the whole of it and the shelf below moves up by the difference.
+///
+/// The declaration contract is unchanged and still load-bearing: [`reveal_block`] guarantees
+/// [`BOTTOM_PAD`] under the block a screen DECLARES, and the shelf whose scroll is being revealed
+/// is by construction the FOCUSED one — whose band is open — so the caption still clears the panel.
+fn shelf_block_h_at(band: f32) -> f32 {
+    SHELF_LABEL_H + CARD_H + band
 }
 
 /// The MINIMAL scroll that reveals the block `[top, top+h)` inside `content` px of flow — the
@@ -530,12 +543,49 @@ fn scroll_target(sc: &Scene) -> f32 {
     let Some(fi) = sc.focus_child() else {
         return 0.0;
     };
+    // …measured against the SETTLED column, never the live one. See [`Settled`].
+    let st = Settled(sc, fi);
     reveal_block(
         col.scroll.pos,
-        col.child_top(sc, fi),
-        sc.height(fi),
-        content_h(sc),
+        col.child_top(&st, fi),
+        st.height(fi),
+        content_h(sc, &st),
     )
+}
+
+/// **[`Scene`] with every shelf's label band at its DESTINATION** — open on the focused shelf,
+/// closed on all the others — rather than wherever the springs have it this frame.
+///
+/// A scroll target has to be measured against this. The band and the scroll are two springs
+/// travelling at one rate to two destinations, so a target derived from the live column moves every
+/// frame while the column chases it and the block arrives and then drifts.
+/// `card_row::settled_top` carries the argument in full.
+///
+/// A `Column` view rather than a second copy of [`ScrollColumn::child_top`]'s summation: the
+/// running sum stays in one place, and the only thing this overrides is where each child's height
+/// comes from. `draw_child` is unreachable through it — nothing draws a settled column — and says
+/// so rather than silently drawing the live one.
+struct Settled<'a>(&'a Scene, usize);
+impl Column for Settled<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn height(&self, i: usize) -> f32 {
+        if i == 0 {
+            self.0.band_h()
+        } else {
+            shelf_block_h_at(card_row::under_band((self.1 == i) as i32 as f32))
+        }
+    }
+    fn gap_before(&self, i: usize) -> f32 {
+        self.0.gap_before(i)
+    }
+    fn focus_child(&self) -> Option<usize> {
+        Some(self.1)
+    }
+    fn draw_child(&self, _i: usize, _env: &Env, _p: Painter) {
+        debug_assert!(false, "the settled column is a measurement, never a draw");
+    }
 }
 
 // ---- the ambient wash ------------------------------------------------------------------------
@@ -589,7 +639,7 @@ pub(crate) fn reopen(sid: crate::plex::ServerId, key: &str, guid: &str, name: &s
     // the wash starts AT the header tint — the previous person's poster colours must not dissolve
     // across the new page's mount
     let k = amb_target(sc);
-    sc.amb.jump(k);
+    sc.amb.jump_target(k);
 }
 
 /// [`reopen`] plus the flag app.rs routes on — the INTERACTIVE entry, called from `detail.rs`'s
@@ -754,7 +804,7 @@ pub(crate) fn update(dt: f32) {
         .step(if sc.on_header { 0.0 } else { 1.0 }, K_COND, dt);
     // the wash: dissolve toward whatever the page is about now
     let k = amb_target(sc);
-    sc.amb.step(k, AmbientWash::K, dt);
+    sc.amb.key_target(k, dt);
     let n_items = |k: usize| {
         crate::person::current()
             .map(|p| p.shelf(k).len())

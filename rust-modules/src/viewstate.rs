@@ -294,6 +294,7 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
             crate::pms::edit_item(sid, rk, crate::pms::LocalEdit::Watched(on));
             crate::metadata::set_watched_local(sid, rk, on);
             crate::browse::set_watched_local(sid, rk, on);
+            crate::browse::section_hubs::set_watched_local(sid, rk, on);
             crate::search::set_watched_local(sid, rk, on);
             crate::person::set_watched_local(sid, rk, on);
         }
@@ -301,6 +302,10 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
         // and keeps everything else about it (`plex::Client::remove_from_continue_watching`).
         Write::RemoveFromDeck => {
             crate::pms::edit_item(sid, rk, crate::pms::LocalEdit::LeftTheDeck);
+            // …and the LIBRARY's own deck, which is a different shelf on a different screen and is
+            // where this row is now reachable from at all (the Library's section Continue Watching
+            // shelf, 2026-09-05).
+            crate::browse::section_hubs::left_the_deck(sid, rk);
         }
     }
     crate::ui::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
@@ -443,6 +448,9 @@ pub(crate) fn pump() {
     }
     if hubs {
         crate::pms::request_refetch_hubs();
+        // the same staleness, one screen over: a library's own shelves carry watch state and its
+        // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
+        crate::browse::section_hubs::invalidate_all();
         crate::ui::idle::invalidate();
     }
 }

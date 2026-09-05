@@ -793,15 +793,24 @@ same dial in the same launch.
 
 ## 11. The scroll band as glass — built, measured, refused (2026-08-21)
 
-**The idea.** `widgets::nav_scrim` is the one grey fade in the app on a scrolling surface: an opaque
+> **The element this section is about no longer exists, and cannot be re-armed.** `nav_scrim`, the
+> `nav_glass_*` family and the `/tmp/plxnative-navglass` trigger were all DELETED on 2026-09-05,
+> when Search became one scrolling document and left the band with no caller at all (the Library had
+> stopped drawing one the same day). `git log -S nav_scrim` and the retirement note in
+> `rust-modules/src/ui/widgets.rs` are the recipe; reproducing any of this needs the band REBUILT on
+> a screen with fixed top chrome, and no route has one today. **What survives is the verdict and its
+> numbers, which is the durable half — read on for those, and read every "arm the trigger"
+> instruction below as history.**
+
+**The idea.** `widgets::nav_scrim` was the one grey fade in the app on a scrolling surface: an opaque
 `SURFACE_APP` floor from y=0 to the bottom of the top chrome, then a two-stop ramp out to where the
-caller's content begins. Two screens draw it — the Library grid (chrome to 186, content at 214) and
-Search (208 and 248). The obvious improvement is to make it a **frosted material** instead, so a
-poster scrolling under the bar blurs rather than dissolving into flat grey.
+caller's content began. Two screens drew it — the Library grid (chrome to 186, content at 214) and
+Search (208 and 248). The obvious improvement was to make it a **frosted material** instead, so a
+poster scrolling under the bar blurred rather than dissolving into flat grey.
 
 It was built (`/tmp/plxnative-navglass`, `widgets::nav_scrim`'s glass path — the same three bands at
-`NAV_GLASS_FROST` 0.62 of their weight, over one `Glass::DYNAMIC_BACKDROP` surface), it works, and
-it does not ship. **The trigger stays off.**
+`NAV_GLASS_FROST` 0.62 of their weight, over one `Glass::DYNAMIC_BACKDROP` surface), it worked, and
+it did not ship. **The trigger stayed off, and is now gone with the element.**
 
 ### What the arithmetic predicted, and why that prediction is WRONG
 
@@ -809,7 +818,8 @@ Indexed on §3's region law this looked hopeless before it was built. The band i
 the panel, so grown `BLUR_MARGIN` 88 a side and clamped it prices at **1,920 x 302 = 579,840 px²**
 on the Library and **1,920 x 336 = 645,120** on Search, against a `GLASS_REGION_BUDGET` of 300,000
 — roughly twice over, which §3.2's table puts at **45 fps at best and more likely 36**. (Both
-figures are now a host test, `widgets`' `the_scroll_band_is_twice_the_glass_region_budget_on_both_screens`.)
+figures were a host test, `widgets`' `the_scroll_band_is_twice_the_glass_region_budget_on_both_screens`,
+until it was deleted with the element it graded on 2026-09-05.)
 
 **Measured, it is 58 fps, not 45.** The region law over-charges this surface badly, and the reason
 matters more than the row: **§3's whole table was measured on the CAPTURE path** —
@@ -917,8 +927,10 @@ can is the one above: continuous presents, and the frame-time distribution rathe
 
 * **On Search the material has almost nothing to show.** The opaque chrome floor is the scope
   line's bottom at about 262 px — the tab strip, bare query run and scope — and the result shelves
-  are scissored at `CHROME_BOTTOM`, so the only live content behind the band is the 38 px ramp
-  between that floor and `CONTENT_TOP` 300.
+  were scissored at `CHROME_BOTTOM`, so the only live content behind the band was the 38 px ramp
+  between that floor and `CONTENT_TOP` 300. (Neither the scissor nor that constant exists now:
+  Search unpinned its head on 2026-09-05, the cut went with the band, and `CHROME_BOTTOM` was
+  renamed `HEAD_BOTTOM` for what is left of it.)
   Photographed on the panel: the Library band frosts real posters, and the Search band is flat grey
   with a veiled shelf heading at its bottom edge. Search would be paying the full bill for a blur of
   the app's own ground.
@@ -936,10 +948,17 @@ can is the one above: continuous presents, and the frame-time distribution rathe
 > `/tmp/com.beb.plxnative.debug` at the tracked `FLAVOR ?= debug` default — so armed as bare
 > `/tmp/…` not one of them reaches the install `make run` launches. See `docs/two-installs.md`.
 
-Arm `/tmp/plxnative-navglass` and look at it — the code is still there, still trigger-gated, and
-`widgets::nav_scrim`'s doc points here. Then reproduce the table above before arguing from the
-median: `plxnative-noidle` + `plxnative-library` + `plxnative-libosc` (+ `plxnative-navglass`),
-`make run RUN_SECS=30`, and separately `printf 17 > /tmp/plxnative-framedrop` for the distribution.
+**This is the recipe as it stood, and it can no longer be run.** `/tmp/plxnative-navglass` was
+deleted with `nav_scrim` on 2026-09-05: the Library's one-scroll rewrite took that screen's fixed
+toolbar and the band with it, Search followed the same day, and an element with no caller was
+retired rather than kept warm. Arming the trigger today does nothing, which reads as a broken
+trigger and is not one — there is no trigger. The measurement above stands on its own; only its
+reproduction is gone, and getting it back means rebuilding the band on a screen with fixed top
+chrome.
+
+It was: `plxnative-noidle` + `plxnative-search=<a query the library matches>` +
+`plxnative-searchosc` (+ `plxnative-navglass`), `make run RUN_SECS=30`, and separately
+`printf 17 > /tmp/plxnative-framedrop` for the distribution.
 
 **Take both numbers, and know which one each answers.** `worstframe=` is the EXPLANATION — it is
 where the two frames went, and it is what a median hides. `fps=`, and specifically its **minimum**,
@@ -954,3 +973,59 @@ What made the case here is that BOTH moved together — the distribution shifted
 because it is unaffordable — it is far cheaper than this document predicted, and that correction is
 the durable half of this section — but because the two screens it would live on currently hold a
 perfect 60 with no frame over 20.6 ms, and it spends that.
+
+(Everything above was measured against the tree of 2026-09-02, when `nav_scrim` had two callers.
+By the end of 2026-09-05 it had none — the Library became a single document with no fixed bar, then
+Search did — so the element and its trigger were deleted, and the photograph of it frosting real
+posters belongs to a screen nobody can boot. The verdict is unchanged and Search's half of it was
+already the decisive one: it paid the full bill for a blur of the app's own flat ground. If a route
+ever grows fixed top chrome again, this section is the reason to price the band before drawing it.)
+
+---
+
+## 12. The episode tile's label band as glass — measured, and the cheaper idea it points at (2026-09-05)
+
+**The idea.** The reference client draws a still's label on a blurred strip across the bottom of the
+card rather than on a black gradient, so the artwork under the label is dimmed rather than hidden
+and the label can sit lower. The owner asked what it would cost, with a photograph of Apple TV's
+Continue Watching row. `/tmp/plxnative-tileglass` is that build — the same band height, the same two
+lines, the same bar; only the GROUND changes, so an A/B between two runs is the material and not a
+second layout.
+
+**Measured on the dev set, TV Shows library, `plxnative-libosc` sweeping the document, 44 s a leg.**
+Eight stills on screen across two shelves, which is what the screen actually holds.
+
+| leg | min | median | max |
+|---|---|---|---|
+| control — the black scrim | 59 | **60** | 61 |
+| `plxnative-tileglass` | **42** | **56** | 61 |
+
+**It is what §8 predicts, for once, and the shape is the whole reason.** A per-tile band is a wide
+thin strip, the worst shape this hardware has (§8: a single 1148x76 bar falls to 46 once its
+backdrop refreshes), and a ROW of them spread across the panel unions into one full-width band —
+"how many glass surfaces you draw is free, WHERE you put them is not". Two shelves' worth of bands
+unions vertically as well, so the blurred region is most of the content area. And unlike every
+other glass surface in the app this one cannot be cached at all: its backdrop is artwork that moves
+with the shelf, so the blur refreshes on every changed present by construction.
+
+The spread is the tell. It is not a steady 56 — it is 60 while the oscillator is between steps and
+42 while it moves, which is the same "affordable exactly when the page under it is still" §8 records
+for the tab-bar glass, at a much larger region.
+
+**The cheaper idea, and the one to try next.** The owner's own follow-up: *"I thought of a fading
+blur that can be added for image during its rendering in one pass."* That is a different cost class
+entirely — not a backdrop surface at all, so no framebuffer grab, no blur chain, no region union
+and no cadence. The tile's own fragment shader already composites artwork + rim + shadow in one
+pass (`fs_img.frag`), and `fs_hero.frag` is the precedent for folding a scrim field into that same
+pass. A band whose sampling blurs on a vertical ramp would be charged as ORDINARY FILL over the
+band's own pixels — §1's ~4 ns/px, times however many taps it needs — which is the term this
+document says you can plan with.
+
+**Price the taps before writing it.** Eight tiles' bands are ~376,000 fragments; at ~4 ns/px each
+extra tap costs ~1.5 ms of the 7.8 ms budget, so a 9-tap box (~12 ms) is already over and a 4-tap
+one spends more than half of it. The construction worth trying is **one tap at a mip bias** —
+`texture2D(sampler, uv, bias)` is available to a GLES2 fragment shader, the hardware's own trilinear
+does the blur, and a lower mip samples with better cache locality than the base tap it replaces. It
+needs `glGenerateMipmap` and a trilinear min filter on the still textures (`gfx.rs` sets
+`GL_LINEAR` with no mips today) and costs ~33% more texture memory on those slots. Nothing in this
+document measures that path yet; it is the experiment, not the answer.
