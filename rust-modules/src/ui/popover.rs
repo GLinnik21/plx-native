@@ -1379,8 +1379,8 @@ mod tests {
     #[test]
     fn a_self_gated_popover_is_not_route_gated_on_update() {
         let _g = crate::testlock::serial();
-        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs");
-        let text = std::fs::read_to_string(&app).expect("app.rs is readable");
+        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/mod.rs");
+        let text = std::fs::read_to_string(&app).expect("app/mod.rs is readable");
         let lines: Vec<&str> = text.lines().collect();
         assert!(
             lines.len() > 1000,
