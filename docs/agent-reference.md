@@ -404,12 +404,12 @@ Two planes are composited by the TV: the app's **GLES/graphics plane** (UI, draw
 over the hardware **VIDEO overlay plane** (decoded frames). The UI plane is made non-opaque so
 video shows through.
 
-**UI (the Rust app core — `app.rs`'s event loop, entered via `plex_run()`):** SDL2 window + GLES2
+**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `app/mod.rs` after `app/boot.rs::boot()`):** SDL2 window + GLES2
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples SDL2_ttf-rendered glyph
 textures (cached by string+size). Critically-damped springs animate focus scale and shelf scroll.
 Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary. (Wayland surface setup +
-input decoding live in `system.rs` / `app.rs`, not the C shim — see the gotchas below.)
+input decoding live in `system.rs` / `app/events.rs` + `app/input.rs`, not the C shim — see the gotchas below.)
 
 **Video playback (summary — `rust-modules/src/player/CLAUDE.md` is the deep-dive: pipeline,
 threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Read it before
@@ -444,7 +444,7 @@ which the linking section explains is load-bearing rather than tidy.
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately ON the
   television — `segv` is a real null write, the rest are `raise`.
-- `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `nav.rs`), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
@@ -739,7 +739,7 @@ which the linking section explains is load-bearing rather than tidy.
 - **SAM keeps stale "running" state after a hard kill**, so a launch is a silent no-op relaunch
   unless you close-first — `make run`/`kill` do the `closeByAppId` first (and `luna-send -i` must
   stay subscribed for the launch to take).
-- **App-switch lifecycle (was a black-screen bug), handled in `app.rs`:** the TV sends SDL app
+- **App-switch lifecycle (was a black-screen bug), handled in `app/run.rs` (the `0x103`–`0x106` arms of the frame loop):** the TV sends SDL app
   events — `0x103`/`0x104` (will/did enter **background**) and `0x105`/`0x106` (will/did enter
   **foreground**). On background during playback the loop **suspends the buffer-feed** (preserving the
   session) and drops to Home. On foreground `0x106` it tracks one exact Load attempt at a time,
@@ -1498,12 +1498,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
   at **Home's own root** is the end of that chain and hands the screen back to the TELEVISION
-  (`app.rs::back_at_root` → `webos::go_home`), with the app still running — which is what the
+  (`app::input::back_at_root` → `webos::go_home`), with the app still running — which is what the
   platform itself does at an app's entry page on this firmware, and what LG's submission rules
   require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
   sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
   both handed it to `auth::cancel` and ignored its `false`. **The first-run consent question is a
-  fourth and is NOT covered yet**; `app.rs`'s consent arm says why, and it is a `ui/consent.rs`
+  fourth and is NOT covered yet**; `app/input.rs`'s consent arm says why, and it is a `ui/consent.rs`
   change rather than a BACK-arm one. BACK is no longer a quit anywhere — the remote's EXIT key
   still is, and `closeByAppId` is still how `make kill`, `tests/run.py` and `tools/tv-session.sh`
   close the app — so the `/tmp/plxnative-noexitconfirm` bypass went with the "Exit PlxNative?"

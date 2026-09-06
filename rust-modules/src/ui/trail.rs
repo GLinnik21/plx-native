@@ -22,7 +22,7 @@
 //! host-testable at all: the BACK arm itself lives inside the SDL event loop, where no host test can
 //! reach it, so everything it decides has to be liftable into a value first.
 //!
-//! Main-thread only — an `app.rs` run-loop LOCAL, exactly like the booleans it replaces. Navigation
+//! Main-thread only — a field of `app::App` (`app/mod.rs`), exactly like the booleans it replaces. Navigation
 //! history belongs to the loop that navigates, not to a static.
 
 use crate::plex::ServerId;

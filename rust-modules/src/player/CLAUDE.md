@@ -158,7 +158,7 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`ui::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
-- **App-switch lifecycle** (handled in `app.rs`; details in the
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; details in the
   `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact

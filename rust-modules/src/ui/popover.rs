@@ -1374,17 +1374,17 @@ mod tests {
     /// MISMATCH between the two gates, not a route gate as such — which is why this test lists the
     /// popovers whose draw is self-gated rather than every popover in the app.
     ///
-    /// Asserted by reading `app.rs`, because the frame loop is reachable from no unit test — the
+    /// Asserted by reading `app/run.rs` (the frame loop), because the frame loop is reachable from no unit test — the
     /// same reason `diag::scrub` pins its call-site property by grepping the tree.
     #[test]
     fn a_self_gated_popover_is_not_route_gated_on_update() {
         let _g = crate::testlock::serial();
-        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/mod.rs");
-        let text = std::fs::read_to_string(&app).expect("app/mod.rs is readable");
+        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs");
+        let text = std::fs::read_to_string(&app).expect("app/run.rs is readable");
         let lines: Vec<&str> = text.lines().collect();
         assert!(
             lines.len() > 1000,
-            "read only {} lines of app.rs — not reading the frame loop",
+            "read only {} lines of app/run.rs — not reading the frame loop",
             lines.len()
         );
 
