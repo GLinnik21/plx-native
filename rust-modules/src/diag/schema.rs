@@ -147,6 +147,16 @@ pub(crate) enum Feature {
     SubtitleTrack,
     SkipIntro,
     SkipCredits,
+    /// **The viewer moved to another library of the tab they were on** — a pill in the Library's
+    /// head row, or a row of the Sources panel behind it.
+    ///
+    /// It exists because issue #68 could not be answered from this channel at all. A user with two
+    /// TV libraries reported the second one as missing; the switcher was drawn and was never found,
+    /// and nothing here could say whether that was one account or every account with the shape.
+    /// This is the numerator for that question — "does anybody ever leave the library a tab opens
+    /// on" — and it is deliberately the whole of it: the denominator is a topology fact about an
+    /// account, which this channel does not carry and is not the place to start carrying.
+    LibrarySwitch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +187,7 @@ impl Feature {
             Self::SubtitleTrack => "subtitle_track",
             Self::SkipIntro => "skip_intro",
             Self::SkipCredits => "skip_credits",
+            Self::LibrarySwitch => "library_switch",
         }
     }
 }

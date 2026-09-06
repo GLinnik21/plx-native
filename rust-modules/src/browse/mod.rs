@@ -492,6 +492,10 @@ pub(crate) fn reset() {
         // on the switch. Carrying it would let the previous person's answer govern the next
         // person's Home for the frames before their own record is read (see [`RECORDED`]).
         *addr_of_mut!(RECORDED) = None;
+        // …and the remembered libraries with it, for the same reason and one more: the next
+        // profile's own record is read by `resolve_pins` a moment later, and between the two a
+        // stale entry would resolve a tab to a library this person may not even be granted.
+        *addr_of_mut!(REMEMBERED) = Vec::new();
         // …and the strip's measured shape with it: the next read must count as a move, or a cache
         // keyed on `tabs_gen` would serve the previous account's pills.
         TAB_SHAPE = u32::MAX;
@@ -771,6 +775,16 @@ impl SecKind {
             "movie" => Some(SecKind::Movie),
             "show" => Some(SecKind::Show),
             _ => None,
+        }
+    }
+    /// The wire code this type was parsed FROM — the inverse of [`from_wire`](Self::from_wire), and
+    /// the key `plex::session::TypedLib` records a remembered library under. A `&'static str` from
+    /// this table rather than an enum discriminant, so a reordered `SecKind` cannot silently
+    /// repoint a record an older build wrote.
+    pub(crate) fn wire(self) -> &'static str {
+        match self {
+            SecKind::Movie => "movie",
+            SecKind::Show => "show",
         }
     }
     /// The Sources row's count noun ("187 films") — plural, and the singular-less form the row
@@ -1070,12 +1084,122 @@ pub(crate) fn tab_section(t: usize) -> Option<usize> {
 /// because the last-favourite fallback ([`repoint_cur`]) asks the same question of a kind it did
 /// not get from a strip position.
 fn section_of_kind(kind: SecKind) -> Option<usize> {
+    // **What you were last browsing of this type wins**, when it is still granted and still a
+    // favourite. Without it a tab resolves the same way on every launch — owned first, then TABLE
+    // order, which is the server's order and is not a preference anybody expressed — so a
+    // household with two libraries of one type opens whichever their server happens to list first,
+    // forever. That is the second half of what issue #68 costs: with the switcher drawn it is one
+    // press, but it is one press EVERY launch.
+    //
+    // The fallback below is unchanged and still does all the work on a fresh install, on a profile
+    // that has never browsed this type, and whenever the remembered library has been switched off
+    // or has gone away with its server.
+    if let Some(i) = remembered_section(kind) {
+        return Some(i);
+    }
     sections()
         .iter()
         .enumerate()
         .filter(|(_, s)| s.kind == kind && s.pinned)
         .min_by_key(|(_, s)| !sources().get(s.src).map(|x| x.owned).unwrap_or(false))
         .map(|(i, _)| i)
+}
+
+/// This profile's remembered library for `kind`, resolved against the table as it is NOW.
+///
+/// Every term is a re-check rather than a lookup, because a record outlives the world it was
+/// written in: the server may be gone from the roster, the library may have been deleted, and the
+/// profile may since have switched it off. Any of those falls through to the ordinary resolution
+/// instead of pointing a tab at something that is not there — which is the failure the whole
+/// `section_of_kind` guard exists to prevent, arriving by a new route.
+fn remembered_section(kind: SecKind) -> Option<usize> {
+    let want = unsafe { &*addr_of!(REMEMBERED) }
+        .iter()
+        .find(|(k, _, _)| *k == kind)?;
+    sections().iter().position(|s| {
+        s.kind == kind
+            && s.pinned
+            && s.key == want.2
+            && sources().get(s.src).map(|x| x.machine_id.as_str()) == Some(want.1.as_str())
+    })
+}
+
+/// This profile's remembered libraries, as `(kind, machine id, section key)` — the session record
+/// (`plex::session::LastLibrary`) held in memory so [`section_of_kind`] can consult it without
+/// touching the disk.
+///
+/// **It must not read the session file**, which is why this exists at all rather than a `peek()` at
+/// the point of use: `section_of_kind` runs from `tab_section`, i.e. off the tab strip's own draw
+/// and from `repoint_cur`, and `session::peek` takes the session lock and reads files. That is the
+/// same deadlock `diag::scrub` documents — identities are PUSHED to it for exactly this reason —
+/// and the same per-frame file read. Loaded by [`load_remembered`] on the paths that already hold
+/// the session, and cleared by [`reset`] so it can never outlive the profile that chose it.
+static mut REMEMBERED: Vec<(SecKind, String, i64)> = Vec::new();
+
+/// Take this profile's remembered libraries out of the session and into [`REMEMBERED`].
+///
+/// Called from [`resolve_pins`], which already holds the session for the pins and runs on exactly
+/// the events that can change the answer: a table landing, a profile switch, a favourite flip.
+fn load_remembered(sess: &crate::plex::session::Session, user: &str) {
+    let libs = sess
+        .last_library
+        .iter()
+        .find(|l| l.user == user)
+        .map(|l| {
+            l.libs
+                .iter()
+                .filter_map(|t| {
+                    SecKind::from_wire(&t.kind).map(|k| (k, t.machine_id.clone(), t.key))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    unsafe { *addr_of_mut!(REMEMBERED) = libs };
+}
+
+/// **Remember the library the viewer is now browsing, for its type.**
+///
+/// Called from the COMMIT of a user-driven page change (`ui::library`'s `apply_section`), never
+/// from [`set_cur`] itself. The distinction is the whole correctness of the record: `set_cur` also
+/// runs from [`repoint_cur`], which MOVES the cursor when the library under it stops being a
+/// favourite, and from the boot path before discovery has settled. Recording either would write
+/// down a library the user never chose and then open there next launch — a preference invented by
+/// the app, which is worse than having none.
+pub(crate) fn note_library_choice(i: usize) {
+    let (Some(kind), Some(sec)) = (section_kind(i), sections().get(i)) else {
+        return;
+    };
+    let Some(machine) = sources().get(sec.src).map(|s| s.machine_id.clone()) else {
+        return;
+    };
+    let key = sec.key;
+    // in memory first, so the next `section_of_kind` in this run agrees with what was just chosen
+    // even if the write below is refused (no session on disk yet, a read-only runtime root)
+    unsafe {
+        let mem = &mut *addr_of_mut!(REMEMBERED);
+        mem.retain(|(k, _, _)| *k != kind);
+        if !machine.is_empty() {
+            mem.push((kind, machine.clone(), key));
+        }
+    }
+    let user = crate::plex::session::current_profile_key();
+    let wire = kind.wire();
+    crate::plex::session::update(|cur| {
+        let mut next = cur.clone();
+        let slot = match next.last_library.iter_mut().find(|l| l.user == user) {
+            Some(l) => l,
+            None => {
+                next.last_library
+                    .push(crate::plex::session::LastLibrary {
+                        user: user.clone(),
+                        libs: Vec::new(),
+                    });
+                next.last_library.last_mut()?
+            }
+        };
+        slot.set(wire, &machine, key);
+        Some(next)
+    });
 }
 /// The pill that represents section `s`: the pill of its own TYPE — so browsing a friend's film
 /// library keeps the *Movies* pill lit, which is what "a pill is a type" means for the selection
@@ -1193,7 +1317,12 @@ fn lib_refs() -> Vec<crate::plex::pins::LibRef<'static>> {
 fn resolve_pins() {
     let libs = lib_refs();
     let sess = crate::plex::session::peek();
-    let rec = sess.pins_for(&crate::plex::session::current_profile_key());
+    let user = crate::plex::session::current_profile_key();
+    // The remembered libraries ride along with the pins: this is already the one place holding the
+    // session on exactly the events that can change what a tab should open — a table landing, a
+    // profile switch, a favourite flip — and reading it here keeps `section_of_kind` off the disk.
+    load_remembered(&sess, &user);
+    let rec = sess.pins_for(&user);
     let want = crate::plex::pins::resolve(&libs, rec);
     unsafe {
         // …and keep the record itself, because [`library_pins`] needs it for the sources this
@@ -1584,6 +1713,57 @@ fn cur_kind() -> Option<SecKind> {
 /// the visible ones.
 pub(crate) fn source_rows() -> Vec<SrcRow> {
     let Some(kind) = cur_kind() else {
+        return Vec::new();
+    };
+    rows_where(|s| s.kind == kind && s.pinned)
+}
+
+/// **Where library `i` sits among the ones its own tab pill can reach, and how many there are** —
+/// the library chip's `1 of 2`.
+///
+/// It answers the question the chip could not: the chip's PRESENCE already means "there is
+/// somewhere else to go" ([`crate::ui::library`]'s `lib_chip_on`), but that is knowledge the user
+/// has no way to have. Issue #68 is what it costs — two TV libraries behind one *TV Shows* pill,
+/// the second one read as missing rather than as one press away.
+///
+/// **The same predicate and the same order as [`source_rows`]**, deliberately: the number the chip
+/// prints is a promise about the list the chip OPENS, so a position derived any other way could
+/// disagree with the menu it names. Scoped to the type of `i` rather than to `cur()`, because the
+/// chip relabels on the press frame from `view_section()` while the store still holds the old one.
+///
+/// `None` when there is nothing to count — one library of this type, or a section that is not a
+/// favourite of its own type and so draws no row in that list at all. Absence, not `1 of 1`.
+///
+/// Allocation-free, unlike `source_rows`, because the chip's cache KEY is rebuilt every frame on
+/// this screen's hot path and cloning every row's title to count them is not what that key is for.
+pub(crate) fn kind_position(i: usize) -> Option<(usize, usize)> {
+    let kind = section_kind(i)?;
+    if !sections().get(i)?.pinned {
+        return None;
+    }
+    let (mut pos, mut n) = (0usize, 0usize);
+    for (j, s) in sections().iter().enumerate() {
+        if s.kind != kind || !s.pinned {
+            continue;
+        }
+        if j == i {
+            pos = n;
+        }
+        n += 1;
+    }
+    (n > 1).then_some((pos + 1, n))
+}
+
+/// The Sources rows for the type of **section `i`**, rather than of `cur()`.
+///
+/// It exists because [`source_rows`] reads `cur_kind()`, and the Library's head relabels on the
+/// PRESS frame from `view_section()` — so between a tab press and the fade floor the two name
+/// different types. Building the head's row from the current one drew the MOVIE libraries under a
+/// *TV Shows* tab and then never corrected itself: the row's cache is keyed on the viewed section,
+/// which does not move again at the commit, so the stale answer was cached for the life of the
+/// page. Same predicate, same order, same projection — only the scope's source differs.
+pub(crate) fn source_rows_for(i: usize) -> Vec<SrcRow> {
+    let Some(kind) = section_kind(i) else {
         return Vec::new();
     };
     rows_where(|s| s.kind == kind && s.pinned)
@@ -3998,6 +4178,179 @@ mod tests {
     /// asserting against whatever `home_pins` the developer happens to have recorded — green here
     /// and red on a clean checkout, the shape `[[make-check-hides-host-assumptions]]` describes.
     /// That hazard is older than this test and is not this landing's to fix; stating the intent is.
+    /// **Issue #68, at the layer that can answer it.** Two TV libraries on one server sit behind
+    /// ONE *TV Shows* pill — `tab_section` opens exactly one of them — so the head of the Library
+    /// is the only place that can say the other exists. This is the fact it says it from.
+    ///
+    /// The three assertions are the three ways the head can be wrong: silence where there is a
+    /// choice, a `1 of 1` where there is not, and a position that disagrees with the panel the
+    /// same head opens.
+    #[test]
+    fn two_libraries_behind_one_pill_have_a_position_and_a_lone_one_has_none() {
+        let _g = crate::testlock::serial();
+        let _t = TempPins::new("kind-position");
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "TV Shows".into(), SecKind::Show),
+                (3, "Animes".into(), SecKind::Show),
+            ],
+        );
+        assert_eq!(
+            tab_count(),
+            2,
+            "still two pills — the second TV library folds onto the one it shares a type with, \
+             which is the whole shape of the report"
+        );
+        assert_eq!(
+            kind_position(1),
+            Some((1, 2)),
+            "the TV library the pill opens on is the FIRST of two"
+        );
+        assert_eq!(kind_position(2), Some((2, 2)), "…and the reported one the second");
+        assert_eq!(
+            kind_position(0),
+            None,
+            "the lone film library has no position: `1 of 1` would advertise a choice that does \
+             not exist"
+        );
+
+        // …and the count is a promise about the list the head OPENS, so it follows the same
+        // favourite filter that list does rather than the grant.
+        set_pinned_for_test(2, false);
+        assert_eq!(
+            kind_position(1),
+            None,
+            "with its sibling switched off there is nowhere else to go, and nothing to count"
+        );
+        assert_eq!(
+            source_rows().len(),
+            1,
+            "the panel agrees — one row, so a `1 of 2` beside it would have been a lie"
+        );
+    }
+
+    /// **The scope both the head's row and the panel it opens now share.** Two surfaces read this:
+    /// `ui::library`'s library row, and `build_source_menu` behind the row's `+N`. Neither may use
+    /// [`source_rows`], which is scoped through `cur_kind()` and therefore lags a tab press by the
+    /// length of the page fade — the row drew the MOVIE libraries under a *TV Shows* tab and kept
+    /// them (its cache key is the viewed section, which does not move again at the commit), and the
+    /// popover listed the other type's libraries under a row naming this one.
+    ///
+    /// It is graded here rather than at either call site because both of those go through text
+    /// measurement — `crate::text` is SDL2_ttf, which the host test build does not link — so this
+    /// is the layer at which the shared decision is reachable at all.
+    #[test]
+    fn the_rows_a_head_offers_follow_the_viewed_librarys_type_not_the_current_one() {
+        let _g = crate::testlock::serial();
+        let _t = TempPins::new("rows-for-section");
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "Films".into(), SecKind::Movie),
+                (3, "TV Shows".into(), SecKind::Show),
+                (4, "Animes".into(), SecKind::Show),
+            ],
+        );
+        // browsing a FILM library, asking about a SHOW one — the mid-fade shape exactly
+        set_cur(0);
+        let rows = source_rows_for(3);
+        let shows: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(
+            shows,
+            vec!["TV Shows", "Animes"],
+            "the rows must follow the section asked about, not `cur()`"
+        );
+        assert_eq!(
+            source_rows().len(),
+            2,
+            "…while `source_rows` answers for the films, which is what made it the wrong call"
+        );
+
+        // …and it is the FAVOURITE filter too, so the count on a head can never promise a row the
+        // panel behind it will not draw.
+        set_pinned_for_test(3, false); // "Animes"
+        assert_eq!(
+            source_rows_for(3).len(),
+            1,
+            "a switched-off library draws no row here either"
+        );
+        assert_eq!(kind_position(3), None, "…and so there is nothing left to count");
+    }
+
+    /// The position is read of the VIEWED library, which during a page fade is not `cur()` — so it
+    /// may not be derived from the current section's kind the way [`source_rows`] is.
+    #[test]
+    fn a_position_is_scoped_to_the_type_of_the_library_it_is_asked_about() {
+        let _g = crate::testlock::serial();
+        let _t = TempPins::new("kind-position-scope");
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        append_sections(
+            0,
+            vec![
+                (1, "Movies".into(), SecKind::Movie),
+                (2, "Films".into(), SecKind::Movie),
+                (3, "TV Shows".into(), SecKind::Show),
+            ],
+        );
+        set_cur(2); // browsing the SHOW library…
+        assert_eq!(
+            kind_position(0),
+            Some((1, 2)),
+            "…and a film library still counts against the films, not against what is on screen"
+        );
+        assert_eq!(kind_position(2), None, "the lone show library, from the same call");
+    }
+
+    /// **Issue #68's second half, reported by the person who hit it.** Two TV libraries on one
+    /// server, the pill opening the one they did not want — so they did the obviously right thing
+    /// and switched the other OFF in *Favorite libraries*. Nothing changed: "even if I disable my
+    /// Anime library in the settings, only my Animes library is populated under TV Shows".
+    ///
+    /// They were not wrong about the control. In the shipped build the favourite switch governed
+    /// HOME alone and `tab_section` filtered on `s.kind` and nothing else, so a pill resolved to
+    /// the first library of its type whether or not the user had just told the app to stop showing
+    /// it. That is worse than the missing switcher beside it: the one workaround the UI offered was
+    /// correct, and the app ignored it.
+    #[test]
+    fn switching_a_librarys_favourite_off_repoints_its_tab_at_the_one_that_is_left() {
+        let _g = crate::testlock::serial();
+        let _t = TempPins::new("tab-follows-favourite");
+        seed_sources(vec![a_source("mac-mini", "", true)]);
+        // The reporter's shape, in their order: the pill lands on the library they were trying to
+        // get away from, because table order is the server's and nothing else.
+        append_sections(
+            0,
+            vec![
+                (1, "Animes".into(), SecKind::Show),
+                (2, "TV Shows".into(), SecKind::Show),
+            ],
+        );
+        let shows = tab_of_kind(SecKind::Show).expect("the type has a pill");
+        assert_eq!(
+            tab_section(shows),
+            Some(0),
+            "the pill opens the first of the two — which is the complaint, not the bug"
+        );
+
+        // …and now the switch they actually reached for.
+        set_pinned_for_test(0, false);
+
+        assert_eq!(
+            tab_section(shows),
+            Some(1),
+            "with Animes switched off the TV Shows pill must open the library that is left"
+        );
+        assert!(
+            tab_has_favorite(SecKind::Show),
+            "…and it keeps its pill: one of the two is still on"
+        );
+    }
+
     #[test]
     fn switching_off_a_types_last_favourite_takes_its_pill_and_renumbers_the_rest() {
         let _g = crate::testlock::serial();
