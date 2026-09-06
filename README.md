@@ -74,13 +74,10 @@ You need a Plex account and server, and a way to install unsigned apps: the
 [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) or LG Developer Mode. You do
 **not** need a rooted TV — the app runs in LG's normal sandbox like anything else on the set.
 
-Grab the `.ipk` from the [latest release](https://github.com/GLinnik21/plx-native/releases) and
-install it with the Homebrew Channel or
+**PlxNative is in the Homebrew Channel's app list** — install it from there directly, no manual
+`.ipk` needed. Or grab the `.ipk` from the
+[latest release](https://github.com/GLinnik21/plx-native/releases) and install it with
 [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
-
-> **Not in the Homebrew Channel's app list yet** — the submission is
-> [open](https://github.com/webosbrew/apps-repo/pull/224). Until it lands, point the Channel at the
-> `.ipk` yourself.
 
 **Check the download against `ipk.sha256` before you sideload it.** Nothing in this chain is
 code-signed, and pointing the Channel at a bare `.ipk` skips the hash check it would otherwise do
