@@ -304,9 +304,11 @@ fn is_numeric_address(a: &str) -> bool {
 
 /// Every address of `res` that policy allows, best first.
 ///
-/// Each surviving connection yields its advertised `uri` (verbatim — the `plex.direct` hostname's
-/// hash label is the *certificate's* UUID, so it cannot be rebuilt from the machine id, and https to
-/// the bare IP fails validation by design), plus a synthesized `http://{address}:{port}` twin unless
+/// Each surviving connection yields its advertised `uri` — kept as given except that a portless one
+/// takes the connection's advertised port (a custom access URL; see [`Origin::parse_connection`]),
+/// never rebuilt from the address, because the `plex.direct` hostname's hash label is the
+/// *certificate's* UUID and cannot be reconstructed from the machine id, and https to the bare IP
+/// fails validation by design — plus a synthesized `http://{address}:{port}` twin unless
 /// something refuses it: `httpsRequired` (rule 2), a relay connection, or an unmatched private-LAN
 /// connection advertised by somebody else's server. Rule 1 gates only that plaintext twin: the
 /// advertised TLS URI survives because certificate and `machineIdentifier` verification can reject
@@ -345,7 +347,13 @@ pub fn candidates(res: &Resource) -> Vec<Candidate> {
         if !c.uri.is_empty() {
             let scheme = scheme_of(&c.uri, &c.protocol);
             if !(unmatched_shared_lan && scheme == Scheme::Http) {
-                push(c.uri.trim_end_matches('/').to_string(), scheme);
+                // Not `c.uri` verbatim: a custom server-access URL (`https://host`, no port) must
+                // dial the connection's advertised `port` (443, a reverse proxy), not the 32400
+                // PMS default `Origin::parse` would apply — see `Origin::parse_connection`. A
+                // `plex.direct` URI already spells its port, so this is a no-op for it.
+                if let Some(o) = Origin::parse_connection(&c.uri, c.port) {
+                    push(o.base(), scheme);
+                }
             }
         }
         if !c.relay && !unmatched_shared_lan {
@@ -728,6 +736,53 @@ mod tests {
         assert!(
             cs.iter().any(|c| c.url == "http://[2001:db8::1]:32400"),
             "{cs:#?}"
+        );
+    }
+
+    /// A **custom server-access URL** advertises its `uri` WITHOUT a port (`https://<host>`) and its
+    /// real port only in the connection's `port` field (443, a reverse proxy). The candidate must
+    /// dial that 443, not the 32400 PMS default `Origin::parse` applies to a portless URL — the bug
+    /// that made a real share (only remote a custom `https://` at `port:443`, no relay) unreachable
+    /// while the official client reached it. A `plex.direct` URI that already spells its port is
+    /// unaffected.
+    #[test]
+    fn a_custom_access_urls_port_comes_from_the_connection_not_the_pms_default() {
+        // A reporter's shape: one unmatched-LAN plex.direct + one portless custom-access remote.
+        let res: Resource = parse(
+            r#"{"name":"nas-home","clientIdentifier":"cccc3333","provides":"server","owned":false,
+                "sourceTitle":"friend","ownerId":222,"publicAddressMatches":false,
+                "httpsRequired":false,"connections":[
+                  {"protocol":"https","address":"10.9.9.7","port":32400,
+                   "uri":"https://172-20-4-7.hash3.plex.direct:32400","local":true,"relay":false,"IPv6":false},
+                  {"protocol":"https","address":"plex.example.com","port":443,
+                   "uri":"https://plex.example.com","local":false,"relay":false,"IPv6":false}]}"#,
+        );
+        let cs = candidates(&res);
+        let remote: Vec<&Candidate> = cs
+            .iter()
+            .filter(|c| c.location == Location::Remote)
+            .collect();
+        assert!(
+            !remote.is_empty(),
+            "the custom remote must survive: {cs:#?}"
+        );
+        // the https candidate for the custom host dials 443, never 32400
+        let https = remote
+            .iter()
+            .find(|c| c.scheme == Scheme::Https)
+            .expect("a TLS candidate for the custom host");
+        assert_eq!(
+            https.url, "https://plex.example.com:443",
+            "portless custom uri must take the connection's advertised 443, not the 32400 default: {cs:#?}"
+        );
+        assert_eq!(
+            https.origin().expect("custom remote origin parses").port(),
+            443,
+            "{cs:#?}"
+        );
+        assert!(
+            !cs.iter().any(|c| c.url.contains("plex.example.com:32400")),
+            "nothing may dial the custom host on the PMS default port: {cs:#?}"
         );
     }
 
