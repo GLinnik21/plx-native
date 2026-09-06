@@ -161,6 +161,30 @@ impl Origin {
             .then(|| Origin::new(p.scheme, p.host, p.port.unwrap_or(DEFAULT_PORT)))
     }
 
+    /// Parse an advertised `Connection.uri`, but fall back to the connection's own advertised
+    /// `port` — not [`DEFAULT_PORT`] — when the URI wrote none.
+    ///
+    /// plex.tv's `plex.direct` URIs always spell their port (`…plex.direct:32400`). A **custom
+    /// server-access URL** does not: `https://plex.example.com` carries no port, and its owner is
+    /// serving it on 443 (a reverse proxy), which is exactly what the connection's `port` field
+    /// reports. Parsing such a URI through [`parse`] would apply the 32400 PMS default and dial a
+    /// closed port — the whole server then reads as unreachable, with no relay to fall back on
+    /// (observed live: a share whose only remote was `https://<custom>` at `port:443`, timing out
+    /// at every probe deadline while the official client reached it fine). A URI that DID write a
+    /// port keeps it; `advertised` is the fallback, and only a `port_bad` URI (a written-but-
+    /// garbage port) is still refused.
+    pub fn parse_connection(uri: &str, advertised: i64) -> Option<Origin> {
+        let p = Parts::of(uri);
+        if !p.scheme_known || p.host.is_empty() || p.port_bad {
+            return None;
+        }
+        let port = p
+            .port
+            .or_else(|| dial_port(advertised))
+            .unwrap_or(DEFAULT_PORT);
+        Some(Origin::new(p.scheme, p.host, port))
+    }
+
     pub fn scheme(&self) -> Scheme {
         self.scheme
     }
@@ -328,6 +352,32 @@ fn is_v6_literal(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `parse_connection` falls back to the connection's advertised port for a portless custom URL,
+    /// keeps a port the URL DID write, and still refuses a written-but-garbage one. This is the
+    /// contract that stops a custom `https://host` (served on 443) from being dialled on 32400.
+    #[test]
+    fn parse_connection_takes_the_advertised_port_only_when_the_uri_omits_one() {
+        // portless custom URL → the advertised 443, not the 32400 PMS default
+        let o = Origin::parse_connection("https://plex.example.com", 443).unwrap();
+        assert_eq!(
+            (o.scheme(), o.host(), o.port()),
+            (Scheme::Https, "plex.example.com", 443)
+        );
+        assert_eq!(o.base(), "https://plex.example.com:443");
+
+        // a plex.direct URL that spells its port keeps it, ignoring the advertised fallback
+        let o = Origin::parse_connection("https://1-2-3-4.hash.plex.direct:32400", 443).unwrap();
+        assert_eq!(o.port(), 32400);
+
+        // an empty advertised port is not a port — fall through to the PMS default rather than 0
+        let o = Origin::parse_connection("https://plex.example.com", 0).unwrap();
+        assert_eq!(o.port(), DEFAULT_PORT);
+
+        // a written-but-garbage port is still refused (the `port_bad` guard `parse` also honours)
+        assert!(Origin::parse_connection("https://plex.example.com:", 443).is_none());
+        assert!(Origin::parse_connection("ftp://plex.example.com", 443).is_none());
+    }
 
     /// **The bracket invariant, as a round trip.** `host()` is the resolver's node and is bare;
     /// `authority()` is URL serialization and is bracketed; `base()` reproduces the input exactly.
