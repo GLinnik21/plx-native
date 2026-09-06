@@ -68,7 +68,7 @@ use crate::ui::popover::{Opener, Popover};
 use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::table::{Row, Section, TableView};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, PageGround, Pill, Spinner, StatusKind};
+use crate::ui::widgets::{Art, PageGround, Pill, Spinner, StatusKind, StripLay};
 use crate::ui::xfade::Xfade;
 use crate::ui::{on_axis, Env, Painter, Rect, Spring, View};
 use std::ffi::CString;
@@ -154,7 +154,7 @@ pub(crate) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
 /// via the nearest `theme::space` rung (`XL` 64). On the panel it reads as a hole: the chip is a
 /// control row like any other, and every other control row in this document is followed by 26px.
 /// The canvas authored this block before the grid's own heading row existed to be consistent with.
-const HEADER_H: f32 = TOOL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
+const HEADER_H: f32 = HEAD_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
 
 /// The grid block's heading band: its title, air, the Sort/Filter control row, air. Everything
 /// above the first grid row and below the last shelf.
@@ -1277,7 +1277,31 @@ fn lib_chip_on() -> bool {
 /// a page transition between two types can have one true and the other false for 70 ms. The head
 /// must be drawn whenever either wants it, or the row appears out of nothing at the fade floor.
 fn head_on() -> bool {
-    lib_chip_on() || lib_row_on()
+    lib_row_on() || lone_borrowed_library() || dead_source_escape()
+}
+
+/// The failure read-out's ESCAPE HATCH. A listing that failed draws no grid, no Sort, no Filter and
+/// no count, and on a multi-source roster the Sources panel is how you leave the source that is not
+/// answering — which is exactly why the read-out itself spends no line telling you the way out
+/// (`Shared Sources.dc.html` D).
+///
+/// It is the one place a count of SERVERS still decides this, and the one place it is the right
+/// question: the head is not offering a choice between libraries here, it is offering a way off a
+/// dead one, and the table this page would have counted libraries in is empty by construction.
+/// With a single source there is nothing to escape TO and the tab strip above is the way out.
+fn dead_source_escape() -> bool {
+    readout() == Readout::Failed && crate::browse::sources().len() > 1
+}
+
+/// The one case a head is still owed when there is NOWHERE ELSE TO GO: the library you are in is
+/// somebody else's, and this is the only surface in the app that says whose.
+///
+/// **It replaced `lib_chip_on()` here, whose first term was a count of SERVERS.** A second server
+/// drew a chip even when the browsed type held one library — a control with a chevron, opening a
+/// panel with a single row, on a page with nothing to switch to. Owner call: hide it when one
+/// library is enabled. Absence, not a control that leads back to itself.
+fn lone_borrowed_library() -> bool {
+    crate::browse::section_sid_is_borrowed(view_section())
 }
 /// The old name, kept while the fixed toolbar's own callers are migrated onto the scroll.
 ///
@@ -1789,18 +1813,42 @@ enum LibPill {
 /// bound exists so the array is fixed, not because eight is a design limit.
 const MAX_LIB_PILLS: usize = 8;
 
-/// One pill's cached strings, measured once per row shape. Same rationale as [`ChipStrs`]: building
-/// `CString`s and re-measuring text every frame on this screen's hot path was a review-confirmed
-/// waste, and this row is drawn on every frame of every library.
+/// The row's height. **[`StatusOverlay::CTRL_H`], the same rung the detail page's season strip
+/// stands at** — these are one control family and the whole point of moving onto the shared strip
+/// is that they are indistinguishable. It is 8px taller than the [`TOOL_H`] chip it replaced, which
+/// the head block absorbs through [`HEADER_H`].
+const HEAD_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
+
+/// The row's label size — **`BODY`, the size the app's other plated strip sets its pills at** (the
+/// Filmography route's department filter). Named once because [`build_lib_row`] MEASURES with it
+/// and `draw_lib_row` DRAWS with it: a disagreement between those two puts a capsule at rest off a
+/// pill, which is the failure `widgets::strip_span`'s own doc exists to prevent.
+const LIB_PILL_SZ: c_int = theme::size::BODY;
+
+/// One pill's cached layout — **[`StripLay`], the shared strip's own**, so the x-advance, the pill
+/// frame and the capsule spans all come from one place. Same caching rationale as [`ChipStrs`]:
+/// building `CString`s and re-measuring text every frame on this screen's hot path was a
+/// review-confirmed waste, and this row draws on every frame of every library.
 struct LibStrs {
     pill: LibPill,
-    label: CString,
-    /// The owner's handle, for a BORROWED library — the one annotation that survived the chip, and
-    /// for the same reason it existed there: nothing else on this screen says whose library this
-    /// is. `None` on your own, and `None` means no run at all.
-    note: Option<CString>,
-    w: f32,
+    lay: StripLay,
 }
+
+/// **The row's two capsules** — the subtle plate marking the library you are IN and the bright one
+/// following the remote — held here exactly as `detail::View::tabs` holds the season strip's.
+///
+/// This row was hand-drawn from the toolbar chip's own primitives until the owner tested it on the
+/// television and named both halves of what was missing: "deselected pill has no background, no
+/// animations like on season". Both are properties of the shared component, not of a colour choice
+/// — a plated pill lays its own ground, and the capsules TRAVEL between pills on the strip's own
+/// springs. Re-forking that motion is what `ui/CLAUDE.md`'s directive above `widgets::TAB_PILL_H`
+/// forbids, and this is what forking it cost.
+static mut LIB_TABS: crate::ui::widgets::TabStrip = crate::ui::widgets::TabStrip::new();
+/// The focused pill's POP and press dip, folded into the capsule that IS that pill's face
+/// ([`TabGround::Plated`]). One `CtlPop<1>` because the strip has ONE focused pill and its capsule
+/// travels between them — there is no second control here to keep animating after focus left it,
+/// which is why the hero row next door needs a spring per control and this does not.
+static mut LIB_POP: crate::ui::widgets::CtlPop<1> = crate::ui::widgets::CtlPop::new();
 
 /// (cache key, pills). The key is the section table's shape plus the library being VIEWED, because
 /// the selected pill is drawn differently and the row relabels on the press frame like every other
@@ -1882,7 +1930,7 @@ fn lib_row() -> &'static [LibStrs] {
 /// is built from and now scoped the same way — off the VIEWED section, see below — so the row and
 /// the panel behind `+N` can never disagree about which libraries exist or what order they are in.
 fn build_lib_row(sel: usize) -> Vec<LibStrs> {
-    let sz = theme::size::LABEL;
+    let sz = LIB_PILL_SZ;
     // **The VIEWED section's type, not the current one.** `source_rows` reads `cur_kind()`, which
     // lags the head by the length of a page fade — and this row's cache key is the viewed section,
     // which does not move again at the commit, so a row built from the old type stays cached for
@@ -1890,67 +1938,67 @@ fn build_lib_row(sel: usize) -> Vec<LibStrs> {
     // drawing them: caught in the simulator, invisible to every host test, because the defect is
     // the ORDER two statics settle in rather than anything either of them says.
     let rows = crate::browse::source_rows_for(sel);
-    let measured: Vec<(usize, CString, Option<CString>, f32)> = rows
+    // A BORROWED library says whose it is in its own label. The chip carried the handle as a dim
+    // MICRO run on its own rung; a shared strip pill has one label and one weight (`TabNote` is a
+    // tick, not text), so the fact moves into the label rather than being dropped — losing the
+    // annotation entirely would take away the only surface in the app that names an owner.
+    let labels: Vec<String> = rows
         .iter()
         .map(|r| {
-            let label = CString::new(r.title.as_str()).unwrap_or_default();
             let handle = crate::browse::handle_of(r.section);
-            let note = (!handle.is_empty())
-                .then(|| CString::new(format!("  {handle}")).unwrap_or_default());
-            let mut w = CHIP_PAD + crate::text::text_width(label.as_ptr(), sz, 1) + CHIP_PAD;
-            if let Some(h) = &note {
-                w += crate::text::text_width(h.as_ptr(), NOTE_SZ, 0);
+            if handle.is_empty() {
+                r.title.clone()
+            } else {
+                format!("{} {handle}", r.title)
             }
-            (r.section, label, note, w)
         })
         .collect();
-    let widths: Vec<f32> = measured.iter().map(|m| m.3).collect();
-    let sel_i = measured.iter().position(|m| m.0 == sel).unwrap_or(0);
+    // Measured through the SHARED layout, so the pill frames, the x-advance and the capsule spans
+    // can never disagree — the contract `TabStrip::update` states for its span function.
+    let all = crate::ui::widgets::strip_layout(labels.iter().cloned(), MARGIN_X, sz);
+    let widths: Vec<f32> = all
+        .iter()
+        .map(|l| crate::ui::widgets::strip_pill_rect(l, 0.0, HEAD_H).w)
+        .collect();
+    let sel_i = rows.iter().position(|r| r.section == sel).unwrap_or(0);
     // The `+N` pill is measured for the worst case it can carry — every library but one — so the
-    // window solve below never has to be re-run against a narrower tail than it reserved for.
-    let more = CString::new(format!("+{}", widths.len().saturating_sub(1))).unwrap_or_default();
-    let more_w = CHIP_PAD + crate::text::text_width(more.as_ptr(), sz, 1) + CHIP_PAD;
-    // **[`MAX_LIB_PILLS`] goes IN, rather than being applied to the answer.** A truncate after the
-    // solve cannot be told apart from a fit: `hidden` is computed from the window, so a row that
-    // the array cut short reported nothing hidden and grew no `+N`, and the libraries past slot 8
-    // were simply gone — including, when the viewer was standing in one of them, the SELECTED one,
-    // which then had no pill, no overflow to reach it through and no chip either. Passing the bound
-    // in is what lets the solve reserve the overflow slot it needs.
+    // window solve never has to be re-run against a narrower tail than it reserved for.
+    let more_label = format!("+{}", widths.len().saturating_sub(1));
+    let more_w = crate::ui::widgets::strip_layout(std::iter::once(more_label), 0.0, sz)
+        .first()
+        .map(|l| crate::ui::widgets::strip_pill_rect(l, 0.0, HEAD_H).w)
+        .unwrap_or(0.0);
     let (start, len) = lib_window(
         &widths,
         sel_i,
         lib_band_w(),
-        theme::space::XS,
+        crate::ui::widgets::STRIP_GAP,
         more_w,
         MAX_LIB_PILLS,
     );
-    let mut out: Vec<LibStrs> = measured
-        .into_iter()
+    // Re-laid from the WINDOW, so the drawn run starts at the margin whatever it starts with —
+    // `strip_layout` is the one place an x-advance is computed, here as at the season strip.
+    let hidden = widths.len() - len;
+    let mut shown: Vec<String> = labels.iter().skip(start).take(len).cloned().collect();
+    let mut pills: Vec<LibPill> = rows
+        .iter()
         .skip(start)
         .take(len)
-        .map(|(section, label, note, w)| LibStrs {
-            pill: LibPill::Library(section),
-            label,
-            note,
-            w,
-        })
+        .map(|r| LibPill::Library(r.section))
         .collect();
-    let hidden = widths.len() - len;
     if hidden > 0 {
-        let label = CString::new(format!("+{hidden}")).unwrap_or_default();
-        let w = CHIP_PAD + crate::text::text_width(label.as_ptr(), sz, 1) + CHIP_PAD;
-        out.push(LibStrs {
-            pill: LibPill::More,
-            label,
-            note: None,
-            w,
-        });
+        shown.push(format!("+{hidden}"));
+        pills.push(LibPill::More);
     }
-    // A BACKSTOP now, not a policy: `lib_window` was given the same bound and reserved the `+N`
-    // slot against it, so there is nothing left here to discard. It stays because the array this
-    // feeds is fixed-length and the draw indexes it — a bound the type system does not carry is
-    // better restated than assumed.
-    debug_assert!(out.len() <= MAX_LIB_PILLS, "the window solve overran the rect array");
+    let lays = crate::ui::widgets::strip_layout(shown.into_iter(), MARGIN_X, sz);
+    let mut out: Vec<LibStrs> = pills
+        .into_iter()
+        .zip(lays)
+        .map(|(pill, lay)| LibStrs { pill, lay })
+        .collect();
+    // A backstop, not the bound: [`lib_window`] is given `MAX_LIB_PILLS` and reserves the `+N`
+    // slot against it, so this can only fire if the two ever disagree.
+    debug_assert!(out.len() <= MAX_LIB_PILLS, "lib_window must bound the row");
     out.truncate(MAX_LIB_PILLS);
     out
 }
@@ -2168,62 +2216,92 @@ fn draw_lib_row(p: Painter, y: f32) -> [Rect; MAX_LIB_PILLS] {
     publish_lib_row(pills, row.len().min(MAX_LIB_PILLS), sel);
     let focused_row = area() == Area::LibChip && !menu_open();
     let cur = lib_f();
+    // **The capsules go down FIRST — they are the pills' ground**, and a label drawn under an
+    // opaque focus capsule is a label nobody can read. `TabStrip::draw`'s own rule.
+    let tabs = unsafe { addr_of!(LIB_TABS).read() };
+    tabs.draw(
+        p,
+        y,
+        HEAD_H,
+        crate::ui::widgets::TabGround::Plated {
+            pop: unsafe { (*addr_of!(LIB_POP)).scale(0) },
+        },
+    );
+    let e = Env::inert();
     let mut rects = [Rect::new(0.0, 0.0, 0.0, 0.0); MAX_LIB_PILLS];
-    let mut x = MARGIN_X;
     for (i, cs) in row.iter().enumerate().take(MAX_LIB_PILLS) {
-        rects[i] = lib_pill_at(
-            p,
-            x,
-            y,
-            cs,
-            cs.pill == LibPill::Library(sel),
-            focused_row && i == cur,
-        );
-        x += cs.w + theme::space::XS;
+        let pill = crate::ui::widgets::strip_pill_rect(&cs.lay, y, HEAD_H);
+        rects[i] = pill;
+        // Each pill takes its ink from HOW COVERED it is by the two capsules, which is what makes
+        // the travel read as one control moving rather than two labels swapping colour. `plated()`
+        // is the season strip's own face: **every pill lays its own ground**, so a deselected one
+        // is a plate with dim ink and not bare text on the page — the half the owner named first.
+        let (fm, sm) = tabs.mixes((pill.x, pill.w));
+        let (fm, sm) = if focused_row { (fm, sm) } else { (0.0, sm) };
+        let _ = i;
+        crate::ui::widgets::TabPill::new(cs.lay.label.as_ptr(), LIB_PILL_SZ, pill)
+            .plated()
+            .mix(fm, sm)
+            .draw(&e, p);
     }
+    let _ = cur;
     rects
 }
 
-/// One library pill. **Three faces, and they are the tab bar's own language one level down**:
-/// focused wears the app's Accent like every other control, the library you are IN wears the
-/// filled idle capsule, and the rest are bare dim text with no capsule at all.
-///
-/// That last one is what makes the row read as a row rather than as several buttons — the same
-/// distinction the tab track above draws between the selected type and its neighbours, which is
-/// the point: a user who reads *Movies · TV Shows* up there reads *Films · Animation* down here
-/// the same way, and the nesting explains itself.
-fn lib_pill_at(p: Painter, x: f32, y: f32, cs: &LibStrs, selected: bool, focused: bool) -> Rect {
-    let sz = theme::size::LABEL;
-    let r = Rect::new(x, y, cs.w, TOOL_H);
-    let ink = match (focused, selected) {
-        (true, _) => {
-            p.rrect(r, TOOL_H * 0.5, TOOL_H * 0.5, crate::ui::ACCENT);
-            crate::ui::ACCENT_INK
-        }
-        (false, true) => {
-            p.rrect(r, TOOL_H * 0.5, TOOL_H * 0.5, theme::CONTROL_IDLE_FILL);
-            theme::CONTROL_IDLE_INK
-        }
-        (false, false) => theme::TEXT_SECONDARY,
-    };
-    let ty = crate::text::text_vcenter_y(sz, 1, r.y + r.h * 0.5);
-    let mut tx = r.x + CHIP_PAD;
-    tx += p.text(cs.label.as_ptr(), tx, ty, sz, ink, 0, 1);
-    // the owner annotation, on the VALUE's baseline — the same treatment and the same reason as the
-    // chip's, which this row replaces on accounts that have one
-    if let Some(h) = &cs.note {
-        let hy = crate::text::baseline_y(NOTE_SZ, 0, sz, 1, ty);
-        p.text(
-            h.as_ptr(),
-            tx,
-            hy,
-            NOTE_SZ,
-            theme::with_a(ink, NOTE_INK_A),
-            0,
-            0,
+/// Step the row's capsules and its focus pop. Called from [`update`] every frame, like every other
+/// spring on this screen — the capsules ARE springs, so `gfx`'s integrator reports their motion to
+/// `ui::idle` itself and the present gate cannot freeze a travel mid-flight.
+fn update_lib_row(dt: f32) {
+    // The strip is placed from the SAME span function it was laid out with, which is what stops a
+    // capsule ever coming to rest off a pill (`TabStrip::update`'s contract).
+    let (sel_i, foc_i) = lib_row_marks();
+    let lays: Vec<&StripLay> = lib_row().iter().map(|c| &c.lay).collect();
+    unsafe {
+        (*addr_of_mut!(LIB_TABS)).update(
+            sel_i,
+            foc_i,
+            |i| {
+                lays.get(i)
+                    .map(|l| crate::ui::widgets::strip_pill_rect(l, 0.0, HEAD_H))
+                    .map(|r| (r.x, r.w))
+            },
+            // **`SelMark::Travels`, as the Filmography route's department strip does** — and
+            // NOT the season strip's `Lands`. The season plate lands because selection there only
+            // ever changes with the focus capsule already sitting on the destination, so its
+            // travel would be hidden under a brighter capsule that has already answered. Neither
+            // is true here: the library also changes from the Sources panel (the `+N` pill, with
+            // focus on the overflow rather than on the destination) and from a pointer click, and
+            // in both the plate's path from the old library to the new one is the whole statement
+            // — a filter re-pointing itself, which is the case `Travels` is for.
+            crate::ui::widgets::SelMark::Travels,
+            dt,
+        );
+        // the pop belongs to the focused pill and nothing else; `None` eases it back to rest
+        (*addr_of_mut!(LIB_POP)).step(
+            (foc_i >= 0).then_some(0),
+            dt,
         );
     }
-    r
+}
+
+/// `(selected, focused)` as strip indices — `-1` for "nothing to mark", which is what fades a
+/// capsule out in place rather than leaving it on a stale pill.
+///
+/// The SELECTED pill is the library being viewed; the FOCUSED one exists only while the head holds
+/// focus and no menu is open, so walking away from the row takes the bright capsule with it.
+fn lib_row_marks() -> (c_int, c_int) {
+    let sel = view_section();
+    let selected = lib_pills()
+        .iter()
+        .position(|&p| p == LibPill::Library(sel))
+        .map(|i| i as c_int)
+        .unwrap_or(-1);
+    let focused = if area() == Area::LibChip && !menu_open() && lib_row_on() {
+        lib_f() as c_int
+    } else {
+        -1
+    };
+    (selected, focused)
 }
 
 /// Is the pointer on a library pill? The drawn rects, so an undrawn slot is not hittable.
@@ -2850,6 +2928,12 @@ fn apply_section(i: usize) {
         return;
     }
     crate::browse::set_cur(i);
+    // **Remember it, HERE and not in `set_cur`.** This is the commit of a page change the viewer
+    // asked for — a tab press or a library pill — so it is the only seam that can tell a choice
+    // from `repoint_cur` moving the cursor off a library that stopped being a favourite, or from
+    // the boot path settling before discovery has finished. Recording either would invent a
+    // preference and then open there next launch.
+    crate::browse::note_library_choice(i);
     crate::browse::kick_letters();
     restore_view();
 }
@@ -3045,6 +3129,8 @@ fn rail_jump(i: usize) {
 
 pub(crate) fn update(dt: f32) {
     unsafe { PHASE_MS += dt * 1000.0 };
+    // the head's strip: two capsules and a focus pop, stepped like every other spring here
+    update_lib_row(dt);
 
     // ---- content cross-fade. FIRST, because the commit frame teleports SCROLL/GR/GC and the
     // wanted window below must be computed from the POST-swap scroll (the same reason that window
@@ -4685,7 +4771,7 @@ fn draw_document(pg: Painter, ph: Painter, lay: &Layout, sc: f32) {
         // gap between them by the whole lift, which is what "the pills stay where they were,
         // leaving an awkward amount of spacing" describes. Moving with it holds the gap constant.
         let y = doc_y(lay, 0.0, sc) - head_lift(lay);
-        if on_axis(y, TOOL_H, SCR_H, 0.0) {
+        if on_axis(y, HEAD_H, SCR_H, 0.0) {
             // **Two forms, one block.** The row when this tab holds more than one library, the
             // single chip when it does not — and the head is [`TOOL_H`] tall either way, so
             // nothing in [`Layout`] has to know which one ran.
@@ -5824,12 +5910,15 @@ mod tests {
             "there is nothing to sort, to filter or to count"
         );
 
-        // TWO sources: the Source chip leads the row, and it OUTLIVES the failure
+        // TWO sources, healthy and with no library of this type between them: **no head at all**.
+        // A second SERVER used to be enough to draw one, which put a chevron over a panel with one
+        // row on a page with nowhere to go (owner call: hide it when one library is enabled). The
+        // head is a choice between libraries now, and there is no choice here.
         crate::browse::seed_sources_for_test(2, true);
         assert_eq!(
             chips(),
-            &CHIPS_MANY[..],
-            "two sources put Source at the head of the row"
+            &CHIPS_ONE[..],
+            "a second server is not by itself somewhere else to go"
         );
         crate::browse::seed_sources_for_test(2, false);
         assert_eq!(readout(), Readout::Failed);
@@ -6246,7 +6335,13 @@ mod tests {
         // so a row that lost its grid chips drew no focused chip at all while OK still fired the
         // clamped last one — and RIGHT was dead, because it too measured a stale index against the
         // shorter row. Both now read [`tool_f`], which is why this asserts through it.
-        crate::browse::seed_sources_for_test(2, true);
+        // The long row needs a real HEAD, which since the head became a choice between libraries
+        // means more than one FAVOURITE of the browsed type — not merely a second server, and not
+        // a friend's library of a type we own, which defaults off. Two switched-on libraries on
+        // one source is the smallest fixture that draws one; the grid under them is what makes the
+        // control row drawn at all.
+        crate::browse::seed_pins_for_test(&[true, true]);
+        crate::browse::seed_items_for_test(4);
         assert_eq!(chips(), &CHIPS_MANY[..]);
         unsafe { TOOL_F = 2 };
         assert_eq!(tool_f(), 2, "the user walked to the end of the long row");
@@ -6275,8 +6370,12 @@ mod tests {
         );
 
         // the source answers again: the row grows back and focus returns to the chip the user
-        // actually walked to, rather than having been dumped at 0 while it was away
-        crate::browse::seed_sources_for_test(2, true);
+        // actually walked to, rather than having been dumped at 0 while it was away. The regrown
+        // row has to be the LONG one, so this restores the same two-favourite fixture rather than a
+        // bare pair of sources — which since the head became a choice between libraries draws no
+        // head at all.
+        crate::browse::seed_pins_for_test(&[true, true]);
+        crate::browse::seed_items_for_test(4);
         assert_eq!((tool_f(), focused_chip()), (2, Some(Chip::Filter)));
 
         crate::browse::reset();

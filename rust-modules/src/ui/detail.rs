@@ -398,15 +398,10 @@ const HERO_ART: (c_int, c_int) = (1920, 1080);
 
 // Season tabs (header for the episode row)
 const TAB_ROW_H: f32 = CD; // tab pills stand as tall as the hero buttons (one control height)
-/// Season-tab pill padding either side of its label (`Details Screen.dc.html`'s `padding: 0 26px`,
-/// up from 18). A 60px-tall pill wrapped on 18 read as a tall thin lozenge; at 26 the pill is the
-/// capsule the mock draws, and it matches the Play pill's own label inset beside it.
-const TAB_PAD: f32 = 26.0;
-/// Air BETWEEN two tab pills.
-const TAB_GAP: f32 = theme::space::SM;
-/// Per-tab horizontal advance past the label width — derived from the two above rather than spelled,
-/// so a change to the padding can't silently change the gap (which is what 52 vs 18 used to hide).
-const TAB_ADVANCE: f32 = 2.0 * TAB_PAD + TAB_GAP;
+// The pill padding, gap and advance moved to `widgets` when the Library grew a strip of its own —
+// `TabStrip` and `TabPill` were already shared and the numbers that place their pills were not. The
+// aliases keep this file's prose (and its dozen call sites) reading in its own terms.
+use crate::ui::widgets::STRIP_ADVANCE as TAB_ADVANCE;
 const SEASON_SETTLE: f32 = 0.2; // hold a season tab this long (s) before its episodes are fetched
                                 // Episodes: landscape stills + under-card metadata
 const EP_ANIM_MAX: usize = 40; // per-episode pop-spring count (episodes past this don't animate the pop)
@@ -762,7 +757,7 @@ fn hero_btn_rect_at(set: HeroSet, i: c_int, y: f32, cw: HeroWidths) -> Rect {
 /// screen y for the hit-test; the horizontal scroll is applied by the caller, which is why this
 /// takes the layout entry rather than reaching for one.
 fn tab_pill_rect(lay: &TabLay, top: f32) -> Rect {
-    Rect::new(lay.x - TAB_PAD, top, lay.w + 2.0 * TAB_PAD, TAB_ROW_H)
+    crate::ui::widgets::strip_pill_rect(lay, top, TAB_ROW_H)
 }
 
 /// The content-space left edge of strip index `i` at horizontal pitch `pitch` — the ONE x formula
@@ -1747,12 +1742,7 @@ pub(crate) fn move_focus(sym: c_int) {
 
 /// ONE season tab's resolved layout: its index, content-space label x, the tab's CONTENT width
 /// (label plus whatever trailing note it carries) and the label CString.
-struct TabLay {
-    i: usize,
-    x: f32,
-    w: f32,
-    label: CString,
-}
+use crate::ui::widgets::StripLay as TabLay;
 
 /// ONE source of truth for the season-tab strip's layout — the draw pass and the focus/scroll
 /// geometry both walk this, so their x-advance can't drift. A label that can't be a CString
@@ -1826,10 +1816,7 @@ fn tabs_layout(d: &crate::metadata::Detail) -> &'static [TabLay] {
 /// label inside it. The one span function [`TabStrip`] is placed from, so a capsule can only ever
 /// come to rest exactly on a pill.
 fn tab_span(lays: &[TabLay], i: usize) -> Option<(f32, f32)> {
-    lays.get(i).map(|l| {
-        let r = tab_pill_rect(l, 0.0);
-        (r.x, r.w)
-    })
+    crate::ui::widgets::strip_span(lays, i, TAB_ROW_H)
 }
 
 /// content-space geometry (label x, label width) of the focused season tab.

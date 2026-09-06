@@ -233,6 +233,26 @@ pub struct Session {
     /// search term would sign the device out on every boot.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub recent_searches: Vec<RecentSearches>,
+    /// **The library each top tab was last browsed in**, per profile — so a household with two TV
+    /// libraries opens the one it actually watches instead of whichever the server happens to list
+    /// first.
+    ///
+    /// Without it the tab resolves through `browse::section_of_kind` every launch: owned first,
+    /// then table order, which is the server's order and is not a preference anybody expressed.
+    /// Issue #68 is what that costs when the two are not the same library — the reporter's own
+    /// libraries opened in the order their server listed them, every time.
+    ///
+    /// **Per TYPE, not one entry per profile.** The Movies tab and the TV Shows tab are two
+    /// choices; one slot would make picking a film library forget which shows you browse.
+    ///
+    /// Keyed by profile like [`RecentSearches`] and [`HomePins`], and by (machine id, section key)
+    /// like [`PinnedLib`] — never a section INDEX, which the table renumbers on every
+    /// `browse::reset` and on a re-discovery that appends.
+    ///
+    /// Soft-parsed for the reason every list in this struct is: one hand-edited entry costs that
+    /// entry, never the credentials.
+    #[serde(default, deserialize_with = "de_soft_vec")]
+    pub last_library: Vec<LastLibrary>,
     /// The install's playback-quality preference. `None` is deliberately distinct from an
     /// explicit value: every session written before this field existed lands there and must keep
     /// the old **Original** behaviour rather than being migrated onto automatic playback.
@@ -533,6 +553,56 @@ impl SourceRef {
 pub struct PinnedLib {
     pub machine_id: String,
     pub key: i64,
+}
+
+/// One profile's last-browsed library per content type. See [`Session::last_library`].
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct LastLibrary {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** with no Home selection —
+    /// the same convention [`HomePins`] and [`RecentSearches`] use, and for the same reason.
+    pub user: String,
+    pub libs: Vec<TypedLib>,
+}
+
+/// One remembered library, tagged with the TYPE whose tab it answers for.
+///
+/// `kind` is the wire's own `Directory.type` string (`movie` / `show`) rather than an enum
+/// discriminant, so a reordered `SecKind` cannot silently repoint an entry written by an older
+/// build — the same reason [`PinnedLib`] keys on a machine id rather than a roster position.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct TypedLib {
+    pub kind: String,
+    pub machine_id: String,
+    pub key: i64,
+}
+
+impl LastLibrary {
+    /// This profile's remembered library for `kind`, as `(machine_id, key)`.
+    pub fn get(&self, kind: &str) -> Option<(&str, i64)> {
+        self.libs
+            .iter()
+            .find(|l| l.kind == kind)
+            .map(|l| (l.machine_id.as_str(), l.key))
+    }
+    /// Record a choice, replacing this type's entry rather than appending beside it.
+    ///
+    /// **A library with no machine id is not recorded and CLEARS the entry**, rather than being
+    /// written with an empty one: `""` would match every nameless library on every server nobody
+    /// has identified yet, which is the trap [`HomePins::answer`] carries its own guard for — and
+    /// here it would point a tab at an arbitrary one of them on the next boot.
+    pub fn set(&mut self, kind: &str, machine_id: &str, key: i64) {
+        self.libs.retain(|l| l.kind != kind);
+        if machine_id.is_empty() {
+            return;
+        }
+        self.libs.push(TypedLib {
+            kind: kind.to_string(),
+            machine_id: machine_id.to_string(),
+            key,
+        });
+    }
 }
 
 /// **One profile's FAVOURITE libraries** — the first-run route's record (`Shared Sources.dc.html`

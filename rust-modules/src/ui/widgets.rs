@@ -4395,6 +4395,78 @@ impl Capsule {
     }
 }
 
+// ---- a strip's PILL GEOMETRY, shared by every strip a [`TabStrip`] drives ---------------------
+//
+// **These lived in `ui/detail.rs`, private to the season strip, until the Library grew a strip of
+// its own.** `TabStrip` and `TabPill` were already shared; the numbers that PLACE their pills were
+// not, so a second consumer's only options were to import private constants or to hand-author a
+// copy — and a copy is the fork the directive above [`TAB_PILL_H`] forbids, arrived at from
+// underneath. One padding, one gap, one advance, one pill rect, one span function.
+//
+// The row HEIGHT stays the caller's, because the two strips genuinely differ there: the season
+// strip stands as tall as the hero buttons beside it, and the Library's head as tall as the
+// control row it heads.
+
+/// A strip pill's padding either side of its CONTENT (`Details Screen.dc.html`'s `padding: 0 26px`,
+/// up from 18). A 60px-tall pill wrapped on 18 read as a tall thin lozenge; at 26 the pill is the
+/// capsule the mock draws, and it matches the Play pill's own label inset beside it.
+pub(crate) const STRIP_PAD: f32 = 26.0;
+/// Air BETWEEN two pills of a strip.
+pub(crate) const STRIP_GAP: f32 = theme::space::SM;
+/// Per-pill horizontal advance past the CONTENT width — derived from the two above rather than
+/// spelled, so a change to the padding cannot silently change the gap (which is what 52 vs 18 used
+/// to hide).
+pub(crate) const STRIP_ADVANCE: f32 = 2.0 * STRIP_PAD + STRIP_GAP;
+
+/// ONE strip pill's resolved layout: its index, content-space label x, the pill's CONTENT width
+/// (the label plus whatever trailing note it carries) and the label CString.
+pub(crate) struct StripLay {
+    pub(crate) i: usize,
+    pub(crate) x: f32,
+    pub(crate) w: f32,
+    pub(crate) label: CString,
+}
+
+/// A strip pill's frame: padded [`STRIP_PAD`] either side of its content, standing the full row
+/// height so the pills read as one control family with whatever sits beside them. `top` is the
+/// row's local y for the draw and its screen y for the hit-test; any horizontal scroll is applied
+/// by the caller, which is why this takes the layout entry rather than reaching for one.
+pub(crate) fn strip_pill_rect(lay: &StripLay, top: f32, h: f32) -> Rect {
+    Rect::new(lay.x - STRIP_PAD, top, lay.w + 2.0 * STRIP_PAD, h)
+}
+
+/// Content-space `(x, w)` of pill `i` — **the frame, not the label inside it.** The one span
+/// function a [`TabStrip`] is placed from, so a capsule can only ever come to rest exactly on a
+/// pill; `TabStrip::update`'s contract is that this IS the function the caller laid out with.
+pub(crate) fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f32)> {
+    lays.get(i).map(|l| {
+        let r = strip_pill_rect(l, 0.0, h);
+        (r.x, r.w)
+    })
+}
+
+/// Lay a strip out from its labels: content x from `x0`, advancing by each pill's measured width
+/// plus [`STRIP_ADVANCE`]. Bold, because every strip in this app draws its pills bold.
+///
+/// A label that cannot be a `CString` (an interior NUL — never in practice) is skipped entirely:
+/// not drawn, and no advance, so the gap it would have left cannot desynchronise the span function
+/// from the draw.
+pub(crate) fn strip_layout(
+    labels: impl Iterator<Item = String>,
+    x0: f32,
+    sz: c_int,
+) -> Vec<StripLay> {
+    let mut x = x0;
+    let mut out = Vec::new();
+    for (i, label) in labels.enumerate() {
+        let Ok(lc) = CString::new(label) else { continue };
+        let w = crate::text::text_width(lc.as_ptr(), sz, 1);
+        out.push(StripLay { i, x, w, label: lc });
+        x += w + STRIP_ADVANCE;
+    }
+    out
+}
+
 /// The motion state of ONE tab strip: the subtle capsule marking the SELECTED tab and the bright one
 /// marking the FOCUSED tab, both travelling. Two, not one, because they are independently placed —
 /// on the Library screen the selected tab is the section you are browsing while focus walks the row
