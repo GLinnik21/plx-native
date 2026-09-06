@@ -312,7 +312,7 @@ the last item was parked on. `tabs_layout` is CACHED per season set for that: it
 three times a frame (scroll target, capsule spans, draw) and this row has no FPS scene to catch the
 cost — `fps:detail-transition` is a movie and returns before reaching it.
 `library.rs` is the Library, and since 2026-09-05 it is **ONE VERTICAL DOCUMENT** rather than a
-poster wall under a fixed bar: the library chip at the head of the scroll, then the library's own
+poster wall under a fixed bar: the LIBRARY ROW at the head of the scroll, then the library's own
 server-published shelves (`browse::section_hubs`, one `card_row::CardRow` each), then the grid's
 heading with its Sort/Filter row under it, then the 6-across A–Z grid — all in one scroll, with the
 shared tab track the only chrome standing over content. `widgets::nav_scrim` is GONE — Search
@@ -324,10 +324,24 @@ controls in two reachable states. **BACK from anywhere below the head returns to
 document** (a deep shelf is as far from the top as a deep grid row), and a second BACK leaves for
 Home. Every grid coordinate goes through `Layout` — `doc_to_grid`, `row_y`, `visible_rows` — and the
 review rule is that none is derived from `SCROLL` outside it.
-Its chips are a **typed list** (`Chip`) that is now TWO zones sharing one array: the **Source chip**
-— `Library · <name> <handle> ▾`, the handle a `MICRO` run at 62% of the label's own ink — heads the
-DOCUMENT as `Area::LibChip` when the roster or the type holds more than one library, and Sort and
-Filter are the control row under the grid's heading. `control_lo`/`control_n` give that row its own
+**The head of the document is the LIBRARY ROW** (`Area::LibChip`), and it has two forms. With more
+than one favourite library of the type being browsed it draws them all — a pill each, the one you
+are in filled and the rest bare dim text, `+N` into the Sources panel when they outgrow the band —
+which is the tab track's own language one level down, and deliberately so: the hierarchy is *type
+above, libraries nested inside*, and issue #68 is what it costs to leave the nested level undrawn (a
+second TV library reported as MISSING from the app, confirmed present in Settings). One press
+switches; the row publishes what it drew (`LIB_PILLS`) because the cursor, the walk and the
+activation may not measure text — `crate::text` is SDL2_ttf, which the host test build does not
+link. Otherwise it is the older single **Source chip** — `Library · <name> <handle> ▾`, the handle a
+`MICRO` run at 62% of the label's own ink — which stays for the states where this type holds ONE
+favourite library and there is still something to say: a second server on the roster, and a BORROWED
+library, whose owner nothing else on the screen would name. That last clause is only true while the
+borrowed library is ALONE under its pill: `draw_document` asks the row first, so a borrowed library
+with a same-type sibling favourite draws in the row like any other, carrying its owner's handle as
+its own dim run. `Chip` is a **typed list** either way, TWO zones
+sharing one array: `Chip::Source` is the head's identity (and the popover's anchor, so it exists
+even on the frames the row is what is drawn), and Sort and Filter are the control row under the
+grid's heading. `control_lo`/`control_n` give that row its own
 bounds, because a toolbar cursor seated at index 0 stands on a chip the control row does not draw —
 a zone you could walk into with nothing focused. A chip's index is never its identity and every
 activation matches on the enum (a `_` catch-all there is what once made inserting Source at 0 open

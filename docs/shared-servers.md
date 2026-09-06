@@ -316,7 +316,12 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
 - **D — a dead source is absent from Home** (no shelf, no spinner) and its borrowed items leave
   Continue Watching. Its library section draws the shared failure read-out: `Can't reach nas-home`,
   reason `Shared by friend · your own server is fine.`, one action `Try again`, anchored in the
-  content region with only the Source chip beside it — no sort/filter chips, no count, no A–Z rail.
+  content region with only the head of the document beside it — no sort/filter chips, no count, no
+  A–Z rail. **The head is whichever form it would take on a healthy page**, which since issue #68
+  (2026-09-06) is not always the chip: `Layout::failed` takes `head_on()` and `draw_document` asks
+  `lib_row_on()` first, so a dead library that shares its type with another favourite draws the
+  library ROW beside the read-out. That is the useful answer anyway — the row is how you leave the
+  library that cannot be reached — but "only the Source chip" is no longer what you will see.
 - **E — `Shared by friend`** as the last run on the detail hero's date/runtime line, plus an **Also
   available** button in the actions row when a second pinned source holds the film. **OK navigates**
   to that server's page rather than swapping the copy in place, which is also what settles the
