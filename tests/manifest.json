@@ -116,7 +116,26 @@
         "plxnative-detailok": true
       },
       "fps_ceiling": 5,
-      "_fps_ceiling_note": "This screen SETTLES, so once its appear/condense springs are done it must fall to the keepalive (0.5/s). 5 leaves room for a late poster landing. Guards the over-reporting direction: an animator that reports when it should not costs the whole feature and trips no floor anywhere."
+      "_fps_ceiling_note": "This screen SETTLES, so once its appear springs, its shelf scroll and the ambient wash's twelve corner springs are done it must fall to the keepalive (0.5/s). 5 leaves room for a late poster landing. (It used to name a band CONDENSE spring too; that band stopped condensing, so anything debugging a ceiling failure here should not go looking for one.) Guards the over-reporting direction: an animator that reports when it should not costs the whole feature and trips no floor anywhere."
+    },
+    {
+      "name": "filmography-idle",
+      "tier": "ui",
+      "route": "person",
+      "loop_floor": 50,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "item": "movie_cast0_in_both_libraries",
+      "comment": "The Filmography route, at rest. It is a screen-owned modal over the person page, so the heartbeat still says route=person; plxnative-filmography opens it on the same frame detailok mounts the person store, and plxnative-personcredits seeds seven departments so the strip is the overflowing one rather than a two-pill row. Reached ONLY this way: the route has no boot trigger that does not go through a cast press.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": 1,
+        "plxnative-detailok": true,
+        "plxnative-filmography": true,
+        "plxnative-personcredits": 9
+      },
+      "_fps_ceiling_note": "This route had NO fps scene at all while it grew three clocks: a horizontal scroll spring for its department strip (tab_hscroll), a preview poster on its own settle timer (PV_SETTLE) and an Xfade for the swap. Only the spring reports to ui::idle for free. The ceiling is the direction that catches all three, because an animator that never reports done costs the whole present gate and trips no floor anywhere in the suite. 5 leaves room for a late preview poster landing. There is no FLOOR twin yet and that is a stated gap rather than an oversight: the strip has no oscillator trigger, and a scene with no motion grades nothing."
     },
     {
       "name": "library-scroll",

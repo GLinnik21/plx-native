@@ -1784,6 +1784,75 @@ pub(crate) fn continuous_scroll_rail(
     );
 }
 
+// ---- Pending placeholders --------------------------------------------------------------------
+
+/// **One light pass across a placeholder** — the pending sweep, and a deliberate addition to this
+/// product's motion set (`Person Screen.dc.html`: "it does not pulse, scale or move the block
+/// itself"). Nothing here pulses; arrival is the dip, which is `Xfade`'s job, not this one's.
+pub const SKELETON_PERIOD_MS: u32 = 1500;
+/// The resting fill of a TEXT-line placeholder, and the peak the sweep lifts it to.
+const SKEL_BAR_A: f32 = 0.08;
+const SKEL_SHEEN_A: f32 = 0.06;
+/// How wide the moving highlight is, as a fraction of the block it crosses.
+const SKEL_BAND: f32 = 0.35;
+/// The sweep is drawn as a few flat strips rather than one interpolated quad. At six per cent alpha
+/// the steps are invisible on the panel, and it keeps the whole thing on `Painter::rect` — no
+/// `grad4` corner convention to get wrong, and no scissor to pair.
+const SKEL_STRIPS: usize = 6;
+
+/// Phase 0..1 from a millisecond clock, for a caller accumulating its own — [`Spinner::phase`]'s
+/// pattern. Stepping the clock itself needs no `ui::idle` report (see that module: the six phase
+/// accumulators tick unconditionally); the report is [`skeleton_sheen`]'s, from the draw, exactly
+/// as [`Spinner::draw`] does it and for the same reason recorded there.
+pub(crate) fn skeleton_phase(ms: u32) -> f32 {
+    (ms % SKELETON_PERIOD_MS) as f32 / SKELETON_PERIOD_MS as f32
+}
+
+/// The sweep, over whatever ground the caller has already laid down.
+///
+/// Reports to `ui::idle` from HERE, not from the clock that feeds it — `Spinner::draw`'s rule:
+/// only a placeholder actually ON SCREEN should hold the loop awake, and reporting from draw can
+/// only latch the gate on for the next frame, never off, so it self-sustains for exactly as long as
+/// something keeps drawing one.
+fn skeleton_sheen(p: Painter, r: Rect, rad: f32, phase: f32) {
+    crate::ui::idle::invalidate();
+    let band = (r.w * SKEL_BAND).max(1.0);
+    // travel from fully off the left edge to fully off the right, so the block is clean at both
+    // ends of the cycle rather than starting mid-flash
+    let centre = r.x - band * 0.5 + phase * (r.w + band);
+    let step = band / SKEL_STRIPS as f32;
+    for k in 0..SKEL_STRIPS {
+        let sx = centre - band * 0.5 + step * k as f32;
+        let (x0, x1) = (sx.max(r.x), (sx + step).min(r.x + r.w));
+        if x1 <= x0 {
+            continue;
+        }
+        // a linear tent, peaking at the band's centre
+        let t = 1.0 - ((sx + step * 0.5 - centre).abs() / (band * 0.5)).clamp(0.0, 1.0);
+        let c = theme::white(SKEL_SHEEN_A * t);
+        p.rect(Rect::new(x0, r.y, x1 - x0, r.h), rad, c, c, 0.0);
+    }
+}
+
+/// **A line of text that has not arrived** — a chip-radius bar at the run's own measured height, so
+/// the block it stands in keeps its height and nothing reflows when the words land.
+pub(crate) fn skeleton_bar(p: Painter, r: Rect, phase: f32) {
+    let rad = r.h * 0.5; // a chip radius on a text-line bar IS its half height
+    let base = theme::white(SKEL_BAR_A);
+    p.rect(r, rad, base, base, 0.0);
+    skeleton_sheen(p, r, rad, phase);
+}
+
+/// **Artwork that has not arrived** — the structural top→bottom sheet [`Art`] already draws for a
+/// missing poster, plus the sweep. Same geometry and same resting card edge as the real tile, which
+/// is the whole point: the placeholder is the card, without the picture.
+pub(crate) fn skeleton_sheet(p: Painter, r: Rect, rad: f32, phase: f32) {
+    p.rect(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
+    skeleton_sheen(p, r, rad, phase);
+    // the resting card edge, so the placeholder holds its own boundary exactly as the real tile does
+    p.rring(r, rad, theme::CARD_SHEEN_W, theme::CARD_SHEEN);
+}
+
 // ---- Tracked caps: a kicker drawn letter by letter -----------------------------------------------
 
 /// Draw a letter-tracked kicker. The text backend has no letter-spacing, so tracking is always a
@@ -3195,6 +3264,24 @@ impl AmbientWash {
             .iter()
             .all(|q| q.iter().zip(c).all(|(s, v)| (s.pos - v).abs() <= eps))
     }
+    /// **The colour this wash puts at one point of `r`** — the same bilinear the shader evaluates
+    /// (`fs_ambient.frag`: `mix(mix(tl,tr,u), mix(bl,br,u), v)`), on the CPU, for a caller that has
+    /// to paint something the exact colour of the ground it is standing on.
+    ///
+    /// Its one caller is an EDGE FADE: a scissor-clipped strip is cut at a hard line, and the only
+    /// way to dissolve that cut rather than disguise it is to lay the ground's own colour over it
+    /// at a falling alpha. A guessed constant cannot do that here — this ground is keyed to the
+    /// host's artwork and is a different colour on every page.
+    pub(crate) fn sample(&self, r: Rect, x: f32, y: f32) -> [f32; 3] {
+        let u = if r.w > 0.0 { ((x - r.x) / r.w).clamp(0.0, 1.0) } else { 0.0 };
+        let v = if r.h > 0.0 { ((y - r.y) / r.h).clamp(0.0, 1.0) } else { 0.0 };
+        let c = |i: usize, q: usize| self.corners[q][i].pos;
+        std::array::from_fn(|i| {
+            let top = c(i, 0) + (c(i, 1) - c(i, 0)) * u; // tl -> tr
+            let bot = c(i, 3) + (c(i, 2) - c(i, 3)) * u; // bl -> br
+            top + (bot - top) * v
+        })
+    }
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
@@ -4170,7 +4257,8 @@ impl View for TabPill {
         };
         // WEIGHT crossfades; it does not tween. A bold run and a regular run are two rasterizations
         // — the same reason `theme.rs`'s size ladder says a SIZE is crossfaded rather than animated,
-        // and the way `person.rs` spells its band condense. Two draws happen only while a capsule is
+        // and the way `detail.rs` spells its hero → compact title. (`person.rs`'s band condense was
+        // the other worked example until that band stopped condensing.) Two draws happen only while a capsule is
         // genuinely mid-travel over THIS pill: at most two pills, for ~200 ms. Both boolean states
         // land squarely in the single-draw branches, so nothing that exists today pays for this.
         let lw = if bold_mix > 0.98 {
@@ -4405,7 +4493,7 @@ impl TabStrip {
     /// Call this BEFORE the pill loop: the capsules are the pills' ground, and a label drawn under an
     /// opaque focus capsule is a label nobody can read.
     pub(crate) fn draw(&self, p: Painter, top: f32, h: f32, ground: TabGround) {
-        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>, scale: f32| {
+        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>, scale: f32, cast: bool| {
             let (x, w) = c.span();
             let a = c.alpha();
             // sub-code alpha or a sub-pixel width is nothing on screen but still a full rrect pass
@@ -4415,6 +4503,16 @@ impl TabStrip {
                 // is still a capsule rather than a rounded rectangle.
                 let r = Rect::new(x, top, w, h).scaled(scale);
                 let h = r.h;
+                // The lift every other focused control face wears (`control_cast`, via
+                // `Button::plate`) — owner correction, 2026-09-06: a plated strip's focused pill IS
+                // a control face (this fn's own doc says so, two paragraphs down) and a control face
+                // that never casts reads as a sticker pasted on the artwork rather than a pressable
+                // button, exactly the defect `person.rs::draw_entry` had before its own fix. Never
+                // for a TRACKED pill or the selection plate — see the call sites' own comments for
+                // why each of those stays flat.
+                if cast {
+                    control_cast(p, r, h * 0.5);
+                }
                 match rim {
                     // On a GLASS track the selection plate is a piece of the same material, not a
                     // white wash: its own perimeter line and its own brighter top edge, exactly as
@@ -4453,25 +4551,32 @@ impl TabStrip {
             sel_col,
             matches!(ground, TabGround::Tracked { glass: true }).then_some(theme::GLASS_RIM),
             1.0,
+            // No cast: it marks a PAGE fact (which department you are browsing), not the control
+            // under your thumb, and only the thing focus is actually on lifts off the page.
+            false,
         );
         // The FOCUS capsule keeps its near-white fill: it is the one thing on this row that must not
         // read as a material, because the material is what everything else here is and focus has to
-        // be the exception. It wore two stops of shadow for a while — near-white on a near-white
-        // LIGHT track has no separation and had to be lifted instead — and that went with the light
-        // track it was drawn for.
+        // be the exception. On a TRACKED strip it wore two stops of shadow for a while — near-white
+        // on a near-white LIGHT track has no separation and had to be lifted instead — and that
+        // went with the light track it was drawn for: the capsule TRAVELLING under a row that
+        // encloses it is already the whole focus mark, so `cast: false` below.
         //
         // On the PLATED strip it is additionally a control FACE, which the design system states in
         // one sentence (`components/chrome/TabStrip.jsx`): a season pill "sits bare on artwork and
         // provides its own ground, and because nothing encloses it its focused pill wears the
         // control face: edge-sheen, top hairline, the `--focus-scale-control` pop, and a Button's
-        // press — dip on the way down, ring on release." All four of those are this line and the
-        // `scale` argument; a TRACKED pill gets none of them, because the capsule TRAVELLING under a
-        // row that encloses it is already the whole focus mark.
+        // press — dip on the way down, ring on release." **Owner correction, 2026-09-06: that list
+        // was missing the fifth thing a control face wears, the CAST** — `Button::plate`'s own
+        // `control_cast` before the fill, which is what turns a flat coloured shape sitting flush
+        // against the artwork into something that reads as a pressable control lifted off it. This
+        // pill sits bare on artwork exactly the way `person.rs::draw_entry` sits bare on the page,
+        // and it had the identical defect for the identical reason, so `cast: true` below.
         match ground {
             TabGround::Plated { pop } => {
-                cap(&self.foc, crate::ui::ACCENT, Some(theme::CARD_SHEEN), pop)
+                cap(&self.foc, crate::ui::ACCENT, Some(theme::CARD_SHEEN), pop, true)
             }
-            TabGround::Tracked { .. } => cap(&self.foc, crate::ui::ACCENT, None, 1.0),
+            TabGround::Tracked { .. } => cap(&self.foc, crate::ui::ACCENT, None, 1.0, false),
         }
     }
     /// The `(focus, selected)` mixes pill `pill` (content-space `(x, w)`) should ink itself with —
@@ -6526,6 +6631,32 @@ impl Button {
         );
         p.clip_clear();
     }
+}
+/// **A standalone control face for a caller outside this module** — the same plate
+/// [`Button::plate`] draws (the capsule outline, the edge sheen, and the focus cast), for a control
+/// whose layout does not fit `Button`'s one-label-two-icons shape and so cannot be a `Button`
+/// itself. `person.rs`'s Filmography route entry is the one caller today: three independent text
+/// runs (label, separator, count) and a trailing chevron, drawn by hand rather than through
+/// `Button::icon`/`label`/`trailing_icon`. It used to fill itself with a bare `Painter::rrect`/
+/// `rrect_sheened` — a plain rounded rect with no capsule outline, no edge sheen and no focus cast,
+/// the one pill-shaped control in the app that skipped the construction [`control_rim`] gives every
+/// other one (`CircleButton`, `TransportButton`, `TabPill`'s standalone `ground()` style, `Button`
+/// itself). Flat fill only — `top` and `body` the same colour — because that caller has never
+/// needed the gradient the two-tone [`ControlFace`] exists for; hand it a real `ControlFace` if one
+/// ever does.
+pub(crate) fn draw_control_face(
+    p: Painter,
+    r: Rect,
+    fill: [f32; 4],
+    focused: bool,
+    ground: ControlGround,
+) {
+    let b = face_box(r);
+    let rad = b.h * 0.5;
+    if focused {
+        control_cast(p, b, rad);
+    }
+    control_rim(p, b, rad, fill, fill, focused, ground);
 }
 impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
@@ -8666,6 +8797,47 @@ mod tests {
                 && PageGround::CARD_W[3] < PageGround::CARD_W[1],
             "…and fades toward the bottom, where the content rows are"
         );
+    }
+
+    /// **[`AmbientWash::sample`] is the shader's own bilinear, on the CPU** — the whole point of it
+    /// is that a caller can paint the EXACT colour the ground already puts at a point, and an
+    /// approximation would show as a rectangle rather than a dissolve.
+    ///
+    /// Graded against `fs_ambient.frag`'s two mixes (`mix(mix(tl,tr,u), mix(bl,br,u), v)`) at the
+    /// four corners and at the centre, on a wash whose corners are four distinguishable colours —
+    /// which is also what pins the CORNER ORDER (tl, tr, br, bl, the order `Painter::ambient` and
+    /// `Painter::grad4` both take): swapping any pair still passes a test written on a flat wash.
+    #[test]
+    fn the_ambient_wash_reports_the_colour_the_shader_puts_at_a_point() {
+        let tl = [1.0, 0.0, 0.0];
+        let tr = [0.0, 1.0, 0.0];
+        let br = [0.0, 0.0, 1.0];
+        let bl = [1.0, 1.0, 0.0];
+        let mut w = AmbientWash::flat(theme::SURFACE_APP);
+        w.jump([
+            [tl[0], tl[1], tl[2], 1.0],
+            [tr[0], tr[1], tr[2], 1.0],
+            [br[0], br[1], br[2], 1.0],
+            [bl[0], bl[1], bl[2], 1.0],
+        ]);
+        let r = Rect::new(100.0, 50.0, 400.0, 200.0);
+        let close = |a: [f32; 3], b: [f32; 3], what: &str| {
+            for i in 0..3 {
+                assert!((a[i] - b[i]).abs() < 1e-4, "{what}: {a:?} against {b:?}");
+            }
+        };
+        close(w.sample(r, r.x, r.y), tl, "top left");
+        close(w.sample(r, r.x + r.w, r.y), tr, "top right");
+        close(w.sample(r, r.x + r.w, r.y + r.h), br, "bottom right");
+        close(w.sample(r, r.x, r.y + r.h), bl, "bottom left");
+        close(
+            w.sample(r, r.x + r.w * 0.5, r.y + r.h * 0.5),
+            [0.5, 0.5, 0.25],
+            "centre",
+        );
+        // …and a point outside the rect clamps rather than extrapolating: a fade band drawn at the
+        // very edge of the screen must not ask for a colour the gradient never had.
+        close(w.sample(r, r.x - 500.0, r.y - 500.0), tl, "clamped past the top left");
     }
 
     // ── The hero corner scrim: the wedge's shape, its seam, and the legibility it promises ──────

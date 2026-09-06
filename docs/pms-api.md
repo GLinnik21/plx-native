@@ -168,8 +168,41 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   is required** or you get XML; and **an unknown person is a `200` with `totalSize:0`**, not a 404,
   so "no such person" and "the request failed" are different answers. Being a different HOST, it
   needs DNS+TLS and therefore `net.rs`/libcurl, never the raw `stream.rs` socket. The typed client is
-  `plex/discover.rs`; a filmography list (`…/library/people/{tagKey}/credits` → `CreditGroup[]` of
-  Discover items, NOT local library rows) is documented there and not yet built.
+  `plex/discover.rs`.
+- **The filmography IS built** — `…/library/people/{tagKey}/credits` → `CreditGroup[]` of Discover
+  items, NOT local library rows. `AccountClient::person_credits`, drawn by `ui/filmography.rs`.
+  **The shape was measured 2026-09-06 and is not what the names suggest.** The container is
+  `MediaContainer.CreditGroup[]` (never `Metadata`, which the DTO also accepted until a real
+  response settled it). A group is `{title, type, Credit[]}` — `title` is "Actor"/"Producer"/
+  "Appearances", `type` is `actor`/`producer`/`appeared`, and there is **no `size`**, so a group's
+  count IS its row count. A credit is `{order, role, Metadata}` where `Metadata` is ONE item, whose
+  whole key set is `art`, `key`, `originallyAvailableAt`, `publicPagesURL`, `ratingKey`, `slug`,
+  `thumb`, `title`, `type`, `year`.
+  **There is NO `guid` on that item**, and this is the trap: PMS states the same identity as
+  `plex://movie/5d7768295af944001f1f7477` while this endpoint states it as a bare `ratingKey` of
+  `5d7768295af944001f1f7477`. The join is therefore on the guid's **last path segment**
+  (`person::guid_tail`), not on the whole string. Modelling a `guid` field here — it defaults to
+  empty on every row — made the availability join match NOTHING while every count around it read
+  healthy: `joinable=5`, 544 rows drawn, not one markable.
+  `thumb` is an **absolute URL** on `image.tmdb.org` or `metadata-static.plex.tv`. That is not a
+  reason to skip the artwork: `posters::poster_key` URL-encodes exactly such a URL into
+  `/photo/:/transcode?url=…` and the SERVER fetches it, the same path Search's `actor` headshots
+  take. And its group counts are **not** `CreditType`'s — that
+  record says 1745 actor credits where this returns 222 — so the tabs and the person page's entry
+  row spend the group's own, never the profile's. The one thing NOT settled live is which key the
+  container puts the groups under (`CreditGroup` or `Metadata`); the DTO accepts both, logs which
+  one answered, and treats a body carrying NEITHER as a failure to be retried rather than as a
+  person with no career.
+- **Unlike the profile beside it, `/credits` REQUIRES a token** (measured 2026-09-05): with no
+  `X-Plex-Token` it answers `401 {"error":"Unauthorized","message":"You must provide a token!"}`,
+  where `/library/people/{tagKey}` answers 200 unauthenticated. And the token it wants is the
+  plex.tv **account** token, not a PMS server token — which is what puts the whole filmography out
+  of reach of every automated boot in this repo: those sign in with `/tmp/plxnative-token`, a
+  server token, and leave `Session::account_token` empty. It is the same wall
+  `/tmp/plxnative-personbio` exists for one step further along — the biography degrades to a blank
+  line, the filmography to nothing at all — and it is why `/tmp/plxnative-personcredits` had to be
+  written. Reaching either with real data needs a signed-in account (`make sim` with a real
+  session, or the debug install with `--no-token`).
 - **The person's titles:** `GET /library/people/{personId}/media` → `Metadata[]`, everything the
   person appears in **across EVERY library section in one request** (person 161 → 3 items;
   person 6059 → 6). This is the right call for a person page; `?actor=<id>` below is the right

@@ -51,6 +51,8 @@ pub struct Row {
     /// THE trailing accessory icon slot (an SVG asset, never a font glyph): the drill-in
     /// chevron (via the [`Row::chevron`] sugar) or e.g. the sort menu's direction chevron.
     pub ticon: Option<crate::ui::icons::Icon>,
+    /// Reserve [`Self::ticon`]'s column even when this row draws no icon — see [`Row::ticon_slot`].
+    pub ticon_slot: bool,
     /// THE leading accessory icon — the SAME column the [`Row::checked`] checkmark occupies, for
     /// lists whose rows are ACTIONS rather than a picker's options (the item context menu's
     /// `[icon] [label]` rows). `checked` wins the slot when both are set: a picker's active mark is
@@ -76,6 +78,7 @@ impl Row {
             value: None,
             value_dim: false,
             ticon: None,
+            ticon_slot: false,
             licon: None,
             dim: false,
             sep: false,
@@ -131,6 +134,17 @@ impl Row {
         }
         self
     }
+    /// **Hold the trailing accessory's column open on a row that draws none.**
+    ///
+    /// For a list where only SOME rows go somewhere: without it the read-out beside the chevron
+    /// shifts right on every row that has none, so a column of years reads as ragged text instead
+    /// of a column you can compare down. The design states it as a reserved 26px slot at
+    /// `opacity:0` (`Person Screen.dc.html`: "the column is reserved on every row so the year
+    /// column stays on one guide"). Ignored when a `ticon` is actually set.
+    pub fn ticon_slot(mut self, v: bool) -> Self {
+        self.ticon_slot = v;
+        self
+    }
     pub fn ticon(mut self, i: crate::ui::icons::Icon) -> Self {
         self.ticon = Some(i);
         self
@@ -143,13 +157,15 @@ impl Row {
         self.dim = v;
         self
     }
-    fn height(&self) -> f32 {
+    /// `tall` is the TABLE's two-line measure — see [`TableView::tall_rows`]. A row cannot answer
+    /// this alone: 92 and 98 are both correct, and which one applies is a property of the LIST.
+    fn height_in(&self, tall: f32) -> f32 {
         if self.sep {
             SEP_H
         } else if self.detail.is_empty() {
             ROW_H
         } else {
-            ROW_H_TALL
+            tall
         }
     }
 }
@@ -218,6 +234,17 @@ pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
 /// modules' own tests stayed green.
 pub const ROW_H: f32 = 60.0;
 const ROW_H_TALL: f32 = 92.0; // a row that carries a detail sub-line (title HEADLINE + detail CAPTION)
+/// **A CATALOG list's two-line row: 98, against a settings table's 92** — see
+/// [`TableView::tall_rows`].
+///
+/// It arrived as the height of a row carrying a leading 54x81 POSTER, a slot this widget briefly
+/// grew for `ui::filmography` and no longer has: the canvas retired the chip the next day ("a
+/// poster at that size is a grey rectangle 222 times over") in favour of one large preview beside
+/// the list. The chip went with it rather than being kept as a variant nobody draws — it is not an
+/// answer waiting for its next caller, it is one that was measured and rejected. The taller ROW
+/// survives it, because that was never about the poster: it is what a `BODY` title over a
+/// `CAPTION` sub-line wants when the list IS the screen.
+pub const ROW_H_ART: f32 = 98.0;
 const ROW_SUB_GAP: f32 = 15.0; // title baseline → detail cap-top, in a two-line row
 /// Panel header ("AUDIO"/"SUBTITLES", a server over its libraries). 58px in BOTH size classes and
 /// whatever the header's own size — the band is fixed so a size change cannot reflow a panel.
@@ -235,7 +262,7 @@ const DIV_H: f32 = 24.0; // gap + hairline between sections
 /// list (the Sources panel's level band) has to subtract it to put the SEAM on the space scale —
 /// otherwise the two paddings add and the gap lands between rungs.
 pub const TOP_PAD: f32 = 20.0;
-const BOT_PAD: f32 = 20.0;
+pub const BOT_PAD: f32 = 20.0;
 /// Distance from a table frame's top edge to the cap-top of its first section label.
 ///
 /// Route screens use this to align that label with the narrative title in the neighbouring
@@ -298,6 +325,8 @@ pub struct TableView {
     /// It no longer affects HEADERS: those are CAPS at CAPTION in both classes, because the caps
     /// are what make a header a label and a size that varied could tie with its own rows.
     pub compact: bool,
+    /// see [`TableView::tall_rows`]
+    tall: bool,
     /// Semantic ink for section labels. Ambient routes can raise this role for contrast without
     /// replacing the shared table header renderer or changing row/detail hierarchy.
     pub header_ink: [f32; 4],
@@ -308,12 +337,29 @@ pub struct TableView {
     scroll: Spring,
 }
 impl TableView {
+    /// **Two-line rows at the CATALOG measure (98) rather than the settings one (92).**
+    ///
+    /// Opt-in per table, because both are right: a settings row is a line of chrome in a panel, and
+    /// a row in a list that IS the screen — `ui::filmography`'s credits — carries a `BODY` title
+    /// over a `CAPTION` sub-line and wants the air. The canvas states 98 for that list and 92 is
+    /// what every other table here has always drawn.
+    pub fn tall_rows(&mut self, v: bool) {
+        self.tall = v;
+    }
+    fn tall_row_h(&self) -> f32 {
+        if self.tall {
+            ROW_H_ART
+        } else {
+            ROW_H_TALL
+        }
+    }
     pub const fn new() -> Self {
         Self {
             sections: Vec::new(),
             sel: 0,
             list_focused: true,
             compact: false,
+            tall: false,
             header_ink: theme::TEXT_TERTIARY,
             hl_top: Spring::at(0.0),
             hl_bot: Spring::at(0.0),
@@ -323,6 +369,29 @@ impl TableView {
 
     /// The row under the pointer in a `frame`-anchored draw (screen coords), or None — popover
     /// click support (hover→focus, click→commit) shares the draw's own layout walk.
+    /// **Where row `i` is on screen** — the exact inverse of [`Self::hit_row`], walked the same
+    /// way so the two can never disagree about a row's band.
+    ///
+    /// It exists for `ui::popover::Opener`: a context menu anchors beside the element it was opened
+    /// from, and a caller that measured that band itself would be a second layout of this widget.
+    /// Answers `None` for a header, a hairline, or a row scrolled out of the frame — all three are
+    /// cases where there is nothing on screen to anchor to.
+    pub fn row_rect(&self, frame: Rect, i: i32) -> Option<Rect> {
+        let top0 = frame.y + TOP_PAD;
+        let scroll = self.scroll.pos;
+        let mut out = None;
+        self.walk(|cy, gi, _| {
+            if gi != i || gi < 0 || self.rows_at(gi).sep {
+                return;
+            }
+            let sy = top0 + cy - scroll;
+            let h = self.rows_at(gi).height_in(self.tall_row_h());
+            if sy + h > frame.y && sy < frame.y + frame.h {
+                out = Some(Rect::new(frame.x + SIDE, sy, frame.w - 2.0 * SIDE, h));
+            }
+        });
+        out
+    }
     pub fn hit_row(&self, frame: Rect, mx: f32, my: f32) -> Option<i32> {
         if !frame.contains(mx, my) {
             return None;
@@ -335,7 +404,7 @@ impl TableView {
                 return; // headers and grouping hairlines are not click targets
             }
             let sy = top0 + cy - scroll;
-            if my >= sy && my <= sy + self.rows_at(gi).height() {
+            if my >= sy && my <= sy + self.rows_at(gi).height_in(self.tall_row_h()) {
                 hit = Some(gi);
             }
         });
@@ -457,7 +526,7 @@ impl TableView {
             }
             for row in &sec.rows {
                 f(y, gi, si);
-                y += row.height();
+                y += row.height_in(self.tall_row_h());
                 gi += 1;
             }
         }
@@ -477,7 +546,7 @@ impl TableView {
         for sec in &self.sections {
             for row in &sec.rows {
                 if n == target {
-                    return row.height();
+                    return row.height_in(self.tall_row_h());
                 }
                 n += 1;
             }
@@ -530,10 +599,15 @@ impl TableView {
         )
     }
 
-    /// The scroll spring's settled position, in content coordinates. Test-only: this is what a
-    /// regression on the `update(dt, frame_h)` contract shows up as first — the pill motion test
-    /// above cannot see it, since a 2-row list never scrolls.
-    #[cfg(test)]
+    /// The scroll spring's live position, in content coordinates.
+    ///
+    /// It was `#[cfg(test)]` — the tests are still its main reader, for the reason below — until a
+    /// caller needed to draw a SCROLL RAIL beside the list (`ui::filmography`). A rail is the one
+    /// thing outside this widget that has to know where the scroll actually is; everything else it
+    /// exposes is about rows.
+    ///
+    /// For tests: this is what a regression on the `update(dt, frame_h)` contract shows up as
+    /// first — the pill motion test cannot see it, since a 2-row list never scrolls.
     pub(crate) fn scroll_pos(&self) -> f32 {
         self.scroll.pos
     }
@@ -563,7 +637,6 @@ impl TableView {
         let dimc = theme::TEXT_TERTIARY; // was #8a8a8e; unified onto the tertiary grey
         let ink = crate::ui::ACCENT_INK; // text/glyph over the light pill
         let content_x = frame.x + SIDE + CONTENT_PAD;
-        let label_x = content_x + CHECK_W + GAP;
         let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
 
         // ---- sliding pill (under the rows) — warm off-white; top/bottom edges morph independently ----
@@ -653,7 +726,7 @@ impl TableView {
                 return;
             }
             let row = self.rows_at(gi);
-            let h = row.height();
+            let h = row.height_in(self.tall_row_h());
             if sy + h < vis_top || sy > vis_bot {
                 return; // fully scrolled out; a partial edge row is drawn and scissor-clipped to `frame`
             }
@@ -692,6 +765,7 @@ impl TableView {
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
             // never a switch. A mark here says WHERE YOU ARE; what a row is SET to is a word at the
             // trailing edge (below), and no row is allowed to say both.
+            let label_x = content_x + CHECK_W + GAP;
             let lead = if row.checked {
                 Some(crate::ui::icons::Icon::Check)
             } else {
@@ -709,6 +783,8 @@ impl TableView {
                 let cr = Rect::new(text_right - cs, cyc - cs * 0.5, cs, cs);
                 crate::ui::icons::draw(p, ti, cr, base);
                 trailing = cs + 14.0;
+            } else if row.ticon_slot {
+                trailing = 26.0 + 14.0; // reserved, drawn empty — see `Row::ticon_slot`
             }
             // PLACE 4 — the badge run, RIGHT-ALIGNED at the trailing edge and the outermost of the
             // three trailing runs (the design system's cell is a flex row whose label block takes

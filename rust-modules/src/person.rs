@@ -25,7 +25,7 @@
 //!
 //! ## The fetches, and their index space
 //!
-//! Three requests **per source**, plus one that is not per-source at all:
+//! Three requests **per source**, plus TWO that are not per-source at all:
 //!
 //! * **[`K_RESOLVE`]** — `GET /hubs/search?query=<name>` on that server, joined on the `tagKey` to
 //!   its own local `personId`. Skipped entirely for the ORIGIN server, which handed us that id in
@@ -46,9 +46,15 @@
 //!   the SOURCE's own local id, not the origin's.
 //! * **[`F_PROFILE`]** — the biography, from plex.tv: `GET
 //!   discover.provider.plex.tv/library/people/{tagKey}` over the TLS+DNS `net.rs` path (see
-//!   `plex/discover.rs` for the wire facts). **Deliberately still single.** It is the one fetch that
-//!   is already global — plex.tv answers about the person, not about anybody's library — so fanning
-//!   it out would be the same request N times for one answer.
+//!   `plex/discover.rs` for the wire facts). **Deliberately still single.** It is already GLOBAL —
+//!   plex.tv answers about the person, not about anybody's library — so fanning it out would be the
+//!   same request N times for one answer.
+//! * **[`F_CREDITS`]** — the filmography, from the same host: `GET
+//!   …/library/people/{tagKey}/credits` → `CreditGroup[]`. Global for exactly [`F_PROFILE`]'s
+//!   reason and then some, since a person's CAREER is not a fact any server has an opinion about.
+//!   What the servers contribute to it is the availability JOIN, and that rides on the [`K_MEDIA`]
+//!   answers this page already makes — so it adds one request per person, not one per source. The
+//!   screen is [`crate::ui::filmography`]; the display model it draws is [`filmography`].
 //!
 //! Every fetch's plumbing is indexed by ONE flat key ([`fx`]/[`un_fx`]): its mailbox and its
 //! single-flight claim as one [`Fetch`] ([`FETCH`]), its retry countdown beside them ([`RETRY_CD`],
@@ -136,6 +142,9 @@ struct Src {
     resolved: bool,
     /// this source's own contribution, before the merge
     shelves: [Shelf; NSHELF],
+    /// **The availability index** — `(guid, ratingKey)` for every row this source's `/media` answer
+    /// carried, uncapped. See [`MediaLanding::matches`]; read only by [`filmography`].
+    matches: Vec<(String, String)>,
     /// its `/media` fetch has landed successfully at least once
     landed: bool,
     /// its batched character-name read has ANSWERED for ITS CURRENT shelves. Cleared by every media
@@ -240,6 +249,18 @@ pub(crate) struct Person {
     /// never renders a "loading" state for the header, because a header that is complete without a
     /// biography must not flicker a spinner into a space it will never fill.
     pub(crate) profiled: bool,
+    /// Whether the plex.tv profile fetch has COME BACK at all, success or failure — the bound on
+    /// [`facts_pending`]'s wait. Distinct from `profiled`, which says the answer had content:
+    /// "still waiting" and "asked, and got nothing" look identical to a placeholder and must not.
+    pub(crate) profile_tried: bool,
+    /// The filmography as plex.tv sent it — every department, in the provider's own order, with
+    /// nothing folded, sorted or joined. The DISPLAY model is [`filmography`], derived on demand,
+    /// because its availability column is a function of the sources and changes under it.
+    credits: Vec<crate::plex::discover::CreditGroup>,
+    /// the credits fetch has ANSWERED at least once — including the answer "no credits", which is
+    /// an empty vector. [`Person::profiled`]'s twin, and the gate the Filmography entry row is
+    /// drawn on: an entry naming no count is an entry that cannot promise a list.
+    pub(crate) credited: bool,
     /// Exact registry identity this source vector was built from. Background roster refresh can
     /// add/remove/re-point while a page remains open, without going through `install_pms::reset`.
     roster_gen: u32,
@@ -272,6 +293,33 @@ static mut CURRENT: Option<Person> = None;
 
 /// The open person, or None. Main-thread only; the reference is valid until the next
 /// [`pump`]/[`open`]/[`close`] (same lifetime rule as `metadata::current`).
+/// **The plex.tv profile has not answered yet** — the canvas's phase 0, and what the portrait, the
+/// identity pair and the bio draw a placeholder for.
+///
+/// It is PENDING, not ABSENT: a profile that answered with no biography is `profiled` with an empty
+/// `bio`, and that page must read as finished rather than sprouting three grey bars forever. The
+/// two states were one before the placeholders existed, which is why `person.rs`'s guide says a
+/// header line is drawn only when it has content — that rule is about the ANSWER, and this is about
+/// the wait.
+pub(crate) fn facts_pending(p: &Person) -> bool {
+    // **Bounded by a real ATTEMPT, not only by success.** `!p.profiled` alone is unbounded whenever
+    // plex.tv cannot be reached — an offline or LAN-only television, a provider outage, or any
+    // headless boot, where the injected `/tmp/plxnative-token` is a SERVER token that
+    // `discover.provider.plex.tv` answers 401. The profile mailbox then re-arms its back-off
+    // forever, `profiled` never turns true, and `draw_header` paints five `skeleton_bar`s a frame,
+    // each of which calls `idle::invalidate()` — so the whole-frame present gate never closes and
+    // the page repaints at 60fps for as long as it is open, for a sweep over content that is never
+    // arriving. One failed attempt is enough to say "this is what the page is": the band degrades
+    // to the name it already has, which is exactly the finished-not-broken read the doc above asks
+    // for. A later success still fills it in — `profiled` is what draws the content.
+    !p.profiled && !p.profile_tried
+}
+
+// Shelves have their OWN pending question already — [`loading`], just below — which is `!landed`
+// rather than `!all(Src::settled)` and for a reason worth keeping in mind here: `landed` also goes
+// true the moment ANY source has actually put a tile on the page, so a shelf shows real content the
+// instant it is real rather than staying skeletonized while a second, slower source is still out.
+
 pub(crate) fn current() -> Option<&'static Person> {
     unsafe { (*addr_of!(CURRENT)).as_ref() }
 }
@@ -290,11 +338,18 @@ const K_MEDIA: usize = 1;
 const K_ROLES: usize = 2;
 const NKIND: usize = 3;
 
-/// The ONE fetch that is not per-server: plex.tv's biography, which is already global (module doc).
-/// It sits past every per-source mailbox, which is what keeps [`un_fx`] total.
+/// The two fetches that are not per-server: plex.tv's biography and plex.tv's filmography, both of
+/// which are already global (module doc). They sit past every per-source mailbox, which is what
+/// keeps [`un_fx`] total.
 const F_PROFILE: usize = crate::plex::MAX_SERVERS * NKIND;
+/// The FILMOGRAPHY — `{DISCOVER}/library/people/{tagKey}/credits`. Global for [`F_PROFILE`]'s
+/// reason and then some: it is a fact about the person's CAREER, which no server has an opinion
+/// about at all. What the servers contribute is the AVAILABILITY join, and that rides on the
+/// `/media` answers ([`K_MEDIA`]) the page already makes — so this adds one request per person, not
+/// one per source.
+const F_CREDITS: usize = F_PROFILE + 1;
 /// Mailboxes, single-flight claims and retry countdowns, all over this one index space.
-const NFETCH: usize = F_PROFILE + 1;
+const NFETCH: usize = F_CREDITS + 1;
 
 /// Mailbox index of source `sid`'s fetch of kind `k`, `None` for a `ServerId` that names no slot.
 ///
@@ -347,9 +402,29 @@ const RETRY_FRAMES: u32 = 120;
 enum Landing {
     /// One source's own `personId`. `Some("")` = answered, and this server has never heard of them.
     Resolve(Option<String>),
-    Media(Option<[Shelf; NSHELF]>),
+    Media(Option<MediaLanding>),
     Profile(Option<crate::plex::discover::PersonProfile>),
+    /// The whole filmography, ungrouped and unsorted — the display model is derived on the main
+    /// thread by [`filmography`], because the AVAILABILITY half of it changes every time a source
+    /// lands and cannot be baked into a worker's answer.
+    Credits(Option<Vec<crate::plex::discover::CreditGroup>>),
     Roles(Option<RolesLanding>),
+}
+
+/// One source's finished `/media` read: the two shelves it drew, and the **uncapped** guid index
+/// the Filmography route joins against.
+///
+/// The two travel together for [`RolesLanding`]'s reason — they describe the same response, and a
+/// landing that installed one without the other would leave the route claiming a server holds
+/// items it has since replaced. The index is separate from the shelves rather than derived from
+/// them because [`SHELF_MAX`] caps what a `CardRow` can spring: a prolific actor's 60 movies draw
+/// as 24 tiles, and joining a filmography against the 24 would silently un-own 36 films the user
+/// really has.
+pub(crate) struct MediaLanding {
+    shelves: [Shelf; NSHELF],
+    /// `(guid, ratingKey)` for EVERY `movie`/`show` row the response carried. Short strings, a few
+    /// hundred at the very worst.
+    matches: Vec<(String, String)>,
 }
 
 /// A finished character-name batch. `keys` is the shelf-key list it was ADDRESSED to, which rides
@@ -493,6 +568,7 @@ fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
             // machine; contributing nothing is an answer, not a fetch to retry forever.
             resolved: is_origin || name.is_empty(),
             shelves: Default::default(),
+            matches: Vec::new(),
             landed: false,
             roled: false,
         });
@@ -675,6 +751,9 @@ pub(crate) fn open(sid: ServerId, key: &str, guid: &str, name: &str, thumb: &str
             srcs,
             landed: false,
             profiled: false,
+            profile_tried: false,
+            credits: Vec::new(),
+            credited: false,
             roster_gen: crate::plex::server_roster_gen(),
         });
         // A page with NO source at all has already answered — see `resettle`'s fold. Deriving it
@@ -814,7 +893,122 @@ pub(crate) fn pump() -> bool {
         }
         maybe_spawn(i);
     }
+    // The credits seed runs HERE rather than at `open`, unlike the biography's, and the difference
+    // is what it needs: it joins itself against the shelves so the availability column and the
+    // trailing chevron are actually visible, and the shelves do not exist until a landing.
+    if let Some(p) = unsafe { (*addr_of_mut!(CURRENT)).as_mut() } {
+        changed |= seed_dev_credits(p);
+    }
     changed
+}
+
+/// `/tmp/plxnative-personcredits[=<rows>]` — **stand in for the plex.tv FILMOGRAPHY record**, so
+/// [`crate::ui::filmography`] can be reached headlessly.
+///
+/// It exists for exactly [`seed_dev_profile`]'s reason and the argument is not repeated here: the
+/// credits come from `discover.provider.plex.tv`, an automated boot signs in with a *server* token,
+/// and the provider answers that `401`. So no harness and no `make sim-shot` can reach this screen
+/// with a single row on it.
+///
+/// **It seeds the JOIN as well as the rows**, which the biography's twin has no equivalent of and
+/// which is the whole reason this runs from [`pump`] instead of from [`open`]: every row the page's
+/// own shelves can cover gets that item's `(guid, ratingKey)` written into the origin source's
+/// index, so those rows draw the source annotation and the chevron and their OK really opens a
+/// detail page. The rest are the majority the screen exists to show — a career you do not hold.
+///
+/// The value is a row count per department (default 9); the departments themselves are fixed, and
+/// deliberately include one under the [`FOLD`] so the folding into `Other` is visible in a capture —
+/// and enough ABOVE it that the department strip overflows its column, which is the only way a
+/// headless capture reaches the strip's scroll and the left edge fade over its cut.
+#[allow(unused_variables)]
+fn seed_dev_credits(p: &mut Person) -> bool {
+    let Some(arg) = crate::dev::read("personcredits") else {
+        return false;
+    };
+    // **The rows the page really holds, as `(title, guid)`** — taken from the source's OWN index
+    // (`Src::matches`, filled by a real `/media` landing) joined back to the shelf item by
+    // ratingKey. Nothing here fabricates a match: a seeded row that names one of these carries that
+    // server's real guid, so the availability column and the chevron come out of the same
+    // `match_local` a live filmography would go through.
+    let held: Vec<(String, String, String)> = (0..NSHELF)
+        .flat_map(|k| p.shelf(k).iter())
+        .filter_map(|m| {
+            let guid = p
+                .srcs
+                .iter()
+                .flat_map(|s| s.matches.iter())
+                .find(|(_, rk)| *rk == m.rk)?;
+            // the shelf item's OWN art path travels with it, so a seeded run exercises the real
+            // `/photo/:/transcode` fetch rather than only the empty plate — the half of the poster
+            // path that shipped broken and that a placeholder cannot tell you is fixed
+            Some((m.title.clone(), guid.0.clone(), m.thumb.clone()))
+        })
+        .collect();
+    // Seeded once, and re-seeded when the page's holdings change — the join is the second half and
+    // it has nothing to work with until a source lands. A COUNT rather than a "have I seeded" flag,
+    // because the real `/media` landing fills `Src::matches` itself and a flag keyed on that cannot
+    // tell the source's own index apart from a seeded one.
+    static mut HELD: usize = usize::MAX;
+    if p.credited && unsafe { HELD } == held.len() {
+        return false;
+    }
+    unsafe { HELD = held.len() };
+    let n: usize = arg.trim().parse().unwrap_or(9);
+    let row = |i: usize, dept: &str| {
+        let (title, id, thumb) = match held.get(i) {
+            Some((t, g, th)) => (t.clone(), g.clone(), th.clone()),
+            // …and everything past them is the majority this screen exists to show: a career you
+            // do not hold. The ID is deliberately one no server can answer for.
+            None => (
+                format!("{dept} credit {i}"),
+                format!("dev-{dept}-{i}"),
+                String::new(),
+            ),
+        };
+        crate::plex::discover::Credit {
+            order: i as i64,
+            role: format!("Character {i}"),
+            item: Some(crate::plex::discover::CreditItem {
+                kind: "movie".into(),
+                title,
+                // one row per department is deliberately UNDATED, which is the sort's own edge
+                year: if i == 2 { 0 } else { 2024 - i as i64 },
+                rating_key: id,
+                thumb,
+                ..Default::default()
+            }),
+        }
+    };
+    // **Seven groups, not three, and the extra four are all ABOVE the [`FOLD`]** — so the strip
+    // really overflows the content column and its horizontal scroll, its reveal rule and the left
+    // EDGE FADE `filmography::draw` lays over the cut are all reachable from a boot. Three pills fit
+    // in 1064px with room to spare, which meant the one state a capture could never show was the
+    // one an owner reports: a capsule sliced mid-glyph at the column edge. `Writer` stays under the
+    // fold, because the OTHER thing only a seed can show is the folding itself.
+    p.credits = [
+        ("Actor", n),
+        ("Appeared", n / 2 + 1),
+        ("Director", FOLD + 2),
+        ("Producer", FOLD + 1),
+        ("Composer", FOLD + 3),
+        ("Cinematographer", FOLD + 1),
+        ("Writer", 2),
+    ]
+        .iter()
+        .map(|(title, rows)| crate::plex::discover::CreditGroup {
+            kind: title.to_lowercase(),
+            title: title.to_string(),
+            size: *rows as i64,
+            credits: (0..*rows).map(|i| row(i, title)).collect(),
+        })
+        .collect();
+    p.credited = true;
+    crate::log(&format!(
+        "person: DEV credits seeded ({} groups, {} held) — /tmp/plxnative-personcredits",
+        p.credits.len(),
+        held.len()
+    ));
+    true
 }
 
 /// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
@@ -863,8 +1057,14 @@ fn apply(i: usize, what: Landing) -> bool {
         Landing::Resolve(None)
         | Landing::Media(None)
         | Landing::Profile(None)
+        | Landing::Credits(None)
         | Landing::Roles(None) => {
             unsafe { RETRY_CD[i] = RETRY_FRAMES };
+            // The retry still stands; what ends here is the PLACEHOLDER's licence to keep sweeping.
+            // See [`facts_pending`] — a wait nothing can end is not a wait, it is a repaint loop.
+            if matches!(what, Landing::Profile(None)) {
+                p.profile_tried = true;
+            }
             false
         }
         Landing::Profile(Some(prof)) => {
@@ -877,6 +1077,7 @@ fn apply(i: usize, what: Landing) -> bool {
             p.died = prof.died_at;
             p.birthplace = prof.birth_place;
             p.profiled = true;
+            p.profile_tried = true;
             crate::log(&format!(
                 "person: profile guid={} roles='{}' born={} died={} bio={}B",
                 p.guid,
@@ -913,29 +1114,44 @@ fn apply(i: usize, what: Landing) -> bool {
             resettle(p);
             true
         }
-        Landing::Media(Some(shelves)) => {
+        Landing::Media(Some(MediaLanding { shelves, matches })) => {
             let Some((sid, si)) = src_of(p, i) else {
                 return false;
             };
             {
                 let s = &mut p.srcs[si];
                 crate::log(&format!(
-                    "person: source {} '{}' movies={}/{} shows={}/{}",
+                    "person: source {} '{}' movies={}/{} shows={}/{} joinable={}",
                     sid.raw(),
                     p.name,
                     shelves[0].items.len(),
                     shelves[0].total,
                     shelves[1].items.len(),
-                    shelves[1].total
+                    shelves[1].total,
+                    matches.len()
                 ));
                 // Assigning the whole array is what carries the invariant: the captions described
                 // the OLD items, so they go WITH them (a `Shelf` lands with `roles` empty) and
-                // `roled` re-asks. As three loose fields this was three things to remember.
+                // `roled` re-asks. As three loose fields this was three things to remember. The
+                // guid index is the same rule one field further: it describes THESE rows, so a
+                // response that replaces them replaces it.
                 s.shelves = shelves;
+                s.matches = matches;
                 s.landed = true;
                 s.roled = false;
             }
             resettle(p);
+            true
+        }
+        Landing::Credits(Some(groups)) => {
+            crate::log(&format!(
+                "person: credits guid={} groups={} rows={}",
+                p.guid,
+                groups.len(),
+                groups.iter().map(|g| g.credits.len()).sum::<usize>()
+            ));
+            p.credits = groups;
+            p.credited = true;
             true
         }
         Landing::Roles(Some(RolesLanding { keys, pairs })) => {
@@ -992,23 +1208,32 @@ pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> String 
             } else {
                 &c.title
             };
-            let pretty: String = raw
-                .split(['-', '_', ' '])
-                .filter(|w| !w.is_empty())
-                .map(|w| {
-                    let mut ch = w.chars();
-                    match ch.next() {
-                        Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
-                        None => String::new(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
+            let pretty = pretty_department(raw);
             (!pretty.is_empty()).then_some(pretty)
         })
         .take(MAX_ROLES)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A department name as the provider hands it over → the display form.
+///
+/// Extracted from [`roles_line`] because the FILMOGRAPHY's tabs have the identical problem on the
+/// identical data: `CreditGroup::title` repeats the raw `type` slug (`"costume-makeup"`) wherever
+/// the provider has no display name, exactly as `CreditType::title` does. Two screens un-slugging
+/// the same wire field two ways is how "Costume Makeup" and "costume-makeup" end up on one page.
+pub(crate) fn pretty_department(raw: &str) -> String {
+    raw.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut ch = w.chars();
+            match ch.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + ch.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What fetch `i` should be addressed to right now, or `None` when it wants nothing — the ONE place
@@ -1027,6 +1252,9 @@ pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> String 
 fn address(i: usize, p: &Person) -> Option<Vec<String>> {
     if i == F_PROFILE {
         return (!p.profiled && !p.guid.is_empty()).then(|| vec![p.guid.clone()]);
+    }
+    if i == F_CREDITS {
+        return (!p.credited && !p.guid.is_empty()).then(|| vec![p.guid.clone()]);
     }
     let (sid, kind) = un_fx(i)?;
     let s = p.srcs.iter().find(|s| s.sid == sid)?;
@@ -1056,13 +1284,18 @@ fn maybe_spawn(i: usize) {
     // the person's global id rides along: the resolve joins its search answer on it, and the roles
     // worker matches a credit row by either id space
     let guid = p.guid.clone();
-    if i == F_PROFILE {
+    if i == F_PROFILE || i == F_CREDITS {
+        let profile = i == F_PROFILE;
         FETCH[i].claim();
         let spawned = crate::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
-            // as an empty biography
-            let prof = catch_unwind(|| fetch_profile(&arg[0])).unwrap_or(None);
-            land(i, gen, Landing::Profile(prof));
+            // as an empty biography / an empty filmography
+            let what = if profile {
+                Landing::Profile(catch_unwind(|| fetch_profile(&arg[0])).unwrap_or(None))
+            } else {
+                Landing::Credits(catch_unwind(|| fetch_credits(&arg[0])).unwrap_or(None))
+            };
+            land(i, gen, what);
         });
         if !spawned {
             FETCH[i].release();
@@ -1109,7 +1342,10 @@ fn maybe_spawn(i: usize) {
             K_MEDIA => Landing::Media(
                 catch_unwind(|| {
                     let mc = c.person_media(&arg[0])?;
-                    Some(split_by_type(&mc, sid))
+                    Some(MediaLanding {
+                        shelves: split_by_type(&mc, sid),
+                        matches: guid_index(&mc),
+                    })
                 })
                 .unwrap_or(None),
             ),
@@ -1147,6 +1383,21 @@ fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
     let s = crate::plex::session::load();
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_profile(guid)
+}
+
+/// WORKER THREAD: the blocking plex.tv filmography request. [`fetch_profile`]'s twin in every
+/// respect — same identity, same session read, same host — so the two share a spawn arm.
+#[cfg(not(test))]
+fn fetch_credits(guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>> {
+    let s = crate::plex::session::load();
+    let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
+    crate::plex::account::AccountClient::new(&s.client_id, tok).person_credits(guid)
+}
+
+/// HOST SUITE: [`fetch_profile`]'s cut, for its reason — this reaches libcurl.
+#[cfg(test)]
+fn fetch_credits(_guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>> {
+    None
 }
 
 /// HOST SUITE: this is the crate's TLS seam, and the dev Mac has no libcurl to satisfy it — a test
@@ -1214,22 +1465,262 @@ pub(crate) fn split_by_type(mc: &crate::plex::MediaContainer, sid: ServerId) -> 
     out
 }
 
+/// **The availability index of one `/media` response** — `(guid, ratingKey)` for every `movie` /
+/// `show` row it carried, UNCAPPED.
+///
+/// Separate from [`split_by_type`] and not derived from its output, which is the whole point: that
+/// function caps at [`SHELF_MAX`] because a `CardRow` owns a fixed number of springs, and the
+/// Filmography route's question — "does anybody hold this credit" — has nothing to do with how many
+/// posters fit on a strip. Rows the shelves dropped are exactly the ones a prolific actor's list is
+/// made of.
+///
+/// A row with no `guid` contributes nothing: the join key is the metadata provider's global id, and
+/// a server old enough to send none simply cannot be joined. That is an ABSENCE of evidence — the
+/// route draws such a credit at full strength with no annotation — never a claim that nobody has it.
+pub(crate) fn guid_index(mc: &crate::plex::MediaContainer) -> Vec<(String, String)> {
+    mc.metadata
+        .iter()
+        .filter(|it| matches!(it.kind.as_str(), "movie" | "show"))
+        .filter(|it| !it.guid.is_empty() && !it.rating_key.is_empty())
+        .map(|it| (it.guid.clone(), it.rating_key.clone()))
+        .collect()
+}
+
+// ---- the filmography, as the route draws it ----------------------------------------------------
+
+/// **A department with fewer credits than this does not earn a tab.** `other` is already one of the
+/// provider's own groups, so a thin department JOINS it rather than getting a pill nobody can read
+/// a total off — and the fold is by COUNT, so the strip's length does not track a person's
+/// obscurity. Peter Sallis's `actor`(222) / `appeared`(21) / `other`(3) folds to two tabs plus
+/// Other; a jobbing character actor with six one-credit departments folds to one tab plus Other,
+/// rather than to a strip of eight pills each promising a single row.
+const FOLD: usize = 5;
+
+/// One row of the Filmography route: a credit, and whether anybody you can reach holds it.
+pub(crate) struct Credit {
+    pub(crate) title: String,
+    /// **The poster, as an ABSOLUTE URL on somebody else's host** — see
+    /// [`crate::plex::discover::CreditItem::thumb`]. Carried through to the row rather than dropped
+    /// because `posters` proxies exactly this through the current server's photo transcoder; the
+    /// first version of the screen threw it away on an unverified claim that it could not.
+    pub(crate) thumb: String,
+    /// the character or job, `""` where the provider named none
+    pub(crate) role: String,
+    /// `0` = the wire carried no year. See [`crate::plex::discover::CreditItem::year`] for why that
+    /// is not "upcoming".
+    pub(crate) year: i32,
+    /// **The library match**: which server holds this credit and under which `ratingKey`, or `None`
+    /// for a credit nothing in the registry answered for. `None` is UNKNOWN rather than ABSENT — a
+    /// source may still be fetching, and one that sent no guids cannot be joined at all — which is
+    /// why the route annotates a match and does nothing whatever to a row without one.
+    pub(crate) local: Option<(ServerId, String)>,
+}
+
+/// One TAB of the Filmography route.
+pub(crate) struct Department {
+    /// the display name, un-slugged by [`pretty_department`]
+    pub(crate) title: String,
+    /// the department's OWN count — what the pill states. Not `rows.len()` where the provider gave
+    /// a size and sent fewer rows, and never [`crate::plex::discover::CreditType`]'s number.
+    pub(crate) total: usize,
+    pub(crate) rows: Vec<Credit>,
+}
+
+/// **The filmography as the route draws it** — folded into tabs, sorted newest-first, and joined
+/// against every source's library.
+///
+/// Pure over the open person, and derived on demand rather than stored, because two of its three
+/// steps depend on data that keeps moving: the availability join is a function of the sources, and
+/// a share that lands five seconds in must turn "no server behind this" into "Dad's Plex" without
+/// anybody remembering to invalidate a cache. The screen rebuilds it on the frames
+/// [`pump`] reports a change, which is the same discipline `ui::person`'s header flow uses.
+///
+/// **Newest first, and an undated credit goes to the BOTTOM with no year.** The alternative —
+/// reading year 0 as "upcoming" and pinning it to the top — makes a title whose metadata is merely
+/// missing claim to be unreleased, and the wire cannot tell the two apart until the model carries a
+/// release DATE beside the year.
+pub(crate) fn filmography(p: &Person) -> Vec<Department> {
+    let dept = |g: &crate::plex::discover::CreditGroup| {
+        let raw = if g.title.is_empty() {
+            &g.kind
+        } else {
+            &g.title
+        };
+        let rows: Vec<Credit> = g
+            .credits
+            .iter()
+            .filter_map(|c| {
+                let it = c.item.as_ref()?;
+                (!it.title.is_empty()).then(|| Credit {
+                    title: it.title.clone(),
+                    role: c.role.clone(),
+                    year: it.year.clamp(0, i32::MAX as i64) as i32,
+                    thumb: it.thumb.clone(),
+                    local: match_local(p, &it.rating_key),
+                })
+            })
+            .collect();
+        Department {
+            title: pretty_department(raw),
+            total: (g.size.max(0) as usize).max(rows.len()),
+            rows,
+        }
+    };
+    // "Other" is the provider's own group name, so a group already called that folds with the thin
+    // ones rather than sitting beside a second Other.
+    let is_thin = |g: &crate::plex::discover::CreditGroup, d: &Department| {
+        d.total < FOLD || g.kind.eq_ignore_ascii_case("other")
+    };
+    let mut kept: Vec<Department> = Vec::new();
+    let mut other = Department {
+        title: "Other".to_string(),
+        total: 0,
+        rows: Vec::new(),
+    };
+    for g in &p.credits {
+        let d = dept(g);
+        if d.rows.is_empty() && d.total == 0 {
+            continue;
+        }
+        if is_thin(g, &d) {
+            other.total += d.total;
+            other.rows.extend(d.rows);
+        } else {
+            kept.push(d);
+        }
+    }
+    if other.total > 0 || !other.rows.is_empty() {
+        kept.push(other);
+    }
+    for d in kept.iter_mut() {
+        // A STABLE sort, so two credits from the same year keep the provider's own billing order
+        // rather than an arbitrary one — and `0` sorts last by construction rather than by a second
+        // pass, since it is the only value below every real year.
+        d.rows.sort_by_key(|r| match r.year {
+            0 => i32::MAX,
+            y => -y,
+        });
+    }
+    kept
+}
+
+/// **How many credits the filmography holds, without building it.**
+///
+/// The sum of the department counts — what the Filmography entry row states and what gates the row
+/// existing at all. Separate from [`filmography`] because the entry row is drawn every frame and
+/// that function folds, sorts and joins a few hundred rows; this walks a handful of group headers.
+///
+/// It is the credits response's OWN count, never [`crate::plex::discover::CreditType`]'s — see that
+/// type's doc for the two numbers and why spending the wrong one is a promise the list breaks.
+pub(crate) fn filmography_total(p: &Person) -> usize {
+    p.credits
+        .iter()
+        .map(|g| (g.size.max(0) as usize).max(g.credits.len()))
+        .sum()
+}
+
+/// Which registered server holds `guid`, and under which key — the availability join, over every
+/// source's [`Src::matches`] index in registry order.
+///
+/// The FIRST match wins, and registry order is what makes that deterministic: with a film on two
+/// servers the route names the one nearer the front of the roster, which is the same machine every
+/// other surface in the app would open it on. An empty guid never matches (see [`guid_index`]).
+/// **The last path segment of a Plex guid — the catalog ID, which is the ONLY form both sides of
+/// the join agree on.** PMS states an item's identity as `plex://movie/5d7768295af944001f1f7477`;
+/// the Discover credits endpoint states the SAME identity as a bare `ratingKey` of
+/// `5d7768295af944001f1f7477`, and carries no `guid` field at all (measured 2026-09-06 against a
+/// real response — `docs/pms-api.md`). Comparing the two whole strings therefore never matches,
+/// which is exactly the bug this exists to end: the page reported `joinable=5`, drew 544 credit
+/// rows, and marked none of them.
+///
+/// Taking the TAIL rather than stripping a `plex://<type>/` prefix is deliberate — the type
+/// segment differs between the two sides for the same title (a show credit is `plex://show/…`
+/// while the local row may be the movie), and an ID is the same ID whichever side named it.
+fn guid_tail(s: &str) -> &str {
+    match s.rfind('/') {
+        Some(i) => &s[i + 1..],
+        None => s,
+    }
+}
+
+/// Where a credit is held locally, or `None` for the majority of a career that is not.
+///
+/// Takes the Discover `ratingKey` (a bare catalog ID) and matches it against the tail of each
+/// source's own guid index — see [`guid_tail`] for why neither side's string is compared whole.
+/// First match wins in registry order, which is the same "yours before a friend's" precedence
+/// `alt_sources` states explicitly.
+fn match_local(p: &Person, id: &str) -> Option<(ServerId, String)> {
+    let id = guid_tail(id);
+    if id.is_empty() {
+        return None;
+    }
+    p.srcs.iter().find_map(|s| {
+        s.matches
+            .iter()
+            .find(|(g, _)| guid_tail(g) == id)
+            .map(|(_, rk)| (s.sid, rk.clone()))
+    })
+}
+
+/// TEST ONLY: publish a credits answer onto the open person exactly as a successful landing would.
+///
+/// `(title, count)` per department, with that many rows apiece — the shape the folding, the sort
+/// and the entry row's count all read. The rows carry no guid, so nothing joins: the availability
+/// column is the one thing this helper cannot stand in for, and a test that wants it seeds
+/// `Src::matches` instead.
+#[cfg(test)]
+pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
+    use crate::plex::discover::{Credit, CreditGroup, CreditItem};
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+        return;
+    };
+    p.credits = groups
+        .iter()
+        .map(|(title, n)| CreditGroup {
+            kind: title.to_lowercase(),
+            title: title.to_string(),
+            size: *n as i64,
+            credits: (0..*n)
+                .map(|i| Credit {
+                    order: i as i64,
+                    role: format!("Part {i}"),
+                    item: Some(CreditItem {
+                        kind: "movie".into(),
+                        title: format!("{title} {i}"),
+                        year: 2000 + i as i64,
+                        ..Default::default()
+                    }),
+                })
+                .collect(),
+        })
+        .collect();
+    p.credited = true;
+}
+
 /// TEST ONLY: publish shelves onto the open person exactly as a successful landing would, so the
 /// screen's focus/flow tests need neither a server nor the mailbox. Lands them on the FIRST source
 /// (minting one for the open person's own server when the registry is empty, which is the state
 /// `ui::person`'s tests open in) and then re-derives the merge, so what the screen reads came
 /// through the same projection a real landing does.
+///
+/// **Also settles `credited`**, for the same reason: a real landing that populates the shelves
+/// answers the filmography question in the same event, and `ui::person::clamp_focus` holds the
+/// page's default focus on the entry row exactly until `credited` says so — a caller that wants a
+/// PENDING person (focus still parked, nothing walkable yet) should not call this at all rather
+/// than call it and expect `credited` to stay false.
 #[cfg(test)]
 pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
     let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
         return;
     };
+    p.credited = true;
     if p.srcs.is_empty() {
         p.srcs.push(Src {
             sid: p.sid,
             local: None,
             resolved: true,
             shelves: Default::default(),
+            matches: Vec::new(),
             landed: false,
             roled: false,
         });
@@ -1311,13 +1802,17 @@ mod tests {
     }
 
     /// A [`Landing::Media`] payload the way a worker builds one — totals = lens, i.e. an uncapped
-    /// response.
+    /// response, and no guid index (these rows are minted, not parsed, so they carry no guids to
+    /// join on).
     fn media(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) -> Landing {
-        Landing::Media(Some([movies, shows].map(|items| Shelf {
-            total: items.len(),
-            items,
-            roles: Vec::new(),
-        })))
+        Landing::Media(Some(MediaLanding {
+            shelves: [movies, shows].map(|items| Shelf {
+                total: items.len(),
+                items,
+                roles: Vec::new(),
+            }),
+            matches: Vec::new(),
+        }))
     }
 
     fn row(kind: &str, rk: &str, title: &str) -> Metadata {
@@ -1345,6 +1840,7 @@ mod tests {
             local: Some("1".into()),
             resolved: true,
             shelves: Default::default(),
+            matches: Vec::new(),
             landed: true,
             roled: false,
         };
@@ -2276,4 +2772,27 @@ mod tests {
             ""
         );
     }
+    /// **A wait nothing can end is not a wait.** `facts_pending` drives the header's placeholder
+    /// sweep, and every one of those bars calls `idle::invalidate()` — so a pending state that can
+    /// never resolve defeats the whole-frame present gate and repaints the page at 60fps forever.
+    /// That is the ordinary case whenever plex.tv is unreachable: an offline or LAN-only set, a
+    /// provider outage, or any headless boot, where the injected token is a SERVER token the
+    /// discover provider answers 401.
+    #[test]
+    fn the_header_stops_sweeping_once_the_profile_has_actually_been_asked() {
+        let _serial = crate::testlock::serial();
+        open(ServerId::from_raw(0), "1", "guid", "Somebody", "");
+        let p = unsafe { (*addr_of_mut!(CURRENT)).as_mut().expect("open mounts a person") };
+        assert!(facts_pending(p), "before any attempt, the band is genuinely waiting");
+        p.profile_tried = true;
+        assert!(
+            !facts_pending(p),
+            "one failed attempt ends the wait: the band degrades to the name it already has"
+        );
+        // …and a later success still fills it in — `profiled` is what draws the content.
+        p.profiled = true;
+        assert!(!facts_pending(p));
+        supersede();
+    }
+
 }

@@ -146,7 +146,10 @@ pub const TEXT_SEPARATOR: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 /// as rasterized textures, so tweening a point size would rasterize a fresh run every frame and
 /// churn that cache. A title that has to change size does it as two `Label` draws whose alphas run
 /// opposite on one 0..1 progress: `detail.rs`'s hero → compact title (HERO → TITLE, on the scroll)
-/// and `person.rs`'s band condense (the same pair, on focus) are both spelled that way.
+/// is how that is spelled. **`person.rs`'s band condense was the second worked example and is
+/// gone** — that band stopped condensing (its module doc says why), so its name is one run at
+/// `size::DISPLAY` now and a reader sent there for the pattern would conclude the rule is
+/// unimplemented.
 pub mod size {
     use std::os::raw::c_int;
     /// Full-bleed hero title — the home + detail hero headline.
@@ -652,6 +655,16 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 /// everywhere.
 pub const SCRIM_TEXT_A: f32 = 0.72;
 
+/// **White overlay at alpha `a`** — the ramp every overlay on this palette rides.
+///
+/// The palette's rule is that an overlay is a WEIGHT, never a new hue (`with_a(WHITE, a)`), and
+/// `WHITE` is a private primitive; this is that expression for callers outside this module which
+/// genuinely need a weight rather than a named role. Reach for a named token first — a shade with
+/// a JOB belongs in the role layer above, not at a call site.
+pub const fn white(a: f32) -> [f32; 4] {
+    with_a(WHITE, a)
+}
+
 /// Near-black scrim at alpha `a` — hero/scroll dimming.
 pub const fn scrim(a: f32) -> [f32; 4] {
     [SCRIM_INK[0], SCRIM_INK[1], SCRIM_INK[2], a]
@@ -722,7 +735,7 @@ pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 // the band itself — at twice the track's opacity it read as a rendering artifact rather than as
 // information. See the "the rail carries NO marks" note in ui/player_hud.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
-/// keying it (the person page's header state, `Person Screen v2.dc.html`'s
+/// keying it (the person page's header state, `Person Screen.dc.html`'s
 /// `rgba(233,230,224,.10)`). The palette's one warm stop, and the only survivor of the warm "Snow"
 /// [`ACCENT`] used to be: a page GROUND, never a control. Its own role rather than a borrowed one,
 /// so retuning a focus colour can never silently restyle a page background.

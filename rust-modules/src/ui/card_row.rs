@@ -827,7 +827,7 @@ fn cw_caption(m: &crate::pms::PmsMovie) -> Option<std::ffi::CString> {
 // [`TileLabel::height`] hands back to the screens that must reserve room for it.
 /// poster bottom → the title block's first line.
 const UNDER_DROP: f32 = 30.0;
-/// one title line's pitch (`Person Screen v2.dc.html`'s `line-height: 30px`).
+/// one title line's pitch (`Person Screen.dc.html`'s `line-height: 30px`).
 const UNDER_LINE_H: f32 = 30.0;
 /// title block → caption (the mock's `margin-top: 4px`).
 const UNDER_LINE_GAP: f32 = 4.0;

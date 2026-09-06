@@ -3790,18 +3790,26 @@ fn open_library_card(cur: Route, nav: &mut Option<NavReq>) {
     nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
 }
 
-/// Open the focused person-page shelf card's detail page — the ONE person-card activation
+/// Open whatever the person page's focused thing points AT — the ONE person-card activation
 /// (OK-press commit AND pointer click), the twin of [`open_library_card`]. The person page
 /// is left standing behind it on the trail, so BACK comes straight back to the same shelf
 /// position.
+///
+/// **It asks `focused_target`, not `focused_item`, and the difference is the Filmography
+/// route.** A credit row there is a plex.tv item that MAY be joined to a local copy, so the
+/// only thing it can answer is a `(server, ratingKey)` pair — there is no `PmsMovie` behind
+/// it to hand back, and the one that used to be synthesised for this call site was a
+/// skeleton that every other reader of `focused_item` then believed (see that function's
+/// doc). `focused_target` is the narrow question this arm actually asks, so both surfaces
+/// answer it honestly and no caller is handed a stand-in.
 fn open_person_card(cur: Route, nav: &mut Option<NavReq>) {
-    let Some(mm) = crate::ui::person::focused_item() else {
+    let Some((sid, rk)) = crate::ui::person::focused_target() else {
         return;
     };
-    if mm.rk.is_empty() {
+    if rk.is_empty() {
         return;
     }
-    nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
+    nav_open(cur, to_detail(sid, &rk), None, nav);
 }
 
 /// Enter `rk`'s detail page with a HARD CUT — no transition. The one caller left is the
@@ -6259,13 +6267,16 @@ unsafe fn key_ok(
             crate::ui::press::begin(SDL_GetTicks());
             *ok_armed = true;
         } else {
-            // …and the HEADER, which is a focus row carrying no card: OK there
+            // …and the page's two CARDLESS focus rows: the HEADER, where OK
             // opens the bio alert when there is more biography than the band
-            // shows. No press is armed, because a tvOS dip needs something to
-            // dip — nothing in the band draws `press::scale()` — and waiting
-            // for a spring-back nobody can see would only add latency.
-            // `header_ok` owns both tests (are we on the header, is the bio
-            // actually truncated) and answers false when it did nothing.
+            // shows, and the FILMOGRAPHY ENTRY at the end of the shelves, where
+            // it replaces the page with that route. No press is armed for
+            // either, because a tvOS dip needs something to dip — neither the
+            // band nor a row spanning the frame draws `press::scale()` — and
+            // waiting for a spring-back nobody can see would only add latency.
+            // `person::header_ok` owns every test (which row is it, is the bio
+            // actually truncated, is there a filmography at all) and answers
+            // false when it did nothing.
             crate::ui::person::header_ok();
         }
     } else {
@@ -9024,6 +9035,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         if crate::dev::flag("detailok") {
                             crate::ui::detail::on_ok(); // a cast row raises a person request; the
                                                         // per-frame drain below routes on it, like every other OK path
+                            // dev: /tmp/plxnative-filmography opens the person page's Filmography
+                            // route straight away — the design's `startOn: filmography`. It is
+                            // armed HERE, on the same frame the cast OK mounted the person store,
+                            // because that route is an overlay the person SCREEN owns rather than
+                            // a `Route` app.rs could navigate to. Pair it with
+                            // `/tmp/plxnative-personcredits`, without which the list is empty on
+                            // any automated boot (that trigger's doc says why).
+                            if crate::dev::flag("filmography") {
+                                crate::ui::filmography::open();
+                            }
                         }
                         // dev: /tmp/plxnative-detailplay activates the focused control (headless play test)
                         if crate::dev::flag("detailplay") && crate::ui::detail::on_ok() {
@@ -9464,6 +9485,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     Route::Library => crate::ui::library::move_focus(held_key.sym),
                     Route::Search => crate::ui::search::move_focus(held_key.sym),
                     Route::Detail => crate::ui::detail::move_focus(held_key.sym as c_int),
+                    // **The person page, which was the one focus surface missing from this table**
+                    // — so holding a direction there moved nothing, on the page itself and on the
+                    // Filmography route over it. Reported 2026-09-06 against the filmography, where
+                    // a career is hundreds of rows and stepping them one press at a time is not a
+                    // list you can read; but the shelves underneath had the same hole, and adding
+                    // the route alone would have left the page it stands on still unable to repeat.
+                    //
+                    // `person::move_focus` already forwards to whichever overlay is up, which is
+                    // why ONE arm covers both and why nothing here needs to know the route exists.
+                    Route::Person => crate::ui::person::move_focus(held_key.sym),
                     Route::Player {
                         overlay: Overlay::Menu,
                     } => {

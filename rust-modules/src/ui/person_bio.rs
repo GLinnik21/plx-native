@@ -19,13 +19,21 @@
 //! `person::draw` before the panel, not from [`draw`] — the rule `Popover::scrim` states for a
 //! refreshing backdrop, kept here because it is also what makes the *contrast* argument work. The
 //! design's host frame carries a standing comment that nothing bright may sit inside the panel's own
-//! rectangle: a 72px name read through a 72% frost lifts the ground under the fine print past its
+//! rectangle: a large name read through a 72% frost lifts the ground under the fine print past its
 //! graded contrast. On the real page that name is not hypothetical — `person.rs` draws the person's
-//! own name at `size::HERO` at x≈474, y≈96, which is *directly behind this panel's top-left corner*,
-//! where the eyebrow and the identity line sit. The mock could stage that away; we cannot, so the
-//! page is dimmed at [`SCRIM_A`] — [`theme::SCRIM_TEXT_A`], the measured text-legibility floor —
-//! before the frost ever samples it. The anchored chip menus use 0.45 because nothing of theirs is
-//! fine print over a headline; this panel's whole lower half is.
+//! own name at `size::DISPLAY` (48) at x≈474, y≈96, which is *directly behind this panel's top-left
+//! corner*, where the eyebrow and the identity line sit — and more squarely so than it used to,
+//! since that band top-aligns on the name's cap top now, which makes y≈96 exact rather than
+//! approximate. The mock could stage that away; we cannot, so the page is dimmed at [`SCRIM_A`] —
+//! [`theme::SCRIM_TEXT_A`], the measured text-legibility floor — before the frost ever samples it.
+//! The anchored chip menus use 0.45 because nothing of theirs is fine print over a headline; this
+//! panel's whole lower half is.
+//!
+//! **The lift that value was chosen against was measured while that name was `size::HERO` (72)**,
+//! and it has not been re-taken since the band stopped condensing and the name dropped to DISPLAY.
+//! So the 23-level lift quoted on [`prepare_present`] below is an upper bound on today's page
+//! rather than a reading of it: do not re-tune the scrim or the glass policy off it without
+//! measuring again.
 //!
 //! **2. Paragraphs are separate views, because `TextView` cannot hold them.** `TextView::wrap`
 //! splits on `char::is_whitespace` and reflows the lot, so a `\n\n` in a plex.tv biography is
@@ -150,7 +158,8 @@ const META_SEP_PAD: f32 = 10.0;
 /// exact failure the design's contrast note describes. Measured in the simulator before this line
 /// went in: the panel's ground ran a mean luminance of **56.9 under the identity line** against
 /// **34.0 under the prose** four inches below it — a 23-level lift, and it is the blurred ghost of
-/// the page's own `size::HERO` name sitting behind the panel's fine print.
+/// the page's own name sitting behind the panel's fine print. That reading was taken while the name
+/// was `size::HERO`; it is `size::DISPLAY` today, so the 23 is a bound (module doc).
 ///
 /// A refreshing policy re-sources the backdrop on its own cadence, so once the scrim has ramped in
 /// the frost is sampling the page the user can actually see. It is also what makes the

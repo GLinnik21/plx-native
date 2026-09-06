@@ -129,6 +129,19 @@ pub(crate) struct RouteGround {
     latched: bool,
 }
 
+/// **The narrative title's line pitch.** `--size-hero`/**1.05**, which is the design system's own
+/// number (`components/panels/RouteScreen.jsx`: `font: var(--font-weight-bold) var(--size-hero)/1.05`)
+/// and NOT [`TextView`]'s derived default of `sz * 1.32`.
+///
+/// The default is a READING pitch — it is right for the copy under this title and for a synopsis,
+/// and wrong for one 72px line of display type, where 1.32 puts 95px of box under a 52px cap. On a
+/// one-line title every pixel of that surplus becomes air between the title and the copy, because
+/// [`RouteLayout::draw_narrative`] stacks the copy at `title_h + space::MD`: the family's stated
+/// 24px gap was arriving as ~43 (owner report on the Filmography route, 2026-09-06, which is simply
+/// where it was noticed — every route in this family drew it). On a WRAPPED title it is also the
+/// pitch between the two lines, and the same argument applies there: display type sets tight.
+const TITLE_LEADING: f32 = theme::size::HERO as f32 * 1.05;
+
 impl RouteGround {
     pub(crate) const fn new() -> Self {
         Self {
@@ -220,6 +233,17 @@ impl RouteGround {
             self.latch_target(theme::ROUTE_GROUND_FALLBACK);
         }
         self.wash.draw(p, Rect::FULL);
+    }
+
+    /// **The ground's own colour at one screen point.** Every `draw_*` above paints this wash over
+    /// [`Rect::FULL`], so that is the rect the sample is taken against.
+    ///
+    /// It exists for an EDGE FADE. A route that scissor-clips a scrolling strip cuts it at a hard
+    /// line; laying this colour over the cut at a falling alpha dissolves it instead. The constant
+    /// a caller would otherwise guess cannot work here — the ground is keyed to the host page's
+    /// artwork, so it is a different colour on every person's page.
+    pub(crate) fn sample(&self, x: f32, y: f32) -> [f32; 3] {
+        self.wash.sample(Rect::FULL, x, y)
     }
 
     pub(crate) fn palette(&self) -> ControlPalette {
@@ -647,9 +671,27 @@ pub(crate) struct RouteLayout {
 
 impl RouteLayout {
     pub(crate) fn screen() -> Self {
+        Self::screen_with_copy_w(NARRATIVE_W)
+    }
+
+    /// The same two columns with the narrative one at a **stated measure** — `--route-copy-w`, the
+    /// one number in this layout the design system lets a route retune.
+    ///
+    /// The default is the Home hero's editorial measure (660), which is right for a screen whose
+    /// COPY is the screen: Settings' narrative column carries the sentence that explains the list
+    /// beside it. It is wrong for a screen whose LIST is the screen. The Filmography route states
+    /// 480 and takes the 180 back for its content column (`Person Screen.dc.html`, 2026-09-06:
+    /// "titles were truncating while half the frame held a static heading") — a caption does not
+    /// need a hero's measure.
+    ///
+    /// **The REGION GAP does not move with it.** `COLUMN_GAP` is what makes the two columns read as
+    /// related rather than as two screens side by side, and it is the one number here that belongs
+    /// to every route — so a retune of the copy column slides the content column and resizes it,
+    /// and changes nothing else.
+    pub(crate) fn screen_with_copy_w(copy_w: f32) -> Self {
         let top = SAFE.y + TOP_INSET;
         let bottom = SAFE.y + SAFE.h;
-        let narrative = Rect::new(SAFE.x, top, NARRATIVE_W, bottom - top);
+        let narrative = Rect::new(SAFE.x, top, copy_w, bottom - top);
         let content_x = narrative.x + narrative.w + COLUMN_GAP;
         let content = Rect::new(content_x, top, SAFE.x + SAFE.w - content_x, bottom - top);
         let action = Rect::new(narrative.x, bottom - ACTION_H, narrative.w, ACTION_H);
@@ -773,6 +815,21 @@ impl RouteLayout {
             .draw(p, Rect::new(x, ty, self.narrative.x + self.narrative.w - x, h));
     }
 
+    /// **The narrative title, as the view [`draw_narrative`] actually draws** — its rung, its
+    /// weight, its wrap and its [`TITLE_LEADING`] line pitch, in one place a host test can call.
+    ///
+    /// It is split out for exactly that reason and the reason is a lesson: the first test for the
+    /// leading correction asserted `TITLE_LEADING == HERO * 1.05` and nothing else, so deleting
+    /// `.leading(TITLE_LEADING)` from the builder below — reverting the whole fix, putting the copy
+    /// 19.4px back down on all eight callers of this function — left it green. A test that grades a
+    /// constant grades the constant. Building the view here lets it grade the thing that is drawn.
+    pub(crate) fn narrative_title(title: &str) -> TextView<'_> {
+        TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
+            .bold()
+            .leading(TITLE_LEADING)
+            .max_lines(2)
+    }
+
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
     /// wrapped height, never after a screen-specific y offset, and the copy stops before the
     /// shared action slot.
@@ -794,9 +851,7 @@ impl RouteLayout {
             self.draw_crumb(p, self.narrative.y, back_to);
         }
 
-        let title = TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
-            .bold()
-            .max_lines(2);
+        let title = Self::narrative_title(title);
         let title_h = title.measure_h(self.narrative.w);
         title.draw(p, Rect::new(self.narrative.x, top, self.narrative.w, title_h));
 
@@ -849,6 +904,40 @@ mod tests {
             l.narrative.y
         );
         assert_eq!(table.y + table.h, l.content.y + l.content.h);
+    }
+
+    /// **The title sets at the design system's pitch, not at `TextView`'s reading default.**
+    ///
+    /// `RouteScreen.jsx` states `var(--size-hero)/1.05`; `TextView` derives `sz * 1.32` when no
+    /// leading is given, which is a pitch for PROSE. The difference is 19.4px, and on a one-line
+    /// title all of it lands between the title and the copy — `draw_narrative` stacks the copy at
+    /// `title_h + space::MD`, so the family's stated 24px gap was drawing as ~43. This is the whole
+    /// of that correction as arithmetic, and it is here rather than in `filmography.rs` because the
+    /// route that noticed it is not the only one that drew it.
+    #[test]
+    fn the_narrative_title_sets_at_the_design_systems_own_line_height() {
+        assert!(
+            (TITLE_LEADING - theme::size::HERO as f32 * 1.05).abs() < 0.01,
+            "the mock's own ratio, not a rounded pixel"
+        );
+        // …and, the half that actually guards the fix: the view `draw_narrative` DRAWS carries it.
+        // Asserting the constant alone is a tautology — deleting `.leading(TITLE_LEADING)` from the
+        // builder reverts the entire correction and leaves that assertion green.
+        assert!(
+            (RouteLayout::narrative_title("Filmography").line_h() - TITLE_LEADING).abs() < 0.01,
+            "the drawn title must set at TITLE_LEADING, not at TextView's derived reading pitch"
+        );
+        // …and the default it replaces, named so the size of the bug stays legible.
+        let reading_default = theme::size::HERO as f32 * 1.32;
+        assert!(
+            reading_default - TITLE_LEADING > 19.0,
+            "the correction has to be worth making: {reading_default} against {TITLE_LEADING}"
+        );
+        // The box still contains the ink it was tightened around: a 72px cap plus its descender.
+        assert!(
+            TITLE_LEADING > theme::size::HERO as f32,
+            "a pitch under the em box would clip a descender between two wrapped title lines"
+        );
     }
 
     #[test]
