@@ -4411,8 +4411,16 @@ impl Capsule {
 /// up from 18). A 60px-tall pill wrapped on 18 read as a tall thin lozenge; at 26 the pill is the
 /// capsule the mock draws, and it matches the Play pill's own label inset beside it.
 pub(crate) const STRIP_PAD: f32 = 26.0;
-/// Air BETWEEN two pills of a strip.
+/// Air BETWEEN two pills of a strip — the tight rung, for a strip of SHORT labels.
 pub(crate) const STRIP_GAP: f32 = theme::space::SM;
+/// …and the wide rung, for a strip whose pills carry PHRASES rather than words.
+///
+/// Owner call from the panel, on the Library's library row and the Filmography route's department
+/// filter together. The padding is a property of the pill and never changes; the air between two
+/// of them is a property of the ROW, and at `SM` two adjacent plates carrying several words each
+/// read as one long run with a seam in it rather than as two controls. The season strip keeps
+/// [`STRIP_GAP`]: "Season 3" is a word and a number, and it separates cleanly at the tight rung.
+pub(crate) const STRIP_GAP_WIDE: f32 = theme::space::MD;
 /// Per-pill horizontal advance past the CONTENT width — derived from the two above rather than
 /// spelled, so a change to the padding cannot silently change the gap (which is what 52 vs 18 used
 /// to hide).
@@ -4446,7 +4454,13 @@ pub(crate) fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f3
 }
 
 /// Lay a strip out from its labels: content x from `x0`, advancing by each pill's measured width
-/// plus [`STRIP_ADVANCE`]. Bold, because every strip in this app draws its pills bold.
+/// plus twice [`STRIP_PAD`] and `gap`. Bold, because every strip in this app draws its pills bold.
+///
+/// **`gap` is a parameter and [`STRIP_GAP`] is its default**, not its only value. The padding is a
+/// property of the PILL and is shared unconditionally; the air between two of them is a property of
+/// the ROW, and the two strips want different amounts of it — a strip of two or three long library
+/// names reads as one run at the season strip's 16px, where a row of short department names does
+/// not. Pass [`STRIP_GAP`] to keep the shared rhythm.
 ///
 /// A label that cannot be a `CString` (an interior NUL — never in practice) is skipped entirely:
 /// not drawn, and no advance, so the gap it would have left cannot desynchronise the span function
@@ -4455,6 +4469,7 @@ pub(crate) fn strip_layout(
     labels: impl Iterator<Item = String>,
     x0: f32,
     sz: c_int,
+    gap: f32,
 ) -> Vec<StripLay> {
     let mut x = x0;
     let mut out = Vec::new();
@@ -4462,7 +4477,7 @@ pub(crate) fn strip_layout(
         let Ok(lc) = CString::new(label) else { continue };
         let w = crate::text::text_width(lc.as_ptr(), sz, 1);
         out.push(StripLay { i, x, w, label: lc });
-        x += w + STRIP_ADVANCE;
+        x += w + 2.0 * STRIP_PAD + gap;
     }
     out
 }

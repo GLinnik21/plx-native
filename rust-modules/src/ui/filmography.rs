@@ -119,7 +119,10 @@ const PV_SETTLE: f32 = 0.180;
 /// the pill's.
 const STRIP_INSET: f32 = 20.0;
 const TAB_PAD: f32 = 26.0;
-const TAB_GAP: f32 = theme::space::SM;
+/// Air between two department pills — the WIDE rung, shared with the Library's library row (owner
+/// call, and see [`widgets::STRIP_GAP_WIDE`] for why the two rows want it and the season strip does
+/// not).
+const TAB_GAP: f32 = widgets::STRIP_GAP_WIDE;
 
 /// The slide-in. Shares `K_SCROLL` with the page's own scroll for the reason the design system
 /// gives for the tab capsules: two things answering one press at two rates read as two objects.

@@ -1819,6 +1819,23 @@ const MAX_LIB_PILLS: usize = 8;
 /// the head block absorbs through [`HEADER_H`].
 const HEAD_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H;
 
+/// **The row's content origin, placed so the first PILL'S EDGE lands on the safe-area margin.**
+///
+/// `strip_layout` takes the content x and [`widgets::strip_pill_rect`] pads [`STRIP_PAD`] either
+/// side of it, so laying out from `MARGIN_X` puts the pill's LEFT EDGE 26px outside the margin —
+/// which is what the owner caught on the panel: the row hung left of everything under it.
+///
+/// Every other block in this document aligns its BOX to the margin — the shelf headings, the
+/// Sort/Filter chips, the grid's first column — so the pill does too. The season strip on the
+/// detail page keeps the other convention deliberately and is not touched: its neighbours are the
+/// hero buttons, and there the LABELS are what line up.
+const LIB_ROW_X0: f32 = MARGIN_X + crate::ui::widgets::STRIP_PAD;
+
+/// Air BETWEEN two library pills — the WIDE rung, shared with the Filmography route's department
+/// filter. See [`crate::ui::widgets::STRIP_GAP_WIDE`] for why those two rows want it and the season
+/// strip does not.
+const LIB_PILL_GAP: f32 = crate::ui::widgets::STRIP_GAP_WIDE;
+
 /// The row's label size — **`BODY`, the size the app's other plated strip sets its pills at** (the
 /// Filmography route's department filter). Named once because [`build_lib_row`] MEASURES with it
 /// and `draw_lib_row` DRAWS with it: a disagreement between those two puts a capsule at rest off a
@@ -1955,7 +1972,7 @@ fn build_lib_row(sel: usize) -> Vec<LibStrs> {
         .collect();
     // Measured through the SHARED layout, so the pill frames, the x-advance and the capsule spans
     // can never disagree — the contract `TabStrip::update` states for its span function.
-    let all = crate::ui::widgets::strip_layout(labels.iter().cloned(), MARGIN_X, sz);
+    let all = crate::ui::widgets::strip_layout(labels.iter().cloned(), LIB_ROW_X0, sz, LIB_PILL_GAP);
     let widths: Vec<f32> = all
         .iter()
         .map(|l| crate::ui::widgets::strip_pill_rect(l, 0.0, HEAD_H).w)
@@ -1964,7 +1981,7 @@ fn build_lib_row(sel: usize) -> Vec<LibStrs> {
     // The `+N` pill is measured for the worst case it can carry — every library but one — so the
     // window solve never has to be re-run against a narrower tail than it reserved for.
     let more_label = format!("+{}", widths.len().saturating_sub(1));
-    let more_w = crate::ui::widgets::strip_layout(std::iter::once(more_label), 0.0, sz)
+    let more_w = crate::ui::widgets::strip_layout(std::iter::once(more_label), 0.0, sz, LIB_PILL_GAP)
         .first()
         .map(|l| crate::ui::widgets::strip_pill_rect(l, 0.0, HEAD_H).w)
         .unwrap_or(0.0);
@@ -1972,7 +1989,7 @@ fn build_lib_row(sel: usize) -> Vec<LibStrs> {
         &widths,
         sel_i,
         lib_band_w(),
-        crate::ui::widgets::STRIP_GAP,
+        LIB_PILL_GAP,
         more_w,
         MAX_LIB_PILLS,
     );
@@ -1990,7 +2007,7 @@ fn build_lib_row(sel: usize) -> Vec<LibStrs> {
         shown.push(format!("+{hidden}"));
         pills.push(LibPill::More);
     }
-    let lays = crate::ui::widgets::strip_layout(shown.into_iter(), MARGIN_X, sz);
+    let lays = crate::ui::widgets::strip_layout(shown.into_iter(), LIB_ROW_X0, sz, LIB_PILL_GAP);
     let mut out: Vec<LibStrs> = pills
         .into_iter()
         .zip(lays)
@@ -2006,6 +2023,8 @@ fn build_lib_row(sel: usize) -> Vec<LibStrs> {
 /// The band the row is laid out in: the document's own width, stopping where the grid does so the
 /// row cannot run under the A–Z rail's reserved band.
 fn lib_band_w() -> f32 {
+    // In PILL-BOX terms, which is what [`lib_window`] compares against: the run starts at the
+    // margin (see [`LIB_ROW_X0`]) and may not cross the grid's own right edge.
     GRID_R - MARGIN_X
 }
 
