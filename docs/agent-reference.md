@@ -1062,7 +1062,15 @@ gone. The remote FIFO's key and `ck:` tokens are safe because every field they s
 **Tier 2 — the device, which is still the real gate.** Nothing on the host decodes a frame or talks
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
-fails as "no line found", which reads exactly like a total regression. The **`tv-session` skill** is
+fails as "no line found", which reads exactly like a total regression. **The panel rule (the
+owner's standing directive, written down 2026-09-06):** the television's PANEL is **OFF** for a
+device run graded from the event log alone (the playback tiers, log-only characterisation), and
+**ON — sound muted, and never inside the 01:00–10:00 household window** — for every fps scene,
+every `shot` and every capture, because `ui::idle` gates presents on what the panel shows and a
+frame rate measured against a dark panel is a number about nothing. `tests/run.py --fps` says so in
+its banner; the commands are `tools/tv-session.sh screen off` / `screen on` (a PANEL state, not an
+app state — the app keeps running and playback keeps decoding), which the `tv-session` skill
+does not yet document. The **`tv-session` skill** is
 the bring-up/observe/drive loop; **`profile-tv`** handles a live but slow or stuck process and the
 three-layer graphics profile; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
 FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/manifest.local.json`**
@@ -1075,7 +1083,8 @@ death** (since 2026-08-22) — absent or left as the example's `<ratingKey>`, it
 fps scenes naming it, prints the reason in the summary and in `--list`, and runs the rest. The
 matrix is a SUPERSET of what any one library holds (it names 4K DoVi P8, TrueHD, PGS, AV1-with-no-
 DP-audio), so before that change the suite ran for exactly one library in the world; one ordinary
-h264/ac3 movie now gets a stranger five playback cases and 13 of 16 fps scenes. Consequence when
+h264/ac3 movie now gets a stranger every playback case and fps scene naming that shape or no item
+at all — count it with `./tests/run.py --list`, never from here. Consequence when
 reading a result: **the pass count is meaningless without the skip count beside it** — `16 passed`
 can mean sixteen of the shapes that installation happens to own. Resolution happens once at load and
 writes `rk` back for the resolvable ones, so everything downstream still reads `case["rk"]`; a
@@ -1277,11 +1286,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
-  heartbeat. **Three assertions, and picking the wrong one is how a frozen animation ships:**
+  heartbeat. **Five assertions in two families. Three RATE gates — and picking the wrong one is how a frozen
+  animation ships:**
   `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
   see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
   RUNS (`login-spinner`, the two `*-nav` scenes, `search-type`); `fps_ceiling` grades `fps=` from the
-  other side and proves a still screen stops (`home-idle`, `search-idle`). The Search pair is the
+  other side and proves a still screen stops (`home-idle`, `search-idle`). **And two FRAME-TIME gates (2026-09-06)** — `worst_ceiling_ms`
+  (the 2nd-highest post-warmup `worstframe=`) and `stall_ceiling_ms` (the largest `FRAMEDROP`
+  total on the route, warmup INCLUDED) — which arm `plxnative-framedrop` themselves and answer
+  what no rate can: one 80 ms frame under a healthy median. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
@@ -1299,8 +1312,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
   milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
   instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
-  N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
-  heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
+  N ms — the file's content) with an EIGHT-PHASE breakdown — `ingest results tick_drain navcommit
+  prepare draw capture swap`, the frame algorithm's names, timed from the TOP of the iteration since
+  2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus the
+  upload counts, and adds `worstframe` (the whole iteration, presented frames only) and `worstprep`
+  (the prepare phase, timed on EVERY iteration) to the heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly. For a reproducible three-layer account of one FPS scene use
   `./tests/run.py --fps --only <scene> --graphics-profile --profile-phase <phase>`: it preserves
   one unarmed pacing leg, samples global Mali IRQ activity with the selected install closed, then runs
@@ -1397,7 +1413,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   spends more than four of those seconds just reaching the grid — so `fps:library-scroll`, whose
   whole purpose is to sweep the seam between the last shelf and the poster wall, graded a sweep
   that could not reach it), and
-  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), the three
+  Settings-family scene triggers added 2026-09-06 for the frame-TIME gates (`worst_ceiling_ms` /
+  `stall_ceiling_ms`, graded from `worstframe=` and `FRAMEDROP`): `/tmp/plxnative-modalosc` (with
+  `plxnative-settings=root`, open and dismiss Settings every 1.5 s — `fps:modal-ramp`),
+  `/tmp/plxnative-legaldoc` (with `=legal`, one OK on the index so the boot lands on a pushed
+  document — `fps:legal-document`) and `/tmp/plxnative-alert` (with `=privacy`, open the
+  "Delete all local data?" decision alert, deleting nothing — `fps:decision-alert`); and the
   Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already
   holding `<query>` — the seed is not a convenience, since neither the harness nor `sim-shot` can
   type and the TV's own keyboard is raised by a user, so without it every headless look at this

@@ -40,7 +40,7 @@
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 21] = [
+const DIAG: [&str; 24] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -84,6 +84,19 @@ const DIAG: [&str; 21] = [
     // one is moot — but leaving it out of this list would be a silent inconsistency for the next
     // reader, and the honest reading is that it changes no screen.
     "plxnative-crashtest",
+    // The FRAME-DROP DETECTOR (`app.rs`, the `FRAMEDROP` line and `worstframe=`). It observes the
+    // frame it is armed on and changes no screen; the harness's `worst_ceiling_ms` /
+    // `stall_ceiling_ms` gates arm it under every fps scene, and a scene whose gate moved the boot
+    // away from the screen it grades would fail as "never entered this screen".
+    "plxnative-framedrop",
+    // The deterministic RECORDER and its replay trigger (`ui/rec.rs`, NOT YET IN THE TREE — reserved
+    // here first so the recorder cannot land as a non-DIAG trigger and move the boot screen out
+    // from under the session it records; restructure spec §5.3). Both observe or reproduce a session and must not decide
+    // which screen it starts on — a recording of the who's-watching picker has to be possible.
+    // `recplay` is a NEW name: `plxnative-replay[=N]` is the EOS replay COUNTER, non-DIAG, and
+    // stays exactly as it is.
+    "plxnative-rec",
+    "plxnative-recplay",
 ];
 
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?

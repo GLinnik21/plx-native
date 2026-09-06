@@ -4787,6 +4787,86 @@ def parse_fps(lines, route, overlay):
     return out
 
 
+# `worstframe=<ms>ms` — the worst WHOLE-ITERATION time in that heartbeat second, present only when
+# `plxnative-framedrop` is armed (run_fps_scene arms it for any scene declaring a ceiling below).
+# Deliberately its own regex, for FPS_RE's reason: a log from a build or a run without the field
+# must fail as "no samples", never match nothing and pass.
+WORST_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bworstframe=(\d+(?:\.\d+)?)ms")
+# One `FRAMEDROP` line per frame over the armed threshold; `total=` is the whole iteration. The
+# route word sits after the phase breakdown (`route=<word>`), so a scene grades only its own screen.
+FRAMEDROP_RE = re.compile(r"^FRAMEDROP total=(\d+(?:\.\d+)?) .*?\broute=(\w+)")
+
+
+def parse_worst(lines, route, overlay):
+    """The per-second `worstframe=` peaks (ms) whose route (+overlay) match."""
+    reject_simulator(lines)
+    out = []
+    for ln in lines:
+        m = WORST_RE.search(ln)
+        if not m or m.group(1) != route:
+            continue
+        if overlay and (m.group(2) or "none") != overlay:
+            continue
+        out.append(float(m.group(3)))
+    return out
+
+
+def parse_framedrop(lines, route):
+    """Every FRAMEDROP `total=` (ms) logged on this route, in log order, warmup included: a stall
+    is graded over the WHOLE run because the interesting one (a cold mount) is the first."""
+    reject_simulator(lines)
+    out = []
+    for ln in lines:
+        m = FRAMEDROP_RE.search(ln)
+        if m and m.group(2) == route:
+            out.append(float(m.group(1)))
+    return out
+
+
+def frame_ceiling_threshold(scene):
+    """The `plxnative-framedrop` content to arm for this scene, or None when it declares neither
+    ceiling. The detector logs a FRAMEDROP line only ABOVE its threshold, so the threshold is the
+    lower of the two ceilings: everything a gate could fail on is then in the log."""
+    cs = [scene[k] for k in ("worst_ceiling_ms", "stall_ceiling_ms") if scene.get(k) is not None]
+    if not cs:
+        return None
+    return str(int(min(cs)))
+
+
+def grade_frame_ceilings(scene, lines, route, overlay, warmup):
+    """`worst_ceiling_ms`: the 2nd-HIGHEST post-warmup `worstframe=` (robust_max, fps_ceiling's
+    mirror — one poster landing is tolerated, a sustained ramp is not) must be <= the ceiling.
+    `stall_ceiling_ms`: the LARGEST FRAMEDROP total on this route over the whole run — warmup
+    included — must be <= the ceiling; no FRAMEDROP line at all passes, PROVIDED the heartbeat
+    proves the detector was armed (at least one worstframe= sample), since a run where it was not
+    would otherwise pass vacuously. Returns (ok, detail_suffix)."""
+    ok, detail = True, ""
+    w_ceiling = scene.get("worst_ceiling_ms")
+    s_ceiling = scene.get("stall_ceiling_ms")
+    if w_ceiling is None and s_ceiling is None:
+        return ok, detail
+    worst_all = parse_worst(lines, route, overlay)
+    if not worst_all:
+        return False, (" | no worstframe= samples for this route — plxnative-framedrop was not "
+                       "armed, or the scene never reached this screen")
+    if w_ceiling is not None:
+        worst = worst_all[warmup:]
+        if len(worst) < 5:
+            return False, (f" | only {len(worst)} post-warmup worstframe= samples (need >= 5)")
+        sw = sorted(worst, reverse=True)
+        robust_max = sw[1]
+        ok = ok and robust_max <= w_ceiling
+        detail += (f" | worst robust_max={robust_max:.1f}ms (max={sw[0]:.1f}, n={len(worst)}) "
+                   f"vs worst_ceiling_ms {w_ceiling}")
+    if s_ceiling is not None:
+        drops = parse_framedrop(lines, route)
+        peak = max(drops) if drops else 0.0
+        ok = ok and peak <= s_ceiling
+        detail += (f" | stall peak={peak:.1f}ms over {len(drops)} FRAMEDROP line(s), whole run, "
+                   f"vs stall_ceiling_ms {s_ceiling}")
+    return ok, detail
+
+
 def rate_stats(vals):
     s = sorted(vals)
     n = len(s)
@@ -4863,6 +4943,11 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     if scene.get("tier") == "player":
         files.append(("plxnative-quality", scene.get("quality", "original")))
     files.extend(extra_triggers)
+    # A frame-ceiling gate needs the frame-drop detector armed, at the lower of its two ceilings
+    # (see frame_ceiling_threshold). It is a DIAG trigger, so arming it moves no boot screen.
+    thr = frame_ceiling_threshold(scene)
+    if thr is not None and not any(n == "plxnative-framedrop" for n, _ in files):
+        files.append(("plxnative-framedrop", thr))
     # clears every plxnative-* (incl. plxnative-profile) then writes this scene's. Player-tier
     # scenes actually decode video, so they need the test-user token too — appended to the same
     # round-trip via extra= so its value stays off stdout, exactly like the playback cases.
@@ -4981,6 +5066,13 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
                    f"n={len(pres)}) vs fps_ceiling {ceiling}")
         ok = ok and ok_c
 
+    # `worst_ceiling_ms` / `stall_ceiling_ms`: the frame-TIME gates (see grade_frame_ceilings).
+    # They answer what a rate cannot: a modal ramp or a cold mount that drops ONE 80 ms frame reads
+    # as a healthy fps median and a healthy loop rate, and is the hitch the user actually sees.
+    ok_f, detail_f = grade_frame_ceilings(scene, lines, route, overlay, warmup)
+    ok = ok and ok_f
+    detail += detail_f
+
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
 
@@ -5001,6 +5093,11 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     # A second filter-and-bail here was dead code that someone would keep maintaining.
     tiers = {"ui"} | ({"player"} if include_player else set())
     print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)} ===")
+    # The panel rule (docs/agent-reference.md, Tier 2): `ui::idle` gates presents on what the panel
+    # shows, so every number below is about a television whose PANEL IS ON. Sound muted, and never
+    # inside the 01:00-10:00 household window. A dark panel grades nothing.
+    print("    panel rule: the television's panel must be ON (muted) for this suite; "
+          "log-only tiers run with it OFF")
     results = []
     for s in scenes:
         try:
@@ -5388,6 +5485,10 @@ def main():
                 gates += f" fps_floor={s['fps_floor']}"
             if s.get("fps_ceiling") is not None:
                 gates += f" fps_ceiling={s['fps_ceiling']}"
+            if s.get("worst_ceiling_ms") is not None:
+                gates += f" worst_ceiling_ms={s['worst_ceiling_ms']}"
+            if s.get("stall_ceiling_ms") is not None:
+                gates += f" stall_ceiling_ms={s['stall_ceiling_ms']}"
             mark = "  [+2nd server]" if s.get("needs_shared_server") else ""
             mark += f"  [SKIP: {s['skip']}]" if s.get("skip") else ""
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")

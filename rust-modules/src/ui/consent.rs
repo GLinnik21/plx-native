@@ -786,6 +786,13 @@ fn record_answer(errors: bool, usage: bool) {
     close();
 }
 
+/// Open the "Delete all local data?" decision alert from a DEV TRIGGER (`plxnative-alert`,
+/// `app.rs`), exactly as the Delete row's OK does — the same `open_with_body`, the same scope
+/// text — so `fps:decision-alert` grades the real alert over the real privacy panel. Nothing is
+/// deleted by opening it.
+pub(crate) fn dev_open_delete_alert() {
+    delete_alert().open_with_body(DELETE_SCOPE);
+}
 pub(crate) fn close() {
     close_delete_and_menu(false);
 }

@@ -7358,6 +7358,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let settings_osc = crate::dev::flag("settingsosc");
         let mut settings_osc_last = 0u32;
         let mut settings_osc_down = true;
+        // dev: /tmp/plxnative-modalosc — with `plxnative-settings=root`, OPEN and DISMISS the
+        // Settings modal every 1500 ms through the same `open`/`on_back` the chip and BACK use, so
+        // `fps:modal-ramp` grades the appear/disappear RAMP (host snapshot, scrim, ground) under
+        // `worst_ceiling_ms` rather than a settled modal. It reverses on a clock because the ramp
+        // itself has no end the app reports.
+        let modal_osc = crate::dev::flag("modalosc");
+        let mut modal_osc_last = 0u32;
+        // dev: /tmp/plxnative-legaldoc — with `plxnative-settings=legal`, press OK on the Legal
+        // index ONCE so the boot lands on a pushed DOCUMENT (the reader over the frozen ground),
+        // which no boot trigger reached before: `fps:legal-document`.
+        let legal_doc = crate::dev::flag("legaldoc");
+        let mut legal_doc_tried = false;
+        // dev: /tmp/plxnative-alert — with `plxnative-settings=privacy`, open the "Delete all local
+        // data?" DECISION ALERT once the privacy panel is up. It is the one shared yes/no alert in
+        // the app and nothing headless could reach it: `fps:decision-alert`. Opening it is all this
+        // does — nothing is deleted, and Cancel is what a BACK would press.
+        let alert_boot = crate::dev::flag("alert");
+        let mut alert_tried = false;
         // The profile menu freezes its host and uses one cached backdrop. Drive the menu's own
         // TableView for a strict FPS scene; reusing `homeosc` would now correctly move nothing and
         // would grade the idle keepalive rather than the popover.
@@ -7403,6 +7421,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         let perf_freq = SDL_GetPerformanceFrequency() as f64;
         let perf_ms = |c: u64| c as f64 * 1000.0 / perf_freq;
         let mut fd_worst = 0.0f64; // worst frame-total this second, for a once/sec peak line
+        let mut fd_worst_prep = 0.0f64; // worst prepare phase this second, timed on every iteration
+        let mut fd_stamps = [0u64; 9]; // the nine phase stamps of one iteration (see the loop top)
 
         let mut last_input = SDL_GetTicks();
         let t0 = last_input;
@@ -7593,6 +7613,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
             // call site let a keypress activate a control this same frame then declined to draw.
             let ctrl = crate::ui::player_hud::slot();
+            // Frame-drop detector, stamp 0 of 9: the TOP of the iteration, before the ls2 pump
+            // and the event poll — `worstframe=` covers the whole iteration, not the half after
+            // the input. Eight phases between the nine stamps, named after the frame algorithm
+            // the restructure moves this loop onto (spec §3.3/§8.4); on THIS loop navcommit
+            // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
+            let fd = &mut fd_stamps;
+            fd[0] = if framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
             crate::system::ls2_pump();
             // Cloud Test Lab has no SSH/FIFO. Its LAB build long-polls outward, then leaves each
             // command here for the SDL thread so the same dispatcher and event queue remain the
@@ -8816,6 +8843,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::textinput::on_event(&ev);
                 }
             }
+            fd[1] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // ingest
 
             let now = SDL_GetTicks();
             // dev: /tmp/plxnative-autoplay auto-presses OK once
@@ -10197,6 +10225,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // superseded request is visible as `route != req.from`, and BEFORE the per-route
             // `update(dt)` below so the incoming screen steps its springs on the same frame it first
             // draws — otherwise its first drawn frame is one update stale.
+            fd[2] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // results
             if crate::ui::nav::tick(dt) {
                 // Superseded: something else moved the app while this was fading. Drop the
                 // request — the fader still completes, fading the screen the user actually has
@@ -10300,6 +10329,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     }
                 }
             }
+            fd[3] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // navcommit
 
             if matches!(route, Route::Login) {
                 crate::ui::login::update(dt);
@@ -10447,6 +10477,24 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     crate::ui::account_menu::move_focus(sym as c_int);
                 }
             }
+            if modal_osc && settings_tried && now.wrapping_sub(modal_osc_last) > 1500 {
+                modal_osc_last = now;
+                if crate::ui::settings::is_open() {
+                    // `on_back`, not `close`: the interactive exit runs the dismiss FADE, and the
+                    // fade is the half of the ramp this scene exists to grade.
+                    let _ = crate::ui::settings::on_back();
+                } else {
+                    crate::ui::settings::open();
+                }
+            }
+            if legal_doc && !legal_doc_tried && crate::ui::legal::is_open() {
+                legal_doc_tried = true;
+                let _ = crate::ui::legal::on_ok();
+            }
+            if alert_boot && !alert_tried && crate::ui::consent::is_open() {
+                alert_tried = true;
+                crate::ui::consent::dev_open_delete_alert();
+            }
             if settings_osc && crate::ui::settings::is_open() {
                 // This is deliberately continuous. Row springs naturally settle between D-pad
                 // steps, so measuring only their duty cycle would grade timing policy rather than
@@ -10576,11 +10624,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // stepped once per FRAME, and `draw_hud` does not run on every frame of this route.
                 crate::ui::player_hud::update(ctrl, hud.nav.focus, hud.nav.btn, dt, now);
             }
-            let fd_pc0 = if framedrop_on {
-                SDL_GetPerformanceCounter()
-            } else {
-                0
-            };
             // Async play resolve: install the worker's plan and start the engine. Route-
             // unconditional — a landing must never depend on which screen is mounted.
             land_play_then_observe(
@@ -10645,17 +10688,22 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // mounts. It invalidates from inside `alt_sources::install`, since a landing that grows
             // the actions row must be drawn without waiting for a keypress.
             crate::metadata::pump_alt_sources();
+            fd[4] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // tick_drain
             crate::posters::poster_pump(3); // invalidates from inside, per texture installed
-            let fd_pc_pump = if framedrop_on {
-                SDL_GetPerformanceCounter()
-            } else {
-                0
-            };
 
             let player = matches!(route, Route::Player { .. });
             // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
             // is absent. Route-scoped and edge-triggered — see `system.rs`.
             crate::system::opaque_route(player);
+            fd[5] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // prepare
+            // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
+            // settled screen must never run untimed work at the loop rate (spec §8.3).
+            if framedrop_on {
+                let prep = perf_ms(fd[5].wrapping_sub(fd[4]));
+                if prep > fd_worst_prep {
+                    fd_worst_prep = prep;
+                }
+            }
             // ---- whole-frame present gate (`ui::idle`) --------------------------------------
             // A screen with nothing moving on it does not need to be re-sent to the panel. This
             // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
@@ -10680,8 +10728,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             let present = crate::ui::idle::should_present(now) || player;
             // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
-            let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) =
-                (fd_pc_pump, fd_pc_pump, fd_pc_pump);
+            fd[6] = fd[5];
+            fd[7] = fd[5];
+            fd[8] = fd[5];
             if present {
                 // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
                 // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
@@ -11065,11 +11114,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::lab::draw();
                     });
                 });
-                fd_pc_draw = if framedrop_on {
-                    SDL_GetPerformanceCounter()
-                } else {
-                    0
-                };
+                fd[6] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // draw
                 // dev capture stream: grab this finished frame before the swap (after the last draw,
                 // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
                 // Deliberately NOT on the player route (the UI plane is transparent over video, so
@@ -11078,11 +11123,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 if !player {
                     crate::capture::tick(now);
                 }
-                fd_pc_cap = if framedrop_on {
-                    SDL_GetPerformanceCounter()
-                } else {
-                    0
-                };
+                fd[7] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // capture
                 // Before the swap, never after: the back buffer is undefined once presented.
                 #[cfg(feature = "hostsim")]
                 crate::shot::maybe_capture(vx, vy, vw, vh);
@@ -11095,11 +11136,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     buffer_flip_count = (buffer_flip_count + 1) % 60;
                 }
                 crate::ui::widgets::glass_presented();
-                fd_pc_swap = if framedrop_on {
-                    SDL_GetPerformanceCounter()
-                } else {
-                    0
-                };
+                fd[8] = if framedrop_on { SDL_GetPerformanceCounter() } else { fd[0] }; // swap
                 // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
                 // idle gate skipped would pace the profiler's once-per-N-frames log off frames
                 // that ran no phases at all.
@@ -11118,19 +11155,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // problem. One frame period, so input latency is exactly what it is today.
                 SDL_Delay(crate::ui::idle::IDLE_POLL_MS);
             }
-            let rn = match route {
-                Route::Login => "login",
-                Route::Profiles => "profiles",
-                Route::Onboard => "onboard",
-                Route::Account { .. } => "account",
-                Route::ItemMenu { .. } => "itemmenu",
-                Route::Library => "library",
-                Route::Detail => "detail",
-                Route::Person => "person",
-                Route::Search => "search",
-                Route::Player { .. } => "player",
-                _ => "home",
-            };
+            let rn = route_word(route);
             // …and the same name as a reportable event, on CHANGE only. Per-frame would be a
             // firehose of one fact; what is worth knowing is which screens get used, which is a
             // transition count. `&'static str` from the table above, so nothing runtime-built can
@@ -11207,19 +11232,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // would drag `worstframe` toward zero and read as a perf WIN. A skipped frame is not a
             // fast frame — it is an absent one, and `fps=` on the heartbeat is where it shows up.
             if framedrop_on && present {
-                let pump = perf_ms(fd_pc_pump.wrapping_sub(fd_pc0));
-                let draw = perf_ms(fd_pc_draw.wrapping_sub(fd_pc_pump));
-                let cap = perf_ms(fd_pc_cap.wrapping_sub(fd_pc_draw));
-                let swap = perf_ms(fd_pc_swap.wrapping_sub(fd_pc_cap));
-                let total = pump + draw + cap + swap;
+                let ph = |k: usize| perf_ms(fd[k].wrapping_sub(fd[k - 1]));
+                let (ingest, results, navcommit, tick_drain, prepare, draw, cap, swap) =
+                    (ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7), ph(8));
+                let total = perf_ms(fd[8].wrapping_sub(fd[0]));
                 let (up, px) = crate::posters::take_upload_stats();
                 let (cards, cards_off) = crate::gfx::take_card_stats();
                 if total > fd_worst {
                     fd_worst = total;
                 }
                 if total > framedrop_thresh {
+                    // Printed in the frame ALGORITHM's order (spec §8.4), which on this loop is
+                    // not the order they ran: navcommit ran before tick_drain here.
                     log(&format!(
-                        "FRAMEDROP total={total:.1} pump={pump:.1} draw={draw:.1} cap={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
+                        "FRAMEDROP total={total:.1} ingest={ingest:.1} results={results:.1} tick_drain={tick_drain:.1} navcommit={navcommit:.1} prepare={prepare:.1} draw={draw:.1} capture={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
                         crate::ui::glassload::step_index(),
                         crate::ui::home::snap_pos()
                     ));
@@ -11234,36 +11260,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // as the opposite of what it says: the field that used to be `FPS=` is now `loop=`,
                 // and `fps=` now means what it always should have — frames actually presented,
                 // previously `pres=`. An old `FPS=60` is a LOOP rate and says nothing about frames.
-                let ov = if crate::ui::settings::is_open() {
-                    if crate::ui::legal::is_open() {
-                        " overlay=legal"
-                    } else if crate::ui::consent::is_open() {
-                        " overlay=privacy"
-                    } else {
-                        " overlay=settings"
-                    }
-                } else if crate::ui::consent::is_open() {
-                    " overlay=consent"
-                } else {
-                    match route {
-                        Route::Player {
-                            overlay: Overlay::Info,
-                        } => " overlay=info",
-                        Route::Player {
-                            overlay: Overlay::Chapters,
-                        } => " overlay=chapters",
-                        Route::Player {
-                            overlay: Overlay::Menu,
-                        } => " overlay=menu",
-                        Route::Player {
-                            overlay: Overlay::More,
-                        } => " overlay=more",
-                        Route::Player {
-                            overlay: Overlay::None,
-                        } => " overlay=none",
-                        _ => "",
-                    }
-                };
+                let ov = overlay_word(route);
                 // `pos=<s>` rides the heartbeat while frames are actually being presented: the
                 // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
                 // that reporter's 10s cadence. tests/run.py grades playback progress from this.
@@ -11350,8 +11347,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     String::new()
                 };
                 if framedrop_on {
-                    log(&format!("loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld} worstframe={fd_worst:.1}ms{SIM_TAG}"));
+                    // `worstframe=` stays LAST of the graded fields (both harness regexes anchor
+                    // on it); `worstprep=` follows it, ungated by present.
+                    log(&format!("loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld} worstframe={fd_worst:.1}ms worstprep={fd_worst_prep:.1}ms{SIM_TAG}"));
                     fd_worst = 0.0;
+                    fd_worst_prep = 0.0;
                 } else {
                     log(&format!(
                         "loop={loop_shown} route={rn}{ov}{pos}{vp} fps={pres}{ld}{SIM_TAG}"
@@ -11814,6 +11814,157 @@ mod key_layout_tests {
             remote_token_key("pageup"),
             Some((crate::ui::consts::SDLK_PAGEUP, 0))
         );
+    }
+}
+
+/// The heartbeat's `route=` WORD for a route — the string `tests/run.py` selects samples by
+/// (`LOOP_RE`/`FPS_RE`) against `manifest.json`'s `route` field, and the one the focus
+/// fingerprint, the diag `RouteEntered` event and the lab envelope all print. ONE function so the
+/// four cannot disagree, and so `heartbeat_word_tests` can grade the table against the manifest:
+/// a route renamed here without its scenes following would otherwise fail on the device as
+/// "never entered this screen", which reads exactly like a total regression.
+fn route_word(route: Route) -> &'static str {
+    match route {
+        Route::Login => "login",
+        Route::Profiles => "profiles",
+        Route::Onboard => "onboard",
+        Route::Account { .. } => "account",
+        Route::ItemMenu { .. } => "itemmenu",
+        Route::Library => "library",
+        Route::Detail => "detail",
+        Route::Person => "person",
+        Route::Search => "search",
+        Route::Player { .. } => "player",
+        _ => "home",
+    }
+}
+
+/// The heartbeat's ` overlay=<word>` suffix (leading space included, empty when there is none),
+/// from the SAME open-state reads the key ladder uses. The Settings family outranks the player's
+/// overlays because it can only be open over a bar page, where no player overlay exists.
+fn overlay_word(route: Route) -> &'static str {
+    if crate::ui::settings::is_open() {
+        if crate::ui::legal::is_open() {
+            " overlay=legal"
+        } else if crate::ui::consent::is_open() {
+            " overlay=privacy"
+        } else {
+            " overlay=settings"
+        }
+    } else if crate::ui::consent::is_open() {
+        " overlay=consent"
+    } else {
+        match route {
+            Route::Player {
+                overlay: Overlay::Info,
+            } => " overlay=info",
+            Route::Player {
+                overlay: Overlay::Chapters,
+            } => " overlay=chapters",
+            Route::Player {
+                overlay: Overlay::Menu,
+            } => " overlay=menu",
+            Route::Player {
+                overlay: Overlay::More,
+            } => " overlay=more",
+            Route::Player {
+                overlay: Overlay::None,
+            } => " overlay=none",
+            _ => "",
+        }
+    }
+}
+
+/// Every `route=` word [`route_word`] can print, and every ` overlay=` word [`overlay_word`] can —
+/// the heartbeat WORD TABLE. Read by `heartbeat_word_tests` only; the functions above are the
+/// source, and the arrays exist so the manifest can be graded against a finite alphabet.
+#[cfg(test)]
+const ROUTE_WORDS: [&str; 11] = [
+    "login", "profiles", "onboard", "account", "itemmenu", "library", "detail", "person",
+    "search", "player", "home",
+];
+#[cfg(test)]
+const OVERLAY_WORDS: [&str; 9] = [
+    "legal", "privacy", "settings", "consent", "info", "chapters", "menu", "more", "none",
+];
+
+/// The heartbeat word table versus `tests/manifest.json`. Every fps scene selects its samples by
+/// a `route` word and an optional `overlay` word; a word the app cannot print makes that scene
+/// fail on the television as "only 0 post-warmup samples — scene never entered this screen",
+/// which is indistinguishable from a real regression. This is the host-side half of that gate,
+/// and it is what lets the route-name source move (from this `match` to `Screen::name` later)
+/// without the fps tier silently disarming.
+#[cfg(test)]
+mod heartbeat_word_tests {
+    use super::{overlay_word, route_word, Overlay, Route, OVERLAY_WORDS, ROUTE_WORDS};
+
+    const MANIFEST: &str = include_str!("../../tests/manifest.json");
+
+    fn scenes() -> Vec<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(MANIFEST).expect("manifest.json parses");
+        v["fps_scenes"]
+            .as_array()
+            .expect("fps_scenes is an array")
+            .clone()
+    }
+
+    #[test]
+    fn every_manifest_route_word_is_one_the_heartbeat_prints() {
+        for s in scenes() {
+            let name = s["name"].as_str().unwrap_or("?");
+            let route = s["route"].as_str().expect("scene has a route word");
+            assert!(
+                ROUTE_WORDS.contains(&route),
+                "scene {name}: route word {route:?} is not in the heartbeat table {ROUTE_WORDS:?}"
+            );
+            if let Some(ov) = s.get("overlay").and_then(|o| o.as_str()) {
+                assert!(
+                    OVERLAY_WORDS.contains(&ov),
+                    "scene {name}: overlay word {ov:?} is not in the table {OVERLAY_WORDS:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_table_is_exactly_what_the_functions_print() {
+        // Every arm of `route_word` lands in ROUTE_WORDS, and every word in ROUTE_WORDS has an
+        // arm — a word added to one side only is what this catches.
+        let routes = [
+            Route::Login,
+            Route::Profiles,
+            Route::Onboard,
+            Route::Library,
+            Route::Detail,
+            Route::Person,
+            Route::Search,
+            Route::Home,
+            Route::Player {
+                overlay: Overlay::None,
+            },
+        ];
+        let mut seen: Vec<&str> = routes.iter().map(|r| route_word(*r)).collect();
+        seen.push("account");
+        seen.push("itemmenu");
+        for w in ROUTE_WORDS {
+            assert!(seen.contains(&w), "ROUTE_WORDS has {w:?} but no route prints it");
+        }
+        for w in &seen {
+            assert!(ROUTE_WORDS.contains(w), "route_word prints {w:?}, missing from ROUTE_WORDS");
+        }
+        for (ov, word) in [
+            (Overlay::Info, " overlay=info"),
+            (Overlay::Chapters, " overlay=chapters"),
+            (Overlay::Menu, " overlay=menu"),
+            (Overlay::More, " overlay=more"),
+            (Overlay::None, " overlay=none"),
+        ] {
+            let got = overlay_word(Route::Player { overlay: ov });
+            assert_eq!(got, word);
+            let bare = word.trim_start_matches(" overlay=");
+            assert!(OVERLAY_WORDS.contains(&bare));
+        }
+        assert_eq!(overlay_word(Route::Home), "");
     }
 }
 

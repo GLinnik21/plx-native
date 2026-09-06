@@ -205,6 +205,80 @@ class FpsIdentity(unittest.TestCase):
         )
 
 
+class FrameCeilings(unittest.TestCase):
+    """The two frame-TIME gates (`worst_ceiling_ms`, `stall_ceiling_ms`) added for the restructure's
+    phase 0. Graded from synthetic heartbeat/FRAMEDROP lines so the arithmetic is pinned here and
+    not first exercised on the television."""
+
+    HB = "loop=60 route=home overlay=settings fps=12 worstframe={w}ms worstprep=0.4ms"
+
+    def _lines(self, worsts, drops=()):
+        out = [self.HB.format(w=w) for w in worsts]
+        out += [f"FRAMEDROP total={d} ingest=0.1 results=0.1 tick_drain=1.0 navcommit=0.0 "
+                f"prepare=0.5 draw=20.0 capture=0.2 swap=1.0 up=0 px=0 cards=1 off=0 route=home "
+                f"load=-1 snap=0.00" for d in drops]
+        return out
+
+    def test_worst_ceiling_is_the_second_highest_post_warmup_peak(self):
+        scene = {"worst_ceiling_ms": 30}
+        # one 80 ms outlier is tolerated (a poster landing); the second-highest decides
+        ok, detail = run.grade_frame_ceilings(scene, self._lines([80, 20, 22, 21, 25, 19, 24]),
+                                              "home", "settings", warmup=0)
+        self.assertTrue(ok, detail)
+        ok, _ = run.grade_frame_ceilings(scene, self._lines([80, 35, 22, 21, 25, 19, 24]),
+                                         "home", "settings", warmup=0)
+        self.assertFalse(ok)
+
+    def test_worst_ceiling_respects_warmup_and_the_overlay_word(self):
+        scene = {"worst_ceiling_ms": 30}
+        lines = self._lines([90, 90, 20, 22, 21, 25, 19, 24])
+        ok, _ = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=2)
+        self.assertTrue(ok)
+        # the same lines carry overlay=settings, so a privacy scene sees no samples and FAILS
+        ok, detail = run.grade_frame_ceilings(scene, lines, "home", "privacy", warmup=0)
+        self.assertFalse(ok)
+        self.assertIn("no worstframe= samples", detail)
+
+    def test_an_unarmed_detector_cannot_pass_a_ceiling_vacuously(self):
+        lines = ["loop=60 route=home overlay=settings fps=12"] * 8
+        for scene in ({"worst_ceiling_ms": 30}, {"stall_ceiling_ms": 80}):
+            ok, detail = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=0)
+            self.assertFalse(ok, scene)
+            self.assertIn("not armed", detail)
+
+    def test_stall_ceiling_reads_every_framedrop_line_warmup_included(self):
+        scene = {"stall_ceiling_ms": 80}
+        lines = self._lines([20] * 6, drops=[45.0, 79.9])
+        ok, detail = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=3)
+        self.assertTrue(ok, detail)
+        lines = self._lines([20] * 6, drops=[45.0, 80.1])
+        ok, _ = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=3)
+        self.assertFalse(ok)
+        # a drop on ANOTHER route is not this scene's
+        other = [ln.replace("route=home", "route=detail") for ln in self._lines([], drops=[200.0])]
+        ok, _ = run.grade_frame_ceilings(scene, self._lines([20] * 6) + other, "home", "settings", 0)
+        self.assertTrue(ok)
+
+    def test_the_armed_threshold_is_the_lower_ceiling(self):
+        self.assertIsNone(run.frame_ceiling_threshold({"loop_floor": 30}))
+        self.assertEqual(run.frame_ceiling_threshold({"worst_ceiling_ms": 40}), "40")
+        self.assertEqual(run.frame_ceiling_threshold({"worst_ceiling_ms": 40,
+                                                      "stall_ceiling_ms": 33}), "33")
+
+    def test_a_scene_without_a_ceiling_is_untouched(self):
+        ok, detail = run.grade_frame_ceilings({"loop_floor": 30}, [], "home", None, 0)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "")
+
+    def test_the_new_scenes_declare_a_ceiling_and_a_known_route_word(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        for name in ("modal-ramp", "legal-document", "page-panel", "decision-alert", "cold-open"):
+            s = scenes[name]
+            self.assertIsNotNone(run.frame_ceiling_threshold(s), name)
+        self.assertEqual(scenes["cold-open"].get("warmup_s"), 0,
+                         "a cold open grades its FIRST frames")
+
+
 class LoadManifest(unittest.TestCase):
     """The whole overlay merge, against the real tracked matrix."""
 
