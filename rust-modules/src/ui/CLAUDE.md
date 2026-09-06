@@ -408,6 +408,22 @@ next day — the regression was `fs_ambient.frag`'s dither hash — and with it 
 surround costs nothing the `home-hero` / `home-fold` gates can see. The record is
 `docs/backdrop-blur-profiling.md`, the 2026-09-02 section.
 
+### The restructure spike (phase 2-i of `~/.claude/plans/ui-plxnative-structured-phoenix.md`)
+
+Seven modules carry `#![allow(dead_code)]` with the same one-line reason and NO product caller:
+`machine.rs` (the `Host` bundle, `Machine`/`Cx`/`Effects`, `Fx`, input, `NavOp`, `MachineId`/`Addr`,
+`LogicalState`/`Canon`), `screen.rs` (`Screen`, `ScreenArg`, `Mounter`, the `Focusable` query
+protocol, `Composed`/`Part` with the blanket `Focusable`, `DrawFrame`), `present.rs` (the gate as a
+machine: `note`/`peek`/`take`), `landing.rs` (the bounded two-lane result queue), `tex.rs`
+(`TexCache<K>`: `accept` in the drain, upload in PREPARE), `frame.rs` (`Budget`, the Poster class)
+and `dispatch.rs` (the ten-step frame over a one-stack `NavTree`, taking a `Rig` for everything it
+does not own). `fixture.rs` is `cfg(test)`: `FixtureHost`, a screen `Composed` of one row `Part`, a
+store behind `StoreOrd(0)`, a stub uploader, and the smoke test that composes them over five frames.
+The 67 `#[ignore]`d names there are spec §15.1's tests; a phase makes one real by removing the
+attribute. Until phase 2 lands, `idle.rs`, `nav.rs`, `press.rs` and `app/run.rs` remain the product's
+gate, transition, press and loop — the spike changes no behaviour and is not a place to add
+features.
+
 ## Gotchas that bite
 
 - **`Label`/`Button` hold a non-owning `*const c_char`.** Keep the `CString` alive for the whole

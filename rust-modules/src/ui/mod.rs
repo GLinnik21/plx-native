@@ -19,8 +19,11 @@ pub(crate) mod consent;
 pub mod consts;
 pub(crate) mod decision_alert;
 pub mod detail;
+pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
 pub(crate) mod document_reader;
+pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
 pub mod fmt; // shared duration/clock display formatters
+pub(crate) mod frame; // RESTRUCTURE spike (spec §8.1): `Budget`, admission control for prepare work
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod home;
@@ -31,6 +34,8 @@ pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Wat
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
 pub mod label;
+pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
+pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
 pub mod legal; // Privacy / open-source / source-offer / trademarks — the LG, Plex and LGPL duties that must be readable ON the TV
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
@@ -44,16 +49,19 @@ pub mod person_bio; // ...and that page's bio ALERT panel — the full biography
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
+pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod profile;
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub(crate) mod route_screen;
+pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod settings; // reachable post-setup choices: Home sources, Privacy, Legal and About
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod table;
+pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
 pub mod theme;
@@ -127,7 +135,7 @@ pub fn guard(f: impl FnOnce()) {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
