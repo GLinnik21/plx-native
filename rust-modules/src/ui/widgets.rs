@@ -7325,9 +7325,10 @@ mod tests {
     /// not reach this capsule. `CtlPop` already owns that rule; the test is that the season strip is
     /// wired through it rather than multiplying `press::scale()` in by hand at the draw.
     ///
-    /// Takes `testlock::serial()`: `press` is a crate global that `app.rs`'s own tests drive too.
+    /// Takes `testlock::serial()` for the pop's own statics; the press is the test's own `Press`.
     #[test]
     fn the_season_strips_pop_takes_the_press_dip_only_while_the_row_holds_focus() {
+        let mut p = crate::ui::press::Press::new();
         let _g = crate::testlock::serial();
         let mut pop: CtlPop<1> = CtlPop::new();
         for _ in 0..60 {
@@ -7341,11 +7342,11 @@ mod tests {
 
         // OK goes down on the tab. The strip keeps a CARD's press — a hold here marks the whole
         // season watched — so this is `begin`, not `begin_ctl`; the DIP is identical either way.
-        crate::ui::press::begin(1000);
+        p.begin(1000);
         let mut now = 1000u32;
         for _ in 0..8 {
             now = now.wrapping_add(16);
-            crate::ui::press::tick(now, 1.0 / 60.0);
+            p.tick(now, 1.0 / 60.0);
             pop.step(Some(0), 1.0 / 60.0);
         }
         let pressed = pop.scale(0);
@@ -7365,13 +7366,13 @@ mod tests {
             "a row without focus is at rest, press or no press"
         );
 
-        crate::ui::press::cancel();
+        p.cancel();
         for _ in 0..200 {
             now = now.wrapping_add(16);
-            crate::ui::press::tick(now, 1.0 / 60.0);
+            p.tick(now, 1.0 / 60.0);
         }
         assert!(
-            !crate::ui::press::is_active(),
+            !p.is_active(),
             "leave the global at rest for the next test"
         );
     }

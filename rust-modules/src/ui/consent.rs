@@ -387,7 +387,7 @@ fn focus() -> RouteFocus {
 /// Which band control an in-flight press was armed on, and where the press came from — `None` for
 /// no press.
 ///
-/// **Read through [`armed`], never raw.** `ui::press` is a crate-global machine that many things
+/// **Read through [`armed`], never raw.** `ui::press` publishes a snapshot of the one press (`App.input.press`) that many things
 /// can cancel (a nav key, a fresh click, the lost-key-up ceiling), and none of them knows this
 /// static exists — so a local arm that outlived its press would silently judge the NEXT one. The
 /// accessor expires it against `press::is_live()`, which makes staleness impossible by
@@ -414,7 +414,7 @@ fn band_hit(mx: f32, my: f32) -> Option<usize> {
     }
 }
 
-/// The live arm, or `None` — expired against the crate-global press machine, so an arm can never
+/// The live arm, or `None` — expired against the press machine's published snapshot, so an arm can never
 /// outlive the press it belongs to.
 fn armed() -> Option<(PressFrom, usize)> {
     crate::ui::press::is_live()
@@ -1635,13 +1635,13 @@ mod tests {
 
     /// Run whatever transform is in flight to rest. Rule 11 refuses a POSITIONAL hit until the
     /// layer it belongs to has arrived, so every pointer test here has to land its screen first.
-    /// Spring the crate-global press all the way back to idle. A test that arms one owes this to
+    /// Spring the test's press all the way back to idle. A test that arms one owes this to
     /// the next test in the file: `press` is process-wide state, and `testlock::serial` orders the
     /// tests without cleaning up after them.
-    fn end_press() {
-        crate::ui::press::cancel();
+    fn end_press(p: &mut crate::ui::press::Press) {
+        p.cancel();
         for i in 0..200 {
-            crate::ui::press::tick(4 + i * 16, 0.016);
+            p.tick(4 + i * 16, 0.016);
         }
     }
 
@@ -2384,6 +2384,7 @@ mod tests {
     /// every control and answer the ORIGINAL way anyway.
     #[test]
     fn an_armed_press_survives_jitter_but_not_leaving_the_control() {
+        let mut p = crate::ui::press::Press::new();
         let _g = crate::testlock::serial();
         open(&Consent::default());
         settle();
@@ -2396,7 +2397,7 @@ mod tests {
         // deliberately reads through it — so a test that omits it exercises the UN-armed path,
         // where every hover is held by definition.
         assert!(press_at(share_r.x + 10.0, share_r.y + 10.0), "arm on Share");
-        crate::ui::press::begin_ctl(1);
+        p.begin_ctl(1);
         assert!(
             pointer_hold(share_r.x + 12.0, share_r.y + 12.0),
             "two pixels of jitter is still the same pill, so a real click must still commit"
@@ -2409,7 +2410,7 @@ mod tests {
         // leaves focus exactly where it was, so a before/after comparison of the FOCUSED stop saw
         // no change and the press still committed the answer the pointer had left.
         assert!(press_at(share_r.x + 10.0, share_r.y + 10.0), "re-arm on Share");
-        crate::ui::press::begin_ctl(2);
+        p.begin_ctl(2);
         assert!(
             !pointer_hold(4.0, 4.0),
             "dead space is not the control this press was armed on"
@@ -2420,13 +2421,13 @@ mod tests {
         // `PressFrom` exists (Codex review, 2026-09-04).
         focus().to_band(0);
         arm_key();
-        crate::ui::press::begin_ctl(3);
+        p.begin_ctl(3);
         assert!(
             pointer_hold(4.0, 4.0),
             "dead space parks no focus, so it cannot retract a press the pointer never made"
         );
         assert_eq!(draft(), (false, false), "and none of this answers anything");
-        end_press();
+        end_press(&mut p);
         close();
     }
 

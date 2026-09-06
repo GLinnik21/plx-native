@@ -111,6 +111,8 @@ extern "C" {
 // submodules below as a PURE move (`pub(super)` widening only), glob-imported here so the
 // loop body reads exactly as before. `plex_run` itself is phase 1b.
 mod boot;
+pub(super) mod clock;
+mod recorder;
 mod events;
 mod lifecycle;
 mod playback;
@@ -140,10 +142,7 @@ extern "C" {
     ) -> *mut c_void;
     fn SDL_GL_CreateContext(win: *mut c_void) -> *mut c_void;
     fn SDL_GL_SetSwapInterval(interval: c_int) -> c_int;
-    fn SDL_GetTicks() -> u32;
     fn SDL_Delay(ms: u32);
-    fn SDL_GetPerformanceCounter() -> u64;
-    fn SDL_GetPerformanceFrequency() -> u64;
     fn SDL_PollEvent(event: *mut c_void) -> c_int;
     fn SDL_PushEvent(event: *const c_void) -> c_int;
     fn SDL_GL_SwapWindow(win: *mut c_void);
@@ -225,9 +224,6 @@ struct App {
     onboard_osc_last: u32,
     onboard_osc_right: bool,
     nav_osc_last: u32,
-    fd_worst: f64,
-    fd_worst_prep: f64,
-    fd_stamps: [u64; 9],
     last_input: u32,
     loop_t: u32,
     iters_ct: i32,
@@ -284,14 +280,17 @@ struct App {
     win: *mut c_void,
     /// Boot time (`SDL_GetTicks` at the end of boot): the origin of every dev-script delay.
     t0: u32,
-    /// `SDL_GetPerformanceFrequency`, for `perf_ms`.
-    perf_freq: f64,
-    /// `plxnative-framedrop` is armed: the eight phase stamps are taken.
-    framedrop_on: bool,
-    /// The FRAMEDROP threshold in ms (the trigger's content, default 22).
-    framedrop_thresh: f64,
+    /// The frame's instruments: the eight phase stamps, FRAMEDROP, the per-second peaks
+    /// (`diag::heartbeat`), armed by `plxnative-framedrop`.
+    instr: crate::diag::heartbeat::Instruments,
     /// The boot-time dev trigger flags the loop consults.
     dev: DevFlags,
+    /// The Input machine: owner of the press (restructure spec §2.2); the ladders borrow it.
+    input: crate::ui::input::Input,
+    /// `text::take_measure_fault` has been reported once (the report is once per process).
+    measure_fault_logged: bool,
+    /// The recorder / replay driver (`plxnative-rec` / `plxnative-recplay`, spec §5.3/§5.5).
+    rec: recorder::Recplay,
 }
 
 /// The dev triggers read ONCE at boot and consulted by the loop (each is documented where it
@@ -317,12 +316,6 @@ struct DevFlags {
     glass_hz_armed: bool,
 }
 
-impl App {
-    /// Performance-counter ticks to milliseconds.
-    fn perf_ms(&self, c: u64) -> f64 {
-        c as f64 * 1000.0 / self.perf_freq
-    }
-}
 
 #[no_mangle]
 pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
@@ -381,6 +374,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // playback/UI regression cannot make the instrument unreachable. Compiled out with
     // `devtriggers`; a no-op in every other build.
     crate::dev::crash_on_purpose();
+    crate::dev::softfloat_probe();
     // The first reportable event, and it is a marker with no fields on purpose — everything that
     // would qualify a launch (model, firmware, version, locale) is a session constant and belongs
     // in a sender's envelope, not repeated on every record. It reaches PostHog when the usage
@@ -420,6 +414,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     };
     unsafe {
         run::run(&mut app, mt);
+        std::mem::replace(&mut app.rec, recorder::Recplay::Off).finish();
         run::shutdown(mt);
     }
     0

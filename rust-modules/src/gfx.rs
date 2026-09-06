@@ -1284,7 +1284,7 @@ pub(crate) fn draw_shadow(
 pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
     unsafe {
         let w = k.sqrt(); // natural frequency; critical damping is c = 2ω
-        let e = (-w * dt).exp();
+        let e = crate::ui::motion::exp(-w * dt); // this crate's exp: what a recording can replay
         let x = *pos - target; // offset from target
         let b = *vel + w * x;
         *pos = target + (x + b * dt) * e;
@@ -1311,8 +1311,8 @@ pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zet
         let wd = w * (1.0 - z * z).sqrt(); // damped natural frequency
         let x0 = *pos - target; // offset from target
         let v0 = *vel;
-        let e = (-z * w * dt).exp();
-        let (s, c) = (wd * dt).sin_cos();
+        let e = crate::ui::motion::exp(-z * w * dt);
+        let (s, c) = crate::ui::motion::sin_cos(wd * dt);
         let a = x0;
         let b = (v0 + z * w * x0) / wd;
         *pos = target + e * (a * c + b * s);

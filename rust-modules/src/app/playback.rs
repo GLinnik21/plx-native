@@ -809,7 +809,7 @@ pub(super) fn start_playback(
     // a load longer than the 4.5 s linger expired the HUD before it was ever drawn and the
     // user got a blank screen instead of a transport. Taking a duration makes that
     // unrepresentable, and keeps the headless 60 s case working.
-    set_hud(unsafe { SDL_GetTicks() }.wrapping_add(hud_ms).max(1));
+    set_hud(clock::now().wrapping_add(hud_ms).max(1));
 }
 
 /// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
@@ -901,7 +901,7 @@ pub(super) fn exit_player(
     // landed: a no-op in the ordinary case (the page IS still the top, because playing never
     // moved the trail), the root for a return to Home, a push otherwise.
     trail.ensure(play_from);
-    *refresh_hubs_at = unsafe { SDL_GetTicks() }.wrapping_add(800).max(1);
+    *refresh_hubs_at = clock::now().wrapping_add(800).max(1);
 }
 
 /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
@@ -1337,6 +1337,7 @@ pub(super) fn key_info_panel(
     hud_nav: &mut HudNav,
     held: &mut HeldKey,
     ok_armed: &mut bool,
+    press: &mut crate::ui::press::Press,
 ) {
     if sym == SDLK_DOWN && crate::ui::info_panel::at_last() {
         // past the bottom of the card → drop focus back onto the tabs
@@ -1354,7 +1355,7 @@ pub(super) fn key_info_panel(
         // The card's two actions are control faces with a pop of their own, so OK takes the tvOS
         // press and `commit_info_panel` spends it on the spring-back. The card stays up through the
         // dip — `info_panel::on_ok` is what takes it down — so the whole animation is on screen.
-        crate::ui::press::begin_ctl(now);
+        press.begin_ctl(now);
         *ok_armed = true;
     } else if is_ok(sym) {
         commit_info_panel(mt, now, route, play_from, refresh_hubs_at, trail);

@@ -1063,14 +1063,18 @@ gone. The remote FIFO's key and `ck:` tokens are safe because every field they s
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
 fails as "no line found", which reads exactly like a total regression. **The panel rule (the
-owner's standing directive, written down 2026-09-06):** the television's PANEL is **OFF** for a
-device run graded from the event log alone (the playback tiers, log-only characterisation), and
-**ON — sound muted, and never inside the 01:00–10:00 household window** — for every fps scene,
-every `shot` and every capture, because `ui::idle` gates presents on what the panel shows and a
-frame rate measured against a dark panel is a number about nothing. `tests/run.py --fps` says so in
-its banner; the commands are `tools/tv-session.sh screen off` / `screen on` (a PANEL state, not an
-app state — the app keeps running and playback keeps decoding), which the `tv-session` skill
-does not yet document. The **`tv-session` skill** is
+owner's standing directive, restated 2026-09-07):** the television's PANEL is **OFF and the sound
+is OFF for EVERY device run** — the playback tiers, the fps scenes, `shot` and capture alike; the
+set is in a living room. The owner's statement is that rendering continues with the LCD off, so an
+fps scene graded under `screen off` is a real measurement; the 2026-09-06 form of this rule (panel
+ON for fps, on the reasoning that `ui::idle` gates presents on what the panel shows) is SUPERSEDED,
+and the one number still owed is a same-session `fps=` comparison of one scene screen-on vs
+screen-off, to be taken at the next device session and written here. `tests/run.py --fps` says so
+in its banner; the command is `tools/tv-session.sh screen off` (a PANEL state, not an app state —
+the app keeps running and playback keeps decoding); there is still NO luna tooling for the sound
+half (do not guess a method — `power/turnOff` is the standing example of a plausible name this
+firmware answers `Unknown method` to; settle it from the set's `api-permissions.d` under the lock),
+so muting is the physical remote until then. The **`tv-session` skill** is
 the bring-up/observe/drive loop; **`profile-tv`** handles a live but slow or stuck process and the
 three-layer graphics profile; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
 FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/manifest.local.json`**
@@ -1308,7 +1312,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   story is MEASURED AND REFUTED** (2026-08-19): a control leg holds 60/60/60 across six runs on a
   set up 2 h 15 m under continuous load, and what actually produces a 50 fps reading is **arming a
   profiler** — `frame.ui` brackets every frame with two `glFinish`es and drops a 60 fps leg to 45.
-  **Never quote `fps=` from a run with `/tmp/plxnative-profile` or `/tmp/plxnative-hwcnt` armed**;
+  **Never quote `fps=` from a run with `/tmp/plxnative-profile`, `/tmp/plxnative-hwcnt` or the
+  recorder (`/tmp/plxnative-rec`, whose ` rec=<n>us` heartbeat field makes `tests/run.py` refuse
+  to grade `fps=`/`worstframe=` at all) armed**;
   take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
   milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
   instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
@@ -1357,7 +1363,22 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
-  screen-to-trigger recipes. Named highlights: `/tmp/plxnative-url` (override the streamed part
+  screen-to-trigger recipes. Named highlights: **`/tmp/plxnative-rec[=blobs]`** (the RECORDER of
+  the UI restructure, spec §5.3 — every frame's tick and present bit, every input the loop acted
+  on and, on each input frame, the hash of the app's logical state: the press machine, the route
+  and overlay words and the focus fingerprint. It writes `plxnative-recordings/latest/` in the
+  runtime root — a DIFFERENT name from the trigger file, which is why the directory is not
+  `plxnative-rec/` — private, gitignored and refused by the outbound guard; `tests/focusfp.sh
+  --rec` records a flow and `tools/plxnative-rec import` turns a recording taken against
+  `tests/mock_pms.py` into a committed fixture), **`/tmp/plxnative-recplay=<dir>`** (REPLAY that
+  recording: the loop runs on the recorded ticks through `app::clock`, re-injects each frame's
+  inputs through the remote FIFO's own synthesis, grades the state hash frame by frame — every
+  mismatch is its own `replay: diverge` line and the run continues — and ends with one `replay:
+  done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --replay` drives it over the committed
+  fixtures. Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
+  logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
+  it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
   tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;

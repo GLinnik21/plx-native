@@ -152,6 +152,7 @@ fn random_uuid_v4() -> Option<String> {
 // `Cargo.toml`: that feature existed, gated nothing, and is gone). Deliberately not widened ahead
 // of a caller either way, because `warnings = "deny"` turns "compiled but unused" into a build
 // error, and that is the check doing the work here.
+pub(crate) mod heartbeat; // the frame's own instruments: the eight phase stamps, FRAMEDROP, worstframe=/worstprep=
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod ring;
 #[cfg(feature = "lab-diagnostics")]

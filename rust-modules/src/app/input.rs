@@ -451,6 +451,7 @@ pub(super) unsafe fn on_key_up(
     held: &mut HeldKey,
     scrubber: &mut Scrub,
     repause_at: &mut i64,
+    press: &mut crate::ui::press::Press,
 ) {
     if sym == held.sym {
         held.sym = 0;
@@ -461,7 +462,7 @@ pub(super) unsafe fn on_key_up(
     if is_ok(sym) && ok_armed {
         // OK released over a grid card: start the spring-back; the deferred
         // activation commits from the per-frame loop once the bounce has shown.
-        crate::ui::press::release(SDL_GetTicks());
+        press.release(clock::now());
     }
     if matches!(route, Route::Player { .. }) && scrubber.dir != 0 && isnav {
         if scrubber.reveal {
@@ -480,7 +481,7 @@ pub(super) unsafe fn on_key_up(
             scrubber.disengage();
         } else {
             // a tap → commit on a short debounce so quick taps accumulate first
-            scrubber.commit_at = SDL_GetTicks().wrapping_add(TAP_COMMIT_MS);
+            scrubber.commit_at = clock::now().wrapping_add(TAP_COMMIT_MS);
         }
     }
 }
@@ -509,13 +510,14 @@ pub(super) unsafe fn on_auto_repeat(
     held: &mut HeldKey,
     scrubber: &mut Scrub,
     modal_repeat: &mut RepeatGate,
+    press: &mut crate::ui::press::Press,
 ) {
-    let n = SDL_GetTicks();
+    let n = clock::now();
     if held.sym != 0 && sym == held.sym {
         held.alive = n; // heartbeat: this held key's hardware repeats are still arriving
     }
     if ok_armed && is_ok(sym) {
-        crate::ui::press::note_alive(n); // OK held: keep the dropped-key-up net honest
+        press.note_alive(n); // OK held: keep the dropped-key-up net honest
     }
     if matches!(route, Route::Player { .. }) && hud_nav.focus == 0 && scrubber.dir != 0 && isnav {
         scrubber.alive = n;
@@ -609,9 +611,10 @@ pub(super) unsafe fn begin_fresh_press(
     hud: &mut HudState,
     ptr: &mut Pointer,
     ok_armed: &mut bool,
+    press: &mut crate::ui::press::Press,
 ) {
     held.down_sym = sym;
-    note_global_press(sym, wcode, now, hud, ok_armed);
+    note_global_press(sym, wcode, now, hud, ok_armed, press);
     if matches!(
         key,
         Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
@@ -639,6 +642,7 @@ pub(super) fn note_global_press(
     now: u32,
     hud: &mut HudState,
     ok_armed: &mut bool,
+    press: &mut crate::ui::press::Press,
 ) {
     if !is_bound(sym, wcode) {
         return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
@@ -652,7 +656,7 @@ pub(super) fn note_global_press(
     // card back to rest WITHOUT activating (you "slid off" the control). A key the app does not
     // bind is not sliding off anything: nothing moved, so nothing is abandoned.
     if *ok_armed && !is_ok(sym) {
-        crate::ui::press::cancel();
+        press.cancel();
         *ok_armed = false;
     }
 }
@@ -666,15 +670,17 @@ mod unsupported_key_tests {
 
     /// Drive one fresh press through [`note_global_press`] and report what it left behind:
     /// `(a click is still armed, the HUD is still dismissed)`. `press::*`, `hud_until()` and
-    /// `paused()` are all crate globals, so every caller holds `testlock::serial()`.
+    /// `hud_until()` and `paused()` are crate globals, so every caller holds `testlock::serial()`;
+    /// the press is the test's own `Press`.
     fn press(sym: c_uint, wcode: c_uint) -> (bool, bool) {
         let mut hud = HudState::IDLE;
         let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
-        crate::ui::press::begin(1_000);
-        note_global_press(sym, wcode, 1_000, &mut hud, &mut ok_armed);
-        let out = (crate::ui::press::is_active() && ok_armed, hud.dismissed);
-        crate::ui::press::cancel();
+        let mut p = crate::ui::press::Press::new();
+        p.begin(1_000);
+        note_global_press(sym, wcode, 1_000, &mut hud, &mut ok_armed, &mut p);
+        let out = (p.is_active() && ok_armed, hud.dismissed);
+        p.cancel();
         out
     }
 
@@ -832,6 +838,7 @@ pub(super) unsafe fn key_onboarding(
     sym: c_uint,
     wcode: c_uint,
     ok_armed: &mut bool,
+    press: &mut crate::ui::press::Press,
 ) -> crate::ui::onboard::Action {
     // **BACK at one of these screens' own ROOT is the root press** — the same one Home's is, and
     // for the same reason: nothing of this app is behind it. Issues #17 and #18 are both this
@@ -894,7 +901,7 @@ pub(super) unsafe fn key_onboarding(
             // during the spring-back and turn `Try again` into `Start watching` under the same
             // focus stop — see `onboard::ActionKind`.
             crate::ui::onboard::arm_action();
-            crate::ui::press::begin_ctl(SDL_GetTicks());
+            press.begin_ctl(clock::now());
             *ok_armed = true;
             return crate::ui::onboard::Action::None;
         }
@@ -907,10 +914,10 @@ pub(super) unsafe fn key_onboarding(
         // arm through different doors and commit through one, `profiles::activate_focused`. The PIN
         // keypad's keys have neither and act on the key-down.
         if is_ok(sym) && crate::ui::profiles::focus_is_avatar() {
-            crate::ui::press::begin(SDL_GetTicks());
+            press.begin(clock::now());
             *ok_armed = true;
         } else if is_ok(sym) && crate::ui::profiles::focus_is_ctl() {
-            crate::ui::press::begin_ctl(SDL_GetTicks());
+            press.begin_ctl(clock::now());
             *ok_armed = true;
         } else {
             crate::ui::profiles::key(sym, wcode);
@@ -1337,6 +1344,7 @@ pub(super) unsafe fn key_ok(
     nav: &mut Option<NavReq>,
     play_from: &mut Node,
     ok_armed: &mut bool,
+    press: &mut crate::ui::press::Press,
 ) {
     // The shared top bar's PROFILE CHIP, ahead of the per-route ladder below: it is one control on
     // three screens and its destination never depends on which of them you are standing on, which
@@ -1357,7 +1365,7 @@ pub(super) unsafe fn key_ok(
         // something OVER this HUD rather than leaving the route, which makes this the one control
         // row in the app where the whole dip → ring is on screen either side of the activation.
         if vis && hud.nav.focus == 1 {
-            crate::ui::press::begin_ctl(now);
+            press.begin_ctl(now);
             *ok_armed = true;
         } else if vis && hud.nav.focus == 2 {
             if hud.nav.tab == 0 {
@@ -1407,7 +1415,7 @@ pub(super) unsafe fn key_ok(
                 ),
             }
         } else if crate::ui::search::focus_is_card() {
-            crate::ui::press::begin(SDL_GetTicks());
+            press.begin(clock::now());
             *ok_armed = true;
         } else if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
             nav_open(*route, node, None, nav);
@@ -1416,7 +1424,7 @@ pub(super) unsafe fn key_ok(
         // OK on a browse-grid card → the same tvOS press as home's grid;
         // tabs / toolbar / menus commit immediately inside the screen.
         if crate::ui::library::focus_is_card() {
-            crate::ui::press::begin(SDL_GetTicks());
+            press.begin(clock::now());
             *ok_armed = true;
         } else {
             match crate::ui::library::on_ok() {
@@ -1454,10 +1462,10 @@ pub(super) unsafe fn key_ok(
         // Season tabs, About rows and the filmstrip's metadata block still
         // activate immediately: none of them draws `press::scale()`.
         if crate::ui::detail::focus_is_card() {
-            crate::ui::press::begin(SDL_GetTicks());
+            press.begin(clock::now());
             *ok_armed = true;
         } else if crate::ui::detail::focus_is_ctl() {
-            crate::ui::press::begin_ctl(now);
+            press.begin_ctl(now);
             *ok_armed = true;
         } else if crate::ui::detail::on_ok() {
             start_playback(
@@ -1474,7 +1482,7 @@ pub(super) unsafe fn key_ok(
         // every focusABLE thing on the person page is a poster card → the
         // same tvOS press as home's grid, committed on the spring-back
         if crate::ui::person::focus_is_card() {
-            crate::ui::press::begin(SDL_GetTicks());
+            press.begin(clock::now());
             *ok_armed = true;
         } else {
             // …and the page's two CARDLESS focus rows: the HEADER, where OK
@@ -1504,7 +1512,7 @@ pub(super) unsafe fn key_ok(
             // Retry belongs to no `CtlPop`, so neither has a dip to show
             // (`home::focus_is_ctl`).
             if crate::ui::home::focus_is_ctl() {
-                crate::ui::press::begin_ctl(now);
+                press.begin_ctl(now);
                 *ok_armed = true;
             } else {
                 let hf = crate::ui::home::hero_focus();
@@ -1523,7 +1531,7 @@ pub(super) unsafe fn key_ok(
             // grid card: tvOS press — dip the focused card now, activate on the
             // spring-back (committed from the per-frame loop). Nav cancels, so the
             // focused cell can't move while the press is armed.
-            crate::ui::press::begin(SDL_GetTicks());
+            press.begin(clock::now());
             *ok_armed = true;
         }
         if !ptr.dpad_mode {

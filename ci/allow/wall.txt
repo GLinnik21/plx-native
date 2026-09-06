@@ -1,0 +1,4 @@
+# count: 2
+# Wall-clock reads in ui/ and app/ are INSTRUMENTS only (spec §15.2); logical state ticks.
+rust-modules/src/ui/profile.rs	the draw-phase profiler
+rust-modules/src/app/recorder.rs	the recorder times its own spend (rec=)

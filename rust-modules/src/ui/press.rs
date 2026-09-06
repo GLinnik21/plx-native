@@ -7,7 +7,7 @@
 //! edges, so we use them. That long press is what opens the **item context menu** on a home shelf
 //! card and on the detail page's episode still (`ui/item_menu.rs`) — see [`LONG_MS`].
 //!
-//! ONE control is pressed at a time (always the currently focused one), so a single global suffices —
+//! ONE control is pressed at a time (always the currently focused one), so one value suffices — `App.input.press`, the only owner (restructure spec §2.2); draw code reads its published snapshot —
 //! the renderer multiplies the focused tile's scale by [`scale`] while [`is_active`]. Focus can't move
 //! mid-press (navigation [`cancel`]s the press), so "the focused tile" is unambiguous the whole time.
 //!
@@ -24,7 +24,6 @@
 //! [`tick`] resolves a stuck press three ways — a real release (after a minimum visible dip), a stale
 //! heartbeat (dropped key-up), or a hard hold cap — and a press therefore always commits or cancels.
 use crate::ui::Spring;
-use std::ptr::addr_of_mut;
 
 /// Rest factor: the focused card sits at its full focus scale (press is a *multiplier* on top).
 const REST: f32 = 1.0;
@@ -80,7 +79,9 @@ enum Phase {
     Up,   // released/cancelled: springing back toward REST
 }
 
-struct State {
+/// The press machine (restructure spec §7.4): ONE value, owned by `App.input` — no global. Draw
+/// code reads the published snapshot (`scale`/`is_live`/`is_active` below); only the owner writes.
+pub struct Press {
     sp: Spring,
     phase: Phase,
     down_at: u32,      // tick at press-down (long-press timing)
@@ -95,25 +96,25 @@ struct State {
     holdable: bool,    // a HOLD is a distinct gesture here (a card) — see `begin` vs `begin_ctl`
 }
 
-static mut S: State = State {
-    sp: Spring::at(REST),
-    phase: Phase::Idle,
-    down_at: 0,
-    alive: 0,
-    got_beat: false,
-    release_at: 0,
-    commit_at: 0,
-    want_commit: false,
-    cancelled: false,
-    long: false,
-    took: false,
-    holdable: true,
-};
-
-#[inline]
-fn st() -> &'static mut State {
-    unsafe { &mut *addr_of_mut!(S) }
+impl Press {
+    pub const fn new() -> Press {
+        Press {
+        sp: Spring::at(REST),
+        phase: Phase::Idle,
+        down_at: 0,
+        alive: 0,
+        got_beat: false,
+        release_at: 0,
+        commit_at: 0,
+        want_commit: false,
+        cancelled: false,
+        long: false,
+        took: false,
+        holdable: true,
+        }
+    }
 }
+
 
 /// Monotone tick compare that tolerates u32 wrap: `now` has reached `t` (and `t` is armed).
 #[inline]
@@ -124,176 +125,296 @@ fn reached(now: u32, t: u32) -> bool {
 /// OK-down on the focused CARD: begin (or restart) the press-in dip. A hold is a second gesture
 /// here — past [`LONG_MS`] the activation is cancelled and the caller opens the item context menu
 /// instead ([`is_long`]).
-pub fn begin(now: u32) {
-    arm(now, true);
-}
+impl Press {
+    pub fn begin(&mut self, now: u32) {
+        self.arm(now, true);
+    }
 
-/// OK-down on the focused CONTROL FACE — a `Button`, `CircleButton` or `TransportButton`
-/// (`ui::widgets`), whose dip is folded in by its row's [`CtlPop::scale`](crate::ui::widgets::CtlPop::scale).
-///
-/// Identical to [`begin`] in everything the eye can see, and different in one thing it cannot: a
-/// control face has **no hold gesture**. Nothing in this app grows a context menu out of a Play pill
-/// or a transport disc, so the [`LONG_MS`] latch is not armed and a slow press still activates on
-/// release — where [`begin`]'s would be swallowed. A control that ate a deliberate, firmly-held OK
-/// and did nothing would read as a dropped keypress, which is exactly the fault a press animation is
-/// meant to rule out.
-///
-/// [`is_long`] therefore answers `false` for the whole of such a press, which also short-circuits
-/// app.rs's held-menu chain rather than leaving each of its arms to decline one at a time.
-pub fn begin_ctl(now: u32) {
-    arm(now, false);
-}
+    /// OK-down on the focused CONTROL FACE — a `Button`, `CircleButton` or `TransportButton`
+    /// (`ui::widgets`), whose dip is folded in by its row's [`CtlPop::scale`](crate::ui::widgets::CtlPop::scale).
+    ///
+    /// Identical to [`begin`] in everything the eye can see, and different in one thing it cannot: a
+    /// control face has **no hold gesture**. Nothing in this app grows a context menu out of a Play pill
+    /// or a transport disc, so the [`LONG_MS`] latch is not armed and a slow press still activates on
+    /// release — where [`begin`]'s would be swallowed. A control that ate a deliberate, firmly-held OK
+    /// and did nothing would read as a dropped keypress, which is exactly the fault a press animation is
+    /// meant to rule out.
+    ///
+    /// [`is_long`] therefore answers `false` for the whole of such a press, which also short-circuits
+    /// app.rs's held-menu chain rather than leaving each of its arms to decline one at a time.
+    pub fn begin_ctl(&mut self, now: u32) {
+        self.arm(now, false);
+    }
 
-fn arm(now: u32, holdable: bool) {
-    let s = st();
-    s.phase = Phase::Down;
-    s.down_at = now;
-    s.alive = now;
-    s.got_beat = false;
-    s.release_at = 0;
-    s.commit_at = 0;
-    s.want_commit = true;
-    s.cancelled = false;
-    s.long = false;
-    s.took = false;
-    s.holdable = holdable;
-}
-
-/// A held-key heartbeat (OK 0x101 auto-repeat) — keeps [`LOST_MS`] from firing on a genuine hold.
-pub fn note_alive(now: u32) {
-    let s = st();
-    if s.phase == Phase::Down {
+    fn arm(&mut self, now: u32, holdable: bool) {
+        let s = &mut *self;
+        s.phase = Phase::Down;
+        s.down_at = now;
         s.alive = now;
-        s.got_beat = true;
-    }
-}
-
-/// OK-up: record the release. The bounce starts (respecting [`MIN_DIP_MS`]) and the activation commits
-/// a [`COMMIT_MS`] beat later — poll [`take_commit`].
-pub fn release(now: u32) {
-    let s = st();
-    if s.phase == Phase::Down && s.release_at == 0 {
-        s.release_at = now;
-    }
-}
-
-/// Abort the in-flight press (navigation / BACK arrived): spring back WITHOUT committing.
-pub fn cancel() {
-    let s = st();
-    if s.phase != Phase::Idle {
-        s.phase = Phase::Up;
-        s.want_commit = false;
-        s.cancelled = true;
-        s.commit_at = 0;
+        s.got_beat = false;
         s.release_at = 0;
+        s.commit_at = 0;
+        s.want_commit = true;
+        s.cancelled = false;
+        s.long = false;
+        s.took = false;
+        s.holdable = holdable;
+        self.publish();
     }
-}
 
-/// True while a press is in flight that can still reach its activation — [`is_active`] MINUS the
-/// cancelled ones.
-///
-/// **The two are not interchangeable, and reading `is_active` for this is a real bug.** A cancel
-/// only clears the commit; the press stays ACTIVE for the ~200 ms of its spring-back, because that
-/// bounce is what the user sees. A screen that records what its press was armed FOR (`consent`'s
-/// and `onboard`'s `ARMED`) and expires that record against `is_active` therefore keeps reading a
-/// dead press's identity: press the action pill, press DOWN — which cancels the press and moves
-/// focus into the list — then press OK on the row before the spring settles, and the row's
-/// activation, which is immediate and starts no press of its own, is judged against the abandoned
-/// pill and swallowed. Expiring against THIS instead makes that impossible by construction, which
-/// is the property those screens wanted in the first place. (Codex review, 2026-09-04.)
-pub fn is_live() -> bool {
-    let s = st();
-    s.phase != Phase::Idle && !s.cancelled
-}
+    /// A held-key heartbeat (OK 0x101 auto-repeat) — keeps [`LOST_MS`] from firing on a genuine hold.
+    pub fn note_alive(&mut self, now: u32) {
+        let s = &mut *self;
+        if s.phase == Phase::Down {
+            s.alive = now;
+            s.got_beat = true;
+        }
+        self.publish();
+    }
 
-/// True while a press is dipping or springing back — the renderer applies [`scale`] only then.
-#[inline]
-pub fn is_active() -> bool {
-    st().phase != Phase::Idle
-}
+    /// OK-up: record the release. The bounce starts (respecting [`MIN_DIP_MS`]) and the activation commits
+    /// a [`COMMIT_MS`] beat later — poll [`take_commit`].
+    pub fn release(&mut self, now: u32) {
+        let s = &mut *self;
+        if s.phase == Phase::Down && s.release_at == 0 {
+            s.release_at = now;
+        }
+        self.publish();
+    }
 
-/// The focused CARD has been held down at least [`LONG_MS`] RIGHT NOW (still in the press). Always
-/// `false` inside a [`begin_ctl`] press — a control face has no hold gesture, so the caller's whole
-/// held-menu chain short-circuits on this one test instead of each of its arms declining in turn.
-/// **This is the one the hold menu opens on** (`app.rs`'s press block → `ui::item_menu`): firing
-/// while the key is still down is what makes it read as a hold rather than a delayed tap.
-pub fn is_long(now: u32) -> bool {
-    let s = st();
-    s.holdable && s.phase == Phase::Down && now.wrapping_sub(s.down_at) >= LONG_MS
-}
+    /// Abort the in-flight press (navigation / BACK arrived): spring back WITHOUT committing.
+    pub fn cancel(&mut self) {
+        let s = &mut *self;
+        if s.phase != Phase::Idle {
+            s.phase = Phase::Up;
+            s.want_commit = false;
+            s.cancelled = true;
+            s.commit_at = 0;
+            s.release_at = 0;
+        }
+        self.publish();
+    }
 
-/// The current / most-recent press crossed into a press-and-hold (latched at [`LONG_MS`]; stays true
-/// until the next [`begin`]) — the AFTER-THE-FACT form of [`is_long`], for a caller that wants to
-/// branch tap-vs-hold on the release rather than act the instant the threshold is crossed.
-///
-/// Nothing reads it today: the item menu deliberately opens on the live [`is_long`] instead, so the
-/// panel is up while the finger is still down. Kept because the latch it reports is what makes the
-/// distinction observable at all, and a screen whose hold action can only run on release (one that
-/// must not fire mid-press) needs exactly this.
-pub fn was_long() -> bool {
-    st().long
-}
+    /// True while a press is in flight that can still reach its activation — [`is_active`] MINUS the
+    /// cancelled ones.
+    ///
+    /// **The two are not interchangeable, and reading `is_active` for this is a real bug.** A cancel
+    /// only clears the commit; the press stays ACTIVE for the ~200 ms of its spring-back, because that
+    /// bounce is what the user sees. A screen that records what its press was armed FOR (`consent`'s
+    /// and `onboard`'s `ARMED`) and expires that record against `is_active` therefore keeps reading a
+    /// dead press's identity: press the action pill, press DOWN — which cancels the press and moves
+    /// focus into the list — then press OK on the row before the spring settles, and the row's
+    /// activation, which is immediate and starts no press of its own, is judged against the abandoned
+    /// pill and swallowed. Expiring against THIS instead makes that impossible by construction, which
+    /// is the property those screens wanted in the first place. (Codex review, 2026-09-04.)
+    pub fn is_live(&self) -> bool {
+        let s = self;
+        s.phase != Phase::Idle && !s.cancelled
+    }
 
-/// Current press scale-factor to multiply the focused tile's scale by (`1.0` when idle).
-#[inline]
-pub fn scale() -> f32 {
-    st().sp.pos
-}
+    /// True while a press is dipping or springing back — the renderer applies [`scale`] only then.
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.phase != Phase::Idle
+    }
 
-/// Advance the press spring + phase machine one frame. Poll [`take_commit`] afterwards for the
-/// deferred activation.
-pub fn tick(now: u32, dt: f32) {
-    let s = st();
-    match s.phase {
-        Phase::Idle => {}
-        Phase::Down => {
-            s.sp.step(DIP, K_DOWN, dt); // fast, non-bouncy dip
-                                        // Long-press latch: once held past LONG_MS this is a press-and-hold, NOT a tap — cancel
-                                        // the normal activation so it can never launch (the hard cap below would otherwise fire
-                                        // it). The press then just holds the dip and springs back; whether anything HAPPENS is
-                                        // the caller's business, read off `is_long` (Home and the detail page's episode
-                                        // filmstrip open the item context menu there; every other screen leaves a hold as a
-                                        // deliberate no-op).
-            if s.holdable && s.want_commit && now.wrapping_sub(s.down_at) >= LONG_MS {
-                s.want_commit = false;
-                s.long = true;
+    /// The focused CARD has been held down at least [`LONG_MS`] RIGHT NOW (still in the press). Always
+    /// `false` inside a [`begin_ctl`] press — a control face has no hold gesture, so the caller's whole
+    /// held-menu chain short-circuits on this one test instead of each of its arms declining in turn.
+    /// **This is the one the hold menu opens on** (`app.rs`'s press block → `ui::item_menu`): firing
+    /// while the key is still down is what makes it read as a hold rather than a delayed tap.
+    pub fn is_long(&self, now: u32) -> bool {
+        let s = self;
+        s.holdable && s.phase == Phase::Down && now.wrapping_sub(s.down_at) >= LONG_MS
+    }
+
+    /// The current / most-recent press crossed into a press-and-hold (latched at [`LONG_MS`]; stays true
+    /// until the next [`begin`]) — the AFTER-THE-FACT form of [`is_long`], for a caller that wants to
+    /// branch tap-vs-hold on the release rather than act the instant the threshold is crossed.
+    ///
+    /// Nothing reads it today: the item menu deliberately opens on the live [`is_long`] instead, so the
+    /// panel is up while the finger is still down. Kept because the latch it reports is what makes the
+    /// distinction observable at all, and a screen whose hold action can only run on release (one that
+    /// must not fire mid-press) needs exactly this.
+    pub fn was_long(&self) -> bool {
+        self.long
+    }
+
+    /// Current press scale-factor to multiply the focused tile's scale by (`1.0` when idle).
+    #[inline]
+    pub fn scale(&self) -> f32 {
+        self.sp.pos
+    }
+
+    /// Advance the press spring + phase machine one frame. Poll [`take_commit`] afterwards for the
+    /// deferred activation.
+    pub fn tick(&mut self, now: u32, dt: f32) {
+        let s = &mut *self;
+        match s.phase {
+            Phase::Idle => {}
+            Phase::Down => {
+                s.sp.step(DIP, K_DOWN, dt); // fast, non-bouncy dip
+                                            // Long-press latch: once held past LONG_MS this is a press-and-hold, NOT a tap — cancel
+                                            // the normal activation so it can never launch (the hard cap below would otherwise fire
+                                            // it). The press then just holds the dip and springs back; whether anything HAPPENS is
+                                            // the caller's business, read off `is_long` (Home and the detail page's episode
+                                            // filmstrip open the item context menu there; every other screen leaves a hold as a
+                                            // deliberate no-op).
+                if s.holdable && s.want_commit && now.wrapping_sub(s.down_at) >= LONG_MS {
+                    s.want_commit = false;
+                    s.long = true;
+                }
+                // Resolve the hold. The PRIMARY trigger is the real key-up (once the dip has shown for
+                // ≥ MIN_DIP_MS): the activation WAITS for the physical release. The other two are
+                // dropped-key-up SAFETY only — `lost` fires when auto-repeat heartbeats were arriving and
+                // then stopped (gated on `got_beat`, so THIS remote's OK, which never repeats, is not
+                // mistaken for a lost release — the "launches before release" bug), and `capped` is the
+                // last-resort ceiling when no heartbeat ever arrives.
+                let released = s.release_at != 0 && reached(now, s.down_at.wrapping_add(MIN_DIP_MS));
+                let lost = s.got_beat && now.wrapping_sub(s.alive) > LOST_MS;
+                let capped = now.wrapping_sub(s.down_at) > MAX_HOLD_MS;
+                if released || lost || capped {
+                    s.phase = Phase::Up;
+                    if s.want_commit {
+                        s.commit_at = now.wrapping_add(COMMIT_MS).max(1);
+                    }
+                }
             }
-            // Resolve the hold. The PRIMARY trigger is the real key-up (once the dip has shown for
-            // ≥ MIN_DIP_MS): the activation WAITS for the physical release. The other two are
-            // dropped-key-up SAFETY only — `lost` fires when auto-repeat heartbeats were arriving and
-            // then stopped (gated on `got_beat`, so THIS remote's OK, which never repeats, is not
-            // mistaken for a lost release — the "launches before release" bug), and `capped` is the
-            // last-resort ceiling when no heartbeat ever arrives.
-            let released = s.release_at != 0 && reached(now, s.down_at.wrapping_add(MIN_DIP_MS));
-            let lost = s.got_beat && now.wrapping_sub(s.alive) > LOST_MS;
-            let capped = now.wrapping_sub(s.down_at) > MAX_HOLD_MS;
-            if released || lost || capped {
-                s.phase = Phase::Up;
-                if s.want_commit {
-                    s.commit_at = now.wrapping_add(COMMIT_MS).max(1);
+            Phase::Up => {
+                s.sp.step_zeta(REST, K_UP, ZETA_UP, dt); // underdamped overshoot back to rest
+                if (s.sp.pos - REST).abs() < 0.002 && s.sp.vel.abs() < 0.01 {
+                    s.sp.jump(REST);
+                    s.phase = Phase::Idle;
                 }
             }
         }
-        Phase::Up => {
-            s.sp.step_zeta(REST, K_UP, ZETA_UP, dt); // underdamped overshoot back to rest
-            if (s.sp.pos - REST).abs() < 0.002 && s.sp.vel.abs() < 0.01 {
-                s.sp.jump(REST);
-                s.phase = Phase::Idle;
-            }
+        self.publish();
+    }
+
+    /// One-shot: `true` exactly once, when a released press's bounce has played long enough to commit the
+    /// activation. A cancelled press never returns `true`.
+    pub fn take_commit(&mut self, now: u32) -> bool {
+        let s = &mut *self;
+        if s.want_commit && !s.took && reached(now, s.commit_at) {
+            s.took = true;
+            s.want_commit = false;
+            s.publish();
+            return true;
         }
+        false
+    }
+
+    /// Write the read-only snapshot draw code reads (restructure spec §2.3: the owner publishes
+    /// on change; readers never reach the machine).
+    fn publish(&self) {
+        SNAP.with(|c| {
+            c.set(Snap {
+                scale: self.sp.pos,
+                live: self.phase != Phase::Idle && !self.cancelled,
+                active: self.phase != Phase::Idle,
+            })
+        });
     }
 }
 
-/// One-shot: `true` exactly once, when a released press's bounce has played long enough to commit the
-/// activation. A cancelled press never returns `true`.
-pub fn take_commit(now: u32) -> bool {
-    let s = st();
-    if s.want_commit && !s.took && reached(now, s.commit_at) {
-        s.took = true;
-        s.want_commit = false;
-        return true;
+impl Press {
+    /// The state SHAPE (spec §5.4): bump when a field is added, removed or retyped.
+    pub const SHAPE: &'static str = "Press{sp:(f32,f32),phase:u8,down_at:u32,alive:u32,got_beat:bool,release_at:u32,commit_at:u32,want_commit:bool,cancelled:bool,long:bool,took:bool,holdable:bool}";
+}
+
+impl crate::ui::machine::LogicalState for Press {
+    fn write(&self, w: &mut crate::ui::machine::Canon) {
+        w.f32(self.sp.pos)
+            .f32(self.sp.vel)
+            .discriminant(match self.phase {
+                Phase::Idle => 0,
+                Phase::Down => 1,
+                Phase::Up => 2,
+            })
+            .u32(self.down_at)
+            .u32(self.alive)
+            .bool(self.got_beat)
+            .u32(self.release_at)
+            .u32(self.commit_at)
+            .bool(self.want_commit)
+            .bool(self.cancelled)
+            .bool(self.long)
+            .bool(self.took)
+            .bool(self.holdable);
     }
-    false
+    fn probe(&self, out: &mut String) {
+        use std::fmt::Write;
+        let _ = write!(
+            out,
+            "press phase={} live={} active={} long={}",
+            match self.phase {
+                Phase::Idle => "idle",
+                Phase::Down => "down",
+                Phase::Up => "up",
+            },
+            self.is_live() as u8,
+            self.is_active() as u8,
+            self.long as u8
+        );
+    }
+}
+
+/// The published snapshot: what a frame's draw and the screens' `armed()` predicates read. It is
+/// a MAIN-THREAD cell written by the owner on every change, not a second copy of the machine —
+/// the `Press` in `App.input` is the only state.
+#[derive(Clone, Copy)]
+struct Snap {
+    scale: f32,
+    live: bool,
+    active: bool,
+}
+
+thread_local! {
+    static SNAP: std::cell::Cell<Snap> = const { std::cell::Cell::new(Snap { scale: REST, live: false, active: false }) };
+}
+
+/// The dip factor the renderer multiplies the focus scale by (published snapshot).
+#[inline]
+pub fn scale() -> f32 {
+    SNAP.with(|c| c.get().scale)
+}
+
+/// A press is in flight and was not abandoned (published snapshot).
+pub fn is_live() -> bool {
+    SNAP.with(|c| c.get().live)
+}
+
+/// A press is in flight or still springing back (published snapshot).
+#[inline]
+pub fn is_active() -> bool {
+    SNAP.with(|c| c.get().active)
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    /// Restructure spec §15.1: the press machine is owned by `Input` and has no global. Pinned by
+    /// reading the source, because a `static mut` creeping back would compile fine.
+    #[test]
+    fn the_press_machine_is_owned_by_input_and_has_no_global() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let press = std::fs::read_to_string(root.join("ui/press.rs")).unwrap();
+        let code: Vec<&str> = press
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        let needle = ["static", "mut"].join(" "); // not spelled out, or this line would match itself
+        assert!(
+            !code.iter().any(|l| l.contains(&needle)),
+            "press.rs holds a static-mut again"
+        );
+        let cell = ["thread_local", "!"].join(""); // as above: keep this line from matching itself
+        let cells = code.iter().filter(|l| l.contains(&cell)).count();
+        assert_eq!(cells, 1, "the one thread_local is the published snapshot");
+        let input = std::fs::read_to_string(root.join("ui/input.rs")).unwrap();
+        assert!(input.contains("press: Press"), "Input owns the press");
+        let app = std::fs::read_to_string(root.join("app/mod.rs")).unwrap();
+        assert!(app.contains("input: crate::ui::input::Input"), "App owns Input");
+    }
 }
 
 #[cfg(test)]
@@ -309,23 +430,23 @@ mod tests {
     /// Tick the machine forward `ms` from `now` at ~60 Hz, reporting whether the activation
     /// committed anywhere in that span. The loop is the per-frame one in `app.rs`, minus the route
     /// dispatch: `tick` then `take_commit`, in that order, every frame.
-    fn run(now: &mut u32, ms: u32) -> bool {
+    fn run(p: &mut Press, now: &mut u32, ms: u32) -> bool {
         let end = now.wrapping_add(ms);
         let mut committed = false;
         while now.wrapping_sub(end) >= 0x8000_0000 {
             *now = now.wrapping_add(16);
-            tick(*now, 0.016);
-            committed |= take_commit(*now);
+            p.tick(*now, 0.016);
+            committed |= p.take_commit(*now);
         }
         committed
     }
 
     /// Put the global back at rest, whatever state a test left it in.
-    fn rest(now: &mut u32) {
-        cancel();
-        run(now, 2000);
+    fn rest(p: &mut Press, now: &mut u32) {
+        p.cancel();
+        run(p, now, 2000);
         assert!(
-            !is_active(),
+            !p.is_active(),
             "the spring must settle, or the next test starts mid-dip"
         );
     }
@@ -334,11 +455,11 @@ mod tests {
     /// is a factor *below* rest that the renderer multiplies the focus scale by (`--press-dip`).
     #[test]
     fn a_control_press_dips_inward_and_rings_back_past_rest() {
-        let _g = crate::testlock::serial();
-        let mut now = 1000;
-        begin_ctl(now);
-        run(&mut now, 100);
-        let dipped = scale();
+        let mut p = Press::new();
+                let mut now = 1000;
+        p.begin_ctl(now);
+        run(&mut p, &mut now, 100);
+        let dipped = p.scale();
         assert!(
             dipped < 0.99,
             "the press must be visible as a dip, got {dipped}"
@@ -347,21 +468,21 @@ mod tests {
             dipped >= DIP - 0.001,
             "…and must not go past the dip it is aiming at, got {dipped}"
         );
-        release(now);
+        p.release(now);
         // the RING: the release is underdamped, so somewhere in the spring-back the face is larger
         // than it rests at. This is the half `--ease-bounce` names and the only bounce in the app.
         let mut over = false;
         for _ in 0..40 {
             now = now.wrapping_add(16);
-            tick(now, 0.016);
-            let _ = take_commit(now);
-            over |= scale() > REST + 0.005;
+            p.tick(now, 0.016);
+            let _ = p.take_commit(now);
+            over |= p.scale() > REST + 0.005;
         }
         assert!(
             over,
             "the release must overshoot — a critically damped one would not ring"
         );
-        rest(&mut now);
+        rest(&mut p, &mut now);
     }
 
     /// A control face has no hold gesture, so a firmly-held OK still activates on the release. The
@@ -370,28 +491,28 @@ mod tests {
     /// [`begin`].
     #[test]
     fn a_held_control_still_activates_where_a_held_card_would_not() {
-        let _g = crate::testlock::serial();
-        let mut now = 1000;
+        let mut p = Press::new();
+                let mut now = 1000;
 
-        begin_ctl(now);
+        p.begin_ctl(now);
         assert!(
-            !run(&mut now, LONG_MS + 100),
+            !run(&mut p, &mut now, LONG_MS + 100),
             "nothing commits while the key is still down"
         );
-        assert!(!is_long(now), "a control press is never a long press");
-        release(now);
+        assert!(!p.is_long(now), "a control press is never a long press");
+        p.release(now);
         assert!(
-            run(&mut now, 400),
+            run(&mut p, &mut now, 400),
             "a control held past LONG_MS must still activate on release"
         );
-        rest(&mut now);
+        rest(&mut p, &mut now);
 
-        begin(now);
-        run(&mut now, LONG_MS + 100);
-        assert!(is_long(now), "the same hold on a card IS a long press…");
-        release(now);
-        assert!(!run(&mut now, 400), "…and a long press activates nothing");
-        rest(&mut now);
+        p.begin(now);
+        run(&mut p, &mut now, LONG_MS + 100);
+        assert!(p.is_long(now), "the same hold on a card IS a long press…");
+        p.release(now);
+        assert!(!run(&mut p, &mut now, 400), "…and a long press activates nothing");
+        rest(&mut p, &mut now);
     }
 
     /// The dropped-key-up net, which is the one place the two kinds visibly part. A card has
@@ -400,39 +521,39 @@ mod tests {
     /// than never.
     #[test]
     fn a_control_press_whose_release_never_arrives_commits_at_the_ceiling() {
-        let _g = crate::testlock::serial();
-        let mut now = 1000;
-        begin_ctl(now);
+        let mut p = Press::new();
+                let mut now = 1000;
+        p.begin_ctl(now);
         assert!(
-            !run(&mut now, MAX_HOLD_MS - 100),
+            !run(&mut p, &mut now, MAX_HOLD_MS - 100),
             "…but not before the ceiling"
         );
         assert!(
-            run(&mut now, 400),
+            run(&mut p, &mut now, 400),
             "the ceiling must resolve a control press as an activation"
         );
-        rest(&mut now);
+        rest(&mut p, &mut now);
 
-        begin(now);
+        p.begin(now);
         assert!(
-            !run(&mut now, MAX_HOLD_MS + 400),
+            !run(&mut p, &mut now, MAX_HOLD_MS + 400),
             "the same on a card is a hold, and commits nothing"
         );
-        rest(&mut now);
+        rest(&mut p, &mut now);
     }
 
     /// Navigation (or a fresh click) aborts the press: the face springs back and the activation
     /// never runs. Identical for both kinds — "you slid off the control".
     #[test]
     fn a_cancelled_control_press_springs_back_without_activating() {
-        let _g = crate::testlock::serial();
-        let mut now = 1000;
-        begin_ctl(now);
-        run(&mut now, 100);
-        cancel();
-        assert!(!run(&mut now, 600), "a cancelled press must never commit");
-        assert!(!is_active(), "and it must reach rest on its own");
-        assert!((scale() - REST).abs() < 0.001);
+        let mut p = Press::new();
+                let mut now = 1000;
+        p.begin_ctl(now);
+        run(&mut p, &mut now, 100);
+        p.cancel();
+        assert!(!run(&mut p, &mut now, 600), "a cancelled press must never commit");
+        assert!(!p.is_active(), "and it must reach rest on its own");
+        assert!((p.scale() - REST).abs() < 0.001);
     }
 
     /// **A cancelled press stops being LIVE at the cancel, not at the end of its bounce** — the
@@ -441,28 +562,28 @@ mod tests {
     /// still on screen; what it can no longer do is own an activation.
     #[test]
     fn a_cancelled_press_stops_being_live_while_it_is_still_on_screen() {
-        let _g = crate::testlock::serial();
-        let mut now = 1000;
-        begin_ctl(now);
-        run(&mut now, 100);
-        assert!(is_live(), "a press that can still commit is live");
-        cancel();
-        assert!(is_active(), "the bounce is still playing");
-        assert!(!is_live(), "…but nothing can be armed on it any more");
-        run(&mut now, 600);
-        assert!(!is_active() && !is_live(), "and both end together");
+        let mut p = Press::new();
+                let mut now = 1000;
+        p.begin_ctl(now);
+        run(&mut p, &mut now, 100);
+        assert!(p.is_live(), "a press that can still commit is live");
+        p.cancel();
+        assert!(p.is_active(), "the bounce is still playing");
+        assert!(!p.is_live(), "…but nothing can be armed on it any more");
+        run(&mut p, &mut now, 600);
+        assert!(!p.is_active() && !p.is_live(), "and both end together");
         // …while a press that COMMITS stays live through the commit: `take_commit` clears
         // `want_commit`, and a screen reading that instead would disarm itself one frame before
         // the activation it armed for actually runs.
-        begin_ctl(now);
-        run(&mut now, 100);
-        release(now);
+        p.begin_ctl(now);
+        run(&mut p, &mut now, 100);
+        p.release(now);
         let mut live_at_commit = None;
         for _ in 0..40 {
             now = now.wrapping_add(16);
-            tick(now, 0.016);
-            if take_commit(now) {
-                live_at_commit = Some(is_live());
+            p.tick(now, 0.016);
+            if p.take_commit(now) {
+                live_at_commit = Some(p.is_live());
                 break;
             }
         }
@@ -471,7 +592,7 @@ mod tests {
             Some(true),
             "a press that commits is still live AT the commit — `take_commit` clears `want_commit`,\n             so a screen reading that instead would disarm one frame before its own activation ran"
         );
-        rest(&mut now);
+        rest(&mut p, &mut now);
     }
 
     /// A tap shorter than [`MIN_DIP_MS`] still shows its dip: the release waits out the floor
@@ -479,20 +600,20 @@ mod tests {
     /// invisible on a control that stays on screen.
     #[test]
     fn a_flash_quick_tap_still_shows_the_dip_before_it_rings() {
-        let _g = crate::testlock::serial();
-        let mut now = 1000;
-        begin_ctl(now);
-        run(&mut now, 16);
-        release(now); // released almost immediately — well inside MIN_DIP_MS
-        run(&mut now, MIN_DIP_MS - 32);
+        let mut p = Press::new();
+                let mut now = 1000;
+        p.begin_ctl(now);
+        run(&mut p, &mut now, 16);
+        p.release(now); // released almost immediately — well inside MIN_DIP_MS
+        run(&mut p, &mut now, MIN_DIP_MS - 32);
         assert!(
-            scale() < REST - 0.01,
+            p.scale() < REST - 0.01,
             "the dip must still be on screen at the floor"
         );
         assert!(
-            run(&mut now, 500),
+            run(&mut p, &mut now, 500),
             "…and the activation still commits after it"
         );
-        rest(&mut now);
+        rest(&mut p, &mut now);
     }
 }

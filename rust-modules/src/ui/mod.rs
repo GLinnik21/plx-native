@@ -20,6 +20,7 @@ pub mod consts;
 pub(crate) mod decision_alert;
 pub mod detail;
 pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
+pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine world, and its test stub
 pub(crate) mod document_reader;
 pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
 pub mod fmt; // shared duration/clock display formatters
@@ -30,6 +31,7 @@ pub mod home;
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
+pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
@@ -39,6 +41,7 @@ pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral con
 pub mod legal; // Privacy / open-source / source-offer / trademarks — the LG, Plex and LGPL duties that must be readable ON the TV
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
@@ -54,6 +57,8 @@ pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs
 pub mod profile;
 pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub(crate) mod route_screen;
+pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
+pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod settings; // reachable post-setup choices: Home sources, Privacy, Legal and About

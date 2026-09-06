@@ -157,3 +157,8 @@ rust-modules/target-sym/
 rust-modules/target-release-sym/
 pkg/plxnative.debug
 pkg/telemetry.local.json
+tests/fixtures/softfloat/arm.tbl
+
+# Recordings (restructure spec §5.6): a recording taken against a real server never leaves this
+# machine; committed fixtures live under tests/fixtures/replay/ and pass the synthetic alphabet.
+**/plxnative-recordings/

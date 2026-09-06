@@ -19,6 +19,12 @@
 #
 #   tests/focusfp.sh                    # all flows, own mock PMS on 127.0.0.1:32498
 #   tests/focusfp.sh --only 2,8         # a subset
+#   tests/focusfp.sh --rec --only 1     # RECORD each flow (plxnative-rec): the recording lands in
+#                                       #   $OUT/root-<n>/plxnative-recordings/latest, ready for
+#                                       #   `tools/plxnative-rec import <dir> <name>`
+#   tests/focusfp.sh --replay --only 1  # REPLAY tests/fixtures/replay/<n>-<name> instead of
+#                                       #   sending tokens; a flow passes when the app's own
+#                                       #   `replay: done … verdict=SAME` line is produced
 #   tests/focusfp.sh --pms 10.0.0.5:32400   # against a real server (fingerprints then carry
 #                                            #   real ratingKeys: NOT committable)
 #
@@ -32,6 +38,8 @@ PORT="${MOCK_PORT:-32498}"
 SEED="${MOCK_SEED:-1}"
 PMS=""
 ONLY=""
+REC=""
+REPLAY=""
 MIN_LINES=2
 BOOT_WAIT=25     # seconds to wait for the boot marker before giving up on a flow
 STEP=0.9         # seconds between tokens — a human D-pad cadence, and past every settle spring
@@ -43,6 +51,8 @@ while [ $# -gt 0 ]; do
     --only) ONLY="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
+    --rec) REC=1; shift ;;
+    --replay) REPLAY=1; shift ;;
     -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "focusfp: unknown argument $1" >&2; exit 2 ;;
   esac
@@ -85,6 +95,12 @@ run_flow() {
   rm -rf "$d"; mkdir -p "$d"
   printf 'synthetic-token' > "$d/plxnative-token"
   touch "$d/plxnative-focus" "$d/plxnative-noidle"
+  [ -n "$REC" ] && touch "$d/plxnative-rec"
+  if [ -n "$REPLAY" ]; then
+    local fixture="$ROOT/tests/fixtures/replay/$n-$name"
+    [ -d "$fixture" ] || { echo "  [SKIP] $n $name: no committed fixture at $fixture"; return 0; }
+    printf '%s' "$fixture" > "$d/plxnative-recplay"
+  fi
   for t in $triggers; do
     case "$t" in
       *=*) printf '%s' "${t#*=}" > "$d/plxnative-${t%%=*}" ;;
@@ -105,6 +121,22 @@ run_flow() {
     echo "  [FAIL] $n $name: boot marker /$marker/ never appeared (see $log)"
     kill "$SIM_PID" 2>/dev/null || true; wait "$SIM_PID" 2>/dev/null || true; SIM_PID=""
     return 1
+  fi
+  if [ -n "$REPLAY" ]; then
+    # The recording carries the inputs; the app ends the run itself when the recording does.
+    local waited=0
+    while kill -0 "$SIM_PID" 2>/dev/null && [ "$waited" -lt 120 ]; do sleep 1; waited=$((waited+1)); done
+    kill "$SIM_PID" 2>/dev/null || true; wait "$SIM_PID" 2>/dev/null || true; SIM_PID=""
+    local verdict
+    verdict=$(grep -E '^replay: done ' "$log" | tail -1 || true)
+    grep -E '^replay: (diverge|present|INITIAL)' "$log" | head -20 | sed 's/^/    /'
+    if [ -z "$verdict" ]; then
+      echo "  [FAIL] $n $name: no \`replay: done\` line after ${waited}s ($log)"; return 1
+    fi
+    case "$verdict" in
+      *verdict=SAME*) echo "  [PASS] $n $name: $verdict"; return 0 ;;
+      *) echo "  [FAIL] $n $name: $verdict"; return 1 ;;
+    esac
   fi
   sleep 2   # posters and the async landings the first keys must not race
   if [ -n "$tokens" ]; then
@@ -139,6 +171,7 @@ run_flow() {
     return 1
   fi
   echo "  [PASS] $n $name: $lines fingerprint lines -> $fp"
+  [ -n "$REC" ] && echo "         recording: $d/plxnative-recordings/latest ($(cat "$d"/plxnative-recordings/latest/rec-*.jsonl 2>/dev/null | wc -l | tr -d " ") lines)"
   return 0
 }
 

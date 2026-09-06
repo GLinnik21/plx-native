@@ -996,6 +996,19 @@ run-stream: tv-lock-require
 	  trap "kill $$LP 2>/dev/null" EXIT INT TERM HUP; \
 	  tail -F -n +1 $(EVENTLOG)'
 
+# make softfloat-probe — the ARM half of ui/motion.rs's differential claim (spec §4.2): boot the
+# deployed debug build with plxnative-softfloat armed, print the `softfloat:` line (its hash beside
+# the host's pinned one, MATCH or DIVERGE) and fetch the word table for a diff. Needs a prior
+# `make deploy`; the trigger is removed afterwards so the next boot is ordinary.
+softfloat-probe: tv-lock-require
+	@echo "softfloat probe on $(APPID) [$(FLAVOR)]"
+	$(SSH) 'mkdir -p $(RUNDIR) && chmod 1777 $(RUNDIR); touch $(RUNDIR)/plxnative-softfloat; \
+	  $(BOOT_SH) \
+	  sleep 12; kill $$LP 2>/dev/null; sleep 1; rm -f $(RUNDIR)/plxnative-softfloat; \
+	  $(CLOSE_SH) grep softfloat $(EVENTLOG) || echo "softfloat: NO LINE (was the build deployed with devtriggers?)"'
+	@mkdir -p tests/fixtures/softfloat
+	-$(SCP) root@$(TV_OR_DIE):$(RUNDIR)/plxnative-softfloat.tbl tests/fixtures/softfloat/arm.tbl 2>/dev/null && echo "table: tests/fixtures/softfloat/arm.tbl"
+
 kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
@@ -1085,6 +1098,9 @@ check: lint
 	@# "neither shipped configuration", which is a SKIP, so three gates printed nothing and nobody
 	@# saw it. Free, and the one place the make-side and python-side spellings of the stamp meet.
 	python3 ci/check-package.py --selftest
+	@# The restructure's structure gates (spec §15.2): greps with counted allowlists under
+	@# ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
+	ci/check-deps.sh
 	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
 	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
 	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong

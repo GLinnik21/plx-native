@@ -19,7 +19,7 @@ use super::*;
 pub(super) struct Frame {
     /// The HUD's control slot for this frame, sampled once before input is read.
     pub(super) ctrl: crate::ui::player_hud::ControlSlot,
-    /// `SDL_GetTicks()` at the ingest boundary — THE frame time every phase after it uses.
+    /// `clock::now()` at the ingest boundary — THE frame time every phase after it uses.
     pub(super) now: u32,
     /// Seconds since the previous frame's `now`, clamped to 50 ms (the animation timestep).
     pub(super) dt: f32,
@@ -61,12 +61,22 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
         let mut fr = Frame::begin();
         let fr = &mut fr;
-        app.fd_stamps[0] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { 0 };
+        app.instr.mark(crate::diag::heartbeat::Phase::Top);
+        // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
+        // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
+        // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
+        // below consumes them exactly as it consumed the originals.
+        if let Some(t) = app.rec.replay_tick() {
+            clock::set_replay(t.ms);
+            for v in app.rec.replay_inputs() {
+                replay_inject(&v);
+            }
+        }
         crate::system::ls2_pump();
         ingest(app, mt, fr);
-        app.fd_stamps[1] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // ingest
+        app.instr.mark(crate::diag::heartbeat::Phase::Ingest); // ingest
 
-        fr.now = SDL_GetTicks();
+        fr.now = clock::now();
         // dev: /tmp/plxnative-autoplay auto-presses OK once
         //
         // **Never from the sign-in or the picker.** The auth flow hands its credentials to
@@ -92,6 +102,7 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
             d
         };
         app.prev = fr.now;
+        app.rec.tick(fr.now, fr.dt);
         // Whole-frame present gate (`ui::idle`): forget last frame's motion BEFORE the update
         // phase below re-steps every spring, so the flag it leaves describes THIS frame, and
         // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
@@ -102,34 +113,29 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
         // on Home it opens the item menu below, and anywhere else it just springs back.
         let (_, press_moving) = crate::ui::idle::scoped_motion(|| {
-            crate::ui::press::tick(fr.now, fr.dt);
+            app.input.press.tick(fr.now, fr.dt);
         });
         // The motion of whatever page is UNDER a popover — Home, the Library or Search, since
         // the profile chip is a stop on all three. It was `home_underlay_moving` while only Home
         // could be underneath. The account popover's glass re-snapshots off this.
         fr.underlay_moving = press_moving;
         land_results(app, mt, fr);
-        app.fd_stamps[2] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // results
+        app.instr.mark(crate::diag::heartbeat::Phase::Results); // results
         // NAV COMMIT — the route flips here (a transition at its floor, a cut now).
         nav_commit(app, mt, fr);
-        app.fd_stamps[3] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // navcommit
+        app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, mt, fr);
-        app.fd_stamps[4] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // tick_drain
+        app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
         crate::posters::poster_pump(3); // invalidates from inside, per texture installed
 
         fr.player = matches!(app.route, Route::Player { .. });
         // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
         // is absent. Route-scoped and edge-triggered — see `system.rs`.
         crate::system::opaque_route(fr.player);
-        app.fd_stamps[5] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // prepare
+        app.instr.mark(crate::diag::heartbeat::Phase::Prepare); // prepare
         // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
         // settled screen must never run untimed work at the loop rate (spec §8.3).
-        if app.framedrop_on {
-            let prep = app.perf_ms(app.fd_stamps[5].wrapping_sub(app.fd_stamps[4]));
-            if prep > app.fd_worst_prep {
-                app.fd_worst_prep = prep;
-            }
-        }
+        app.instr.note_prepare();
         // ---- whole-frame present gate (`ui::idle`) --------------------------------------
         // A screen with nothing moving on it does not need to be re-sent to the panel. This
         // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
@@ -152,14 +158,13 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         // takes-and-clears the discrete flag, and on the player route (which always presents)
         // a skipped take would leave a stale flag to fire spuriously on the way back out.
         fr.present = crate::ui::idle::should_present(fr.now) || fr.player;
+        app.rec.present(fr.present);
         // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
         // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
-        app.fd_stamps[6] = app.fd_stamps[5];
-        app.fd_stamps[7] = app.fd_stamps[5];
-        app.fd_stamps[8] = app.fd_stamps[5];
+        app.instr.skip_present_phases();
         if fr.present {
             let (_vx, _vy, _vw, _vh) = draw(app, mt, fr);
-            app.fd_stamps[6] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // draw
+            app.instr.mark(crate::diag::heartbeat::Phase::Draw); // draw
             // dev capture stream: grab this finished frame before the swap (after the last draw,
             // so the copy's pass-flush is work the swap would submit anyway). One atomic when idle.
             // Deliberately NOT on the player route (the UI plane is transparent over video, so
@@ -168,7 +173,7 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
             if !fr.player {
                 crate::capture::tick(fr.now);
             }
-            app.fd_stamps[7] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // capture
+            app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
             // Before the swap, never after: the back buffer is undefined once presented.
             #[cfg(feature = "hostsim")]
             crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
@@ -181,7 +186,7 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
                 app.buffer_flip_count = (app.buffer_flip_count + 1) % 60;
             }
             crate::ui::widgets::glass_presented();
-            app.fd_stamps[8] = if app.framedrop_on { SDL_GetPerformanceCounter() } else { app.fd_stamps[0] }; // swap
+            app.instr.mark(crate::diag::heartbeat::Phase::Swap); // swap
             // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
             // idle gate skipped would pace the profiler's once-per-N-frames log off frames
             // that ran no phases at all.
@@ -213,12 +218,22 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
         // only input path. Acknowledge acceptance after dispatch, before polling SDL below.
         for command in crate::lab::take_commands() {
             let ok = dispatch_remote_token(&command.token);
+            if ok && token_is_direct(&command.token) {
+                app.rec.input(super::recorder::enc_token(&command.token));
+            }
             crate::lab::command_done(command.id, ok);
         }
+        // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
+        // be written per token; a token that pushes SDL events is recorded where they are
+        // polled, a DIRECT one (`pat:`, `shot`, `txt:`) here — `token_is_direct` is the split.
+        let mut toks: Vec<String> = Vec::new();
         if let Some(r) = app.remote.as_mut() {
-            r.drain(|tok| {
-                let _ = dispatch_remote_token(tok);
-            });
+            r.drain(|tok| toks.push(tok.to_string()));
+        }
+        for tok in toks {
+            if dispatch_remote_token(&tok) && token_is_direct(&tok) {
+                app.rec.input(super::recorder::enc_token(&tok));
+            }
         }
         while SDL_PollEvent(app.ev.as_mut_ptr() as *mut c_void) != 0 {
             let et = rd_u32(&app.ev, 0);
@@ -267,8 +282,11 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 };
                 log(&format!(
                     "[{}] {what} type=0x{et:x} raw={hex}",
-                    SDL_GetTicks()
+                    clock::now()
                 ));
+            }
+            if (0x103..=0x106).contains(&et) {
+                app.rec.input(super::recorder::enc_lifecycle(et));
             }
             if et == SDL_QUIT {
                 app.running = false;
@@ -341,7 +359,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         app.route = Route::Player {
                             overlay: Overlay::None,
                         };
-                        set_hud(SDL_GetTicks() + HUD_LINGER_MS);
+                        set_hud(clock::now() + HUD_LINGER_MS);
                     }
                 }
             } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
@@ -353,6 +371,12 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // panels and the CH▲/CH▼ pager, which still spell their own key tests.
                 let key = classify(sym, wcode);
                 let isnav = matches!(key, Key::Left { .. } | Key::Right { .. });
+                app.rec.input(super::recorder::enc_key(
+                    sym,
+                    wcode,
+                    (state & 0xff) == 1,
+                    state & 0x100 != 0,
+                ));
                 if (state & 0xff) != 1 {
                     on_key_up(
                         sym,
@@ -362,6 +386,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         &mut app.held_key,
                         &mut app.scrubber,
                         &mut app.repause_at,
+                        &mut app.input.press,
                     );
                     continue;
                 }
@@ -379,11 +404,12 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         &mut app.held_key,
                         &mut app.scrubber,
                         &mut app.modal_repeat,
+                        &mut app.input.press,
                     );
                     continue;
                 }
                 // From here down this IS a fresh press, whatever the driver stamped on it.
-                app.last_input = SDL_GetTicks();
+                app.last_input = clock::now();
                 begin_fresh_press(
                     key,
                     sym,
@@ -393,6 +419,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     &mut app.hud,
                     &mut app.ptr,
                     &mut app.ok_armed,
+                    &mut app.input.press,
                 );
 
                 // LAB BUILDS ONLY, and above every arm below including the modals: the
@@ -455,7 +482,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                             // KEY, so hover judges it by the focus stop rather than by the
                             // coordinates it never had (`route_screen::PressFrom`).
                             crate::ui::consent::arm_key();
-                            crate::ui::press::begin_ctl(app.last_input);
+                            app.input.press.begin_ctl(app.last_input);
                             app.ok_armed = true;
                         } else {
                             // a TableView row (the two documents) commits on the key-down,
@@ -519,7 +546,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     continue;
                 }
                 if matches!(app.route, Route::Login | Route::Profiles | Route::Onboard) {
-                    let action = key_onboarding(app.route, sym, wcode, &mut app.ok_armed);
+                    let action = key_onboarding(app.route, sym, wcode, &mut app.ok_armed, &mut app.input.press);
                     if let Some(next) = apply_onboarding_action(action, &mut app.trail) {
                         app.route = next;
                     }
@@ -614,6 +641,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         &mut app.hud.nav,
                         &mut app.held_key,
                         &mut app.ok_armed,
+                        &mut app.input.press,
                     );
                     continue;
                 }
@@ -701,6 +729,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         &mut app.nav_pending,
                         &mut app.play_from,
                         &mut app.ok_armed,
+                        &mut app.input.press,
                     );
                 } else if matches!(key, Key::Pause) {
                     key_pause(mt, app.route, app.last_input);
@@ -760,10 +789,11 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     );
                 }
             } else if et == SDL_MOUSEMOTION {
-                app.last_input = SDL_GetTicks();
+                app.last_input = clock::now();
                 app.ptr.last_motion = app.last_input;
                 app.ptr.cur_hidden = false;
                 let (mx, my) = ptr_xy(&app.ev);
+                app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
                 if app.ptr.prev_mx >= 0.0 {
                     app.ptr.mot_accum += (mx - app.ptr.prev_mx).abs() + (my - app.ptr.prev_my).abs();
                 }
@@ -818,7 +848,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         crate::ui::consent::pointer_hold(mx, my)
                     };
                     if app.ok_armed && !held {
-                        crate::ui::press::cancel();
+                        app.input.press.cancel();
                         app.ok_armed = false;
                     }
                     continue;
@@ -843,7 +873,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     // press-armed from the pointer since it was written, so hover sliding off
                     // it mid-press could commit from a control the ring had already left.
                     if app.ok_armed && !crate::ui::onboard::pointer_hold(mx, my) {
-                        crate::ui::press::cancel();
+                        app.input.press.cancel();
                         app.ok_armed = false;
                     } else if !app.ok_armed {
                         crate::ui::onboard::pointer_focus(mx, my);
@@ -857,7 +887,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     // aborts a press armed on the stop it left, or the click commits — or the
                     // press-and-hold menu opens — on a tile the user is no longer pressing
                     if crate::ui::library::pointer_focus(mx, my) && app.ok_armed {
-                        crate::ui::press::cancel();
+                        app.input.press.cancel();
                         app.ok_armed = false;
                     }
                 } else if matches!(app.route, Route::Detail) {
@@ -867,7 +897,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     if crate::ui::detail::pointer_focus(mx, my) && app.ok_armed {
                         // the pointer slid off the control the click was armed on: abort the
                         // press without activating, exactly as a nav key does above
-                        crate::ui::press::cancel();
+                        app.input.press.cancel();
                         app.ok_armed = false;
                     }
                 } else if matches!(app.route, Route::Person) {
@@ -892,7 +922,11 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     }
                 }
             } else if et == SDL_MOUSEBUTTONDOWN {
-                app.last_input = SDL_GetTicks();
+                app.last_input = clock::now();
+                {
+                    let (cx, cy) = ptr_xy(&app.ev);
+                    app.rec.input(super::recorder::enc_pointer("click", cx as i32, cy as i32));
+                }
                 // A FRESH click supersedes a press still in flight from the previous one — the
                 // pointer's twin of `begin_fresh_press`'s nav-key abort. Without it, clicking a
                 // control and then something else inside the ~210 ms commit window let the first
@@ -907,7 +941,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // pill clicked, which navigates at once and would otherwise have played the
                 // hero a moment later on the page it had just left.
                 if app.ok_armed {
-                    crate::ui::press::cancel();
+                    app.input.press.cancel();
                     app.ok_armed = false;
                 }
                 // Rule 11's click half. These two used to `continue` unconditionally, which
@@ -920,7 +954,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     if crate::ui::consent::alert_press_at(cx, cy)
                         || crate::ui::consent::press_at(cx, cy)
                     {
-                        crate::ui::press::begin_ctl(app.last_input);
+                        app.input.press.begin_ctl(app.last_input);
                         app.ok_armed = true;
                     } else if crate::ui::consent::click_row(cx, cy) {
                         commit_consent(&mut app.route, &mut app.trail);
@@ -1020,7 +1054,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                             // …then the tvOS press, exactly as the key arm does it:
                             // `activate_player_row` reads `hud.nav`, which the two lines
                             // above have just parked on what was clicked.
-                            crate::ui::press::begin_ctl(app.last_input);
+                            app.input.press.begin_ctl(app.last_input);
                             app.ok_armed = true;
                         }
                         _ => {
@@ -1044,7 +1078,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                                 // never be seen under it.
                                 app.hud.nav.focus = 1;
                                 app.hud.nav.btn = idx;
-                                crate::ui::press::begin_ctl(app.last_input);
+                                app.input.press.begin_ctl(app.last_input);
                                 app.ok_armed = true;
                             } else if let Some(frac) = on_scrub {
                                 let mut t = (frac as f64 * dur() as f64) as i64;
@@ -1114,7 +1148,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                             // (`home::focus_is_ctl` is what tells them apart, here as on OK).
                             crate::ui::home::set_hero_focus(b);
                             if crate::ui::home::focus_is_ctl() {
-                                crate::ui::press::begin_ctl(app.last_input);
+                                app.input.press.begin_ctl(app.last_input);
                                 app.ok_armed = true;
                             } else {
                                 home_activate(
@@ -1217,10 +1251,10 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     let (cx, cy) = ptr_xy(&app.ev);
                     if crate::ui::detail::click(cx, cy) {
                         if crate::ui::detail::focus_is_card() {
-                            crate::ui::press::begin(app.last_input);
+                            app.input.press.begin(app.last_input);
                             app.ok_armed = true;
                         } else if crate::ui::detail::focus_is_ctl() {
-                            crate::ui::press::begin_ctl(app.last_input);
+                            app.input.press.begin_ctl(app.last_input);
                             app.ok_armed = true;
                         } else if crate::ui::detail::on_ok() {
                             start_playback(
@@ -1305,9 +1339,9 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     // the same two predicates the key arm asks, in the same order.
                     if crate::ui::profiles::press_at(cx, cy) {
                         if crate::ui::profiles::focus_is_avatar() {
-                            crate::ui::press::begin(app.last_input);
+                            app.input.press.begin(app.last_input);
                         } else {
-                            crate::ui::press::begin_ctl(app.last_input);
+                            app.input.press.begin_ctl(app.last_input);
                         }
                         app.ok_armed = true;
                     } else {
@@ -1319,7 +1353,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     // still flips its pin on the button-down. `commit_onboarding` is what can
                     // finish the flow now, from the per-frame arm.
                     if crate::ui::onboard::press_at(cx, cy) {
-                        crate::ui::press::begin_ctl(app.last_input);
+                        app.input.press.begin_ctl(app.last_input);
                         app.ok_armed = true;
                     } else {
                         crate::ui::onboard::click(cx, cy);
@@ -1329,11 +1363,15 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     crate::ui::login::key(SDLK_RETURN, 0);
                 }
             } else if et == SDL_MOUSEBUTTONUP {
-                app.last_input = SDL_GetTicks();
+                app.last_input = clock::now();
+                {
+                    let (cx, cy) = ptr_xy(&app.ev);
+                    app.rec.input(super::recorder::enc_pointer("release", cx as i32, cy as i32));
+                }
                 // a click that armed the tvOS press (a detail card) releases on the button-up,
                 // the pointer's twin of the OK key-up: without it the dip would sit there until
                 // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
-                crate::ui::press::release(app.last_input);
+                app.input.press.release(app.last_input);
                 if app.ptr.drag {
                     app.ptr.drag = false;
                     if scrub() >= 0 {
@@ -1342,7 +1380,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     extend_hud(app.last_input, HUD_LINGER_MS);
                 }
             } else if et == SDL_MOUSEWHEEL {
-                app.last_input = SDL_GetTicks();
+                app.last_input = clock::now();
                 if app.last_input.wrapping_sub(app.ptr.last_wheel) > 250 {
                     app.ptr.last_wheel = app.last_input;
                     // **The host reads a DIFFERENT offset, and this one is not the LG-fork
@@ -1363,6 +1401,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     } else {
                         rd_i32(&app.ev, 20)
                     };
+                    app.rec.input(super::recorder::enc_pointer("wheel", 0, dy));
                     // the wheel scrolls VERTICALLY only, and only on routes with a vertical
                     // flow (it used to drive home's focus behind every other screen)
                     //
@@ -1572,7 +1611,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
                 && ((matches!(app.route, Route::Home) && crate::ui::home::focus_is_card())
                     || (matches!(app.route, Route::Library) && crate::ui::library::focus_is_card()))
             {
-                crate::ui::press::begin(fr.now);
+                app.input.press.begin(fr.now);
                 app.ok_armed = true;
                 // past MIN_DIP_MS (the dip must be seen), well short of LONG_MS
                 app.press_release_at = fr.now.wrapping_add(150).max(1);
@@ -1580,7 +1619,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
         }
         if app.press_release_at != 0 && fr.now.wrapping_sub(app.press_release_at) < 0x8000_0000 {
             app.press_release_at = 0;
-            crate::ui::press::release(fr.now);
+            app.input.press.release(fr.now);
         }
         // dev: /tmp/plxnative-itemmenu opens the press-and-hold card menu on the focused grid
         // card once the snap has settled — the headless entry for the item-menu FPS scene and
@@ -2347,7 +2386,7 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
             // `is_long` leads and short-circuits, deliberately: everything after it OPENS a
             // menu, so evaluating the arms first would put the popover up on the key-DOWN of
             // every tap.
-            let held_menu = crate::ui::press::is_long(fr.now)
+            let held_menu = app.input.press.is_long(fr.now)
                 && match app.route {
                     // the grid, not the hero: the hero has no card to anchor a panel beside
                     Route::Home => {
@@ -2422,8 +2461,8 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                 };
             if held_menu {
                 app.ok_armed = false;
-                crate::ui::press::cancel();
-            } else if crate::ui::press::take_commit(fr.now) {
+                app.input.press.cancel();
+            } else if app.input.press.take_commit(fr.now) {
                 app.ok_armed = false;
                 // The deferred activation, dispatched by asking the SAME questions the key
                 // ladder asked when it armed the press, in the SAME order. The modal panel
@@ -2559,7 +2598,7 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                         _ => {}
                     }
                 }
-            } else if !crate::ui::press::is_active() {
+            } else if !app.input.press.is_active() {
                 app.ok_armed = false; // long-press / cancelled — disarm without activating
             }
         }
@@ -3658,6 +3697,11 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
 pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &mut Frame) {
         fr.rn = route_word(app.route);
     let rn = fr.rn;
+    if crate::text::take_measure_fault() && !app.measure_fault_logged {
+        // once per process: the layout that was built on estimates is the thing to go and look at
+        app.measure_fault_logged = true;
+        log("text: a width was measured with NO FONT loaded — layout is on average-advance estimates");
+    }
         // …and the same name as a reportable event, on CHANGE only. Per-frame would be a
         // firehose of one fact; what is worth knowing is which screens get used, which is a
         // transition count. `&'static str` from the table above, so nothing runtime-built can
@@ -3686,8 +3730,7 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
         // `rn` is passed rather than re-derived so the fingerprint's `route=` is the same
         // string the heartbeat prints; the `Screen` beside it is what the probe DISPATCHES on,
         // and its match is exhaustive so a new route cannot fingerprint as nothing.
-        if crate::focusprobe::armed() {
-            let screen = match app.route {
+        let probe_screen = |app: &App| match app.route {
                 Route::Login => crate::focusprobe::Screen::Login,
                 Route::Profiles => crate::focusprobe::Screen::Profiles,
                 Route::Onboard => crate::focusprobe::Screen::Onboard,
@@ -3712,18 +3755,31 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
                         Overlay::More => "more",
                     },
                 },
-            };
-            crate::focusprobe::sample(
-                fr.rn,
-                screen,
-                crate::focusprobe::Hud {
-                    focus: app.hud.nav.focus,
-                    btn: app.hud.nav.btn,
-                    tab: app.hud.nav.tab,
-                    visible: hud_visible(app.last_input, hud_until(), paused(), app.hud.dismissed),
-                },
-                fr.ctrl,
-            );
+        };
+        let probe_hud = |app: &App| crate::focusprobe::Hud {
+            focus: app.hud.nav.focus,
+            btn: app.hud.nav.btn,
+            tab: app.hud.nav.tab,
+            visible: hud_visible(app.last_input, hud_until(), paused(), app.hud.dismissed),
+        };
+        if crate::focusprobe::armed() {
+            crate::focusprobe::sample(fr.rn, probe_screen(app), probe_hud(app), fr.ctrl);
+        }
+        // The recorder's frame tail (spec §5.3): on an event frame the logical-state hash —
+        // the press machine, the route and overlay words and the focus fingerprint, i.e. the
+        // state a press MOVED this frame, sampled here for the probe's own reason — then the
+        // frame's records flushed. Under a replay the same hash is graded against the recorded
+        // one; the run ends when the recording does.
+        if !matches!(app.rec, super::recorder::Recplay::Off) {
+            let focus = crate::focusprobe::line(fr.rn, probe_screen(app), probe_hud(app), fr.ctrl);
+            let ov = overlay_word(app.route);
+            let press = &app.input.press;
+            let done = app
+                .rec
+                .end_frame(&|| super::recorder::state_hash(press, rn, ov, &focus));
+            if done {
+                app.running = false;
+            }
         }
         // frame-drop detector: attribute slow frames to pump(uploads)/draw/swap(GPU). Drains the
         // per-frame upload counters every frame (so the count is per-frame, not cumulative).
@@ -3733,24 +3789,17 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
         // `present` gates this too: a frame the idle gate skipped drew nothing, so grading it
         // would drag `worstframe` toward zero and read as a perf WIN. A skipped frame is not a
         // fast frame — it is an absent one, and `fps=` on the heartbeat is where it shows up.
-        if app.framedrop_on && fr.present {
-            let ph = |k: usize| app.perf_ms(app.fd_stamps[k].wrapping_sub(app.fd_stamps[k - 1]));
-            let (ingest, results, navcommit, tick_drain, prepare, draw, cap, swap) =
-                (ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7), ph(8));
-            let total = app.perf_ms(app.fd_stamps[8].wrapping_sub(app.fd_stamps[0]));
-            let (up, px) = crate::posters::take_upload_stats();
-            let (cards, cards_off) = crate::gfx::take_card_stats();
-            if total > app.fd_worst {
-                app.fd_worst = total;
-            }
-            if total > app.framedrop_thresh {
-                // Printed in the frame ALGORITHM's order (spec §8.4), which on this loop is
-                // not the order they ran: navcommit ran before tick_drain here.
-                log(&format!(
-                    "FRAMEDROP total={total:.1} ingest={ingest:.1} results={results:.1} tick_drain={tick_drain:.1} navcommit={navcommit:.1} prepare={prepare:.1} draw={draw:.1} capture={cap:.1} swap={swap:.1} up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
+        if fr.present {
+            if let Some(line) = app.instr.frame_drop_line(&|| {
+                let (up, px) = crate::posters::take_upload_stats();
+                let (cards, cards_off) = crate::gfx::take_card_stats();
+                format!(
+                    "up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
                     crate::ui::glassload::step_index(),
                     crate::ui::home::snap_pos()
-                ));
+                )
+            }) {
+                log(&line);
             }
         }
 }
@@ -3853,17 +3902,13 @@ pub(super) unsafe fn heartbeat(app: &mut App, _mt: &crate::task::MainThread, fr:
             } else {
                 String::new()
             };
-            if app.framedrop_on {
-                // `worstframe=` stays LAST of the graded fields (both harness regexes anchor
-                // on it); `worstprep=` follows it, ungated by present.
-                log(&format!("loop={} route={rn}{ov}{pos}{vp} fps={pres}{ld} worstframe={:.1}ms worstprep={:.1}ms{SIM_TAG}", app.loop_shown, app.fd_worst, app.fd_worst_prep));
-                app.fd_worst = 0.0;
-                app.fd_worst_prep = 0.0;
-            } else {
-                log(&format!(
-                    "loop={} route={rn}{ov}{pos}{vp} fps={pres}{ld}{SIM_TAG}", app.loop_shown
-                ));
-            }
+            // `worstframe=` stays LAST of the graded fields (both harness regexes anchor on it);
+            // `worstprep=` follows it, ungated by present. Both are empty unarmed.
+            let tail = app.instr.heartbeat_tail(app.rec.take_spent_us());
+            log(&format!(
+                "loop={} route={rn}{ov}{pos}{vp} fps={pres}{ld}{tail}{SIM_TAG}",
+                app.loop_shown
+            ));
         }
 }
 
@@ -3882,4 +3927,31 @@ pub(super) unsafe fn shutdown(mt: &crate::task::MainThread) {
     crate::capture::shutdown();
     crate::posters::posters_shutdown();
     SDL_Quit();
+}
+
+/// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL
+/// kinds through the same synthesis the remote FIFO uses, direct tokens through the dispatcher.
+/// An unknown kind is logged once per kind rather than silently skipped.
+unsafe fn replay_inject(v: &serde_json::Value) {
+    let kind = v["kind"].as_str().unwrap_or("");
+    let i = |k: &str| v[k].as_i64().unwrap_or(0) as i32;
+    let u = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
+    match kind {
+        "key" => {
+            if v["repeat"].as_bool().unwrap_or(false) {
+                remote_synth_key_repeat(u("sym"), u("wcode"));
+            } else {
+                remote_synth_key_edge(u("sym"), u("wcode"), v["down"].as_bool().unwrap_or(true));
+            }
+        }
+        "pointer" => remote_synth_pointer(SDL_MOUSEMOTION, i("x"), i("y")),
+        "click" => remote_synth_pointer(SDL_MOUSEBUTTONDOWN, i("x"), i("y")),
+        "release" => remote_synth_pointer(SDL_MOUSEBUTTONUP, i("x"), i("y")),
+        "wheel" => remote_synth_wheel(i("y")),
+        "lifecycle" => remote_synth_lifecycle(u("code")),
+        "token" => {
+            let _ = dispatch_remote_token(v["tok"].as_str().unwrap_or(""));
+        }
+        other => log(&format!("replay: input kind {other:?} is not replayable; skipped")),
+    }
 }

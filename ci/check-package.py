@@ -995,6 +995,12 @@ if data_tar.exists():
           "payload carries lab.json only in a LAB=1 build (a live session secret otherwise)")
     check(not (has_lab and IS_STABLE),
           "the stable id never carries a lab session file")
+    # A recording (restructure spec §5.3, `ui/rec.rs`) is the household's every keypress and every
+    # server answer; it lives in the runtime root's plxnative-recordings/ and nothing stages it — but a
+    # package that carried one would look completely normal, so the absence is asserted.
+    rec_paths = [p for p in paths if "plxnative-recordings" in p or p.endswith(".jsonl")]
+    check(not rec_paths,
+          "payload carries no recorder artefacts (plxnative-recordings/, *.jsonl): %s" % rec_paths[:3])
     missing = [loc for loc in tracked_locales
                if f'usr/palm/applications/{appinfo["id"]}/resources/{loc}/appinfo.json' not in paths]
     check(not missing,

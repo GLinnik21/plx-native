@@ -322,6 +322,33 @@ pub(crate) fn crash_on_purpose() {
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn crash_on_purpose() {}
 
+/// `plxnative-softfloat`: the ARM half of `ui::motion`'s differential claim (spec §4.2). Runs the
+/// 4,096-operand table through this binary's own arithmetic, logs its hash beside the host's
+/// pinned one, and writes the words to `plxnative-softfloat.tbl` in the runtime root so a
+/// divergence can be diffed word by word. `make softfloat-probe` is the recipe.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn softfloat_probe() {
+    if !flag("softfloat") {
+        return;
+    }
+    let host = crate::ui::motion::DIFFERENTIAL_HASH_HOST;
+    let here = crate::ui::motion::differential_hash();
+    crate::log(&format!(
+        "softfloat: n={} hash={here:#018x} host={host:#018x} {}",
+        crate::ui::motion::DIFFERENTIAL_N,
+        if here == host { "MATCH" } else { "DIVERGE" }
+    ));
+    let mut t = Vec::new();
+    crate::ui::motion::differential_table(&mut t);
+    let body: String = t.iter().map(|w| format!("{w:08x}\n")).collect();
+    let path = crate::paths::runtime_dir().join("plxnative-softfloat.tbl");
+    if let Err(e) = std::fs::write(&path, body) {
+        crate::log(&format!("softfloat: table write failed: {e}"));
+    }
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn softfloat_probe() {}
+
 /// A test-only playback policy override from `plxnative-quality`.
 ///
 /// The server matrix grades established direct-play/remux/transcode routes. It must not silently
@@ -898,6 +925,32 @@ pub(crate) fn any_trigger_present() -> bool {
         .ok()
         .map(|rd| rd.filter_map(|e| e.ok()).any(|e| is_armed_trigger(&e)))
         .unwrap_or(false)
+}
+
+/// Every `plxnative-*` FILE in the runtime root, by name (DIAG entries included), sorted — the
+/// recorder's header lists them so a replay can say what the recording boot had armed. Names
+/// only: a trigger's CONTENT can be a query or a path and never enters a recording.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn armed_triggers() -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(crate::paths::runtime_dir())
+        .ok()
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .filter_map(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    // the three logs share the prefix and are not triggers
+                    (n.starts_with("plxnative-") && !n.ends_with(".log")).then_some(n)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn armed_triggers() -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(feature = "devtriggers")]

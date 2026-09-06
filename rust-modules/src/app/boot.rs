@@ -856,12 +856,9 @@ pub(super) unsafe fn boot(
         .and_then(|s| s.parse().ok())
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(22.0);
-    let perf_freq = SDL_GetPerformanceFrequency() as f64;
-    let fd_worst = 0.0f64; // worst frame-total this second, for a once/sec peak line
-    let fd_worst_prep = 0.0f64; // worst prepare phase this second, timed on every iteration
-    let fd_stamps = [0u64; 9]; // the nine phase stamps of one iteration (see the loop top)
+    let instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
 
-    let last_input = SDL_GetTicks();
+    let last_input = clock::now();
     let t0 = last_input;
     let loop_t = t0;
     let iters_ct = 0i32;
@@ -1044,7 +1041,7 @@ pub(super) unsafe fn boot(
     // has been initialised and, unlike the earlier boot/discovery work, the SDL loop below is
     // ready to dispatch a delivered command within one frame. Compile-time no-op otherwise.
     crate::lab::start_control();
-    let app = App {
+    let mut app = App {
         pick_user,
         home_osc_last,
         hero_osc_last,
@@ -1066,9 +1063,6 @@ pub(super) unsafe fn boot(
         onboard_osc_last,
         onboard_osc_right,
         nav_osc_last,
-        fd_worst,
-        fd_worst_prep,
-        fd_stamps,
         last_input,
         loop_t,
         iters_ct,
@@ -1123,9 +1117,10 @@ pub(super) unsafe fn boot(
         remote,
         win,
         t0,
-        perf_freq,
-        framedrop_on,
-        framedrop_thresh,
+        instr,
+        measure_fault_logged: false,
+        input: crate::ui::input::Input::new(),
+        rec: super::recorder::Recplay::Off,
         dev: DevFlags {
             detail_osc,
             home_osc,
@@ -1147,5 +1142,29 @@ pub(super) unsafe fn boot(
             glass_hz_armed,
         },
     };
+    // The recorder / replay driver, armed ONCE, here, at the end of boot (spec §5.3): the
+    // header's initial conditions are what this boot reached — route, sign-in, roster size,
+    // consent — and nothing has ticked yet. Phase 2 honesty: the stores have already spawned
+    // their first fetches above (they still talk to the network themselves until phase 4), so
+    // a replay runs those LIVE against the same synthetic server and grades the machines.
+    {
+        let consent = crate::telemetry::consent::current();
+        let init = super::recorder::AppInit {
+            route: route_word(app.route),
+            session: !crate::plex::session::peek().account_token.is_empty(),
+            servers: crate::plex::server_count() as u32,
+            consent_asked: consent.as_ref().map(|c| c.asked_version).unwrap_or(0),
+            consent_errors: consent.as_ref().map(|c| c.errors).unwrap_or(false),
+            consent_usage: consent.as_ref().map(|c| c.usage).unwrap_or(false),
+            seed: 0,
+        };
+        app.rec = super::recorder::Recplay::arm(&init, crate::dev::armed_triggers());
+        if let Some(ms) = app.rec.clock_start() {
+            super::clock::set_replay(ms);
+            app.t0 = ms;
+            app.loop_t = ms;
+            app.last_input = ms;
+        }
+    }
     Ok(app)
 }

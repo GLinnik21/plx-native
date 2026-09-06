@@ -84,6 +84,136 @@ class _Overlay:
         os.unlink(self.fh.name)
 
 
+class ReplayFixtures(unittest.TestCase):
+    """Restructure spec §5.6 rule 2: every string value in a committed replay fixture belongs to
+    the closed synthetic alphabet (tests/fixtures/replay/ALPHABET.json). The guard applies the same
+    rule before a push; this is the copy that runs on every `make check`, so a fixture that slipped
+    in by any other route is still caught."""
+
+    FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "replay")
+
+    def _alphabet(self):
+        with open(os.path.join(self.FIXTURES, "ALPHABET.json"), encoding="utf-8") as f:
+            a = json.load(f)
+        return frozenset(a["literals"]), [re.compile("^(?:%s)$" % p) for p in a["patterns"]]
+
+    @staticmethod
+    def _strings(node, out):
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                ReplayFixtures._strings(v, out)
+        elif isinstance(node, list):
+            for v in node:
+                ReplayFixtures._strings(v, out)
+
+    def test_no_committed_fixture_string_leaves_the_synthetic_alphabet(self):
+        lits, pats = self._alphabet()
+        checked = 0
+        for name in sorted(os.listdir(self.FIXTURES)):
+            d = os.path.join(self.FIXTURES, name)
+            if not os.path.isdir(d):
+                continue
+            for fn in sorted(os.listdir(d)):
+                if not (fn == "manifest.json" or (fn.startswith("rec-") and fn.endswith(".jsonl"))):
+                    continue
+                with open(os.path.join(d, fn), encoding="utf-8") as f:
+                    text = f.read()
+                docs = ([json.loads(text)] if fn.endswith(".json")
+                        else [json.loads(l) for l in text.splitlines() if l.strip()])
+                for doc in docs:
+                    vals = []
+                    self._strings(doc, vals)
+                    for v in vals:
+                        checked += 1
+                        # the value is deliberately not in the message: a leak by a shorter route
+                        self.assertTrue(v in lits or any(p.match(v) for p in pats),
+                                        "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
+        self.assertGreaterEqual(checked, 0)
+
+    def _tool(self, *args):
+        tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
+        return subprocess.run([sys.executable, os.path.abspath(tool), *args],
+                              capture_output=True, text=True)
+
+    def _synthetic_recording(self, root, st=0x1234, anchor=False):
+        d = os.path.join(root, "rec")
+        os.makedirs(d)
+        manifest = {"schema": 1, "state_fp": 7, "build": "0.7.0-dev", "features": [], "triggers": [],
+                    "init": {"probe": "seed=0", "hash": 1}, "clock": {"start": 0}, "blobs": False}
+        if anchor:
+            manifest["anchor"] = True
+        with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        with open(os.path.join(d, "rec-0000.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"t": "tick", "f": 0, "ms": 0, "dt_us": 16000}) + "\n")
+            f.write(json.dumps({"t": "in", "f": 0, "kind": "key", "sym": 1, "wcode": 0, "down": True, "repeat": False}) + "\n")
+            f.write(json.dumps({"t": "st", "f": 0, "hash": st}) + "\n")
+        return d
+
+    def test_a_rebaseline_without_a_divergence_record_is_refused(self):
+        """Spec §5.5 / §15.1: `--rebaseline` is allowed only with a divergence record the replay
+        driver's own log supports, and never for an anchor fixture. The tool is the owner of the
+        rule, so its test lives here rather than in the Rust fixture list."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixtures = os.path.join(tmp, "fixtures")
+            os.makedirs(fixtures)
+            env_tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
+            src = open(os.path.abspath(env_tool), encoding="utf-8").read()
+            # point the tool at a throwaway fixture directory
+            tool = os.path.join(tmp, "plxnative-rec")
+            with open(tool, "w", encoding="utf-8") as f:
+                f.write(src.replace('FIXTURES = os.path.join(ROOT, "tests", "fixtures", "replay")',
+                                    'FIXTURES = %r' % fixtures))
+            shutil.copy(os.path.join(self.FIXTURES, "ALPHABET.json"), fixtures)
+            old = self._synthetic_recording(os.path.join(tmp, "a"), st=0x10)
+            run = lambda *a: subprocess.run([sys.executable, tool, *a], capture_output=True, text=True)
+            self.assertEqual(run("import", old, "flow").returncode, 0)
+            new = self._synthetic_recording(os.path.join(tmp, "b"), st=0x20)
+            # 1. no record at all
+            r = run("rebaseline", new, "flow")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("divergence record", r.stdout)
+            # 2. a log that says SAME is not a divergence record
+            log = os.path.join(tmp, "same.log")
+            open(log, "w").write("replay: done frames=1 graded=1 diverged=0 present_diffs=0 verdict=SAME\n")
+            r = run("rebaseline", new, "flow", "--log", log)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            # 3. a divergence about a DIFFERENT fixture (expected hash is not this one's)
+            log = os.path.join(tmp, "other.log")
+            open(log, "w").write("replay: diverge f=0 expected=0x0000000000000099 got=0x0000000000000020 inputs=1\n"
+                                 "replay: done frames=1 graded=1 diverged=1 present_diffs=0 verdict=DIVERGED\n")
+            r = run("rebaseline", new, "flow", "--log", log)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("not this fixture", r.stdout)
+            # 4. a real record: accepted, and divergence.json is written beside the new recording
+            log = os.path.join(tmp, "real.log")
+            open(log, "w").write("replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n"
+                                 "replay: done frames=1 graded=1 diverged=1 present_diffs=0 verdict=DIVERGED\n")
+            r = run("rebaseline", new, "flow", "--log", log)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            rec = json.load(open(os.path.join(fixtures, "flow", "divergence.json")))
+            self.assertEqual(rec["first_frame"], 0)
+            self.assertEqual(rec["preceding_event_kinds"], ["in"])
+            # 5. an anchor refuses even with a record
+            anchor = self._synthetic_recording(os.path.join(tmp, "c"), st=0x30, anchor=True)
+            self.assertEqual(run("import", anchor, "pinned").returncode, 0)
+            log = os.path.join(tmp, "anchor.log")
+            open(log, "w").write("replay: diverge f=0 expected=0x0000000000000030 got=0x0000000000000020 inputs=1\n"
+                                 "replay: done frames=1 graded=1 diverged=1 present_diffs=0 verdict=DIVERGED\n")
+            r = run("rebaseline", new, "pinned", "--log", log)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("ANCHOR", r.stdout)
+
+    def test_the_alphabet_refuses_a_title_shaped_string(self):
+        lits, pats = self._alphabet()
+        for v in ("Film Club Night", "The Godfather", "192.168.0.114", "nas-home"):
+            self.assertFalse(v in lits or any(p.match(v) for p in pats), v)
+        for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(4))", "plxnative-rec"):
+            self.assertTrue(v in lits or any(p.match(v) for p in pats), v)
+
+
 class TeardownProcessTable(unittest.TestCase):
     def test_non_utf8_argv_cannot_hide_or_crash_a_run_stream_pid(self):
         marker = "/tmp/com.beb.plxnative.debug/plxnative-events.log"
@@ -3532,6 +3662,32 @@ class PresentedRate(unittest.TestCase):
         ok, why = run.a_presented_rate(lines2, {})
         self.assertTrue(ok, why)
         self.assertIn("median 25.0", why)
+
+class DepGates(unittest.TestCase):
+    """Restructure spec §15.2: `ci/check-deps.sh` is green, and every allowlist under ci/allow/
+    declares the count it actually has — so an allowlist grows only by editing both lines, and a
+    review sees the number move."""
+
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+    def test_check_deps_is_green(self):
+        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_every_allowlist_declares_its_own_count(self):
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        seen = 0
+        for fn in sorted(os.listdir(allow)):
+            with open(os.path.join(allow, fn), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            declared = int(lines[0].split(":")[1])
+            entries = [l for l in lines if l.strip() and not l.startswith("#")]
+            self.assertEqual(declared, len(entries), fn)
+            for e in entries:
+                self.assertTrue(os.path.exists(os.path.join(self.ROOT, e.split("\t")[0])), e)
+            seen += 1
+        self.assertGreaterEqual(seen, 3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

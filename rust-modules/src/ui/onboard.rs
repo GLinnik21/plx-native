@@ -850,7 +850,7 @@ pub fn press_at(mx: f32, my: f32) -> bool {
 
 /// What the in-flight press was armed on — its VERB and where the press came from.
 ///
-/// **Read through [`armed`], never raw**, so an arm cannot outlive the crate-global press it
+/// **Read through [`armed`], never raw**, so an arm cannot outlive the press (the one in `App.input`, read here through its published snapshot) it
 /// belongs to: many things cancel that press (a nav key, a fresh click, the lost-key-up ceiling)
 /// and none of them knows this static exists. The expiry is `press::is_live` rather than
 /// `is_active` — a cancelled press stays ACTIVE for its bounce, and a list row's OK is immediate,
@@ -1361,6 +1361,7 @@ mod tests {
     /// first-run answer and leave the ceremony instead (Codex review, 2026-09-04).
     #[test]
     fn an_action_that_changes_verb_under_an_armed_press_refuses_to_commit() {
+        let mut p = crate::ui::press::Press::new();
         let _g = crate::testlock::serial();
         crate::browse::reset();
         unsafe {
@@ -1373,7 +1374,7 @@ mod tests {
         // `arm_action` records what the press is FOR; `begin_ctl` is the press itself, and `armed`
         // deliberately reads through it — so a test that omits it is testing the un-armed path.
         arm_action();
-        crate::ui::press::begin_ctl(1);
+        p.begin_ctl(1);
         // …the roster lands while the press is still springing back.
         crate::browse::seed_two_source_table_for_test();
         assert_eq!(action_kind(), ActionKind::Start, "the same stop, a different verb");
@@ -1383,19 +1384,19 @@ mod tests {
         );
         // …and an unchanged verb still commits normally.
         arm_action();
-        crate::ui::press::begin_ctl(2);
+        p.begin_ctl(2);
         assert!(!matches!(on_ok(), Action::None));
         // …while an arm the press outlived is ignored rather than obeyed, from the CANCEL rather
         // than from the end of the bounce — see the next test for why that difference is visible.
         arm_action();
-        crate::ui::press::begin_ctl(3);
-        crate::ui::press::cancel();
+        p.begin_ctl(3);
+        p.cancel();
         assert!(
-            crate::ui::press::is_active(),
+            p.is_active(),
             "the cancelled press is still on screen"
         );
         assert!(armed().is_none(), "…and already disarmed, by construction");
-        end_press();
+        end_press(&mut p);
         crate::browse::reset();
     }
 
@@ -1407,13 +1408,13 @@ mod tests {
     /// "nothing uncommitted". Under the draft model `draft_rows` absorbs the landing row into
     /// `ENTRY` at first sight, so its first toggle IS an edit
     /// (`a_roster_that_lands_after_the_editor_opened_is_uncommitted_only_once_edited`).
-    /// Spring the crate-global press all the way back to idle. A test that arms one owes this to
+    /// Spring the test's press all the way back to idle. A test that arms one owes this to
     /// the next test in the file: `press` is process-wide state, and `testlock::serial` orders the
     /// tests without cleaning up after them.
-    fn end_press() {
-        crate::ui::press::cancel();
+    fn end_press(p: &mut crate::ui::press::Press) {
+        p.cancel();
         for i in 0..200 {
-            crate::ui::press::tick(4 + i * 16, 0.016);
+            p.tick(4 + i * 16, 0.016);
         }
     }
 
@@ -1436,6 +1437,7 @@ mod tests {
 
     #[test]
     fn a_press_abandoned_for_the_list_does_not_swallow_the_row_s_own_ok() {
+        let mut p = crate::ui::press::Press::new();
         let _g = crate::testlock::serial();
         crate::browse::reset();
         crate::browse::seed_two_source_table_for_test();
@@ -1451,13 +1453,13 @@ mod tests {
         let before = draft_on(section);
         // The user presses the pill…
         arm_action();
-        crate::ui::press::begin_ctl(1);
+        p.begin_ctl(1);
         // …then navigates instead. `app.rs`'s `note_global_press` cancels on any bound non-OK key,
         // and this screen's UP moves focus into the list — both while the bounce still plays.
-        crate::ui::press::cancel();
+        p.cancel();
         key(SDLK_UP, 0);
         assert!(
-            crate::ui::press::is_active(),
+            p.is_active(),
             "the abandoned press is still springing back — the whole window this bug lived in"
         );
         assert!(matches!(settled_focus(), Focus::List), "focus is on the row");
@@ -1469,7 +1471,7 @@ mod tests {
             "the row toggles (in the DRAFT — a toggle never touches the live table until Done); \
              it is not judged against a pill the user already left"
         );
-        end_press();
+        end_press(&mut p);
         crate::browse::reset();
     }
 

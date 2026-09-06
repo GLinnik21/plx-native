@@ -4752,6 +4752,22 @@ def reject_simulator(lines):
         )
 
 
+# The RECORDER (`plxnative-rec`) writes ` rec=<n>us` onto every heartbeat while armed. A recorder
+# perturbs the pacing it feeds (restructure spec §5.3), so — exactly like the two profiler triggers —
+# it disqualifies a run's `fps=`/`worstframe=`; `loop=` is still readable (liveness is not pacing).
+REC_RE = re.compile(r"\brec=\d+us\b")
+
+
+def reject_recorder(lines):
+    """Abort rather than grade a frame rate measured with the recorder armed."""
+    if any(REC_RE.search(ln) for ln in lines):
+        raise SystemExit(
+            "refusing to grade: this log carries `rec=`, so the recorder (plxnative-rec) was armed "
+            "for the run. A recorder perturbs the pacing it feeds; take pacing in a separate, "
+            "unarmed run."
+        )
+
+
 def parse_loop(lines, route, overlay):
     """The per-second LOOP-ITERATION counts whose route (+overlay, if the scene pins one) match."""
     reject_simulator(lines)
@@ -4776,6 +4792,7 @@ FPS_RE = re.compile(r"\bloop=\d+ route=(\w+)(?: overlay=(\w+))?.*?\bfps=(\d+)")
 def parse_fps(lines, route, overlay):
     """The per-second PRESENTED-FRAME counts whose route (+overlay) match."""
     reject_simulator(lines)
+    reject_recorder(lines)
     out = []
     for ln in lines:
         m = FPS_RE.search(ln)
@@ -4800,6 +4817,7 @@ FRAMEDROP_RE = re.compile(r"^FRAMEDROP total=(\d+(?:\.\d+)?) .*?\broute=(\w+)")
 def parse_worst(lines, route, overlay):
     """The per-second `worstframe=` peaks (ms) whose route (+overlay) match."""
     reject_simulator(lines)
+    reject_recorder(lines)
     out = []
     for ln in lines:
         m = WORST_RE.search(ln)
@@ -5093,11 +5111,11 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     # A second filter-and-bail here was dead code that someone would keep maintaining.
     tiers = {"ui"} | ({"player"} if include_player else set())
     print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)} ===")
-    # The panel rule (docs/agent-reference.md, Tier 2): `ui::idle` gates presents on what the panel
-    # shows, so every number below is about a television whose PANEL IS ON. Sound muted, and never
-    # inside the 01:00-10:00 household window. A dark panel grades nothing.
-    print("    panel rule: the television's panel must be ON (muted) for this suite; "
-          "log-only tiers run with it OFF")
+    # The panel rule (docs/agent-reference.md, Tier 2), restated by the owner 2026-09-07: the panel
+    # is OFF and the sound is OFF for EVERY device run, fps scenes included — rendering continues
+    # with the LCD off. The 2026-09-06 "panel ON for fps" form is superseded.
+    print("    panel rule: run this suite with the television's panel OFF and the sound OFF "
+          "(tools/tv-session.sh screen off; mute from the remote) — the owner's standing directive")
     results = []
     for s in scenes:
         try:

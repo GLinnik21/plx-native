@@ -203,6 +203,12 @@ pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) {
     *last = Some(line);
 }
 
+/// The fingerprint as a value, for the recorder's logical-state hash (`app::recorder`): the
+/// legacy screens' focus state as one ordered line, whether or not the probe is armed.
+pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
+    fingerprint(route, screen, hud, ctrl)
+}
+
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {

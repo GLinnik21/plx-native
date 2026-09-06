@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::ffi::CStr;
 
-use super::dispatch::{CxParts, Dispatcher, Rig, Split};
+use super::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use super::frame::Budget;
 use super::machine::{
     Addr, Canon, Chrome, Cx, Delivery, Effects, Fx, GroupId, Handled, Host, InputEvent, InputKind,
@@ -224,6 +224,18 @@ pub struct FixtureState {
     pub events: Vec<&'static str>,
     pub keys: u32,
     pub items_seen: u32,
+    /// The HTTP statuses that landed, in arrival order.
+    pub statuses: Vec<u16>,
+}
+
+impl FixtureState {
+    /// The shape census (spec §5.4): field names and types, in order. A new field is a new shape.
+    pub const SHAPE: &'static str = "FixtureState{events:[str],keys:u32,items_seen:u32,statuses:[u16]}";
+}
+
+/// The bundle's state fingerprint: every `LogicalState` shape it carries, in a fixed order.
+pub fn fixture_state_fp() -> u64 {
+    super::rec::state_fp(&[FixtureState::SHAPE, "FixtureInit{seed:u32}"])
 }
 
 impl LogicalState for FixtureState {
@@ -233,9 +245,13 @@ impl LogicalState for FixtureState {
             w.str(e);
         }
         w.u32(self.keys).u32(self.items_seen);
+        w.seq(self.statuses.len());
+        for st in &self.statuses {
+            w.u32(*st as u32);
+        }
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("events={:?} keys={}", self.events, self.keys));
+        out.push_str(&format!("events={:?} keys={} statuses={:?}", self.events, self.keys, self.statuses));
     }
 }
 
@@ -273,7 +289,11 @@ impl Machine<FixtureHost> for FixtureScreen {
             }) => {
                 // OK on Home opens a page: the structural op that must mount THIS frame
                 self.state.keys += 1;
-                fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(self.state.keys))));
+                let next = match self.arg {
+                    FixtureArg::Home => self.state.keys,
+                    FixtureArg::Page(n) => n + 1,
+                };
+                fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(next))));
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
             }
@@ -301,9 +321,15 @@ impl Machine<FixtureHost> for FixtureScreen {
                 Handled::Yes
             }
             ScreenEvent::Async(_, FixtureMsg::Http { status, .. }) => {
+                self.state.statuses.push(*status);
                 if *status == 200 {
                     fx.push(Fx::App(FixtureFx::StoreAdd(7)));
                 }
+                Handled::Yes
+            }
+            ScreenEvent::Enter(_) if self.arg == FixtureArg::Page(2) => {
+                // a structural op emitted from Enter: parked for the NEXT frame's commit (§3.3)
+                fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(3))));
                 Handled::Yes
             }
             _ => Handled::No,
@@ -475,6 +501,47 @@ impl Rig<FixtureHost> for FixtureRig {
 
     fn app_fx(
         &mut self,
+        from: MachineId,
+        fx: FixtureFx,
+        parts: &CxParts<u32>,
+        out: &mut Effects<'_, FixtureHost>,
+    ) {
+        // the rig forwards to its adapter set — the one door (`ui::adapters`)
+        super::adapters::Adapters::execute(self, from, fx, parts, out);
+    }
+
+    fn log(&mut self, line: &str) {
+        self.log.push(line.to_string());
+    }
+
+    fn prepare(&mut self, b: &mut Budget, present: &mut Present) {
+        let mut ph = super::machine::PresentHandle(present);
+        let us = self.us;
+        self.cache.prepare(b, &mut self.uploader, &mut ph, || us);
+    }
+
+    fn ls2_pump(&mut self) {
+        self.ls2_pumps += 1;
+    }
+
+    fn opaque_route(&mut self, bound: bool) {
+        self.opaque_route_calls.push(bound);
+    }
+
+    fn clear_opaque_region(&mut self) {
+        self.clears += 1;
+    }
+
+    fn now_us(&self) -> u64 {
+        self.us
+    }
+}
+
+/// The fixture's adapters ARE the rig: it holds the resources a real adapter set would (the
+/// request log, the texture cache) and answers each effect synchronously.
+impl super::adapters::Adapters<FixtureHost> for FixtureRig {
+    fn execute(
+        &mut self,
         _from: MachineId,
         fx: FixtureFx,
         _parts: &CxParts<u32>,
@@ -502,32 +569,6 @@ impl Rig<FixtureHost> for FixtureRig {
                 }),
             }),
         }
-    }
-
-    fn log(&mut self, line: &str) {
-        self.log.push(line.to_string());
-    }
-
-    fn prepare(&mut self, b: &mut Budget, present: &mut Present) {
-        let mut ph = super::machine::PresentHandle(present);
-        let us = self.us;
-        self.cache.prepare(b, &mut self.uploader, &mut ph, || us);
-    }
-
-    fn ls2_pump(&mut self) {
-        self.ls2_pumps += 1;
-    }
-
-    fn opaque_route(&mut self, bound: bool) {
-        self.opaque_route_calls.push(bound);
-    }
-
-    fn clear_opaque_region(&mut self) {
-        self.clears += 1;
-    }
-
-    fn now_us(&self) -> u64 {
-        self.us
     }
 }
 
@@ -561,7 +602,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
 
     // frame 1: boot — Root(Home) parked, committed, mounted, entered; presented (first frame)
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
-    let r1 = d.frame(&mut rig, tick(0), vec![], vec![]);
+    let r1 = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
     assert!(r1.presented);
     assert_eq!(r1.mounted.len(), 1, "Home mounted at NAV COMMIT");
     assert_eq!(rig.ls2_pumps, 1);
@@ -587,8 +628,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
                 status: 200,
                 blob: vec![],
             },
-        )],
-    );
+        )], &mut NoTap);
     assert_eq!(r2.dropped_deliveries, 0);
     assert!(!r2.presented, "an Async that damaged nothing does not present");
     assert_eq!(rig.store.view.items, vec![7], "Home asked the store to add; the store stepped in the same drain");
@@ -603,7 +643,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
         FixtureMsg::Store(StoreOrd(0), 1),
     );
     d.track_inflight(home, RequestId(0));
-    let r3 = d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![notice]);
+    let r3 = d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![notice], &mut NoTap);
     assert_eq!(r3.mounted.len(), 1, "the page mounted in the same frame as the key");
     assert!(r3.presented, "the key invalidated");
     assert_eq!(d.nav.stack.len(), 2);
@@ -626,14 +666,14 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
         }),
     });
     d.budget.note_queued(rig.cache.has_pending());
-    let r4 = d.frame(&mut rig, tick(48), vec![], vec![]);
+    let r4 = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
     assert!(r4.presented, "queued prepare work forces a present");
     assert!(rig.cache.resolve(PosterKey(9)).is_some(), "uploaded in prepare");
     assert!(!rig.cache.has_pending());
     d.budget.note_queued(false);
 
     // frame 5: BACK pops the page: WillLeave → Unmount → Uncover → Enter(Restored) on Home
-    let r5 = d.frame(&mut rig, tick(64), vec![key(Key::Back, tick(64))], vec![]);
+    let r5 = d.frame(&mut rig, tick(64), vec![key(Key::Back, tick(64))], vec![], &mut NoTap);
     assert_eq!(r5.unmounted.len(), 1);
     d.prune(&r5.unmounted);
     assert_eq!(d.nav.stack.len(), 1);
@@ -642,6 +682,375 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     home_inst.screen.state().probe(&mut probe);
     assert!(probe.contains("\"uncover\", \"enter\""), "{probe}");
     assert_ne!(home_inst.screen.state().hash(), 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// the recorder tap and the replay codec for this bundle
+// ---------------------------------------------------------------------------------------------
+
+use super::dispatch::Tap;
+use super::rec::{Header, MemSink, Recording, Writer};
+use super::replay::{run_targets, Codec};
+use serde_json::{json, Value};
+
+pub struct RecTap {
+    pub w: Writer,
+}
+
+fn key_name(k: Key) -> &'static str {
+    match k {
+        Key::Up => "up",
+        Key::Down => "down",
+        Key::Left => "left",
+        Key::Right => "right",
+        Key::Ok => "ok",
+        Key::Back => "back",
+        Key::Other => "other",
+    }
+}
+
+impl Tap<FixtureHost> for RecTap {
+    fn tick(&mut self, f: u64, t: Tick) {
+        self.w.tick(f, t);
+    }
+    fn input(&mut self, f: u64, ev: &InputEvent<u32>) {
+        if let InputKind::Key { key, .. } = ev.kind {
+            self.w.input(f, json!({"kind": "key", "key": key_name(key), "ms": ev.at.ms}));
+        }
+    }
+    fn result(&mut self, f: u64, addr: &Addr, msg: &FixtureMsg) {
+        let (to, payload) = match (addr.to, msg) {
+            (MachineId::Instance(i), FixtureMsg::Http { status, .. }) => {
+                (format!("inst:{}", i.0), json!({"kind": "http", "status": status}))
+            }
+            (MachineId::Instance(i), FixtureMsg::Store(o, v)) => {
+                (format!("inst:{}", i.0), json!({"kind": "store", "ord": o.0, "v": v}))
+            }
+            _ => return,
+        };
+        self.w.result(f, &to, addr.req.0, payload);
+    }
+    fn effect(&mut self, f: u64, s: &super::machine::Stamped<FixtureHost>) {
+        let e = match &s.fx {
+            Fx::Nav(_) => "nav",
+            Fx::Mount(_) => "mount",
+            Fx::Unmount(_) => "unmount",
+            Fx::Deliver(..) => "deliver",
+            Fx::Timer { .. } => "timer",
+            Fx::CancelTimer(_) => "cancel_timer",
+            Fx::Press(_) => "press",
+            Fx::Log(_) => "log",
+            Fx::App(_) => "app",
+        };
+        self.w.effect(f, &format!("{:?}", s.from), e, None);
+    }
+    fn present(&mut self, f: u64, bit: bool, why: Option<Provenance>) {
+        let why = why.map(|p| format!("{p:?}"));
+        self.w.present(f, bit, why.as_deref());
+    }
+    fn state(&mut self, f: u64, hash: u64) {
+        self.w.state(f, hash);
+    }
+    fn frame_done(&mut self, _f: u64) {
+        self.w.flush_frame().expect("the memory sink never fails");
+    }
+}
+
+pub struct FixtureCodec;
+
+impl Codec<FixtureHost> for FixtureCodec {
+    fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> {
+        let k = match v["key"].as_str()? {
+            "up" => Key::Up,
+            "down" => Key::Down,
+            "left" => Key::Left,
+            "right" => Key::Right,
+            "ok" => Key::Ok,
+            "back" => Key::Back,
+            _ => Key::Other,
+        };
+        Some(key(k, tick(v["ms"].as_u64()? as u32)))
+    }
+    fn decode_result(&self, v: &Value) -> Option<(Addr, FixtureMsg)> {
+        let to = v["to"].as_str()?;
+        let inst = to.strip_prefix("inst:")?.parse::<u32>().ok()?;
+        let addr = Addr {
+            to: MachineId::Instance(super::machine::InstanceId(inst)),
+            req: RequestId(v["req"].as_u64()? as u32),
+        };
+        let p = &v["payload"];
+        let msg = match p["kind"].as_str()? {
+            "http" => FixtureMsg::Http {
+                status: p["status"].as_u64()? as u16,
+                blob: vec![],
+            },
+            "store" => FixtureMsg::Store(StoreOrd(p["ord"].as_u64()? as u32), p["v"].as_u64()? as u32),
+            _ => return None,
+        };
+        Some((addr, msg))
+    }
+}
+
+/// The scenario every recorder test drives: boot, an HTTP landing, a store notice + OK, BACK.
+fn drive(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Tap<FixtureHost>) {
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    d.frame(rig, tick(0), vec![], vec![], tap);
+    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    d.track_inflight(home, RequestId(1));
+    d.track_inflight(home, RequestId(0));
+    let addr = |req: u32| Addr {
+        to: MachineId::Instance(home),
+        req: RequestId(req),
+    };
+    d.frame(
+        rig,
+        tick(16),
+        vec![],
+        vec![(addr(1), FixtureMsg::Http { status: 200, blob: vec![] })],
+        tap,
+    );
+    d.frame(
+        rig,
+        tick(32),
+        vec![key(Key::Ok, tick(32))],
+        vec![(addr(0), FixtureMsg::Store(StoreOrd(0), 1))],
+        tap,
+    );
+    d.frame(rig, tick(48), vec![], vec![], tap);
+    let r = d.frame(rig, tick(64), vec![key(Key::Back, tick(64))], vec![], tap);
+    d.prune(&r.unmounted);
+}
+
+fn record() -> Recording {
+    let sink = MemSink::default();
+    let segs = sink.segments.clone();
+    let header = Header::new(fixture_state_fp(), &FixtureInit { seed: 1 });
+    let w = Writer::open(Box::new(sink), &header, 0).unwrap();
+    let mut tap = RecTap { w };
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    drive(&mut d, &mut rig, &mut tap);
+    tap.w.finish();
+    let manifest = serde_json::to_string(&json!({
+        "schema": super::rec::SCHEMA, "state_fp": fixture_state_fp(),
+        "init": {"probe": "seed=1", "hash": FixtureInit { seed: 1 }.hash()}
+    }))
+    .unwrap();
+    let s = segs.borrow();
+    let refs: Vec<&[u8]> = s.iter().map(|v| v.as_slice()).collect();
+    Recording::parse(&manifest, &refs, fixture_state_fp()).unwrap()
+}
+
+/// Replay `rec` the way the product driver will: the replay re-registers the inflight requests
+/// the scenario minted (the app's registry does that from `Fx::App` in phase 2's registry).
+fn replay(rec: &Recording, codec: &dyn Codec<FixtureHost>) -> super::replay::Report {
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    // the first frame mounts Home; the replay driver runs it, then the test registers the two
+    // requests the recorded scenario tracked before feeding the rest
+    let first = &rec.frames[..1];
+    let rest = &rec.frames[1..];
+    let head = Recording {
+        header: rec.header.clone(),
+        frames: first.to_vec(),
+        metrics: Default::default(),
+        stopped_at: None,
+    };
+    let r0 = run_targets(&head, codec, &mut d, &mut rig, &|| None);
+    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    d.track_inflight(home, RequestId(1));
+    d.track_inflight(home, RequestId(0));
+    let tail = Recording {
+        header: rec.header.clone(),
+        frames: rest.to_vec(),
+        metrics: Default::default(),
+        stopped_at: None,
+    };
+    let mut r = run_targets(&tail, codec, &mut d, &mut rig, &|| None);
+    r.frames += r0.frames;
+    r.graded += r0.graded;
+    r.divergences.splice(0..0, r0.divergences);
+    r.present_diffs.splice(0..0, r0.present_diffs);
+    r
+}
+
+#[test]
+fn a_sim_recording_replays_to_the_same_state_hash_stream() {
+    // "sim" in the spec's sense: the recording is taken by the tap, not typed by hand; the product
+    // fixture recorded on the simulator is the same path with the product codec.
+    let rec = record();
+    assert!(rec.state_stream().len() >= 4, "every event frame carries an st record");
+    let report = replay(&rec, &FixtureCodec);
+    assert!(report.is_clean(), "{:?}", report.safe_lines());
+    assert_eq!(report.graded as usize, rec.state_stream().len());
+
+    // A codec that loses the HTTP landing is a different application: pointwise divergences from
+    // the frame it first mattered, and replay CONTINUES.
+    struct Lossy;
+    impl Codec<FixtureHost> for Lossy {
+        fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> {
+            FixtureCodec.decode_input(v)
+        }
+        fn decode_result(&self, v: &Value) -> Option<(Addr, FixtureMsg)> {
+            let r = FixtureCodec.decode_result(v)?;
+            matches!(r.1, FixtureMsg::Store(..)).then_some(r)
+        }
+    }
+    let report = replay(&rec, &Lossy);
+    assert!(!report.is_clean());
+    assert_eq!(report.divergences[0].frame, 2, "the landing frame is the first to diverge");
+    assert!(report.frames == rec.frames.len() as u64, "replay continued past the divergence");
+    assert!(report.safe_lines()[0].starts_with("diverge f=2 expected=0x"));
+}
+
+#[test]
+fn the_present_bit_is_recorded_and_replayed() {
+    let rec = record();
+    let bits: Vec<Option<bool>> = rec.frames.iter().map(|f| f.present).collect();
+    assert_eq!(bits[0], Some(true), "boot presents");
+    assert_eq!(bits[1], Some(false), "a landing that damaged nothing does not");
+    assert_eq!(bits[2], Some(true), "the key did");
+    assert_eq!(rec.frames[2].present_why.as_deref(), Some("Input"));
+    let report = replay(&rec, &FixtureCodec);
+    assert!(report.present_diffs.is_empty());
+}
+
+#[test]
+fn the_fixture_bundles_state_shape_is_pinned() {
+    // Re-pin only with a named reason: a shape change invalidates every fixture of this bundle.
+    assert_eq!(fixture_state_fp(), 0x7fa4_0b1a_c484_3abf);
+}
+
+fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    (d, rig, home)
+}
+
+fn events_of(d: &Dispatcher<FixtureHost>, idx: usize) -> String {
+    let mut s = String::new();
+    d.nav.stack[idx].inst.as_ref().unwrap().screen.state().probe(&mut s);
+    s
+}
+
+#[test]
+fn external_events_are_drained_before_effect_results() {
+    let (mut d, mut rig, home) = booted();
+    d.track_inflight(home, RequestId(1));
+    let addr = Addr { to: MachineId::Instance(home), req: RequestId(1) };
+    // a direction key Home does not handle, so no page opens and the order stays on one screen
+    d.frame(&mut rig, tick(16), vec![key(Key::Down, tick(16))], vec![(addr, FixtureMsg::Http { status: 404, blob: vec![] })], &mut NoTap);
+    let ev = events_of(&d, 0);
+    let i = ev.find("\"input\"").unwrap();
+    let a = ev.find("\"async\"").unwrap();
+    let t = ev.rfind("\"tick\"").unwrap();
+    assert!(i < a && a < t, "{ev}");
+}
+
+#[test]
+fn the_tick_is_delivered_after_every_result_and_before_nav_commit() {
+    let (mut d, mut rig, home) = booted();
+    d.track_inflight(home, RequestId(1));
+    let addr = Addr { to: MachineId::Instance(home), req: RequestId(1) };
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![(addr, FixtureMsg::Http { status: 404, blob: vec![] })], &mut NoTap);
+    assert_eq!(r.mounted.len(), 1);
+    let home_ev = events_of(&d, 0);
+    let t = home_ev.rfind("\"tick\"").unwrap();
+    let wl = home_ev.find("\"will_leave\"").unwrap();
+    assert!(t < wl, "the tick precedes the commit's lifecycle: {home_ev}");
+    let page_ev = events_of(&d, 1);
+    assert!(page_ev.contains("[\"mount\", \"enter\"]"), "{page_ev}");
+}
+
+#[test]
+fn deliver_executes_in_the_drain_and_mount_at_commit() {
+    let (mut d, mut rig, _home) = booted();
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    assert!(r.steps_pre >= 1, "the input's Deliver ran in the pre-commit drain");
+    assert_eq!(r.mounted.len(), 1, "the mount happened at commit");
+    assert!(r.steps_post >= 2, "Mount and Enter were delivered post-commit");
+}
+
+#[test]
+fn a_key_that_opens_a_page_mounts_in_the_same_frame() {
+    let (mut d, mut rig, _home) = booted();
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    assert_eq!(r.mounted.len(), 1);
+    assert_eq!(d.nav.stack.len(), 2);
+}
+
+#[test]
+fn a_nav_emitted_from_enter_commits_next_frame() {
+    let (mut d, mut rig, _home) = booted();
+    // two OKs: Page(1), then Page(2) — whose Enter pushes Page(3)
+    d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    let r2 = d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![], &mut NoTap);
+    assert_eq!(r2.mounted.len(), 1, "one commit per frame: Page(3) waits");
+    assert_eq!(d.nav.top().unwrap().arg, FixtureArg::Page(2));
+    let r3 = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    assert_eq!(r3.mounted.len(), 1);
+    assert_eq!(d.nav.top().unwrap().arg, FixtureArg::Page(3));
+}
+
+#[test]
+fn carried_effects_survive_to_the_next_frame() {
+    let (mut d, mut rig, home) = booted();
+    let n = super::dispatch::MAX_STEPS_PRE + super::dispatch::MAX_STEPS_POST + 40;
+    for i in 0..n {
+        d.track_inflight(home, RequestId(100 + i));
+    }
+    let results: Vec<(Addr, FixtureMsg)> = (0..n)
+        .map(|i| (Addr { to: MachineId::Instance(home), req: RequestId(100 + i) }, FixtureMsg::Http { status: 404, blob: vec![] }))
+        .collect();
+    let r1 = d.frame(&mut rig, tick(16), vec![], results, &mut NoTap);
+    assert!(r1.carried > 0, "more work than the budget: carried, never dropped");
+    let r2 = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(r2.carried, 0);
+    let ev = events_of(&d, 0);
+    assert_eq!(ev.matches("\"async\"").count() as u32, n, "every result was delivered");
+    assert_eq!(r1.dropped_deliveries + r2.dropped_deliveries, 0);
+}
+
+#[test]
+fn the_post_commit_drain_has_its_own_reserved_budget() {
+    let (mut d, mut rig, home) = booted();
+    let n = super::dispatch::MAX_STEPS_PRE + super::dispatch::MAX_STEPS_POST + 10;
+    for i in 0..n {
+        d.track_inflight(home, RequestId(100 + i));
+    }
+    let results: Vec<(Addr, FixtureMsg)> = (0..n)
+        .map(|i| (Addr { to: MachineId::Instance(home), req: RequestId(100 + i) }, FixtureMsg::Http { status: 404, blob: vec![] }))
+        .collect();
+    // the key is at the head of the queue: its Nav parks before the budget is spent on results
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], results, &mut NoTap);
+    assert_eq!(r.steps_pre, super::dispatch::MAX_STEPS_PRE, "the pre-commit budget was spent");
+    assert_eq!(r.mounted.len(), 1, "…and the page still mounted this frame");
+    assert!(r.steps_post >= 2, "on the reserved post-commit budget");
+    assert!(r.carried > 0);
+}
+
+#[test]
+fn two_results_in_one_frame_replay_in_arrival_order() {
+    let (mut d, mut rig, home) = booted();
+    d.track_inflight(home, RequestId(1));
+    d.track_inflight(home, RequestId(2));
+    let addr = |r: u32| Addr { to: MachineId::Instance(home), req: RequestId(r) };
+    d.frame(&mut rig, tick(16), vec![], vec![(addr(1), FixtureMsg::Http { status: 404, blob: vec![] }), (addr(2), FixtureMsg::Http { status: 200, blob: vec![] })], &mut NoTap);
+    let ev = events_of(&d, 0);
+    assert!(ev.contains("statuses=[404, 200]"), "{ev}");
+}
+
+#[test]
+fn the_adapter_drain_order_is_the_documented_one() {
+    let ranks = super::dispatch::ADAPTER_RANKS;
+    let documented = ["auth", "pms", "browse", "search", "metadata/season", "person", "play", "metadata/detail", "viewstate", "alt_sources", "poster"];
+    assert_eq!(ranks, documented);
+    let mut set = std::collections::HashSet::new();
+    assert!(ranks.iter().all(|r| set.insert(*r)), "no adapter is named twice");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -661,26 +1070,14 @@ macro_rules! pending {
 }
 
 mod phase_2 {
+    // `a_worker_wakes_the_present_gate_through_the_one_door` is real in `ui/present.rs`;
+    // `a_rebaseline_without_a_divergence_record_is_refused` is real in `tests/test_harness.py`
+    // (the rebaseline is `tools/plxnative-rec`'s, so its test is the tool's). The one left is
+    // the half that needs stores as machines: dev flags as recorded `Sys` results (phase 4's
+    // adapter path); phase 2 records the armed trigger NAMES and refuses a replay whose set
+    // differs (`app::recorder::triggers_differ`).
     pending!("2":
-        external_events_are_drained_before_effect_results,
-        the_tick_is_delivered_after_every_result_and_before_nav_commit,
-        carried_effects_survive_to_the_next_frame,
-        the_post_commit_drain_has_its_own_reserved_budget,
-        the_adapter_drain_order_is_the_documented_one,
-        two_results_in_one_frame_replay_in_arrival_order,
-        a_recording_cannot_be_armed_mid_session,
-        a_sim_recording_replays_to_the_same_state_hash_stream,
-        a_replay_measure_miss_fails_loudly,
-        the_state_shape_did_not_change_without_a_bump,
-        a_recording_from_another_schema_is_refused,
-        a_rebaseline_without_a_divergence_record_is_refused,
-        no_committed_fixture_string_leaves_the_synthetic_alphabet,
-        the_present_bit_is_recorded_and_replayed,
         dev_flags_reach_machines_only_as_recorded_sys_results,
-        motion_exp_and_sin_cos_match_the_pinned_table_bit_for_bit,
-        the_soft_float_differential_table_matches,
-        the_press_machine_is_owned_by_input_and_has_no_global,
-        a_worker_wakes_the_present_gate_through_the_one_door,
     );
 }
 
@@ -693,9 +1090,6 @@ mod phase_3a {
 
 mod phase_3b {
     pending!("3b":
-        deliver_executes_in_the_drain_and_mount_at_commit,
-        a_key_that_opens_a_page_mounts_in_the_same_frame,
-        a_nav_emitted_from_enter_commits_next_frame,
         the_render_set_is_checked_over_the_whole_frame,
         slot_to_item_promotion_is_an_explicit_reconcile,
         resolve_mode_reports_every_mismatch_and_continues_from_the_recording,

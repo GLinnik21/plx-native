@@ -1,0 +1,4 @@
+# count: 2
+# `SDL_GetTicks(` is read in ONE place in app/ (spec §4.1); diag/heartbeat.rs is an instrument.
+rust-modules/src/app/clock.rs	the one door to frame time
+rust-modules/src/diag/heartbeat.rs	the frame instruments

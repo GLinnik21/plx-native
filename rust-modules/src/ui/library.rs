@@ -7275,13 +7275,14 @@ mod tests {
     /// resolve against the zone focus was moved to rather than the card that was pressed.
     #[test]
     fn a_shelf_commit_waits_for_an_armed_press_to_finish() {
+        let mut p = crate::ui::press::Press::new();
         let _g = crate::testlock::serial();
         let _t = crate::plex::session::TempSession::new("commitpress");
         _t.watching("u-commitpress");
         crate::browse::reset();
         crate::browse::seed_two_source_table_for_test();
         crate::browse::seed_items_for_test(120);
-        crate::ui::press::cancel();
+        p.cancel();
 
         // the page a single-library household actually has on arrival: no chip, no shelves yet,
         // focus in the grid block at scroll 0 — where the head and grid row 0 are ONE coordinate
@@ -7298,14 +7299,14 @@ mod tests {
         );
 
         // …and with a press armed on the card under the ring, it waits
-        crate::ui::press::begin(0);
-        assert!(crate::ui::press::is_live());
+        p.begin(0);
+        assert!(p.is_live());
         assert!(
             !may_publish_shelves(),
             "the deferred activation would resolve against the zone focus was moved TO"
         );
 
-        crate::ui::press::cancel();
+        p.cancel();
         assert!(may_publish_shelves(), "…and once the press is over, it may");
         crate::browse::reset();
     }

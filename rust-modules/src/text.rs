@@ -64,6 +64,7 @@
 //! decision rather than an oversight.
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -884,8 +885,16 @@ unsafe fn cache_store(
 /// coverage is loaded.
 pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     unsafe {
-        if TEXT_OK == 0 || s.is_null() || *s == 0 {
+        if s.is_null() || *s == 0 {
             return 0.0;
+        }
+        if TEXT_OK == 0 {
+            // NEVER a silent 0.0 (restructure spec §4.3): a layout built on zero widths reads as
+            // a layout, and the fonts-fell-through-to-DroidSans failure this project has already
+            // had was invisible for exactly that reason. Without a font the answer is the
+            // average-advance estimate, and the fault is recorded once for the frame tail to log.
+            MEASURE_FAULT.store(true, Ordering::Relaxed);
+            return unmeasured_width(CStr::from_ptr(s).to_bytes().len(), sz);
         }
         let bytes = CStr::from_ptr(s).to_bytes();
         if let Some((st, runs)) = std::str::from_utf8(bytes)
@@ -917,6 +926,42 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
             return 0.0; // same "unmeasurable → 0" contract the null-surface path had
         }
         w as f32
+    }
+}
+
+/// Set when a width was asked for before any font opened (or after every font failed): the
+/// restructure's `Fault::Measure`. `take_measure_fault` is read at the frame tail, which logs it once.
+static MEASURE_FAULT: AtomicBool = AtomicBool::new(false);
+
+/// The width a string gets with no font to measure it: half an em per byte — the average advance
+/// of a Latin face — so the layout is roughly right and visibly so, rather than collapsed.
+fn unmeasured_width(bytes: usize, sz: c_int) -> f32 {
+    bytes as f32 * sz as f32 * 0.5
+}
+
+/// Whether a measurement happened without a font since the last call (and clears it).
+pub(crate) fn take_measure_fault() -> bool {
+    MEASURE_FAULT.swap(false, Ordering::Relaxed)
+}
+
+/// The device / simulator `Measure` (restructure spec §4.3): synchronous, over the loaded fonts,
+/// and LOUD when there are none — a debug build panics, a release build answers the average
+/// advance and records the fault. The other two implementations are `TableMeasure` (replay) and
+/// `FixtureMeasure` (host tests).
+pub(crate) struct TtfMeasure;
+
+impl crate::ui::machine::Measure for TtfMeasure {
+    fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
+        // `text_width` reads TEXT_OK, a main-thread static the C-era init writes once at boot.
+        let ok = unsafe { std::ptr::addr_of!(TEXT_OK).read() } != 0;
+        debug_assert!(ok, "TtfMeasure::width before init_text: no font is loaded");
+        text_width(s.as_ptr(), sz, bold as c_int)
+    }
+    fn cap_h(&self, sz: c_int) -> f32 {
+        cap_h(sz, 0)
+    }
+    fn line_h(&self, sz: c_int) -> f32 {
+        text_height(sz, 0)
     }
 }
 

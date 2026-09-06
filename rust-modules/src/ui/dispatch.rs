@@ -35,6 +35,40 @@ pub const MAX_ROUNDS: u32 = 4;
 /// A debug build asserts when `carried` grows for this many consecutive frames.
 pub const CARRY_GROWTH_FRAMES: u8 = 8;
 
+/// The recorder's taps (spec §5.3): the dispatcher reports what it did, the recorder writes it.
+/// Every method has a no-op default so an unarmed frame costs a vtable call per event and nothing
+/// else. `NoTap` is the unarmed implementation.
+pub trait Tap<H: Host> {
+    fn tick(&mut self, _f: u64, _t: Tick) {}
+    fn input(&mut self, _f: u64, _ev: &InputEvent<H::Elem>) {}
+    fn result(&mut self, _f: u64, _addr: &Addr, _msg: &H::Msg) {}
+    fn effect(&mut self, _f: u64, _s: &Stamped<H>) {}
+    fn present(&mut self, _f: u64, _bit: bool, _why: Option<super::present::Provenance>) {}
+    /// After the frame's drains, on a frame that had events: the logical-state hash.
+    fn state(&mut self, _f: u64, _hash: u64) {}
+    fn frame_done(&mut self, _f: u64) {}
+}
+
+pub struct NoTap;
+impl<H: Host> Tap<H> for NoTap {}
+
+/// The adapter drain order (spec §3.3 step 3): one rank per PUMP in the legacy loop's order — a
+/// store with two pumps has two ranks, so the list is a permutation of the loop and nothing is
+/// named twice. Results are delivered by `(completion_frame, rank, arrival_index)`.
+pub const ADAPTER_RANKS: [&str; 11] = [
+    "auth",
+    "pms",
+    "browse",
+    "search",
+    "metadata/season",
+    "person",
+    "play",
+    "metadata/detail",
+    "viewstate",
+    "alt_sources",
+    "poster",
+];
+
 /// What the dispatcher borrows from the application for one frame. `split` hands out the
 /// mounter, the views and the measure at once so a mount can read the stores it was built over.
 pub trait Rig<H: Host> {
@@ -193,6 +227,8 @@ pub struct FrameReport {
     pub mounted: Vec<InstanceId>,
     pub unmounted: Vec<InstanceId>,
     pub dropped_deliveries: u32,
+    /// The logical-state hash, on an event frame.
+    pub state_hash: Option<u64>,
 }
 
 /// The dispatcher: the queue that is never dropped, the parked structural ops, the timers, the
@@ -269,10 +305,14 @@ impl<H: Host> Dispatcher<H> {
         tick: Tick,
         inputs: Vec<InputEvent<H::Elem>>,
         results: Vec<(Addr, H::Msg)>,
+        tap: &mut dyn Tap<H>,
     ) -> FrameReport {
         self.frame += 1;
+        let f = self.frame;
         let mut report = FrameReport::default();
         let queued_before = self.queue.len();
+        tap.tick(f, tick);
+        let event_frame = !inputs.is_empty() || !results.is_empty() || !self.parked.is_empty();
 
         // 1. the first privileged call
         rig.ls2_pump();
@@ -282,6 +322,7 @@ impl<H: Host> Dispatcher<H> {
         let owner = self.parts(tick).owner;
         let mut head: Vec<Stamped<H>> = Vec::new();
         for ev in inputs {
+            tap.input(f, &ev);
             if let InputOwner::Entry(eid) = owner {
                 if let Some(inst) = self.nav.entry_mut(eid).and_then(|e| e.inst.as_ref()) {
                     head.push(Stamped {
@@ -301,6 +342,7 @@ impl<H: Host> Dispatcher<H> {
                 report.dropped_deliveries += 1;
                 continue;
             }
+            tap.result(f, &addr, &msg);
             let delivery = match addr.to {
                 MachineId::Instance(_) => Delivery::Screen(ScreenEvent::Async(addr.req, msg)),
                 _ => Delivery::Machine(msg),
@@ -347,12 +389,18 @@ impl<H: Host> Dispatcher<H> {
 
         // 6. the pre-commit drain
         let parts = self.parts(tick);
-        report.steps_pre = self.drain(rig, &parts, MAX_STEPS_PRE, &mut report);
+        report.steps_pre = self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap);
         report.queue_hwm = report.queue_hwm.max(queued_before);
 
         // 7. NAV COMMIT — one per frame — then the post-commit drain on its own budget
         self.commit(rig, &parts, &mut report);
-        report.steps_post = self.drain(rig, &parts, MAX_STEPS_POST, &mut report);
+        report.steps_post = self.drain(rig, &parts, MAX_STEPS_POST, &mut report, tap);
+        let timers_fired = report.steps_pre > 0 && event_frame;
+        if event_frame || timers_fired {
+            let h = self.state_hash();
+            tap.state(f, h);
+            report.state_hash = Some(h);
+        }
 
         // carry accounting: nothing is ever dropped from this queue
         report.carried = self.queue.len();
@@ -373,8 +421,10 @@ impl<H: Host> Dispatcher<H> {
             ));
         }
 
-        // 8. the present decision, once
+        // 8. the present decision, once (its WHY is read before the take clears it)
+        let why = self.present.why();
         let will_present = self.present.take(tick.ms) || self.budget.has_queued_work();
+        tap.present(f, will_present, why);
 
         // 9. prepare (only if presenting), then opaque_route on EVERY frame
         if will_present {
@@ -415,7 +465,30 @@ impl<H: Host> Dispatcher<H> {
             }
         }
         report.presented = will_present;
+        tap.frame_done(f);
         report
+    }
+
+    /// The logical-state hash (spec §5.4): every live instance's `LogicalState`, the focus, the
+    /// stack's entry ids and the present gate's video-plane bit, in a fixed order. Incremental
+    /// hashing (dirty flags per machine) is the optimisation the spec names; this is the
+    /// definition it must equal.
+    pub fn state_hash(&self) -> u64 {
+        let mut c = super::machine::Canon::new();
+        c.seq(self.nav.stack.len());
+        for e in &self.nav.stack {
+            c.u32(e.id.0);
+            c.option(e.inst.as_ref(), |c, i| {
+                c.u32(i.id.0);
+                c.u64(i.screen.state().hash());
+            });
+        }
+        c.option(self.focus, |c, fk| {
+            c.u32(fk.entry.0);
+        });
+        c.bool(self.present.video_plane());
+        c.u32(self.queue.len() as u32);
+        c.finish()
     }
 
     /// Pop-and-execute until the queue is empty or `max_steps` step invocations are spent;
@@ -426,6 +499,7 @@ impl<H: Host> Dispatcher<H> {
         parts: &CxParts<H::Elem>,
         max_steps: u32,
         report: &mut FrameReport,
+        tap: &mut dyn Tap<H>,
     ) -> u32 {
         let mut steps = 0;
         while steps < max_steps {
@@ -433,13 +507,14 @@ impl<H: Host> Dispatcher<H> {
                 break;
             };
             report.queue_hwm = report.queue_hwm.max(self.queue.len() + 1);
+            tap.effect(self.frame, &item);
             match item.fx {
                 Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.parked.push(item),
                 Fx::Deliver(to, delivery) => {
                     steps += 1;
                     let mut out: Vec<Stamped<H>> = Vec::new();
                     self.execute_deliver(rig, parts, to, delivery, &mut out, report);
-                    self.queue.extend(out);
+                    self.absorb(out);
                 }
                 Fx::Timer { id, after_ms } => {
                     self.timers
@@ -459,11 +534,23 @@ impl<H: Host> Dispatcher<H> {
                         let mut fx = Effects::new(&mut out, item.from, present);
                         rig.app_fx(item.from, app_fx, parts, &mut fx);
                     }
-                    self.queue.extend(out);
+                    self.absorb(out);
                 }
             }
         }
         steps
+    }
+
+    /// A step's emissions: the structural three are PARKED at once (so a key that opens a page
+    /// mounts it this frame even when the drain's budget was spent before the FIFO reached its
+    /// op — `a_key_that_opens_a_page_mounts_in_the_same_frame`); everything else joins the tail.
+    fn absorb(&mut self, out: Vec<Stamped<H>>) {
+        for s in out {
+            match s.fx {
+                Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.parked.push(s),
+                _ => self.queue.push_back(s),
+            }
+        }
     }
 
     fn execute_deliver(
@@ -544,7 +631,8 @@ impl<H: Host> Dispatcher<H> {
                     if matches!(ev, ScreenEvent::Mount) {
                         continue; // delivered by `mount` itself, first
                     }
-                    self.push_lifecycle(eid, ev, post, Some(inst_id));
+                    let hint = (eid == new).then_some(inst_id);
+                    self.push_lifecycle(eid, ev, post, hint);
                 }
             }
             NavOp::Root(arg) | NavOp::SelectTab(arg) | NavOp::Replace(arg) => {

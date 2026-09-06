@@ -229,6 +229,51 @@ def file_payload_case():
     return ok
 
 
+def recording_case():
+    """The restructure's privacy rules (spec §5.6): a `plxnative-recordings/` descendant is refused by
+    PATH wherever it sits; a payload carrying the envelope grammar is refused by CONTENT; the one
+    exception is a file under tests/fixtures/replay/ whose every string is in the synthetic
+    alphabet — and a fixture with a household string in it is refused even there."""
+    ok = True
+    rec_dir = os.path.join(ROOT, "plxnative-recordings")
+    os.makedirs(rec_dir, exist_ok=True)
+    line = '{"f":1,"t":"st","hash":42}\n'
+    with open(os.path.join(rec_dir, "rec-0000.jsonl"), "w") as f:
+        f.write(line)
+    with open(os.path.join(ROOT, "notes.jsonl"), "w") as f:
+        f.write('{"f":0,"t":"tick","ms":0}\n' + line)
+    fix = os.path.join(ROOT, "tests", "fixtures", "replay", "demo")
+    os.makedirs(fix, exist_ok=True)
+    with open(os.path.join(ROOT, "tests", "fixtures", "replay", "ALPHABET.json"), "w") as f:
+        json.dump({"patterns": ["s[0-9a-f]{8}", "[0-9]+"],
+                   "literals": ["tick", "st", "in", "key", "ok"]}, f)
+    with open(os.path.join(fix, "rec-0000.jsonl"), "w") as f:
+        f.write('{"f":0,"t":"tick","ms":0}\n'
+                '{"f":0,"t":"in","kind":"key","key":"ok","title":"s0a1b2c3d"}\n' + line)
+    bad = os.path.join(ROOT, "tests", "fixtures", "replay", "leaky")
+    os.makedirs(bad, exist_ok=True)
+    with open(os.path.join(bad, "rec-0000.jsonl"), "w") as f:
+        f.write('{"f":0,"t":"in","kind":"key","key":"ok","title":"Film Club Night"}\n')
+    for cmd, want in (
+        ("gh release upload v1 plxnative-recordings/rec-0000.jsonl", BLOCK),
+        ("gh release upload v1 /tmp/anything/plxnative-recordings/rec-0000.jsonl", BLOCK),
+        ("gh pr create --body-file notes.jsonl", BLOCK),
+        ("gh pr create --body '{\"f\":3,\"t\":\"st\",\"hash\":1}'", BLOCK),
+        ("git add tests/fixtures/replay/demo/rec-0000.jsonl", ALLOW),
+        ("gh pr create --body-file tests/fixtures/replay/demo/rec-0000.jsonl", ALLOW),
+        ("git add -f tests/fixtures/replay/leaky/rec-0000.jsonl", BLOCK),
+        ("git commit -m 'fixtures: leaky' tests/fixtures/replay/leaky/rec-0000.jsonl", BLOCK),
+        ("git commit -m 'fixtures: the boot recording' tests/fixtures/replay/demo/rec-0000.jsonl",
+         ALLOW),
+    ):
+        got = blocked(cmd)
+        if got != want:
+            print("  FAIL  expected %s, got %s: %s"
+                  % ("BLOCK" if want else "ALLOW", "BLOCK" if got else "ALLOW", cmd))
+            ok = False
+    return ok
+
+
 def refusal_case():
     """Drive the REAL binary and grep its stderr for the fake secrets.
 
@@ -370,7 +415,8 @@ def main():
             print("  FAIL  expected %s, got %s: %s"
                   % ("BLOCK" if want else "ALLOW", "BLOCK" if got else "ALLOW",
                      cmd.replace("\n", "\\n")[:110]))
-    helpers = (file_payload_case, secrets_case, refusal_case, variable_reference_case)
+    helpers = (file_payload_case, secrets_case, refusal_case, variable_reference_case,
+               recording_case)
     for fn in helpers:
         if not fn():
             fails += 1

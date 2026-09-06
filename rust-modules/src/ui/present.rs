@@ -8,7 +8,39 @@
 //! presenting and the keepalive bounds staleness.
 #![allow(dead_code)] // phase 2-i: no consumer until phase 2 (spec §13)
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::machine::{MachineId, TimerId};
+
+/// The ONE worker-side door (spec §4.4): a poster decode completing, the lab uploader — anything
+/// off the main thread that needs the next frame to present. It is a flag, not an event: the
+/// main thread's `take` folds it into the frame's verdict as `Damage` with no provenance of its
+/// own, because a worker cannot say which machine it woke on behalf of. Nothing else touches
+/// the atomic (`ci/check-deps.sh` gates `present::` atomics to this file).
+static WAKE: AtomicBool = AtomicBool::new(false);
+
+/// Wake the gate from a worker thread. Safe to call from any thread, any number of times.
+pub fn wake_from_worker() {
+    WAKE.store(true, Ordering::Release);
+}
+
+/// Test seam: a wake left by a test must not leak into the next.
+#[cfg(test)]
+fn clear_worker_wake() {
+    WAKE.store(false, Ordering::Release);
+}
+
+impl Present {
+    /// The product's gate, on the GLOBAL door. `new()` under `cfg(test)` hands out a private door
+    /// so parallel tests cannot wake each other's gates; the one test of the door itself asks for
+    /// this.
+    #[cfg(test)]
+    pub fn global() -> Self {
+        let mut p = Self::new();
+        p.door = &WAKE;
+        p
+    }
+}
 
 /// Why a frame presents — recorded, so a replay diff can say WHY (§4.4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,6 +84,8 @@ pub struct Present {
     last_present_ms: u32,
     /// The provenance of the first damage since the last take — what the recorder writes.
     why: Option<Provenance>,
+    /// The worker door this gate reads (`WAKE`, or a private flag in a test).
+    door: &'static AtomicBool,
 }
 
 impl Default for Present {
@@ -69,6 +103,12 @@ impl Present {
             fault: None,
             last_present_ms: 0,
             why: None,
+            // a test's gate reads a PRIVATE door: tests run in parallel, and one wake must not
+            // present a frame in another test's dispatcher (`global()` is the exception)
+            #[cfg(not(test))]
+            door: &WAKE,
+            #[cfg(test)]
+            door: Box::leak(Box::new(AtomicBool::new(false))),
         }
     }
 
@@ -86,18 +126,20 @@ impl Present {
         }
     }
 
-    /// Side-effect-free: what `take` would answer.
+    /// Side-effect-free: what `take` would answer (the worker door included, un-consumed).
     pub fn peek(&self, tick_ms: u32) -> bool {
         self.video_plane
             || self.dirty
             || self.motion
+            || self.door.load(Ordering::Acquire)
             || tick_ms.wrapping_sub(self.last_present_ms) >= KEEPALIVE_MS
     }
 
     /// The take-and-clear, once per frame (§3.3 step 8). Answers `true` unconditionally while the
-    /// video plane is bound.
+    /// video plane is bound. Consumes the worker door.
     pub fn take(&mut self, tick_ms: u32) -> bool {
         let will = self.peek(tick_ms);
+        self.door.swap(false, Ordering::AcqRel);
         self.dirty = false;
         self.motion = false;
         self.why = None;
@@ -123,6 +165,25 @@ impl Present {
 
 #[cfg(test)]
 mod tests {
+    /// Spec §15.1: a worker reaches the gate through `wake_from_worker` and nothing else; the
+    /// main thread's `take` consumes the wake exactly once.
+    #[test]
+    fn a_worker_wakes_the_present_gate_through_the_one_door() {
+        let _g = crate::testlock::serial();
+        super::clear_worker_wake();
+        let mut p = super::Present::global();
+        assert!(p.take(0), "the first frame always draws");
+        assert!(!p.take(1), "settled, inside the keepalive: nothing to present");
+        std::thread::spawn(super::wake_from_worker).join().unwrap();
+        assert!(p.peek(2), "the door is visible to peek");
+        assert!(p.take(2), "…and folded into the frame's verdict");
+        assert!(!p.take(3), "consumed exactly once");
+        // a second wake is a second frame, not a lost one
+        super::wake_from_worker();
+        assert!(p.take(4));
+        assert!(!p.take(5));
+    }
+
     use super::*;
 
     #[test]

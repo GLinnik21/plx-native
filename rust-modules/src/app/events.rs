@@ -267,6 +267,39 @@ pub(super) fn remote_synth_ptr(x: i32, y: i32) {
     push(SDL_MOUSEBUTTONUP, x, y);
 }
 
+/// ONE pointer event in authored coordinates — the replay driver's re-injection of a recorded
+/// motion (`SDL_MOUSEMOTION`), press or release, without `remote_synth_ptr`'s jitter prelude
+/// (the recording already holds whatever motion defeated the D-pad gate).
+pub(super) fn remote_synth_pointer(et: u32, x: i32, y: i32) {
+    let mut ev = [0u8; 128];
+    let (px, py) = crate::surface::to_physical(x as f32, y as f32);
+    let (px, py) = (px.round() as i32, py.round() as i32);
+    ev[0..4].copy_from_slice(&et.to_ne_bytes());
+    ev[20..24].copy_from_slice(&px.to_ne_bytes());
+    ev[24..28].copy_from_slice(&py.to_ne_bytes());
+    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
+}
+
+/// One app lifecycle event (`0x103`–`0x106`), as the compositor would send it — the replay
+/// driver's re-injection of a recorded background/foreground edge.
+pub(super) fn remote_synth_lifecycle(code: u32) {
+    let mut ev = [0u8; 128];
+    ev[0..4].copy_from_slice(&code.to_ne_bytes());
+    unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
+}
+
+/// A remote token that acts DIRECTLY rather than by pushing SDL events — the recorder writes
+/// these as `token` records (the SDL kinds are recorded where they are polled), and the replay
+/// driver re-dispatches them. `txt:` is here because its payload never becomes an SDL event on
+/// this host (`dispatch_remote_token`'s arm says why).
+pub(super) fn token_is_direct(tok: &str) -> bool {
+    tok == "shot"
+        || tok == "diag"
+        || tok == "diagnostics"
+        || tok.starts_with("pat:")
+        || tok.starts_with("txt:")
+}
+
 /// Synthesize a full remote-key press (key-down then key-up) and push both onto SDL's
 /// own event queue, so the existing poll loop consumes them as if they came off the
 /// wayland input path. The LG SDL fork's `SDL_KeyboardEvent` carries state@16 /
