@@ -31,8 +31,8 @@ token gets a **401** from it, and its section key `1` is a different library fro
 `client()` and `client_opt()` still mean what they always did, they just mean **the CURRENT
 server** now — which is why nothing outside `plex/` changed when the `OnceLock<Client>` singleton
 became a table. `client_for(id)` is the multi-server addition; `register_origin(machine_id,
-&Origin, token)` puts a server in the table; `install(&Origin, token)` is the SESSION path (boot, QR
-login, profile switch) and always retargets.
+&Origin, token, Option<&ResolvePin>)` puts a server in the table; `install(&Origin, token,
+Option<&ResolvePin>)` is the SESSION path (boot, QR login, profile switch) and always retargets.
 
 **A server's address is an `Origin` — scheme + host + port — and it is PARSED FROM A URL, never
 assembled from an address.** `origin.rs` is the type and the reasoning; the short version is that
@@ -51,6 +51,42 @@ libcurl. Neither does playback: `StreamUrl` preserves the scheme and `ff.rs` sel
 for plaintext or `curlio.rs` for HTTPS. One dev-only caller also still throws an origin away:
 `ui/alt_sources.rs`'s `stand_in_slot` registers a stand-in from `c.host()`/`c.port()` and must move
 to `register_origin` in that UI-owned lane.
+
+**A `plex.direct` origin is dialled at the address plex.tv advertised beside it, with no DNS.**
+`origin::ResolvePin` (2026-09-05) is the offline-mode fix: the persisted origin for the household's
+own server is normally `https://192-168-0-10.<hash>.plex.direct:32400`, a name only Plex's public
+zone resolves, so a LAN whose uplink was down could not reach a server one hop away — and the
+plaintext twin `probe::candidates` documents as "the offline fallback" cannot carry a token in a
+store build (`http::credential_transport_allowed`). A pin is built ONLY when the dashed label
+encodes the stored `address` (v4 or the eight-group v6 spelling), so it is a pure function of the
+hostname; `register_origin`/`install` take it, the `Client` carries it for the control plane, and
+`net::resolve` holds an append-only table the media plane (`curlio`) consults by host and port.
+TLS validation is untouched: the name stays in the URL and in SNI. `/tmp/plxnative-nowan` makes
+every unpinned name fail as a dead resolver would, which is how the case is reproduced on a desk.
+
+**The who's-watching pick is seated from `Session::profiles` when plex.tv does not answer.** The
+first real outage (2026-09-06, `docs/measurements/offline-picker-red-tv-2026-09-06.log`) got past
+the pinned origin and then could seat nobody: every pick is a `POST /api/v2/home/users/{uuid}/switch`,
+and the one no-network shortcut (re-picking the active, PIN-free profile) did not cover a house
+whose active profile is the PIN-protected admin. So every ONLINE seating now writes a
+`ProfileCreds` record — user, primary, roster, and for a protected profile a `PinVerifier`
+(PBKDF2-HMAC-SHA-256 under a random salt, `crate::sha256`; never the PIN) — and
+`auth::switch_thread` reads `account::SwitchOutcome`: plex.tv's verdict (`Refused`) ends the
+switch as before, `Unreachable` falls through to `auth::offline_activation`, which seats a cached
+unprotected profile on the pick and a cached protected one on its PIN, and a profile this set has
+never seated online says so: "No internet connection. Pick this profile once while online, and it
+will work offline." (The QR screen carries the same sentence about signing in.) `account::plex_tv_recently_unreachable` (a 45 s
+memo the picker's own roster refresh usually fills) sends the pick to the cache FIRST so an
+outage does not cost a connect timeout per pick. Three simulator runs in `docs/measurements/
+offline-picker-sim-*-2026-09-06.log`, and `tests/run.py`'s `offline_pick_cached` on the set.
+
+**A candidate only becomes the LIVE origin if this build can put a token on it.** The probe race
+activates "the first usable answer immediately", and on a LAN the plaintext twin answers before the
+TLS handshake completes — so a store build re-pointed its live server to an origin it then refused
+(`security: refused plaintext PMS credentials`) for the ~100 ms until the https winner landed, and
+whatever was in flight (a hub fetch, the picker's first avatar) failed for good. `auth::
+activation_allowed` asks `http::credential_transport_allowed_by_policy` BEFORE registering; the
+first answer still counts as reached, and the best usable one is activated at the end.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot

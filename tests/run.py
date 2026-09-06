@@ -413,7 +413,7 @@ def fetch_managed_user_token(admin_token, host, port, user_id):
 # fetch_managed_user_token: one secret in one gitignored place, everything else derived at runtime.
 def _plextv_resources(admin_token):
     """Every server this account can reach — owned AND shared with it — from plex.tv."""
-    url = "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1"
+    url = "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
     req = urllib.request.Request(url, headers={
         "Accept": "application/json",
         "X-Plex-Token": admin_token,
@@ -462,6 +462,39 @@ def pick_connection(hit):
     best = min(conns, key=rank)
     how = "relay" if best.get("relay") else ("LAN" if best.get("local") else "remote")
     return best["address"], int(best.get("port") or 32400), f"{how}, {best.get('protocol', '?')}"
+
+
+def stored_primary_machine_id(tv):
+    """The `machine_id` of the install's stored primary, read off its session file on the set —
+    so the IPv6 re-point names THAT server and not merely the first owned one plex.tv lists."""
+    r = ssh(tv, f"cat /media/developer/{APPID}-auth.json 2>/dev/null || cat /media/internal/.{APPID}-auth.json")
+    try:
+        return json.loads(r.stdout).get("server", {}).get("machine_id", "")
+    except (ValueError, AttributeError):
+        return ""
+
+
+def primary_ipv6_server(admin_token, machine_id=""):
+    """The owned server's LOCAL IPv6 connection as a plxnative-servers entry — same machine id as
+    the stored primary (so the registry re-points slot 0 rather than adding a source), the
+    `plex.direct` uri as the https host, and the advertised address as the `pin` the app dials it
+    at with no resolver. Refuses with the reason when plex.tv advertises no such connection: an
+    IPv6 case that quietly ran over v4 would grade nothing about v6."""
+    owned = [r for r in _server_resources(_plextv_resources(admin_token)) if r.get("owned")]
+    if machine_id:
+        owned = [r for r in owned if r.get("clientIdentifier") == machine_id]
+    for hit in owned:
+        for c in hit.get("connections") or []:
+            uri = c.get("uri") or ""
+            addr = c.get("address") or ""
+            if not c.get("local") or c.get("relay") or ":" not in addr or ".plex.direct" not in uri:
+                continue
+            host = uri.split("://", 1)[1].split("/", 1)[0].rsplit(":", 1)[0]
+            return {"name": hit.get("name") or "", "machine_id": hit["clientIdentifier"],
+                    "host": host, "port": int(c.get("port") or 32400), "scheme": "https",
+                    "tier": "local", "token": hit.get("accessToken") or admin_token, "pin": addr}
+    sys.exit("primary_ipv6: plex.tv advertises no local IPv6 plex.direct connection for an owned "
+             "server (is the server's host on a v6 LAN, and does PMS see it?)")
 
 
 def resolve_shared_server(admin_token, spec):
@@ -555,6 +588,50 @@ def sh_squote(s):
 # ---------------------------------------------------------------------------
 # Device I/O
 # ---------------------------------------------------------------------------
+_WAN_CUT = False
+# Did the tool's own probe from the television confirm the LAST cut (`resolve plex.tv -> FAIL`)?
+# Read by `a_offline_roster` as the negative control when the app's log cannot carry one: with a
+# managed profile active the server-roster refresh is skipped, and an automated boot never raises
+# the picker whose home-user refresh would fail instead. Reset per case, not on `on`, because the
+# verdict is graded after the restore.
+_WAN_CUT_VERIFIED = False
+
+
+def tv_wan(state, ttl_s=None):
+    """Cut or restore the television's uplink through `tools/tv-session.sh wan`, which owns the
+    netfilter recipe and the on-device watchdog. Never raises on `on`: a restore that cannot reach
+    the set must not mask the failure that got us here, and the watchdog covers that case."""
+    global _WAN_CUT, _WAN_CUT_VERIFIED
+    argv = [os.path.join(REPO_ROOT, "tools", "tv-session.sh"), "wan", state]
+    if state == "off":
+        argv.append(str(int(ttl_s or 900)))
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    for ln in (r.stdout or "").splitlines():
+        if ln.strip():
+            print(f"    wan {state}: {ln.strip()}")
+    if state == "off":
+        if r.returncode != 0:
+            sys.exit(f"wan off failed (rc={r.returncode}): {(r.stderr or '').strip()}")
+        _WAN_CUT = True
+        _WAN_CUT_VERIFIED = "resolve plex.tv -> FAIL" in (r.stdout or "")
+    else:
+        _WAN_CUT = False
+        if r.returncode != 0:
+            print(f"    WARNING: wan on returned rc={r.returncode}; the on-device watchdog restores it")
+
+
+def require_stored_session(tv, name):
+    """A `session: stored` case needs a sign-in ON THE INSTALL, in one of the two places
+    `paths::session_candidates` reads for a flavoured install. Refused with the reason rather than
+    skipped: an offline case that silently ran as the injected identity would be the false pass
+    the attribute exists to prevent."""
+    r = ssh(tv, f"test -s /media/developer/{APPID}-auth.json || test -s /media/internal/.{APPID}-auth.json")
+    if r.returncode != 0:
+        sys.exit(f"{name}: `session: stored` needs a signed-in session on {APPID} "
+                 f"(none at /media/developer/{APPID}-auth.json) — sign in on that install once, "
+                 f"with the internet up, and rerun")
+
+
 def ssh_argv(tv, remote_cmd):
     """The one SSH command shape used by blocking calls and streaming profiler helpers."""
     return [
@@ -1233,6 +1310,101 @@ def a_no_error(lines):
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
     return True, "no `smp_cb type=18` / `Playing error`"
+
+
+def a_resolve_pin(lines, want="any"):
+    """The registry dialled the primary's `plex.direct` name at the address plex.tv advertised
+    beside it, with no resolver: `plex: server slot N registered at … (pinned: v4 name resolved
+    locally)`. The line is written once per pin, when it is NEW, so it is the boot's own statement
+    that offline mode had something to stand on. Its absence means the stored session's address
+    does not match its name (or the file predates the field) — DNS as before, which is exactly
+    what an offline case must not pass on. The line names the FAMILY and nothing else: the
+    app's scrubber rewrites every host to `<host>`, and a dashed `plex.direct` label is a LAN
+    address spelled sideways, so neither the name nor the address is ever in a log.
+
+    `want` narrows the family: `"v6"` demands a v6 pin (the `primary_ipv6` case would otherwise
+    be satisfied by the v4 pin the stored session registers first, before the re-point), `"v4"`
+    the reverse, anything else either. For `v6` the pin must also be on the CURRENT server
+    before the play starts — the re-point line must precede `plxnative-play: … start` — which
+    is the ordering that proves the stream was dispatched on the re-pointed slot (the `stream:`
+    line itself cannot say, its host being scrubbed)."""
+    marker = " name resolved locally)"
+    hits = [(i, ln) for i, ln in enumerate(lines) if "(pinned: " in ln and marker in ln]
+    if want in ("v4", "v6"):
+        hits = [(i, ln) for i, ln in hits if f"(pinned: {want} " in ln]
+    # the PRIMARY's slot, when the play start names it: a share pinned to its own LAN label is
+    # a pin too, and must not stand in for the server the case actually plays from
+    slot = primary_slot(lines)
+    if slot is not None:
+        mine = [(i, ln) for i, ln in hits if f"server slot {slot} " in ln]
+        hits = mine or []
+    if not hits:
+        return False, f"no `(pinned: … name resolved locally)` line{' for ' + want if want in ('v4', 'v6') else ''}: nothing was pinned"
+    i, ln = hits[-1]
+    if want == "v6":
+        start = next((j for j, l in enumerate(lines) if "plxnative-play: " in l and " start" in l), None)
+        if start is None or start < i:
+            return False, f"the v6 pin landed AFTER the play started (or no start line): {ln.strip()}"
+        if "re-pointed" not in ln:
+            return False, f"the v6 pin did not re-point the primary's slot: {ln.strip()}"
+    return True, ln.strip()
+
+
+def primary_slot(lines):
+    """The registry slot the boot's PRIMARY landed in — the `server=N` of the direct-play trigger's
+    own start line, which names the slot the play was dispatched on. Slots are never reused after a
+    sign-out, so a hardcoded 0 would be wrong on the second sign-in of a process."""
+    for ln in lines:
+        m = re.search(r"plxnative-play: rk=\d+ server=(\d+) start", ln)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def a_offline_roster(lines):
+    """Three halves of "the internet was really down and it did not matter": the boot's roster
+    refresh reached for plex.tv and was refused (the negative control — a cut that did not cut
+    would refresh silently); the PRIMARY's source landed its hubs (`hubs: source N ok`, the
+    positive half, N being the slot the play was dispatched on); and that same source never
+    FAILED a hub fetch, which is what a DNS-dependent origin does within seconds of the refusal."""
+    # The SERVER roster refresh runs only for the owner's profile; with a managed profile
+    # active it is skipped, and the negative control is then the picker's HOME-USER refresh
+    # failing, or a pick seated from the cache — which only happens when plex.tv did not answer.
+    # …and when the boot makes NO plex.tv call at all (a managed profile active, picker
+    # suppressed), the tool's own probe from the set is the control — `tv_wan` records it.
+    roster = (find(lines, "plex.tv unreachable, keeping the stored roster")
+              or find(lines, "roster refresh failed — keeping cached roster")
+              or find(lines, "-> ok (offline, cached credentials)"))
+    if roster is None and _WAN_CUT_VERIFIED:
+        roster = "(the app made no plex.tv call this boot; the cut was verified from the set: resolve plex.tv -> FAIL)"
+    if roster is None:
+        return False, "no `plex.tv unreachable` / `roster refresh failed` / offline-seat line, and the tool did not verify the cut: plex.tv was reachable"
+    slot = primary_slot(lines)
+    if slot is None:
+        return False, "no `plxnative-play: … server=N start` line: which slot was the primary?"
+    landed = find(lines, f"hubs: source {slot} ok")
+    if landed is None:
+        return False, f"the primary (slot {slot}) never landed its hubs offline"
+    failed = find(lines, f"hubs: source {slot} FAILED")
+    if failed is not None:
+        return False, f"the primary's hub fetch failed offline :: {failed.strip()}"
+    return True, f"{roster.strip()} ; {landed.strip()}"
+
+
+def a_offline_pick(lines):
+    """The who's-watching pick was seated from this television's cached credentials — the line
+    `auth::seat_offline` writes — and not through plex.tv, which the `offline` assertion beside
+    this proves was unreachable. A `-> failed` on the same profile is the 2026-09-06 outage."""
+    ok = find(lines, "-> ok (offline, cached credentials)")
+    if ok is not None:
+        return True, ok.strip()
+    failed = find(lines, "auth: switch '")
+    if failed is not None:
+        return False, f"the pick was not seated from the cache :: {failed.strip()}"
+    # Say what the picker DID do: every auth/pick line, so the verdict carries its own evidence.
+    saw = " | ".join(ln.strip() for ln in lines
+                     if any(k in ln for k in ("auth: ", "pickuser", "boot: ")))
+    return False, f"no `auth: switch` line at all: the picker never took the pick :: {saw}"
 
 
 def a_video_bound(lines):
@@ -3558,6 +3730,14 @@ def teardown(tv):
     global _TEARDOWN_DONE
     if _TEARDOWN_DONE:
         return
+    # A cut uplink outlives the harness like the app does: put it back before anything else, so
+    # an interrupted offline case never leaves the household's television off the internet for
+    # the watchdog's whole TTL.
+    if _WAN_CUT:
+        try:
+            tv_wan("on")
+        except Exception as e:  # noqa: BLE001 — never mask the real failure
+            print(f"    WARNING: wan restore failed ({e}); the on-device watchdog restores it")
     _TEARDOWN_DONE = True
     try:
         make(["kill", f"TV={tv}"], timeout=40)
@@ -3913,6 +4093,12 @@ def evaluate(case, lines):
     if exp.get("no_playing_error", True):
         results.append(("no_error", *a_no_error(lines)))
     results.append(("presented_rate", *a_presented_rate(lines, exp)))
+    if exp.get("resolve_pin"):
+        results.append(("resolve_pin", *a_resolve_pin(lines, exp["resolve_pin"])))
+    if exp.get("offline"):
+        results.append(("offline", *a_offline_roster(lines)))
+    if exp.get("offline_pick"):
+        results.append(("offline_pick", *a_offline_pick(lines)))
 
     # per-operation assertions
     for op in case["operations"]:
@@ -3980,7 +4166,48 @@ def report_case(passed, results, elapsed, run_secs, stopped_early, settled, verb
         print(f"       stopped early — settled: {redact(settled)}")
 
 
+def prime_online(case, cfg, files):
+    """`prime_online: [tile, ...]` — seat each roster tile ONCE, in order, with the uplink up,
+    and close the app after each. The offline picker seats a profile from the credentials its
+    last ONLINE seating cached (`Session::profiles`), so a case that grades the offline pick has
+    to make the seating happen on this install — otherwise it grades whether somebody happened
+    to use that profile since the last sign-in. Listing a SECOND tile last is what makes the
+    offline pick of the first one go through the cache rather than the same-user shortcut: the
+    active profile needs no network at all, which is a different (older) path.
+
+    Each launch is the case's own trigger set with `pickuser` overridden, so the play trigger
+    rides along exactly as it will offline; runs before `wan: off` cuts the link."""
+    tv = cfg["tv"]
+    tiles = case["prime_online"]
+    if tiles is True:
+        tiles = [int((case.get("triggers") or {}).get("pickuser", 0))]
+    def seated(_case, lines):
+        # Either road seats the profile online: the plex.tv switch, or the same-user shortcut
+        # when the tile was already the active profile (which also writes the record).
+        ok = (find(lines, "-> ok (per-user server token)") is not None
+              or find(lines, "already active — no switch needed") is not None)
+        return ok, [("primed", ok, "seated online")]
+    for tile in tiles:
+        print(f"    prime: seating roster tile {tile} online once, so the cache holds it ...")
+        primed = [(n, c) for n, c in files if n != "plxnative-pickuser"]
+        primed.append(("plxnative-pickuser", str(tile)))
+        apply_triggers(tv, primed)
+        lines, _, _, _ = stream_case(case, cfg, 60, early=True, inject=None, evaluator=seated)
+        make(["kill", f"TV={tv}"], timeout=40)
+        ok, _ = seated(case, lines)
+        if not ok:
+            # Say what the launch DID do: the lines that decide this, verbatim (already scrubbed).
+            for ln in lines:
+                if any(k in ln for k in ("auth: ", "pickuser", "boot: ")):
+                    print(f"      prime saw: {ln.strip()}")
+            raise RuntimeError(f"prime_online: roster tile {tile} was not seated online (is the "
+                               "uplink up, and does the stored roster hold that tile?)")
+    print("    prime: done")
+
+
 def run_case(case, cfg, token, verbose, cond=None):
+    global _WAN_CUT_VERIFIED
+    _WAN_CUT_VERIFIED = False
     name = case["name"]
     tv = cfg["tv"]
     run_secs = case.get("run_secs", 60)
@@ -4030,20 +4257,42 @@ def run_case(case, cfg, token, verbose, cond=None):
     # Always required — the binary carries no baked token, so plxnative-token in the runtime root
     # is the only way an automated run gets PMS access.
     files = triggers_for_case(case)
+    # `session: stored` — boot from the install's own signed-in session instead of the injected
+    # identity. The injected token installs the compiled PMS_HOST as a PLAINTEXT origin, which
+    # never touches the `plex.direct` name a real sign-in persists, so an offline case graded
+    # through it would be a false pass by construction. The install must therefore hold a sign-in
+    # already (refused with the reason otherwise), and that sign-in's profile is who plays — the
+    # one case family where the owner's history can move.
+    stored = case.get("session") == "stored"
+    if stored:
+        require_stored_session(tv, name)
+    inject = bool(cfg.get("inject_token")) and not stored
     extras = []
-    if cfg.get("inject_token"):
+    if inject:
         extras.append(f"printf '%s' '{token}' > {RUNDIR}/plxnative-token")
     # …and, for a case that declares it needs one, the SECOND server's credentials — same rules:
     # value never on stdout, cleared by the glob wipe above and again by teardown().
     srv_json = shared_servers_json(cfg, case)
+    if case.get("primary_ipv6"):
+        # The same server re-registered at its IPv6 `plex.direct` origin with its pin: the
+        # registry keys on machineIdentifier, so this RE-POINTS slot 0 rather than adding a
+        # source, and the case plays over v6 with no resolver. Built from plex.tv's own answer.
+        # The OWNER's token: plex.tv answers about the identity that asks, and a managed test
+        # user gets a 401 from `/api/v2/resources`. The stored session plays as the owner anyway.
+        srv_json = json.dumps([primary_ipv6_server(read_token(), stored_primary_machine_id(tv))],
+                              separators=(",", ":"))
     if srv_json:
         extras.append(f"printf '%s' {sh_squote(srv_json)} > {RUNDIR}/plxnative-servers")
     apply_triggers(tv, files, extra=extras)
     shown = ", ".join(n + ("=" + c if c is not None else "") for n, c in files)
     print(f"    triggers: {shown}")
-    if cfg.get("inject_token"):
+    if inject:
         print(f"    plxnative-token: <{cfg['user_label']}, redacted>")
-    if srv_json:
+    elif stored:
+        print(f"    session: the install's own stored sign-in (no token injected)")
+    if case.get("primary_ipv6"):
+        print("    plxnative-servers: <the primary's IPv6 plex.direct origin + pin, token redacted>")
+    if srv_json and not case.get("primary_ipv6"):
         # said the way the APP says it (`describe_server`): a share is a `ref=` tag and nothing
         # else. The token was never printed here and still is not.
         print(f"    plxnative-servers: <{describe_server(cfg['shared_server'])}, token redacted>")
@@ -4057,6 +4306,17 @@ def run_case(case, cfg, token, verbose, cond=None):
     on_start = None
     if profile and cond and cond.usable:
         on_start = lambda at: cond.arm(profile, at)
+    # `wan: off` — cut the television's uplink for this case (tools/tv-session.sh wan), after the
+    # triggers are armed and before the launch, so the boot itself runs offline. The set restores
+    # itself after a TTL whatever happens to this process; the explicit `on` below is the prompt
+    # half of that promise, and teardown() repeats it.
+    wan_off = case.get("wan") == "off"
+    if case.get("prime_online"):
+        prime_online(case, cfg, files)
+        # the priming launches wrote their own trigger sets; put the case's back
+        apply_triggers(tv, files, extra=extras)
+    if wan_off:
+        tv_wan("off", ttl_s=run_secs + 120)
     try:
         lines, elapsed, stopped_early, settled = stream_case(
             case, cfg, run_secs, early=early, inject=key_inject_for_case(case),
@@ -4066,6 +4326,8 @@ def run_case(case, cfg, token, verbose, cond=None):
         # this one, and nothing downstream would say so.
         if on_start:
             cond.disarm()
+        if wan_off:
+            tv_wan("on")
 
     # 5. evaluate
     passed, results = evaluate(case, lines)

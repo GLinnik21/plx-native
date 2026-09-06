@@ -9,9 +9,9 @@
 //! All network happens on spawned threads; the UI only reads snapshots through the accessors here.
 //! Tokens live in the working [`Session`] and are never logged.
 #![allow(dead_code)]
-use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource};
+use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
-use crate::plex::session::{self, ServerRef, Session, SourceRef, UserRef};
+use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 use crate::plex::{Origin, ServerId};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -165,6 +165,10 @@ pub struct ReadyCreds {
     /// The tier that won discovery, restored only after the main thread installs/re-points the
     /// client because a fresh client deliberately starts with an unknown link.
     pub tier: Option<probe::Location>,
+    /// The origin's resolve pin, read off the same stored record ([`session::ServerRef::resolve_pin`])
+    /// so the install this hands off dials the LAN name with no resolver, exactly as the boot
+    /// gate does.
+    pub pin: Option<crate::plex::ResolvePin>,
 }
 
 #[derive(Default)]
@@ -774,6 +778,7 @@ pub fn take_ready() -> Option<ReadyCreds> {
     let (sources, creds) = with_ctl(|c| {
         if c.phase == Phase::Ready && c.apply_pending {
             c.apply_pending = false;
+            remember_unprotected_active(&mut c.session);
             session::save(&c.session);
             session::set_current(Some(c.session.user.clone())); // drives the Home profile chip
             Some((
@@ -782,6 +787,7 @@ pub fn take_ready() -> Option<ReadyCreds> {
                     origin: c.session.server.origin(),
                     token: c.session.pms_token().to_owned(),
                     tier: c.session.server.tier,
+                    pin: c.session.server.resolve_pin(),
                 },
             ))
         } else {
@@ -794,6 +800,30 @@ pub fn take_ready() -> Option<ReadyCreds> {
     // retargets `current`, and an owned entry registers first regardless.
     install_roster(&sources, None);
     Some(creds)
+}
+
+/// Every seating of a PIN-free profile also writes its cache record, whichever path seated it —
+/// the switch worker writes protected ones because only it holds a PIN to verify against, but an
+/// unprotected profile's record is the session itself, so a stored sign-in that predates the cache
+/// becomes seatable offline the first time it is used, with no online switch required.
+fn remember_unprotected_active(sess: &mut Session) {
+    // An existing record (protected or not) follows the session; only a MISSING record for an
+    // unprotected profile is created here.
+    sess.refresh_profile_record();
+    if sess.user.uuid.is_empty()
+        || sess.pms_token().is_empty()
+        || sess.active_profile_is_protected()
+        || sess.cached_profile(&sess.user.uuid).is_some()
+    {
+        return;
+    }
+    sess.remember_profile(ProfileCreds {
+        uuid: sess.user.uuid.clone(),
+        user: sess.user.clone(),
+        server: sess.server.clone(),
+        sources: sess.sources.clone(),
+        pin: None,
+    });
 }
 
 /// Open the "who's watching" picker: the boot gate (picker-at-start) and the Home profile menu's
@@ -939,6 +969,8 @@ fn forget_account() {
     session::clear();
     crate::plex::revoke_all();
     drop(_gate);
+    // The pictures go with the account they belong to (avatars are the only class today).
+    crate::imgcache::clear();
     session::set_current(None);
 }
 
@@ -1092,7 +1124,13 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
     let pin = match ac.create_pin() {
         Some(p) if p.id != 0 && !p.code.is_empty() => p,
         _ => {
-            set_error_if_live(epoch, "Couldn't reach Plex — check the connection.");
+            // Says what the internet is FOR here, because the one time this screen appears
+            // with the link deliberately down is the first boot of a set that has never signed
+            // in — and that person needs to know the app works offline once it has.
+            set_error_if_live(
+                epoch,
+                "Couldn't reach Plex — check the connection. Signing in needs the internet once.",
+            );
             return None;
         }
     };
@@ -1691,7 +1729,17 @@ fn settle_probe_message(
                 origin,
             };
             if result.first.is_none() {
-                activate(plan, &winner.candidate, &winner.origin);
+                // "First usable immediately" — and USABLE is the word: on a LAN the plaintext
+                // twin answers before the TLS handshake completes, and a store build refuses
+                // to put a token on it, so activating it re-pointed the live server to an
+                // origin every request then failed on until the https winner landed ~100 ms
+                // later (device, 2026-09-06: `security: refused plaintext PMS credentials`,
+                // a hub fetch and the picker's first avatar lost in the gap). The first answer
+                // still counts as reached; it just does not become the live origin unless this
+                // build can dial it with a credential.
+                if activation_allowed(&winner.origin) {
+                    activate(plan, &winner.candidate, &winner.origin);
+                }
                 result.first = Some(winner.clone());
             }
             if result.best.as_ref().is_none_or(|old| better(&winner, old)) {
@@ -1908,14 +1956,38 @@ fn probe_server_racing(
         .first
         .as_ref()
         .expect("a best winner is also a first winner");
-    if first.index != best.index {
+    // The final re-point to the best score — or the first activation of the best, when the
+    // first answer was one this build could not make live (see `settle_probe_message`).
+    if (first.index != best.index || !activation_allowed(&first.origin))
+        && activation_allowed(&best.origin)
+    {
         activate(plan, &best.candidate, &best.origin);
     }
     Reach::At(best.candidate, best.origin)
 }
 
+/// May this origin become the LIVE one — can the app put a credential on it in this build?
+/// TLS always; plaintext only in a developer build (`http::credential_transport_allowed`'s rule,
+/// asked before a registration instead of after a refused request).
+fn activation_allowed(origin: &Origin) -> bool {
+    activation_allowed_by_policy(origin, cfg!(feature = "devtriggers"))
+}
+
+fn activation_allowed_by_policy(origin: &Origin, allow_plaintext_credentials: bool) -> bool {
+    crate::http::credential_transport_allowed_by_policy(
+        origin,
+        "/",
+        &["X-Plex-Token: any"],
+        allow_plaintext_credentials,
+    )
+}
+
 fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin, credit: &str) {
-    let id = crate::plex::register_origin(&plan.machine_id, origin, &plan.token);
+    // The pin is decided here, from the address plex.tv advertised BESIDE this candidate's uri —
+    // the one moment both halves are in hand. Persisted as `SourceRef::address`, it is re-derived
+    // the same way at every later boot.
+    let pin = crate::plex::ResolvePin::for_origin(origin, &c.address);
+    let id = crate::plex::register_origin(&plan.machine_id, origin, &plan.token, pin.as_ref());
     // Registration can re-point by publishing a fresh Client. The link write must follow that
     // publication every time or the new client silently returns to UNKNOWN.
     if let Some(client) = crate::plex::client_for(id) {
@@ -2466,6 +2538,7 @@ fn reconcile_ctl_roster(
     if !c.session.user.token.is_empty() {
         c.session.user.token = server.token.clone();
     }
+    c.session.refresh_profile_record();
     true
 }
 
@@ -2580,8 +2653,12 @@ pub fn refresh_roster() {
                 let roster_changed = !same_sources(&sources, &s.sources);
                 let mut next = s.clone();
                 let moved = usable_refresh && reconcile_refresh_session(&mut next, &sources);
-                let changed = roster_changed || moved;
                 next.sources = sources.clone();
+                // the offline record of the active profile follows the refreshed roster — and a
+                // record that was stale before this refresh is repaired even when the roster
+                // itself did not move, which is why its verdict is part of `changed`
+                let record_repaired = next.refresh_profile_record();
+                let changed = roster_changed || moved || record_repaired;
                 reconciled = Some((sources, next.server.clone(), changed, usable_refresh));
                 if changed {
                     Some(next)
@@ -2782,7 +2859,12 @@ pub(crate) fn request_endpoint_refresh(id: ServerId) {
             let Some(origin) = source.origin() else {
                 return false;
             };
-            let live_id = crate::plex::register_origin(&source.machine_id, &origin, &source.token);
+            let live_id = crate::plex::register_origin(
+                &source.machine_id,
+                &origin,
+                &source.token,
+                source.resolve_pin().as_ref(),
+            );
             if live_id != id {
                 return false;
             }
@@ -2893,7 +2975,7 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         // so this `else` is unreachable today and is a `continue` rather than an `expect` because
         // a roster entry has never been allowed to cost more than itself (`de_soft_vec`).
         let Some(origin) = s.origin() else { continue };
-        let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token);
+        let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token, s.resolve_pin().as_ref());
         if !id.is_set() {
             continue;
         }
@@ -3059,6 +3141,9 @@ fn merge_profile_roster(
         c.session.sources = sources;
         c.session.server = server_ref(&primary);
         c.session.user.token = primary.token.clone();
+        // …and the offline record of this profile, or the next offline seat restores the
+        // roster as it stood before the late probes.
+        c.session.refresh_profile_record();
         Some((c.session.clone(), c.apply_pending))
     });
     let Some((next, apply_pending)) = landed else {
@@ -3105,6 +3190,130 @@ fn switch_failure(pin_submitted: bool) -> (String, bool) {
     }
 }
 
+/// The uuid a seated profile is recorded under: the ROSTER's, which is what every later
+/// comparison uses — the tile the next pick names, [`Session::cached_profile`]'s key, and the
+/// same-user shortcut in [`switch_thread`]. The `/switch` response's own `uuid` is taken only when
+/// it agrees or the roster has none. The first device run of the cache (2026-09-06) wrote NO
+/// record for a primed profile: the response's `uuid` came back empty, `remember_profile` refuses
+/// an empty key, and the pick that followed offline found "no cached credentials".
+fn seated_uuid(u: &crate::plex::account::SwitchedUser, tile: &UserTile) -> String {
+    if tile.uuid.is_empty() {
+        u.uuid.clone()
+    } else {
+        tile.uuid.clone()
+    }
+}
+
+/// What a profile pick resolves to with plex.tv out of reach — decided from the stored session
+/// alone, so it can be graded on the host.
+pub(crate) enum OfflineSwitch {
+    /// Seat this session: the cached credentials, under the stored account and roster.
+    Seat(Box<Session>),
+    /// A protected profile whose PIN does not match this television's record.
+    PinDenied,
+    /// Nothing cached for this profile — or a protected one cached without a verifier, which
+    /// cannot be checked and is therefore the same as nothing.
+    NoCache,
+}
+
+/// [`OfflineSwitch`] for `tile`, from `stored`'s [`Session::profiles`].
+///
+/// The rule is the online one with the network removed: a PIN-protected profile is seated only
+/// on its PIN, an unprotected one on the pick alone. What changes is who checks the PIN — the
+/// verifier the last online switch wrote — and that a profile this television has never seated
+/// online cannot be seated at all, because there is nothing to seat it with.
+fn offline_activation(stored: &Session, tile: &UserTile, pin: Option<&str>) -> OfflineSwitch {
+    let Some(cached) = stored.cached_profile(&tile.uuid) else {
+        return OfflineSwitch::NoCache;
+    };
+    if tile.protected {
+        let Some(verifier) = &cached.pin else {
+            return OfflineSwitch::NoCache;
+        };
+        let Some(pin) = pin.filter(|p| !p.is_empty()) else {
+            return OfflineSwitch::PinDenied;
+        };
+        if !verifier.verify(pin) {
+            return OfflineSwitch::PinDenied;
+        }
+    }
+    let mut next = stored.clone();
+    next.server = cached.server.clone();
+    next.sources = cached.sources.clone();
+    next.user = cached.user.clone();
+    OfflineSwitch::Seat(Box::new(next))
+}
+
+/// The switch worker's offline arm: seat `tile` from the cache, or say why not, under `epoch`.
+///
+/// The seat is the online success arm with the probes removed — the same revoke / install /
+/// finish sequence, so the registry ends in the same state a network switch leaves it in. The
+/// cached tokens are the ones that were valid when the profile was last seated online; a server
+/// that has since revoked them answers 401 on Home exactly as it would after a stale boot, and
+/// the next online pick rewrites the record.
+fn seat_offline(epoch: u64, stored: &Session, tile: &UserTile, pin: Option<&str>) {
+    match offline_activation(stored, tile, pin) {
+        OfflineSwitch::Seat(next) => {
+            log(&format!(
+                "auth: switch '{}' -> ok (offline, cached credentials)",
+                tile.title
+            ));
+            let applied = with_live_epoch(epoch, || {
+                crate::plex::revoke_for_profile_switch();
+                let primary_pos = next
+                    .sources
+                    .iter()
+                    .position(|s| s.machine_id == next.server.machine_id);
+                let installed = install_roster(&next.sources, primary_pos);
+                crate::plex::finish_profile_switch(&installed);
+                with_ctl(|c| {
+                    c.session = (*next).clone();
+                    c.error.clear();
+                    c.pin_denied = false;
+                    c.phase = Phase::Ready;
+                    c.apply_pending = true;
+                });
+            });
+            if applied.is_none() {
+                log("auth: offline profile seat dropped — a newer flow owns the session");
+            }
+        }
+        OfflineSwitch::PinDenied => {
+            log(&format!(
+                "auth: switch '{}' -> offline, the PIN did not match this television's record",
+                tile.title
+            ));
+            let _ = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.error.clear();
+                    c.pin_denied = true;
+                    c.phase = Phase::Profiles;
+                });
+            });
+        }
+        OfflineSwitch::NoCache => {
+            log(&format!(
+                "auth: switch '{}' -> failed (plex.tv unreachable, and no cached credentials for this profile)",
+                tile.title
+            ));
+            // The banner, never the PIN flash: a PIN that could not be checked was not refused —
+            // and it says what would fix it, because "check the connection" reads as a fault
+            // when the connection is down on purpose (owner, 2026-09-06: state that one online
+            // pick is needed first).
+            let error = String::from(
+                "No internet connection. Pick this profile once while online, and it will work offline.",
+            );
+            let _ = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.error = error;
+                    c.pin_denied = false;
+                    c.phase = Phase::Profiles;
+                });
+            });
+        }
+    }
+}
+
 fn switch_thread(index: usize, pin: Option<String>) {
     let (epoch, (stored, tile, same_user)) = begin_flow(|c| {
         let tile = c.users.get(index).cloned();
@@ -3145,12 +3354,28 @@ fn switch_thread(index: usize, pin: Option<String>) {
     let account_token = stored.account_token.clone();
     let spawned = crate::task::spawn_small("switch", move || {
         let ac = AccountClient::new(&cid, Some(&account_token));
-        let u = match ac.switch_user(&tile.uuid, pin.as_deref()) {
-            Some(u) if !u.auth_token.is_empty() => u,
-            _ => {
-                // 401 (wrong PIN) and transport errors are indistinguishable at this layer;
-                // only blame the PIN when one was actually submitted.
-                log(&format!("auth: switch '{}' -> failed", tile.title));
+        // plex.tv is the authority whenever it answers. When it failed to answer moments ago
+        // (the picker's own roster refresh usually finds that out while the person is still
+        // reading the screen), a profile this television has seated online before is seated
+        // from that record straight away rather than after another full connect timeout —
+        // `account::plex_tv_recently_unreachable` says why the memo is short-lived.
+        let cache_first = stored.cached_profile(&tile.uuid).is_some()
+            && crate::plex::account::plex_tv_recently_unreachable();
+        let outcome = if cache_first {
+            log("auth: switch — plex.tv was unreachable moments ago, trying the cached credentials first");
+            SwitchOutcome::Unreachable
+        } else {
+            ac.switch_user(&tile.uuid, pin.as_deref())
+        };
+        let u = match outcome {
+            SwitchOutcome::Switched(u) => u,
+            SwitchOutcome::Refused(status) => {
+                // plex.tv answered and declined: a wrong PIN (401) when one was submitted, or
+                // an account token it no longer honours. Only blame the PIN when one was sent.
+                log(&format!(
+                    "auth: switch '{}' -> refused (HTTP {status})",
+                    tile.title
+                ));
                 let (error, pin_denied) = switch_failure(pin.is_some());
                 let _ = with_live_epoch(epoch, || {
                     with_ctl(|c| {
@@ -3159,6 +3384,10 @@ fn switch_thread(index: usize, pin: Option<String>) {
                         c.phase = Phase::Profiles;
                     });
                 });
+                return;
+            }
+            SwitchOutcome::Unreachable => {
+                seat_offline(epoch, &stored, &tile, pin.as_deref());
                 return;
             }
         };
@@ -3231,11 +3460,23 @@ fn switch_thread(index: usize, pin: Option<String>) {
                 next.sources = initial;
                 next.user = UserRef {
                     id: u.id,
-                    uuid: u.uuid.clone(),
+                    uuid: seated_uuid(&u, &tile),
                     title: u.title.clone(),
                     thumb: tile.thumb.clone(),
                     token: primary.token.clone(),
                 };
+                // The record the offline fallback seats this profile from next time. The PIN
+                // plex.tv just accepted becomes a verifier, never the PIN (`session::PinVerifier`).
+                next.remember_profile(ProfileCreds {
+                    uuid: next.user.uuid.clone(),
+                    user: next.user.clone(),
+                    server: next.server.clone(),
+                    sources: next.sources.clone(),
+                    pin: pin
+                        .as_deref()
+                        .filter(|p| !p.is_empty())
+                        .map(session::PinVerifier::new),
+                });
                 let applied = with_live_epoch(epoch, || {
                     crate::plex::revoke_for_profile_switch();
                     let primary_pos = next
@@ -4606,6 +4847,187 @@ mod tests {
     /// file on every television written before that field carries. `..Default::default()` is what
     /// leaves it empty, so these fixtures also stand as the compatibility case: everything they
     /// assert about registration and re-keying runs through `SourceRef::origin`'s fallback.
+    // ---- the offline profile seat, decided from the stored session alone ----
+
+    fn cached_session(protected_pin: Option<&str>) -> Session {
+        let mut s = Session {
+            client_id: "cid".into(),
+            account_token: "acct".into(),
+            ..Default::default()
+        };
+        s.user = UserRef {
+            uuid: "u-admin".into(),
+            token: "admin-token".into(),
+            ..Default::default()
+        };
+        s.server = ServerRef {
+            machine_id: "ours".into(),
+            address: "10.0.0.1".into(),
+            port: 32400,
+            token: "admin-token".into(),
+            ..Default::default()
+        };
+        s.sources = vec![source("ours", true, "admin-token")];
+        s.remember_profile(ProfileCreds {
+            uuid: "u-admin".into(),
+            user: s.user.clone(),
+            server: s.server.clone(),
+            sources: s.sources.clone(),
+            pin: protected_pin.map(session::PinVerifier::new),
+        });
+        s.remember_profile(ProfileCreds {
+            uuid: "u-kid".into(),
+            user: UserRef {
+                uuid: "u-kid".into(),
+                token: "kid-token".into(),
+                ..Default::default()
+            },
+            server: ServerRef {
+                machine_id: "ours".into(),
+                address: "10.0.0.1".into(),
+                port: 32400,
+                token: "kid-token".into(),
+                ..Default::default()
+            },
+            sources: vec![source("ours", true, "kid-token")],
+            pin: None,
+        });
+        s
+    }
+
+    /// The roster's uuid keys the record, whatever the `/switch` body says — an empty or
+    /// differing response uuid must not produce an entry the next pick cannot find.
+    #[test]
+    fn a_seated_profile_is_recorded_under_the_roster_uuid() {
+        let u = crate::plex::account::SwitchedUser {
+            uuid: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(seated_uuid(&u, &tile("u-kid", false)), "u-kid");
+        let u = crate::plex::account::SwitchedUser {
+            uuid: "u-other".into(),
+            ..Default::default()
+        };
+        assert_eq!(seated_uuid(&u, &tile("u-kid", false)), "u-kid");
+        assert_eq!(seated_uuid(&u, &tile("", false)), "u-other", "no roster uuid: the response's");
+    }
+
+    /// The plaintext twin may answer first, but a store build cannot make it live: only an
+    /// https origin is activated there, while a developer build keeps its lab plaintext.
+    #[test]
+    fn a_store_build_never_makes_a_plaintext_origin_live() {
+        let plain = Origin::http("192.168.0.10", 32400);
+        let tls = Origin::parse("https://192-168-0-10.abc.plex.direct:32400").unwrap();
+        assert!(!activation_allowed_by_policy(&plain, false));
+        assert!(activation_allowed_by_policy(&tls, false));
+        assert!(activation_allowed_by_policy(&plain, true), "a developer build keeps its lab server");
+    }
+
+    fn tile(uuid: &str, protected: bool) -> UserTile {
+        UserTile {
+            uuid: uuid.into(),
+            title: uuid.into(),
+            protected,
+            ..Default::default()
+        }
+    }
+
+    /// The outage that motivated the cache (2026-09-06): the active profile is the PIN-protected
+    /// admin, plex.tv is unreachable, and the PIN has to be checked by this television.
+    #[test]
+    fn a_protected_profile_is_seated_offline_on_its_pin_and_refused_on_any_other() {
+        let stored = cached_session(Some("4821"));
+        match offline_activation(&stored, &tile("u-admin", true), Some("4821")) {
+            OfflineSwitch::Seat(next) => {
+                assert_eq!(next.user.token, "admin-token");
+                assert_eq!(next.client_id, "cid", "the account and its roster ride through");
+                assert_eq!(next.account_token, "acct");
+            }
+            _ => panic!("the right PIN seats the cached profile"),
+        }
+        assert!(matches!(
+            offline_activation(&stored, &tile("u-admin", true), Some("0000")),
+            OfflineSwitch::PinDenied
+        ));
+        assert!(matches!(
+            offline_activation(&stored, &tile("u-admin", true), None),
+            OfflineSwitch::PinDenied
+        ));
+        assert!(matches!(
+            offline_activation(&stored, &tile("u-admin", true), Some("")),
+            OfflineSwitch::PinDenied
+        ));
+    }
+
+    /// A protected profile whose record predates the verifier cannot be checked, so it is not
+    /// seated — "no cache", never "no PIN".
+    #[test]
+    fn a_protected_profile_cached_without_a_verifier_is_not_seated() {
+        let stored = cached_session(None);
+        assert!(matches!(
+            offline_activation(&stored, &tile("u-admin", true), Some("4821")),
+            OfflineSwitch::NoCache
+        ));
+    }
+
+    #[test]
+    fn an_unprotected_cached_profile_is_seated_on_the_pick_alone() {
+        let stored = cached_session(Some("4821"));
+        match offline_activation(&stored, &tile("u-kid", false), None) {
+            OfflineSwitch::Seat(next) => {
+                assert_eq!(next.user.uuid, "u-kid");
+                assert_eq!(next.user.token, "kid-token");
+                assert_eq!(next.server.token, "kid-token");
+                assert_eq!(next.sources[0].token, "kid-token");
+                assert_eq!(next.profiles.len(), 2, "the cache itself is kept for the next pick");
+            }
+            _ => panic!("an unprotected cached profile seats without a network"),
+        }
+    }
+
+    #[test]
+    fn a_profile_this_television_never_seated_online_has_nothing_to_seat() {
+        let stored = cached_session(Some("4821"));
+        assert!(matches!(
+            offline_activation(&stored, &tile("u-guest", false), None),
+            OfflineSwitch::NoCache
+        ));
+        assert!(matches!(
+            offline_activation(&Session::default(), &tile("u-admin", true), Some("4821")),
+            OfflineSwitch::NoCache
+        ));
+    }
+
+    /// The seating paths that never see a PIN still write the record for a PIN-free profile,
+    /// so a session stored before the cache existed becomes seatable offline on first use.
+    #[test]
+    fn seating_an_unprotected_active_profile_records_it_and_a_protected_one_is_left_to_the_switch() {
+        let mut s = cached_session(None);
+        s.profiles.clear();
+        s.home_users = vec![session::HomeUserRef {
+            uuid: "u-admin".into(),
+            protected: false,
+            ..Default::default()
+        }];
+        remember_unprotected_active(&mut s);
+        assert_eq!(s.profiles.len(), 1);
+        assert_eq!(s.cached_profile("u-admin").unwrap().user.token, "admin-token");
+
+        let mut p = cached_session(None);
+        p.profiles.clear();
+        p.home_users = vec![session::HomeUserRef {
+            uuid: "u-admin".into(),
+            protected: true,
+            ..Default::default()
+        }];
+        remember_unprotected_active(&mut p);
+        assert!(p.profiles.is_empty(), "no PIN in hand, no verifier to write");
+
+        let mut none = Session::default();
+        remember_unprotected_active(&mut none);
+        assert!(none.profiles.is_empty(), "an account without Plex Home names no profile");
+    }
+
     fn source(machine_id: &str, owned: bool, token: &str) -> SourceRef {
         SourceRef {
             machine_id: machine_id.into(),

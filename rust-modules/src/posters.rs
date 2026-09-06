@@ -801,11 +801,47 @@ fn poster_worker() {
         // did, and the state transition below is untouched.
         let mut w = 0i32;
         let mut h = 0i32;
-        let px = match crate::plex::client_for(srv) {
+        // A DURABLE class of art (today: profile avatars, which the server proxies from plex.tv)
+        // also lives in `crate::imgcache`, and the FILE WINS whenever there is one: the key
+        // carries plex.tv's own cache-buster, so a cached file is current for its key by
+        // construction and there is nothing a fetch could refresh. Going to the network first
+        // was the 2026-09-06 picker with no faces: offline, the proxy's request to plex.tv
+        // hangs for the whole transfer budget, both workers sat on avatars, and the tiles
+        // stayed skeletons until long after the pick. On a miss the fetch runs as before, and
+        // the bytes are written only AFTER they decode — a proxy answering 2xx with something
+        // that is not the picture must never overwrite a good file.
+        let disk = crate::imgcache::classify(&key_s);
+        let cache_gen = crate::imgcache::generation();
+        let mut fetched: Option<Vec<u8>> = None;
+        let mut px = std::ptr::null_mut();
+        // A stale cached file is refreshed AFTER the picture is published (below), and only
+        // into the file — never on this worker's critical path, and never as a texture swap.
+        let mut refresh_after: Option<crate::imgcache::DiskKey> = None;
+        if let Some(k) = &disk {
+            if let Some(b) = crate::imgcache::read(k) {
+                px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
+                if px.is_null() {
+                    // a file that no longer decodes is retired, and the fetch below replaces it
+                    crate::imgcache::remove(k);
+                } else if crate::imgcache::age(k).is_some_and(|a| a > crate::imgcache::REFRESH_AFTER)
+                    && crate::plex::account::plex_tv_recently_reachable()
+                {
+                    refresh_after = Some(k.clone());
+                }
+            }
+        }
+        let px = if !px.is_null() {
+            px
+        } else {
+            match crate::plex::client_for(srv) {
             Some(c) => match c.fetch_built(&key_s) {
                 // bytes arrived: from here on a failure is the decoder's, and `img.rs` logs it
                 Some(b) if !b.is_empty() => {
-                    img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h)
+                    let px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
+                    if !px.is_null() && disk.is_some() {
+                        fetched = Some(b);
+                    }
+                    px
                 }
                 Some(_) => {
                     warn_fetch_failed(srv, ArtFail::Empty);
@@ -820,7 +856,14 @@ fn poster_worker() {
                 warn_fetch_failed(srv, ArtFail::NoServer);
                 std::ptr::null_mut()
             }
+            }
         };
+
+        if let (Some(k), Some(b)) = (&disk, &fetched) {
+            // gated on the generation read before the fetch: a sign-out in between means these
+            // bytes belong to an account that has left, and they are dropped
+            crate::imgcache::write_at(cache_gen, k, b);
+        }
 
         let mut g = store();
         let s = &mut g.slots[idx];
@@ -836,6 +879,25 @@ fn poster_worker() {
         } else if !px.is_null() {
             drop(g);
             img::img_free(px); // recycled while we worked: discard
+        }
+
+        // The cached picture is on its way to the screen; now, and only now, look again at a
+        // file old enough to deserve it, on a link plex.tv has answered on recently. A refresh
+        // must never cost a face: the fetch feeds the FILE (next boot shows it), the texture
+        // already published stands, and a fetch that brings nothing changes nothing. This worker
+        // is busy for the round trip, which is the price of not holding a third thread for it.
+        if let Some(k) = refresh_after {
+            if let Some(b) = crate::plex::client_for(srv).and_then(|c| c.fetch_built(&key_s)) {
+                if !b.is_empty() {
+                    let mut fw = 0i32;
+                    let mut fh = 0i32;
+                    let fresh = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut fw, &mut fh);
+                    if !fresh.is_null() {
+                        img::img_free(fresh);
+                        crate::imgcache::write_at(cache_gen, &k, &b);
+                    }
+                }
+            }
         }
     }
 }

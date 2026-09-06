@@ -74,15 +74,23 @@
 //!    `getaddrinfo`, where no byte in our pipe can reach it. The dev set reports `AsynchDNS = YES`
 //!    (c-ares), so the window is much smaller than feared there, but that is ONE firmware.
 //!
-//! ## The designed fallback for DNS cancellation — documented, deliberately NOT built
+//! ## `CURLOPT_RESOLVE` — built on 2026-09-05, for a different reason than this doc once gave
 //!
-//! With `CURLOPT_NOSIGNAL=1` and a synchronous resolver, libcurl cannot honour a timeout during
-//! name resolution, so neither can we. **If a device probe ever shows this is a real teardown
-//! problem**, the clean fix is our own `getaddrinfo` plus `CURLOPT_RESOLVE`: the `plex.direct`
-//! hostname stays in the URL, so TLS SNI and certificate identity are untouched, while libcurl is
-//! handed the resolved numeric address separately and never resolves anything itself. It is a
-//! dozen lines. It is not written here because nothing has measured it as needed, and a
-//! pre-emptive resolver is a second name-resolution path to keep in step with `stream.rs`'s.
+//! This section used to describe our own `getaddrinfo` plus `CURLOPT_RESOLVE` as the "designed
+//! fallback for DNS cancellation, deliberately NOT built": with `CURLOPT_NOSIGNAL=1` and a
+//! synchronous resolver libcurl cannot honour a timeout during name resolution, and pre-resolving
+//! would have sidestepped that. Nothing measured that as needed, and it still has not been.
+//!
+//! What DID need it is offline play. plex.tv advertises the household's own server as an
+//! `https://…plex.direct` name that only public DNS resolves, so a LAN with its uplink down could
+//! not reach a server one hop away. `CurlSource::open*` now asks `net::resolve` for a pin by the
+//! URL's host and port — recorded by the registry from the address plex.tv advertised beside the
+//! name, validated in `plex::origin::ResolvePin` — and applies it as ONE `CURLOPT_RESOLVE` entry
+//! on every easy handle it attaches. The hostname stays in the URL, so SNI and certificate
+//! identity are untouched; libcurl simply never resolves it. There is no `getaddrinfo` here: the
+//! address comes from plex.tv, never from a resolver of ours, so the second-resolution-path
+//! objection above does not arise. The list is owned by the easy handle it was set on (see
+//! `stop`), and a libcurl that answers `CURLE_UNKNOWN_OPTION` keeps resolving names itself.
 //!
 //! # Why the abort handle lives in a module-global REGISTRY
 //!
@@ -189,6 +197,9 @@ const CURLOPT_TIMEOUT_MS: c_int = 155;
 /// The numeric protocol options are the compatibility surface for this project's curl floor.
 /// Their `_STR` replacements are newer than webOS 4.5's libcurl 7.53.1.
 const CURLOPT_PROTOCOLS: c_int = 181;
+/// `host:port:address` DNS pre-population — the media plane's half of the offline fix. The option
+/// id and its non-fatal polarity are documented on `net::CURLOPT_RESOLVE` / `net::resolve`.
+const CURLOPT_RESOLVE: c_int = 10203;
 const CURLOPT_REDIR_PROTOCOLS: c_int = 182;
 const CURLPROTO_HTTP: c_long = 1 << 0;
 const CURLPROTO_HTTPS: c_long = 1 << 1;
@@ -532,6 +543,16 @@ pub(crate) struct CurlSource {
     url: CString,
     ua: CString,
     range: Option<CString>,
+    /// The `CURLOPT_RESOLVE` entry for this URL's host, when `net::resolve` holds a pin for it —
+    /// computed once at open, applied to every easy handle this source attaches (a seek is a fresh
+    /// handle). The pinned name is a pure function of the host, so it cannot go stale mid-stream.
+    resolve_entry: Option<CString>,
+    /// The `curl_slist` built from `resolve_entry` for the CURRENT easy handle. **Owned by that
+    /// handle**: libcurl keeps the pointer for the transfer's life, so it is freed only after the
+    /// handle has been removed and cleaned, and it is abandoned together with the handles on
+    /// `stop`'s catastrophic path (freeing it under a handle libcurl may still reference would be
+    /// a use-after-free, which is the one thing that path exists to avoid).
+    resolve: *mut crate::net::curl_slist,
     xfer: Box<Xfer>,
     abort: Arc<Abort>,
     /// Byte offset of the next byte [`CurlSource::read`] will deliver.
@@ -651,6 +672,20 @@ impl CurlSource {
         if !media_url_allowed(url) {
             return Err(OpenErr::Local);
         }
+        // The resolve pin, by this URL's host and port — see `net::resolve` for why the media
+        // plane consults a table rather than carrying the pin. Looked up ONCE here; a seek reuses it.
+        let (origin, _) = crate::plex::origin::split(url);
+        let resolve_entry = crate::net::resolve::entry_for(origin.host(), origin.port());
+        // The offline reproduction (`/tmp/plxnative-nowan`): a name opens only with a pin.
+        if resolve_entry.is_none()
+            && crate::net::refuse_name(origin.host(), crate::net::API.connect_s)
+        {
+            return Err(OpenErr::Local);
+        }
+        let resolve_entry = resolve_entry
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| OpenErr::Local)?;
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
         let ua = CString::new(crate::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
@@ -664,6 +699,8 @@ impl CurlSource {
             url: url_c,
             ua,
             range: None,
+            resolve_entry,
+            resolve: std::ptr::null_mut(),
             xfer: Box::new(Xfer::new()),
             abort: Arc::clone(&abort),
             off: 0,
@@ -746,6 +783,7 @@ impl CurlSource {
                         ));
                         crate::net::curl_easy_cleanup(easy);
                         self.easy = std::ptr::null_mut();
+                        self.free_resolve_list();
                         return Err(OpenErr::Local);
                     }
                 }};
@@ -771,6 +809,25 @@ impl CurlSource {
             );
             if let Some(r) = &self.range {
                 crate::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
+            }
+            // The resolve pin, one list entry, owned by THIS easy handle (`stop` frees it after the
+            // handle, or abandons both). Not `require_setopt!`: a libcurl without the option keeps
+            // resolving the name itself, and that is a logged fact rather than a cancelled stream.
+            if let Some(r) = &self.resolve_entry {
+                let l = crate::net::curl_slist_append(std::ptr::null_mut(), r.as_ptr());
+                if l.is_null() {
+                    crate::net::curl_easy_cleanup(easy);
+                    self.easy = std::ptr::null_mut();
+                    return Err(OpenErr::Local);
+                }
+                self.resolve = l;
+                let rc = crate::net::curl_easy_setopt_ptr(easy, CURLOPT_RESOLVE, l as *const c_void);
+                if crate::net::resolve::note_setopt(rc).is_err() {
+                    crate::net::curl_easy_cleanup(easy);
+                    self.easy = std::ptr::null_mut();
+                    self.free_resolve_list();
+                    return Err(OpenErr::Local);
+                }
             }
             // TLS verification ON, both halves — the certificate is issued for the `plex.direct`
             // NAME, which is the entire reason an Origin is parsed from a URL and never rebuilt
@@ -1008,6 +1065,15 @@ impl CurlSource {
         self.done = true;
     }
 
+    /// Free the resolve list of a handle that is already gone (cleaned up, or never attached).
+    /// Only ever AFTER the easy handle: libcurl holds the pointer for the handle's life.
+    fn free_resolve_list(&mut self) {
+        if !self.resolve.is_null() {
+            unsafe { crate::net::curl_slist_free_all(self.resolve) };
+            self.resolve = std::ptr::null_mut();
+        }
+    }
+
     /// Detach and free the current easy handle. Idempotent.
     ///
     /// If libcurl refuses the detach, ownership is no longer provable. Its documented cleanup
@@ -1025,14 +1091,18 @@ impl CurlSource {
                     self.multi_failed = true;
                     // Neither cleanup is contractually safe while attachment is uncertain.
                     // Forget both values; `start` sees `multi_failed` and builds a fresh owner.
+                    // The resolve list goes with them: libcurl may still hold its pointer.
                     self.multi = std::ptr::null_mut();
                     self.easy = std::ptr::null_mut();
+                    self.resolve = std::ptr::null_mut();
                     self.range = None;
                     return;
                 }
                 crate::net::curl_easy_cleanup(self.easy);
             }
             self.easy = std::ptr::null_mut();
+            // After the handle, never before: the list must outlive the transfer.
+            self.free_resolve_list();
         }
         self.range = None;
     }
@@ -1642,6 +1712,45 @@ mod tests {
     }
 
     const BODY: &[u8] = b"ABCDEFGH";
+
+    /// **The offline fix's media half.** A `.invalid` host is opened through the resolve TABLE —
+    /// the pin was recorded the way the registry records one, and the source found it by the
+    /// URL's host and port with no parameter threaded through `ff::demux`. The bytes arrive, the
+    /// listener saw exactly one connection, and the same URL without an entry opens nothing.
+    #[test]
+    fn a_pinned_host_streams_through_the_resolve_table_without_dns() {
+        let Some(_g) = curl_gate() else { return };
+        crate::net::resolve::clear();
+        with_server(RangeMode::Honour, |port, accepts, _requests| {
+            let url = format!("http://no-such-host.invalid:{port}/f.mkv");
+            assert!(
+                CurlSource::open_gated(&url, 0, true).is_err(),
+                "unpinned, the name resolves to nothing"
+            );
+            assert_eq!(accepts.load(Ordering::Acquire), 0);
+            let pin = crate::plex::ResolvePin::for_test(
+                "no-such-host.invalid",
+                port as i32,
+                "127.0.0.1".parse().unwrap(),
+            );
+            assert!(crate::net::resolve::add(&pin));
+            let mut src = CurlSource::open_gated(&url, 0, true).expect("opens through the pin");
+            let mut buf = [0u8; 16];
+            let n = src.read(&mut buf);
+            assert!(n > 0, "read returned {n}");
+            assert_eq!(&buf[..n as usize], &BODY[..n as usize]);
+            assert_eq!(accepts.load(Ordering::Acquire), 1);
+            // a seek is a fresh easy handle: the entry is applied again and, the connection
+            // being reused, the listener still counts one accept
+            assert!(src.seek(2), "the seek re-applies the pin");
+            let n = src.read(&mut buf);
+            assert!(n > 0, "read after seek returned {n}");
+            assert_eq!(&buf[..n as usize], &BODY[2..2 + n as usize]);
+            assert_eq!(accepts.load(Ordering::Acquire), 1);
+            drop(src);
+        });
+        crate::net::resolve::clear();
+    }
 
     fn with_server(mode: RangeMode, body: impl FnOnce(u16, &AtomicUsize, &AtomicUsize)) {
         let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");

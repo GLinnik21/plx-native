@@ -67,7 +67,7 @@
 //! cannot, because libcurl owns that framing and `net.rs` sees only the assembled body. The gap is
 //! narrower than it looks: `plex::client::get_json` logs the status, the byte count and serde's own
 //! error whenever a 2xx will not parse, over either transport.
-use crate::plex::{Origin, Scheme};
+use crate::plex::{Origin, Scheme, ResolvePin};
 
 /// The verb. Three, because three is what the Plex control plane uses: reads, the body-less
 /// `PUT /library/parts/{id}` that selects a track server-side, and the POSTs whose params ride the
@@ -174,8 +174,9 @@ pub(crate) fn request(
     path: &str,
     method: Method,
     headers: &[&str],
+    pin: Option<&ResolvePin>,
 ) -> Option<Reply> {
-    request_with(origin, path, method, headers, BodyPolicy::Api).response()
+    request_with(origin, path, method, headers, BodyPolicy::Api, pin).response()
 }
 
 /// A PMS request whose response size is content-dependent. Only the TLS arm differs from
@@ -185,8 +186,9 @@ pub(crate) fn request_bulk(
     path: &str,
     method: Method,
     headers: &[&str],
+    pin: Option<&ResolvePin>,
 ) -> Option<Reply> {
-    request_with(origin, path, method, headers, BodyPolicy::Bulk).response()
+    request_with(origin, path, method, headers, BodyPolicy::Bulk, pin).response()
 }
 
 /// A small control-plane request inside an already-running transaction reserve. Plaintext composes
@@ -201,6 +203,7 @@ pub(crate) fn request_until_outcome(
     method: Method,
     headers: &[&str],
     deadline: std::time::Instant,
+    pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
     request_with(
         origin,
@@ -208,12 +211,18 @@ pub(crate) fn request_until_outcome(
         method,
         headers,
         BodyPolicy::Deadline { at: deadline },
+        pin,
     )
 }
 
 /// A bounded discovery probe. The caller chooses 5 s for a local candidate and 10 s for a remote
 /// or relay candidate; this façade carries that policy into either transport without either arm
 /// trying to infer locality from an address.
+///
+/// **Unpinned, and that is a known gap rather than an oversight.** A probe runs only after
+/// `/api/v2/resources` answered, i.e. with the internet up, so its name resolves the ordinary way;
+/// carrying the candidate's [`ResolvePin`] into `auth::ProbeDial` is the follow-up that would let
+/// discovery itself run on a LAN with no resolver.
 pub(crate) fn request_probe(
     origin: &Origin,
     path: &str,
@@ -231,6 +240,7 @@ pub(crate) fn request_probe(
             max: max_body,
             timeout_s,
         },
+        None,
     )
     .response()
 }
@@ -241,13 +251,15 @@ fn request_with(
     method: Method,
     headers: &[&str],
     body_policy: BodyPolicy,
+    pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
     if !credential_transport_allowed(origin, path, headers) {
         return RequestOutcome::Transport;
     }
     match origin.scheme() {
+        // The plaintext arm dials the literal it is given; a pin belongs to a TLS NAME only.
         Scheme::Http => plaintext(origin, path, method, headers, body_policy),
-        Scheme::Https => tls(origin, path, method, headers, body_policy),
+        Scheme::Https => tls(origin, path, method, headers, body_policy, pin),
     }
 }
 
@@ -519,14 +531,24 @@ fn plaintext(
 /// plex.tv advertised. Unmatched private-LAN connections on a share are removed earlier by
 /// `probe::candidates`; validation could reject a stranger there, but could not refund its 8 s
 /// sequential connect setting (subject to the synchronous-resolver caveat in the module doc).
+///
+/// `pin`, when the origin has one, is handed to `net` as a ready `CURLOPT_RESOLVE` entry, so the
+/// `plex.direct` name is dialled at the address plex.tv advertised beside it and no resolver is
+/// consulted — the whole of offline mode, from this layer's point of view. A pin for a DIFFERENT
+/// host than this origin's is ignored: the entry is keyed on the URL's own host, and curl would
+/// simply never match it, but refusing to send it keeps the log honest.
 fn tls(
     origin: &Origin,
     path: &str,
     method: Method,
     headers: &[&str],
     body_policy: BodyPolicy,
+    pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
     let url = format!("{}{}", origin.base(), path);
+    let resolve = pin
+        .filter(|p| p.host() == origin.host() && p.port() == origin.port())
+        .map(crate::net::resolve::entry_of);
     let owned: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
     // A POST carries a body even when that body is empty — the Plex control plane's POSTs put
     // their params in the query string — while GET and the body-less PUT carry none. `net` turns
@@ -593,6 +615,7 @@ fn tls(
         timeouts,
         false,
         max_body,
+        resolve.as_deref(),
     ) {
         Ok(r) => RequestOutcome::Response(Reply {
             status: r.status as i32,
@@ -627,6 +650,47 @@ mod tests {
     /// `stream::http_open` and fails to connect. Both are `None`, so what this really pins is that
     /// neither one PANICS and neither one dials the other's target — the useful half on a machine
     /// that has no PMS.
+    /// **The control plane end to end.** An https origin whose name no resolver answers for is
+    /// dialled at the pinned address: the loopback listener ACCEPTS a connection (the TLS
+    /// handshake against a plaintext listener then fails, which is fine — reaching the socket is
+    /// the whole claim, and a DNS failure never reaches one). A pin for a different host is not
+    /// sent, so the same request stays undialled.
+    #[test]
+    fn a_pinned_tls_origin_is_dialled_at_the_pinned_address() {
+        let _g = crate::testlock::serial();
+        if !crate::net::global_init() {
+            return;
+        }
+        let Ok(srv) = std::net::TcpListener::bind("127.0.0.1:0") else { return };
+        let port = srv.local_addr().unwrap().port();
+        srv.set_nonblocking(true).unwrap();
+        let accepts = std::sync::atomic::AtomicUsize::new(0);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                    match srv.accept() {
+                        Ok(_) => {
+                            accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1))
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            let origin = Origin::parse(&format!("https://no-such-host.invalid:{port}")).unwrap();
+            let pin = ResolvePin::for_test("no-such-host.invalid", port as i32, "127.0.0.1".parse().unwrap());
+            let other = ResolvePin::for_test("other.invalid", port as i32, "127.0.0.1".parse().unwrap());
+            assert!(request(&origin, "/identity", Method::Get, &[], Some(&other)).is_none());
+            assert_eq!(accepts.load(std::sync::atomic::Ordering::Acquire), 0, "a foreign pin is not sent");
+            assert!(request(&origin, "/identity", Method::Get, &[], Some(&pin)).is_none(), "TLS against a plaintext listener fails, as it must");
+            assert_eq!(accepts.load(std::sync::atomic::Ordering::Acquire), 1, "…but the socket was reached through the pin");
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        });
+    }
+
     #[test]
     fn a_request_is_routed_by_the_origins_scheme() {
         // TEST-NET-1 (RFC 5737): guaranteed unrouted, so nothing can answer either of these.
@@ -635,8 +699,8 @@ mod tests {
         assert_eq!(http.scheme(), Scheme::Http);
         assert_eq!(https.scheme(), Scheme::Https);
 
-        assert!(request(&http, "/identity", Method::Get, &[ACCEPT_JSON]).is_none());
-        assert!(request(&https, "/identity", Method::Get, &[ACCEPT_JSON]).is_none());
+        assert!(request(&http, "/identity", Method::Get, &[ACCEPT_JSON], None).is_none());
+        assert!(request(&https, "/identity", Method::Get, &[ACCEPT_JSON], None).is_none());
     }
 
     /// The verb tokens are what goes on the request line, and `plex::client::put` and the
@@ -757,7 +821,7 @@ mod tests {
         let origin = Origin::http("127.0.0.1", port as i32);
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
 
-        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline);
+        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline, None);
         server.join().unwrap();
         cross(deadline);
 
@@ -795,7 +859,7 @@ mod tests {
         let origin = Origin::http("127.0.0.1", port as i32);
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
 
-        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline);
+        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline, None);
         server.join().unwrap();
         cross(deadline);
 
@@ -814,7 +878,7 @@ mod tests {
         let origin = Origin::http("127.0.0.1", port as i32);
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(80);
 
-        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline);
+        let outcome = request_until_outcome(&origin, "/decision", Method::Get, &[], deadline, None);
         let _ = release_tx.send(());
         server.join().unwrap();
 

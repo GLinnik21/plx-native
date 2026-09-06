@@ -86,6 +86,14 @@ pub struct Client {
     /// still answer exactly what they always did, which is why the ~30 call sites below this
     /// layer did not move.
     pub(super) origin: Origin,
+    /// **The DNS answer for `origin`, when this process may supply it** — see
+    /// [`super::origin::ResolvePin`]. `None` for a plaintext origin, a literal host, a name that
+    /// is not a dashed `plex.direct` label, or a stored address the label does not encode; every
+    /// request this client makes hands it to [`crate::http`], which is what lets the household's
+    /// own server be reached with no resolver at all. Set once at construction
+    /// ([`Client::with_resolve_pin`]) because it is a pure function of `origin` plus the address
+    /// plex.tv advertised, and a re-point publishes a fresh `Client` anyway.
+    pub(super) resolve_pin: Option<super::origin::ResolvePin>,
     // X-Plex-Token value. Interior-mutable because the token changes at runtime after boot: it's
     // installed once we've logged in, and swapped when the user switches Plex Home profile (same
     // server, different per-user token). Read in exactly one place (`with_token`).
@@ -212,6 +220,7 @@ impl Client {
             id,
             machine_id: machine_id.to_owned(),
             origin,
+            resolve_pin: None,
             token: RwLock::new(token.to_owned()),
             client_id: client_id.to_owned(),
             product: super::identity::PRODUCT.into(),
@@ -221,6 +230,20 @@ impl Client {
             link: AtomicU8::new(LINK_UNKNOWN),
             ip_version: AtomicU8::new(IP_UNKNOWN),
         }
+    }
+
+    /// [`Client::new`] plus the origin's resolve pin. A builder rather than a sixth constructor
+    /// argument so the registry is the only place that decides a pin, and every test that builds
+    /// a bare client stays as it was.
+    pub(super) fn with_resolve_pin(mut self, pin: Option<super::origin::ResolvePin>) -> Client {
+        self.resolve_pin = pin;
+        self
+    }
+
+    /// The pin this client dials its origin through, if any — what the registry recorded for the
+    /// media plane and what `http` receives on every control request.
+    pub fn resolve_pin(&self) -> Option<&super::origin::ResolvePin> {
+        self.resolve_pin.as_ref()
     }
 
     /// Append the full playback identity to a query — every playback-protocol request
@@ -370,6 +393,7 @@ impl Client {
             &self.with_token(path_no_token),
             method,
             &headers,
+            self.resolve_pin.as_ref(),
         )
     }
 
@@ -392,6 +416,7 @@ impl Client {
             method,
             &headers,
             deadline,
+            self.resolve_pin.as_ref(),
         )
     }
 
@@ -415,6 +440,7 @@ impl Client {
             &self.with_token(path_no_token),
             Method::Get,
             &headers,
+            self.resolve_pin.as_ref(),
         )?;
         r.ok().then_some(r.body)
     }
@@ -519,7 +545,13 @@ impl Client {
         // token, and this path already ends in one.
         let owned = pms_headers(&[]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let r = http::request_bulk(&self.origin, path_with_token, Method::Get, &headers)?;
+        let r = http::request_bulk(
+            &self.origin,
+            path_with_token,
+            Method::Get,
+            &headers,
+            self.resolve_pin.as_ref(),
+        )?;
         r.ok().then_some(r.body)
     }
 

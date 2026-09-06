@@ -149,7 +149,7 @@
         "plxnative-libosc": true
       },
       "fps_floor": 30,
-      "_rebaseline_note": "REBASELINED on device 2026-09-05, after the one-scroll rewrite. Measured median 60 fps (min 60, max 60, n=12) against the July poster-wall number of 49, and the reason is the sweep rather than the fill rate: `libosc` reverses at the document's own ends now (`ui::library::osc_step`) instead of on a 3s clock, which at 350ms could not reach the grid of a twelve-shelf library at all \u2014 so something is in motion on every frame and the scene never falls into the idle gate between steps. The floor moves 25 \u2192 30, which keeps the same ratio to the healthy median the old pair had; a FROZEN animator still reads ~0.5/s, so the margin is unchanged. Measured on a one-shelf library: a library with twelve shelves spends more of the leg in the shelf run, so treat 60 as this library's number and the floor as the frozen/alive separator it is meant to be.",
+      "_rebaseline_note": "REBASELINED on device 2026-09-05, after the one-scroll rewrite. Measured median 60 fps (min 60, max 60, n=12) against the July poster-wall number of 49, and the reason is the sweep rather than the fill rate: `libosc` reverses at the document's own ends now (`ui::library::osc_step`) instead of on a 3s clock, which at 350ms could not reach the grid of a twelve-shelf library at all — so something is in motion on every frame and the scene never falls into the idle gate between steps. The floor moves 25 → 30, which keeps the same ratio to the healthy median the old pair had; a FROZEN animator still reads ~0.5/s, so the margin is unchanged. Measured on a one-shelf library: a library with twelve shelves spends more of the leg in the shelf run, so treat 60 as this library's number and the floor as the frozen/alive separator it is meant to be.",
       "_fps_floor_note": "SUPERSEDED by _rebaseline_note above; kept for its reasoning. Measured healthy median 49 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 25 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
@@ -177,7 +177,7 @@
       "triggers": {
         "plxnative-library": true
       },
-      "comment": "The Library's half of home-idle, and it did not exist before the one-scroll rewrite: a settled library must STOP presenting. It is the only scene that can catch either of this screen's two new perpetual animators \u2014 the page/grid fade coordinator and the A\u2013Z rail's alpha spring \u2014 repainting forever, because every other library scene drives motion on purpose and an fps FLOOR is blind to a frame rate that is too high. loop_floor still grades loop=, which counts loop iterations: the loop must stay responsive at >=30Hz while presenting nothing. warmup_s is 10, longer than home-idle's 8, because this page settles last: its posters, its section hubs and the shelf reveal springs those land into all have to finish."
+      "comment": "The Library's half of home-idle, and it did not exist before the one-scroll rewrite: a settled library must STOP presenting. It is the only scene that can catch either of this screen's two new perpetual animators — the page/grid fade coordinator and the A–Z rail's alpha spring — repainting forever, because every other library scene drives motion on purpose and an fps FLOOR is blind to a frame rate that is too high. loop_floor still grades loop=, which counts loop iterations: the loop must stay responsive at >=30Hz while presenting nothing. warmup_s is 10, longer than home-idle's 8, because this page settles last: its posters, its section hubs and the shelf reveal springs those land into all have to finish."
     },
     {
       "name": "search-type",
@@ -477,6 +477,97 @@
         "require_video_bound": true
       },
       "_quality_note": "The standalone CONTROL: it establishes that playback left alone on Auto runs on this server, independently of the switching mechanism. Deliberately asserts nothing about rungs or controller presence: on an unshaped link what Auto chooses is the server's and the network's business, and a bound here would grade the afternoon. Run with `--verbose` when its `auto:` and `abr: sample` lines are wanted as characterisation; no cross-case fact is silently imported into the switch assertions."
+    },
+    {
+      "name": "offline_play",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Offline: the television's uplink cut, boot from the stored sign-in, play from the LAN server",
+      "covers": [
+        "offline",
+        "resolve-pin",
+        "stored-session",
+        "e2e"
+      ],
+      "session": "stored",
+      "wan": "off",
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "min_timeline_climb_s": 20,
+        "no_playing_error": true,
+        "require_video_bound": true,
+        "resolve_pin": "v4",
+        "offline": true
+      },
+      "_note": "THE offline case. `session: stored` boots from the install's own sign-in — whose primary is the `https://…plex.direct` name plex.tv advertised, exactly what a household's television persists — and `wan: off` rejects every packet leaving the LAN plus every DNS query, on the set, for this case. What is graded: the boot pinned that name to the stored address (`resolve_pin`), plex.tv was refused and the primary's hubs still landed (`offline`), and a film played and reported progress over the LAN. It plays as the STORED profile, so that profile's history moves; the pre-case unscrobble is on the test user and does not reach it. Needs a sign-in on the install, made with the internet up."
+    },
+    {
+      "name": "offline_play_v6",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Offline over IPv6: the primary re-pointed to its IPv6 plex.direct origin, then the same play",
+      "covers": [
+        "offline",
+        "resolve-pin",
+        "ipv6",
+        "e2e"
+      ],
+      "session": "stored",
+      "wan": "off",
+      "primary_ipv6": true,
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "min_timeline_climb_s": 20,
+        "no_playing_error": true,
+        "require_video_bound": true,
+        "resolve_pin": "v6",
+        "offline": true
+      },
+      "_note": "`offline_play` with the primary moved onto the server's IPv6 `plex.direct` origin: the harness reads that connection (uri + address) off plex.tv and writes it as a plxnative-servers entry with the same machineIdentifier and a `pin`, which RE-POINTS slot 0 rather than adding a source. On the dev set's libcurl 7.53.1 the resolve entry is the bare v6 literal (brackets arrived in 7.57.0), so this is the run that proves that syntax on the television; the media stream is TLS over v6. Skips with a reason when plex.tv advertises no local IPv6 connection for the server."
+    },
+    {
+      "name": "offline_pick_cached",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "Offline: pick a household profile on the who's-watching screen with plex.tv unreachable, then play",
+      "covers": [
+        "offline",
+        "profiles",
+        "stored-session",
+        "e2e"
+      ],
+      "session": "stored",
+      "wan": "off",
+      "prime_online": [
+        1,
+        2
+      ],
+      "triggers": {
+        "pickuser": "1"
+      },
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "min_timeline_climb_s": 20,
+        "no_playing_error": true,
+        "require_video_bound": true,
+        "offline_pick": true
+      },
+      "_note": "The 2026-09-06 outage: with the uplink down the picker could seat nobody, because every pick went to plex.tv's /switch. Now a profile this television has seated online before is seated from the credentials that seating cached (`Session::profiles`; a PIN-protected one on its PIN, checked against a local verifier). `prime_online` seats roster tile 1 and then tile 2 with the link up, so tile 1 is CACHED but NOT ACTIVE (the active profile needs no network — an older shortcut this case must not grade); `pickuser=1` then picks tile 1 with the link cut. Tiles 1 and 2 must be UNPROTECTED profiles — the harness cannot type a PIN it does not know; the protected case is proven on the simulator (`docs/measurements/offline-picker-sim-green-2026-09-06.log`) and by hand. Graded: the pick was seated offline (`offline_pick`), plex.tv was refused and the primary's hubs landed (`offline`), and a film played over the LAN. `expect.offline` is deliberately absent: its positive half wants the primary's hubs, and the play trigger enters the player the moment the seating lands, before Home has fetched a shelf; the offline-seat line is itself the proof plex.tv did not answer."
     },
     {
       "name": "auto_hls_pin_and_back",

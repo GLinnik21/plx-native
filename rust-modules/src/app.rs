@@ -7047,8 +7047,9 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
         // routes control and media requests through the matching transport.
         let install_pms = |origin: &crate::plex::Origin,
                            token: &str,
-                           tier: Option<crate::plex::probe::Location>| {
-            crate::plex::install(origin, token); // a (re)install is a login / profile switch
+                           tier: Option<crate::plex::probe::Location>,
+                           pin: Option<&crate::plex::ResolvePin>| {
+            crate::plex::install(origin, token, pin); // a (re)install is a login / profile switch
                                                  // `install` may re-point the slot by publishing a fresh Client, whose link starts
                                                  // unknown. Restore the persisted/raced winner only after that publication.
             if let Some(link) = tier {
@@ -7075,7 +7076,12 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // `continue` rather than an `expect` because an injected server has never been
                 // allowed to cost more than itself.
                 let Some(origin) = s.origin() else { continue };
-                let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token);
+                let id = crate::plex::register_origin(
+                    &s.machine_id,
+                    &origin,
+                    &s.token,
+                    s.resolve_pin().as_ref(),
+                );
                 if let Some(tier) = s.tier {
                     // The endpoint may be a LAN conditioner in front of a Remote PMS.  Preserve
                     // the discovery fact the harness supplied; the private proxy address itself
@@ -7148,6 +7154,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 &crate::plex::Origin::http(&host_s, pms_port),
                 &dev_token,
                 Some(tier),
+                None,
             );
             BootTo::Home
         } else if session.can_go_local() {
@@ -7155,7 +7162,11 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // Who's watching first. Only the read client is installed here (the avatars proxy
                 // through the PMS photo transcoder); the catalog fetch + playback config happen in
                 // take_ready once a profile is picked — done now they'd be thrown out on a switch.
-                crate::plex::install(&session.server.origin(), session.pms_token());
+                crate::plex::install(
+                    &session.server.origin(),
+                    session.pms_token(),
+                    session.server.resolve_pin().as_ref(),
+                );
                 crate::plex::session::set_current(Some(session.user.clone()));
                 // seeds the persisted roster + refreshes it online. `Picker::Boot` is what makes
                 // BACK out of this picker refuse to reinstate a PIN-protected profile — nobody has
@@ -7185,6 +7196,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                     &session.server.origin(),
                     session.pms_token(),
                     session.server.tier,
+                    session.server.resolve_pin().as_ref(),
                 );
                 // Re-learn the roster only AFTER the spawn-time primary snapshot was installed.
                 // If a fast refresh re-pointed first, installing that stale snapshot afterwards
@@ -8807,7 +8819,17 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
 
             let now = SDL_GetTicks();
             // dev: /tmp/plxnative-autoplay auto-presses OK once
-            if !auto_tried && !matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 2000
+            //
+            // **Never from the sign-in or the picker.** The auth flow hands its credentials to
+            // the main thread through `take_ready`, which is polled only on those two routes; a
+            // trigger that jumped to the player from the picker left a HALF-seated profile —
+            // the worker had re-keyed the registry, but the session was never persisted and
+            // `apply_pending` stayed set — so the next boot came up as the previous profile
+            // and the offline-pick harness case found no cache record (device, 2026-09-06).
+            // Waiting for the handoff costs a headless run the seconds the seating takes.
+            if !auto_tried
+                && !matches!(route, Route::Player { .. } | Route::Login | Route::Profiles)
+                && now.wrapping_sub(t0) > 2000
             {
                 auto_tried = true;
                 // dev: /tmp/plxnative-playurl is the player-PIPELINE tier's entry — a URL and
@@ -9066,7 +9088,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // it fetches the item's metadata fresh and drives the same field-based play
             // path the detail Play button uses (route::play_episode is generic — movie or
             // episode), so tests can target arbitrary rks deterministically.
-            if !play_tried && !matches!(route, Route::Player { .. }) && now.wrapping_sub(t0) > 500 {
+            // …and never from the sign-in or the picker, for the reason the autoplay trigger above
+            // gives: `take_ready` is polled only on those two routes, so a play that left them
+            // mid-switch stranded a half-seated profile (registry re-keyed, session never saved).
+            // The harness's own `offline_pick_cached` priming launch is what showed it (2026-09-06):
+            // the switch line arrived AFTER `plxnative-play: … start`, and the next boot came up
+            // as the previous profile.
+            if !play_tried
+                && !matches!(route, Route::Player { .. } | Route::Login | Route::Profiles)
+                && now.wrapping_sub(t0) > 500
+            {
                 play_tried = true;
                 if let Some(rk) = crate::dev::read("play") {
                     let rk = rk.as_str();
@@ -10051,7 +10082,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         crate::dev::playback_quality_override()
                             .unwrap_or_else(|| saved.playback_quality()),
                     );
-                    install_pms(&c.origin, &c.token, c.tier);
+                    install_pms(&c.origin, &c.token, c.tier, c.pin.as_ref());
                     // the fourth store an identity change must not survive, beside the
                     // `browse`/`pms`/`person` resets `install_pms` performs: a new user must never
                     // be able to walk BACK into the previous one's pages. Reset at the CALL SITE

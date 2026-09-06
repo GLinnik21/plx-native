@@ -253,6 +253,25 @@ pub struct Session {
     /// entry, never the credentials.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub last_library: Vec<LastLibrary>,
+    /// **Every profile this television has switched to, with the credentials that switch
+    /// resolved** — so the who's-watching picker can seat a household member with plex.tv
+    /// unreachable. Written by the profile switch on every ONLINE success (replace-by-uuid), read
+    /// by [`crate::auth`]'s offline fallback, and gone with the file on sign-out.
+    ///
+    /// It exists because the offline design's first cut let only the already-active, PIN-free
+    /// profile through without a network, and the first real outage (2026-09-06) showed what that
+    /// is worth in a house whose active profile is the PIN-protected admin: nothing. A protected
+    /// entry carries a [`PinVerifier`]; an unprotected one carries `None` and is seated on a pick.
+    ///
+    /// **Several profiles' server tokens in one file is not a new exposure.** The same file holds
+    /// `account_token`, which mints every one of them online (`/api/v2/home/users/{uuid}/switch`),
+    /// and it is 0600 or sealed by the key manager either way. What a reader of this file could
+    /// NOT do before is walk past a PIN, which is why the PIN itself is never here — see
+    /// [`PinVerifier`] for exactly what is.
+    ///
+    /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
+    #[serde(default, deserialize_with = "de_soft_vec")]
+    pub profiles: Vec<ProfileCreds>,
     /// The install's playback-quality preference. `None` is deliberately distinct from an
     /// explicit value: every session written before this field existed lands there and must keep
     /// the old **Original** behaviour rather than being migrated onto automatic playback.
@@ -388,6 +407,104 @@ pub struct HomeUserRef {
     pub admin: bool,
 }
 
+/// One entry of [`Session::profiles`]: what a successful online switch to this profile resolved,
+/// kept so the same profile can be seated offline. `user`, `server` and `sources` are exactly
+/// what the switch wrote into the session when it was the active profile.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct ProfileCreds {
+    pub uuid: String,
+    pub user: UserRef,
+    pub server: ServerRef,
+    #[serde(deserialize_with = "de_soft_vec")]
+    pub sources: Vec<SourceRef>,
+    /// Present for a protected profile: the PIN plex.tv accepted at the last online switch, as a
+    /// verifier. Absent for an unprotected profile — and absent for a protected one whose last
+    /// switch predates this field, which [`Session::cached_profile`] treats as "cannot verify",
+    /// never as "no PIN".
+    pub pin: Option<PinVerifier>,
+}
+
+/// A Plex Home PIN as something a PIN can be checked against, never the PIN: PBKDF2-HMAC-SHA-256
+/// over a random 16-byte salt ([`crate::sha256`]).
+///
+/// **What it does and does not protect.** A four-digit PIN has ten thousand values, so nothing
+/// stored can stop somebody who can read this file from grinding it — and that somebody already
+/// holds the account token in the same file, which switches to any profile online, so there is no
+/// new door. What the salt and the iteration count DO buy is the number itself: household PINs
+/// are reused for phones and cards, and a leaked session file must not hand one over in clear.
+/// The count is the highest a Cortex-A9 verifies in well under a second on the switch worker.
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct PinVerifier {
+    /// Lower-case hex, 16 random bytes.
+    pub salt: String,
+    /// Lower-case hex, the 32-byte PBKDF2 output.
+    pub hash: String,
+    pub iters: u32,
+}
+
+impl PinVerifier {
+    pub const ITERS: u32 = 20_000;
+    /// The largest count [`PinVerifier::verify`] will run. A record is this app's own writing,
+    /// so anything past a few times [`PinVerifier::ITERS`] is a hand edit or a newer build's
+    /// value, and either must fail the check rather than park the switch worker in PBKDF2 for
+    /// as long as a `u32` can count.
+    pub const MAX_ITERS: u32 = 4 * Self::ITERS;
+
+    /// A fresh verifier for `pin`, under a salt read from `/dev/urandom`.
+    pub fn new(pin: &str) -> PinVerifier {
+        Self::with_salt(pin, &random_bytes::<16>())
+    }
+
+    fn with_salt(pin: &str, salt: &[u8]) -> PinVerifier {
+        let hash = crate::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), salt, Self::ITERS);
+        PinVerifier {
+            salt: hex(salt),
+            hash: hex(&hash),
+            iters: Self::ITERS,
+        }
+    }
+
+    /// Does `pin` reproduce this verifier? A malformed record (no salt, an un-hex hash, a zero
+    /// count) verifies NOTHING rather than everything — the failure direction a lock must have.
+    pub fn verify(&self, pin: &str) -> bool {
+        let (Some(salt), Some(hash)) = (unhex(&self.salt), unhex(&self.hash)) else {
+            return false;
+        };
+        if salt.is_empty() || hash.len() != 32 || self.iters == 0 || self.iters > Self::MAX_ITERS {
+            return false;
+        }
+        let got = crate::sha256::pbkdf2_hmac_sha256(pin.as_bytes(), &salt, self.iters);
+        crate::sha256::ct_eq(&got, &hash)
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// `N` bytes from `/dev/urandom`, the same source [`new_client_id`] draws from. A short read
+/// leaves zeros, which for a SALT costs uniqueness and nothing else.
+fn random_bytes<const N: usize>() -> [u8; N] {
+    use std::io::Read;
+    let mut b = [0u8; N];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut b);
+    }
+    b
+}
+
 /// The PRIMARY server's coordinates — the one `can_go_local` boots on. `origin` is the verified
 /// HTTP(S) authority; `address`:`port` remains its diagnostic/legacy fallback. `token` is that
 /// server's access token (fallback when no managed-user token is set). Every server, including
@@ -397,8 +514,11 @@ pub struct HomeUserRef {
 pub struct ServerRef {
     pub name: String,
     pub machine_id: String,
-    /// The dotted quad (or v6 literal, or hostname) discovery recorded. **Diagnostic, and the
-    /// LEGACY fallback** — see [`ServerRef::origin`], which is what anything dialling reads.
+    /// The dotted quad (or v6 literal, or hostname) discovery recorded. The LEGACY fallback for a
+    /// file with no `origin` — see [`ServerRef::origin`] — and, since 2026-09-05, **the DNS
+    /// answer for a `plex.direct` origin**: [`ServerRef::resolve_pin`] dials the name at this
+    /// address when the name encodes it, which is what lets a stored session reach the household's
+    /// own server with the internet down.
     pub address: String,
     pub port: i64,
     pub token: String,
@@ -439,6 +559,14 @@ impl ServerRef {
         Origin::parse(&self.origin_url)
             .unwrap_or_else(|| Origin::http(&self.address, self.port as i32))
     }
+
+    /// The DNS answer this file already holds for its origin: `address` beside a `plex.direct`
+    /// name that encodes it. `None` for a legacy plaintext record or any origin whose address the
+    /// name does not vouch for — see [`super::origin::ResolvePin`]. It is what lets a stored
+    /// session boot against the household's own server with no resolver at all.
+    pub fn resolve_pin(&self) -> Option<super::origin::ResolvePin> {
+        super::origin::ResolvePin::for_origin(&self.origin(), &self.address)
+    }
 }
 
 /// One server this identity can browse — our own or a friend's share. What discovery resolved:
@@ -471,9 +599,11 @@ pub struct SourceRef {
     /// one advertised. An unmatched share's advertised local address may be this only through its
     /// TLS URI, after certificate and machine-identity verification; its plaintext form is gated.
     ///
-    /// **Diagnostic metadata, and the LEGACY fallback.** It is what [`SourceRef::describe`] prints
-    /// and what the Sources panel says; it is *not* what a connection is built from — that is
-    /// [`SourceRef::origin`], and for an https server the two genuinely differ (`origin.rs`).
+    /// **What [`SourceRef::describe`] prints, the LEGACY fallback, and the resolve pin's address.**
+    /// A connection is built from [`SourceRef::origin`], and for an https server the two genuinely
+    /// differ (`origin.rs`) — but when the origin's `plex.direct` name encodes this very address,
+    /// [`SourceRef::resolve_pin`] hands it to the transport as the name's resolution, so the
+    /// origin is dialled with no resolver at all (the offline case).
     pub address: String,
     pub port: i64,
     /// This identity's per-(user, server) `accessToken` for THIS server. A secret — never logged.
@@ -541,6 +671,15 @@ impl SourceRef {
             return None;
         }
         super::probe::dial_port(self.port).map(|p| Origin::http(&self.address, p))
+    }
+
+    /// [`ServerRef::resolve_pin`] for a roster entry: the answer plex.tv gave beside this
+    /// origin, when the origin's name encodes it. A share on the internet gets none in practice
+    /// (its name is not a LAN literal's); a second household server on the LAN gets the same
+    /// treatment as the primary.
+    pub fn resolve_pin(&self) -> Option<super::origin::ResolvePin> {
+        let origin = self.origin()?;
+        super::origin::ResolvePin::for_origin(&origin, &self.address)
     }
 }
 
@@ -727,6 +866,50 @@ where
 }
 
 impl Session {
+    /// Record (or replace) the cached credentials for one profile — the online switch's write.
+    pub fn remember_profile(&mut self, creds: ProfileCreds) {
+        if creds.uuid.is_empty() {
+            return;
+        }
+        self.profiles.retain(|p| p.uuid != creds.uuid);
+        self.profiles.push(creds);
+    }
+
+    /// Bring the ACTIVE profile's cached record up to date with the session's own user, primary
+    /// and roster — the late half of a switch (`merge_profile_roster`) and a roster refresh both
+    /// change those after the record was first written, and an offline seat from the old copy
+    /// would restore a roster missing the shares found since. The verifier is kept; nothing here
+    /// knows a PIN. No record, no write: an unprotected profile's first record comes from
+    /// `auth::remember_unprotected_active`, a protected one's from the switch that saw its PIN.
+    /// Returns whether the record CHANGED, so a writer that persists only on change (the roster
+    /// refresh) also persists a stale record's repair when the roster itself did not move.
+    pub fn refresh_profile_record(&mut self) -> bool {
+        let uuid = self.user.uuid.clone();
+        if uuid.is_empty() {
+            return false;
+        }
+        let Some(p) = self.profiles.iter_mut().find(|p| p.uuid == uuid) else {
+            return false;
+        };
+        let before = serde_json::to_string(&(&p.user, &p.server, &p.sources)).unwrap_or_default();
+        p.user = self.user.clone();
+        p.server = self.server.clone();
+        p.sources = self.sources.clone();
+        serde_json::to_string(&(&p.user, &p.server, &p.sources)).unwrap_or_default() != before
+    }
+
+    /// The cached credentials for `uuid`, if this television has switched to it online before
+    /// and the entry still names a usable primary. Nothing about a PIN is decided here — the
+    /// caller reads [`ProfileCreds::pin`] against the tile's `protected` flag.
+    pub fn cached_profile(&self, uuid: &str) -> Option<&ProfileCreds> {
+        if uuid.is_empty() {
+            return None;
+        }
+        self.profiles
+            .iter()
+            .find(|p| p.uuid == uuid && !p.user.token.is_empty() && !p.server.origin().host().is_empty())
+    }
+
     /// The effective persisted playback quality. Absence is the literal legacy migration rule:
     /// builds that predate the field played Original, so they continue to play Original.
     pub(crate) fn playback_quality(&self) -> PlaybackQuality {
@@ -1119,7 +1302,15 @@ fn publish_identities(s: &Session) {
         v.push(src.name.clone());
         v.push(src.machine_id.clone());
         v.push(src.shared_by.clone());
+        // The origin's HOST too: a share reached through a custom access URL carries the friend's
+        // own domain, which is neither a `plex.direct` label nor a bare address — the two shapes
+        // the scrubber recognises on its own — and it surfaced verbatim in a `stream: … DNS
+        // FAILED host=…` line on 2026-09-06.
+        if let Some(o) = src.origin() {
+            v.push(o.host().to_string());
+        }
     }
+    v.push(s.server.origin().host().to_string());
     crate::diag::scrub::set_identities(v);
 }
 
@@ -2665,5 +2856,188 @@ mod tests {
         .expect("one bad tile must not fail the file");
         assert_eq!(s.home_users.len(), 1);
         assert_eq!(s.account(None).name.as_deref(), Some("B"));
+    }
+}
+
+#[cfg(test)]
+mod profile_cache_tests {
+    use super::*;
+
+    fn creds(uuid: &str, token: &str, pin: Option<&str>) -> ProfileCreds {
+        ProfileCreds {
+            uuid: uuid.into(),
+            user: UserRef {
+                uuid: uuid.into(),
+                token: token.into(),
+                ..Default::default()
+            },
+            server: ServerRef {
+                machine_id: "m".into(),
+                address: "10.0.0.5".into(),
+                port: 32400,
+                token: token.into(),
+                origin_url: "https://10-0-0-5.abc.plex.direct:32400".into(),
+                ..Default::default()
+            },
+            sources: vec![],
+            pin: pin.map(PinVerifier::new),
+        }
+    }
+
+    #[test]
+    fn a_verifier_accepts_its_pin_and_nothing_else() {
+        let v = PinVerifier::new("4821");
+        assert!(v.verify("4821"));
+        assert!(!v.verify("4822"));
+        assert!(!v.verify(""));
+        assert_eq!(v.salt.len(), 32, "16 random bytes, hex");
+        assert_eq!(v.hash.len(), 64);
+        assert_ne!(
+            PinVerifier::new("4821").salt,
+            v.salt,
+            "two verifiers of one PIN never share a salt"
+        );
+    }
+
+    #[test]
+    fn a_malformed_verifier_admits_nobody() {
+        let none = PinVerifier::default();
+        assert!(!none.verify(""), "an empty record must not match an empty PIN");
+        let mut v = PinVerifier::new("1234");
+        v.iters = 0;
+        assert!(!v.verify("1234"));
+        let mut v = PinVerifier::new("1234");
+        v.iters = u32::MAX;
+        assert!(!v.verify("1234"), "an unbounded count is refused before it is run");
+        let mut v = PinVerifier::new("1234");
+        v.iters = PinVerifier::MAX_ITERS + 1;
+        assert!(!v.verify("1234"));
+        let mut v = PinVerifier::new("1234");
+        v.hash.pop();
+        assert!(!v.verify("1234"));
+        let mut v = PinVerifier::new("1234");
+        v.salt = "zz".into();
+        assert!(!v.verify("1234"));
+    }
+
+    #[test]
+    fn remember_replaces_by_uuid_and_the_cache_survives_a_round_trip() {
+        let mut s = Session::default();
+        s.remember_profile(creds("u-admin", "t1", Some("1111")));
+        s.remember_profile(creds("u-kid", "t2", None));
+        s.remember_profile(creds("u-admin", "t3", Some("2222")));
+        s.remember_profile(creds("", "t4", None));
+        assert_eq!(s.profiles.len(), 2, "replace by uuid; an empty uuid is never cached");
+        assert_eq!(s.cached_profile("u-admin").unwrap().user.token, "t3");
+        assert!(s.cached_profile("u-admin").unwrap().pin.as_ref().unwrap().verify("2222"));
+        assert!(s.cached_profile("u-kid").unwrap().pin.is_none());
+        assert!(s.cached_profile("u-nobody").is_none());
+        assert!(s.cached_profile("").is_none());
+
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.profiles.len(), 2);
+        assert!(back.cached_profile("u-admin").unwrap().pin.as_ref().unwrap().verify("2222"));
+        assert_eq!(back.cached_profile("u-kid").unwrap().server.port, 32400);
+    }
+
+    #[test]
+    fn refreshing_the_active_record_follows_the_session_and_keeps_the_verifier() {
+        let mut s = Session::default();
+        s.remember_profile(creds("u-admin", "t1", Some("1111")));
+        s.remember_profile(creds("u-kid", "t2", None));
+        s.user = UserRef { uuid: "u-admin".into(), token: "t9".into(), ..Default::default() };
+        s.server = ServerRef { machine_id: "m2".into(), address: "10.0.0.9".into(), port: 32400, token: "t9".into(), ..Default::default() };
+        s.sources = vec![SourceRef { machine_id: "m2".into(), token: "t9".into(), address: "10.0.0.9".into(), port: 32400, ..Default::default() }, SourceRef { machine_id: "share".into(), token: "s".into(), address: "10.0.0.7".into(), port: 32400, ..Default::default() }];
+        assert!(s.refresh_profile_record(), "a stale record changes");
+        assert!(!s.refresh_profile_record(), "a current one does not");
+        let c = s.cached_profile("u-admin").unwrap();
+        assert_eq!(c.user.token, "t9");
+        assert_eq!(c.server.machine_id, "m2");
+        assert_eq!(c.sources.len(), 2, "the share found late is in the record");
+        assert!(c.pin.as_ref().unwrap().verify("1111"), "the verifier survives");
+        assert_eq!(s.cached_profile("u-kid").unwrap().user.token, "t2", "other records untouched");
+        s.user.uuid = "u-nobody".into();
+        assert!(!s.refresh_profile_record());
+        assert_eq!(s.profiles.len(), 2, "no record for the active user: nothing invented");
+    }
+
+    #[test]
+    fn an_unusable_entry_is_not_offered() {
+        let mut s = Session::default();
+        s.remember_profile(creds("u-empty", "", None));
+        assert!(s.cached_profile("u-empty").is_none(), "no token, nothing to seat");
+        let mut c = creds("u-noorigin", "t", None);
+        c.server = ServerRef::default();
+        s.remember_profile(c);
+        assert!(s.cached_profile("u-noorigin").is_none(), "no primary, nothing to seat");
+    }
+
+    /// The shapes the APP writes — a real primary with a tier and an https origin, a roster
+    /// entry with a credit, a verifier — survive `to_vec_pretty` → `load`'s re-parse. Written
+    /// after a device wiped its cache on boot (2026-09-06): `load` re-saves every plaintext
+    /// session it parses, so an entry the parser drops is gone after one launch.
+    #[test]
+    fn an_app_written_record_survives_the_parse_that_every_boot_re_saves() {
+        let server = ServerRef {
+            machine_id: "abc123".into(),
+            address: "192.168.0.10".into(),
+            port: 32400,
+            token: "srv-tok".into(),
+            tier: Some(Location::Local),
+            origin_url: "https://192-168-0-10.abcdef.plex.direct:32400".into(),
+            ..Default::default()
+        };
+        let source = SourceRef {
+            machine_id: "abc123".into(),
+            name: "nas".into(),
+            shared_by: String::new(),
+            owned: true,
+            address: "192.168.0.10".into(),
+            port: 32400,
+            token: "srv-tok".into(),
+            tier: Some(Location::Local),
+            origin_url: "https://192-168-0-10.abcdef.plex.direct:32400".into(),
+            ..Default::default()
+        };
+        let mut s = Session {
+            client_id: "cid".into(),
+            account_token: "acct".into(),
+            server: server.clone(),
+            ..Default::default()
+        };
+        s.user = UserRef {
+            id: 7,
+            uuid: "u-admin".into(),
+            title: "Admin".into(),
+            thumb: "https://plex.tv/users/x/avatar?c=1".into(),
+            token: "user-tok".into(),
+        };
+        s.sources = vec![source.clone()];
+        s.remember_profile(ProfileCreds {
+            uuid: "u-admin".into(),
+            user: s.user.clone(),
+            server,
+            sources: vec![source],
+            pin: Some(PinVerifier::new("1234")),
+        });
+        let bytes = serde_json::to_vec_pretty(&s).unwrap();
+        let back: Session = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.profiles.len(), 1, "{}", String::from_utf8_lossy(&bytes));
+        let c = back.cached_profile("u-admin").expect("the record is offered back");
+        assert_eq!(c.server.tier, Some(Location::Local));
+        assert!(c.pin.as_ref().unwrap().verify("1234"));
+    }
+
+    /// A file written before the field existed parses with an empty cache, never fails.
+    #[test]
+    fn a_legacy_file_has_an_empty_cache() {
+        let back: Session = serde_json::from_str(r#"{"client_id":"c","account_token":"a"}"#).unwrap();
+        assert!(back.profiles.is_empty());
+        let back: Session = serde_json::from_str(
+            r#"{"client_id":"c","profiles":[{"uuid":"u","user":{"token":"t"},"server":{"address":"10.0.0.1","port":"nope"}}, 7]}"#,
+        )
+        .unwrap();
+        assert!(back.profiles.is_empty(), "a malformed entry costs the entry, not the session");
     }
 }

@@ -316,9 +316,13 @@ fn is_numeric_address(a: &str) -> bool {
 ///
 /// That twin was once the point of the whole file — the only candidate the app's transport could
 /// dial. It is the FALLBACK now: the advertised https uri leads its tier, and the twin is what
-/// answers when DNS cannot. That case is real rather than theoretical — a LAN with no route to the
-/// internet resolves no `plex.direct` name at all, and offline play on the house's own server is
-/// exactly what must keep working there.
+/// answers the `/identity` PROBE when DNS cannot. **It is not what makes offline play work, and
+/// this doc said it was until 2026-09-05.** A store build refuses to send a token over plaintext
+/// (`crate::http::credential_transport_allowed`), so the twin can prove a server is there and
+/// cannot browse it; and a stored-session boot never re-races candidates at all. Offline play on
+/// the house's own server — a LAN with no route to the internet resolves no `plex.direct` name —
+/// is carried by [`super::origin::ResolvePin`] instead: the https uri stays the origin, and the
+/// `address` advertised beside it is what the name is dialled at, with no resolver involved.
 ///
 /// A `relay` connection gets no http twin: it is a Plex-operated TLS tunnel, and plain HTTP on it is
 /// not a thing that exists — synthesizing one would only spend a probe slot proving that.

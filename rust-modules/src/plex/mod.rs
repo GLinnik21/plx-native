@@ -75,7 +75,7 @@ pub use client::{Client, IpVersion, StreamUrl};
 // `Client` carries; `Scheme` is re-exported beside it because `dev::DevServer` deserializes one
 // straight out of the `plxnative-servers` trigger.
 #[allow(unused_imports)]
-pub use origin::{Origin, Scheme};
+pub use origin::{plex_direct_literal, url_host, Origin, ResolvePin, Scheme};
 // The registry surface. `client`/`client_opt`/`install` keep the exact signatures they had as
 // singleton accessors, so every call site outside `plex/` reads unchanged; `client_for`,
 // `register`, `set_current` and `ServerId` are the multi-server additions.

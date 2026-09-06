@@ -26,11 +26,11 @@ use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 type CURL = c_void;
-type curl_slist = c_void;
+pub(crate) type curl_slist = c_void;
 
 /// The stable head of `curl_version_info_data`. Passing `CURLVERSION_FIRST` promises to inspect
 /// only these original fields; libcurl extends the struct at the tail for later ages, so this
@@ -145,6 +145,13 @@ const CURLOPT_PINNEDPUBLICKEY: c_int = 10230;
 /// independence from a store nobody can update on a television, on a path whose far end is not a
 /// Plex service and whose CA may rotate.
 const CURLOPT_CAINFO: c_int = 10065;
+/// `CURLOPTTYPE_SLISTPOINT + 203`: a `curl_slist` of `host:port:address` entries that pre-populate
+/// the DNS cache, so the named host is never resolved. Present since 7.21.3; the entry syntax the
+/// television's 7.53.1 parses is documented on [`crate::plex::ResolvePin::entry`]. See [`resolve`].
+const CURLOPT_RESOLVE: c_int = 10203;
+/// `CURLE_UNKNOWN_OPTION` — what `curl_easy_setopt` answers for an option id this libcurl was
+/// built without. The one `setopt` result in this module that is NOT fatal: see [`resolve`].
+const CURLE_UNKNOWN_OPTION: c_int = 48;
 // curl.h info ids (CURLINFO_LONG = 0x200000).
 const CURLINFO_RESPONSE_CODE: c_int = 0x20_0002;
 const CURL_GLOBAL_ALL: c_long = 3;
@@ -159,6 +166,14 @@ static CURL_OK: AtomicBool = AtomicBool::new(false);
 /// checks this separately from [`CURL_OK`]: an old OpenSSL whose mutex API cannot be installed may
 /// still serve serialized HTTPS control, but must not be driven beside another curl request.
 static CURL_THREADED_TLS_OK: AtomicBool = AtomicBool::new(false);
+/// `curl_version_info().version_num` (`0xXXYYZZ`), captured once by [`global_init`]; `0` until then
+/// or when the struct could not be read. Read by [`resolve`] to pick the entry syntax.
+static CURL_VERSION_NUM: AtomicU32 = AtomicU32::new(0);
+
+/// The bound libcurl's numeric version, `0xXXYYZZ`, or `0` before [`global_init`].
+pub(crate) fn curl_version_num() -> u32 {
+    CURL_VERSION_NUM.load(Ordering::Acquire)
+}
 /// Only used on the abnormal old-OpenSSL/no-callback fallback. Normal devices never take it.
 static CURL_FALLBACK_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -366,6 +381,9 @@ pub fn global_init() -> bool {
             // CONNECTTIMEOUT; log the runtime fact for every firmware instead of promoting one
             // set's string into a fleet-wide guarantee.
             let vi = unsafe { curl_version_info(CURLVERSION_FIRST) };
+            if !vi.is_null() {
+                CURL_VERSION_NUM.store(unsafe { (*vi).version_num } as u32, Ordering::Release);
+            }
             let async_dns = if vi.is_null() {
                 "unknown"
             } else if unsafe { (*vi).features } & CURL_VERSION_ASYNCHDNS != 0 {
@@ -466,6 +484,10 @@ impl Drop for Easy {
     }
 }
 
+/// An owned `curl_slist`, freed on drop. Named for its first job (the request headers) and used
+/// for the resolve list too: libcurl does not copy either list, it keeps the pointer for the life
+/// of the transfer, so the wrapper must outlive `curl_easy_perform` — which it does by being a
+/// local of the function that performs.
 struct HeaderList(*mut curl_slist);
 
 impl Drop for HeaderList {
@@ -576,6 +598,7 @@ fn allowed_redirect_protocols(url: &[u8]) -> c_long {
 /// into a PUT, no stale header list, no connection reuse whose keep-alive outlives the token that
 /// authorised it. A reusable handle (or a share/multi) would buy connection reuse and cost a
 /// design: this app makes tens of control-plane requests per session, not thousands.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request(
     url: &str,
     headers: &[String],
@@ -584,12 +607,14 @@ pub(crate) fn request(
     t: Timeouts,
     follow_redirects: bool,
     max_body: Option<usize>,
+    resolve: Option<&str>,
 ) -> Option<Resp> {
-    request_result(url, headers, verb, body, t, follow_redirects, max_body).ok()
+    request_result(url, headers, verb, body, t, follow_redirects, max_body, resolve).ok()
 }
 
 /// Typed twin used by a caller which must keep curl's timeout distinct from every other transport
 /// failure. Ordinary clients retain [`request`]'s compatibility `Option`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn request_result(
     url: &str,
     headers: &[String],
@@ -598,6 +623,7 @@ pub(crate) fn request_result(
     t: Timeouts,
     follow_redirects: bool,
     max_body: Option<usize>,
+    resolve: Option<&str>,
 ) -> Result<Resp, RequestError> {
     request_tls_result(
         url,
@@ -608,6 +634,7 @@ pub(crate) fn request_result(
         follow_redirects,
         max_body,
         Tls::Ca,
+        resolve,
     )
 }
 
@@ -656,9 +683,13 @@ pub(crate) fn request_tls(
     max_body: Option<usize>,
     tls: Tls<'_>,
 ) -> Option<Resp> {
-    request_tls_result(url, headers, verb, body, t, follow_redirects, max_body, tls).ok()
+    request_tls_result(url, headers, verb, body, t, follow_redirects, max_body, tls, None).ok()
 }
 
+/// `resolve` is a ready-made `CURLOPT_RESOLVE` entry (`host:port:address`, see
+/// [`crate::plex::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
+/// answer. Every request whose origin carries a [`crate::plex::ResolvePin`] passes one; plex.tv
+/// calls pass `None`, and that is the difference the `nowan` trigger grades (see [`refuse_name`]).
 #[allow(clippy::too_many_arguments)]
 fn request_tls_result(
     url: &str,
@@ -669,12 +700,23 @@ fn request_tls_result(
     follow_redirects: bool,
     max_body: Option<usize>,
     tls: Tls<'_>,
+    resolve: Option<&str>,
 ) -> Result<Resp, RequestError> {
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
     // enters curl with a half-configured request.
     let verb_c = CString::new(verb).map_err(|_| RequestError::Transport)?;
     let url_c = CString::new(url).map_err(|_| RequestError::Transport)?;
+    let resolve_c = resolve
+        .map(CString::new)
+        .transpose()
+        .map_err(|_| RequestError::Transport)?;
+    // The offline reproduction: with `/tmp/plxnative-nowan` armed, a name reaches the wire only
+    // with a pin. This is the ONE place every easy request passes (`request_result` enters here
+    // directly), which is why the gate is here and not on `request_tls`.
+    if resolve.is_none() && refuse_name(crate::plex::url_host(url), t.connect_s) {
+        return Err(RequestError::Transport);
+    }
     let ua =
         CString::new(crate::plex::identity::user_agent()).map_err(|_| RequestError::Transport)?;
     let tls_c = match tls {
@@ -837,6 +879,23 @@ fn request_tls_result(
         if !slist.0.is_null() {
             curl_easy_setopt_ptr(easy.0, CURLOPT_HTTPHEADER, slist.0 as *const c_void);
         }
+        // The resolve pin. Its list is a second `HeaderList` local for the same lifetime reason as
+        // the first: curl keeps the pointer until the transfer ends. NOT `require_setopt!` — a
+        // libcurl that answers `CURLE_UNKNOWN_OPTION` here has simply not got the option, and the
+        // right outcome is today's DNS path, logged once; every OTHER refusal still cancels
+        // (`resolve::note_setopt` decides).
+        let mut resolve_list = HeaderList(ptr::null_mut());
+        if let Some(r) = &resolve_c {
+            let l = curl_slist_append(ptr::null_mut(), r.as_ptr());
+            if l.is_null() {
+                return Err(RequestError::Transport);
+            }
+            resolve_list.0 = l;
+            let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_RESOLVE, l as *const c_void);
+            if resolve::note_setopt(rc).is_err() {
+                return Err(RequestError::Transport);
+            }
+        }
         // The VERB. Three shapes, and the split is what keeps each one on the wire curl already
         // knows how to send:
         //   * `GET` with no body is curl's default — setting nothing is setting it right.
@@ -907,11 +966,11 @@ fn request_tls_result(
 
 /// Blocking HTTPS GET on the [`API`] deadlines — the plex.tv account calls.
 pub fn https_get(url: &str, headers: &[String]) -> Option<Resp> {
-    request(url, headers, "GET", None, API, false, None)
+    request(url, headers, "GET", None, API, false, None, None)
 }
 /// Blocking HTTPS POST (`body` may be empty) on the [`API`] deadlines.
 pub fn https_post(url: &str, headers: &[String], body: &[u8]) -> Option<Resp> {
-    request(url, headers, "POST", Some(body), API, false, None)
+    request(url, headers, "POST", Some(body), API, false, None, None)
 }
 
 /// Blocking **pinned** HTTPS POST — used by Lab Diagnostics uploads and Lab Control's long poll.
@@ -1015,7 +1074,116 @@ const TELEMETRY_MAX_REPLY: usize = 4096;
 /// only caller: at most five HTTP(S)-only redirects are followed, and an HTTPS request may never
 /// downgrade. Account/PMS requests keep redirects off because replayed headers/URLs carry tokens.
 pub fn https_get_public(url: &str) -> Option<Resp> {
-    request(url, &[], "GET", None, API, true, None)
+    request(url, &[], "GET", None, API, true, None, None)
+}
+
+/// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
+/// [`crate::curlio`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
+/// `host` is a NAME rather than a literal, i.e. when a dead resolver would have refused it. The
+/// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
+/// resolver. `false` without the trigger, and at compile time without `devtriggers`.
+pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
+    let Some(nw) = crate::dev::no_wan() else {
+        return false;
+    };
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if bare.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    if nw.slow {
+        std::thread::sleep(std::time::Duration::from_secs(connect_s.max(0) as u64));
+    }
+    crate::log(&format!("net: nowan — refused name {host}"));
+    true
+}
+
+/// **Resolve pins — the DNS answers this process already knows.**
+///
+/// A [`ResolvePin`] says "this `plex.direct` name IS this address", validated by
+/// [`ResolvePin::for_origin`] so that it is a pure function of the hostname (its doc has the
+/// rule). The control plane carries the pin on each `Client` and passes it into
+/// [`request_result`] explicitly. The media plane cannot: `ff::demux` receives a URL string and
+/// `curlio::CurlSource` builds a fresh easy handle on every open and seek, so it asks THIS table
+/// by the URL's host and port instead.
+///
+/// **Append-only, process-lifetime, never replaced.** A registry slot is re-pointed by publishing
+/// a new `Client` over a leaked old one, and a worker mid-stream keeps the old reference — so a
+/// table that removed or rewrote an entry on re-point could change the resolution of a route a
+/// demuxer already captured. Because a valid pin cannot become wrong, nothing here ever needs to
+/// be taken back: a re-point that lands on a new host appends, and the old entry stays true.
+/// The table holds one entry per server address this process has ever pinned — a handful.
+pub(crate) mod resolve {
+    use super::{c_int, Mutex, Ordering, CURLE_UNKNOWN_OPTION};
+    use crate::plex::ResolvePin;
+
+    static PINS: Mutex<Vec<ResolvePin>> = Mutex::new(Vec::new());
+
+    /// Record a pin. `true` when it was new, `false` when the same host and port were already
+    /// pinned (to the same address, by construction).
+    pub(crate) fn add(pin: &ResolvePin) -> bool {
+        let mut pins = PINS.lock().unwrap_or_else(|e| e.into_inner());
+        if pins
+            .iter()
+            .any(|p| p.host() == pin.host() && p.port() == pin.port())
+        {
+            return false;
+        }
+        pins.push(pin.clone());
+        true
+    }
+
+    /// The pin for `host:port`, if this process has recorded one.
+    pub(crate) fn lookup(host: &str, port: i32) -> Option<ResolvePin> {
+        PINS.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|p| p.host() == host && p.port() == port)
+            .cloned()
+    }
+
+    /// The `CURLOPT_RESOLVE` entry for a pin, in the syntax the bound libcurl parses.
+    pub(crate) fn entry_of(pin: &ResolvePin) -> String {
+        pin.entry(super::curl_version_num())
+    }
+
+    /// [`lookup`] then [`entry_of`] — what the media plane asks for a URL it is about to open.
+    pub(crate) fn entry_for(host: &str, port: i32) -> Option<String> {
+        lookup(host, port).map(|p| entry_of(&p))
+    }
+
+    /// Grade a `curl_easy_setopt(CURLOPT_RESOLVE)` result. `Ok` means the request may go on:
+    /// either the pin took, or this libcurl has no such option (`CURLE_UNKNOWN_OPTION`, 48) and
+    /// the name resolves through DNS as it did before the pin existed — logged once per process
+    /// so the fact is in the log from a set nobody here owns. Any OTHER refusal is `Err`: a
+    /// malformed entry or a broken handle is not a reason to quietly send the request elsewhere.
+    /// Under `nowan` even 48 is `Err`, because DNS is deliberately unavailable there.
+    pub(crate) fn note_setopt(rc: c_int) -> Result<(), ()> {
+        if rc == 0 {
+            return Ok(());
+        }
+        if rc == CURLE_UNKNOWN_OPTION {
+            static REPORTED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, Ordering::Relaxed) {
+                crate::log(
+                    "net: resolve pin not applied (rc=48, this libcurl has no CURLOPT_RESOLVE); \
+                     names resolve through DNS",
+                );
+            }
+            return if crate::dev::no_wan().is_some() { Err(()) } else { Ok(()) };
+        }
+        crate::log(&format!("net: resolve pin refused (rc={rc}); request cancelled"));
+        Err(())
+    }
+
+    /// Tests share one process-global table; this empties it between them.
+    #[cfg(test)]
+    pub(crate) fn clear() {
+        PINS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
 }
 
 #[cfg(test)]
@@ -1056,6 +1224,120 @@ mod request_tests {
                 low_speed_s: 30,
             }
         );
+    }
+
+    /// A loopback HTTP/1.1 server answering one request per connection with `ok`, counting the
+    /// connections it accepted. The acceptor is stopped through the flag whether or not the body
+    /// panicked (the scope joins before it reports).
+    fn with_ok_server(
+        bind: &str,
+        body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize),
+    ) -> Option<()> {
+        use std::io::{Read, Write};
+        use std::sync::atomic::AtomicUsize;
+        let srv = std::net::TcpListener::bind(bind).ok()?;
+        let port = srv.local_addr().unwrap().port();
+        srv.set_nonblocking(true).unwrap();
+        let accepts = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                while !stop.load(Ordering::Acquire) {
+                    match srv.accept() {
+                        Ok((mut s, _)) => {
+                            accepts.fetch_add(1, Ordering::AcqRel);
+                            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                            let mut buf = [0u8; 2048];
+                            let _ = s.read(&mut buf);
+                            let _ = s.write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                            );
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1))
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            struct StopAll<'a>(&'a AtomicBool);
+            impl Drop for StopAll<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            let _stop = StopAll(&stop);
+            body(port, &accepts);
+        });
+        Some(())
+    }
+
+    /// **The offline fix, at the transport.** A host no resolver on earth answers for
+    /// (`.invalid`, RFC 2606) reaches a loopback listener when the request carries a resolve
+    /// entry naming it, and reaches nothing without one — so a request that succeeds here did so
+    /// through `CURLOPT_RESOLVE` and not through DNS. Vacuous on a host with no libcurl.
+    #[test]
+    fn a_resolve_entry_dials_the_address_without_dns() {
+        let _g = crate::testlock::serial();
+        if !(global_init() && available()) {
+            return;
+        }
+        with_ok_server("127.0.0.1:0", |port, accepts| {
+            let url = format!("http://no-such-host.invalid:{port}/");
+            let entry = format!("no-such-host.invalid:{port}:127.0.0.1");
+            let t = Timeouts {
+                connect_s: 3,
+                total_s: 5,
+                ..API
+            };
+            let r = request_result(&url, &[], "GET", None, t, false, None, Some(&entry))
+                .expect("the pinned name reaches the listener");
+            assert_eq!(r.status, 200);
+            assert_eq!(r.body, b"ok");
+            assert_eq!(accepts.load(Ordering::Acquire), 1);
+            // and without the entry the same name is exactly as unreachable as it always was
+            assert!(request_result(&url, &[], "GET", None, t, false, None, None).is_err());
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "nothing dialled");
+        })
+        .expect("loopback v4 binds");
+    }
+
+    /// The same over IPv6, in whichever entry syntax the bound libcurl takes — bare below 7.57.0,
+    /// bracketed from it — chosen by `ResolvePin::entry` from the version this process captured.
+    /// Skips where `::1` cannot be bound.
+    #[test]
+    fn a_v6_resolve_entry_dials_the_address_in_this_curls_syntax() {
+        let _g = crate::testlock::serial();
+        if !(global_init() && available()) {
+            return;
+        }
+        let ran = with_ok_server("[::1]:0", |port, accepts| {
+            let pin = crate::plex::ResolvePin::for_test(
+                "no-such-host.invalid",
+                port as i32,
+                "::1".parse().unwrap(),
+            );
+            let entry = resolve::entry_of(&pin);
+            assert_eq!(
+                curl_version_num() >= crate::plex::origin::CURL_RESOLVE_BRACKETS_SINCE,
+                entry.ends_with(":[::1]"),
+                "entry {entry:?} for curl {:#x}",
+                curl_version_num()
+            );
+            let url = format!("http://no-such-host.invalid:{port}/");
+            let t = Timeouts {
+                connect_s: 3,
+                total_s: 5,
+                ..API
+            };
+            let r = request_result(&url, &[], "GET", None, t, false, None, Some(&entry))
+                .expect("the pinned name reaches the v6 listener");
+            assert_eq!(r.status, 200);
+            assert_eq!(accepts.load(Ordering::Acquire), 1);
+        });
+        if ran.is_none() {
+            eprintln!("skipped: ::1 not bindable here");
+        }
     }
 
     #[test]

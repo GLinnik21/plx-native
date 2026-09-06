@@ -44,8 +44,15 @@ tools/tv-session.sh key down down ok        # key tokens through the real handle
 tools/tv-session.sh click 960 540           # authored 1920x1080 coords
 tools/tv-session.sh shot [out.png]          # panel capture (video plane included)
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
+tools/tv-session.sh wan off [TTL]|on|status  # cut the SET's uplink (LAN intact), self-restoring
 tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
+
+`wan off` is the offline-mode test condition: a netfilter chain on the television rejects every
+v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route cuts public v6
+(the firmware has no `ip6tables` filter table), and a watchdog on the set restores both after the
+TTL whatever happens to your shell. Read what the APP saw from its own log (`net: curl
+rc=6`, `pinned: … name resolved locally`), not from this command's status lines.
 
 `down` hands back the APP (interactive boot, triggers cleared); `tools/tv-lock.sh release` hands
 back the TELEVISION. Do both, in that order — a released lock with an automated app still on

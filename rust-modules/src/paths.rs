@@ -497,6 +497,24 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
 ///
 /// Outside the `plxnative-` trigger namespace by construction, since it is not in the runtime root
 /// at all — so it cannot suppress the who's-watching picker the way anything in `/tmp` would.
+/// Where the image cache may live (`crate::imgcache`), best first: the session file's search
+/// order, as DIRECTORIES. `/media/developer` under the Developer Mode jail, `/media/internal`
+/// under the production one, the app dir as a theory, and a steerable build's instance root
+/// first of all so two simulators never share (or race) one cache.
+pub(crate) fn image_cache_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if ENV_STEERABLE {
+        v.push(in_runtime_dir("imgcache"));
+    }
+    let id = app_id();
+    v.extend([
+        PathBuf::from(format!("/media/developer/{id}-imgcache")),
+        PathBuf::from(format!("/media/internal/.{id}-imgcache")),
+        in_app_dir("imgcache"),
+    ]);
+    v
+}
+
 /// The spool, beside the decision that authorised it.
 ///
 /// **Same directories, same search order, different file** — and not merged into

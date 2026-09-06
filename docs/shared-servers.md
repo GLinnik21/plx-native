@@ -222,6 +222,30 @@ and curl is *push*, and `stream.rs`'s single-closer teardown protocol has to be 
 terms. The bundled FFmpeg cannot help — it is built `--disable-network`,
 `--enable-protocol=file` (`ci/build-ffmpeg.sh:122,129`) and pinned to majors 63/63/61.
 
+**Offline (2026-09-05): the `plex.direct` name is dialled with no DNS at all.** A LAN whose uplink
+is down resolves no `plex.direct` name, and the plaintext twin cannot carry a token in a store
+build, so the household's own server used to be unreachable exactly when it was the only thing
+left. `rust-modules/src/plex/origin.rs`'s `ResolvePin` keeps the https origin and hands libcurl the
+`address` plex.tv advertised beside it through `CURLOPT_RESOLVE`, on both the control and the media
+plane; the certificate is still validated against the name. `rust-modules/src/plex/CLAUDE.md` has
+the rules, and `/tmp/plxnative-nowan` is the reproduction.
+
+**Offline, the who's-watching pick (2026-09-06).** A profile pick is a plex.tv call, so the pinned
+origin alone still left the picker unable to seat anybody the first time the uplink really went
+down. Every online seating now caches that profile's credentials in `Session::profiles` (a
+PIN-protected one with a local verifier of the PIN, never the PIN), and a pick that plex.tv does
+not answer is seated from the cache — an unprotected profile on the pick, a protected one on its
+PIN. A profile that has never been seated online on this television has nothing cached, and the
+picker says so: "No internet connection. Pick this profile once while online, and it will work
+offline." One online sign-in and one online pick per profile are the whole precondition. `rust-modules/src/plex/CLAUDE.md` has the mechanism.
+
+**Offline, the pictures (2026-09-06).** Posters, backdrops and hero art are the server's own and
+load offline as they do online. Profile avatars are not: the server proxies them from plex.tv, so
+they used to be blank circles on the one screen every boot shows. `rust-modules/src/imgcache.rs`
+is a small bounded on-disk cache — the foundation, used for avatars only today — that the poster
+worker reads before any fetch (the key carries plex.tv's cache-buster, so a file is current by
+construction) and fills on a miss; sign-out empties it. Cast headshots (`metadata-static.plex.tv`, also proxied) are still online-only.
+
 **That plaintext endpoint is useful reachability evidence, not a stable authenticated route.**
 §2(c) shows that the TV can reach it, but a public build still needs one of the server's advertised
 HTTPS origins before it may attach the token. Connection selection and the multi-server data model

@@ -63,7 +63,7 @@
 //! inside one process.
 
 use super::client::Client;
-use super::origin::Origin;
+use super::origin::{Origin, ResolvePin};
 use super::probe::Outcome;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -725,7 +725,7 @@ fn activate(id: ServerId) {
 /// (otherwise there is nothing for `client()` to answer with). Use [`set_current`] to switch,
 /// or [`install`], which is the session path and always retargets.
 pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerId {
-    register_origin(machine_id, &Origin::http(host, port), token)
+    register_origin(machine_id, &Origin::http(host, port), token, None)
 }
 
 /// [`register`], given the server's whole [`Origin`] instead of a plaintext address.
@@ -736,13 +736,23 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// and the certificate is issued for the name. So an origin has to be carried from where it was
 /// parsed ([`super::probe::Candidate::origin`]) all the way to here, and the pair-shaped entry
 /// points are kept only for callers that genuinely have nothing but an address.
-pub fn register_origin(machine_id: &str, origin: &Origin, token: &str) -> ServerId {
+///
+/// `pin` is the origin's [`ResolvePin`] when the caller holds the address plex.tv advertised
+/// beside it (`ResolvePin::for_origin`), `None` otherwise. The registry records it on the
+/// published `Client` for the control plane and in `crate::net::resolve` for the media plane;
+/// that table is append-only, so a pin is never retracted — see its doc for why that is sound.
+pub fn register_origin(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    pin: Option<&ResolvePin>,
+) -> ServerId {
     // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
     // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    let id = register_lazy(machine_id, origin, token, &|| {
+    let id = register_lazy(machine_id, origin, token, pin, &|| {
         super::session::load().client_id
     });
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
@@ -783,6 +793,19 @@ pub(crate) fn register_with_client_id(
     register_origin_with_client_id(machine_id, &Origin::http(host, port), token, client_id)
 }
 
+/// [`register_origin_with_client_id`] with a resolve pin — the seam for the test that is about the
+/// PIN. Same contract: no session file, no worker.
+#[cfg(test)]
+pub(crate) fn register_pinned_with_client_id(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    pin: Option<&ResolvePin>,
+    client_id: &str,
+) -> ServerId {
+    register_lazy(machine_id, origin, token, pin, &|| client_id.to_owned())
+}
+
 /// [`register_with_client_id`], given the whole [`Origin`] — the seam for a test that is about the
 /// SCHEME, which the `(host, port)` form cannot express. Same contract: no session file, no worker.
 pub(crate) fn register_origin_with_client_id(
@@ -791,15 +814,29 @@ pub(crate) fn register_origin_with_client_id(
     token: &str,
     client_id: &str,
 ) -> ServerId {
-    register_lazy(machine_id, origin, token, &|| client_id.to_owned())
+    register_lazy(machine_id, origin, token, None, &|| client_id.to_owned())
 }
 
 fn register_lazy(
     machine_id: &str,
     origin: &Origin,
     token: &str,
+    pin: Option<&ResolvePin>,
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
+    // Recorded BEFORE the client is published, so no request made through the new pointer can
+    // reach `curlio` ahead of the table entry it will look for. Once per (host, port); the
+    // log line below names the pin only when it is new, so a token-only re-registration of the
+    // same server (every profile switch) stays byte-identical to what it always logged.
+    let pinned = pin.is_some_and(crate::net::resolve::add);
+    // The NOTE names the family and nothing else. The pin's host is a dashed LAN address and its
+    // `addr` is that address again: `crate::log`'s scrubber rewrites a bare address but has no
+    // rule for a `192-168-0-10.<hash>.plex.direct` label, so printing either would put the
+    // household's LAN layout into the file users paste into issues.
+    let pin_note = match pin {
+        Some(p) if pinned => format!(" (pinned: {} name resolved locally)", p.family()),
+        _ => String::new(),
+    };
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire).min(n);
@@ -818,7 +855,13 @@ fn register_lazy(
         } else {
             machine_id
         };
-        if c.origin() != origin || c.machine_id() != mid {
+        // A pin ARRIVING on a slot that had none is a re-publication condition too: the pin lives
+        // on the `Client` (immutable there by design), so a same-origin registration that only
+        // swapped the token would leave the control plane resolving through DNS while the media
+        // table already knew the answer. A pin never goes away (same origin ⇒ same pin), so this
+        // is a one-way upgrade and cannot churn.
+        let pin_arrived = pin.is_some() && c.resolve_pin() != pin;
+        if c.origin() != origin || c.machine_id() != mid || pin_arrived {
             // Re-point. The old `Client` stays alive and merely stale for anyone mid-request
             // with it; the fresh one also gets a fresh token generation, so token-baked caches
             // flush without a special case.
@@ -829,7 +872,7 @@ fn register_lazy(
             // worth saying, which is the only way a headless run armed with `{"scheme":"https"}`
             // can be told from an http one at all. See `Origin::log_form`.
             crate::log(&format!(
-                "plex: server slot {} re-pointed to {}",
+                "plex: server slot {} re-pointed to {}{pin_note}",
                 id.0,
                 origin.log_form()
             ));
@@ -842,7 +885,8 @@ fn register_lazy(
             PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
             publish(
                 id,
-                Client::new(id, mid, origin.clone(), token, &client_id()),
+                Client::new(id, mid, origin.clone(), token, &client_id())
+                    .with_resolve_pin(pin.cloned()),
             );
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         } else {
@@ -866,7 +910,8 @@ fn register_lazy(
     PROBES[n].store(PROBE_UNKNOWN, Ordering::Release);
     publish(
         id,
-        Client::new(id, machine_id, origin.clone(), token, &client_id()),
+        Client::new(id, machine_id, origin.clone(), token, &client_id())
+            .with_resolve_pin(pin.cloned()),
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     activate(id);
@@ -874,7 +919,7 @@ fn register_lazy(
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
     crate::log(&format!(
-        "plex: server slot {} registered at {}",
+        "plex: server slot {} registered at {}{pin_note}",
         id.0,
         origin.log_form()
     ));
@@ -890,8 +935,8 @@ fn register_lazy(
 /// a single-server session changed. A call naming a DIFFERENT address now registers a second slot
 /// and makes it current, where the singleton kept the FIRST server's address and quietly applied
 /// the new token to it (a mis-target no caller could see, because the address was frozen).
-pub fn install(origin: &Origin, token: &str) {
-    let id = register_origin("", origin, token);
+pub fn install(origin: &Origin, token: &str, pin: Option<&ResolvePin>) {
+    let id = register_origin("", origin, token, pin);
     set_current(id); // the session path always retargets: this is now the server we are using
                      // (`register` already refreshed this server's self-description — see its doc.)
 }
@@ -1089,6 +1134,87 @@ mod tests {
 
     fn reg(machine_id: &str, host: &str, token: &str) -> ServerId {
         register_with_client_id(machine_id, host, 32400, token, "test-client-id")
+    }
+
+    /// **The offline fix's registry half.** A pinned registration publishes the pin on the
+    /// `Client` (the control plane reads it there) AND records it in `net::resolve` (the media
+    /// plane looks it up by host); a re-point to a new origin APPENDS a second entry and leaves the
+    /// first in place, because a worker mid-stream may still hold the old client and its URL; and
+    /// a token-only re-registration of the same server records nothing new.
+    #[test]
+    fn installing_a_pinned_origin_appends_to_the_resolve_table_and_a_repoint_appends_not_replaces() {
+        let _g = fresh();
+        crate::net::resolve::clear();
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let o1 = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
+        let p1 = ResolvePin::for_origin(&o1, "192.168.0.10").expect("a valid pin");
+        let id = register_pinned_with_client_id("m1", &o1, "tok", Some(&p1), "cid");
+        assert!(id.is_set());
+        assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p1), "the client carries it");
+        assert_eq!(
+            crate::net::resolve::lookup("192-168-0-10.h4sh.plex.direct", 32400).map(|p| p.addr()),
+            Some(ip("192.168.0.10")),
+            "the media plane can find it by host and port"
+        );
+        // a profile switch: same server, new token, no new entry
+        let again = register_pinned_with_client_id("m1", &o1, "tok2", Some(&p1), "cid");
+        assert_eq!(again, id);
+        assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p1));
+        // DHCP moved the server and discovery re-pointed the slot: the old entry survives
+        let o2 = Origin::parse("https://192-168-0-20.h4sh.plex.direct:32400").unwrap();
+        let p2 = ResolvePin::for_origin(&o2, "192.168.0.20").unwrap();
+        let moved = register_pinned_with_client_id("m1", &o2, "tok2", Some(&p2), "cid");
+        assert_eq!(moved, id, "re-pointed in place");
+        assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p2));
+        assert_eq!(
+            crate::net::resolve::lookup("192-168-0-10.h4sh.plex.direct", 32400).map(|p| p.addr()),
+            Some(ip("192.168.0.10")),
+            "append-only: the route an old worker captured still resolves"
+        );
+        assert_eq!(
+            crate::net::resolve::lookup("192-168-0-20.h4sh.plex.direct", 32400).map(|p| p.addr()),
+            Some(ip("192.168.0.20"))
+        );
+        // an unpinned registration carries nothing and records nothing
+        let plain = Origin::http("10.0.0.7", 32400);
+        let pid = register_pinned_with_client_id("m2", &plain, "t", None, "cid");
+        assert_eq!(client_for(pid).unwrap().resolve_pin(), None);
+        assert_eq!(crate::net::resolve::lookup("10.0.0.7", 32400), None);
+        crate::net::resolve::clear();
+    }
+
+    /// A pin that arrives on an ALREADY registered origin (a legacy session file re-saved with its
+    /// address, a roster refresh learning it) must reach the control plane: the same origin is
+    /// re-published with the pin rather than only re-tokened, and the slot stays the same.
+    #[test]
+    fn a_pin_arriving_on_a_registered_origin_republishes_the_same_slot() {
+        let _g = fresh();
+        crate::net::resolve::clear();
+        let o = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
+        let id = register_pinned_with_client_id("m1", &o, "tok", None, "cid");
+        assert_eq!(client_for(id).unwrap().resolve_pin(), None);
+        let p = ResolvePin::for_origin(&o, "192.168.0.10").unwrap();
+        let again = register_pinned_with_client_id("m1", &o, "tok", Some(&p), "cid");
+        assert_eq!(again, id, "same slot");
+        assert_eq!(client_for(id).unwrap().resolve_pin(), Some(&p), "…now pinned");
+        assert_eq!(count(), 1);
+        crate::net::resolve::clear();
+    }
+
+    /// The boot gate registers the stored roster (with machine ids) and then installs the
+    /// primary by ORIGIN alone (`install` has no id): that must land in the roster's slot, not a
+    /// second one. Written because a device log read as two slots at one origin (it was the
+    /// friend's share pinned to its own LAN label), and the coalescing rule deserved a pin.
+    #[test]
+    fn installing_the_primary_after_the_roster_reuses_its_slot() {
+        let _g = fresh();
+        let o = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
+        let p = ResolvePin::for_origin(&o, "192.168.0.10").unwrap();
+        let roster = register_pinned_with_client_id("m1", &o, "tok", Some(&p), "cid");
+        let primary = register_pinned_with_client_id("", &o, "tok", Some(&p), "cid");
+        assert_eq!(primary, roster);
+        assert_eq!(count(), 1);
+        crate::net::resolve::clear();
     }
 
     /// The table's basic contract: a registration round trips through its id, the reserved UNSET

@@ -1,0 +1,56 @@
+=== offline_play  (rk=4, Offline: the television's uplink cut, boot from the stored sign-in, play from the LAN server) ===
+    covers: offline, resolve-pin, stored-session, e2e
+    progress reset: http://<ip4>:32400/:/unscrobble?key=4&identifier=com.plexapp.plugins.library&X-Plex-Token=<r> -> 200
+    triggers: plxnative-play=4, plxnative-quality=original, plxnative-stats
+    session: the install's own stored sign-in (no token injected)
+    run-stream (cap 70s) ...
+    wan off: [32m✓[0m TV reachable
+    wan off: lan4=<ip4>/24 ttl=190
+    wan off: [32m✓[0m WAN cut on the television (LAN + loopback open, DNS refused, public v6 unreachable); auto-restores in 190s
+    wan off: [32m✓[0m TV reachable
+    wan off: · WAN: CUT since epoch 1788614022 (v4 chain / v6 unreachable route armed: 1/1); watchdog pid 18402
+    wan off: · from the TV: LAN PMS /identity -> ok
+    wan off: · from the TV: resolve plex.tv -> FAIL
+    wan on: [32m✓[0m TV reachable
+    wan on: [32m✓[0m WAN restored
+    wan on: [32m✓[0m TV reachable
+    wan on: · WAN: open (v4 chain / v6 unreachable route armed: 0/0)
+    wan on: · from the TV: LAN PMS /identity -> ok
+    wan on: · from the TV: resolve plex.tv -> ok
+      [PASS] video_bound: setMediaVideoData sent → window+PLAYING
+      [PASS] timeline_climb: heartbeat pos= 267s..289s (climb 22s, need >=20s) over 23 samples; 1000pm of real time (worst 10s window 1000pm over 1 leg(s))
+      [PASS] timeline_post: 2 timeline report(s) to PMS, last t=285s
+      [PASS] no_error: no `smp_cb type=18` / `Playing error`
+      [PASS] presented_rate: declared 24.000 fps; presented median 24.0, min 24.0, max 25.0 over 20 healthy s (117 counter samples); 0 window(s) below 85%
+      [PASS] resolve_pin: plex: server slot 1 registered at https://<host> (pinned: v4 name resolved locally)
+      [PASS] offline: auth: roster refresh — plex.tv unreachable, keeping the stored roster ; hubs: source 0 ok — 4 shelves, 8 in CW
+    => PASS in 30s (early, cap 70s)
+
+=== offline_play_v6  (rk=4, Offline over IPv6: the primary re-pointed to its IPv6 plex.direct origin, then the same play) ===
+    covers: offline, resolve-pin, ipv6, e2e
+    progress reset: http://<ip4>:32400/:/unscrobble?key=4&identifier=com.plexapp.plugins.library&X-Plex-Token=<r> -> 200
+    triggers: plxnative-play=4, plxnative-quality=original, plxnative-stats
+    session: the install's own stored sign-in (no token injected)
+    plxnative-servers: <the primary's IPv6 plex.direct origin + pin, token redacted>
+    run-stream (cap 70s) ...
+    wan off: [32m✓[0m TV reachable
+    wan off: lan4=<ip4>/24 ttl=190
+    wan off: [32m✓[0m WAN cut on the television (LAN + loopback open, DNS refused, public v6 unreachable); auto-restores in 190s
+    wan off: [32m✓[0m TV reachable
+    wan off: · WAN: CUT since epoch 1788614062 (v4 chain / v6 unreachable route armed: 1/1); watchdog pid 18712
+    wan off: · from the TV: LAN PMS /identity -> ok
+    wan off: · from the TV: resolve plex.tv -> FAIL
+    wan on: [32m✓[0m TV reachable
+    wan on: [32m✓[0m WAN restored
+    wan on: [32m✓[0m TV reachable
+    wan on: · WAN: open (v4 chain / v6 unreachable route armed: 0/0)
+    wan on: · from the TV: LAN PMS /identity -> ok
+    wan on: · from the TV: resolve plex.tv -> ok
+      [PASS] video_bound: setMediaVideoData sent → window+PLAYING
+      [PASS] timeline_climb: heartbeat pos= 294s..316s (climb 22s, need >=20s) over 23 samples; 1000pm of real time (worst 10s window 1000pm over 1 leg(s))
+      [PASS] timeline_post: 2 timeline report(s) to PMS, last t=312s
+      [PASS] no_error: no `smp_cb type=18` / `Playing error`
+      [PASS] presented_rate: declared 24.000 fps; presented median 24.0, min 24.0, max 25.0 over 20 healthy s (117 counter samples); 0 window(s) below 85%
+      [PASS] resolve_pin: plex: server slot 0 re-pointed to https://<host> (pinned: v6 name resolved locally)
+      [PASS] offline: auth: roster refresh — plex.tv unreachable, keeping the stored roster ; hubs: source 0 ok — 4 shelves, 8 in CW
+    => PASS in 31s (early, cap 70s)

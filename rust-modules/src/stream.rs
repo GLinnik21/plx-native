@@ -693,6 +693,13 @@ fn host_header(host: &str, port: c_int) -> String {
 /// levers, none of them this file's to pull, are an interruptible resolver or an application-owned
 /// resolution worker.
 unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
+    // The offline reproduction (`/tmp/plxnative-nowan`): a name that would have gone to the
+    // resolver is refused here, exactly where a dead resolver would have refused it. A literal is
+    // untouched — the plaintext transport never needed DNS for one, which is the whole point of
+    // the twin `probe::candidates` synthesizes.
+    if crate::net::refuse_name(host, (CONNECT_TIMEOUT_MS / 1000) as _) {
+        return None;
+    }
     // The port is range-checked HERE and not left to `AI_NUMERICSERV`, because the two platforms
     // disagree and the disagreement is SILENT. Darwin rejects an out-of-range numeric service;
     // glibc parses it with `strtoul`, applies no range check at all, and hands back
@@ -1484,7 +1491,7 @@ mod tests {
     /// in production, which is strictly more than the wrapper could say.
     fn loopback_get(port: u16) -> Option<crate::http::Reply> {
         let o = crate::plex::Origin::http("127.0.0.1", port as i32);
-        crate::http::request(&o, "/x", crate::http::Method::Get, &[])
+        crate::http::request(&o, "/x", crate::http::Method::Get, &[], None)
     }
 
     /// Descriptors currently open in this process. `/dev/fd` works on both macOS and Linux;

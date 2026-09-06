@@ -1,0 +1,42 @@
+== harness
+install: com.beb.plxnative.debug [debug] — triggers and log under /tmp/com.beb.plxnative.debug
+test identity: Guest (id=<test-user-id>)  (playback + watch-history isolation)
+TV lock: already held by this lane — inheriting it
+=== offline_pick_cached  (rk=4, Offline: pick a household profile on the who's-watching screen with plex.tv unreachable, then play) ===
+    covers: offline, profiles, stored-session, e2e
+    progress reset: http://<pms-host>:32400/:/unscrobble?key=4&identifier=com.plexapp.plugins.library&X-Plex-Token=<token> -> 200
+    triggers: plxnative-play=4, plxnative-quality=original, plxnative-stats, plxnative-pickuser=1
+    session: the install's own stored sign-in (no token injected)
+    run-stream (cap 70s) ...
+    prime: seating roster tile 1 online once, so the cache holds it ...
+    prime: seating roster tile 2 online once, so the cache holds it ...
+    prime: done
+    wan off: [32m✓[0m TV reachable
+    wan off: lan4=192.168.0.0/24 ttl=190
+    wan off: [32m✓[0m WAN cut on the television (LAN + loopback open, DNS refused, public v6 unreachable); auto-restores in 190s
+    wan off: [32m✓[0m TV reachable
+    wan off: · WAN: CUT since epoch 1788703786 (v4 chain / v6 unreachable route armed: 1/1); watchdog pid 1007
+    wan off: · from the TV: LAN PMS /identity -> ok
+    wan off: · from the TV: resolve plex.tv -> FAIL
+    wan on: [32m✓[0m TV reachable
+    wan on: [32m✓[0m WAN restored
+    wan on: [32m✓[0m TV reachable
+    wan on: · WAN: open (v4 chain / v6 unreachable route armed: 0/0)
+    wan on: · from the TV: LAN PMS /identity -> ok
+    wan on: · from the TV: resolve plex.tv -> ok
+      [PASS] video_bound
+      [PASS] timeline_climb
+      [PASS] timeline_post
+      [PASS] no_error
+      [PASS] presented_rate
+      [PASS] offline_pick
+    => PASS in 30s (early, cap 70s)
+    characterisation (recorded, not graded):
+       playback: max_stall=0s (total 0s over 23 beats, +/-1s) rate=1000pm mean / 1000pm worst over 1 leg(s) lumpy=0 beat(s), longest run 0
+       presented: 24.1 fps mean, worst 1s window 24.0 fps (sink displayed-frames counter, 114 samples, per-interval) dropped=0
+========================================================================
+SUMMARY
+========================================================================
+  [PASS] offline_pick_cached
+1 passed, 0 failed, 0 known-gap of 1
+run exit=0

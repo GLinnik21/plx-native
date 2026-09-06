@@ -1,0 +1,47 @@
+sim: THIS IS THE DESKTOP SIMULATOR, not a television. No video pipeline; frame rates here describe this Mac's GPU and must never be read as an fps gate.
+install: id=com.beb.plxnative flavour=- runtime=/tmp/plxnative-offline-sim-green6 features=dev APPID_env=unset
+appdir: /Users/gleblinnik/Developer/plex/plex-native-poc/.claude/worktrees/bridge-cse_01Qm24rXXAfqZ3nL9gFCJxiM/pkg (PLXNATIVE_APP_DIR)
+webos: /var/run/nyx/os_info.json unreadable (No such file or directory (os error 2)) — version unknown
+webos: /var/run/nyx/device_info.json unreadable (No such file or directory (os error 2)) — model/board unknown
+telemetry: answered=false errors=false usage=false id=none errors_id=none
+telemetry: env=development sentry=no posthog=no
+devcaps: /etc/umediaserver/device_codec_capability_config.json unreadable (No such file or directory (os error 2)) — assuming the 49SM9000PLA profile
+video driver: cocoa
+surface: window=960x540 drawable=960x540 panel=unknown logical=1920x1080 scale=0.500
+surface: drawable is NOT the 1920x1080 the UI is authored at — scaling the whole interface by 0.500. Text will be softer than on a 1:1 surface. This is expected on a desktop: the window is a whole fraction of the canvas.
+GL: Apple M4 / 4.1 Metal - 90.5
+egl: no eglGetCurrentDisplay in this process — EGL capabilities unknown
+gl extensions: <null>
+keyboard: support=0 active=1 focus=0 winflags=0x2006
+FB bits: alpha=-1 red=-1 depth=-1 stencil=-1 (config alpha=8 depth=0 stencil=0)
+wm sdl=2.32.70 subsys=0 wl_surface=0x0 wl_display=0x0 alpha=8
+init_text ok=1
+net: bound libcurl -> libcurl.4.dylib (libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.68.0; AsynchDNS=yes); threaded-tls=true legacy-locks=NotNeeded
+session protection: no usable key manager; using the 0600 file fallback
+plex: server slot 0 registered at https://<host> (resolves <ip6-dashed>.<hash>.plex.direct -> <ip6> locally)
+auth: roster restored — 1 server(s) registered
+hubs: source 0 fetching (off-thread)
+browse: roster now 1 source(s)
+pms: catalog activation queued
+pms: server 0 version=<ip4>96-cb3ebc72d plexPass=true
+boot: stored session — local server (offline-capable)
+net: nowan — refused name plex.tv
+vplane: this device has NEITHER libAcbAPI nor SDL's exported window — audio will play and the picture will not appear. Please report your webOS version.
+auth: roster refresh — plex.tv unreachable, keeping the stored roster
+curlio: bound libcurl.4.dylib curl_multi_* (7 symbols)
+ff: bound avutil -> libavutil-plx.61.dylib
+ff: bound avcodec -> libavcodec-plx.63.dylib
+ff: bound avformat -> libavformat-plx.63.dylib
+ff: bound swscale -> libswscale-plx.10.dylib
+ff: avformat=63.1.100 avcodec=63.1.100 avutil=61.1.100
+idle: present gate DISABLED by /tmp/plxnative-noidle
+font chain: Base /Users/gleblinnik/Developer/plex/plex-native-poc/.claude/worktrees/bridge-cse_01Qm24rXXAfqZ3nL9gFCJxiM/pkg/appfont.ttf codepoints=2853
+hubs: source 0 ok — 4 shelves, 7 in CW
+hubs: landed — 42 items, 5 shelves
+loop=61 route=home fps=61 sim=1
+loop=60 route=home fps=60 sim=1
+loop=60 route=home fps=60 sim=1
+loop=60 route=home fps=60 sim=1
+loop=60 route=home fps=61 sim=1
+loop=60 route=home fps=60 sim=1
+shot: wrote 960x540 to /tmp/plxnative-offline-sim-green6/home.png

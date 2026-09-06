@@ -20,6 +20,8 @@
 //! than a second client — which is why [`AccountClient::get`] is `pub(super)`.
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 // The lenient wire adapters live once, in `models.rs`, next to the note that explains why every
 // number and flag needs one — see `de_bool` there for why the plex.tv policy flags fold to `bool`
@@ -102,13 +104,22 @@ impl AccountClient {
     /// `pub(super)` so the sibling op file `discover.rs` can add its `impl AccountClient` block on
     /// top of this ONE transport + identity choke point instead of hand-rolling a second one.
     pub(super) fn get<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
-        let resp = crate::net::https_get(url, &self.headers())?;
-        decode("GET", url, resp)
+        let resp = crate::net::https_get(url, &self.headers());
+        note_contact(url, resp.is_some());
+        decode("GET", url, resp?)
     }
 
     fn post<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
-        let resp = crate::net::https_post(url, &self.headers(), b"")?;
+        let resp = self.post_raw(url)?;
         decode("POST", url, resp)
+    }
+
+    /// The transport half of [`AccountClient::post`]: `None` is a request that never completed,
+    /// `Some` is whatever the service said, status and all.
+    fn post_raw(&self, url: &str) -> Option<crate::net::Resp> {
+        let resp = crate::net::https_post(url, &self.headers(), b"");
+        note_contact(url, resp.is_some());
+        resp
     }
 
     // ---- login (PIN/QR) ----
@@ -179,12 +190,128 @@ impl AccountClient {
     /// POST /api/v2/home/users/{uuid}/switch[?pin=NNNN] — exchange the admin token for the chosen
     /// user's own token (the thing PMS scopes watch state by). `pin` is required for a `protected`
     /// user, ignored otherwise.
-    pub fn switch_user(&self, uuid: &str, pin: Option<&str>) -> Option<SwitchedUser> {
+    ///
+    /// **Graded, because the caller has to tell "plex.tv said no" from "plex.tv never answered".**
+    /// The first is a verdict about the PIN or the token and ends the switch; the second is a
+    /// fact about the network at this instant, and `auth::switch_thread` answers it from the
+    /// credentials this television cached the last time the same profile was seated online.
+    /// An `Option` folded those into one `None`, which is how a house with no internet could not
+    /// pick a profile at all (2026-09-06).
+    pub fn switch_user(&self, uuid: &str, pin: Option<&str>) -> SwitchOutcome {
         let q = match pin {
             Some(p) if !p.is_empty() => format!("?pin={p}"),
             _ => String::new(),
         };
-        self.post(&format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}"))
+        let url = format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}");
+        let Some(resp) = self.post_raw(&url) else {
+            return SwitchOutcome::Unreachable;
+        };
+        let status = resp.status;
+        match decode::<SwitchedUser>("POST", &url, resp) {
+            Some(u) if !u.auth_token.is_empty() => SwitchOutcome::Switched(u),
+            // A completed request the service declined, or one it answered with a body that is
+            // not a switched user. 4xx is plex.tv's verdict (401 is the wrong PIN); anything
+            // else — a 5xx, a 2xx that did not parse — is the service failing us, which for the
+            // caller's purposes is the same as not answering: retryable, and answerable offline.
+            _ if (400..500).contains(&status) => SwitchOutcome::Refused(status),
+            _ => SwitchOutcome::Unreachable,
+        }
+    }
+}
+
+/// How `/api/v2/home/users/{uuid}/switch` came back — see [`AccountClient::switch_user`].
+pub enum SwitchOutcome {
+    /// 2xx with a token: the profile's own credential.
+    Switched(SwitchedUser),
+    /// plex.tv completed the request and declined it, with this status. 401 is a wrong PIN.
+    Refused(u16),
+    /// No usable answer: a transport failure, a 5xx, or a 2xx body that did not parse.
+    Unreachable,
+}
+
+// ---- plex.tv reachability, remembered ----
+
+/// When plex.tv last failed to answer this process at all — so a caller can decide whether a
+/// round trip is worth its timeout.
+///
+/// One question, asked by the profile switch: with the uplink down, a resolver that times out
+/// (the usual shape of "the internet is off" behind a live router) costs the whole connect budget
+/// per attempt, and the picker's own roster refresh has typically already paid it while the person
+/// was reading the screen. This memo lets the switch go to its cache FIRST when plex.tv was
+/// unreachable moments ago, and to plex.tv first — the authority — the rest of the time. It is
+/// deliberately short-lived ([`UNREACHABLE_MEMO`]): a link that came back is trusted again within
+/// the minute, and a stale "unreachable" can only ever route one pick through credentials that a
+/// successful switch had already vouched for.
+///
+/// Only the plex.tv host is recorded. `discover.provider.plex.tv` shares this transport and is
+/// a different service on a different name; its silence says nothing about the account API.
+static LAST_UNREACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
+static LAST_REACHABLE: Mutex<Option<Instant>> = Mutex::new(None);
+const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
+/// The positive memo lives longer: it answers "is a network round trip worth starting" for work
+/// that is optional (an avatar refresh), and a link that answered within the last few minutes
+/// is a link.
+const REACHABLE_MEMO: Duration = Duration::from_secs(300);
+
+fn note_contact(url: &str, answered: bool) {
+    if !url.starts_with(PLEX_TV) {
+        return;
+    }
+    let now = Instant::now();
+    let mut g = LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+    *g = if answered { None } else { Some(now) };
+    drop(g);
+    if answered {
+        *LAST_REACHABLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    }
+}
+
+/// Did plex.tv ANSWER within the last [`REACHABLE_MEMO`], with nothing failing since? The
+/// question for optional network work: `false` at a cold boot, where nothing is known yet, so
+/// a refresh never blocks a worker on a link nobody has proven.
+pub fn plex_tv_recently_reachable() -> bool {
+    if plex_tv_recently_unreachable() {
+        return false;
+    }
+    let g = LAST_REACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+    g.is_some_and(|t| t.elapsed() < REACHABLE_MEMO)
+}
+
+/// Did the account API fail to answer within the last [`UNREACHABLE_MEMO`], with nothing
+/// answering since?
+pub fn plex_tv_recently_unreachable() -> bool {
+    let g = LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+    g.is_some_and(|t| t.elapsed() < UNREACHABLE_MEMO)
+}
+
+/// Seed the memo. Callers hold `crate::testlock::serial()`: this is a process global.
+#[cfg(test)]
+pub(crate) fn set_unreachable_for_test(unreachable: bool) {
+    let mut g = LAST_UNREACHABLE.lock().unwrap_or_else(|e| e.into_inner());
+    *g = unreachable.then(Instant::now);
+}
+
+#[cfg(test)]
+mod reachability_tests {
+    use super::*;
+
+    /// Process globals — serialized on the crate-wide lock.
+    #[test]
+    fn the_memos_say_unreachable_beats_reachable_and_nothing_is_known_at_boot() {
+        let _g = crate::testlock::serial();
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
+        assert!(!plex_tv_recently_reachable(), "nothing proven yet");
+        assert!(!plex_tv_recently_unreachable());
+        note_contact(PLEX_TV, true);
+        assert!(plex_tv_recently_reachable());
+        note_contact(PLEX_TV, false);
+        assert!(plex_tv_recently_unreachable());
+        assert!(!plex_tv_recently_reachable(), "a failure since the answer wins");
+        note_contact("https://discover.provider.plex.tv/x", true);
+        assert!(plex_tv_recently_unreachable(), "another host says nothing about plex.tv");
+        *LAST_UNREACHABLE.lock().unwrap() = None;
+        *LAST_REACHABLE.lock().unwrap() = None;
     }
 }
 

@@ -184,6 +184,36 @@ pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
 
+/// **`/tmp/plxnative-nowan` — refuse every name lookup, as a dead resolver would.**
+///
+/// The offline-mode reproduction. A household whose internet is down but whose LAN is up resolves
+/// no public name at all: `plex.tv`, `discover.provider.plex.tv` and — the one that matters — the
+/// `plex.direct` hostname the app persisted for its OWN server on the LAN. Nothing on a desk can
+/// take the router's uplink away deterministically, so this trigger does it inside the app: while
+/// armed, [`crate::net`], [`crate::curlio`] and [`crate::stream`] refuse any host that is not a
+/// numeric literal, at the point where they would otherwise hand it to a resolver, and return the
+/// same error a failed resolution returns. A name reaches the wire only when the request carries a
+/// resolve pin ([`crate::plex::ResolvePin`]) — which is exactly what the fix provides, so the same
+/// trigger shows the defect red and the fix green with no network condition arranged anywhere.
+///
+/// Content `slow` first sleeps the connect budget an API call would have spent waiting on a dead
+/// resolver ([`crate::net::API`]'s `connect_s`), so a worker that would have stalled stalls here
+/// too. Empty is the fast variant. Latched at first read like every per-frame trigger, and `None`
+/// at COMPILE time without `devtriggers`, so a public binary carries no such switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NoWan {
+    pub(crate) slow: bool,
+}
+
+pub(crate) fn no_wan() -> Option<NoWan> {
+    static SEEN: std::sync::OnceLock<Option<NoWan>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        read("nowan").map(|s| NoWan {
+            slow: s.trim() == "slow",
+        })
+    })
+}
+
 /// Parse `/tmp/plxnative-server=<slot>`, the optional server half of a direct-screen trigger.
 ///
 /// A Plex `ratingKey` is only unique together with its server.  The original `plxnative-play`
@@ -530,6 +560,14 @@ pub(crate) struct DevServer {
     /// Public, like the machine name: it is the string every browsing surface says out loud.
     #[serde(default, alias = "sourceTitle", alias = "source_title")]
     pub(crate) handle: String,
+    /// The literal to dial `host` at WITHOUT resolving it — the `Connection.address` plex.tv
+    /// advertises beside a `plex.direct` `uri`, which is what a stored session persists. This is
+    /// how a headless run puts a pinned TLS origin through the registry (`/tmp/plxnative-nowan`
+    /// beside it is the offline reproduction). It is validated exactly as a session's address is
+    /// ([`crate::plex::ResolvePin::for_origin`]): a value the `host` label does not encode pins
+    /// nothing. Omitted: no pin, unchanged behaviour for every overlay written before it existed.
+    #[serde(default, alias = "address_pin", alias = "resolve")]
+    pub(crate) pin: String,
 }
 
 fn default_port() -> i64 {
@@ -610,6 +648,13 @@ impl DevServer {
         }
         crate::plex::probe::dial_port(self.port)
             .map(|p| crate::plex::Origin::new(self.scheme, &self.host, p))
+    }
+
+    /// The resolve pin for [`DevServer::origin`], from the `pin` field — `None` when absent or
+    /// when the label does not encode it.
+    pub(crate) fn resolve_pin(&self) -> Option<crate::plex::ResolvePin> {
+        let origin = self.origin()?;
+        crate::plex::ResolvePin::for_origin(&origin, &self.pin)
     }
 }
 

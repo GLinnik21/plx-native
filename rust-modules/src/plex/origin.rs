@@ -336,6 +336,161 @@ impl<'a> Parts<'a> {
     }
 }
 
+/// **A DNS shortcut for one origin, validated: dial this literal instead of resolving
+/// [`Origin::host`].** It never validates anything — TLS still checks the certificate against the
+/// hostname, which stays in the URL and in SNI. libcurl is merely told the answer DNS would have
+/// given (`CURLOPT_RESOLVE`), so no lookup happens at all.
+///
+/// ## Why it exists
+///
+/// plex.tv advertises the household's OWN server as `https://192-168-0-10.<hash>.plex.direct`,
+/// and that name resolves only through Plex's public wildcard zone. Discovery ranks TLS first and
+/// persists the winner, so a LAN server is normally stored under that name — and on a LAN whose
+/// uplink is down it can no longer be found, although it is one hop away. The plaintext twin
+/// [`super::probe::candidates`] synthesizes for exactly this case cannot carry a token in a store
+/// build (`crate::http::credential_transport_allowed`), so the only offline route is the TLS name
+/// with its address supplied locally. That is this type.
+///
+/// ## What is accepted, and why the rule is narrow
+///
+/// A pin is built ONLY for a TLS origin whose host is a dashed-address `*.plex.direct` label, and
+/// only when the address that label ENCODES equals the address stored beside it — the
+/// `Connection.address` plex.tv advertised, persisted as `ServerRef::address` / `SourceRef::address`.
+/// The stored address is what is dialled (data copied from plex.tv, per `docs/shared-servers.md`
+/// §1); the decode is the cross-check. Two consequences:
+///
+/// * a mismatch, an undecodable label, a plain hostname or a literal host yields `None`, and the
+///   request resolves through DNS exactly as before — a wrong guess can only COST a pin, never
+///   produce a wrong one;
+/// * a valid pin is a pure function of the hostname, so a mapping recorded once can never become
+///   stale when a registry slot re-points. That is what lets `crate::net::resolve` keep an
+///   append-only table for the media plane instead of threading this value through the engine.
+///
+/// The IPv6 label is Plex's documented spelling — the full eight groups joined by dashes, no `::`
+/// shorthand — and it is what this account's server advertises on the wire (captured 2026-09-05
+/// alongside the v4 form). An abbreviated fixture such as `2001-db8--1` is therefore not a label
+/// this decoder accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvePin {
+    host: String,
+    port: i32,
+    addr: std::net::IpAddr,
+}
+
+/// `CURLOPT_RESOLVE` learned bracketed IPv6 addresses in 7.57.0 (`0x073900`). Below it, the entry
+/// parser is `sscanf("%255[^:]:%d:%255s")` and takes the bare literal — verified in the 7.53.1
+/// source the development television runs.
+pub const CURL_RESOLVE_BRACKETS_SINCE: u32 = 0x07_39_00;
+
+impl ResolvePin {
+    /// The pin for `origin`, given the address plex.tv advertised (or a file persisted) beside it —
+    /// `None` unless every rule in the type doc holds.
+    pub fn for_origin(origin: &Origin, stored_address: &str) -> Option<ResolvePin> {
+        if !origin.is_tls() {
+            return None;
+        }
+        let stored: std::net::IpAddr = unbracket(stored_address.trim()).parse().ok()?;
+        let encoded = plex_direct_literal(origin.host())?;
+        (encoded == stored).then(|| ResolvePin {
+            host: origin.host().to_owned(),
+            port: origin.port(),
+            addr: stored,
+        })
+    }
+
+    /// A pin for a host no zone would ever answer for — the loopback tests' way of proving that a
+    /// name reached the wire through the pin and not through DNS. Production pins come only from
+    /// [`ResolvePin::for_origin`].
+    #[cfg(test)]
+    pub(crate) fn for_test(host: &str, port: i32, addr: std::net::IpAddr) -> ResolvePin {
+        ResolvePin {
+            host: host.to_owned(),
+            port,
+            addr,
+        }
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+    pub fn port(&self) -> i32 {
+        self.port
+    }
+    pub fn addr(&self) -> std::net::IpAddr {
+        self.addr
+    }
+
+    /// The `CURLOPT_RESOLVE` list entry — `host:port:address`, the v6 address bracketed only on a
+    /// libcurl that parses brackets (see [`CURL_RESOLVE_BRACKETS_SINCE`]).
+    pub fn entry(&self, curl_version_num: u32) -> String {
+        match self.addr {
+            std::net::IpAddr::V4(a) => format!("{}:{}:{a}", self.host, self.port),
+            std::net::IpAddr::V6(a) if curl_version_num >= CURL_RESOLVE_BRACKETS_SINCE => {
+                format!("{}:{}:[{a}]", self.host, self.port)
+            }
+            std::net::IpAddr::V6(a) => format!("{}:{}:{a}", self.host, self.port),
+        }
+    }
+
+    /// `"v4"` or `"v6"` — the only thing about a pin the event log says. The host is a dashed
+    /// LAN address in disguise and the address is that address; neither belongs in the file
+    /// users paste into issues (the scrubber catches the bare address, not the label).
+    pub fn family(&self) -> &'static str {
+        if self.addr.is_ipv6() {
+            "v6"
+        } else {
+            "v4"
+        }
+    }
+
+    /// Host and address, for a test's eyes. Never logged — see [`ResolvePin::family`].
+    pub fn log_form(&self) -> String {
+        format!("{} -> {}", self.host, self.addr)
+    }
+}
+
+/// The address a dashed `plex.direct` label encodes, or `None` for anything else.
+///
+/// `192-168-0-10.<label>.plex.direct` → `192.168.0.10`; eight dash-joined hex groups → the v6
+/// address. Only the FIRST label is read; the hash label and the zone are checked for shape, not
+/// meaning. This is the reverse of a mapping plex.tv performs and is used as a cross-check against
+/// an address it advertised — never to build a hostname ([`super::probe`]'s rule stands).
+pub fn plex_direct_literal(host: &str) -> Option<std::net::IpAddr> {
+    let host = unbracket(host);
+    let rest = host.strip_suffix(".plex.direct")?;
+    let (label, hash) = rest.split_once('.')?;
+    if hash.is_empty() || hash.contains('.') {
+        return None; // exactly `<address>.<hash>.plex.direct`
+    }
+    let groups: Vec<&str> = label.split('-').collect();
+    match groups.len() {
+        4 => {
+            let mut o = [0u8; 4];
+            for (i, g) in groups.iter().enumerate() {
+                if g.is_empty() || g.len() > 3 || !g.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                o[i] = g.parse().ok()?;
+            }
+            Some(std::net::IpAddr::V4(o.into()))
+        }
+        8 => {
+            if groups
+                .iter()
+                .any(|g| g.is_empty() || g.len() > 4 || !g.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
+                return None;
+            }
+            groups
+                .join(":")
+                .parse::<std::net::Ipv6Addr>()
+                .ok()
+                .map(std::net::IpAddr::V6)
+        }
+        _ => None,
+    }
+}
+
 /// Strip the brackets a URL authority puts around a v6 literal, if they are there.
 fn unbracket(host: &str) -> &str {
     host.strip_prefix('[')
@@ -596,5 +751,96 @@ mod tests {
             Scheme::Https < Scheme::Http,
             "probe RANKS on this order — TLS is the better connection"
         );
+    }
+
+    // ---- ResolvePin: the offline-mode shortcut ----
+
+    #[test]
+    fn a_plex_direct_v4_origin_with_a_matching_stored_address_yields_a_pin() {
+        let o = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
+        let p = ResolvePin::for_origin(&o, "192.168.0.10").expect("pinned");
+        assert_eq!(p.host(), "192-168-0-10.h4sh.plex.direct");
+        assert_eq!(p.port(), 32400);
+        assert_eq!(p.addr(), "192.168.0.10".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(p.entry(0x07_35_01), "192-168-0-10.h4sh.plex.direct:32400:192.168.0.10");
+        assert_eq!(p.log_form(), "192-168-0-10.h4sh.plex.direct -> 192.168.0.10");
+        assert_eq!(p.family(), "v4");
+    }
+
+    #[test]
+    fn a_plex_direct_v6_origin_with_a_matching_stored_address_yields_a_pin() {
+        // The eight-group label plex.tv actually advertises (captured 2026-09-05), no `::`.
+        let o = Origin::parse("https://2001-0db8-0000-0000-0000-0000-0000-0001.h4sh.plex.direct:32400")
+            .unwrap();
+        let p = ResolvePin::for_origin(&o, "2001:db8::1").expect("pinned");
+        assert_eq!(p.addr(), "2001:db8::1".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(p.family(), "v6");
+        // …and a bracketed spelling of the stored address is the same address
+        assert_eq!(ResolvePin::for_origin(&o, "[2001:db8::1]"), Some(p));
+    }
+
+    #[test]
+    fn the_entry_is_bare_v6_below_7_57_and_bracketed_from_7_57() {
+        let o = Origin::parse("https://2001-0db8-0000-0000-0000-0000-0000-0001.h4sh.plex.direct:32400")
+            .unwrap();
+        let p = ResolvePin::for_origin(&o, "2001:db8::1").unwrap();
+        // the development television's 7.53.1 parses `%255[^:]:%d:%255s`: bare
+        assert_eq!(
+            p.entry(0x07_35_01),
+            "2001-0db8-0000-0000-0000-0000-0000-0001.h4sh.plex.direct:32400:2001:db8::1"
+        );
+        assert_eq!(
+            p.entry(CURL_RESOLVE_BRACKETS_SINCE),
+            "2001-0db8-0000-0000-0000-0000-0000-0001.h4sh.plex.direct:32400:[2001:db8::1]"
+        );
+        assert_eq!(
+            p.entry(0x08_00_00),
+            "2001-0db8-0000-0000-0000-0000-0000-0001.h4sh.plex.direct:32400:[2001:db8::1]"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_or_undecodable_label_yields_no_pin() {
+        let v4 = Origin::parse("https://192-168-0-10.h4sh.plex.direct:32400").unwrap();
+        // the address the label encodes is not the one stored beside it: no pin, DNS as before
+        assert_eq!(ResolvePin::for_origin(&v4, "192.168.0.11"), None);
+        assert_eq!(ResolvePin::for_origin(&v4, ""), None);
+        assert_eq!(ResolvePin::for_origin(&v4, "nas.local"), None);
+        // plaintext never pins: the raw socket dials the literal it is given
+        let http = Origin::parse("http://192-168-0-10.h4sh.plex.direct:32400").unwrap();
+        assert_eq!(ResolvePin::for_origin(&http, "192.168.0.10"), None);
+        // a literal host has nothing to resolve
+        let lit = Origin::parse("https://192.168.0.10:32400").unwrap();
+        assert_eq!(ResolvePin::for_origin(&lit, "192.168.0.10"), None);
+        // a share's own hostname is not a plex.direct label
+        let name = Origin::parse("https://nas.example.net:31234").unwrap();
+        assert_eq!(ResolvePin::for_origin(&name, "203.0.113.9"), None);
+        // the abbreviated v6 spelling this repo's fixtures guessed is NOT what plex.tv sends
+        let abbrev = Origin::parse("https://2001-db8--1.h4sh.plex.direct:32400").unwrap();
+        assert_eq!(ResolvePin::for_origin(&abbrev, "2001:db8::1"), None);
+    }
+
+    #[test]
+    fn plex_direct_literal_decodes_only_the_documented_shapes() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert_eq!(plex_direct_literal("192-168-0-10.h4sh.plex.direct"), Some(ip("192.168.0.10")));
+        assert_eq!(
+            plex_direct_literal("2001-0db8-0000-0000-0000-0000-0000-0001.h4sh.plex.direct"),
+            Some(ip("2001:db8::1"))
+        );
+        assert_eq!(plex_direct_literal("fe80-0-0-0-1-2-3-4.h4sh.plex.direct"), Some(ip("fe80::1:2:3:4")));
+        for bad in [
+            "192-168-0-10.plex.direct",        // no hash label
+            "192-168-0-10.h4sh.x.plex.direct", // one label too many
+            "192-168-0-256.h4sh.plex.direct",  // not an octet
+            "192-168-0.h4sh.plex.direct",      // three groups
+            "2001-db8--1.h4sh.plex.direct",    // abbreviated
+            "192-168-0-10.h4sh.plex.tv",       // wrong zone
+            "nas.h4sh.plex.direct",            // a name
+            "192.168.0.10",
+            "",
+        ] {
+            assert_eq!(plex_direct_literal(bad), None, "{bad}");
+        }
     }
 }

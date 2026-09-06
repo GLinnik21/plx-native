@@ -1,0 +1,46 @@
+install: id=com.beb.plxnative.debug flavour=debug runtime=/tmp/com.beb.plxnative.debug features=release APPID_env=com.beb.plxnative.debug
+appdir: /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug (from current_exe)
+webos: webOS TV release=4.10.2 codename=goldilocks2-grampians api=4.1.0 major=4
+webos: model=m16p3 board=M19_DVB hw=BOARD_PT_1ST
+telemetry: answered=true errors=true usage=true id=yes errors_id=yes
+telemetry: env=development sentry=no posthog=no
+devcaps: hevc=true 4096x2176 vp9=true audio=aac,ac3,eac3 rows: h264=4096x2304@60 hevc=4096x2176@60 (device table)
+video driver: wayland
+surface: window=1920x1080 drawable=1920x1080 panel=3840x2160 logical=1920x1080 scale=1.000
+GL: Mali-T820 / OpenGL ES 3.2 v1.r12p0-04rel0.cb5901e2e52329f9302428bb2e5885c3
+egl: display=0x82e3a8 draw_surface=0x867228
+keyboard: support=1 active=0 focus=0 winflags=0x7
+FB bits: alpha=8 red=8 depth=0 stencil=0 (config alpha=8 depth=0 stencil=0)
+wm sdl=2.0.5 subsys=6 wl_surface=0x82d418 wl_display=0x828ee0 alpha=8
+init_text ok=1
+net: bound libcurl -> libcurl.so.5 (libcurl/7.53.1 OpenSSL/1.0.2p zlib/1.2.11 c-ares/1.12.0 nghttp2/1.26.0; AsynchDNS=yes); threaded-tls=true legacy-locks=Installed
+session protection: no usable key manager; using the 0600 file fallback
+plex: server slot 0 registered at https://<host> (pinned: v4 name resolved locally)
+plex: server slot 0 re-pointed to https://<host>
+plex: server slot 1 registered at https://<host> (pinned: v4 name resolved locally)
+auth: roster restored — 2 server(s) registered
+net: curl rc=7 — transport error
+pms: server 1 info unavailable (GET / failed) — subscription stays unknown
+boot: stored session — who's watching
+vplane: ACB (webOS 4.x)
+ptype=10
+acb create=1
+curlio: bound libcurl.so.5 curl_multi_* (7 symbols)
+ff: bound avutil -> libavutil-plx.so.61
+ff: bound avcodec -> libavcodec-plx.so.63
+ff: bound avformat -> libavformat-plx.so.63
+ff: no swscale (expected in a RELEASE build) — dev capture JPEG/MPEG1 off
+ff: avformat=63.1.100 avcodec=63.1.100 avutil=61.1.100
+coldstart: could not remove every obsolete last-page bookmark
+pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
+LIFECYCLE: foreground (wasPlaying=0)
+LIFECYCLE: foreground (wasPlaying=0)
+net: curl rc=28 — timed out
+auth: roster refresh — plex.tv unreachable, keeping the stored roster
+net: curl rc=28 — timed out
+auth: roster refresh failed — keeping cached roster
+net: curl rc=28 — timed out
+auth: switch '<name>' -> failed
+net: curl rc=28 — timed out
+auth: switch '<name>' -> failed
+font chain: Base /media/developer/apps/usr/palm/applications/com.beb.plxnative.debug/appfont.ttf codepoints=2853

@@ -589,6 +589,49 @@ which the linking section explains is load-bearing rather than tidy.
   beside it) is a device job nobody has done. NB a
   request occasionally fails through the proxy that succeeds direct (seen once on `POST /playQueues`)
   — confirm any new failure against a direct run before believing it.
+- **`tools/tv-session.sh wan off [TTL]|on|status` — cut the TELEVISION's uplink, LAN intact**
+  (2026-09-05). The offline-mode test condition, in two halves because the firmware has one tool
+  of the two (probed that day): a netfilter chain on the set's own OUTPUT (iptables 1.6, filter
+  table loaded) rejects every v4 packet not bound for the LAN and every DNS query, and — there
+  being NO `ip6_tables` module, so `ip6tables` cannot even open its filter table — an
+  `unreachable 2000::/3` route cuts public v6 while the on-link /64s keep LAN v6 and neighbour
+  discovery intact (more specific than either default route, so no metric contest; note that
+  the kernel maps an IPv6 route metric of 0 to 1024, which is why a metric trick was not the
+  answer). `off` proves both halves from the set's own tables or fails. `off` writes the restore script
+  ON the set and starts a watchdog there, so a dead harness or a sleeping Mac cannot leave the
+  household offline past the TTL; `on` restores at once. `tests/run.py` drives it from a case's
+  `"wan": "off"`, restores in the case's `finally` and again in `teardown()`. Two more case
+  attributes came with it: `"session": "stored"` boots from the install's OWN sign-in instead of
+  the injected token (the injected path installs a plaintext origin and never touches the
+  `plex.direct` name a real sign-in persists, so an offline case through it is a false pass by
+  construction; the case refuses when the install holds no sign-in), and `"primary_ipv6": true`
+  re-points the primary onto its IPv6 `plex.direct` origin read off plex.tv, with its `pin`.
+  `offline_play` and `offline_play_v6` are the cases, and `expect.resolve_pin` /
+  `expect.offline` are their assertions (the latter keyed on the slot the play was dispatched
+  on, requiring that slot's `hubs: source N ok`, with the negative control being any plex.tv
+  refusal the app logged OR — when a managed profile is active and the boot makes no plex.tv
+  call at all — the tool's own `resolve plex.tv -> FAIL` probe from the set; the former, for `v6`, also requires the v6
+  re-point line to PRECEDE the play start, since the scrubber turns every host into `<host>`
+  and the pin line itself names only the family — a dashed `plex.direct` label is a LAN
+  address spelled sideways and is never logged). Both PASSED on the dev build, real cut,
+  2026-09-05 (`docs/measurements/offline-wan-cut-tv-2026-09-05.log`). **The release build
+  cannot be a harness case** — `run.py` refuses a release binary and its key injection needs
+  the dev-only FIFO — so the store configuration is proven by hand: `make RELEASE=1
+  FLAVOR=debug deploy`, `tools/tv-session.sh wan off 900`, launch, pick the profile with the
+  physical remote, browse, play, then read `tv-session.sh log 'resolves|hubs: source|curl rc'`
+  and `wan on`. **Done 2026-09-06 by the owner, with the router's uplink really down — and it
+  FAILED at the picker**: the origin was pinned and the roster restored, but every profile pick
+  went to plex.tv's `/switch` and timed out (`docs/measurements/offline-picker-red-tv-2026-09-06.log`;
+  the active profile is the PIN-protected admin, which the one no-network shortcut excluded).
+  The fix caches each profile's credentials at its ONLINE seating (`Session::profiles`, a PIN as
+  a local verifier) and seats from that when plex.tv does not answer — `plex/CLAUDE.md` has the
+  mechanism, `offline_pick_cached` is the harness case (its `prime_online` step seats the tile
+  once with the link up, so the cache is the case's own doing), and the PIN half is proven on
+  the simulator (`offline-picker-sim-green-2026-09-06.log`) because the harness cannot type a
+  PIN it does not know. The by-hand release-build proof is owed AGAIN for the fixed build: it
+  was deployed to the debug install the same day and awaits the owner's next real cut. The
+  router-side alternative (Keenetic's per-client "No Internet access" policy) is manual and was
+  not needed.
 - `tools/sockprobe.c` — standalone ARM diagnostic (`make sockprobe`, scp, run, delete) for socket
   semantics **the host suite cannot answer**: `cargo test` runs on Darwin, the app on Linux, and
   they disagree. Measured 2026-07-28: on this kernel `shutdown(2)` **does** abort a `connect(2)`
@@ -1319,6 +1362,14 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first),
+  **`/tmp/plxnative-nowan[=slow]`** (the OFFLINE reproduction: every name that would have gone
+  to a resolver — plex.tv, discover, an UNPINNED `plex.direct` origin — fails as it does on a LAN
+  whose uplink is down, while a literal or a pinned name is untouched; `slow` first spends the
+  connect budget a dead resolver would have cost. It is how `plex::ResolvePin`, the fix that dials
+  the household's own `plex.direct` name at the address plex.tv advertised beside it, is shown red
+  and green on the simulator with a stored session; pair a `/tmp/plxnative-servers` entry's
+  `"scheme":"https"` with its new `"pin":"<address>"` field to put a pinned TLS origin through the
+  registry headlessly),
   `/tmp/plxnative-failtest[=verdict|audio|novideo|stream|connection|tv|none]` (force one
   variant of the full-screen **failure read-out** — the one screen that cannot be reached on
   purpose, since it needs a server that refuses, and the one most meant to be LOOKED at: it is

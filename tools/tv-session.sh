@@ -9,6 +9,8 @@
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
 #   tv-session.sh log [pattern]  fetch the on-device event log, optionally grepped
 #   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
+#   tv-session.sh wan off [TTL]|on|status
+#                                cut the TELEVISION's route to the internet, LAN intact (see below)
 #   tv-session.sh down           hand the TV back: strip automation, relaunch interactive
 #
 # Options (accepted before OR after the subcommand, because every one of them needs it):
@@ -805,8 +807,109 @@ cmd_screen() {
   fi
 }
 
+# ------------------------------------------------------------ the WAN cut ----
+# "Offline mode" is a household whose LAN is up and whose uplink is down. Nothing on a desk can
+# take the router's uplink away for ONE device deterministically, so this does it on the set
+# itself, in two halves because the firmware only has one of the two tools (probed 2026-09-05):
+#   * v4: a netfilter chain on OUTPUT (iptables 1.6, filter table loaded) REJECTS every packet
+#     not bound for the LAN, plus every DNS query anywhere — the router would otherwise still
+#     resolve `plex.direct` through its own uplink, which is the half of "offline" that matters;
+#   * v6: there is NO ip6tables filter table (`ip6_tables` is not in the kernel's modules), so
+#     the cut is an `unreachable 2000::/3` route — more specific than either default route, so
+#     no metric contest with connman's or the RA's, and less specific than the on-link /64s, so
+#     LAN v6 keeps routing and neighbour discovery is untouched. DNS is v4 here (connman's
+#     resolv.conf names the router's v4 address), so the v4 chain already covers it.
+# REJECT / unreachable rather than DROP, so a dead destination fails at once instead of burning a
+# connect budget: the case graded is "the app reaches the LAN server", not "how long a timeout takes".
+#
+# FAIL-SAFE BY CONSTRUCTION. `off` writes the restore script ON THE SET and starts a watchdog
+# there (`nohup sh -c 'sleep TTL; sh restore'`), so a harness that dies, a Mac that sleeps and an
+# ssh that drops all end with the television back online without anybody's help. `on` runs the
+# same restore and kills the watchdog. Idempotent both ways. The marker is outside the
+# `plxnative-*` prefix, like the lock, so it neither suppresses the picker nor gets swept.
+#
+# Two things this cannot claim, stated so nobody grades them from it: a REJECT is not what a
+# real router does with its uplink down (that is usually silence), and the jail's resolver view
+# is the app's business — read `net: curl rc=6` / `nowan` lines in the app's OWN log, never this
+# script's status, to say what the app saw.
+WAN_MARK=/tmp/plx-wan-off
+WAN_RESTORE=/tmp/plx-wan-restore.sh
+cmd_wan() {
+  local want="${1:-}" ttl="${2:-900}"
+  case "$want" in off|on|status) ;; *) echo "usage: tv-session.sh wan off [TTL_SECONDS]|on|status" >&2; exit 2 ;; esac
+  case "$ttl" in ''|*[!0-9]*) echo "wan off: TTL must be seconds" >&2; exit 2 ;; esac
+  if [ "$want" = status ]; then advise_lock "tv-session wan status"; else require_lock "tv-session wan $want"; fi
+  ensure_awake || exit 1
+  case "$want" in
+    off)
+      # The restore script FIRST, so a watchdog can never exist without the thing it runs.
+      tv "cat > $WAN_RESTORE" <<'RESTORE'
+#!/bin/sh
+# written by tools/tv-session.sh wan off — puts the television's uplink back
+while iptables -D OUTPUT -j PLXWAN 2>/dev/null; do :; done
+iptables -F PLXWAN 2>/dev/null; iptables -X PLXWAN 2>/dev/null
+while ip -6 route del unreachable 2000::/3 2>/dev/null; do :; done
+[ -f /tmp/plx-wan-off.wd ] && kill "$(cat /tmp/plx-wan-off.wd)" 2>/dev/null
+rm -f /tmp/plx-wan-off /tmp/plx-wan-off.wd
+RESTORE
+      if ! tv "sh -s $ttl" <<'CUT'
+set -e
+ttl="$1"
+sh /tmp/plx-wan-restore.sh >/dev/null 2>&1 || true   # idempotent: start from a clean chain
+lan4=$(ip -4 route show dev eth0 scope link | awk '/\// {print $1; exit}')
+iptables -N PLXWAN
+iptables -A PLXWAN -p udp --dport 53 -j REJECT
+iptables -A PLXWAN -p tcp --dport 53 -j REJECT
+iptables -A PLXWAN -d 127.0.0.0/8 -j ACCEPT
+[ -n "$lan4" ] && iptables -A PLXWAN -d "$lan4" -j ACCEPT
+iptables -A PLXWAN -d 224.0.0.0/4 -j ACCEPT
+iptables -A PLXWAN -j REJECT --reject-with icmp-net-unreachable
+# The watchdog BEFORE the hook: if anything after this line fails, the set still comes back.
+date +%s > /tmp/plx-wan-off
+nohup sh -c "sleep $ttl; sh /tmp/plx-wan-restore.sh" >/dev/null 2>&1 &
+echo $! > /tmp/plx-wan-off.wd
+iptables -I OUTPUT -j PLXWAN
+ip -6 route add unreachable 2000::/3
+# …and prove it took, from the set's own tables, or fail this command.
+[ "$(iptables -S OUTPUT | grep -c PLXWAN)" = 1 ] || { echo "v4 chain not hooked" >&2; exit 3; }
+ip -6 route show | grep -q '^unreachable 2000::/3' || { echo "v6 route not added" >&2; exit 3; }
+echo "lan4=$lan4 ttl=$ttl"
+CUT
+      then
+        bad "WAN cut FAILED on the television — restoring whatever half took"
+        tv "sh $WAN_RESTORE" >/dev/null 2>&1 || true
+        exit 1
+      fi
+      ok "WAN cut on the television (LAN + loopback open, DNS refused, public v6 unreachable); auto-restores in ${ttl}s"
+      cmd_wan status
+      ;;
+    on)
+      tv "[ -f $WAN_RESTORE ] && sh $WAN_RESTORE; while iptables -D OUTPUT -j PLXWAN 2>/dev/null; do :; done; iptables -F PLXWAN 2>/dev/null; iptables -X PLXWAN 2>/dev/null; while ip -6 route del unreachable 2000::/3 2>/dev/null; do :; done; rm -f $WAN_MARK $WAN_MARK.wd; true"
+      ok "WAN restored"
+      cmd_wan status
+      ;;
+    status)
+      local chain since pms
+      chain=$(tvq "iptables -S OUTPUT 2>/dev/null | grep -c PLXWAN; ip -6 route show 2>/dev/null | grep -c '^unreachable 2000::/3'" | tr '\n' '/')
+      since=$(tvq "cat $WAN_MARK 2>/dev/null")
+      if [ -n "$since" ]; then
+        info "WAN: CUT since epoch $since (v4 chain / v6 unreachable route armed: ${chain%/}); watchdog pid $(tvq "cat $WAN_MARK.wd 2>/dev/null")"
+      else
+        info "WAN: open (v4 chain / v6 unreachable route armed: ${chain%/})"
+      fi
+      # Measured from the SET, which is the only place the answer is about: the PMS on the Mac
+      # over the LAN, and a public name through the router's resolver. The PMS host comes from
+      # the gitignored config, when this checkout has one; a lane without it skips that line.
+      pms=${PMS_HOST:-$(sed -n 's/.*PMS_HOST *"\([^"]*\)".*/\1/p' "$REPO/src/config.local.h" 2>/dev/null)}
+      [ -n "$pms" ] && info "from the TV: LAN PMS /identity -> $(tvq "wget -q -T 5 -O - http://$pms:32400/identity >/dev/null 2>&1 && echo ok || echo FAIL")"
+      info "from the TV: resolve plex.tv -> $(tvq "nslookup plex.tv >/dev/null 2>&1 && echo ok || echo FAIL")"
+      ;;
+  esac
+}
+
 case "${1:-}" in
   selftest) cmd_selftest ;;
+  wan)    shift; cmd_wan "$@" ;;
   up)     shift; cmd_up "$@" ;;
   screen) shift; cmd_screen "$@" ;;
   status) shift; cmd_status ;;

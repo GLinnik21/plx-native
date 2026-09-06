@@ -29,7 +29,11 @@ const NAME_DY: f32 = RowStyle::PROFILES.h
     + RowStyle::PROFILES.h * (RowStyle::PROFILES.focus_scale - 1.0) * 0.5
     + theme::space::MD;
 const PIN_LEN: usize = 4;
-const FOOTER_Y: f32 = 780.0; // "Sign out" pill, below the roster/name/error band
+const FOOTER_Y: f32 = 780.0; // "Sign out" pill, below the roster/name band
+const FOOTER_H: f32 = 60.0;
+/// The switch-failure message's vertical centre: below the pill with a full `space::XL` of air,
+/// where the screen is otherwise empty. See the draw site for why it left the name band.
+const ERROR_Y: f32 = FOOTER_Y + FOOTER_H + theme::space::XL + theme::size::BODY as f32 * 0.5;
 
 // PIN pad geometry: the label, dots and keypad are ONE centered unit (they used three independent
 // hard-coded Ys, which left the whole block sitting low on the panel).
@@ -350,10 +354,16 @@ pub fn draw() {
 
     // a failed switch (wrong PIN, offline) drops the flow back here with an error — show it,
     // or the spinner just vanishes and the picker looks like it ignored the choice.
+    //
+    // **Under the Sign-out pill, not under the names.** It sat a name's height below the name
+    // band, which read as a third caption jammed into the roster (owner, 2026-09-06: the bottom
+    // of the screen looked crumpled). The roster keeps its names and nothing else; the message
+    // is a status line for the whole screen and takes the empty lower third, a full `space::XL`
+    // of air under the pill so it is not read as the pill's own caption.
     let err = auth::error();
     if !err.is_empty() && !s.pad.open && auth::phase() == Phase::Profiles {
         if let Ok(e) = CString::new(err) {
-            let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ROW_Y + sty.h + 96.0);
+            let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ERROR_Y);
             p.text(
                 e.as_ptr(),
                 SCR_W as f32 * 0.5,
@@ -513,7 +523,7 @@ fn pad_key_rect(r: usize, c: usize) -> Rect {
 fn footer_rect() -> Rect {
     let tw = crate::text::text_width(c"Sign out".as_ptr(), theme::size::BODY, 1);
     let w = tw + 76.0;
-    Rect::new((SCR_W - w) * 0.5, FOOTER_Y, w, 60.0)
+    Rect::new((SCR_W - w) * 0.5, FOOTER_Y, w, FOOTER_H)
 }
 
 /// The roster tile under the pointer (tile body or its name label; None in the gaps).
