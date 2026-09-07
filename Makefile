@@ -1092,6 +1092,7 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	python3 tools/test_tv_capture_bench.py
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
 	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
@@ -1378,6 +1379,13 @@ logmprobe: tools/logmprobe.c
 mali-hwcnt-probe: tools/mali-hwcnt-probe.c
 	$(CC) $(CFLAGS) -o pkg/mali-hwcnt-probe tools/mali-hwcnt-probe.c
 
+# tools/tv-capture-bench.c — staged, standalone probe for the firmware planes a hardware screen
+# recorder would consume. Runtime dlopen keeps DILE/GAL out of the application's DT_NEEDED set;
+# the probe is copied to /tmp by hand, run under the TV lock, then deleted.
+tv-capture-bench: tools/tv-capture-bench.c
+	@mkdir -p pkg
+	$(CC) $(CFLAGS) -o pkg/tv-capture-bench tools/tv-capture-bench.c -ldl -lrt
+
 # Passive /proc/interrupts sampler used as the middle, non-attributable layer of the opt-in
 # graphics profile. Standalone and temporary like the HWCNT probe; never an application payload.
 mali-irq-sample: tools/mali-irq-sample.c
@@ -1615,5 +1623,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

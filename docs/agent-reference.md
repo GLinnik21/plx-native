@@ -674,6 +674,19 @@ which the linking section explains is load-bearing rather than tidy.
   30-lattice case at 13.0 fps presented vs 24.1 with the rate declared correctly; and LG's `GST_DEBUG` was long avoided as perturbing, which is true of
   `dualsequencer:9` and **false of `:6`** (same scene, 123 misses uninstrumented vs 122 traced) —
   `:6` is the only per-frame cadence instrument this project has.
+- `tools/tv-capture-bench.c` — staged standalone ARM benchmark (`make tv-capture-bench`, scp, run,
+  delete) for a prospective hardware screen recorder. Its `vtm` mode measures the real rotating
+  video DMA-buffer cadence without mapping or copying the plane, `osd` times graphics-framebuffer
+  descriptor access, and `venc` feeds synthetic NV12 frames to the firmware H.264 encoder. Its
+  `stream` mode uses the source-video SCALER plane (DISPLAY advances but is blank here), maps each
+  `/dev/mem` Y/UV plane read-only, and serves firmware Annex-B H.264 over TCP. On the development TV
+  on 2026-09-07, a current YouTube picture reached the Mac as 300 decodable 1280x720 frames in 4.99 s
+  (60.08 fps, 6.74 Mbit/s; encode p95 12.22 ms, send p95 1.36 ms) without stopping playback. The TV
+  firewall refused a direct new LAN port, so that proof reached the probe's TCP listener through
+  an SSH local forward targeting the TV's loopback interface. The memory-input encoder rejected
+  every tested size above 1280x720, including
+  1920x1080. This benchmark therefore proves a 720p60 video-only path; it does **not** yet prove
+  full-plane OSD composition, audio, reconnect/backpressure policy, or a 1080p60 encoder path.
 - `tools/threadprobe.c` — standalone ARM diagnostic (`make threadprobe`, scp, run as root, delete):
   spawns under the app's uid until `pthread_create` refuses. Measured 2026-07-28 — **2 MB stacks
   die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on

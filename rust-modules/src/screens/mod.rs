@@ -17,3 +17,5 @@ pub(crate) mod legal;
 pub(crate) mod onboard;
 pub(crate) mod registry;
 pub(crate) mod settings;
+#[cfg(test)]
+pub(crate) mod profiles;
