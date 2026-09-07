@@ -1,9 +1,19 @@
-//! Rust port of src/posters.c — async poster/artwork texture store (posters.h).
-//! Same C ABI. Rewritten on std::sync instead of the C's pthread globals: a
-//! Mutex<Store> + Condvar + std::thread workers. The decoded-pixel pointer is
-//! stored as an address (usize) so the shared Store stays Send. GL calls
-//! (upload/delete) run only on the main thread (poster_pump / poster_get);
-//! workers only fetch (via the typed client) + decode (Rust img) off the lock.
+//! The application's SOURCE half of image caching (restructure spec §10): interning
+//! `(server, path, w, h, png)` into an opaque [`PosterKey`] (a slot index), the transcode request
+//! path and its token, the fetch + decode workers, the disk tier (`imgcache`), the prefetch gate
+//! and the slot LRU. It delivers a decoded image as `tex::PosterReady` and holds NO texture: GL
+//! residency is the library's [`crate::ui::tex::TexCache`], reached through `ui::tex`'s free
+//! functions, and the seam between the two halves is the key. The library never names this
+//! module; it sees it as the [`tex::Source`] installed at [`init`].
+//!
+//! A slot's lifecycle: EMPTY → WANT (claimed by a draw's miss or a prefetch) → LOADING (a worker
+//! fetches + decodes off the lock) → DECODED (pixels waiting on the main thread) → READY (the
+//! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE) or
+//! FAILED. A READY slot recycled by [`victim`] frees its cache entry on the way out.
+//!
+//! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
+//! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
+//! shared `Store` stays `Send`.
 //!
 //! ## Every entry point names a SERVER, and none of them assumes one
 //!
@@ -16,20 +26,22 @@
 //! `plex::current_server()`, at the call site, where it is visible.
 //!
 //! The server is a FIELD on the slot, not a prefix on the key, deliberately: keys already run
-//! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`poster_key`])
+//! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
 //! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
 //! cheaper half of the per-frame identity scan, so it goes first.
 use crate::img;
 use crate::plex::ServerId;
-use std::os::raw::{c_char, c_int, c_uchar, c_uint};
+use crate::ui::machine::PosterKey;
+use crate::ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
+use std::os::raw::{c_int, c_uchar, c_uint};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-// Per-frame GL-upload counters for the frame-drop detector (app.rs): each poster_pump upload is a
-// synchronous glTexImage2D on the main thread — the prime suspect for scroll judder. `take_upload_stats`
-// reads-and-resets (call once per frame).
+// Per-frame GL-upload counters for the frame-drop detector (app/run.rs): each upload the cache
+// performs through `GfxUploader` is a synchronous glTexImage2D on the main thread — the prime
+// suspect for scroll judder. `take_upload_stats` reads-and-resets (call once per frame).
 static UP_CT: AtomicU32 = AtomicU32::new(0);
 static UP_PX: AtomicU64 = AtomicU64::new(0);
 /// (uploads, total pixels) since the last call; resets both. Main-thread, once per frame.
@@ -72,7 +84,7 @@ const P_EMPTY: c_int = 0;
 const P_WANT: c_int = 1;
 const P_LOADING: c_int = 2;
 const P_DECODED: c_int = 3;
-const P_UPLOADING: c_int = 4;
+/// The pixels were handed to the render cache; whether they are UPLOADED yet is the cache's.
 const P_READY: c_int = 5;
 const P_FAILED: c_int = 6;
 
@@ -86,17 +98,8 @@ enum Touch {
     Warm,
 }
 
-/// What a [`poster_warm`] did — which is what lets a caller spend exactly ONE key per frame: a
-/// prefetch loop walks its candidates and stops at the first `Claimed`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Warm {
-    /// the store already holds this key (ready, failed, or in flight) — nothing was enqueued
-    Known,
-    /// a slot was claimed and the fetch enqueued — this frame's one prefetch is spent
-    Claimed,
-    /// every slot is in flight or evict-protected; try again on a later frame
-    Full,
-}
+// `Warm` — what a prefetch did — is the library's `ui::tex::Warm` now (re-exported through
+// the `use` above): the prefetch loops in `ui/` read it without naming this module.
 
 #[derive(Clone, Copy)]
 struct Pslot {
@@ -113,7 +116,6 @@ struct Pslot {
     /// 42/thumb/…` path (their rating keys are both server-local integers from 1), so a key alone
     /// names a slot only while there is one server.
     srv: ServerId,
-    tex: c_uint,
     pw: c_int,
     ph: c_int,
     px: usize, // decoded RGBA ptr as address (0 = none) — keeps Pslot Send
@@ -126,7 +128,6 @@ impl Pslot {
     const ZERO: Pslot = Pslot {
         key: [0; PT_KEYLEN],
         srv: ServerId::UNSET,
-        tex: 0,
         pw: 0,
         ph: 0,
         px: 0,
@@ -172,19 +173,6 @@ static CV: Condvar = Condvar::new();
 
 fn store() -> MutexGuard<'static, Store> {
     STORE.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-unsafe fn cstr(p: *const c_char) -> String {
-    if p.is_null() {
-        String::new()
-    } else {
-        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
-    }
-}
-
-/// delete a poster texture on the GL/main thread (gfx owns the GL bindings)
-fn gl_delete(t: c_uint) {
-    crate::gfx::delete_tex(t);
 }
 
 fn key_bytes(s: &Pslot) -> &[u8] {
@@ -264,93 +252,35 @@ fn reset_key_memo() {
     unsafe { *std::ptr::addr_of_mut!(KEY_MEMO) = None };
 }
 
-/// Build `srv`'s transcode request path (also the store key). png=1 -> transparent clearLogo.
-/// The path (and token) come from that server's own `image_transcode_path` — the one place that
-/// assembles a /photo/:/transcode request — so this stays the LRU key AND the fetch path.
+/// The built request path for `(srv, path, w, h, png)` — the store key — memoised. `None` for an
+/// unknown server, an empty path, or a path the slot array cannot hold ([`KEY_MAX`]: a path that
+/// cannot survive the round trip is worse than no path, since the stored key would never equal
+/// the probe that built it and every frame would claim a fresh slot and evict a real poster).
+/// MAIN thread; borrows the memo, so the key is consumed before the next call.
 ///
-/// ## `src_path` may be RELATIVE or ABSOLUTE, and both take this one route
-///
-/// Most art is a PMS-relative key (`/library/metadata/42/thumb/1778526065`). Search's `Directory[]`
-/// results are the exception: an `actor` row's `thumb` is an **absolute
-/// `https://metadata-static.plex.tv/…jpg`**, a different host entirely — and `stream.rs` has
-/// neither DNS nor TLS, so the app can never dial it. It does not have to. `image_transcode_path`
-/// percent-encodes whatever it is given into `url=` (`enc` is RFC3986-unreserved passthrough, so
-/// `:` and `/` both become `%XX`), the request still goes to our own PMS, and **the server does
-/// the TLS on our behalf**. Verified live against PMS 1.43.3 (2026-08-14): a headshot URL encoded
-/// into `url=` answers `200 image/jpeg`, exactly the requested 300×300. `docs/pms-api.md` §2 says
-/// the same thing about the detail page's cast row and adds the rule this doc is here to keep —
-/// **never invent another image route for them**. There is deliberately no second code path: the
-/// two shapes differ only in how long the encoded value is.
-///
-/// ## Three sources get an EMPTY key, which every store entry point reads as "nothing to fetch"
-///
-/// The alternative is a claimed slot for a request that can never resolve — a tile that stays a
-/// skeleton forever while holding one of [`PT_CAP`].
-///
-///  * **A server the registry does not know**: no address to dial, no token to sign with.
-///  * **An empty `src_path`**, which used to fall through and build a fetchable-LOOKING
-///    `…&url=&X-Plex-Token=…`. This server answers that **404 `text/html`** (measured), so each one
-///    burnt a slot as `P_FAILED` until the LRU walked back to it. A rarity worth ignoring while
-///    every caller was `ui::widgets::resolve_tex_on`, which refuses an empty path at the call site
-///    — but SEARCH makes it the normal case for a WHOLE SHELF, because a `/hubs/search`
-///    `collection` row carries no `thumb` at all (nor a `ratingKey` — see `search::TagHit::thumb`).
-///  * **A built path longer than a slot can key** (see [`KEY_MAX`]) — the cliff absolute URLs
-///    brought within sight, and the worst of the three if it is let through. [`is_fetchable`]
-///    re-checks this at [`lookup`], which is where the array actually lives.
-///
-/// ## The INPUT end is not gated, and today that is arithmetic rather than design
-///
-/// `ui::widgets::tex_key` copies `src_path` into a 256-byte stack buffer before this ever sees it,
-/// and `cbuf::set_bytes` TRUNCATES rather than refusing — so two absolute URLs sharing a 255-byte
-/// prefix would collapse to one memo entry and one key. Nothing catches that; it is unreachable
-/// only because a 255-byte source encodes to at least 255 bytes, which plus ~88 of fixed request
-/// and token always exceeds [`KEY_MAX`], so the gate below refuses both. Shrink the fixed
-/// overhead, shorten the token or raise [`PT_KEYLEN`] and two people's headshots start resolving
-/// to one slot. If any of those three moves, gate the source at `tex_key` too.
-pub(crate) fn poster_key(
-    srv: ServerId,
-    dst: *mut c_char,
-    cap: usize,
-    src_path: *const c_char,
-    w: c_int,
-    h: c_int,
-    png: c_int,
-) {
-    if dst.is_null() || cap == 0 {
-        return;
+/// Headroom today, worth stating so a future shape can be judged against it: a headshot key
+/// measures ~177 bytes of the 255 (54 fixed + 89 encoded URL + 34 of token), an ordinary relative
+/// thumb ~140.
+fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option<&'static str> {
+    if path.is_empty() {
+        return None;
     }
-    let Some(c) = crate::plex::client_for(srv) else {
-        unsafe { crate::cbuf::set(dst, cap, "") };
-        return;
-    };
-    unsafe {
-        let path = cstr(src_path);
-        if path.is_empty() {
-            crate::cbuf::set(dst, cap, "");
-            return;
-        }
-        let memo = (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo {
+    let c = crate::plex::client_for(srv)?;
+    // SAFETY: main-thread only (every caller is a draw path), and the borrow is consumed by the
+    // caller before the memo can be touched again; the `'static` is that discipline, not a fact.
+    let memo = unsafe {
+        (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo {
             map: std::collections::HashMap::new(),
-        });
-        let s = memo.get_or_build(srv.raw(), &path, w, h, png != 0, c.token_gen(), || {
-            c.image_transcode_path(&path, w as i64, h as i64, png != 0)
-        });
-        // A path that cannot survive the round trip is worse than no path: whichever end truncates
-        // it, the stored key never equals the probe that built it, and every frame claims a fresh
-        // slot and evicts a real poster. Refusing hands back the same skeleton an unknown server
-        // gets. TWO ceilings, because there are two arrays and they are not the same size —
-        // [`KEY_MAX`], what a slot can hold, and the CALLER's `cap`, which `cbuf::set` truncates
-        // to `cap - 1`. `is_fetchable` re-checks the first at `lookup` for keys built by any other
-        // route; only here is `cap` in scope. Headroom today is comfortable, and worth stating so
-        // a future shape can be judged against it: a headshot key measures ~177 bytes of the 255
-        // (54 fixed + 89 encoded URL + 34 of token), an ordinary relative thumb ~140, and both
-        // callers pass a 352-byte buffer.
-        let fits = s.len() <= KEY_MAX && s.len() < cap;
-        if !fits {
-            warn_key_refused(s.len(), cap);
-        }
-        crate::cbuf::set(dst, cap, if fits { s } else { "" });
+        })
+    };
+    let s = memo.get_or_build(srv.raw(), path, w, h, png, c.token_gen(), || {
+        c.image_transcode_path(path, w as i64, h as i64, png)
+    });
+    if s.len() > KEY_MAX {
+        warn_key_refused(s.len());
+        return None;
     }
+    Some(s)
 }
 
 /// A refused key logs ONCE per process, with both ceilings and the length that missed them.
@@ -360,11 +290,11 @@ pub(crate) fn poster_key(
 /// is the failure `paths.rs` was fixed for (a font fell through to DroidSans while `init_text`
 /// still logged `ok=1`), and a silent refusal here is a tile that is a skeleton forever with
 /// nothing in the one file an issue report is asked for. Once is enough to name the cause.
-fn warn_key_refused(len: usize, cap: usize) {
+fn warn_key_refused(len: usize) {
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, Ordering::Relaxed) {
         crate::log(&format!(
-            "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}, caller buffer {cap}) - tile stays a skeleton"
+            "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}) - tile stays a skeleton"
         ));
     }
 }
@@ -380,37 +310,26 @@ const LOGO_REQ_H: c_int = 240;
 /// the PREFETCH must warm the exact key the draw will later resolve — `(server, path, w, h, png)`
 /// IS the store key, so a warm at a different size (or against a different server) is a different
 /// slot and buys nothing. `None` for an item with no ratingKey.
-fn logo_key(srv: ServerId, rk: &str) -> Option<[u8; 352]> {
+fn logo_key(srv: ServerId, rk: &str) -> Option<&'static str> {
     if rk.is_empty() {
         return None;
     }
-    let lpath = std::ffi::CString::new(format!("/library/metadata/{rk}/clearLogo")).ok()?;
-    let mut key = [0u8; 352];
-    poster_key(
-        srv,
-        key.as_mut_ptr() as *mut c_char,
-        key.len(),
-        lpath.as_ptr(),
-        LOGO_REQ_W,
-        LOGO_REQ_H,
-        1,
-    );
-    Some(key)
+    built_key(srv, &format!("/library/metadata/{rk}/clearLogo"), LOGO_REQ_W, LOGO_REQ_H, true)
 }
 
 /// The prefetch twin of [`logo_src`] — starts the same fetch, takes no texture and no LRU
 /// protection. A hero page whose logo misses draws its title as HERO TEXT and then pops to the
 /// logotype the moment it lands; warming kills that pop the same way it kills the backdrop's.
-pub(crate) fn logo_warm(srv: ServerId, rk: &str) -> Warm {
+fn logo_warm(srv: ServerId, rk: &str) -> Warm {
     logo_key(srv, rk)
-        .map(|k| poster_warm(srv, k.as_ptr() as *const c_char))
+        .map(|k| lookup(srv, k, Touch::Warm).1)
         .unwrap_or(Warm::Known)
 }
 
-/// Resolve an item's clearLogo (transparent PNG) to a GL texture plus its TRUE PIXEL SIZE.
-/// `Some((tex, px_w, px_h))` once loaded; `None` while pending OR when the item has no logo (the
-/// store cannot tell those two apart — which is why the text→logo swap is still a cut, see
-/// [`crate::ui::hero_logo`]).
+/// An item's clearLogo (transparent PNG) as a cache key once its pixels are in — `None` while
+/// pending OR when the item has no logo (the store cannot tell those two apart — which is why the
+/// text→logo swap is still a cut, see [`crate::ui::hero_logo`]). `ui::tex::logo_src` adds the
+/// texture and its TRUE PIXEL SIZE.
 ///
 /// The ONE clearLogo resolve (home hero, detail hero, detail compact title all draw through it).
 /// How big it is DRAWN is a UI decision and lives in [`crate::ui::hero_logo::fit`]: this layer used
@@ -419,13 +338,8 @@ pub(crate) fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 ///
 /// NB it claims a slot even for an item that HAS no logo — the 404 lands as `P_FAILED` and holds it
 /// — so every hero page costs two of the store's [`PT_CAP`] slots, backdrop plus logo.
-pub(crate) fn logo_src(srv: ServerId, rk: &str) -> Option<(c_uint, f32, f32)> {
-    let key = logo_key(srv, rk)?;
-    let (tex, lw, lh) = poster_get_wh(srv, key.as_ptr() as *const c_char);
-    if tex == 0 || lw <= 0 || lh <= 0 {
-        return None;
-    }
-    Some((tex, lw as f32, lh as f32))
+fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
+    lookup(srv, logo_key(srv, rk)?, Touch::Draw).0
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
@@ -457,11 +371,10 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     pick
 }
 
-/// What one store probe found: the READY texture and its DECODED pixel size, or `(0, 0, 0)` while
-/// the slot is empty, in flight, or failed. One answer rather than two calls because the size is
-/// free once the slot is in hand — and this is a per-frame path walked once per visible tile, so a
-/// second lock + 64-slot key scan just to read two ints is pure waste.
-type Hit = (c_uint, c_int, c_int);
+/// What one store probe found: the slot's key once its pixels have been handed to the render
+/// cache (READY), else `None` while the slot is empty, in flight, or failed. The texture and its
+/// decoded size are the cache's answer for that key.
+type Hit = Option<PosterKey>;
 
 /// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
 /// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
@@ -471,7 +384,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
     // next candidate instead of retiring this frame's one warm here.
     if !is_fetchable(key_s) {
-        return ((0, 0, 0), Warm::Known);
+        return (None, Warm::Known);
     }
     let mut g = store();
     // hit?
@@ -483,21 +396,16 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 g.slots[i].use_ = c;
                 g.slots[i].frame = f;
             }
-            let s = &g.slots[i];
-            let hit = if s.state == P_READY {
-                (s.tex, s.pw, s.ph)
-            } else {
-                (0, 0, 0)
-            };
+            let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
             return (hit, Warm::Known);
         }
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
         Some(i) => i,
-        None => return ((0, 0, 0), Warm::Full), // all visible: skip
+        None => return (None, Warm::Full), // all visible: skip
     };
-    let (old_tex, old_px) = (g.slots[idx].tex, g.slots[idx].px);
+    let (was_ready, old_px) = (g.slots[idx].state == P_READY, g.slots[idx].px);
     let (use_, frame) = match touch {
         Touch::Draw => {
             g.clock = g.clock.wrapping_add(1);
@@ -511,7 +419,6 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     };
     {
         let s = &mut g.slots[idx];
-        s.tex = 0;
         s.px = 0;
         s.gen = s.gen.wrapping_add(1);
         set_key(s, key_s);
@@ -523,59 +430,49 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.ph = 0;
     }
     drop(g);
-    // free the evicted resources off-lock (this is the GL/main thread)
-    if old_tex != 0 {
-        gl_delete(old_tex);
+    // free the evicted resources off-lock (this is the GL/main thread): the cache's texture for
+    // the recycled slot, and pixels a worker decoded that nobody drained
+    if was_ready {
+        tex::free(PosterKey(idx as u32), &mut GfxUploader);
     }
     if old_px != 0 {
         img::img_free(old_px as *mut c_uchar);
     }
     CV.notify_one();
-    ((0, 0, 0), Warm::Claimed)
+    (None, Warm::Claimed)
 }
 
-/// MAIN thread. READY texture for `srv`'s `key`, else 0 (claim a slot + enqueue fetch on miss).
-pub(crate) fn poster_get(srv: ServerId, key: *const c_char) -> c_uint {
-    poster_get_wh(srv, key).0
-}
+/// The [`tex::Source`] this module is to the library: one value, installed at [`init`].
+struct PosterSource;
+static SOURCE: PosterSource = PosterSource;
 
-/// [`poster_get`] plus the texture's DECODED pixel size — `(0, 0, 0)` until it is READY. Art that
-/// must be FIT or COVERED into its frame (a clearLogo, a hero backdrop) needs the source aspect, and
-/// the store is the only thing that knows it. Same one probe as `poster_get`: the size rides along.
-pub(crate) fn poster_get_wh(srv: ServerId, key: *const c_char) -> Hit {
-    if key.is_null() {
-        return (0, 0, 0);
+impl tex::Source for PosterSource {
+    fn probe(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Option<PosterKey> {
+        let srv = ServerId::from_raw(srv);
+        lookup(srv, built_key(srv, path, w, h, png)?, Touch::Draw).0
     }
-    let key_s = unsafe { cstr(key) };
-    if key_s.is_empty() {
-        return (0, 0, 0); // no path was built for this server — see [`poster_key`]
+    /// The prefetch: start the fetch, take no key, take no LRU protection. Two deliberate
+    /// differences from a draw's probe, and together they are why a prefetch can share a 64-slot
+    /// store with everything on screen: it never stamps `frame` (no evict-protection) and never
+    /// bumps `use_` (LRU age 0, permanently the first victim). A key that cannot be built answers
+    /// `Known`, so a prefetch loop walks on to the next candidate instead of retiring this
+    /// frame's one warm on a key that can never resolve.
+    fn warm(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
+        let srv = ServerId::from_raw(srv);
+        match built_key(srv, path, w, h, png) {
+            Some(k) => lookup(srv, k, Touch::Warm).1,
+            None => Warm::Known,
+        }
     }
-    lookup(srv, &key_s, Touch::Draw).0
-}
-
-/// MAIN thread. Ensure `key` is being fetched WITHOUT drawing it — the prefetch path (the texture
-/// twin of `browse::want`). Returns what it did, never a texture, so no caller can accidentally draw
-/// a warmed slot and re-age it behind the store's back.
-///
-/// Two deliberate differences from [`poster_get`], and together they are why a prefetch can share a
-/// 64-slot store with everything on screen:
-///  * it never stamps `frame`, so a warmed slot carries NO evict-protection — a visible tile that
-///    misses on the very next frame takes the slot straight back;
-///  * it never bumps `use_`, so a warmed slot stays at LRU age 0, permanently the first victim.
-///
-/// Prefetched art is by construction the cheapest thing in the store to throw away.
-pub(crate) fn poster_warm(srv: ServerId, key: *const c_char) -> Warm {
-    if key.is_null() {
-        return Warm::Known;
+    fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey> {
+        logo_probe(ServerId::from_raw(srv), rk)
     }
-    let key_s = unsafe { cstr(key) };
-    if key_s.is_empty() {
-        // Nothing to enqueue and nothing spent: `Known` is what lets the caller's prefetch loop
-        // walk on to the next candidate instead of retiring this frame's one warm on a key that
-        // can never resolve.
-        return Warm::Known;
+    fn logo_warm(&self, srv: u16, rk: &str) -> Warm {
+        logo_warm(ServerId::from_raw(srv), rk)
     }
-    lookup(srv, &key_s, Touch::Warm).1
+    fn idle(&self) -> bool {
+        store_idle()
+    }
 }
 
 /// Pure half of [`store_idle`] — split so the gate is host-testable without mutating the store
@@ -596,7 +493,7 @@ fn idle_of(slots: &[Pslot; PT_CAP]) -> bool {
 /// on a frame where nothing else is outstanding.
 ///
 /// Cost: one 64-slot scan per frame under the mutex — the draw already does dozens.
-pub(crate) fn store_idle() -> bool {
+fn store_idle() -> bool {
     idle_of(&store().slots)
 }
 
@@ -605,62 +502,96 @@ pub(crate) fn store_idle() -> bool {
 // cover-fitted tile now costs exactly what a stretched one does. Both of its callers, `logo_src` and
 // `ui::widgets::resolve_tex_wh`, go through `poster_get_wh`.)
 
-/// MAIN/GL thread, once per frame BEFORE drawing. Uploads up to `budget` decoded slots.
-pub(crate) fn poster_pump(budget: c_int) {
-    {
-        let mut g = store();
-        g.frame = g.frame.wrapping_add(1); // new frame: nothing "touched" yet
-    }
-    for _ in 0..budget {
-        let (idx, px, w, h, gen) = {
-            let mut g = store();
-            let mut found = None;
-            for i in 0..PT_CAP {
-                if g.slots[i].state == P_DECODED {
-                    found = Some(i);
-                    break;
-                }
-            }
-            let idx = match found {
-                Some(i) => i,
-                None => break,
-            };
-            let s = &mut g.slots[idx];
-            let (px, w, h, gen) = (s.px, s.pw, s.ph, s.gen);
-            s.px = 0;
-            s.state = P_UPLOADING;
-            (idx, px, w, h, gen)
-        };
-        // GL upload off the lock (synchronous glTexImage2D — counted for the frame-drop detector)
-        let t = img::img_upload_rgba(px as *const c_uchar, w, h);
-        // ...and make it resident NOW rather than on the next draw that samples it — see
-        // `gfx::warm_tex` for the 116 ms frame this moves out of the draw.
-        crate::gfx::warm_tex(t);
-        UP_CT.fetch_add(1, Ordering::Relaxed);
-        UP_PX.fetch_add((w.max(0) as u64) * (h.max(0) as u64), Ordering::Relaxed);
-        img::img_free(px as *mut c_uchar);
+/// MAIN thread, once per frame, first: a new frame — nothing is "touched" yet (evict-protection
+/// is per frame, see [`victim`]).
+pub(crate) fn begin_frame() {
+    let mut g = store();
+    g.frame = g.frame.wrapping_add(1);
+}
 
-        let stale = {
+/// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
+/// DECODED hands its pixels to the render cache as one `PosterReady` and becomes READY. No GL
+/// here — the cache uploads in PREPARE ([`prepare`]). The pixels are copied once out of the
+/// decoder's C allocation into the owned `Decoded` (a 250x375 poster is ~375 KB, tens of
+/// microseconds) so the library owns what it uploads.
+pub(crate) fn drain_decoded() {
+    loop {
+        let (idx, px, w, h) = {
             let mut g = store();
-            let s = &mut g.slots[idx];
-            if s.gen == gen && s.state == P_UPLOADING {
-                s.tex = t;
-                s.state = if t != 0 { P_READY } else { P_FAILED };
-                0
-            } else {
-                t // slot recycled mid-upload: drop this texture
-            }
+            let Some(i) = (0..PT_CAP).find(|&i| g.slots[i].state == P_DECODED) else {
+                break;
+            };
+            let s = &mut g.slots[i];
+            let (px, w, h) = (s.px, s.pw, s.ph);
+            s.px = 0;
+            s.state = P_READY;
+            (i, px, w, h)
         };
-        if stale != 0 {
-            gl_delete(stale);
+        let key = PosterKey(idx as u32);
+        let result = if px != 0 && w > 0 && h > 0 && w <= u16::MAX as c_int && h <= u16::MAX as c_int {
+            let n = (w as usize) * (h as usize) * 4;
+            // SAFETY: the worker decoded exactly w*h RGBA bytes at `px` (img::img_decode_rgba's
+            // contract) and handed the pointer over under the lock; it is freed right below.
+            let rgba: Box<[u8]> = unsafe { std::slice::from_raw_parts(px as *const u8, n) }.into();
+            Ok(Decoded {
+                w: w as u16,
+                h: h as u16,
+                rgba,
+            })
         } else {
-            // A texture just landed on a screen that may have gone idle waiting for it. No spring
-            // reports this — the reveal spring is only armed once the tile SEES a texture — so the
-            // present gate has to be told, or the poster arrives invisibly and the shelf stays
-            // grey until the next keypress. (`ui::idle::invalidate` — see its call-site list.)
-            crate::ui::idle::invalidate();
+            Err(PosterError::Decode)
+        };
+        if px != 0 {
+            img::img_free(px as *mut c_uchar);
+        }
+        tex::accept(PosterReady { key, result });
+    }
+}
+
+/// The GL half behind the cache, on the main thread: `img::img_upload_rgba` (a synchronous
+/// glTexImage2D, counted for the frame-drop detector), `gfx::warm_tex` (resident NOW rather than
+/// on the next draw that samples it — see that fn for the 116 ms frame it moves out of the draw)
+/// and `gfx::delete_tex`.
+pub(crate) struct GfxUploader;
+
+impl Uploader for GfxUploader {
+    fn upload(&mut self, d: &Decoded) -> Tex {
+        let id = img::img_upload_rgba(d.rgba.as_ptr(), d.w as c_int, d.h as c_int);
+        UP_CT.fetch_add(1, Ordering::Relaxed);
+        UP_PX.fetch_add((d.w as u64) * (d.h as u64), Ordering::Relaxed);
+        Tex {
+            id,
+            w: d.w,
+            h: d.h,
         }
     }
+    fn warm(&mut self, t: Tex) {
+        if t.id != 0 {
+            crate::gfx::warm_tex(t.id);
+        }
+    }
+    fn free(&mut self, t: Tex) {
+        if t.id != 0 {
+            crate::gfx::delete_tex(t.id);
+        }
+    }
+}
+
+/// MAIN/GL thread, once per frame (§3.3 step 9): upload what the cache holds pending, under the
+/// frame budget's `Poster` class (3 per frame). A landed texture invalidates the present gate
+/// through the cache's own `Provenance::Resource` note — and, while `ui::idle` is still the
+/// product's gate, through `idle::invalidate` here: a texture lands on a screen that may have
+/// gone idle waiting for it, and no spring reports that.
+pub(crate) fn prepare(
+    b: &mut crate::ui::frame::Budget,
+    present: &mut crate::ui::machine::PresentHandle<'_>,
+    now_us: impl Fn() -> u64,
+) -> usize {
+    let n = tex::prepare(b, &mut GfxUploader, present, now_us);
+    if n > 0 {
+        crate::ui::idle::invalidate();
+    }
+    n
 }
 
 /// Why the worker got no bytes to decode. Three arms rather than one flag because they send the
@@ -905,7 +836,8 @@ fn poster_worker() {
 /// Spawn the poster workers. No config is threaded in: each request carries its own server
 /// (the slot's [`Pslot::srv`]), and the address behind it comes from the registry
 /// (`crate::plex::install` or a `register` must have run before a fetch can resolve).
-pub(crate) fn posters_init() {
+pub(crate) fn init() {
+    tex::install(&SOURCE);
     {
         let mut g = store();
         g.quit = false;
@@ -920,7 +852,7 @@ pub(crate) fn posters_init() {
     store().workers = handles;
 }
 
-pub(crate) fn posters_shutdown() {
+pub(crate) fn shutdown() {
     {
         let mut g = store();
         g.quit = true;
@@ -932,23 +864,21 @@ pub(crate) fn posters_shutdown() {
         // so an app exit against a stalled PMS waits out SO_RCVTIMEO here. Measured, not fixed.
         crate::task::join("poster", h);
     }
-    // free textures + pending decodes (main thread for GL); workers are joined
+    // free pending decodes, then every resident texture (main thread for GL); workers are joined
     let mut to_free = Vec::with_capacity(PT_CAP);
     {
         let mut g = store();
         for i in 0..PT_CAP {
-            to_free.push((g.slots[i].tex, g.slots[i].px));
+            to_free.push(g.slots[i].px);
             g.slots[i] = Pslot::ZERO;
         }
     }
-    for (tex, px) in to_free {
-        if tex != 0 {
-            gl_delete(tex);
-        }
+    for px in to_free {
         if px != 0 {
             img::img_free(px as *mut c_uchar);
         }
     }
+    tex::shutdown(&mut GfxUploader);
 }
 
 #[cfg(test)]
@@ -1005,22 +935,10 @@ mod tests {
         (Fresh(g), sid, tok)
     }
 
-    /// Build a key through the real [`poster_key`], into the same 352-byte buffer
-    /// `ui::widgets::tex_key` uses — so these grade the string a draw actually receives, not a
-    /// reimplementation of it.
+    /// Build a key through the real [`built_key`] — the same call `lookup` makes for a draw —
+    /// so these grade the string a draw actually receives, not a reimplementation of it.
     fn key_for(srv: ServerId, src: &str, w: c_int, h: c_int, png: c_int) -> String {
-        let src_c = std::ffi::CString::new(src).expect("test source paths carry no NUL");
-        let mut buf = [0u8; 352];
-        poster_key(
-            srv,
-            buf.as_mut_ptr() as *mut c_char,
-            buf.len(),
-            src_c.as_ptr(),
-            w,
-            h,
-            png,
-        );
-        String::from_utf8_lossy(crate::cbuf::as_bytes(&buf)).into_owned()
+        built_key(srv, src, w, h, png != 0).unwrap_or("").to_owned()
     }
 
     /// **Search's `Directory[]` half, and the reason this file needed no second image route.** An
@@ -1275,7 +1193,7 @@ mod tests {
     /// even REQUESTED, which is worse than one that arrives late. Pinned in code, not just in prose.
     #[test]
     fn an_in_flight_slot_is_never_evicted() {
-        for st in [P_WANT, P_LOADING, P_DECODED, P_UPLOADING] {
+        for st in [P_WANT, P_LOADING, P_DECODED] {
             let slots = [Pslot {
                 state: st,
                 use_: 0,

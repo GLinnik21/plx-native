@@ -204,6 +204,14 @@ pub struct Cx<'a, H: Host> {
 /// The dispatcher's reborrow of `App.present` for one step (§3.1, §4.4): `note` is its one method.
 pub struct PresentHandle<'p>(pub(super) &'p mut Present);
 
+impl<'p> PresentHandle<'p> {
+    /// The application's reborrow of its `Present` for one step (the dispatcher's, or the
+    /// legacy loop's around the render cache's prepare).
+    pub fn of(p: &'p mut Present) -> Self {
+        PresentHandle(p)
+    }
+}
+
 impl PresentHandle<'_> {
     pub fn note(&mut self, ev: PresentEvent) {
         self.0.note(ev);

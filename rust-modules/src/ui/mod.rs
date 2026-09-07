@@ -21,6 +21,8 @@ pub(crate) mod decision_alert;
 pub mod detail;
 pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
 pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine world, and its test stub
+pub(crate) mod geom; // RESTRUCTURE (spec §7.1): `Focusable` for the widgets — geometry IS `place`
+pub(crate) mod tile; // RESTRUCTURE (spec §10): the library's item abstraction for a shelf tile
 pub(crate) mod document_reader;
 pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
 pub mod fmt; // shared duration/clock display formatters
@@ -227,6 +229,13 @@ impl Rect {
         );
         Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
     }
+    /// The smallest rect holding both — a group's extent from its elements (`ui::geom`).
+    #[inline]
+    pub fn union(&self, o: Rect) -> Rect {
+        let (x0, y0) = (self.x.min(o.x), self.y.min(o.y));
+        let (x1, y1) = ((self.x + self.w).max(o.x + o.w), (self.y + self.h).max(o.y + o.h));
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -315,6 +324,15 @@ pub struct Painter {
     dy: f32,
     a: f32,
     rgb: f32,
+    /// The focus POP carried on the cascade (spec §7.6): a popped tile draws through
+    /// `scaled(s)` so the stop it registers is its popped rect. A value, never applied by the
+    /// primitives themselves — a screen still hands them the rect it computed (`Rect::scaled`),
+    /// and `DrawFrame::stop` folds this in.
+    scale: f32,
+    /// The clip carried on the cascade, in SCREEN space: what `clipped(r)` intersects and what
+    /// `DrawFrame::stop` clips a registered rect to. The GL scissor is set by `ClipScope`
+    /// (`DrawFrame::clip`), never implicitly by a primitive.
+    clip: Rect,
 }
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
 /// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
@@ -341,7 +359,42 @@ impl Painter {
             dy: 0.0,
             a: 1.0,
             rgb: 1.0,
+            scale: 1.0,
+            clip: Rect::FULL,
         }
+    }
+    /// Carry a focus pop on the cascade (multiplicative). See the `scale` field.
+    pub fn scaled(self, s: f32) -> Self {
+        Self {
+            scale: self.scale * s,
+            ..self
+        }
+    }
+    /// The accumulated pop.
+    pub fn scale(self) -> f32 {
+        self.scale
+    }
+    /// Narrow the cascade's clip to `r` (in this painter's space; the translate is folded in and
+    /// the result intersected with the clip already carried). A VALUE: it sets no scissor —
+    /// `DrawFrame::clip` opens the GL scope for it.
+    pub fn clipped(self, r: Rect) -> Self {
+        let screen = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        Self {
+            clip: self.clip.intersect(screen),
+            ..self
+        }
+    }
+    /// The cascade's clip, in screen space.
+    pub fn clip_rect(self) -> Rect {
+        self.clip
+    }
+    /// A rect in this painter's space, as the SCREEN rect it lands on with the cascade's
+    /// translate and pop folded in (the pop about the rect's centre, as `Rect::scaled` does) and
+    /// clipped to the cascade's clip — the one conversion the hit map records (spec §7.6).
+    pub fn to_screen(self, r: Rect) -> (Rect, Rect, Rect) {
+        let moved = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        let popped = if self.scale == 1.0 { moved } else { moved.scaled(self.scale) };
+        (popped, moved, self.clip)
     }
     pub fn alpha(self, m: f32) -> Self {
         Self {

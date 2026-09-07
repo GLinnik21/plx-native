@@ -157,7 +157,7 @@ fn clean(s: &str) -> String {
         .collect()
 }
 
-/// percent-encode into a String (Rust callers, e.g. posters::poster_key)
+/// percent-encode into a String (Rust callers, e.g. app::adapters::poster::built_key)
 pub(crate) fn urlenc_str(src: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(src.len());
@@ -2848,5 +2848,25 @@ mod tests {
             "catalog row 1 is ours (row 0 is theirs, watched later)"
         );
         reset();
+    }
+}
+
+/// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
+/// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.
+impl crate::ui::tile::Tile for PmsMovie {
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn poster(&self) -> Option<(u16, &str)> {
+        (!self.thumb.is_empty()).then_some((self.sid.raw(), self.thumb.as_str()))
+    }
+    fn progress(&self) -> Option<f32> {
+        self.resume_frac()
+    }
+    fn watched(&self) -> bool {
+        self.watched
+    }
+    fn unwatched(&self) -> bool {
+        self.unwatched
     }
 }

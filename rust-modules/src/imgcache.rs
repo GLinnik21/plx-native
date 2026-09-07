@@ -4,7 +4,7 @@
 //! ## Why it exists, and why only avatars
 //!
 //! Every image the app draws is fetched through the Plex server's `/photo/:/transcode` proxy and
-//! held in memory by `posters.rs` for the run. Posters, backdrops and hero art come from the
+//! held in memory by `app/adapters/poster.rs` for the run. Posters, backdrops and hero art come from the
 //! server itself, one hop away, and so load offline as they do online (`docs/shared-servers.md`,
 //! the offline section). Avatars do not: a profile's `thumb` is an absolute `https://plex.tv/users/
 //! …/avatar` URL that the SERVER fetches from plex.tv on the app's behalf, so with the uplink down
@@ -16,7 +16,7 @@
 //!
 //! ## How it is wired
 //!
-//! No caller names it. `posters.rs`'s worker classifies the key it is about to fetch
+//! No caller names it. `app/adapters/poster.rs`'s worker classifies the key it is about to fetch
 //! ([`classify`]: the built `/photo/:/transcode?…url=<encoded source>…` path is decoded and the
 //! source graded), and for a durable class **the file wins whenever there is one**; only a miss
 //! fetches, and the fetched bytes are written after they decode. The file key is a SHA-256 of

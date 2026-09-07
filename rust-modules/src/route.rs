@@ -6939,7 +6939,7 @@ pub(crate) fn pump_play() -> Option<i64> {
     // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
     // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
     // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
-    // evict-protection a draw takes (see `posters::poster_warm`). At the tile's OWN 480×270 —
+    // evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
     // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
     //
     // It sits HERE, in the once-a-frame pump, rather than inside `apply_plan`: that function's

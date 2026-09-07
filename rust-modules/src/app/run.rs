@@ -62,6 +62,7 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         let mut fr = Frame::begin();
         let fr = &mut fr;
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
+        app.budget.begin_frame(crate::diag::heartbeat::now_us());
         // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
@@ -126,7 +127,16 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, mt, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
-        crate::posters::poster_pump(3); // invalidates from inside, per texture installed
+        // The poster adapter's frame (spec §3.3 steps 3 and 9, on the legacy loop): a new frame
+        // for the slot LRU, every decoded image handed to the render cache, and the cache's
+        // upload step under the frame budget's Poster class. Kept before the present decision
+        // as `poster_pump(3)` was — a landed texture invalidates, so the frame presents.
+        super::adapters::poster::begin_frame();
+        super::adapters::poster::drain_decoded();
+        {
+            let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
+            super::adapters::poster::prepare(&mut app.budget, &mut ph, crate::diag::heartbeat::now_us);
+        }
 
         fr.player = matches!(app.route, Route::Player { .. });
         // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
@@ -3791,7 +3801,7 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
         // fast frame — it is an absent one, and `fps=` on the heartbeat is where it shows up.
         if fr.present {
             if let Some(line) = app.instr.frame_drop_line(&|| {
-                let (up, px) = crate::posters::take_upload_stats();
+                let (up, px) = super::adapters::poster::take_upload_stats();
                 let (cards, cards_off) = crate::gfx::take_card_stats();
                 format!(
                     "up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snap={:.2}",
@@ -3925,7 +3935,7 @@ pub(super) unsafe fn shutdown(mt: &crate::task::MainThread) {
     // paid, except now it is paid once at exit instead of on every BACK out of a movie.
     crate::route::drain_scrobble();
     crate::capture::shutdown();
-    crate::posters::posters_shutdown();
+    crate::app::adapters::poster::shutdown();
     SDL_Quit();
 }
 

@@ -535,7 +535,7 @@ pub(super) unsafe fn boot(
 
 
     // UI infra + poster workers always come up — the login/profiles screens use them too.
-    crate::posters::posters_init();
+    super::adapters::poster::init();
     crate::capture::init(); // dev live UI capture stream (no-op without /tmp/plxnative-capture)
     crate::ui::home::home_init();
     crate::ui::login::init();
@@ -1121,6 +1121,8 @@ pub(super) unsafe fn boot(
         measure_fault_logged: false,
         input: crate::ui::input::Input::new(),
         rec: super::recorder::Recplay::Off,
+        present: crate::ui::present::Present::new(),
+        budget: crate::ui::frame::Budget::new(),
         dev: DevFlags {
             detail_osc,
             home_osc,

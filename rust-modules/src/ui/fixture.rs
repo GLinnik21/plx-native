@@ -201,9 +201,10 @@ impl Part<FixtureHost> for FixtureRow {
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>, rect: Rect) {
         self.drawn += 1;
+        let p = f.painter;
         for i in 0..self.len as u32 {
             let r = Rect::new(rect.x + i as f32 * 200.0, rect.y, 180.0, 180.0);
-            f.stop(Stop {
+            f.stop(p, Stop {
                 key: FocusKey {
                     entry: self.entry,
                     elem: i,
@@ -260,6 +261,8 @@ pub struct FixtureScreen {
     pub state: FixtureState,
     row: FixtureRow,
 }
+
+crate::focusable_via_composed!(FixtureScreen, FixtureHost);
 
 impl Composed<FixtureHost> for FixtureScreen {
     fn layout(&self, _cx: &Cx<'_, FixtureHost>) -> Vec<(PartId, Rect)> {

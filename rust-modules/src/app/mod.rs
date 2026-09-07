@@ -110,6 +110,7 @@ extern "C" {
 // Phase 1a of the UI restructure split this file: everything above `plex_run` moved into the
 // submodules below as a PURE move (`pub(super)` widening only), glob-imported here so the
 // loop body reads exactly as before. `plex_run` itself is phase 1b.
+pub(crate) mod adapters;
 mod boot;
 pub(super) mod clock;
 mod recorder;
@@ -291,6 +292,11 @@ struct App {
     measure_fault_logged: bool,
     /// The recorder / replay driver (`plxnative-rec` / `plxnative-recplay`, spec §5.3/§5.5).
     rec: recorder::Recplay,
+    /// The present gate as a machine (spec §4.4). `ui::idle` is still the product's verdict on
+    /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
+    present: crate::ui::present::Present,
+    /// The frame budget (spec §8.1): the poster upload quota, spent by the render cache.
+    budget: crate::ui::frame::Budget,
 }
 
 /// The dev triggers read ONCE at boot and consulted by the loop (each is documented where it

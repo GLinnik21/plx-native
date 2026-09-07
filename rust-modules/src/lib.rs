@@ -45,7 +45,6 @@ mod person; // person/actor page data layer: the header handed in by the cast ro
 mod player; // buffer-feed video engine (was playback.c) — step 5
 mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
 mod pms;
-mod posters;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves

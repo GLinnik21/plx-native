@@ -377,6 +377,14 @@ impl TableView {
     /// Answers `None` for a header, a hairline, or a row scrolled out of the frame — all three are
     /// cases where there is nothing on screen to anchor to.
     pub fn row_rect(&self, frame: Rect, i: i32) -> Option<Rect> {
+        self.row_frame(frame, i)
+            .filter(|r| r.y + r.h > frame.y && r.y < frame.y + frame.h)
+    }
+
+    /// Row `i`'s frame under the live scroll WHETHER OR NOT it is inside the viewport — the one
+    /// walk [`row_rect`](Self::row_rect), [`hit_row`](Self::hit_row) and `ui::geom::Table::place`
+    /// share (spec §7.1). `None` for a header index, a separator, or an index out of range.
+    pub fn row_frame(&self, frame: Rect, i: i32) -> Option<Rect> {
         let top0 = frame.y + TOP_PAD;
         let scroll = self.scroll.pos;
         let mut out = None;
@@ -386,11 +394,34 @@ impl TableView {
             }
             let sy = top0 + cy - scroll;
             let h = self.rows_at(gi).height_in(self.tall_row_h());
-            if sy + h > frame.y && sy < frame.y + frame.h {
-                out = Some(Rect::new(frame.x + SIDE, sy, frame.w - 2.0 * SIDE, h));
-            }
+            out = Some(Rect::new(frame.x + SIDE, sy, frame.w - 2.0 * SIDE, h));
         });
         out
+    }
+
+    /// The next SELECTABLE row from `i` in direction `delta` (−1/+1; 0 answers `i` itself if
+    /// selectable), stepping over separators as `move_sel` does; `None` at the ends.
+    pub fn next_selectable(&self, i: i32, delta: i32) -> Option<i32> {
+        let n = self.n_rows();
+        if n == 0 || i < 0 || i >= n {
+            return None;
+        }
+        if delta == 0 {
+            return (!self.rows_at(i).sep).then_some(i);
+        }
+        let mut j = i + delta;
+        while j >= 0 && j < n {
+            if !self.rows_at(j).sep {
+                return Some(j);
+            }
+            j += delta;
+        }
+        None
+    }
+
+    /// The nearest selectable row to `i` (what `set_sections` and `move_sel` settle on).
+    pub fn settle(&self, i: i32) -> i32 {
+        self.settle_sel(i)
     }
     pub fn hit_row(&self, frame: Rect, mx: f32, my: f32) -> Option<i32> {
         if !frame.contains(mx, my) {

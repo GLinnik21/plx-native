@@ -436,25 +436,6 @@ fn frost_sweep() -> Option<f32> {
     None
 }
 
-/// Build `srv`'s transcode key for `path` on the stack. The ONE key builder the resolvers below
-/// share, so a warm and the draw that follows it can never name two different slots — `(server,
-/// path, w, h, png)` IS the store key. Per-frame hot path (every visible tile): the
-/// NUL-terminated copy `poster_key` wants is made on the stack, no heap alloc.
-fn tex_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> [u8; 352] {
-    let mut p = [0u8; 256];
-    crate::cbuf::set_bytes(&mut p, path);
-    let mut key = [0u8; 352];
-    crate::posters::poster_key(
-        srv,
-        key.as_mut_ptr() as *mut c_char,
-        key.len(),
-        p.as_ptr() as *const c_char,
-        w,
-        h,
-        png,
-    );
-    key
-}
 
 /// build the transcode key on the stack and resolve it to a GL texture (0 until loaded), for art
 /// on the server the user is browsing.
@@ -470,10 +451,7 @@ pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
 
 /// [`resolve_tex`] for art belonging to a NAMED server.
 pub(crate) fn resolve_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
-    if path.is_empty() {
-        return 0;
-    }
-    crate::posters::poster_get(srv, tex_key(srv, path, w, h, png).as_ptr() as *const c_char)
+    crate::ui::tex::resolve_on(srv.raw(), path, w, h, png != 0)
 }
 
 /// [`resolve_tex_on`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is
@@ -493,17 +471,11 @@ pub(crate) fn resolve_tex_wh_on(
     h: c_int,
     png: c_int,
 ) -> (u32, f32, f32) {
-    if path.is_empty() {
-        return (0, 0.0, 0.0);
-    }
-    let key = tex_key(srv, path, w, h, png);
-    let (tex, pw, ph) = crate::posters::poster_get_wh(srv, key.as_ptr() as *const c_char);
-    (tex, pw as f32, ph as f32)
+    crate::ui::tex::resolve_wh_on(srv.raw(), path, w, h, png != 0)
 }
 
-/// The prefetch twin of [`resolve_tex_on`]: build the same transcode key and hand it to
-/// [`posters::poster_warm`](crate::posters::poster_warm) — start the fetch, take no texture, take no
-/// LRU protection. Same arguments on purpose, so a screen warms EXACTLY the key it will later
+/// The prefetch twin of [`resolve_tex_on`]: the same key through `ui::tex::warm_on` — start the
+/// fetch, take no texture, take no LRU protection. Same arguments on purpose, so a screen warms EXACTLY the key it will later
 /// resolve; a warm at a different size — or on a different server — is a different slot and buys
 /// nothing.
 pub(crate) fn warm_tex_on(
@@ -512,12 +484,8 @@ pub(crate) fn warm_tex_on(
     w: c_int,
     h: c_int,
     png: c_int,
-) -> crate::posters::Warm {
-    if path.is_empty() {
-        return crate::posters::Warm::Known;
-    }
-    let key = tex_key(srv, path, w, h, png);
-    crate::posters::poster_warm(srv, key.as_ptr() as *const c_char)
+) -> crate::ui::tex::Warm {
+    crate::ui::tex::warm_on(srv.raw(), path, w, h, png != 0)
 }
 
 /// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any
@@ -971,11 +939,11 @@ pub(crate) enum PosterMark {
 /// stands, which a poster in a grid is not the place for. **That is this function's rule and not the
 /// enum's** — a MENU asking which verbs are reachable gets a different answer for the same show, and
 /// asks [`row_watch_state`] instead.
-pub(crate) fn poster_mark(m: &PmsMovie) -> PosterMark {
-    if m.resume_frac().is_some() {
+pub(crate) fn poster_mark<T: crate::ui::tile::Tile + ?Sized>(m: &T) -> PosterMark {
+    if m.progress().is_some() {
         return PosterMark::InProgress;
     }
-    if m.watched {
+    if m.watched() {
         PosterMark::Watched
     } else {
         PosterMark::None
@@ -1004,8 +972,8 @@ pub(crate) fn poster_mark(m: &PmsMovie) -> PosterMark {
 ///
 /// Leaves are delegated rather than re-derived, so the resume-point edge cases (`resume_frac`'s "at
 /// or past the end is finished, not in progress") stay in one place.
-pub(crate) fn row_watch_state(m: &PmsMovie) -> PosterMark {
-    if !m.unwatched && !m.watched {
+pub(crate) fn row_watch_state<T: crate::ui::tile::Tile + ?Sized>(m: &T) -> PosterMark {
+    if !m.unwatched() && !m.watched() {
         return PosterMark::InProgress;
     }
     poster_mark(m)
@@ -4890,6 +4858,12 @@ const K_TAB_SCROLL: f32 = 240.0;
 /// telling the same story: a pill scrolled out of the track has zero width here, so it is neither
 /// drawn nor clickable, and a half-visible one is clickable exactly across the half you can see.
 static mut PILL_RECTS: Vec<Rect> = Vec::new();
+
+/// The strip's pill rects as last DRAWN, in screen space — what `ui::geom::TabRow` places by
+/// until the pills come from `Cx` (spec §10). Main thread; a copy, so no borrow outlives a draw.
+pub(crate) fn tab_pill_rects() -> Vec<Rect> {
+    unsafe { (*std::ptr::addr_of!(PILL_RECTS)).clone() }
+}
 /// Horizontal scroll of the strip inside its track; 0 whenever the whole row fits.
 static mut TAB_SCROLL: crate::ui::Spring = crate::ui::Spring::at(0.0);
 /// The top row's travelling capsules ([`TabStrip`]). A static for the same reason [`TAB_SCROLL`] is

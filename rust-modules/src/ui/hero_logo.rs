@@ -2,7 +2,7 @@
 //!
 //! Three screens draw an item's clearLogo with a text title behind it: the home hero, the detail
 //! hero, and the detail page's pinned compact title. They used to pass their own literal bounds to
-//! `posters::logo_tex` (660×96 / 680×120 / ∞×54), which made the same mark three sizes in one app —
+//! `the old poster store's `logo_tex`` (660×96 / 680×120 / ∞×54), which made the same mark three sizes in one app —
 //! and, because every one of those boxes is far wider than it is tall, made all three a pure HEIGHT
 //! clamp. Under a height clamp the drawn area is linear in aspect, so a 5:1 wordmark covered five
 //! times the ink of a 1:1 emblem and square logos read as an afterthought.
@@ -20,7 +20,7 @@
 //! clearance that matters there is the top chrome's (`widgets::TOP_BAR_BOTTOM`), asserted in
 //! `home.rs`'s `the_home_hero_logo_never_reaches_the_top_bar`.
 //!
-//! There is deliberately no fade-in behind the text→logo swap: `posters::logo_src` answers `None`
+//! There is deliberately no fade-in behind the text→logo swap: `ui::tex::logo_src` answers `None`
 //! both while the fetch is pending AND when the item simply has no clearLogo, so a cross-fade would
 //! need the store to distinguish `P_FAILED`/absent from `P_WANT`/`P_LOADING` first. The swap is a
 //! cut, but nothing around it MOVES, which is the part that used to read as a glitch.
@@ -76,7 +76,7 @@ pub fn band_h(rung: LogoRung) -> f32 {
 /// break the floor, because drawing past the column is never acceptable and drawing short is.
 pub fn fit(rung: LogoRung, src_w: f32, src_h: f32, col_w: f32) -> (f32, f32) {
     let (area, h_min, h_max, _) = rung.bounds();
-    // A degenerate source has no aspect to solve for. `posters::logo_src` already rejects one, but
+    // A degenerate source has no aspect to solve for. `ui::tex::logo_src` already rejects one, but
     // `fit` is public and a 0.0/0.0 would propagate a NaN into a `Rect` — which blanks the band
     // silently rather than crashing, i.e. is invisible until someone looks at a television.
     if !(src_w > 0.0) || !(src_h > 0.0) {
@@ -147,7 +147,7 @@ impl<'a> HeroLogo<'a> {
         // The hero draws the item the shelf under it has focused, and that shelf is the server
         // being browsed — so its clearLogo is asked of the current server. An item that came from
         // somewhere else (a merged Continue Watching row) names its own, once items carry one.
-        if let Some((tex, sw, sh)) = crate::posters::logo_src(self.sid, self.rk) {
+        if let Some((tex, sw, sh)) = crate::ui::tex::logo_src(self.sid.raw(), self.rk) {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             // NOT pixel-snapped: a logo is SCALED content, and the crispness contract snaps
             // 1:1-texel content only (see the note above `theme.rs`'s size ladder).
@@ -176,7 +176,7 @@ mod tests {
     // `fit`/`place`/`band_h` are pure f32 arithmetic over their arguments — no GL, no SDL_ttf, no
     // crate globals — so unlike `ui/home.rs`'s tests these are ordinary parallel ones, needing
     // neither `testlock::serial()` nor a module mutex. Everything downstream (`HeroLogo::draw` →
-    // `posters::logo_src` + `text::elide`) is deliberately NOT tested here: it reaches GL and the
+    // `ui::tex::logo_src` + `text::elide`) is deliberately NOT tested here: it reaches GL and the
     // font, and `text_cap_band`'s host fallback would measure the fallback rather than the device
     // font, which is worse than no test.
 

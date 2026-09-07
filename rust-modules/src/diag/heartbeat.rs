@@ -45,6 +45,16 @@ pub(crate) enum Phase {
     Swap = 8,
 }
 
+/// Microseconds on the performance counter — the frame budget's clock (`ui::frame::Budget`).
+pub(crate) fn now_us() -> u64 {
+    // SAFETY: SDL is initialised before the loop; no arguments, no memory of ours.
+    let (t, f) = unsafe { (SDL_GetPerformanceCounter(), SDL_GetPerformanceFrequency()) };
+    if f == 0 {
+        return 0;
+    }
+    t / (f / 1_000_000).max(1)
+}
+
 pub(crate) struct Instruments {
     armed: bool,
     thresh_ms: f64,

@@ -94,7 +94,7 @@ instead of adding a second one for the same machine.
 
 Three design choices carry the weight, and each is a prevented bug rather than a preference:
 
-- **An atomic-pointer table, not an `RwLock`.** `client()` is a HOT path: `posters::poster_key`
+- **An atomic-pointer table, not an `RwLock`.** `client()` is a HOT path: `app::adapters::poster::built_key`
   calls it **three times per key, for every visible art tile, every frame** (~25–40 tiles × 60 fps).
   A read is one relaxed load, one acquire load, a deref — no lock, no refcount, no allocation. An
   `RwLock` would add an atomic RMW pair per call plus a fairness stall every time a login writes,
@@ -108,7 +108,7 @@ Three design choices carry the weight, and each is a prevented bug rather than a
   server switch, never per frame.
 - **Token generations come from a process-global sequence, so no two clients ever share one.**
   `token_gen` was a single process-wide counter, which cannot express "server B's token changed".
-  Its only reader is `posters::poster_key`'s memo and that memo compares **one number** — so two
+  Its only reader is `app::adapters::poster::built_key`'s memo and that memo compares **one number** — so two
   servers whose generations happened to agree would mean that the moment `client()` started
   answering with B, the memo said nothing had changed and served B its cards from **A's memoised,
   token-bearing paths**. Uniqueness makes "did this number move" also answer "is this even the same

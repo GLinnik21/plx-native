@@ -117,7 +117,7 @@ pub struct Client {
     pub(super) version: String,   // "0.1.0"
     pub(super) platform: String,  // "webOS"
     // Token generation, PER SERVER. Bumped by `set_token`; read by caches keyed on a path that
-    // bakes the token in (`posters::poster_key`'s memo). This used to be a process-global
+    // bakes the token in (`app::adapters::poster::built_key`'s memo). This used to be a process-global
     // `static TOKEN_GEN`, which cannot express "server B's token changed" — with a registry that
     // would flush every server's cache on any server's profile switch, and (worse) would say
     // NOTHING changed when the CURRENT server switched from A to B, handing B's requests A's
@@ -302,7 +302,7 @@ impl Client {
     }
     /// Token generation for THIS server — moved by [`Client::set_token`]; caches keyed on paths
     /// that embed the token compare this to know when to flush. Signature unchanged from the
-    /// process-global era on purpose: `posters.rs` reads it through `client()` and must keep
+    /// process-global era on purpose: `app/adapters/poster.rs` reads it through `client()` and must keep
     /// compiling untouched.
     pub fn token_gen(&self) -> u32 {
         self.token_gen.load(Relaxed)
@@ -534,7 +534,7 @@ impl Client {
     /// there, the built `/photo/:/transcode?…&X-Plex-Token=…` path *is* the LRU key, so the key
     /// and the request must be the same bytes. Routing it through [`Client::get_bytes`] would
     /// append a second token — a URL with two `X-Plex-Token` params, whose meaning is the
-    /// server's business and not ours. `pub(crate)` because `posters.rs` lives outside this
+    /// server's business and not ours. `pub(crate)` because `app/adapters/poster.rs` lives outside this
     /// module tree; it exists so that file stops calling `crate::stream` behind this layer's
     /// back, which is what the module doc above has always claimed nothing does.
     ///
@@ -904,7 +904,7 @@ mod tests {
     }
 
     /// The token generation is per-CLIENT (it was a process-global `TOKEN_GEN`). Two properties
-    /// matter to `posters::poster_key`'s token-baked memo, which is the only reader: a swap must
+    /// matter to `app::adapters::poster::built_key`'s token-baked memo, which is the only reader: a swap must
     /// MOVE this server's number and no other's, and two servers must never share a value — the
     /// memo compares one number, so identical generations across servers would let server B be
     /// served server A's memoised, token-bearing paths.

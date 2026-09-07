@@ -131,8 +131,8 @@ const HERO_SLIDE_REST_PX: f32 = 0.5;
 ///    be 16, for pages nobody is about to look at.
 ///
 /// **Raising this is the one knob here that can hurt**, and not through eviction: `P_WANT`/
-/// `P_LOADING`/`P_DECODED` slots are never victims ([`crate::posters::store_idle`]'s doc and
-/// `posters::victim`), so enough in-flight warms make a `poster_get` for a poster the user is
+/// `P_LOADING`/`P_DECODED` slots are never victims (`adapters::poster::store_idle`'s doc and
+/// `app::adapters::poster::victim`), so enough in-flight warms make a a draw's probe for a poster the user is
 /// LOOKING AT fall through to "all visible: skip" and return 0 — a tile that is never even
 /// requested, which is worse than one that arrives late. The same paragraph is why
 /// [`prefetch_hero_neighbours`] issues at most one key per frame from an idle store; drop either
@@ -967,7 +967,7 @@ fn prefetch_order(cur: c_int, n: c_int, out: &mut [c_int; 2 * HERO_PREFETCH]) ->
 /// texture store or a live pool (the `status_takes` idiom).
 ///
 /// The store's own "am I idle" half is deliberately NOT a parameter: Rust evaluates arguments
-/// eagerly, so passing it in meant `posters::store_idle` — a store-mutex lock and a 64-slot scan —
+/// eagerly, so passing it in meant `app::adapters::poster::store_idle` — a store-mutex lock and a 64-slot scan —
 /// ran on every Home frame including the whole grid scene, where `sp` alone had already settled the
 /// answer. The caller `&&`s the two, so the cheap test short-circuits the expensive one.
 fn prefetch_armed(sp: f32, sliding: bool) -> bool {
@@ -982,7 +982,7 @@ fn prefetch_armed(sp: f32, sliding: bool) -> bool {
 /// It issues at most ONE key per frame, from an otherwise idle store. Both halves are load-bearing:
 ///  * the idle gate is the only way to stay off the critical path, because `poster_worker` has no
 ///    priority — it claims the first `P_WANT` slot BY SLOT INDEX, and indices are handed out
-///    arbitrarily (see [`crate::posters::store_idle`]);
+///    arbitrarily (see `adapters::poster::store_idle`);
 ///  * one key per frame caps the race that remains (a tile that misses the frame after a warm went
 ///    out): the two workers hold at most one prefetch, so the worst a visible poster can queue behind
 ///    is a single fetch, never a batch of four.
@@ -991,10 +991,10 @@ fn prefetch_armed(sp: f32, sliding: bool) -> bool {
 /// the 8-second auto-flip. On a server slow enough that the store is never idle the prefetch simply
 /// never fires and the screen degrades to exactly the old behaviour, which is the right degradation.
 fn prefetch_hero_neighbours() {
-    use crate::posters::Warm;
+    use crate::ui::tex::Warm;
     // the screen's own gate FIRST, so the store probe behind `store_idle` (a lock plus a 64-slot
     // scan) is only paid on the frames where the answer could still be yes
-    if !(prefetch_armed(snap_pos(), hero_slide_state().is_some()) && crate::posters::store_idle()) {
+    if !(prefetch_armed(snap_pos(), hero_slide_state().is_some()) && crate::ui::tex::source_idle()) {
         return;
     }
     let n = crate::pms::hero_pool_len() as c_int;
@@ -1011,7 +1011,7 @@ fn prefetch_hero_neighbours() {
         }
         // the same server the draw will resolve against (`hero_logo`), or the warm names a
         // different slot and buys nothing
-        if crate::posters::logo_warm(m.sid, hero_logo_rk(m)) == Warm::Claimed {
+        if crate::ui::tex::logo_warm(m.sid.raw(), hero_logo_rk(m)) == Warm::Claimed {
             return;
         }
     }
@@ -2937,7 +2937,7 @@ mod tests {
     }
 
     /// The gate's screen half. Warming while a flip is running would put a key in front of the very
-    /// layer sliding on. (The store half — `posters::store_idle`, which keeps a warm from competing
+    /// layer sliding on. (The store half — `app::adapters::poster::store_idle`, which keeps a warm from competing
     /// with a texture the user is waiting on, since the poster workers claim by slot index and have
     /// no priority to lose — is the caller's `&&`, deliberately outside this function so it is not
     /// evaluated on frames this half already refused.)

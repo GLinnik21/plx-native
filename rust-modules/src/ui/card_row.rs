@@ -258,6 +258,11 @@ impl CardRow {
     pub(crate) fn scroll_x(&self) -> f32 {
         self.scroll_x.pos
     }
+    /// Which cell holds focus (`-1` none), as `update` last recorded it.
+    #[inline]
+    pub(crate) fn focus(&self) -> i32 {
+        self.focus
+    }
     /// How far this row's heading must rise, live — see [`heading_clearance`] for the rule and
     /// [`CardRow::update`] for the spring that holds it there.
     #[inline]
@@ -354,6 +359,14 @@ pub(crate) fn column_near_x(
 #[inline]
 pub(crate) fn tile_centre_x(i: usize, origin: f32, adv: f32, w: f32, scroll: f32) -> f32 {
     origin + i as f32 * adv - scroll + w * 0.5
+}
+
+/// The SETTLED rect of tile `i` — the one formula [`strip`] draws by and `ui::geom::Shelf::place`
+/// answers with (spec §7.1: draw calls place). The focus pop is applied on top by the caller
+/// (`Rect::scaled` by the cell's spring), never here.
+#[inline]
+pub(crate) fn tile_rect(i: usize, origin: f32, pitch: f32, scroll: f32, row_y: f32, size: (f32, f32)) -> Rect {
+    Rect::new(origin + i as f32 * pitch - scroll, row_y, size.0, size.1)
 }
 
 /// THE clamp-into-view core every scroller shares — uniform slots ([`scroll_into_view`]),
@@ -721,21 +734,22 @@ pub(crate) fn strip<'a>(
         if i as std::os::raw::c_int == focus_col {
             continue; // focused tile drawn last
         }
-        let x = sty.margin_x + i as f32 * pitch;
+        // `tile_rect` in the row's own (unscrolled) space: `pr` carries the scroll
+        let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
         if !crate::ui::on_axis(x - sx, size.0, axis_span, 0.0) {
             continue;
         }
         let s = row.scale(i);
-        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
         draw_tile(pr, art(i), rect, s, sty, resume(i));
         extra(pr, i, x, false);
     }
     if focus_col >= 0 && (focus_col as usize) < n {
         let i = focus_col as usize;
-        let x = sty.margin_x + i as f32 * pitch;
+        let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
         // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
         let s = row.scale(i) * crate::ui::press::scale();
-        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
         draw_focused(
             pr,
             art(i),
