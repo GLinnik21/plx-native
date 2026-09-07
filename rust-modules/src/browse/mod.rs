@@ -584,7 +584,8 @@ pub(crate) fn sections_gen() -> u32 {
 }
 
 /// The table's IDENTITY epoch, read out — see [`EPOCH`]'s own doc. A caller that keeps its own
-/// state keyed by SECTION INDEX across more than one frame (`ui::onboard`'s draft, in particular)
+/// state keyed by SECTION INDEX across more than one frame (`screens::onboard`'s draft, in
+/// particular)
 /// must capture this at the point it captured those indices and treat a later mismatch as "the
 /// indices no longer mean what they meant" rather than apply them: `reset` runs on a profile
 /// switch, but also from inside ordinary roster maintenance (`sync_roster`, pumped every frame
@@ -603,7 +604,8 @@ static SRC_FACTS_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// **The generation of everything the Sources list DRAWS** — the table's shape plus the facts its
 /// rows state. The number both surfaces that draw that list watch (`ui::library`'s panel and
-/// `ui::onboard`'s route), because a surface keyed on the SHAPE alone goes on saying "Films" long
+/// `screens::onboard`'s route), because a surface keyed on the SHAPE alone goes on saying "Films"
+/// long
 /// after the count arrived and heads an unnamed group with no header at all — which is precisely
 /// what both did.
 ///
@@ -1536,7 +1538,8 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
     true
 }
 /// Apply a batch of pin edits and persist ONCE — the Home editor's draft commit
-/// (`ui::onboard::commit`), never a per-toggle write, and since 2026-09-04 the ONLY way a pin is
+/// (`screens::onboard`'s `OnboardScreen::commit`), never a per-toggle write, and since 2026-09-04
+/// the ONLY way a pin is
 /// written by a control at all: the per-press [`toggle_pin`] has no production caller left and is
 /// compiled only for the tests that grade the pin invariants through it. The editor's whole point
 /// is that an editing session can toggle N rows while the route is open, and every one of them
@@ -1548,7 +1551,8 @@ pub(crate) fn toggle_pin(i: usize) -> bool {
 ///
 /// Trusts the caller's edits rather than re-checking [`is_last_pinned`] per entry — the draft that
 /// produced them already enforced the never-empty floor against its OWN running count as each
-/// toggle was made (`ui::onboard::toggle_draft`), which `toggle_pin`'s per-call check cannot see
+/// toggle was made (`screens::onboard`'s `OnboardScreen::toggle_row`), which `toggle_pin`'s
+/// per-call check cannot see
 /// mid-edit anyway (it only ever sees what is on disk).
 pub(crate) fn apply_pins(edits: &[(usize, bool)]) {
     let mut changed = false;
@@ -1622,7 +1626,8 @@ fn repoint_cur() {
 /// had turned them off. The recorded answer is keyed by machine, precisely the join that is needed.
 ///
 /// NB an EMPTY result STILL means "nothing has been discovered or recorded yet", NOT "nothing is
-/// pinned": the never-empty floor (`ui::onboard::toggle_draft` on the editor's draft, `plex::pins`
+/// pinned": the never-empty floor (`screens::onboard`'s `OnboardScreen::toggle_row` on the
+/// editor's draft, `plex::pins`
 /// on a recorded selection) forbids unpinning the last library, so the pinned set is never
 /// legitimately empty. `pms::feeds_home` is written around exactly that distinction.
 ///
@@ -4011,7 +4016,8 @@ mod tests {
 
     /// **The editor's commit is one write for the whole batch, not one per toggle.** [`toggle_pin`]
     /// above records on every call because it has no draft standing between the press and the
-    /// store; [`apply_pins`] is what a caller with one (`ui::onboard`) reaches for instead — every
+    /// store; [`apply_pins`] is what a caller with one (`screens::onboard`) reaches for instead —
+    /// every
     /// edit lands in the SAME `record_pins` call, so an editing session that flips three rows costs
     /// this app one write and one generation bump, exactly as it costs one press of Done.
     #[test]

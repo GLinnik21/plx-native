@@ -18,12 +18,18 @@
 //!
 //! **The rule for `None` is "BACK does not go anywhere inside the app", not "the Settings root".**
 //! Three routes qualify today and a hard count here would be the fourth transcription of a number
-//! this project keeps letting rot — take the census by CALL SITE, since phase 5a: a screen
-//! composed through `table_screen.rs` names its crumb in `Header::new(layout, None, …)` and the
-//! literal `draw_narrative` call sits once, generically, inside `Header::paint`, so
-//! `git grep -nE 'draw_narrative\(|Header::new\(' -- 'rust-modules/src/ui/*.rs'` with the
-//! `None` crumbs read off each site is the census (grepping the method alone finds two of the
-//! three, the Settings root having moved behind `Header`). They are the Settings modal
+//! this project keeps letting rot — take the census by CALL SITE: a screen composed through
+//! `table_screen.rs` names its crumb in `Header::new(layout, None, …)` and the literal
+//! `draw_narrative` call sits once, generically, inside `Header::paint`, so
+//! `git grep -nE 'draw_narrative\(|Header::new\(' -- 'rust-modules/src/ui/*.rs' 'rust-modules/src/screens/*.rs'`
+//! with the `None` crumbs read off each site is the census — a call-site grep rather than a
+//! transcribed count exactly so a file move cannot make it stale silently, which already happened
+//! once: phase 5b moved every real screen of this family out of `ui/` and into `screens/`, and a
+//! pathspec of `'rust-modules/src/ui/*.rs'` alone now matches neither of the family's `Header::new`
+//! sites at all (grepping the method alone, even over both directories, now finds only ONE of the
+//! three — `ui/login.rs`'s QR sign-in, the one screen here that never joined the family's
+//! `Header`/`TableScreen` — because 5b moved the FIRST first-run consent stage's `None` crumb
+//! behind `Header::new` too, beside the Settings root's since 5a). They are the Settings modal
 //! (BACK leaves the family), the FIRST first-run consent question (sign-in is behind it and
 //! cannot be undone) and the QR sign-in itself (there is no app behind it yet).
 //!

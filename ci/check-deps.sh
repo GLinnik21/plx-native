@@ -16,7 +16,7 @@
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
 #
 # Phase 4 rule:
-#   mutators — a screen (ui/) or the loop (app/) never calls a data module's MUTATOR directly
+#   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
 #              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
 #              `stores::StoreCmd` applied through `stores::<store>::apply` (spec §14, the
 #              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
@@ -78,8 +78,18 @@ if [ "$n" -eq 1 ] && [ "$d" -eq 1 ]; then ok "present: one worker door"; else fa
 
 if [ -n "$(grep_code '\bEffect::' "$SRC")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
 
-# mutators: production lines of ui/ and app/ (everything before the file's first
+# mutators: production lines of ui/, screens/ and app/ (everything before the file's first
 # `#[cfg(test)]` + `mod` pair, which is where every screen keeps its tests).
+#
+# **`screens/` joined this list in phase 5b and that was not cosmetic.** The gate's own rule is
+# "a SCREEN never calls a data module's mutator directly", and until 5b every screen lived under
+# `ui/`, so scanning `ui/` and `app/` scanned every screen there was. The migration moves screens
+# to `rust-modules/src/screens/` one family at a time — so from the moment the first one landed,
+# the gate was silently blind to exactly the code it exists to police, and a migrated screen could
+# call `browse::apply_pins(` with the gate still reporting green. It is the same shape as the hole
+# the comment below records (cutting at the FIRST test module and leaving ~700 lines unscanned):
+# a gate that passes because it looked at the wrong thing reads identical to one that passes
+# because the code is clean.
 MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_view|set_sort_by_key|set_sort|toggle_unwatched|set_genre_by_id|set_genre|retry_cur_source|recheck_shares|apply_pins|toggle_pin|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|load_detail_now|clear|load_season|load_season_now|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|request_refetch_hubs|request_retry|edit_item)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
@@ -96,7 +106,7 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
-done < <(find "$SRC/ui" "$SRC/app" -name '*.rs' | sort)
+done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" -name '*.rs' | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
 # every allowlist's declared count equals its entries

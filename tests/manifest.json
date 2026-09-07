@@ -321,7 +321,8 @@
     {
       "name": "settings-home",
       "tier": "ui",
-      "route": "onboard",
+      "route": "home",
+      "overlay": "onboard",
       "loop_floor": 50,
       "fps_floor": 50,
       "run_secs": 18,
@@ -330,7 +331,7 @@
         "plxnative-settings": "home",
         "plxnative-settingsosc": true
       },
-      "comment": "The shared Home-source picker opened as a Settings editor. settingsosc moves the real source TableView and grades the clean BACK composition over Settings rather than treating the visually similar first-run route as sufficient coverage; the dirty Done replacement is a pure state contract covered by the onboard unit suite."
+      "comment": "The shared Home-source picker opened as a Settings editor. Filters on route=home overlay=onboard rather than the old route=onboard: the picker is now a PAGE of the Settings family surface (`SettingsPage::Favourites`), not its own route, so `app.route` never leaves Home. Until 2026-09-07 this scene selected on overlay=settings — the family's ROOT word — because `bridge::overlay_word` prints whatever the topmost page's `Screen::name` answers, and the Home-sources editor answered the SAME `settings` word the root page does; the scene's heartbeat was therefore BYTE-IDENTICAL to settings-root/settings-idle, so a boot-target regression that left this run stuck on the root (a renamed `plxnative-settings=home` value, or a future bug in the boot-target match in `app/run.rs`) still produced >=5 matching samples and PASSED, at the wrong screen. `OnboardScreen::name` now answers its own `onboard` word while mounted inside the family (word chosen to match the FIRST-RUN mounting of the identical screen, which already prints route=onboard with no overlay — one screen, two positions, one name) and `bridge::overlay_word` maps it, so this scene can no longer be satisfied by any other page of the family. settingsosc moves the real source TableView and grades the clean BACK composition over Settings rather than treating the visually similar first-run route as sufficient coverage; the dirty Done replacement is a pure state contract covered by the onboard unit suite."
     },
     {
       "name": "settings-legal",

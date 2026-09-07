@@ -6,32 +6,41 @@
 //! `composed_draw`; and each also draws for the LEGACY loop through `paint(Painter)`, the same
 //! routine, so the pixels are one function whichever loop calls it.
 //!
-//! Phase 5a EXTRACTS: the words, the geometry (`RouteLayout`) and the widgets stay where they
-//! were — `ui/settings.rs` and `ui/legal.rs` keep their statics and their `RouteFocus` ladders
-//! — and their draws build one of these views over that state and call `paint`. What the
-//! components ADD is the focus protocol as data (spec §10's reading of route_screen's rules):
-//! the table is a `Column` group with `Seat::Remembered` (rules 1, 3, 5), its LEFT edge is
-//! `EdgeRule::Nav(Back)` (rule 9 — the crumb is literal) unless the screen holds an uncommitted
-//! edit, in which case it is `Stop`; its RIGHT edge is `EdgeRule::Screen`, so a chevron row's
-//! RIGHT reaches the screen's own `step` (rule 8) and a plain row's is dropped; a document is a
-//! `Document` group that scrolls inside and leaves at its ends. The band (rules 2, 4, 6, 7) is
-//! the screen's `ActionRow` and joins these views in 5b with the first owned screen; until then
-//! `TableScreen::band` is `None` for both extracted screens, which draw no band.
+//! What the components ADD over a bare `TableView`/`DocumentReader` is the focus protocol as data
+//! (spec §10's reading of route_screen's rules): the table is a `Column` group with
+//! `Seat::Remembered` (rules 1, 3, 5), its LEFT edge is `EdgeRule::Nav(Back)` (rule 9 — the crumb
+//! is literal) unless the screen holds an uncommitted edit, in which case it is `Stop`; its RIGHT
+//! edge is `EdgeRule::Screen`, so a chevron row's RIGHT reaches the screen's own `step` (rule 8)
+//! and a plain row's is dropped; a document is a `Document` group that scrolls inside and leaves
+//! at its ends. The band (rules 2, 4, 6, 7) is [`BandPart`], this module's own struct with its own
+//! focus/hit logic honouring those rules, attached with [`TableScreen::with_band`] — NOT a wrapper
+//! over `route_screen::ActionRow`, which has no caller left outside that module's own tests.
 //!
-//! The Focusable half is exercised by the host tests below (spec §13: "its Focusable impl is
-//! exercised by the golden tables only until 5b"); the legacy ladders keep answering the keys.
-#![allow(dead_code)] // phase 5a: the Part/Composed half has no dispatcher-mounted consumer until 5b
+//! **Phase 5b completed the handover this module was built for, so read the paragraph above as
+//! the CURRENT contract rather than as a staging note.** 5a extracted these views while the words,
+//! the statics and the `RouteFocus` ladders stayed behind in `ui/settings.rs`, `ui/legal.rs`,
+//! `ui/consent.rs` and `ui/onboard.rs`; 5b moved all four onto owned screens under
+//! `crate::screens` and DELETED those four modules, so there is no legacy ladder left to answer a
+//! key and `band` is no longer `None` — `screens::consent` and `screens::onboard` both attach one.
+//! The `paint(Painter)` entry points survive that deletion and are still exercised, but by owned
+//! screens choosing to draw imperatively (`screens/onboard.rs`, `screens/consent.rs`) rather than
+//! by a frame loop that owns the state; `composed_draw` is the other half and neither is dead.
+
+use crate::ui::View;
+use std::ffi::CStr;
 
 use super::document_reader::DocumentReader;
 use super::frame::Budget;
 use super::geom::{Document, IndexElem, Table};
-use super::machine::{Cx, EntryId, FocusKey, GroupId, Host, NavOpKind, PartId};
+use super::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
 use super::route_screen::RouteLayout;
 use super::screen::{
     composed_draw, composed_group_of, composed_groups, composed_neighbour, composed_place,
-    composed_prepare, composed_reconcile, composed_seat, Activate, At, Composed, Dir, DrawFrame,
-    EdgeRule, Focusable, GroupSpec, Hover, Part, Placed, Step, Stop,
+    composed_prepare, composed_reconcile, composed_seat, Activate, At, AxisMask, Composed, Dir,
+    DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part, Placed, Seat,
+    Step, Stop,
 };
+use super::widgets::ControlPalette;
 use super::table::TableView;
 use super::{theme, Painter, Rect};
 
@@ -54,6 +63,11 @@ impl<'a> Header<'a> {
             copy,
             copy_size: theme::size::LABEL,
         }
+    }
+
+    pub fn with_copy_size(mut self, sz: std::os::raw::c_int) -> Self {
+        self.copy_size = sz;
+        self
     }
 
     /// The one drawing routine, for both loops.
@@ -103,12 +117,15 @@ impl<H: Host> Part<H> for Header<'_> {
 /// The content column as a table: a `Column` group (rules 1, 3, 5 through `Seat::Remembered`)
 /// whose LEFT edge is the crumb (rule 9) and whose RIGHT edge asks the screen (rule 8).
 pub struct TablePart<'a> {
-    pub table: &'a mut TableView,
+    pub table: &'a TableView,
     pub frame: Rect,
     pub group: GroupId,
     pub entry: EntryId,
     /// Rule 9's guard: `true` while the screen holds an edit BACK would discard — LEFT is a wall.
     pub uncommitted: bool,
+    /// A band sits beside the table this frame: LEFT is the geometric move into it (rule 5)
+    /// rather than BACK (rule 9), and DOWN off the last row finds it (rule 2).
+    pub has_band: bool,
 }
 
 impl TablePart<'_> {
@@ -137,8 +154,16 @@ where
             // [up, down, left, right]: up/down are the column's own (Geometric past the ends,
             // which is how DOWN off the last row reaches a band beneath — rule 2); LEFT is BACK
             // unless an edit is at stake (rule 9); RIGHT is the screen's to answer (rule 8).
-            g.edge[2] = if self.uncommitted { EdgeRule::Stop } else { EdgeRule::Nav(NavOpKind::Back) };
+            g.edge[2] = if self.has_band {
+                EdgeRule::Geometric
+            } else if self.uncommitted {
+                EdgeRule::Stop
+            } else {
+                EdgeRule::Nav(NavOpKind::Back)
+            };
             g.edge[3] = EdgeRule::Screen;
+            // a row commits on the DOWN edge, as every row in the app does (no press dip)
+            g.elem = ElemKind::Bare;
         }
     }
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -184,10 +209,164 @@ where
                         rest_rect: r,
                         clip: rect,
                         hover: Hover::Focus,
-                        activate: Activate::Press,
+                        activate: Activate::Direct,
                     },
                 );
             }
+        }
+    }
+}
+
+/// **The action band** (spec §10 `TableScreen{table, band}`; route_screen's rules 2, 4, 6, 7):
+/// up to two pills at the bottom of the narrative column, one `Row` group with `Seat::Remembered`
+/// whose UP is the geometric move back into the content column (rule 3), whose DOWN is the floor
+/// (rule 4), whose LEFT off the leading control is BACK unless an edit is at stake (rule 9), and
+/// whose RIGHT off the trailing control returns to the content column geometrically (rule 7).
+/// Every control is a `Control` element (a non-holdable press with the tvOS dip) and a hit stop.
+///
+/// Geometry from the `Measure` capability rather than `Button::pill_w`, so the band's placement
+/// is host-testable; the DRAW measures through the same font, so the two agree on the device.
+pub struct BandPart<'a> {
+    pub layout: RouteLayout,
+    pub labels: &'a [&'a CStr],
+    pub group: GroupId,
+    pub entry: EntryId,
+    /// Rule 9's guard, on the band's leading edge.
+    pub uncommitted: bool,
+    /// The focus pop scale per control (the page's `CtlPop`), read at draw.
+    pub scales: [f32; 2],
+    pub palette: ControlPalette,
+    /// The one control drawn in the danger face (an alert's destructive answer), if any.
+    pub danger: Option<usize>,
+}
+
+/// `Button::pill_w`'s formula over a `Measure`: label width plus the pill's air.
+pub fn pill_w(m: &dyn Measure, label: &CStr, sz: std::os::raw::c_int) -> f32 {
+    m.width(label, sz, false) + super::widgets::BTN_PILL_AIR
+}
+
+impl BandPart<'_> {
+    /// Where each control sits: one pill at the band's leading edge, or the shared pair rule.
+    pub fn rects(&self, m: &dyn Measure) -> Vec<Rect> {
+        let a = self.layout.action;
+        match self.labels {
+            [] => Vec::new(),
+            [one] => {
+                let w = pill_w(m, one, theme::size::BODY).min(a.w);
+                vec![Rect::new(a.x, a.y, w, a.h)]
+            }
+            [l, t, ..] => {
+                let (lr, tr) = self
+                    .layout
+                    .action_pair(pill_w(m, l, theme::size::BODY), pill_w(m, t, theme::size::BODY));
+                vec![lr, tr]
+            }
+        }
+    }
+
+    fn key<H: Host>(&self, i: usize) -> FocusKey<H::Elem>
+    where
+        H::Elem: IndexElem,
+    {
+        FocusKey {
+            entry: self.entry,
+            elem: H::Elem::of_index(BAND_BASE + i as u32),
+        }
+    }
+}
+
+/// The band's controls sit above this in a screen's element namespace (`screens::registry::BAND`
+/// is the same number; the library cannot name the registry).
+pub const BAND_BASE: u32 = 0x4000_0000;
+
+impl<H: Host> Focusable<H> for BandPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.labels.is_empty() {
+            return;
+        }
+        out.push(GroupSpec {
+            id: self.group,
+            kind: GroupKind::Row { wrap: false },
+            seat: Seat::Remembered,
+            reachable: AxisMask::BOTH,
+            edge: [
+                EdgeRule::Geometric,
+                EdgeRule::Stop,
+                if self.uncommitted { EdgeRule::Stop } else { EdgeRule::Nav(NavOpKind::Back) },
+                EdgeRule::Geometric,
+            ],
+            extent: self.layout.action,
+            len: self.labels.len(),
+            elem: ElemKind::Control,
+        });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        let i = key.index()?.checked_sub(BAND_BASE)? as usize;
+        (i < self.labels.len()).then_some(self.group)
+    }
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
+        let Some(i) = key.elem.index().and_then(|i| i.checked_sub(BAND_BASE)) else {
+            return Step::Edge;
+        };
+        let i = i as usize;
+        match dir {
+            Dir::Left if i > 0 => Step::Move(self.key::<H>(i - 1)),
+            Dir::Right if i + 1 < self.labels.len() => Step::Move(self.key::<H>(i + 1)),
+            _ => Step::Edge,
+        }
+    }
+    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let i = key.index()?.checked_sub(BAND_BASE)? as usize;
+        let r = *self.rects(cx.measure).get(i)?;
+        Some(Placed {
+            rect: r,
+            rest_rect: r,
+            clip: Rect::FULL,
+            index: Some(i as u32),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        let i = want.elem.index().and_then(|i| i.checked_sub(BAND_BASE)).unwrap_or(0) as usize;
+        self.key::<H>(i.min(self.labels.len().saturating_sub(1)))
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        self.key::<H>(0)
+    }
+}
+
+impl<H: Host> Part<H> for BandPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
+    fn draw(&mut self, f: &mut DrawFrame<'_, H>, _rect: Rect) {
+        let p = f.painter;
+        let focused = f.focus.current.and_then(|k| k.elem.index()).and_then(|e| e.checked_sub(BAND_BASE));
+        let rects = self.rects(f.measure);
+        let env = super::Env::inert();
+        for (i, (label, r)) in self.labels.iter().zip(rects.iter()).enumerate() {
+            let mut b = super::widgets::Button::new(label.as_ptr(), theme::size::BODY, *r)
+                .focused(focused == Some(i as u32))
+                .scale(self.scales.get(i).copied().unwrap_or(1.0))
+                .palette(self.palette);
+            if self.danger == Some(i) {
+                b = b.style(super::widgets::ControlStyle::Danger);
+            }
+            b.draw(&env, p);
+            f.stop(
+                p,
+                Stop {
+                    key: self.key::<H>(i),
+                    rect: *r,
+                    rest_rect: *r,
+                    clip: Rect::FULL,
+                    hover: Hover::Focus,
+                    activate: Activate::Press,
+                },
+            );
         }
     }
 }
@@ -196,11 +375,13 @@ where
 pub struct TableScreen<'a> {
     pub header: Header<'a>,
     pub table: TablePart<'a>,
+    /// The action band (rules 2, 4, 6, 7), `None` for a screen whose every row is a door.
+    pub band: Option<BandPart<'a>>,
 }
 
 impl<'a> TableScreen<'a> {
     /// Over a route's own layout: the table in the content column's SECTIONED frame.
-    pub fn new(header: Header<'a>, table: &'a mut TableView, group: GroupId, entry: EntryId) -> Self {
+    pub fn new(header: Header<'a>, table: &'a TableView, group: GroupId, entry: EntryId) -> Self {
         let frame = header.layout.sectioned_table();
         Self {
             header,
@@ -210,12 +391,32 @@ impl<'a> TableScreen<'a> {
                 group,
                 entry,
                 uncommitted: false,
+                has_band: false,
             },
+            band: None,
         }
+    }
+
+    /// The table in a frame of the screen's own (first run's `content`, not the sectioned inset).
+    pub fn with_frame(mut self, frame: Rect) -> Self {
+        self.table.frame = frame;
+        self
     }
 
     pub fn uncommitted(mut self, v: bool) -> Self {
         self.table.uncommitted = v;
+        if let Some(b) = self.band.as_mut() {
+            b.uncommitted = v;
+        }
+        self
+    }
+
+    /// Put a band beside the table: the table's LEFT becomes the move into it (rule 5) and the
+    /// band inherits the screen's `uncommitted` guard.
+    pub fn with_band(mut self, band: BandPart<'a>) -> Self {
+        let uncommitted = self.table.uncommitted;
+        self.table.has_band = !band.labels.is_empty();
+        self.band = Some(BandPart { uncommitted, ..band });
         self
     }
 
@@ -231,17 +432,23 @@ where
     H::Elem: IndexElem,
 {
     fn layout(&self, _cx: &Cx<'_, H>) -> Vec<(PartId, Rect)> {
-        vec![(PartId(0), self.header.layout.narrative), (PartId(1), self.table.frame)]
+        let mut v = vec![(PartId(0), self.header.layout.narrative), (PartId(1), self.table.frame)];
+        if self.band.is_some() {
+            v.push((PartId(2), self.header.layout.action));
+        }
+        v
     }
     fn part(&self, id: PartId) -> &dyn Part<H> {
-        match id {
-            PartId(0) => &self.header,
+        match (id, self.band.as_ref()) {
+            (PartId(0), _) => &self.header,
+            (PartId(2), Some(b)) => b,
             _ => &self.table,
         }
     }
     fn part_mut(&mut self, id: PartId) -> &mut dyn Part<H> {
-        match id {
-            PartId(0) => &mut self.header,
+        match (id, self.band.as_mut()) {
+            (PartId(0), _) => &mut self.header,
+            (PartId(2), Some(b)) => b,
             _ => &mut self.table,
         }
     }
@@ -292,7 +499,16 @@ pub struct DocumentPart<'a> {
     pub entry: EntryId,
 }
 
-impl DocumentPart<'_> {
+/// The document's FOCUS half over an immutable reader — what a page whose `Focusable` methods
+/// take `&self` builds per query, while its draw builds the `DocumentPart` over `&mut`.
+pub struct DocumentFocus<'a> {
+    pub reader: &'a DocumentReader,
+    pub frame: Rect,
+    pub group: GroupId,
+    pub entry: EntryId,
+}
+
+impl DocumentFocus<'_> {
     fn view(&self) -> Document<'_> {
         Document {
             reader: self.reader,
@@ -301,13 +517,9 @@ impl DocumentPart<'_> {
             entry: self.entry,
         }
     }
-
-    pub fn paint(&mut self, p: Painter) {
-        self.reader.draw(p, self.frame, None, self.body);
-    }
 }
 
-impl<H: Host> Focusable<H> for DocumentPart<'_>
+impl<H: Host> Focusable<H> for DocumentFocus<'_>
 where
     H::Elem: IndexElem,
 {
@@ -333,6 +545,45 @@ where
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         Focusable::<H>::seat(&self.view(), g, from, cx)
+    }
+}
+
+impl DocumentPart<'_> {
+    fn focus(&self) -> DocumentFocus<'_> {
+        DocumentFocus {
+            reader: self.reader,
+            frame: self.frame,
+            group: self.group,
+            entry: self.entry,
+        }
+    }
+
+    pub fn paint(&mut self, p: Painter) {
+        self.reader.draw(p, self.frame, None, self.body);
+    }
+}
+
+impl<H: Host> Focusable<H> for DocumentPart<'_>
+where
+    H::Elem: IndexElem,
+{
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        Focusable::<H>::groups(&self.focus(), cx, out)
+    }
+    fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
+        Focusable::<H>::group_of(&self.focus(), key, cx)
+    }
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem> {
+        Focusable::<H>::neighbour(&self.focus(), key, dir, cx)
+    }
+    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        Focusable::<H>::place(&self.focus(), key, cx, at)
+    }
+    fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        Focusable::<H>::reconcile(&self.focus(), want, cx)
+    }
+    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        Focusable::<H>::seat(&self.focus(), g, from, cx)
     }
 }
 

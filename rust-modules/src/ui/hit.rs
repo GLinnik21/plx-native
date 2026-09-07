@@ -5,10 +5,25 @@
 //! — the LAST stop whose visible part (`rect ∩ clip`) contains the point — and a miss is the
 //! `ModalStack`'s to answer.
 //!
-//! The pointer policies live on the STOP (`hover`, `activate`); the gates live here:
-//! `dpad_mode` suppresses hover until the pointer has travelled `DPAD_TRAVEL_PX` since the last
-//! D-pad press, and a fading surface's alpha threshold suppresses it outright.
-#![allow(dead_code)] // phase 3b: the product's LegacyPage keeps the map inert until 5b
+//! The pointer policies live on the STOP (`hover`, `activate`); the gates live here. There are
+//! two, and **only the first of them is wired to the product today**:
+//!
+//! * `dpad_mode` suppresses hover until the pointer has travelled `DPAD_TRAVEL_PX` since the last
+//!   D-pad press. Live: `Dispatcher`'s ingest calls [`HitMap::note_dpad`] on every direction key.
+//! * `suppressed` is the fading-surface gate — below an alpha threshold a surface should answer
+//!   no hover and no click at all. **The mechanism exists and nothing sets it**: outside this
+//!   module's own unit test, `suppressed` is written nowhere, because no container feeds a
+//!   surface's `Opening`/`Closing` phase or its appear-spring alpha into the map. This paragraph
+//!   used to state the gate as a fact, which is how it went unnoticed — the honest reading is
+//!   that a click during a surface's ~0.5 s dismissal fade still resolves against the stops that
+//!   were registered on the last presented frame.
+//!
+//! Screens that must not be clickable through their own fade therefore have to say so themselves
+//! for now — `screens/consent.rs` gates its commit arms on `DecisionAlert::visible()` rather than
+//! `is_open()` for exactly this reason, and says so at each guard. Wiring the container phase in
+//! here would let those screens drop that defence; it is a library change with a blast radius
+//! across every surface, so it belongs to the phase that owns the hit map's remaining work
+//! (spec §7.5-§7.6) rather than to the screen migration that found it (2026-09-07).
 
 use super::machine::FocusKey;
 use super::screen::{Activate, Hover, Stop};
@@ -43,7 +58,9 @@ pub struct HitMap<K> {
     pub dpad_mode: bool,
     dpad_at: (f32, f32),
     last: (f32, f32),
-    /// A fading surface below the threshold: no hover, no click.
+    /// A fading surface below the threshold: no hover, no click. **Nothing outside this module's
+    /// tests sets this yet** — see the module doc; it is honoured by [`Self::resolve`] but never
+    /// raised, so it is a mechanism waiting for its caller rather than a live gate.
     pub suppressed: bool,
 }
 

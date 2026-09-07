@@ -12,6 +12,21 @@
 //! Phase 2 replaces this loop with `ui::dispatch`'s ten-step algorithm (spec §3.3); the phase
 //! names here are that algorithm's, mapped onto today's order (`navcommit` still runs BEFORE
 //! `tick_drain` on this loop, and the `FRAMEDROP` line prints them in the spec's order).
+//!
+//! **Phase 5b is where the replacement stopped being a shadow.** The Settings family — the root,
+//! Legal and its documents, Privacy & data, the first-run consent question and Favourite libraries
+//! in both its modes — is now OWNED by the dispatcher, and this loop asks it four questions and
+//! obeys one queue:
+//!
+//! * `Dispatcher::owns_input` — asked by the key, pointer, click and wheel arms alike. When it is
+//!   true the arm pushes an `InputEvent` onto `app.inputs` and `continue`s; the ladders see
+//!   nothing. Four hand-written modal arms and their ordering left this file with it.
+//! * `bridge::host_frozen` / `host_replaced` — the container's fold, replacing the pairs of
+//!   `is_open()` / `host_ground_ready()` reads the update and draw phases each had to keep in step.
+//! * `bridge::page_owned` — whether the dispatcher draws the top PAGE too, which is the one bit
+//!   `Dispatcher::draw`'s single call per frame needs.
+//! * `Bridge::take_reqs` — what an owned screen asked this loop to do (`loop_requests`), because
+//!   the machines that own sign-in and the app's real stack are not on the dispatcher yet.
 use super::*;
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
@@ -124,17 +139,19 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         app.instr.mark(crate::diag::heartbeat::Phase::Results); // results
         // NAV COMMIT — the route flips here (a transition at its floor, a cut now).
         nav_commit(app, mt, fr);
-        // The shadow container tree follows the committed route (phase 3b(c)): a Replace CUT
-        // on a flip, one dispatcher frame with no input. `app/legacy.rs` says what it buys.
-        super::legacy::mirror(
+        // The container tree follows the committed route (a Replace CUT on a flip) and runs its
+        // frame — the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
+        let (_word, _report) = super::bridge::frame(
             &mut app.pages,
-            &mut app.shadow,
+            &mut app.bridge,
             app.route,
             crate::ui::machine::Tick {
                 ms: fr.now,
                 dt_us: (fr.dt * 1_000_000.0) as u32,
             },
+            std::mem::take(&mut app.inputs),
         );
+        loop_requests(app);
         app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, mt, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
@@ -398,7 +415,30 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     (state & 0xff) == 1,
                     state & 0x100 != 0,
                 ));
+                // **Does the TREE own this key?** (phase 5b, `app/bridge.rs`'s coexistence
+                // contract.) Asked once, here, above all three edges — because the dispatcher's
+                // press machine wants ALL of them: `Edge::Down` arms, `Edge::Repeat` is the
+                // dropped-key-up net's liveness beat, and `Edge::Up` is the release. Handing it
+                // only the fresh presses would leave a dipped control committing a second later
+                // at `press::MAX_HOLD_MS` instead of on the button coming up.
+                let tree_owns_key = app.pages.owns_input();
+                // `clock::now()`, not `fr.now`: INGEST runs before the frame stamps its own time
+                // (see `run`'s phase order), so `fr.now` is still 0 here — the same reason the
+                // ladder below reaches for the clock to fill `app.last_input`. `dt_us` is 0
+                // because an event's `at` is a stamp, not a timestep: every machine the
+                // dispatcher steps is driven by the FRAME's tick, which `bridge::frame` supplies.
+                let tree_tick = crate::ui::machine::Tick {
+                    ms: clock::now(),
+                    dt_us: 0,
+                };
                 if (state & 0xff) != 1 {
+                    if tree_owns_key {
+                        app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
+                    }
+                    // …and the loop's own key-up bookkeeping runs either way: it retires the sym
+                    // from both held-key slots, which is state about the PHYSICAL key rather than
+                    // about whoever read it. Skipping it while a surface is up would leave a key
+                    // the ladders never saw go down looking held the moment the surface closes.
                     on_key_up(
                         sym,
                         isnav,
@@ -416,6 +456,20 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // 0x100 on presses that are the FIRST of their own gesture, and dropping those
                 // loses one press in two.
                 if state & 0x100 != 0 && sym == app.held_key.down_sym {
+                    if tree_owns_key {
+                        // **Item 13 survives the migration, and only the DIRECTIONS are gated.**
+                        // A held key repeats every ~50 ms; a settings row or a line of reading
+                        // text per beat is a blur nobody can track, and the focus engine has no
+                        // cadence of its own — so `RepeatGate` still throttles the moves. The OK
+                        // edges go through UNGATED, deliberately: `dispatch`'s ingest reads an OK
+                        // `Edge::Repeat` as `press.note_alive`, so a swallowed beat is a hold that
+                        // looks like a lost key-up and springs back without activating.
+                        let ok = is_ok(sym);
+                        if ok || app.modal_repeat.ready(tree_tick.ms) {
+                            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
+                        }
+                        continue;
+                    }
                     on_auto_repeat(
                         sym,
                         isnav,
@@ -424,7 +478,6 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         app.hud.nav,
                         &mut app.held_key,
                         &mut app.scrubber,
-                        &mut app.modal_repeat,
                         &mut app.input.press,
                     );
                     continue;
@@ -459,122 +512,46 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // below does deliberately. Keep it a chain — a `match` over the same routes
                 // compiles and keeps the suite green while silently reordering it, because
                 // exhaustiveness cannot see subsumption.
-                // Legal is high in the chain, and the ordering is load-bearing rather than
-                // arbitrary: the notice is opened from the account menu, which is reachable
-                // from Home's ROOT — so with this arm any lower, BACK out of the privacy
-                // notice would be read as the ROOT PRESS and hand the screen to the
-                // television's Home instead of closing the notice. It is a `Popover` and not a
-                // `Route` (one owner, `ui::legal`), so it takes its turn by being high in the
-                // chain and `continue`ing on every key; that IS its modality.
-                // ABOVE Legal, and therefore above everything: the consent question is the
-                // one panel that must be answered before the app is usable, and it is not
-                // answering a press the person just made — it is the reason the boot stopped,
-                // which is why its BACK is navigation and never an answer (below). Same
-                // mechanism as the arm below it (a `Popover`,
-                // not a `Route`, taking its turn by height in the chain and `continue`ing on
-                // every key), which is also the whole of its modality. First-run BACK is
-                // navigation, never an answer: Product returns to Crash. Only the explicit
-                // Share / Don’t Share ANSWERS write a decision — they are the route's
-                // action band, not rows. Settings BACK discards its draft.
                 //
-                // **AT `Stage::Crash` THIS ARM SWALLOWS BACK, AND THAT IS THE ONE ROOT THE
-                // 2026-09-03 root rule does not yet reach.** The comment here used to say that
-                // press "restores Profiles or Shared Sources", which `consent::on_back` has
-                // never done — it returns `true` having done nothing, because sign-in is behind
-                // this question and cannot be undone. Under the new rule that is a root like
-                // any other and should call `back_at_root()`: going to the television's Home
-                // neither answers nor dismisses the question, so nothing is stranded and
-                // selecting the tile again comes straight back to it. It is NOT done here for
-                // one mechanical reason — `consent::on_back` reports `true` for BOTH the
-                // stepped-back and the swallowed case, so this arm cannot tell them apart, and
-                // teaching it to means changing `ui/consent.rs`'s return type (`Consumed |
-                // Root`), which belongs with that module rather than in a BACK arm guessing at
-                // its stage.
-                if crate::ui::consent::is_open() {
-                    if is_ok(sym) {
-                        if crate::ui::consent::focus_is_ctl() {
-                            // An answer pill is a control face with a pop of its own
-                            // (`route_screen::ActionRow`), so OK takes the tvOS press: dip
-                            // now, commit in `commit_consent` on the spring-back — the shared
-                            // decision alert's shape, for the same reason (the sheet is up
-                            // through the whole animation, so the answer being taken stays
-                            // legible).
-                            // `arm_key` records WHICH control and that the press came from the
-                            // KEY, so hover judges it by the focus stop rather than by the
-                            // coordinates it never had (`route_screen::PressFrom`).
-                            crate::ui::consent::arm_key();
-                            app.input.press.begin_ctl(app.last_input);
-                            app.ok_armed = true;
-                        } else {
-                            // a TableView row (the two documents) commits on the key-down,
-                            // as every row in the app does
-                            commit_consent(&mut app.route, &mut app.trail);
-                        }
-                    } else if is_back(sym, wcode) {
-                        // BACK reverses Product → Crash and is swallowed at Crash: the step
-                        // behind the consent question is sign-in, which cannot be undone.
-                        crate::ui::consent::on_back();
-                    } else if sym == SDLK_UP {
-                        crate::ui::consent::on_updown(-1);
-                    } else if sym == SDLK_DOWN {
-                        crate::ui::consent::on_updown(1);
-                    } else if sym == SDLK_LEFT {
-                        crate::ui::consent::on_left_right(-1);
-                    } else if sym == SDLK_RIGHT {
-                        crate::ui::consent::on_left_right(1);
-                    }
+                // **THE DISPATCHER'S ARM, and it is one line because that is the whole point**
+                // (phase 5b). Three hand-written arms stood here — consent above legal above the
+                // settings root — and the height of each in this chain WAS its modality: each
+                // `continue`d on every key, and the ordering was load-bearing because BACK out of
+                // the privacy notice would otherwise have been read as Home's ROOT PRESS and
+                // handed the screen to the television. That ordering is now a container's: the
+                // Settings family is a modal SURFACE on the app's `ModalStack`, whose inner
+                // `NavStack` walks itself on BACK and only then lets the container dismiss it, so
+                // "which of the four answers this key" is a tree walk rather than a chain the next
+                // editor has to keep in order. `owns_input` is the same question the pointer,
+                // click and wheel arms below ask, which is what stops the four drifting apart.
+                //
+                // It stays HIGH in the chain for the reason the old arms did: an owned surface is
+                // modal over whatever route is behind it, and every route arm below would
+                // otherwise act on a page the user cannot see.
+                //
+                // **The fourth root is closed here** (`app/input.rs`'s `back_at_root`). BACK at
+                // the FIRST consent stage used to be swallowed — the step behind it is sign-in,
+                // which cannot be undone — and the old comment recorded why the 2026-09-03 root
+                // rule could not reach it: `ui::consent::on_back` reported `true` for both the
+                // stepped-back and the swallowed case, so a BACK arm could not tell them apart
+                // without changing that module's return type. The owned screen simply says which
+                // it is: `ConsentPage` answers `Handled::No` at a Settings BACK and pushes
+                // `LoopReq::BackAtRoot` at the first stage, and the request drain below performs
+                // it. Nothing is stranded by going to the television's Home — the question is
+                // neither answered nor dismissed, and selecting the tile again comes back to it.
+                if tree_owns_key {
+                    app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
                     continue;
                 }
-                if crate::ui::legal::is_open() {
-                    if is_ok(sym) {
-                        crate::ui::legal::on_ok();
-                    } else if is_back(sym, wcode) {
-                        crate::ui::legal::on_back();
-                    } else if sym == SDLK_UP {
-                        crate::ui::legal::on_updown(-1);
-                    } else if sym == SDLK_DOWN {
-                        crate::ui::legal::on_updown(1);
-                    } else if sym == SDLK_LEFT {
-                        crate::ui::legal::on_left_right(-1);
-                    } else if sym == SDLK_RIGHT {
-                        crate::ui::legal::on_left_right(1);
-                    }
-                    continue;
-                }
-                if settings_root_owns_input(
-                    app.route,
-                    crate::ui::settings::is_open(),
-                    crate::ui::onboard::settings_mode(),
-                ) {
-                    if is_ok(sym) {
-                        let action = crate::ui::settings::on_ok();
-                        perform_settings_action(action, &mut app.route);
-                    } else if is_back(sym, wcode) {
-                        crate::ui::settings::on_back();
-                    } else if sym == SDLK_UP {
-                        crate::ui::settings::on_updown(-1);
-                    } else if sym == SDLK_DOWN {
-                        crate::ui::settings::on_updown(1);
-                    } else if sym == SDLK_LEFT || sym == SDLK_RIGHT {
-                        // `ui::route_screen`'s rules 8 and 9: RIGHT enters the row under
-                        // focus, LEFT leaves a screen that has no action band. The root
-                        // answered neither key at all until the family was given one model.
-                        let action = crate::ui::settings::on_left_right(
-                            if sym == SDLK_LEFT { -1 } else { 1 },
-                        );
-                        perform_settings_action(action, &mut app.route);
-                    }
-                    continue;
-                }
-                if matches!(app.route, Route::Login | Route::Profiles | Route::Onboard) {
-                    let action = key_onboarding(app.route, sym, wcode, &mut app.ok_armed, &mut app.input.press);
-                    if let Some(next) = apply_onboarding_action(action, &mut app.trail) {
-                        app.route = next;
-                    }
+                if matches!(app.route, Route::Login | Route::Profiles) {
+                    // `Route::Onboard` is deliberately absent: first-run *Favorite libraries* is
+                    // an owned screen, so it was taken by the arm above and never reaches this
+                    // one. Login and Who's Watching are not migrated in this phase.
+                    key_onboarding(app.route, sym, wcode, &mut app.ok_armed, &mut app.input.press);
                     continue;
                 }
                 if let Route::Account { over } = app.route {
-                    key_account(over, sym, wcode, &mut app.route);
+                    key_account(over, sym, wcode, &mut app.route, &mut app.pages);
                     continue;
                 }
                 if let Route::ItemMenu { over } = app.route {
@@ -848,57 +825,26 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     }
                     app.ptr.dpad_mode = false;
                 }
-                // The Settings family is a chain of POPOVERS over whatever route is behind
-                // them, so a hover ladder keyed by `route` never reached any of it — every
-                // pointer move across Settings, Privacy & data or Legal drove HOME's focus
-                // underneath instead. `ui::route_screen`'s rule 11 says hover parks focus on
-                // every screen in the family, so they take their turn here in exactly the
-                // order the key ladder gives them.
-                if crate::ui::consent::is_open() {
-                    // `ui::press` assumes focus cannot move while a press is in flight — the
-                    // nav keys pay that by calling `press::cancel`, and hover owes the same.
-                    // Otherwise a pointer-down on `Share reports` plus ordinary Magic Remote
-                    // jitter records the OTHER answer, or — the case the first version of this
-                    // guard missed — slides off every control and records the ORIGINAL one
-                    // anyway, because a miss leaves focus where it was. `pointer_hold` parks
-                    // focus as usual and reports whether the pointer is still on the thing the
-                    // press was armed on, dead space included.
-                    let held = if crate::ui::consent::alert_is_open() {
-                        crate::ui::consent::alert_hold(mx, my)
-                    } else {
-                        crate::ui::consent::pointer_hold(mx, my)
-                    };
-                    if app.ok_armed && !held {
-                        app.input.press.cancel();
-                        app.ok_armed = false;
-                    }
-                    continue;
-                }
-                if crate::ui::legal::is_open() {
-                    crate::ui::legal::pointer_focus(mx, my);
-                    continue;
-                }
-                if settings_root_owns_input(
-                    app.route,
-                    crate::ui::settings::is_open(),
-                    crate::ui::onboard::settings_mode(),
-                ) {
-                    crate::ui::settings::pointer_focus(mx, my);
+                // Hover is the tree's on every screen it owns — `ui::route_screen`'s rule 11
+                // ("hover parks focus on every screen in the family") is the HIT MAP's job now.
+                // Three hand-written arms stood here, keyed by the same open-state flags the key
+                // ladder used, and they existed because a hover ladder keyed by `route` reached
+                // none of the family: a pointer move across Settings, Privacy & data or Legal
+                // drove HOME's focus underneath instead. The press-cancel each of them paid for
+                // by hand — a pointer sliding off the control it armed must abandon that press —
+                // is `dispatch`'s ingest, which cancels an arm whose hit no longer resolves to it.
+                if app.pages.owns_input() {
+                    // `app.last_input`, stamped from the clock at the top of this arm: `fr.now`
+                    // is not written until after ingest (`tree_tick` above says why).
+                    app.inputs.push(super::bridge::pointer_input(
+                        mx,
+                        my,
+                        crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                    ));
                     continue;
                 }
                 if matches!(app.route, Route::Profiles) {
                     crate::ui::profiles::pointer_focus(mx, my);
-                } else if matches!(app.route, Route::Onboard) {
-                    // The same guard the consent arm above pays, and for the same reason: this
-                    // screen's action pill is the one control face in the family that has been
-                    // press-armed from the pointer since it was written, so hover sliding off
-                    // it mid-press could commit from a control the ring had already left.
-                    if app.ok_armed && !crate::ui::onboard::pointer_hold(mx, my) {
-                        app.input.press.cancel();
-                        app.ok_armed = false;
-                    } else if !app.ok_armed {
-                        crate::ui::onboard::pointer_focus(mx, my);
-                    }
                 } else if matches!(app.route, Route::Account { .. }) {
                     crate::ui::account_menu::pointer_focus(mx, my);
                 } else if matches!(app.route, Route::ItemMenu { .. }) {
@@ -965,36 +911,17 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     app.input.press.cancel();
                     app.ok_armed = false;
                 }
-                // Rule 11's click half. These two used to `continue` unconditionally, which
-                // is why Privacy & Data answered neither hover nor click: an answer pill, a
-                // Done, a document row and a delete-confirmation answer were all unclickable.
-                if crate::ui::consent::is_open() {
+                // Rule 11's click half, and the same one arm the hover path takes. The three it
+                // replaces each spelled out the two activation shapes by hand — a control FACE
+                // dips and commits on the spring-back, a table row commits on the button-down —
+                // which is exactly what `ElemKind` says once, per element, for every owned screen.
+                if app.pages.owns_input() {
                     let (cx, cy) = ptr_xy(&app.ev);
-                    // a control FACE dips and commits on the spring-back, exactly as its OK
-                    // does; a table row commits on the button-down like every row in the app
-                    if crate::ui::consent::alert_press_at(cx, cy)
-                        || crate::ui::consent::press_at(cx, cy)
-                    {
-                        app.input.press.begin_ctl(app.last_input);
-                        app.ok_armed = true;
-                    } else if crate::ui::consent::click_row(cx, cy) {
-                        commit_consent(&mut app.route, &mut app.trail);
-                    }
-                    continue;
-                }
-                if crate::ui::legal::is_open() {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    crate::ui::legal::click(cx, cy);
-                    continue;
-                }
-                if settings_root_owns_input(
-                    app.route,
-                    crate::ui::settings::is_open(),
-                    crate::ui::onboard::settings_mode(),
-                ) {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    let action = crate::ui::settings::click(cx, cy);
-                    perform_settings_action(action, &mut app.route);
+                    app.inputs.push(super::bridge::click_input(
+                        cx,
+                        cy,
+                        crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                    ));
                     continue;
                 }
                 // …and the pointer's half of the same rule.  The erased transport geometry is
@@ -1316,9 +1243,9 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                             crate::ui::login::enter();
                             app.route = Route::Login;
                         }
-                        // the pointer twin of `key_account`'s Legal arm
+                        // the pointer twin of `key_account`'s Settings arm
                         crate::ui::account_menu::Action::Settings => {
-                            crate::ui::settings::open();
+                            super::bridge::open_settings(&mut app.pages);
                             app.route = over.route();
                         }
                         // the pointer twin of `key_account`'s arm — lab builds only
@@ -1368,17 +1295,6 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     } else {
                         crate::ui::profiles::click(cx, cy);
                     }
-                } else if matches!(app.route, Route::Onboard) {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    // the action PILL is a control face → press it; a list row is not and
-                    // still flips its pin on the button-down. `commit_onboarding` is what can
-                    // finish the flow now, from the per-frame arm.
-                    if crate::ui::onboard::press_at(cx, cy) {
-                        app.input.press.begin_ctl(app.last_input);
-                        app.ok_armed = true;
-                    } else {
-                        crate::ui::onboard::click(cx, cy);
-                    }
                 } else if matches!(app.route, Route::Login) {
                     // one actionable thing on the login screen (retry on error) — click = OK
                     crate::ui::login::key(SDLK_RETURN, 0);
@@ -1393,6 +1309,17 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // the pointer's twin of the OK key-up: without it the dip would sit there until
                 // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
                 app.input.press.release(app.last_input);
+                // …and the same release for the TREE's press machine, which has no pointer-up of
+                // its own: `dispatch`'s ingest reaches `InputMachine::release` from exactly one
+                // place, an `Ok` key on the `Up` edge, so that is what a button-up becomes here
+                // (`bridge::release_input` carries the reasoning and why it is inert everywhere
+                // else). Unconditional on ownership for `press.release`'s reason above — a
+                // release with nothing armed is a no-op, and asking `owns_input` would drop the
+                // release of a press armed on the frame a surface began to close.
+                app.inputs.push(super::bridge::release_input(crate::ui::machine::Tick {
+                    ms: app.last_input,
+                    dt_us: 0,
+                }));
                 if app.ptr.drag {
                     app.ptr.drag = false;
                     if scrub() >= 0 {
@@ -1426,30 +1353,28 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     // the wheel scrolls VERTICALLY only, and only on routes with a vertical
                     // flow (it used to drive home's focus behind every other screen)
                     //
-                    // Item 13: a modal overlay takes the wheel BEFORE the route dispatch below
-                    // ever sees it — otherwise a wheel tick over Settings/Consent/Legal fell
-                    // through to whatever route sat behind the popover (Home's own hero/grid
-                    // dive, a Detail scroll, …), which is the same ownership question the key
-                    // ladder answers for a fresh press, asked here for the wheel instead.
-                    // `on_updown` already forwards to the open document's own `move_by` once
-                    // one is pushed (`legal.rs`/`consent.rs`), so there is no separate reader
-                    // case to spell out here.
+                    // Item 13: an owned surface takes the wheel BEFORE the route dispatch below
+                    // ever sees it — otherwise a wheel tick over Settings/Privacy/Legal fell
+                    // through to whatever route sat behind it (Home's own hero/grid dive, a
+                    // Detail scroll, …), which is the same ownership question the key ladder
+                    // answers for a fresh press, asked here for the wheel instead. It is the
+                    // same `owns_input` the other three arms ask, so the four cannot drift.
                     if dy == 0 {
                         // a fractional trackpad tick that rounded to nothing (hostsim), or a
                         // `wheel:0` token — not a step in either direction
                         continue;
                     }
-                    let delta = if dy < 0 { 1 } else { -1 };
-                    if crate::ui::consent::is_open() {
-                        crate::ui::consent::on_updown(delta);
-                    } else if crate::ui::legal::is_open() {
-                        crate::ui::legal::on_updown(delta);
-                    } else if settings_root_owns_input(
-                        app.route,
-                        crate::ui::settings::is_open(),
-                        crate::ui::onboard::settings_mode(),
-                    ) {
-                        crate::ui::settings::on_updown(delta);
+                    if app.pages.owns_input() {
+                        // A tick becomes the DIRECTION KEY it stands for (`bridge::wheel_input`),
+                        // rather than a `Wheel` the family's tables would each have to interpret:
+                        // one tick is one row, which is what `on_updown(±1)` meant. `RepeatGate`
+                        // is deliberately NOT applied — a wheel gesture's ticks are the user's own
+                        // cadence and the gate is armed against the remote's 50 ms hardware
+                        // repeat, so sharing it would let a held key mute a scroll and vice versa.
+                        app.inputs.extend(super::bridge::wheel_input(
+                            dy,
+                            crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                        ));
                     } else if matches!(app.route, Route::Home) {
                         if crate::ui::home::snap_pos() < 0.5 {
                             if dy < 0 {
@@ -1600,21 +1525,43 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
         if !app.settings_tried && fr.now.wrapping_sub(app.t0) > 800 {
             if matches!(app.route, Route::Home) {
                 app.settings_tried = true;
-                crate::ui::settings::open();
-                match app.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root") {
-                    "" | "root" => {}
-                    "home" => {
-                        perform_settings_action(crate::ui::settings::Action::Home, &mut app.route)
+                // The target is the surface's inner ROOT rather than a page pushed onto it —
+                // `bridge::AppArg` carries the whole argument, and the short version is that the
+                // Settings root's row indices belong to `RootPage` and the loop must not encode
+                // them. `home` keeps its spelling: the Home-sources editor was a `Route` and is a
+                // page of the family now, so the trigger's word outlived the mechanism.
+                let page = match app.dev.settings_boot.as_deref().map(str::trim).unwrap_or("root") {
+                    "" | "root" => crate::screens::family::SettingsPage::Root,
+                    "home" => crate::screens::family::SettingsPage::Favourites,
+                    "privacy" => crate::screens::family::SettingsPage::Privacy,
+                    "legal" => crate::screens::family::SettingsPage::Legal,
+                    other => {
+                        // A value here can only come from a hand-typed or scripted
+                        // `/tmp/plxnative-settings` trigger — this whole arm compiles out of a
+                        // RELEASE build along with the rest of `devtriggers` — so it is either a
+                        // typo an operator will want to see immediately, or a regression that
+                        // stopped some legitimate boot-target string from matching the arms
+                        // above. Opening Root rather than refusing outright keeps an interactive
+                        // session usable (a dead screen or a panic on `/tmp` content this app has
+                        // always treated as untrusted input would be strictly worse than a
+                        // visibly-wrong-but-working one), but a QUIET fallback here is exactly
+                        // what let `fps:settings-home` go silently blind for as long as it did:
+                        // Root prints the SAME `overlay=settings` word `settings-root` does (see
+                        // `app/mod.rs`'s `overlay_word` and its word-table test), so a scene
+                        // landing here by mistake still collected >=5 matching heartbeat samples
+                        // and PASSED — measuring the root page while believing it measured
+                        // whichever page the broken trigger asked for. `BADTRIGGER` is a marker no
+                        // other log call in this crate ever emits (grep the tree before reusing it
+                        // elsewhere), chosen so a saved fps log can be found by a human — or by a
+                        // future `tests/run.py` check, which does not scan arbitrary log prose for
+                        // any scene today and so cannot yet fail loudly on this by itself — even
+                        // though the printed `route=`/`overlay=` pair alone would read as a clean
+                        // pass.
+                        log(&format!("BADTRIGGER settings-boot target {other:?} unknown; opened root instead"));
+                        crate::screens::family::SettingsPage::Root
                     }
-                    "privacy" => {
-                        let current = crate::telemetry::consent::current().unwrap_or_default();
-                        crate::ui::consent::open_settings(&current);
-                    }
-                    "legal" => crate::ui::legal::open(),
-                    other => log(&format!(
-                        "settings: unknown boot target {other:?}; opened root"
-                    )),
-                }
+                };
+                super::bridge::open_settings_at(&mut app.pages, page);
             } else if fr.now.wrapping_sub(app.t0) > 12_000 {
                 app.settings_tried = true;
                 log("settings: boot target timed out before Home became available");
@@ -2486,138 +2433,137 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
             } else if app.input.press.take_commit(fr.now) {
                 app.ok_armed = false;
                 // The deferred activation, dispatched by asking the SAME questions the key
-                // ladder asked when it armed the press, in the SAME order. The modal panel
-                // comes first here because it comes first there: consent stands OVER a route
-                // that has its own arm below, so a match on `route` alone would commit a
-                // consent press as a Home activation.
-                if crate::ui::consent::is_open() {
-                    commit_consent(&mut app.route, &mut app.trail);
-                } else if matches!(app.route, Route::Onboard) {
-                    if let Some(next) = apply_onboarding_action(commit_onboarding(), &mut app.trail)
-                    {
-                        app.route = next;
+                // ladder asked when it armed the press, in the SAME order.
+                //
+                // **The two family arms that stood at the top of this dispatch are gone** — the
+                // consent question's answer pill and the first-run editor's action. Both were
+                // here for one reason: the press was the LOOP's, so the loop had to remember, a
+                // frame or two later and from nothing but the route, which screen had armed it.
+                // The tree owns its own press end to end (`InputMachine::arm` records the owner,
+                // and `PressEvent::Commit` is delivered back to exactly that machine), so an
+                // owned screen's press cannot arrive here at all — which also retires the
+                // ordering hazard the old comment recorded, that consent stood OVER a route with
+                // its own arm below and a match on `route` alone would have committed a consent
+                // press as a Home activation.
+                match app.route {
+                    // `Account { over: Home }` and not every `Account`: the popover can stand on
+                    // three pages now, and a press armed on a Library card must not commit as a
+                    // HOME activation because a panel happened to open over it. (Reaching either
+                    // is near-impossible — a nav key cancels the press — but the arm has to say
+                    // which page it means.)
+                    Route::Home
+                    | Route::Account {
+                        over: BarHost::Home,
+                    } => {
+                        // WHICH press this was, re-asked rather than remembered: the hero's
+                        // action row arms one and so does the grid, and `home_activate`
+                        // needs the focus value to tell them apart. Sound because focus
+                        // cannot move under a press (a nav key cancels it), so the answer is
+                        // the one that was true when the key went down — and the grid's
+                        // sentinel is what a hero pill or a Retry press could never be,
+                        // since neither arms a press at all.
+                        let hf = if crate::ui::home::focus_is_ctl() {
+                            crate::ui::home::hero_focus()
+                        } else {
+                            c_int::MIN
+                        };
+                        home_activate(
+                            mt,
+                            hf,
+                            HUD_LINGER_MS,
+                            &mut app.route,
+                            &mut app.play_from,
+                            &mut app.trail,
+                            &mut app.hud.nav,
+                            &mut app.nav_pending,
+                        );
                     }
-                } else {
-                    match app.route {
-                        // `Account { over: Home }` and not every `Account`: the popover can stand on
-                        // three pages now, and a press armed on a Library card must not commit as a
-                        // HOME activation because a panel happened to open over it. (Reaching either
-                        // is near-impossible — a nav key cancels the press — but the arm has to say
-                        // which page it means.)
-                        Route::Home
-                        | Route::Account {
-                            over: BarHost::Home,
-                        } => {
-                            // WHICH press this was, re-asked rather than remembered: the hero's
-                            // action row arms one and so does the grid, and `home_activate`
-                            // needs the focus value to tell them apart. Sound because focus
-                            // cannot move under a press (a nav key cancels it), so the answer is
-                            // the one that was true when the key went down — and the grid's
-                            // sentinel is what a hero pill or a Retry press could never be,
-                            // since neither arms a press at all.
-                            let hf = if crate::ui::home::focus_is_ctl() {
-                                crate::ui::home::hero_focus()
-                            } else {
-                                c_int::MIN
-                            };
-                            home_activate(
-                                mt,
-                                hf,
-                                HUD_LINGER_MS,
-                                &mut app.route,
-                                &mut app.play_from,
-                                &mut app.trail,
-                                &mut app.hud.nav,
-                                &mut app.nav_pending,
-                            );
-                        }
-                        // Re-ASKED, not remembered, exactly as the Detail arm below does —
-                        // and it has to be asked now that the shelves arm this press too. The
-                        // grid's answer is `Card` (open the page); a SHELF tile's is
-                        // `ShelfCard`, which a section deck turns into a RESUME. Dispatching
-                        // both here rather than calling `open_library_card` unconditionally is
-                        // what stops a held-then-released press on a Continue Watching tile
-                        // opening the detail page the immediate path would have resumed past.
-                        Route::Library => match crate::ui::library::on_ok() {
-                            crate::ui::library::Action::ShelfCard { from_deck } => {
-                                if let Some(mm) = crate::ui::library::focused_item() {
-                                    // the DECK plays; every other shelf navigates — see `home_activate`
-                                    let want_play = from_deck;
-                                    activate_card(
-                                        mt,
-                                        mm,
-                                        want_play,
-                                        HUD_LINGER_MS,
-                                        &mut app.route,
-                                        &mut app.play_from,
-                                        &mut app.hud.nav,
-                                        &mut app.nav_pending,
-                                    );
-                                }
-                            }
-                            // the paged grid, and — for totality — the zones that cannot arm a
-                            // press at all (`focus_is_card` is Grid or Shelf only)
-                            _ => open_library_card(app.route, &mut app.nav_pending),
-                        },
-                        // ONE arm for the page's cards AND its hero control row: `on_ok`
-                        // already resolves which, exactly as it does on the immediate path.
-                        Route::Detail => {
-                            if crate::ui::detail::on_ok() {
-                                start_playback(
+                    // Re-ASKED, not remembered, exactly as the Detail arm below does —
+                    // and it has to be asked now that the shelves arm this press too. The
+                    // grid's answer is `Card` (open the page); a SHELF tile's is
+                    // `ShelfCard`, which a section deck turns into a RESUME. Dispatching
+                    // both here rather than calling `open_library_card` unconditionally is
+                    // what stops a held-then-released press on a Continue Watching tile
+                    // opening the detail page the immediate path would have resumed past.
+                    Route::Library => match crate::ui::library::on_ok() {
+                        crate::ui::library::Action::ShelfCard { from_deck } => {
+                            if let Some(mm) = crate::ui::library::focused_item() {
+                                // the DECK plays; every other shelf navigates — see `home_activate`
+                                let want_play = from_deck;
+                                activate_card(
                                     mt,
-                                    crate::ui::detail::last_resume_ns(),
-                                    origin_here(app.route),
+                                    mm,
+                                    want_play,
                                     HUD_LINGER_MS,
                                     &mut app.route,
                                     &mut app.play_from,
                                     &mut app.hud.nav,
+                                    &mut app.nav_pending,
                                 );
                             }
                         }
-                        Route::Person => {
-                            if matches!(
-                                crate::ui::person::on_ok(),
-                                crate::ui::person::Action::Card
-                            ) {
-                                open_person_card(app.route, &mut app.nav_pending);
-                            }
+                        // the paged grid, and — for totality — the zones that cannot arm a
+                        // press at all (`focus_is_card` is Grid or Shelf only)
+                        _ => open_library_card(app.route, &mut app.nav_pending),
+                    },
+                    // ONE arm for the page's cards AND its hero control row: `on_ok`
+                    // already resolves which, exactly as it does on the immediate path.
+                    Route::Detail => {
+                        if crate::ui::detail::on_ok() {
+                            start_playback(
+                                mt,
+                                crate::ui::detail::last_resume_ns(),
+                                origin_here(app.route),
+                                HUD_LINGER_MS,
+                                &mut app.route,
+                                &mut app.play_from,
+                                &mut app.hud.nav,
+                            );
                         }
-                        Route::Search => {
-                            if let crate::ui::search::Action::Open(node) =
-                                crate::ui::search::on_ok()
-                            {
-                                nav_open(app.route, node, None, &mut app.nav_pending);
-                            }
-                        }
-                        // an avatar or the Sign-out footer — the screen resolves which
-                        Route::Profiles => crate::ui::profiles::activate_focused(),
-                        // the transport's control row (discs or a stand-in)
-                        Route::Player {
-                            overlay: Overlay::None,
-                        } => activate_player_row(
-                            mt,
-                            fr.ctrl,
-                            fr.now,
-                            &mut app.route,
-                            &mut app.hud,
-                            &mut app.held_key,
-                            &mut app.trail,
-                            &mut app.play_from,
-                            &mut app.refresh_hubs_at,
-                        ),
-                        // the Info card's action column
-                        Route::Player {
-                            overlay: Overlay::Info,
-                        } => commit_info_panel(
-                            mt,
-                            fr.now,
-                            &mut app.route,
-                            &app.play_from,
-                            &mut app.refresh_hubs_at,
-                            &mut app.trail,
-                        ),
-                        _ => {}
                     }
+                    Route::Person => {
+                        if matches!(
+                            crate::ui::person::on_ok(),
+                            crate::ui::person::Action::Card
+                        ) {
+                            open_person_card(app.route, &mut app.nav_pending);
+                        }
+                    }
+                    Route::Search => {
+                        if let crate::ui::search::Action::Open(node) =
+                            crate::ui::search::on_ok()
+                        {
+                            nav_open(app.route, node, None, &mut app.nav_pending);
+                        }
+                    }
+                    // an avatar or the Sign-out footer — the screen resolves which
+                    Route::Profiles => crate::ui::profiles::activate_focused(),
+                    // the transport's control row (discs or a stand-in)
+                    Route::Player {
+                        overlay: Overlay::None,
+                    } => activate_player_row(
+                        mt,
+                        fr.ctrl,
+                        fr.now,
+                        &mut app.route,
+                        &mut app.hud,
+                        &mut app.held_key,
+                        &mut app.trail,
+                        &mut app.play_from,
+                        &mut app.refresh_hubs_at,
+                    ),
+                    // the Info card's action column
+                    Route::Player {
+                        overlay: Overlay::Info,
+                    } => commit_info_panel(
+                        mt,
+                        fr.now,
+                        &mut app.route,
+                        &app.play_from,
+                        &mut app.refresh_hubs_at,
+                        &mut app.trail,
+                    ),
+                    _ => {}
                 }
             } else if !app.input.press.is_active() {
                 app.ok_armed = false; // long-press / cancelled — disarm without activating
@@ -2748,10 +2694,10 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                 // The sign-in's question first, before any per-profile step. On a Plex Home
                 // account it was already asked at the picker below and this is a no-op; on a
                 // single-user account this is the earliest authorized moment there is.
-                maybe_ask_consent();
-                if crate::ui::onboard::asks() {
+                maybe_ask_consent(&mut app.pages);
+                if crate::screens::onboard::asks() {
                     log("login: server installed — asking which sources feed Home");
-                    crate::ui::onboard::enter();
+                    // no `enter()`: naming the route is what mounts the owned screen (`boot.rs`)
                     app.route = Route::Onboard;
                 } else {
                     log("login: server installed — entering Home");
@@ -2764,7 +2710,7 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                         // question is answerable, and the person holding the remote at this
                         // moment is the one who signed the television in. It draws over the
                         // picker's route on its own opaque ground.
-                        maybe_ask_consent();
+                        maybe_ask_consent(&mut app.pages);
                         if app.route != Route::Profiles {
                             crate::ui::profiles::enter();
                         }
@@ -2960,15 +2906,66 @@ pub(super) unsafe fn nav_commit(app: &mut App, _mt: &crate::task::MainThread, fr
         }
 }
 
+/// **What an owned screen asked the LOOP to do this frame** (spec §14, `screens::registry`'s
+/// `LoopReq`), drained immediately after the dispatcher's frame so the route it may flip is the
+/// one the rest of the iteration sees.
+///
+/// Each variant is a DEBT with a phase number on it: the machine that should own the decision —
+/// Session, or Navigation over the app's real stack — is not on the dispatcher yet, so the screen
+/// names the outcome and the loop performs it. None of them is a general escape hatch; they are
+/// the four things a Settings-family screen can decide that outlive the surface it decided them in.
+fn loop_requests(app: &mut App) {
+    for req in app.bridge.take_reqs() {
+        match req {
+            // BACK at a root the platform owns. The FIRST consent stage is the fourth such root
+            // and the one the 2026-09-03 rule could not reach until this phase — see the key
+            // ladder's dispatcher arm for why a `Popover` could not tell the two BACKs apart.
+            crate::screens::registry::LoopReq::BackAtRoot => back_at_root(),
+            // Privacy & data → Delete all local data, confirmed. The sweep signs the account out,
+            // so the surface goes with the screen under it: there is no host left for its
+            // dismissal fade to run over, which is what `settings::hide()` used to say by hand.
+            //
+            // **Both halves of that old `settings::hide()` matter, and this arm dropped both for
+            // a while.** `dismiss_surfaces_now` (not the ordinary, spring-driven
+            // `dismiss_surfaces`) is `ModalStack::hide`'s caller — see that function's doc for why
+            // a queued fade is actively wrong here: `delete_all_local_data_and_sign_out` above has
+            // already flipped `app.route` to `Route::Login`, so a Settings surface that took even
+            // one more frame to start fading, let alone the several a spring takes to settle,
+            // would composite its cached snapshot of the now-gone Settings/Home page over the
+            // freshly-mounted sign-in screen. And the confirmed answer's own decision alert
+            // (`screens::consent.rs`'s `DecisionAlert`, nested inside this same surface) DOES
+            // still fade on its own spring — legacy's `close_delete_and_menu(true)` never made
+            // that one instant either, only the popover behind it — so its `Glass::CACHED` panel
+            // is still serving the one snapshot it took of the Settings page for the length of
+            // that fade. `blur_invalidate()` is the same fix legacy reached for at the same call
+            // site and for the same reason (`consent.rs::close_delete_and_menu`'s comment): it
+            // forces a recapture, so the alert's exit shows whatever is actually on screen now —
+            // the incoming sign-in page — rather than a ghost of the screen the sweep just erased.
+            crate::screens::registry::LoopReq::DeleteAllLocalData => {
+                delete_all_local_data_and_sign_out(&mut app.route, &mut app.trail);
+                super::bridge::dismiss_surfaces_now(&mut app.pages);
+                crate::gfx::blur_invalidate();
+            }
+            // First-run Favourites finished (Start watching, or the retry that found nothing to
+            // pin): Home, with the trail reset so BACK from it is the root press.
+            crate::screens::registry::LoopReq::OnboardDone => {
+                app.route = enter_home_from_onboard(&mut app.trail);
+            }
+            // …and its BACK: the picker behind it, re-seeded from the persisted session.
+            crate::screens::registry::LoopReq::OnboardBack => {
+                app.route = enter_profiles_from_onboard();
+            }
+        }
+    }
+}
+
 /// The update phase: per-route screen updates (which run the route-gated store pumps), the
-/// dev oscillators, every overlay's `update(dt)`, the play landing and the remaining pumps —
-/// `tick_drain` on the FRAMEDROP line.
+/// dev oscillators, the play landing and the remaining pumps — `tick_drain` on the FRAMEDROP
+/// line.
 pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame) {
 
         if matches!(app.route, Route::Login) {
             crate::ui::login::update(fr.dt);
-        } else if matches!(app.route, Route::Onboard) {
-            crate::ui::onboard::update(fr.dt);
         } else if matches!(app.route, Route::Profiles) {
             crate::ui::profiles::update(fr.dt);
             if app.pick_user.is_some()
@@ -2987,10 +2984,8 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
         // freezes its host so invisible hero/shelf work cannot steal frames from the menu.
         // Asking `page_of` here keeps the host identity in one place while the lifecycle policy
         // remains separately testable instead of being inferred from route shape.
-        } else if host_page_updates(
-            app.route,
-            crate::ui::settings::is_open() || crate::ui::consent::freezes_host(),
-        ) && matches!(page_of(app.route), Route::Home)
+        } else if host_page_updates(app.route, super::bridge::host_frozen(&app.pages))
+            && matches!(page_of(app.route), Route::Home)
         {
             if app.dev.hero_osc && fr.now.wrapping_sub(app.hero_osc_last) > 700 {
                 app.hero_osc_last = fr.now;
@@ -3024,10 +3019,8 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 crate::ui::home::home_update(fr.dt);
             });
             fr.underlay_moving |= moving;
-        } else if host_page_updates(
-            app.route,
-            crate::ui::settings::is_open() || crate::ui::consent::freezes_host(),
-        ) && matches!(page_of(app.route), Route::Library)
+        } else if host_page_updates(app.route, super::bridge::host_frozen(&app.pages))
+            && matches!(page_of(app.route), Route::Library)
         {
             // dev: libosc sweeps the browse-grid focus down↔up (the library_scroll FPS scene).
             // Only while the PAGE holds focus, for `detail_osc`'s reason: the context-menu
@@ -3061,10 +3054,8 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
             });
             fr.underlay_moving |= moving;
         }
-        if host_page_updates(
-            app.route,
-            crate::ui::settings::is_open() || crate::ui::consent::freezes_host(),
-        ) && matches!(page_of(app.route), Route::Search)
+        if host_page_updates(app.route, super::bridge::host_frozen(&app.pages))
+            && matches!(page_of(app.route), Route::Search)
         {
             // dev: searchosc sweeps the result shelves' focus down↔up (the fps:search-type
             // scene). Same 350ms step / 3s reversal as homeosc and libosc, so the three read
@@ -3111,25 +3102,62 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 crate::ui::account_menu::move_focus(sym as c_int);
             }
         }
+        // ---- the Settings family's dev oscillators, on the tree -------------------------
+        //
+        // All six drive the SAME screens through the same door the remote does: a synthesised
+        // `InputEvent` with `Source::Script`, queued on `app.inputs` for the dispatcher's next
+        // frame. That is what replaced calling `on_updown`/`on_ok` on four modules by hand and
+        // then asking four `is_open()` flags to decide which — the top page of the surface takes
+        // the key whatever it is, so `settings_osc` no longer needs to know that Legal and
+        // Privacy exist. **Every interval below is unchanged**, because these scenes' gates are
+        // read against a cadence (`fps:modal-ramp`, `legal-document`, `decision-alert`,
+        // `settings-*`): 1500 ms for the modal ramp, 520 ms for the three focus sweeps.
+        let script_tick = crate::ui::machine::Tick {
+            ms: fr.now,
+            dt_us: (fr.dt * 1_000_000.0) as u32,
+        };
         if app.dev.modal_osc && app.settings_tried && fr.now.wrapping_sub(app.modal_osc_last) > 1500 {
             app.modal_osc_last = fr.now;
-            if crate::ui::settings::is_open() {
-                // `on_back`, not `close`: the interactive exit runs the dismiss FADE, and the
-                // fade is the half of the ramp this scene exists to grade.
-                let _ = crate::ui::settings::on_back();
+            if super::bridge::settings_up(&app.pages) {
+                // A DISMISS, not a teardown: the interactive exit runs the fade, and the fade is
+                // the half of the ramp this scene exists to grade. `settings_up` is true through
+                // that fade as `settings::is_open()` was, so the surface is never re-presented
+                // over one still closing.
+                super::bridge::dismiss_surfaces(&mut app.pages);
             } else {
-                crate::ui::settings::open();
+                super::bridge::open_settings(&mut app.pages);
             }
         }
-        if app.dev.legal_doc && !app.legal_doc_tried && crate::ui::legal::is_open() {
+        if app.dev.legal_doc
+            && !app.legal_doc_tried
+            && super::bridge::surface_word(&app.pages) == Some(crate::screens::registry::word::LEGAL)
+        {
+            // The Legal index opens on its first row, so one OK is the whole trigger. Waiting on
+            // the WORD rather than on `settings_up` is what makes it a one-shot on the right page:
+            // `plxnative-settings=legal` roots the surface at the index, and until that page has
+            // mounted the surface still names `settings`.
             app.legal_doc_tried = true;
-            let _ = crate::ui::legal::on_ok();
+            app.inputs.extend(super::bridge::script_key(crate::ui::machine::Key::Ok, script_tick));
         }
-        if app.dev.alert_boot && !app.alert_tried && crate::ui::consent::is_open() {
-            app.alert_tried = true;
-            crate::ui::consent::dev_open_delete_alert();
+        if app.dev.alert_boot
+            && !app.alert_tried
+            && super::bridge::surface_word(&app.pages) == Some(crate::screens::registry::word::PRIVACY)
+        {
+            // Walk to *Delete all local data* and press it. See `boot`'s `alert_step` for why
+            // this is a bounded count of DOWNs at one press per frame rather than a row index:
+            // the row is the last of that table, DOWN at the last row is an `Outcome::Edge`, and
+            // the table's length is the screen's own business.
+            const ALERT_WALK: u8 = 16;
+            let key = if app.alert_step < ALERT_WALK {
+                app.alert_step += 1;
+                crate::ui::machine::Key::Down
+            } else {
+                app.alert_tried = true;
+                crate::ui::machine::Key::Ok
+            };
+            app.inputs.extend(super::bridge::script_key(key, script_tick));
         }
-        if app.dev.settings_osc && crate::ui::settings::is_open() {
+        if app.dev.settings_osc && super::bridge::settings_up(&app.pages) {
             // This is deliberately continuous. Row springs naturally settle between D-pad
             // steps, so measuring only their duty cycle would grade timing policy rather than
             // the GPU cost of the Settings composition the user asked to hold at 50 fps.
@@ -3141,47 +3169,49 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
             // picture that looked like broken production focus.
             if fr.now.wrapping_sub(app.settings_osc_last) > 520 {
                 app.settings_osc_last = fr.now;
-                let delta = if app.settings_osc_down { 1 } else { -1 };
-                app.settings_osc_down = !app.settings_osc_down;
-                if matches!(app.route, Route::Onboard) && crate::ui::onboard::settings_mode() {
-                    let sym = if delta > 0 { SDLK_DOWN } else { SDLK_UP };
-                    crate::ui::onboard::key(sym, 0);
-                } else if crate::ui::legal::is_open() {
-                    crate::ui::legal::on_updown(delta);
-                } else if crate::ui::consent::is_open() {
-                    crate::ui::consent::on_updown(delta);
+                let key = if app.settings_osc_down {
+                    crate::ui::machine::Key::Down
                 } else {
-                    crate::ui::settings::on_updown(delta);
-                }
+                    crate::ui::machine::Key::Up
+                };
+                app.settings_osc_down = !app.settings_osc_down;
+                app.inputs.extend(super::bridge::script_key(key, script_tick));
             }
         }
-        if app.dev.consent_osc && crate::ui::consent::is_open() && !crate::ui::settings::is_open() {
+        if app.dev.consent_osc && super::bridge::consent_up(&app.pages) {
+            // The FIRST-RUN question, never the Settings Privacy page — which is what
+            // `consent::is_open() && !settings::is_open()` used to say, and what asking the
+            // surface's own identity says now without the two flags having to be ordered.
             crate::ui::idle::invalidate();
             if fr.now.wrapping_sub(app.consent_osc_last) > 520 {
                 app.consent_osc_last = fr.now;
-                let delta = if app.consent_osc_down { 1 } else { -1 };
+                let key = if app.consent_osc_down {
+                    crate::ui::machine::Key::Down
+                } else {
+                    crate::ui::machine::Key::Up
+                };
                 app.consent_osc_down = !app.consent_osc_down;
-                crate::ui::consent::on_updown(delta);
+                app.inputs.extend(super::bridge::script_key(key, script_tick));
             }
         }
         if app.dev.onboard_osc && matches!(app.route, Route::Onboard) {
             crate::ui::idle::invalidate();
             if fr.now.wrapping_sub(app.onboard_osc_last) > 520 {
                 app.onboard_osc_last = fr.now;
-                let sym = if app.onboard_osc_right {
-                    SDLK_RIGHT
+                let key = if app.onboard_osc_right {
+                    crate::ui::machine::Key::Right
                 } else {
-                    SDLK_LEFT
+                    crate::ui::machine::Key::Left
                 };
                 app.onboard_osc_right = !app.onboard_osc_right;
-                crate::ui::onboard::key(sym, 0);
+                app.inputs.extend(super::bridge::script_key(key, script_tick));
             }
         }
-        // Self-gated like the alert, and for the same reason: not a route, so there is no
-        // route term to test it with.
-        crate::ui::legal::update(fr.dt);
-        crate::ui::consent::update(fr.dt);
-        crate::ui::settings::update(fr.dt);
+        // (`legal::update` / `consent::update` / `settings::update` stood here, self-gated on
+        // their own `Popover::visible` because none of them was a route. The surface and its
+        // pages are TICKED by the dispatcher — `RouteSurface::tick` steps the push spring and
+        // then delivers `ScreenEvent::Tick` to every body on its stack — so there is nothing
+        // left for this phase to advance.)
         // Self-gated on `Popover::visible`, NOT on the route — the same rule the draw sites
         // below obey, and for the same reason. These two popovers are also ROUTES, so
         // dismissing one flips `route` back to its host page on the press frame while the
@@ -3524,15 +3554,24 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                         // `home_draw` the moment they became menu hosts, and the account popover
                         // drew Home over the Library the moment the profile chip became pressable
                         // there.
-                        let page_route = if matches!(app.route, Route::Onboard)
-                            && crate::ui::onboard::settings_mode()
-                        {
-                            std::ptr::addr_of!(SETTINGS_HOME_RETURN)
-                                .read()
-                                .unwrap_or(Route::Home)
-                        } else {
-                            page_of(app.route)
-                        };
+                        //
+                        // It used to have a fourth case, and its removal is the whole of what
+                        // phase 5b did to this line: while the Home-sources editor was a ROUTE
+                        // borrowed by Settings, `Route::Onboard` in settings mode had to draw
+                        // the page the modal was STANDING on (`SETTINGS_HOME_RETURN`) rather
+                        // than the editor. The editor is a page of the surface's own stack now,
+                        // so the route under it never moved and `page_of` is the whole answer.
+                        let page_route = page_of(app.route);
+                        // Does the DISPATCHER draw the top page (first-run Favourites today)?
+                        // Sampled once, before the closure, because both the visible pass and the
+                        // blur source pass below are gated on it — and because `page` borrows
+                        // nothing of `app`, which is what keeps this readable.
+                        let page_owned = super::bridge::page_owned(&app.pages, app.route);
+                        // …and the host fold: an opaque surface whose ground has drawn REPLACES
+                        // the page, so the legacy page pass is skipped wholesale. This was two
+                        // `host_ground_ready()` reads, one per full-screen popover, which is
+                        // exactly the list that could not be extended without editing this line.
+                        let host_replaced = super::bridge::host_replaced(&app.pages);
                         let mut page = || {
                             // A compact modal still exposes most of its host, so unlike
                             // Settings it cannot replace the page with an opaque ground. It
@@ -3552,8 +3591,6 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                             let _host = crate::ui::popover::host::page_pass();
                             if matches!(page_route, Route::Login) {
                                 crate::ui::login::draw();
-                            } else if matches!(page_route, Route::Onboard) {
-                                crate::ui::onboard::draw();
                             } else if matches!(page_route, Route::Profiles) {
                                 crate::ui::profiles::draw();
                             } else if matches!(page_route, Route::Detail) {
@@ -3603,15 +3640,19 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                             // place, in the draw order they always occupied.
                             crate::ui::account_menu::draw_scrim();
                             crate::ui::item_menu::draw_scrim();
-                            // The rest of that class, and the ones with no opener to lift: a
-                            // notice is about the APP, not about anything on the page behind it.
-                            crate::ui::settings::draw_scrim();
-                            crate::ui::legal::draw_scrim();
-                            // And the consent question over all of them, mirroring the key ladder.
-                            crate::ui::consent::draw_scrim();
+                            // (`settings`/`legal`/`consent`'s scrims stood here — "a notice is
+                            // about the APP, not about anything on the page behind it" — for the
+                            // same reason the two above still do: a popover drawn AFTER this
+                            // closure owes its scrim TO it, or the frosted ground comes out at
+                            // full page brightness inside a dimmed screen. The family draws its
+                            // own scrim INSIDE its page pass now (`RouteSurface::draw` opens with
+                            // it), which satisfies the rule from the other side: the scrim and
+                            // the surface are one draw, so they cannot be separated by a pass.)
                         };
                         if let Some(reg) = crate::gfx::blur_direct_region() {
-                            crate::gfx::blur_snapshot_direct(reg, &mut page);
+                            if !page_owned {
+                                crate::gfx::blur_snapshot_direct(reg, &mut page);
+                            }
                         }
                         // Settings owns a frozen, already-blurred image of the host. After its
                         // first visible draw, repainting the full Home hero and shelves beneath
@@ -3621,9 +3662,14 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                         // The compact modals do NOT take this branch: they expose most of their
                         // host, so the page still has to be on the framebuffer. `page` runs, and
                         // the freeze inside it is what makes running it cheap.
-                        if !crate::ui::settings::host_ground_ready()
-                            && !crate::ui::consent::host_ground_ready()
-                        {
+                        //
+                        // `page_owned` is the second guard, and it is not the same question:
+                        // `host_replaced` says a SURFACE has taken the screen, while this says
+                        // the top PAGE itself is an owned screen the dispatcher draws below — so
+                        // `page()` would render whatever legacy route sat in its `else`. Home,
+                        // today, which is exactly the failure the `page_route` note two altitudes
+                        // up describes for the popovers.
+                        if !host_replaced && !page_owned {
                             crate::ui::profile::phase("main.ui", || page());
                         }
                         // The diagnostics read-out, off the player. It drew ONLY inside the branch
@@ -3647,30 +3693,35 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                         // panel is still fading out over it (`Popover::dismiss`).
                         crate::ui::account_menu::draw(); // profile popover, over the page it opened on
                         crate::ui::item_menu::draw(); // press-and-hold card menu, over the live screen
-                        // …and the notice over all of it, mirroring the key ladder: whichever
-                        // answers BACK first must also be the one on top.
-                        crate::ui::settings::draw();
-                        // The Settings-hosted Home editor, drawn through its OWN push
-                        // (`settings::HOME_PUSH`, split off `settings::CHILD` 2026-09-04 so
-                        // Privacy/Legal opening cannot also satisfy this gate). Gated on the
-                        // push's own amount (`settings::home_editor_visible`), not on
-                        // `route == Route::Onboard && onboard::settings_mode()`: that
-                        // flag-based gate is what used to mount the editor at full opacity on
-                        // its first frame (nothing ever painted it through `RoutePush::child`)
-                        // and drop it with no reverse animation at all
-                        // (`perform_settings_action`'s Done/Cancel exit flips both the route
-                        // and `settings_mode()` away on the SAME frame the reverse spring
-                        // starts). The amount-based gate keeps drawing it, fading and sliding,
-                        // for exactly as long as `settings::update`'s `HOME_PUSH` says there is
-                        // still something on screen — in both directions — and is `false`
-                        // throughout an ordinary first-run boot, which never touches that push.
-                        if crate::ui::settings::home_editor_visible() {
-                            crate::ui::onboard::draw();
-                        }
-                        crate::ui::legal::draw();
-                        // Top of the stack, mirroring the top of the key ladder — the boot stopped
-                        // for this, so nothing may be drawn over it.
-                        crate::ui::consent::draw();
+                        // **THE TREE, once, at the slot the family always occupied** — over the
+                        // two compact popovers, under the dev glass. Five calls stood here:
+                        // `settings::draw()`, the Home editor behind its own second push spring,
+                        // `legal::draw()` and `consent::draw()` on top, each self-gated and each
+                        // ordered by hand to mirror the key ladder ("whichever answers BACK first
+                        // must also be the one on top"). One `Dispatcher::draw` states the same
+                        // order structurally: the surfaces are drawn bottom to top and the inner
+                        // stack's push is the surface's own, so Privacy over the root, or the
+                        // second consent stage over the first, is a stack rather than a pair of
+                        // springs somebody has to keep in step.
+                        //
+                        // `pages` is `page_owned` and it must be exactly that: the argument says
+                        // whether the PAGE pass runs here too, and this is the only call, so a
+                        // `true` for a legacy top page would draw a `LegacyPage` (which paints
+                        // nothing) instead of the page closure above, while a `false` for an
+                        // owned one would leave first-run Favourites unpainted. `Dispatcher::draw`
+                        // also fills and SWAPS the hit map, so calling it twice in a frame — once
+                        // inside the page closure and once here — would register the surfaces'
+                        // stops twice and hand the pointer a map from the wrong pass.
+                        //
+                        // The consequence of drawing an owned PAGE here rather than in the page
+                        // closure is that it lands over `stats`, `account_menu` and `item_menu`.
+                        // That is sound today and stated rather than assumed: the one owned page
+                        // is `Route::Onboard`, which wears no tab bar (so the profile chip that
+                        // opens the account menu is not on it), grows no card context menu, and
+                        // is reached before any of it. It stops being sound the moment a page
+                        // that CAN host a popover is migrated, which is phase 5c's problem and
+                        // is why the popovers move onto the tree with it.
+                        app.pages.draw(&mut app.bridge, page_owned);
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on
@@ -3754,7 +3805,20 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
         let probe_screen = |app: &App| match app.route {
                 Route::Login => crate::focusprobe::Screen::Login,
                 Route::Profiles => crate::focusprobe::Screen::Profiles,
-                Route::Onboard => crate::focusprobe::Screen::Onboard,
+                // The one OWNED page, so its cursor comes from the focus engine rather than
+                // from a module global. A key at or above `registry::BAND` is the action band,
+                // not a row — and the row it retired to is deliberately NOT carried: the engine
+                // has one cursor and it is on the band, which is the honest reading and the one
+                // difference in this line's values across phase 5b (`focusprobe::Screen`).
+                Route::Onboard => {
+                    let (list, row) = match app.pages.focus_record() {
+                        Some((_, elem, _)) if elem < crate::screens::registry::BAND => {
+                            (true, elem as i32)
+                        }
+                        _ => (false, -1),
+                    };
+                    crate::focusprobe::Screen::Onboard { list, row }
+                }
                 Route::Home => crate::focusprobe::Screen::Home,
                 Route::Account { over } => crate::focusprobe::Screen::Account {
                     over: probe_bar_host(over),
@@ -3787,17 +3851,22 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
             crate::focusprobe::sample(fr.rn, probe_screen(app), probe_hud(app), fr.ctrl);
         }
         // The recorder's frame tail (spec §5.3): on an event frame the logical-state hash —
-        // the press machine, the route and overlay words and the focus fingerprint, i.e. the
-        // state a press MOVED this frame, sampled here for the probe's own reason — then the
-        // frame's records flushed. Under a replay the same hash is graded against the recorded
-        // one; the run ends when the recording does.
+        // the press machine, the route and overlay words, the focus fingerprint and, since phase
+        // 5b, the CONTAINER TREE's own hash, i.e. the state a press MOVED this frame, sampled
+        // here for the probe's own reason — then the frame's records flushed. Under a replay the
+        // same hash is graded against the recorded one; the run ends when the recording does.
+        //
+        // The tree term is what makes a press inside the Settings family gradeable at all: none
+        // of those screens has a global for the fingerprint to read, so without it every frame of
+        // that whole flow hashed the same and a divergence there was structurally invisible.
         if !matches!(app.rec, super::recorder::Recplay::Off) {
             let focus = crate::focusprobe::line(fr.rn, probe_screen(app), probe_hud(app), fr.ctrl);
-            let ov = overlay_word(app.route);
+            let ov = overlay_word(&app.pages, app.route);
+            let tree = app.pages.state_hash();
             let press = &app.input.press;
             let done = app
                 .rec
-                .end_frame(&|| super::recorder::state_hash(press, rn, ov, &focus));
+                .end_frame(&|| super::recorder::state_hash(press, rn, ov, &focus, tree));
             if done {
                 app.running = false;
             }
@@ -3837,7 +3906,7 @@ pub(super) unsafe fn heartbeat(app: &mut App, _mt: &crate::task::MainThread, fr:
             // as the opposite of what it says: the field that used to be `FPS=` is now `loop=`,
             // and `fps=` now means what it always should have — frames actually presented,
             // previously `pres=`. An old `FPS=60` is a LOOP rate and says nothing about frames.
-            let ov = overlay_word(app.route);
+            let ov = overlay_word(&app.pages, app.route);
             // `pos=<s>` rides the heartbeat while frames are actually being presented: the
             // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
             // that reporter's 10s cadence. tests/run.py grades playback progress from this.

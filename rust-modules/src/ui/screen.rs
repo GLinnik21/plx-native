@@ -128,6 +128,12 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn render_bytes(&self) -> usize {
         0
     }
+    /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
+    /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after
+    /// every draw; a page never answers.
+    fn ground_ready(&self) -> bool {
+        false
+    }
 }
 
 /// The application's screen argument (§6.1).
@@ -429,6 +435,59 @@ macro_rules! focusable_via_composed {
                 cx: &$crate::ui::machine::Cx<'_, $h>,
             ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
                 $crate::ui::screen::composed_seat(self, g, from, cx)
+            }
+        }
+    };
+}
+
+/// `impl Focusable<H> for $t` by delegation to a VIEW the screen builds for the frame — a
+/// `TableScreen`/`DocumentScreen` over its own state (`fn $view(&self) -> impl Focusable<$h>`).
+/// The screen keeps the widgets; the composition is rebuilt per query, exactly as the draw
+/// rebuilds it (phase 5b's family pages).
+#[macro_export]
+macro_rules! focusable_via_view {
+    ($t:ty, $h:ty, $view:ident) => {
+        impl $crate::ui::screen::Focusable<$h> for $t {
+            fn groups(&self, cx: &$crate::ui::machine::Cx<'_, $h>, out: &mut Vec<$crate::ui::screen::GroupSpec>) {
+                $crate::ui::screen::Focusable::<$h>::groups(&self.$view(), cx, out)
+            }
+            fn group_of(
+                &self,
+                key: &<$h as $crate::ui::machine::Host>::Elem,
+                cx: &$crate::ui::machine::Cx<'_, $h>,
+            ) -> Option<$crate::ui::machine::GroupId> {
+                $crate::ui::screen::Focusable::<$h>::group_of(&self.$view(), key, cx)
+            }
+            fn neighbour(
+                &self,
+                key: $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem>,
+                dir: $crate::ui::screen::Dir,
+                cx: &$crate::ui::machine::Cx<'_, $h>,
+            ) -> $crate::ui::screen::Step<<$h as $crate::ui::machine::Host>::Elem> {
+                $crate::ui::screen::Focusable::<$h>::neighbour(&self.$view(), key, dir, cx)
+            }
+            fn place(
+                &self,
+                key: &<$h as $crate::ui::machine::Host>::Elem,
+                cx: &$crate::ui::machine::Cx<'_, $h>,
+                at: $crate::ui::screen::At,
+            ) -> Option<$crate::ui::screen::Placed> {
+                $crate::ui::screen::Focusable::<$h>::place(&self.$view(), key, cx, at)
+            }
+            fn reconcile(
+                &self,
+                want: $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem>,
+                cx: &$crate::ui::machine::Cx<'_, $h>,
+            ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
+                $crate::ui::screen::Focusable::<$h>::reconcile(&self.$view(), want, cx)
+            }
+            fn seat(
+                &self,
+                g: $crate::ui::machine::GroupId,
+                from: $crate::ui::screen::Placed,
+                cx: &$crate::ui::machine::Cx<'_, $h>,
+            ) -> $crate::ui::machine::FocusKey<<$h as $crate::ui::machine::Host>::Elem> {
+                $crate::ui::screen::Focusable::<$h>::seat(&self.$view(), g, from, cx)
             }
         }
     };

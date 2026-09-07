@@ -246,6 +246,22 @@ impl<'p, H: Host> Effects<'p, H> {
         }
     }
 
+    /// A sink over a handle the caller already holds — a surface stepping the pages of its OWN
+    /// stack (phase 5b's `SettingsSurface`) builds one over its inner buffer and forwards.
+    pub fn from_handle(buf: &'p mut Vec<Stamped<H>>, from: MachineId, present: PresentHandle<'p>) -> Self {
+        Self {
+            buf,
+            from,
+            present,
+            emitted: 0,
+        }
+    }
+
+    /// Reborrow the present handle for a nested step.
+    pub fn present(&mut self) -> PresentHandle<'_> {
+        PresentHandle(self.present.0)
+    }
+
     pub fn push(&mut self, fx: Fx<H>) {
         self.emitted += 1;
         debug_assert!(

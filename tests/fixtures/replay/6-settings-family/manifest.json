@@ -3,7 +3,7 @@
  "blobs": false,
  "build": "0.7.0-dev",
  "clock": {
-  "start": 126
+  "start": 122
  },
  "features": [
   "devtools",
@@ -20,6 +20,7 @@
   "plxnative-focus",
   "plxnative-noidle",
   "plxnative-rec",
+  "plxnative-settings",
   "plxnative-token"
  ]
 }

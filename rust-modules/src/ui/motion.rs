@@ -9,9 +9,20 @@
 //! routines are correctly rounded for the five operations — which is what
 //! [`differential_table`] exists to measure: the same 4,096 operands through the same code on
 //! the host and on the television (`make softfloat-probe`, the `plxnative-softfloat` trigger),
-//! compared as one hash. The host half is pinned here; the ARM half is TV session 3 (phase 5b).
-//! If they diverge, the cross-target fixture is target-scoped and the divergence named — the
-//! same-build promise (§5.5) is not widened.
+//! compared as one hash. The host half is pinned here, and **the ARM half was measured on the
+//! television on 2026-09-07 (TV session 3, phase 5b) and MATCHES BIT FOR BIT**:
+//! `softfloat: n=4096 hash=0x65a8e905a259246d host=0x65a8e905a259246d MATCH`, on webOS 4.5 /
+//! Cortex-A9 against the same 4,096 operands. So the spec's cross-target GOAL (§4.2, §5.5) is met
+//! for these five operations on this target, and the phase-5b fixtures need no target scoping.
+//!
+//! **What that does and does not license.** It is one measurement on ONE firmware and one CPU, not
+//! a proof about armv7 soft-float in general, and it says nothing about a target this project does
+//! not build for. It is also not a licence to widen the same-build promise of §5.5: a replay
+//! fixture is still pinned to the build lineage that recorded it, and this result only removes the
+//! ARITHMETIC as a suspect when a cross-target replay does diverge. Re-run
+//! `make softfloat-probe` after any toolchain or `-C target-cpu` change — those are the inputs
+//! that would move it, and nothing in `make check` can see them. If it ever diverges, the fixture
+//! is target-scoped and the divergence named rather than the promise widened.
 //!
 //! Domain: the springs feed `exp` with `-ω·dt ∈ [-2, 0]` and `sin_cos` with `ω_d·dt ∈ [0, 2]`;
 //! both functions are correct well beyond that (`exp` over the whole finite range, `sin_cos` to

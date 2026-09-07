@@ -9,12 +9,28 @@
                                               REPLACE fixture <name> with a new recording, allowed only
                                               with a DIVERGENCE RECORD derived from the replay's own log
                                               (spec §5.5), and never for an anchor fixture
+    plxnative-rec rerecord <dir> <name>       REPLACE fixture <name> after a SHAPE bump, allowed only when
+                                              the committed fixture's (schema, state_fp) differs from the
+                                              new recording's — i.e. the old artifact can no longer be
+                                              LOADED at all. Permitted for an anchor; see below
 
 A recording is `manifest.json` + `rec-NNNN.jsonl` (ui/rec.rs). `diff` prints frame indices, event
 kinds and hashes and never a string payload unless `--unsafe` is given, because a recording taken
 against a real server is private and the printer's output lands in transcripts. `import` refuses
 anything `check` refuses; the committed fixture is what tests/test_harness.py verifies on every
 `make check`, and the outbound guard applies the same alphabet before a push.
+
+**`rerecord` vs `rebaseline`, which is the whole reason there are two verbs.** A rebaseline says
+"the behaviour changed and the new stream is the truth" — a judgement, which is why it costs a
+divergence record the replay itself produced, and why an ANCHOR refuses it outright (spec §5.5):
+an anchor exists precisely to make a silent behaviour drift impossible. A rerecord says something
+weaker and machine-checkable: the state SHAPE moved (`schema` or `state_fp`), so `Recording::parse`
+refuses the committed artifact before it can grade anything at all, and no divergence record can
+exist because no replay can run. Nothing is being accepted, because nothing could be compared.
+That is why an anchor may be re-recorded and may not be rebaselined, and why this verb verifies the
+condition itself rather than trusting the caller: it reads both headers and refuses when the shape
+did NOT move — which is exactly the case a rebaseline is for. The anchor flag is preserved across
+the replacement, so a re-recorded anchor is still an anchor.
 """
 import json
 import os
@@ -152,6 +168,48 @@ def cmd_import(d, name):
     return 0
 
 
+def cmd_rerecord(d, name):
+    """Replace a fixture whose committed shape can no longer be loaded (see the module doc)."""
+    if check(d):
+        print("refused: the recording is not synthetic; it stays in %s" % d)
+        return 1
+    dst = os.path.join(FIXTURES, name)
+    old_manifest = os.path.join(dst, "manifest.json")
+    if not os.path.isdir(dst) or not os.path.exists(old_manifest):
+        print("refused: no fixture %s to re-record (use import)" % name)
+        return 2
+    with open(old_manifest, encoding="utf-8") as f:
+        old = json.load(f)
+    with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+        new = json.load(f)
+    old_shape = (old.get("schema"), old.get("state_fp"))
+    new_shape = (new.get("schema"), new.get("state_fp"))
+    if old_shape == new_shape:
+        # The committed fixture still LOADS, so a replay can grade it and a divergence record can
+        # exist. Replacing it here would be accepting a behaviour change with no evidence, which
+        # is the one thing this tool exists to prevent.
+        print("refused: %s still loads (schema=%s state_fp=%s unchanged) — this is a rebaseline, "
+              "not a re-record" % (name, new_shape[0], new_shape[1]))
+        return 1
+    was_anchor = bool(old.get("anchor"))
+    shutil.rmtree(dst)
+    os.makedirs(dst)
+    for n in sorted(os.listdir(d)):
+        if n == "manifest.json" or (n.startswith("rec-") and n.endswith(".jsonl")):
+            shutil.copy(os.path.join(d, n), os.path.join(dst, n))
+    if was_anchor:
+        # An anchor stays an anchor: the shape bump is why it could be replaced, not a demotion.
+        with open(os.path.join(dst, "manifest.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        m["anchor"] = True
+        with open(os.path.join(dst, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(m, f, indent=1, sort_keys=True)
+            f.write("\n")
+    print("re-recorded %s: shape %s -> %s%s"
+          % (name, old_shape, new_shape, " (anchor preserved)" if was_anchor else ""))
+    return 0
+
+
 DIVERGE_RE = re.compile(r"^replay: diverge f=(\d+) expected=(0x[0-9a-f]+) got=(0x[0-9a-f]+) inputs=(\d+)")
 DONE_RE = re.compile(r"^replay: done .*verdict=(SAME|DIVERGED)")
 
@@ -240,6 +298,8 @@ def main(argv):
         return cmd_diff(argv[2], argv[3], "--unsafe" in argv[4:])
     if cmd == "import" and len(argv) == 4:
         return cmd_import(argv[2], argv[3])
+    if cmd == "rerecord" and len(argv) == 4:
+        return cmd_rerecord(argv[2], argv[3])
     if cmd == "rebaseline" and len(argv) >= 4:
         log_path = argv[argv.index("--log") + 1] if "--log" in argv[4:] and argv.index("--log") + 1 < len(argv) else None
         return cmd_rebaseline(argv[2], argv[3], log_path)

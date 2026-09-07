@@ -69,19 +69,37 @@ impl LogicalState for AppInit {
 }
 
 /// The state SHAPE of what phase 2 hashes: bump by changing a `SHAPE` string, never silently.
+///
+/// **`tree:u64` joined it in phase 5b** and the bump was deliberate: the Settings family's state
+/// left the legacy globals the focus fingerprint reads and became instances on the container tree,
+/// so without folding `Dispatcher::state_hash` in, a replay would have graded every press inside
+/// Settings, Privacy, Legal and first-run Favourites as identical — a recording that diverges by
+/// opening the wrong page would have come back `SAME`. It invalidates every committed fixture,
+/// which is the cost the pin below exists to make visible rather than silent.
 pub(super) fn state_fp() -> u64 {
     crate::ui::rec::state_fp(&[
         crate::ui::press::Press::SHAPE,
-        "AppFrame{route:str,overlay:str,focus:str}",
+        "AppFrame{route:str,overlay:str,focus:str,tree:u64}",
         AppInit::SHAPE,
     ])
 }
 
 /// The hash of the frame's logical state (spec §5.4), as phase 2 defines it.
-pub(super) fn state_hash(press: &crate::ui::press::Press, route: &str, overlay: &str, focus: &str) -> u64 {
+///
+/// `tree` is `Dispatcher::state_hash` — every live instance's `LogicalState`, the tree's shape and
+/// surface phases, the engine's focus and the queue depth. It is folded in WHOLE rather than
+/// sampled, because that function is already the spec's own definition of "the state of the
+/// machines" (§5.4) and re-deriving a summary here would be a second definition to keep in step.
+pub(super) fn state_hash(
+    press: &crate::ui::press::Press,
+    route: &str,
+    overlay: &str,
+    focus: &str,
+    tree: u64,
+) -> u64 {
     let mut c = Canon::new();
     press.write(&mut c);
-    c.str(route).str(overlay).str(focus);
+    c.str(route).str(overlay).str(focus).u64(tree);
     c.finish()
 }
 
@@ -413,7 +431,31 @@ mod tests {
         init.probe(&mut p);
         assert_eq!(p, "route=home session=1 servers=1 consent=3/1/0 seed=7");
         // Re-pin only with a named reason: a shape change invalidates every committed fixture.
-        assert_eq!(state_fp(), 0x8216_7933_2b91_39ba);
+        // Re-pinned 2026-09-07 for phase 5b's `tree:u64` — see `state_fp`'s own doc for why the
+        // dispatcher's hash had to join the frame's state. The previous value was
+        // `0x8216_7933_2b91_39ba`.
+        //
+        // **Both committed fixtures are re-recorded at this pin — done by commit `28f94d12`.** An
+        // earlier version of this comment said re-recording was "OWED, not done", which was true
+        // when written and is exactly the kind of claim that goes stale here: check it yourself
+        // rather than trust this sentence. `tests/fixtures/replay/1-boot-home-chip-grid/manifest.json`
+        // and the new anchor `tests/fixtures/replay/6-settings-family/manifest.json` both carry
+        // `state_fp: 9531416515347811954` (`0x8446_64d2_3399_0e72`), matching the pin above, so
+        // `Recording::parse` loads them and `tests/focusfp.sh --replay` runs against this build.
+        // Both were re-recorded with `tools/plxnative-rec rerecord` — the verb exists for exactly
+        // this case, a SHAPE bump rather than a behaviour judgement: the old artifact fails to
+        // even LOAD, so there is nothing to diff and no divergence record to produce, which is
+        // also why (unlike `rebaseline`) it is permitted on an anchor at all.
+        //
+        // **And the number pinned today is not guaranteed to be the LAST one this phase needs.**
+        // `tree` folds in `Dispatcher::state_hash`, which walks every live instance's
+        // `LogicalState` — exactly the Settings-family surface state other lanes of this same fix
+        // pass are still reshaping concurrently. If any of that reshaping changes what a
+        // `LogicalState::write` encodes (as opposed to merely how it is spelled), this hash moves
+        // again. Whoever re-records the fixture must first re-run this test against the FINAL
+        // merged tree and use whatever `state_fp()` reports then, rather than assume the value
+        // sitting here — which is only known-correct as of this commit — still holds.
+        assert_eq!(state_fp(), 0x8446_64d2_3399_0e72);
     }
 
     #[test]
@@ -433,11 +475,23 @@ mod tests {
     #[test]
     fn the_state_hash_moves_with_the_focus_line_and_the_press() {
         let mut press = crate::ui::press::Press::new();
-        let a = state_hash(&press, "home", "", "focus route=home sel=0");
-        let b = state_hash(&press, "home", "", "focus route=home sel=1");
+        let a = state_hash(&press, "home", "", "focus route=home sel=0", 0);
+        let b = state_hash(&press, "home", "", "focus route=home sel=1", 0);
         assert_ne!(a, b);
         press.begin(10);
-        let c = state_hash(&press, "home", "", "focus route=home sel=0");
+        let c = state_hash(&press, "home", "", "focus route=home sel=0", 0);
         assert_ne!(a, c);
+    }
+
+    /// …and with the TREE, which is the half phase 5b added. Every screen in the Settings family
+    /// is an instance on the dispatcher whose state the focus fingerprint cannot see: without
+    /// this term a replay that opened Legal instead of Privacy would hash identically to one that
+    /// did not, and come back `verdict=SAME`.
+    #[test]
+    fn the_state_hash_moves_with_the_container_tree() {
+        let press = crate::ui::press::Press::new();
+        let a = state_hash(&press, "home", " overlay=settings", "focus route=home", 0x11);
+        let b = state_hash(&press, "home", " overlay=settings", "focus route=home", 0x12);
+        assert_ne!(a, b, "the same page and focus over a different tree is a different state");
     }
 }

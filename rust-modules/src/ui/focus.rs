@@ -16,7 +16,6 @@
 //! (5) the engine records the move and emits it; (6) after a landing, the owner's pure
 //! `reconcile(want)` — if the answer differs, `FocusMoved{by: Reconcile}` (the Slot→Item
 //! promotion is exactly this); (7) scope: the input owner's groups only.
-#![allow(dead_code)] // phase 3b: the product's LegacyPage keeps the engine inert until 5b
 
 use std::hash::Hash;
 

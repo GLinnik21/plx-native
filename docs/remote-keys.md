@@ -338,10 +338,12 @@ whether **461** and **412 / 417 / 413 / 415 / 402** ever fire (§2, §4.2), and 
 
 ---
 
-## 8. BACK on the entry page — issues #16-#18 implemented 2026-09-03, one root still open
+## 8. BACK on the entry page — issues #16-#18 implemented 2026-09-03, all four roots covered 2026-09-07
 
-**This section recorded a known QA blocker for three weeks; three of its four roots are now
-implemented and the fourth is named at the bottom.** LG's submission UX rules include, as quoted in
+**This section recorded a known QA blocker; three of its four roots were closed 2026-09-03 and the
+fourth — the first-run consent question's first stage — closed 2026-09-07, when phase 5b turned it
+into an owned `ConsentPage` that can tell its own first stage apart from an ordinary step-back (see
+below and `docs/ux-scenario.md` §5.9).** LG's submission UX rules include, as quoted in
 `docs/distribution.md` §2, that
 
 > every selectable element must respond to 4-way + OK + Back, and on webOS 23–25 Back on the entry
@@ -355,10 +357,14 @@ exit the app on webOS TV 6.0 or higher, or **the Home launcher is launched on we
 lower**" (<https://webostv.developer.lge.com/develop/guides/back-button>). The dev set is 4.10.2.
 
 **What the app does today:** BACK at a ROOT — Home's root, the who's-watching picker's root, the QR
-sign-in — hands the screen back to the television and keeps running (`app.rs::back_at_root` →
-`webos::go_home`, which asks SAM to launch `com.webos.app.home` and falls back to minimizing the
-surface). It does not ask, and it does not quit. The remote's own EXIT key still terminates
-(checklist #38), and a script that wants the app closed uses SAM's `closeByAppId` exactly as
+sign-in, and the first-run consent question's first stage — hands the screen back to the television
+and keeps running (`app::input::back_at_root` → `webos::go_home`, which asks SAM to launch
+`com.webos.app.home` and falls back to minimizing the surface). At the consent stage the request is
+raised by the screen itself (`screens/consent.rs` pushes `LoopReq::BackAtRoot`) and performed by
+`app/run.rs`'s request drain; the question is left up rather than answered or dismissed, and
+selecting the tile again lands straight back on it. It does not ask, and it does not quit. The
+remote's own EXIT key still terminates (checklist #38), and a script that wants the app closed uses
+SAM's `closeByAppId` exactly as
 `make kill`, `tests/run.py` and `tools/tv-session.sh` already do — which is why the
 `/tmp/plxnative-noexitconfirm` bypass went away with the "Exit PlxNative?" alert rather than being
 kept: it existed only to let a caller quit by pressing BACK, and BACK is no longer a quit for

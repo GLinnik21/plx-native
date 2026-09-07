@@ -62,7 +62,8 @@ use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::*;
 // The Sources ROW MODEL lives one module over, because it is drawn on TWO surfaces: this
-// panel, and the first-run route that asks the same question before Home (`ui::onboard`).
+// panel, and the first-run route that asks the same question before Home
+// (`crate::screens::onboard`).
 use crate::ui::icons::Icon;
 use crate::ui::popover::{Opener, Popover};
 use crate::ui::source_list::{self, Level, SrcAction, Tail};

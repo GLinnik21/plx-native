@@ -814,6 +814,14 @@ pub(super) unsafe fn boot(
     // does — nothing is deleted, and Cancel is what a BACK would press.
     let alert_boot = crate::dev::flag("alert");
     let alert_tried = false;
+    // …and the DOWN presses that walk to the delete row before the OK that opens it. A count
+    // rather than an index: the row is the LAST of the privacy table, whose length is that
+    // screen's own business, and DOWN at the last row of a document with no action band is an
+    // `Outcome::Edge` — i.e. idempotent — so any count comfortably past the table's length lands
+    // exactly on it whatever the table becomes. One press per frame, for the reason every other
+    // oscillator here steps at a human cadence: a whole table walked inside one frame would be a
+    // slow frame, and this scene's gates (`worst_ceiling_ms`, `stall_ceiling_ms`) include warmup.
+    let alert_step = 0u8;
     // The profile menu freezes its host and uses one cached backdrop. Drive the menu's own
     // TableView for a strict FPS scene; reusing `homeosc` would now correctly move nothing and
     // would grade the idle keepalive rather than the popover.
@@ -884,8 +892,10 @@ pub(super) unsafe fn boot(
 
     let held_key = HeldKey::IDLE;
     let scrubber = Scrub::IDLE;
-    // Item 13: rate-limits a hardware auto-repeat (or a wheel tick) forwarded into
-    // Settings/Consent/Legal's `on_updown`/`on_left_right` — see `on_auto_repeat`'s doc.
+    // Item 13: rate-limits a hardware auto-repeat forwarded into the Settings family, which is
+    // owned by the dispatcher since phase 5b — so the gate is applied at the loop's hand-over,
+    // to the DIRECTIONS only. See `run`'s auto-repeat arm for why the OK edges go through
+    // ungated, and `on_auto_repeat`'s doc for what is left on the legacy side.
     let modal_repeat = RepeatGate::IDLE;
     let hud = HudState::IDLE;
     let marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
@@ -908,7 +918,7 @@ pub(super) unsafe fn boot(
     // boot who's-watching picker, else Home.
     //
     // …and Home is intercepted by the first-run question when this profile has never been
-    // asked it and the roster holds more than one source (`ui::onboard`). It belongs HERE as
+    // asked it and the roster holds more than one source (`screens::onboard`). It belongs HERE as
     // well as on the login path, because a single-Plex-Home-user account never meets the
     // picker at all: the two paths into Home are the picker's `take_ready` and this gate, and
     // a question asked on only one of them is a question half the accounts never see.
@@ -921,7 +931,13 @@ pub(super) unsafe fn boot(
     // needs comes from `/tmp/plxnative-servers`, which marks the boot automated. Both halves
     // are why looking at this screen headlessly requires a trigger of its own.
     let ask_first_run =
-        || crate::dev::flag("firstrun") || (!automated_boot() && crate::ui::onboard::asks());
+        || crate::dev::flag("firstrun") || (!automated_boot() && crate::screens::onboard::asks());
+    // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
+    // the `App` this function is still assembling — so this boot arm records that it owes the
+    // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.
+    // Deferring it changes nothing about when it is ASKED: the surface would not have drawn until
+    // the loop's first frame either way, and the route below is a page underneath it.
+    let mut owes_consent_question = false;
     let mut route = match boot_to {
         // **Both Home arms ask, and the shared call is the point.** This is the one boot that
         // has no earlier hook — an install already signed in, either never asked or asked
@@ -930,10 +946,12 @@ pub(super) unsafe fn boot(
         // (which is what shipped for an hour) meant a stored session that still owed the
         // sources answer walked Onboard → Home and was never asked at all.
         BootTo::Home => {
-            maybe_ask_consent();
+            owes_consent_question = true;
             if ask_first_run() {
                 log("boot: asking which sources feed Home");
-                crate::ui::onboard::enter();
+                // No `enter()`: the first-run editor is an OWNED screen, and naming the route is
+                // the whole of mounting it — `bridge`'s mounter builds `OnboardScreen::first_run`
+                // when the tree follows this route on the loop's first NAV COMMIT.
                 Route::Onboard
             } else {
                 Route::Home
@@ -1056,6 +1074,7 @@ pub(super) unsafe fn boot(
         modal_osc_last,
         legal_doc_tried,
         alert_tried,
+        alert_step,
         account_osc_last,
         account_osc_down,
         consent_osc_last,
@@ -1124,7 +1143,8 @@ pub(super) unsafe fn boot(
         present: crate::ui::present::Present::new(),
         budget: crate::ui::frame::Budget::new(),
         pages: crate::ui::dispatch::Dispatcher::new(),
-        shadow: super::legacy::ShadowRig::new(crate::diag::heartbeat::now_us),
+        inputs: Vec::new(),
+        bridge: super::bridge::Bridge::new(crate::diag::heartbeat::now_us),
         dev: DevFlags {
             detail_osc,
             home_osc,
@@ -1146,6 +1166,12 @@ pub(super) unsafe fn boot(
             glass_hz_armed,
         },
     };
+    // …the deferred half of the `BootTo::Home` arm above: the tree exists now, so the question can
+    // be presented. Idempotent and cheap (`should_show` is false once a decision is recorded and
+    // on any automated boot), so the flag is the only thing carrying the decision forward.
+    if owes_consent_question {
+        maybe_ask_consent(&mut app.pages);
+    }
     // The recorder / replay driver, armed ONCE, here, at the end of boot (spec §5.3): the
     // header's initial conditions are what this boot reached — route, sign-in, roster size,
     // consent — and nothing has ticked yet. Phase 2 honesty: the stores have already spawned

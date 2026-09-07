@@ -132,7 +132,11 @@ The whole shared-source feature rests on keeping these apart:
   removing results would invent a false negative for a film the user owns and can play. The
   unscoped list survives as `browse::all_source_rows`, which is the Favorite libraries editor's, and
   is the only way a non-favourite comes back. The rules are `pins.rs` (pure); the store is keyed by
-  the profile's `uuid`; the route that asks once is `ui::onboard`. Owner's ruling, 2026-08-21 — "it
+  the profile's `uuid`; the route that asks once is `Route::Onboard`, first-run *Favorite
+  libraries* — `ui::onboard` through phase 4, `screens::onboard`'s owned `OnboardScreen` since
+  phase 5b (2026-09-07); reached again later from Settings it is a page of that family rather than
+  this same route (`SettingsPage::Favourites` — the enum lives in `screens/family.rs`, not
+  `screens/settings.rs` — hosting the same screen type). Owner's ruling, 2026-08-21 — "it
   is separate for each profile" — and it hung off the whole `Session` (one per install) before that.
 - **reachable** — a fact about NOW: something answered at one of its addresses, *as the right
   machine*. It changes while nobody touches anything, and it is never a reason to forget the grant

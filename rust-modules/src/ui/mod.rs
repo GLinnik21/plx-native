@@ -5,6 +5,16 @@
 //! fields on the views that own them; the `Painter` folds a cascading alpha (and
 //! optional translate) into every draw op. Single-threaded, main-thread-only.
 //! (Design: docs/ui-framework.md — synthesized from a 3-way design workflow.)
+// **This blankets the WHOLE `ui` tree, and that is wider than it reads.** An inner-attribute
+// `allow` on this module covers every `mod` beneath it, so no file under `ui/` — not
+// `dispatch.rs`, not `focus.rs`, not `hit.rs`, not a screen — can ever report dead code, and the
+// per-file `#![allow(dead_code)]` several of them carry are INERT: measured 2026-09-07 by removing
+// one and watching all three cargo configurations still compile clean. So a stale per-file reason
+// ("inert until phase 5b") is not load-bearing, and deleting one proves nothing about whether its
+// items have callers — which is exactly how three of them kept a reason that had stopped being
+// true. The real gate for this tree is THIS line, and taking it away is the experiment nobody has
+// run; spec §15.2 wants `ui/` at zero with render caches allowlisted BY NAME, which is the phase
+// that gets to do it.
 #![allow(dead_code)] // widgets are added module-by-module; some land before their first caller
 
 use std::os::raw::{c_char, c_int};
@@ -15,7 +25,6 @@ pub mod alt_sources; // "Also available": the same item on a second pinned sourc
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
-pub(crate) mod consent;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
 pub(crate) mod decision_alert;
@@ -45,13 +54,11 @@ pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — s
 pub mod label;
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
-pub mod legal; // Privacy / open-source / source-offer / trademarks — the LG, Plex and LGPL duties that must be readable ON the TV
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
 pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
 pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
-pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod filmography; // the person page's FILMOGRAPHY route — every credit, and which of them you hold
 pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
@@ -68,7 +75,6 @@ pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounde
 pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
-pub mod settings; // reachable post-setup choices: Home sources, Privacy, Legal and About
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV

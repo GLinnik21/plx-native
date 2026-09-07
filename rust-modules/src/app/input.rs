@@ -1,7 +1,14 @@
 //! The key ladders of the non-player routes and the pointer state: OK/BACK/direction handling per
-//! screen, the card activation, the onboarding and consent arms, the account and settings arms,
-//! the press-and-hold path. Moved out of `app.rs` verbatim in phase 1a (a pure move;
-//! `pub(super)` widening only).
+//! screen, the card activation, the onboarding and account arms, the press-and-hold path. Moved
+//! out of `app.rs` verbatim in phase 1a (a pure move; `pub(super)` widening only).
+//!
+//! **Phase 5b (2026-09-07) took the consent and settings arms out of this file.** The Settings
+//! family — Settings root, Legal, first-run/Settings consent, the Home-sources editor — is now
+//! owned `Screen`s mounted through `app::bridge`, and their keys reach them as `InputEvent`s the
+//! loop hands the dispatcher before this ladder is ever consulted; see the deleted-function notes
+//! near `key_onboarding` and `enter_profiles_from_onboard` for what used to live here. What this
+//! file keeps of consent is only the boot-time GATE deciding *when* to open the screen
+//! (`maybe_ask_consent`), never an arm that reads its keys.
 
 use super::*;
 
@@ -21,31 +28,6 @@ pub(super) fn set_fr(v: c_int) {
 #[inline]
 pub(super) fn set_snap(v: f32) {
     crate::ui::home::set_snap_target(v)
-}
-
-/// UP/DOWN as a step of ±1, or `None` for anything else — the mapping the fresh-press ladder
-/// spells out arm by arm for Settings/Consent/Legal (`sym == SDLK_UP` → `on_updown(-1)`, …),
-/// pulled out so a REPEAT (a forwarded hardware auto-repeat, or one wheel tick) can reuse the
-/// same mapping instead of re-deriving which sym means which direction.
-pub(super) fn updown_delta(sym: c_uint) -> Option<i32> {
-    if sym == SDLK_UP {
-        Some(-1)
-    } else if sym == SDLK_DOWN {
-        Some(1)
-    } else {
-        None
-    }
-}
-
-/// LEFT/RIGHT as a step of ±1 — `updown_delta`'s twin, for Consent's and Legal's `on_left_right`.
-pub(super) fn leftright_delta(sym: c_uint) -> Option<i32> {
-    if sym == SDLK_LEFT {
-        Some(-1)
-    } else if sym == SDLK_RIGHT {
-        Some(1)
-    } else {
-        None
-    }
 }
 
 /// The Magic Remote POINTER, as one value: which input mode the remote is in, what the
@@ -425,10 +407,12 @@ pub(super) unsafe fn apply_item_action(
 // ---- the key ladder: one function per arm ------------------------------------------------------
 //
 // The run loop's key handler is a LADDER: a key-up, a hardware auto-repeat and the preamble every
-// fresh press runs; then ten route-scoped arms that each `continue`; then one chained `else if` on
-// key identity. Each arm's BODY is a function here, in the order the ladder tries them — bar three
-// with no body to name (the pointer-hidden arm is empty, Stop is one call to the exit ritual, and
-// Search's body IS `search::key`; see the note at its guard).
+// fresh press runs; then the DISPATCHER's arm and the route-scoped ones after it, each
+// `continue`ing; then one chained `else if` on key identity. Each arm's BODY is a function here,
+// in the order the ladder tries them — bar four with no body to name (the dispatcher's arm is one
+// `app.inputs.push`, the pointer-hidden arm is empty, Stop is one call to the exit ritual, and
+// Search's body IS `search::key`; see the note at its guard). No count is given, deliberately:
+// three arms left this ladder in phase 5b alone, and a number here rots without anything failing.
 //
 // Every guard, every `continue` and the order itself stay at the CALL SITE, because the order is
 // part of the behaviour: an earlier guard subsumes later ones it overlaps with — `key_player_failed`
@@ -492,15 +476,15 @@ pub(super) unsafe fn on_key_up(
 /// held-key timer in the loop, so hold-to-move feels identical everywhere and doesn't depend on the
 /// remote's hardware repeat delay.
 ///
-/// **Settings, Consent and Legal are the one exception**, and deliberately not routed through that
-/// same client-side timer: they are `Popover`s layered over a `Route`, not a route themselves, so
-/// their fresh-press arms (the ladder just above `settings_root_owns_input`'s call site) never call
-/// `HeldKey::arm` the way `key_move_focus` does for an actual route. Rather than teach that ladder a
-/// second focus-list shape, a held key's own hardware repeat is forwarded here, straight to
-/// `on_updown`/`on_left_right`, in the SAME priority order the ladder tries them (consent above
-/// legal above the settings root) — one ownership question, asked the same way whether the press is
-/// fresh or repeating. [`RepeatGate`] throttles it: unthrottled ~50ms hardware repeats would blur
-/// past rows and reading text nobody could track (item 13).
+/// **The Settings family used to be the one exception here and no longer is** (phase 5b). Those
+/// three screens were `Popover`s layered over a `Route`, so their fresh-press arms never called
+/// `HeldKey::arm` the way `key_move_focus` does for an actual route, and a held key's hardware
+/// repeat had to be forwarded from here straight to their `on_updown`/`on_left_right` in the
+/// ladder's own priority order. They are owned screens on the dispatcher now: a repeat reaching
+/// them is an `InputEvent` carrying `Edge::Repeat`, handed over in the loop before this function is
+/// reached, and `RepeatGate` is applied there instead — to the DIRECTIONS only, for the reason the
+/// call site gives. So what is left here is the player's continuous scrub, which is a ramp rather
+/// than a discrete move and is the one thing that was never routed through the client-side timer.
 pub(super) unsafe fn on_auto_repeat(
     sym: c_uint,
     isnav: bool,
@@ -509,7 +493,6 @@ pub(super) unsafe fn on_auto_repeat(
     hud_nav: HudNav,
     held: &mut HeldKey,
     scrubber: &mut Scrub,
-    modal_repeat: &mut RepeatGate,
     press: &mut crate::ui::press::Press,
 ) {
     let n = clock::now();
@@ -534,36 +517,6 @@ pub(super) unsafe fn on_auto_repeat(
             // already sitting on — a full reopen + prime and a visible stall, out of a press the
             // reveal rule promises moves nothing. The advance clears it once there is real travel.
             log("scrub: hold engaged (0x101 repeat)");
-        }
-    } else if crate::ui::consent::is_open() {
-        if let Some(delta) = updown_delta(sym) {
-            if modal_repeat.ready(n) {
-                crate::ui::consent::on_updown(delta);
-            }
-        } else if let Some(delta) = leftright_delta(sym) {
-            if modal_repeat.ready(n) {
-                crate::ui::consent::on_left_right(delta);
-            }
-        }
-    } else if crate::ui::legal::is_open() {
-        if let Some(delta) = updown_delta(sym) {
-            if modal_repeat.ready(n) {
-                crate::ui::legal::on_updown(delta);
-            }
-        } else if let Some(delta) = leftright_delta(sym) {
-            if modal_repeat.ready(n) {
-                crate::ui::legal::on_left_right(delta);
-            }
-        }
-    } else if settings_root_owns_input(
-        route,
-        crate::ui::settings::is_open(),
-        crate::ui::onboard::settings_mode(),
-    ) {
-        if let Some(delta) = updown_delta(sym) {
-            if modal_repeat.ready(n) {
-                crate::ui::settings::on_updown(delta);
-            }
         }
     }
 }
@@ -752,8 +705,15 @@ pub(super) enum OnboardBack {
 ///   else, so every BACK here is the root press.
 /// * **Profiles** — the who's-watching picker. Its PIN keypad is a modal the screen owns, and BACK
 ///   closes it; that is the one press here that is NOT the root press. Everything else is.
-/// * **Onboard** — the first-run "which sources feed Home" question. The picker is behind it
-///   (`Action::Back` → `enter_profiles_from_onboard`), so this is never a root press.
+/// * **Onboard** — the first-run "which sources feed Home" question. Since phase 5b this route is
+///   an OWNED screen, filtered out at `key_onboarding`'s own call site before this function is
+///   ever reached with it (see that function's doc) — so in production `onboarding_back` never
+///   actually sees `Route::Onboard`. The `_` arm below still answers `Screen` for it, the same
+///   conservative default any route this rule does not otherwise name gets. The PROPERTY this
+///   bullet used to argue for still holds — the picker sits behind the question, so this was never
+///   meant to be a root press — but the mechanism that carries it today is the screen's own
+///   `LoopReq::OnboardBack`, which the loop turns into the same `enter_profiles_from_onboard` this
+///   bullet used to call directly through `Action::Back`, an enum that no longer exists.
 ///
 /// **A profile switch in flight (`Phase::Switching`) is a root press like any other on these two
 /// screens, and it is safe BECAUSE `auth::cancel` no longer invalidates on refusal.** Where the
@@ -827,19 +787,23 @@ pub(super) fn after_cancel(backed_out: bool) -> AfterCancel {
     }
 }
 
-/// Onboarding screens (login / who's-watching / the Home-sources question) own every fresh key —
-/// nothing is behind them, so route the key to the active screen and skip all other handlers.
+/// Onboarding screens (login / who's-watching) own every fresh key — nothing is behind them, so
+/// route the key to the active screen and skip all other handlers.
 ///
-/// Returns the source-picker action. Login and Who's Watching remain worker-driven and therefore
-/// report `None`; Shared Sources reports an explicit commit, Settings cancellation, or first-run
-/// BACK as three different outcomes so dismissal can never be mistaken for an answer.
+/// **`Route::Onboard` no longer arrives here** (phase 5b): first-run *Favorite libraries* is an
+/// OWNED screen, so its keys are `InputEvent`s the loop hands to the dispatcher before this ladder
+/// arm is reached, and the screen answers its own commit and its own BACK (`LoopReq::OnboardDone`
+/// / `OnboardBack`). The route is still listed at the call site's guard because it is still a page
+/// of the app's stack; what changed is who reads its keys. Login and Who's Watching are worker-
+/// driven and were the two screens that never reported an action anyway, which is why this returns
+/// nothing now instead of an `Action` that was always `None`.
 pub(super) unsafe fn key_onboarding(
     route: Route,
     sym: c_uint,
     wcode: c_uint,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
-) -> crate::ui::onboard::Action {
+) {
     // **BACK at one of these screens' own ROOT is the root press** — the same one Home's is, and
     // for the same reason: nothing of this app is behind it. Issues #17 and #18 are both this
     // branch missing. Both screens used to hand BACK to `auth::cancel`, whose whole job is to back
@@ -888,24 +852,9 @@ pub(super) unsafe fn key_onboarding(
                         AfterCancel::Home => crate::webos::go_home(),
                     }
                 }
-                return crate::ui::onboard::Action::None;
+                return;
             }
         }
-    }
-    if matches!(route, Route::Onboard) {
-        // The action PILL is a control face (`onboard`'s `ACTION_POP`) → tvOS press, committed on
-        // the spring-back by `commit_onboarding`. A `TableView` row is not a control face and keeps
-        // flipping its pin on the key-down.
-        if is_ok(sym) && crate::ui::onboard::focus_is_ctl() {
-            // Record WHICH action is being pressed, not merely that one is: the roster can land
-            // during the spring-back and turn `Try again` into `Start watching` under the same
-            // focus stop — see `onboard::ActionKind`.
-            crate::ui::onboard::arm_action();
-            press.begin_ctl(clock::now());
-            *ok_armed = true;
-            return crate::ui::onboard::Action::None;
-        }
-        return crate::ui::onboard::key(sym, wcode);
     }
     if matches!(route, Route::Profiles) {
         // BOTH of this screen's press surfaces defer, for the one reason: each has a spring that
@@ -925,53 +874,14 @@ pub(super) unsafe fn key_onboarding(
     } else {
         crate::ui::login::key(sym, wcode);
     }
-    crate::ui::onboard::Action::None
 }
 
-/// Every non-None answer leaves this instance of the source picker, but WHERE it leaves is retained
-/// in the action: Done/Cancel go forward or back to Settings; first-run Back goes to Profiles.
-#[cfg(test)]
-pub(super) fn onboarding_action_leaves(action: crate::ui::onboard::Action) -> bool {
-    matches!(
-        action,
-        crate::ui::onboard::Action::Done
-            | crate::ui::onboard::Action::Back
-            | crate::ui::onboard::Action::Cancel
-    )
-}
-
-/// Settings remains open behind its Home editor, but it must not own input while that child route
-/// is visible. The draw stack and input stack must answer the same ownership question.
-pub(super) fn settings_root_owns_input(route: Route, settings_open: bool, home_editor: bool) -> bool {
-    settings_open && !(matches!(route, Route::Onboard) && home_editor)
-}
-
-#[cfg(test)]
-mod settings_child_input_tests {
-    use super::*;
-
-    #[test]
-    fn home_editor_owns_input_while_settings_remains_open_behind_it() {
-        assert!(!settings_root_owns_input(Route::Onboard, true, true));
-        assert!(settings_root_owns_input(Route::Home, true, false));
-        assert!(!settings_root_owns_input(Route::Home, false, false));
-    }
-
-    #[test]
-    fn back_cancel_leaves_the_settings_home_editor() {
-        assert!(onboarding_action_leaves(crate::ui::onboard::Action::Cancel));
-        assert!(onboarding_action_leaves(crate::ui::onboard::Action::Done));
-        assert!(onboarding_action_leaves(crate::ui::onboard::Action::Back));
-        assert!(!onboarding_action_leaves(crate::ui::onboard::Action::None));
-    }
-}
-
-/// Commit the onboarding-question screen's focused stop — the deferred half of [`key_onboarding`]'s
-/// `Onboard` arm. Returns what [`key_onboarding`] returns: whether the flow is finished and the
-/// caller should route Home.
-pub(super) fn commit_onboarding() -> crate::ui::onboard::Action {
-    crate::ui::onboard::on_ok()
-}
+// `settings_root_owns_input` stood here, with `settings_child_input_tests` beside it: "Settings
+// remains open behind its Home editor, but it must not own input while that child route is
+// visible." Both are gone with the two-route choreography they arbitrated — the Home editor is a
+// PAGE of the surface's own stack now, so the surface's top page IS the input owner and the
+// question is `Dispatcher::owns_input` (spec §11: this test module dissolves into `input_owner()`).
+// `commit_onboarding` went with them: the first-run screen arms and commits its own press.
 
 /// BACK from Shared Sources returns to the identity step and records no source answer. Starting a
 /// ChangeProfile flow re-seeds the roster from the persisted session immediately, so this is a
@@ -982,25 +892,6 @@ pub(super) fn enter_profiles_from_onboard() -> Route {
     Route::Profiles
 }
 
-pub(super) fn apply_onboarding_action(action: crate::ui::onboard::Action, trail: &mut Trail) -> Option<Route> {
-    match action {
-        crate::ui::onboard::Action::None => None,
-        crate::ui::onboard::Action::Back => Some(enter_profiles_from_onboard()),
-        crate::ui::onboard::Action::Done | crate::ui::onboard::Action::Cancel => {
-            Some(enter_home_from_onboard(trail))
-        }
-    }
-}
-
-/// Leave the first-run question for Home.
-///
-/// The trail is RESET rather than pushed to: this route is the last of the onboarding gates and
-/// Home is the root behind it, so a BACK from Home must reach the ROOT PRESS exactly as it does on
-/// any other boot — not walk back into a question that has already been answered. (That press is
-/// [`back_at_root`], the television's own Home; what this reset guarantees is that Home is still the
-/// root when it lands, which is what puts the user one BACK from it either way.) `enter` is what the
-/// route's own BACK and its `Start watching` both come through, which is why there is one exit and
-/// not two.
 /// Put the telemetry question on screen, if this boot is one that should see it.
 ///
 /// **Asked as soon as there is an AUTHORIZED ACCOUNT, and before the profile picker.**
@@ -1018,41 +909,50 @@ pub(super) fn apply_onboarding_action(action: crate::ui::onboard::Action, trail:
 /// to lose by walking away.
 ///
 /// Cheap and idempotent: `should_show` is false once a decision has been recorded, and false on any
-/// automated boot, so every call site can simply ask. Nothing is stored by asking.
-pub(super) fn maybe_ask_consent() {
+/// automated boot, so every call site can simply ask. Nothing is stored by asking — and that is a
+/// property of the SURFACE, not of this function: presenting `AppArg::FirstRunConsent` mounts a
+/// `ConsentPage` holding a draft, and only its two answer pills reach `ConsentCmd::Record`.
+///
+/// Phase 5b: the screen is the tree's, so this presents rather than opens. `bridge::open_*` is
+/// itself idempotent while the surface is up (any phase), which is what lets the three per-frame
+/// routing call sites go on simply asking.
+pub(super) fn maybe_ask_consent(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     let c = crate::telemetry::consent::current().unwrap_or_default();
     // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
     // automated boot. This screen is suppressed BY the presence of any trigger, so without an
     // override it cannot be reached headlessly at all. Selecting Product changes display state
-    // only; no answer is stored by a harness boot.
+    // only; no answer is stored by a harness boot — the stage byte is where the surface STARTS,
+    // and reaching stage 1 that way skips the crash question rather than answering it.
     if let Some(target) = crate::dev::read("consent") {
-        // `fresh` for the same reason `open` is idempotent: this is now asked from a per-frame
-        // routing site, and re-selecting the second purpose every frame would PIN the stage there
-        // and make the seam undriveable.
-        let fresh = !crate::ui::consent::is_open();
-        crate::ui::consent::open(&c);
-        if fresh && target.trim() == "product" {
-            crate::ui::consent::show_product_for_dev();
-        }
+        // `screens::consent`'s `STAGE_PRODUCT`, spelled here because it is that module's private
+        // encoding of `SettingsPage::ConsentStage` and this is its only outside caller. The
+        // companion bit (`ERRORS_SHARED`, 0x10) is deliberately NOT set: a dev boot has answered
+        // nothing, so the product stage opens with the crash answer at its default.
+        let stage = u8::from(target.trim() == "product");
+        super::bridge::open_first_run_consent_at(pages, stage);
         return;
     }
-    if crate::ui::consent::should_show(&c, crate::dev::any_trigger_present()) {
-        crate::ui::consent::open(&c);
+    if crate::screens::consent::should_show(&c, crate::dev::any_trigger_present()) {
+        super::bridge::open_first_run_consent(pages);
     }
 }
 
+/// Leave the first-run question for Home — `LoopReq::OnboardDone`.
+///
+/// The trail is RESET rather than pushed to: this route is the last of the onboarding gates and
+/// Home is the root behind it, so a BACK from Home must reach the ROOT PRESS exactly as it does on
+/// any other boot — not walk back into a question that has already been answered. (That press is
+/// [`back_at_root`], the television's own Home; what this reset guarantees is that Home is still the
+/// root when it lands, which is what puts the user one BACK from it either way.)
+///
+/// **It has only the first-run half now** (phase 5b). The Settings-hosted editor used to come
+/// through here too, and the branch that served it was the whole reason `SETTINGS_HOME_RETURN`
+/// existed: the editor was a `Route` drawn from outside the Settings modal, so leaving it had to
+/// restore the page the modal was standing on. It is a PAGE of the surface's own stack now — its
+/// Done/Cancel is one `NavOp::Pop` inside the surface and the host route never moved — so there is
+/// no parked route to restore and no second exit to tell apart from this one. The screen's two
+/// exits are therefore two different `LoopReq`s rather than one `Action` with four variants.
 pub(super) fn enter_home_from_onboard(trail: &mut Trail) -> Route {
-    if crate::ui::onboard::settings_mode() {
-        crate::ui::settings::refresh();
-        let saved = unsafe {
-            let p = std::ptr::addr_of_mut!(SETTINGS_HOME_RETURN);
-            let saved = p.read().unwrap_or(Route::Home);
-            p.write(None);
-            saved
-        };
-        crate::ui::onboard::finish_settings();
-        return saved;
-    }
     trail.reset();
     // The consent pair is NOT asked here any more: it is the sign-in's decision, shared by every
     // profile on the account, and is put before the profile picker, which is upstream of this whole step. See `maybe_ask_consent`.
@@ -1065,7 +965,13 @@ pub(super) fn enter_home_from_onboard(trail: &mut Trail) -> Route {
 
 /// The profile menu is modal — rows nav, OK commits, BACK closes back to `over`: the page the chip
 /// was pressed on, which is any of the three that wear the shared top bar.
-pub(super) fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut Route) {
+pub(super) fn key_account(
+    over: BarHost,
+    sym: c_uint,
+    wcode: c_uint,
+    route: &mut Route,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+) {
     if is_ok(sym) {
         match crate::ui::account_menu::on_ok() {
             crate::ui::account_menu::Action::ChangeProfile => {
@@ -1083,13 +989,15 @@ pub(super) fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut
                 crate::ui::login::enter();
                 *route = Route::Login;
             }
-            // Opens the Settings popover over the same page, so the ROUTE does not move. Its
-            // Privacy and Legal children take the key ladder while they are open, then reveal this
-            // root again. Reachable signed OUT as well: a person who cannot sign in has still
-            // received a copy of this software, and LG requires the privacy notice to be readable
-            // in the app rather than only on the store listing.
+            // PRESENTS the Settings surface over the same page, so the ROUTE does not move — and
+            // has not moved since phase 5b for a second reason as well: its Privacy, Legal and
+            // Favourite-libraries children are pages of the SURFACE's own stack, where they used
+            // to be popovers taking the key ladder (and, in the Home editor's case, a whole route
+            // borrowed from the app). Reachable signed OUT as well: a person who cannot sign in
+            // has still received a copy of this software, and LG requires the privacy notice to be
+            // readable in the app rather than only on the store listing.
             crate::ui::account_menu::Action::Settings => {
-                crate::ui::settings::open();
+                super::bridge::open_settings(pages);
                 *route = over.route();
             }
             // Lab builds only, and it changes no route: the tester stays where they were, and the
@@ -1108,23 +1016,6 @@ pub(super) fn key_account(over: BarHost, sym: c_uint, wcode: c_uint, route: &mut
         *route = over.route();
     } else {
         crate::ui::account_menu::move_focus(sym as c_int);
-    }
-}
-
-pub(super) fn perform_settings_action(action: crate::ui::settings::Action, route: &mut Route) {
-    match action {
-        crate::ui::settings::Action::Home => {
-            unsafe { SETTINGS_HOME_RETURN = Some(*route) };
-            crate::ui::onboard::enter_settings();
-            *route = Route::Onboard;
-        }
-        crate::ui::settings::Action::Privacy => {
-            let current = crate::telemetry::consent::current().unwrap_or_default();
-            crate::ui::consent::open_settings(&current);
-        }
-        crate::ui::settings::Action::Legal => crate::ui::legal::open(),
-        crate::ui::settings::Action::About => crate::ui::legal::open_about(),
-        crate::ui::settings::Action::None => {}
     }
 }
 
@@ -1662,31 +1553,35 @@ pub(super) fn back_at_root() {
     }
 }
 
-/// Commit the consent screen's focused stop — the answer pill on the press spring-back
-/// (`consent::focus_is_ctl`), or a document row on its key-down. One function for both, because the
-/// erase-everything outcome underneath is the same whichever way the press arrived.
-pub(super) fn commit_consent(route: &mut Route, trail: &mut crate::ui::trail::Trail) {
-    crate::ui::consent::on_ok();
-    if crate::ui::consent::take_delete_request() {
-        let leftovers = delete_all_local_data();
-        let outcome = delete_outcome(leftovers.len());
-        if outcome.report_leftovers {
-            crate::log(&format!(
-                "privacy: local data erased; {} file(s) could not be removed: {}",
-                leftovers.len(),
-                leftovers.join("; ")
-            ));
-        }
-        if outcome.to_sign_in {
-            crate::ui::settings::hide(); // the screen under it is going — no fade to run over
-            // Tell the read-out what the sweep actually achieved BEFORE it is mounted: a survivor
-            // can be the telemetry decision, which comes back on the next launch, so the screen
-            // must not claim to have removed it.
-            crate::ui::login::note_delete_leftovers(leftovers.len());
-            crate::ui::login::enter();
-            trail.reset();
-            *route = Route::Login;
-        }
+/// **Delete all local data, confirmed** — `LoopReq::DeleteAllLocalData`, the one Settings
+/// operation that outlives the screen that asked for it.
+///
+/// It was `commit_consent`'s tail: the legacy consent screen latched a delete REQUEST and the key
+/// ladder collected it on the next press, because the press and the sweep had no other way to meet.
+/// The owned screen's decision alert emits the request as an effect instead, so this is now
+/// reached from exactly one place — the loop's request drain — and does only the part that is
+/// genuinely the loop's: the file sweep, the report, and the route to sign-in.
+///
+/// The SURFACE is dismissed by the caller, not here: the screen under it is going, and there is no
+/// host left for a fade to run over (what `settings::hide()` used to say).
+pub(super) fn delete_all_local_data_and_sign_out(route: &mut Route, trail: &mut crate::ui::trail::Trail) {
+    let leftovers = delete_all_local_data();
+    let outcome = delete_outcome(leftovers.len());
+    if outcome.report_leftovers {
+        crate::log(&format!(
+            "privacy: local data erased; {} file(s) could not be removed: {}",
+            leftovers.len(),
+            leftovers.join("; ")
+        ));
+    }
+    if outcome.to_sign_in {
+        // Tell the read-out what the sweep actually achieved BEFORE it is mounted: a survivor
+        // can be the telemetry decision, which comes back on the next launch, so the screen
+        // must not claim to have removed it.
+        crate::ui::login::note_delete_leftovers(leftovers.len());
+        crate::ui::login::enter();
+        trail.reset();
+        *route = Route::Login;
     }
 }
 

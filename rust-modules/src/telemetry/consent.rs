@@ -47,7 +47,8 @@
 //! # The four `#[allow(dead_code)]`s are gone
 //!
 //! [`POLICY_VERSION`], [`should_ask`], [`apply`] and `telemetry::record` carried one between them,
-//! each naming the consent SCREEN as the missing caller. `ui::consent` is that screen, and the
+//! each naming the consent SCREEN as the missing caller. `screens::consent` is that screen (it
+//! was `ui::consent` when this was written; phase 5b moved it and deleted the old module), and the
 //! attributes were deleted by the commit that added it rather than left behind — which was the
 //! stated plan and is worth having actually happened, because a stale allowance is how a genuinely
 //! dead function later hides in plain sight.

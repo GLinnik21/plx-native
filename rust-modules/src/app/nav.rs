@@ -161,7 +161,9 @@ pub(super) fn probe_bar_host(h: BarHost) -> crate::focusprobe::Host {
 pub(super) enum Route {
     Login,    // plex.tv sign-in (QR) — shown when there's no usable session
     Profiles, // "who's watching" Plex Home picker
-    /// **"Which libraries do you want?"** — the *Favorite libraries* route (`ui::onboard`), the
+    /// **"Which libraries do you want?"** — the *Favorite libraries* route (`screens::onboard`,
+    /// an OWNED screen since phase 5b: this route still names the page, but the dispatcher mounts,
+    /// steps, focuses and draws it, and the loop's ladders never see its keys), the
     /// third and last onboarding screen and the only one that is not about credentials: which of
     /// the granted libraries this profile wants, asked once PER PROFILE and only when the roster
     /// holds more than one. It asked "what goes on your Home?" until 2026-09-05, and both the words
@@ -197,10 +199,6 @@ pub(super) enum Route {
         overlay: Overlay,
     },
 }
-
-/// Host page parked while the shared Home-source route is being used as a Settings editor.
-pub(super) static mut SETTINGS_HOME_RETURN: Option<Route> = None;
-
 
 /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
 /// continuous-chrome rule. Exhaustive for the same reason `Nav::wears_tab_bar` is: a new
@@ -271,6 +269,12 @@ pub(super) fn page_of(r: Route) -> Route {
 /// host pixels behind it, but neither the profile menu nor a full-screen Settings/first-run route
 /// benefits from advancing an invisible focus tree. The profile menu uses cached glass for that
 /// same lifetime, so no hidden animation or repeated snapshot work remains.
+///
+/// `full_screen_modal` is the CONTAINER's fold since phase 5b (`bridge::host_frozen`, i.e.
+/// `modal::host_policy`'s `HostUpdate`), not two `is_open()` reads the loop had to remember to OR
+/// together: the surfaces on the tree answer it, so a surface added later freezes its host by
+/// declaring a `Style` rather than by being added to a condition here. `Route::Account` stays this
+/// function's own, because the profile menu is still a legacy popover.
 pub(super) fn host_page_updates(r: Route, full_screen_modal: bool) -> bool {
     !full_screen_modal && !matches!(r, Route::Account { .. })
 }

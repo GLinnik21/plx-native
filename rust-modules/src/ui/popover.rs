@@ -65,6 +65,55 @@ pub(crate) fn any_open() -> bool {
     unsafe { *std::ptr::addr_of!(OPEN_COUNT) > 0 }
 }
 
+/// **A dispatcher-owned surface's share of the counters** (restructure phase 5b). A surface on
+/// the container tree has no `Popover` — its PHASE is the `ModalStack`'s — but the page under it
+/// is still the legacy frame's, and these three counters are what that frame reads to freeze,
+/// cache and un-glass it. The bridge (`app/bridge.rs`) drives them from the surface phases it
+/// observes after every dispatcher frame: `Opening|Open` → held, `Closing` → held and closing,
+/// gone → released. Exactly [`Popover::open`]/`dismiss`/`release_host`'s arithmetic, exposed
+/// for a caller that keeps its phase elsewhere; `cached` is the surface's host policy
+/// (`Style::Sheet`/`Opaque { snapshot: true }`), a Compact surface holds no snapshot.
+pub(crate) fn surface_held(cached: bool) {
+    unsafe {
+        *std::ptr::addr_of_mut!(OPEN_COUNT) += 1;
+        if cached {
+            *std::ptr::addr_of_mut!(HOST_USERS) += 1;
+        }
+    }
+    host::invalidate();
+}
+
+/// The surface's fade-out began (`Phase::Closing`): the page under it is live to input again.
+pub(crate) fn surface_closing(cached: bool) {
+    unsafe {
+        if *std::ptr::addr_of!(OPEN_COUNT) > 0 {
+            *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1;
+        }
+        if cached {
+            *std::ptr::addr_of_mut!(HOST_CLOSING) += 1;
+        }
+    }
+    crate::ui::idle::invalidate();
+}
+
+/// The surface left for good: release its host user (and its closing mark, if it was fading).
+pub(crate) fn surface_released(cached: bool, was_closing: bool) {
+    unsafe {
+        if !was_closing && *std::ptr::addr_of!(OPEN_COUNT) > 0 {
+            *std::ptr::addr_of_mut!(OPEN_COUNT) -= 1;
+        }
+        if cached {
+            if was_closing && *std::ptr::addr_of!(HOST_CLOSING) > 0 {
+                *std::ptr::addr_of_mut!(HOST_CLOSING) -= 1;
+            }
+            if *std::ptr::addr_of!(HOST_USERS) > 0 {
+                *std::ptr::addr_of_mut!(HOST_USERS) -= 1;
+            }
+        }
+    }
+    host::invalidate();
+}
+
 /// How many OPEN popovers have asked for a cached host — see [`Popover::caching_host`].
 ///
 /// A separate counter from [`OPEN_COUNT`] and not a filter over it, for the same reason that one is
@@ -643,6 +692,36 @@ impl Popover {
     /// activation/snapshot lifetime owned by `Popover`.
     pub(crate) fn modal_ground(&self, p: Painter, r: Rect) {
         self.glass.modal_ground(p, r);
+    }
+}
+
+/// **Give back the three global counters, for a panel that is dropped while still up.**
+///
+/// [`OPEN_COUNT`], [`HOST_USERS`] and [`HOST_CLOSING`] are process-globals that a `Popover`
+/// INCREMENTS on `open` and owes back on `close`. For most of this app's life nothing could
+/// default on that debt, because every popover was a `static mut` that lives as long as the
+/// process — which is why this impl did not exist and was not missed.
+///
+/// **Restructure phase 5b made popovers droppable, and with them this leak reachable.** An owned
+/// screen (`screens::consent`'s `ConsentPage`, which holds a `DecisionAlert`, which holds one of
+/// these) lives inside a `ModalStack` entry and is DROPPED when its surface is torn down. So:
+/// open Privacy & data, press "Delete all local data?", then dismiss the whole Settings surface
+/// while that alert is up — BACK at the family's root, or the loop's `dismiss_surfaces_now` on an
+/// app-switch — and the page is dropped with `open == true`. `OPEN_COUNT` never returns to zero,
+/// and since its one consumer is [`any_open`], the glass tab bar concludes a modal is up and stops
+/// drawing its backdrop **for the rest of the session**, with nothing in any log.
+///
+/// `close` rather than `dismiss` is the right call here, and deliberately: a dismiss starts a FADE,
+/// and there is nothing left to fade — the object is going away this instant. `close` is already
+/// the "release everything now" path and is a no-op on a panel that holds nothing, so this is
+/// exact for the common case of a closed popover being dropped.
+///
+/// The host suite found it as cross-test pollution three modules away: `screens::consent`'s two
+/// alert tests end with the alert open, and `ui::popover`'s counter tests then failed on
+/// `!any_open()` — passing alone, failing in a full run.
+impl Drop for Popover {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -1388,14 +1467,20 @@ mod tests {
             lines.len()
         );
 
-        // The popovers `app.rs` draws WITHOUT a route term, gated only on `Popover::visible`.
-        const SELF_GATED: &[&str] = &[
-            "account_menu",
-            "item_menu",
-            "legal",
-            "consent",
-            "settings",
-        ];
+        // The popovers `app/run.rs` draws WITHOUT a route term, gated only on `Popover::visible`.
+        //
+        // **This list was five and is two, because restructure phase 5b took `settings`, `legal`
+        // and `consent` off the frame loop entirely.** They are no longer popovers the loop
+        // updates: they are owned screens mounted as `ModalStack` entries and stepped by
+        // `app/bridge.rs`'s `frame()`, so `app/run.rs` contains no `ui::settings::update(` for
+        // this scan to find and the assertion below counted 2 of 5. Shrinking the list is
+        // therefore recording where the property MOVED, not weakening it — the defect this test
+        // exists for (a draw gated on `visible` while the matching update is gated on a route, so
+        // a dismissed panel's fade never runs and it never hides) cannot be spelled at all in the
+        // container world, where `ModalStack` advances every live entry's motion each frame with
+        // no route term anywhere in reach. Do not "restore" the three names: with the legacy
+        // modules retired there is nothing behind them, and the scan would fail forever.
+        const SELF_GATED: &[&str] = &["account_menu", "item_menu"];
 
         let mut offences: Vec<String> = Vec::new();
         let mut seen = 0usize;

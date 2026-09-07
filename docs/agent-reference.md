@@ -492,9 +492,13 @@ which the linking section explains is load-bearing rather than tidy.
   of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`, `stores::<store>::apply(Cmd)` the
   only way a screen or the loop changes one, and `ci/check-deps.sh`'s `mutators` gate refuses the
   old `crate::browse::set_cur(` spelling on any production line of `ui/` or `app/`. Every applied
-  command raises the store's notice, which the shadow container tree (`app/legacy.rs`) delivers to
-  its pages as `StoreChanged`. The data and the workers are still in the legacy modules; the
-  vocabulary is what a migrated screen (5b on) emits as `AppFx::Store`.
+  command raises the store's notice, which the shadow container tree delivers to its pages as
+  `StoreChanged`. That tree was `app/legacy.rs` through phase 4; phase 5b (2026-09-07) folded its
+  `Dispatcher<AppHost>`, `LegacyPage` and `Dispatcher::store_changed` into `app/bridge.rs` — the
+  same host module that now also mounts the Settings family's owned screens, so the shadow tree and
+  the real one are the same `Dispatcher` rather than two trees kept in sync. The data and the
+  workers are still in the legacy modules; the vocabulary is what a migrated screen (5b on) emits
+  as `AppFx::Store`.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -1387,8 +1391,14 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   element, group), and the library replay has two MODES: targets — every input replayed with its
   recorded resolution, what `plxnative-recplay` runs — and resolve, which runs the focus engine
   and the hit map for real on every engine page, reports each focus mismatch as its own line and
-  CONTINUES from the recording (`ui::replay::run_resolve`; exercised by the host suite, since
-  every product page is still a `LegacyPage` whose inputs replay by target). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  CONTINUES from the recording (`ui::replay::run_resolve`; exercised only by the host suite's
+  `FixtureHost` pages — nothing wires it to a real screen, so an on-device recording never runs in
+  this mode. That is no longer because every product page is a `LegacyPage`: since phase 5b
+  (2026-09-07) the Settings family and first-run Favourites answer
+  `FocusSource::Engine`/`HitSource::Engine` for real, and `tests/fixtures/replay/6-settings-family/`
+  is a committed on-device recording of them — replayed the only way `plxnative-recplay` runs
+  anything, in `targets` mode. Every OTHER product page is still a `LegacyPage`, and, like these
+  Engine ones, replays on device by target only). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
   it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
@@ -1536,9 +1546,18 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   platform itself does at an app's entry page on this firmware, and what LG's submission rules
   require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
   sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
-  both handed it to `auth::cancel` and ignored its `false`. **The first-run consent question is a
-  fourth and is NOT covered yet**; `app/input.rs`'s consent arm says why, and it is a `ui/consent.rs`
-  change rather than a BACK-arm one. BACK is no longer a quit anywhere — the remote's EXIT key
+  both handed it to `auth::cancel` and ignored its `false`. **The first-run consent question was a
+  fourth root and was NOT covered until phase 5b (2026-09-07), and the fix confirms what this
+  section used to say about the shape of the gap: it needed a screen change, not a BACK-arm one.**
+  While the question was a `Popover` (`ui/consent.rs`), `on_back` was a bare `bool` that could not
+  distinguish "stepped back a stage" from "the platform took the screen" — so the loop's BACK arm
+  had nothing to key the root press on. The owned replacement (`screens::consent.rs`) answers with
+  a request instead of a bool: BACK at the first stage asks the loop for `LoopReq::BackAtRoot`
+  (`app::input::back_at_root` → `webos::go_home`, the same call the other three roots use) rather
+  than stepping or dismissing, and doing so does NOT answer or dismiss the question — selecting the
+  app's tile again lands straight back on it, exactly as Home, the picker and QR sign-in do at
+  theirs (`app/bridge.rs`'s `back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up`
+  pins both halves). BACK is no longer a quit anywhere — the remote's EXIT key
   still is, and `closeByAppId` is still how `make kill`, `tests/run.py` and `tools/tv-session.sh`
   close the app — so the `/tmp/plxnative-noexitconfirm` bypass went with the "Exit PlxNative?"
   alert it existed for (both retired 2026-09-03). Text

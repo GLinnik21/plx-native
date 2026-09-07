@@ -1,7 +1,8 @@
 //! **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on two surfaces.
 //!
 //! The Library toolbar's Source panel (`ui::library`, deliverable A) and the Favorite libraries
-//! editor — first run, and its Settings twin (`ui::onboard`, deliverable F) — show the SAME list:
+//! editor — first run, and its Settings twin (`crate::screens::onboard`, deliverable F) — show
+//! the SAME list:
 //! your servers, each server's libraries, and which of them are favorites. The canvas says so in as
 //! many words — F "is the same list as A's On Home level, in the flow's own frame rather than a
 //! panel" — so it is one builder, and the two screens differ only in the frame around it, in the

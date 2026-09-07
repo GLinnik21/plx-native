@@ -208,6 +208,46 @@ impl<H: Host> ModalStack<H> {
         true
     }
 
+    /// **The INSTANT twin of [`dismiss`](Self::dismiss): `Closing` with the motion JUMPED to 0**,
+    /// so the next `prune` — the same frame's, since a spring at its target is settled by
+    /// definition — retires the surface with nothing ever composited of it again.
+    ///
+    /// `dismiss` runs the appear spring back down, which is right for a person closing a panel
+    /// over a screen that stays. It is wrong for the one case that has no screen left to fade
+    /// over: Privacy & data → **Delete all local data**, confirmed. That sweep signs the account
+    /// out, so the page the surface was presented on is replaced by the sign-in screen in the
+    /// same frame — and a dismissal fade over it composites a stale snapshot of a page that no
+    /// longer exists across the incoming one. The legacy code reached for `ui::settings::hide()`
+    /// here for exactly this reason ("the screen under it is going — no fade to run over"), and
+    /// that is the behaviour this restores.
+    ///
+    /// Unlike `dismiss` it does NOT refuse a surface already `Closing`: the caller's whole claim
+    /// is that there is no longer a host to fade over, which is as true of a fade already running
+    /// as of one about to start, so an in-flight dismissal is cut short rather than left to
+    /// finish. The RETURN value still means what `dismiss`'s does — "this call is the one that
+    /// took the surface out of the running" — so a caller that emits the host's `Uncover` off it
+    /// does not emit a second one for a surface whose `dismiss` already did.
+    ///
+    /// It is the STACK's method, not `Navigation`'s, and so — unlike
+    /// `Navigation::request(NavOp::Dismiss)` — it emits no `Uncover` on the host. That is not an
+    /// omission to be tidied up in general: the only caller is the one whose host is being
+    /// replaced in the same frame, and telling a page it has been uncovered immediately before
+    /// unmounting it is a lie the page might act on. A future caller that hides a surface over a
+    /// host that STAYS wants the `Navigation` path with the uncover bookkeeping, not this one.
+    pub fn hide(&mut self, id: EntryId) -> bool {
+        let Some(s) = self.surfaces.iter_mut().find(|s| s.entry.id == id) else {
+            return false;
+        };
+        let was_running = s.phase != Phase::Closing;
+        s.phase = Phase::Closing;
+        // The jump, not `motion.to(0.0)`: `at` sets appear, velocity AND target together, which
+        // is what makes `settled()` true immediately. Leaving the velocity behind would keep the
+        // spring unsettled for a frame or two and put the surface back on screen after the host
+        // had gone — the exact artefact this method exists to prevent.
+        s.motion = PopoverMotion::at(0.0);
+        was_running
+    }
+
     /// The topmost Opening|Open surface owns input.
     pub fn input_owner(&self) -> Option<InputOwner> {
         self.surfaces
@@ -315,5 +355,95 @@ impl<H: Host> ModalStack<H> {
             .chain(self.retired.iter_mut())
             .filter_map(|e| e.inst.as_mut())
             .find(|i| i.id == id)
+    }
+}
+
+/// `dismiss` vs [`ModalStack::hide`] — the fade and the CUT, which are the same phase change and
+/// two entirely different frames on the panel.
+#[cfg(test)]
+mod hide_tests {
+    use super::*;
+    use crate::ui::fixture::{tick, FixtureArg, FixtureHost};
+    use crate::ui::present::Present;
+
+    /// A surface presented and then stepped until its appear spring has settled: `Open`, with the
+    /// motion at 1. Everything below starts here, because a JUST-presented surface is at 0 and
+    /// `dismiss` would look instant for the wrong reason.
+    fn opened() -> (ModalStack<FixtureHost>, EntryId) {
+        let mut ms: ModalStack<FixtureHost> = ModalStack::new();
+        let mut ids = Minter::default();
+        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, Style::Sheet);
+        let mut present = Present::new();
+        for i in 0..200u32 {
+            let mut ph = PresentHandle::of(&mut present);
+            ms.tick(tick(16 + i * 16), &mut ph);
+            if ms.surface(id).unwrap().phase == Phase::Open {
+                break;
+            }
+        }
+        assert_eq!(ms.surface(id).unwrap().phase, Phase::Open, "the appear spring settled");
+        (ms, id)
+    }
+
+    fn step(ms: &mut ModalStack<FixtureHost>, from: u32, n: u32) {
+        let mut present = Present::new();
+        for i in 0..n {
+            let mut ph = PresentHandle::of(&mut present);
+            ms.tick(tick(from + i * 16), &mut ph);
+        }
+    }
+
+    /// `hide` retires on the same frame — no spring runs at all — while `dismiss` over the same
+    /// surface is still on screen many frames later.
+    #[test]
+    fn hide_retires_without_a_spring_while_dismiss_still_runs_one() {
+        // the cut
+        let (mut ms, id) = opened();
+        assert!(ms.hide(id), "the surface was up, so this call took it out of the running");
+        let s = ms.surface(id).expect("still present until prune");
+        assert_eq!(s.phase, Phase::Closing);
+        assert_eq!(s.motion.appear, 0.0, "JUMPED, not sprung");
+        assert!(s.motion.settled());
+        let life = ms.prune();
+        assert_eq!(life.len(), 2, "WillLeave then Unmount, on the very first prune");
+        assert!(ms.is_empty(), "nothing left to composite over the incoming screen");
+
+        // the fade, for contrast: the same surface, the same first prune, and it is STILL up
+        let (mut ms, id) = opened();
+        assert!(ms.dismiss(id));
+        assert_eq!(ms.surface(id).unwrap().phase, Phase::Closing);
+        assert!(ms.surface(id).unwrap().motion.appear > 0.5, "the fade has barely begun");
+        assert!(ms.prune().is_empty(), "and prune leaves it alone");
+        step(&mut ms, 4096, 4);
+        assert!(
+            ms.prune().is_empty(),
+            "four frames in, a dismissal is still fading and prune still leaves it alone"
+        );
+        assert!(!ms.is_empty(), "…so it is still on screen");
+    }
+
+    /// A dismissal already in flight is CUT SHORT rather than refused — the caller's claim is that
+    /// there is no host left to fade over, which a fade already running does not change. The
+    /// return value still reports that this call was not the one that closed it, so a caller
+    /// emitting the host's `Uncover` off it does not emit a second one.
+    #[test]
+    fn hide_cuts_a_dismissal_already_in_flight_short() {
+        let (mut ms, id) = opened();
+        assert!(ms.dismiss(id));
+        step(&mut ms, 4096, 3);
+        assert!(ms.surface(id).unwrap().motion.appear > 0.0, "mid-fade");
+        assert!(!ms.hide(id), "it was already closing: not this call's doing");
+        assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0, "…but it is gone NOW");
+        assert_eq!(ms.prune().len(), 2);
+        assert!(ms.is_empty());
+    }
+
+    /// An id that names no surface is a no-op, exactly as `dismiss`'s is.
+    #[test]
+    fn hide_of_an_unknown_id_changes_nothing() {
+        let (mut ms, id) = opened();
+        assert!(!ms.hide(EntryId(id.0 + 99)));
+        assert_eq!(ms.surface(id).unwrap().phase, Phase::Open);
+        assert!(ms.prune().is_empty());
     }
 }

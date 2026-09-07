@@ -13,7 +13,7 @@
 //! mount through the one `Mounter`, deliver the §3.4 sequence in the post-commit drain, retire
 //! bodies. The activity table (§8.3) is read off the modal stack's host fold: a Frozen host
 //! receives no `Tick`, a Cached or Replaced host does not prepare, a Replaced host does not draw.
-#![allow(dead_code)] // phase 3b: the product runs one LegacyPage through this; screens from 5b
+#![allow(dead_code)] // since 5b screens run through most of this; suspend/resume/set_focus_source_override/viewport/frame_index still have no caller anywhere (grep-checked, not 3b's stale "screens from 5b")
 
 use std::collections::VecDeque;
 
@@ -290,6 +290,10 @@ pub struct Dispatcher<H: Host> {
     render_breach_logged: bool,
     /// The input owner answered `Handled::No` to a BACK: resolve it over its stack at commit.
     pending_back: bool,
+    /// The tick of the last `frame_with`, for a `draw` the caller runs later in its own frame.
+    last_tick: Tick,
+    /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
+    prepared: bool,
 }
 
 impl<H: Host> Default for Dispatcher<H>
@@ -328,7 +332,43 @@ where
             dropped_deliveries: 0,
             render_breach_logged: false,
             pending_back: false,
+            last_tick: Tick::default(),
+            prepared: false,
         }
+    }
+
+    /// Does the dispatcher OWN the input right now (phase 5b, the coexistence seam): the input
+    /// owner is a surface, or a page whose focus comes from the engine — i.e. anything that is
+    /// not a `LegacyPage`. The legacy loop hands its keys and pointer to `frame_with` while this
+    /// answers `true` and keeps them for its own ladders otherwise.
+    pub fn owns_input(&self) -> bool {
+        self.engine_page()
+    }
+
+    /// A surface is up (any phase but Hidden): the legacy loop draws the tree at its surface slot.
+    pub fn surface_up(&self) -> bool {
+        self.nav
+            .modals
+            .surfaces
+            .iter()
+            .any(|s| s.phase != super::containers::modal::Phase::Hidden)
+    }
+
+    /// The topmost surface's heartbeat word, if a surface is up.
+    pub fn top_surface_name(&self) -> Option<&'static str> {
+        self.nav
+            .modals
+            .surfaces
+            .iter()
+            .rev()
+            .find(|s| s.phase != super::containers::modal::Phase::Hidden)
+            .and_then(|s| s.entry.inst.as_ref())
+            .map(|i| i.screen.name())
+    }
+
+    /// The host fold (§6.2, §8.3) as it stands now.
+    pub fn host_policy(&self) -> (HostUpdate, HostRender) {
+        self.nav.modals.host_policy()
     }
 
     /// The hit map of the last PRESENTED frame (§7.6): what a click on an idle frame resolves against.
@@ -514,7 +554,26 @@ where
         results: Vec<(Addr, H::Msg)>,
         tap: &mut dyn Tap<H>,
     ) -> FrameReport {
+        self.frame_with(rig, tick, inputs, results, tap, true)
+    }
+
+    /// Steps 1–9, and step 10 only if `draw`. The legacy loop (phase 5b onwards) runs the
+    /// dispatcher's frame at its NAV COMMIT and draws the tree LATER, at the positional point
+    /// its own frame reserves for the surfaces, on its own present gate — so it asks for the
+    /// steps without the draw here and calls [`Self::draw`] there. The prepare pass still runs
+    /// here when the dispatcher's gate presents; `draw` runs it itself when it did not.
+    pub fn frame_with(
+        &mut self,
+        rig: &mut dyn Rig<H>,
+        tick: Tick,
+        inputs: Vec<InputEvent<H::Elem>>,
+        results: Vec<(Addr, H::Msg)>,
+        tap: &mut dyn Tap<H>,
+        draw: bool,
+    ) -> FrameReport {
         self.frame += 1;
+        self.last_tick = tick;
+        self.prepared = false;
         let f = self.frame;
         let mut report = FrameReport::default();
         let queued_before = self.queue.len();
@@ -783,29 +842,8 @@ where
 
         // 9. prepare (only if presenting), then opaque_route on EVERY frame. The activity table:
         //    the top page prepares unless its host fold is Cached or Replaced; every surface does.
-        let (_, host_render) = self.nav.modals.host_policy();
         if will_present {
-            self.budget.begin_frame(rig.now_us());
-            let parts = self.parts(tick);
-            {
-                let Dispatcher { nav, budget, .. } = self;
-                let Split { views, measure, .. } = rig.split();
-                let cx = parts.cx::<H>(views, measure);
-                if host_render == HostRender::Live {
-                    if let Some(inst) = nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
-                        inst.screen.prepare(budget, &cx);
-                    }
-                }
-                for s in &mut nav.modals.surfaces {
-                    if let Some(inst) = s.entry.inst.as_mut() {
-                        inst.screen.prepare(budget, &cx);
-                    }
-                }
-            }
-            let Dispatcher {
-                budget, present, ..
-            } = self;
-            rig.prepare(budget, present);
+            self.prepare_pass(rig, tick);
         }
         rig.opaque_route(self.present.video_plane());
         #[cfg(debug_assertions)]
@@ -816,64 +854,118 @@ where
         );
 
         // 10. draw, then the tail
-        if will_present {
-            rig.clear_opaque_region();
-            let parts = self.parts(tick);
-            let Dispatcher { nav, .. } = self;
-            let Split { views, measure, .. } = rig.split();
-            let cx = parts.cx::<H>(views, measure);
-            let mut stops = Vec::new();
-            let mut set = RenderSet::default();
-            // the page pass: the top page (and, under a push, the level beneath it), unless the
-            // host fold REPLACED it
-            if host_render != HostRender::Replaced {
-                let draws_below = nav.tabs.stack.transition.draws_below();
-                let n = nav.tabs.stack.entries.len();
-                let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
-                for e in nav.tabs.stack.entries[from..].iter_mut() {
-                    if let Some(inst) = e.inst.as_mut() {
-                        let mut f = DrawFrame::new(&cx, Painter::root());
-                        f.page_alpha = nav.tabs.stack.transition.page_alpha();
-                        inst.screen.draw(&mut f);
-                        stops.extend(f.into_stops());
-                        set.pages += 1;
-                        set.bytes += inst.screen.render_bytes();
-                    }
-                }
-            }
-            if host_render == HostRender::Cached {
-                set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
-            }
-            // the surfaces, bottom to top; a later stop is above an earlier one
-            for s in &mut nav.modals.surfaces {
-                if let Some(inst) = s.entry.inst.as_mut() {
-                    let mut f = DrawFrame::new(&cx, Painter::root());
-                    f.page_alpha = s.motion.appear;
-                    inst.screen.draw(&mut f);
-                    stops.extend(f.into_stops());
-                    set.surfaces.push((s.entry.id, 1));
-                    set.bytes += inst.screen.render_bytes();
-                }
-            }
-            // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
-            let hit_page = self.hit_page();
-            self.input.hit.fill(if hit_page { stops } else { Vec::new() });
-            self.input.hit.swap();
-            if let Err(breach) = set.check() {
-                debug_assert!(false, "render set breach: {breach}");
-                if !self.render_breach_logged {
-                    self.render_breach_logged = true;
-                    rig.log(&format!("dispatch: render set breach: {breach}"));
-                }
-            }
-            report.render_set = set;
-            if let Some(fault) = self.present.take_fault() {
-                rig.log(&format!("dispatch: fault {fault:?}"));
-            }
+        if will_present && draw {
+            self.draw_pass(rig, tick, &mut report);
         }
         report.presented = will_present;
         tap.frame_done(f);
         report
+    }
+
+    /// Step 9's prepare pass: the top page unless its host fold is Cached or Replaced, then
+    /// every surface, then the rig's own render cache — inside the budget's frame.
+    fn prepare_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick) {
+        self.prepared = true;
+        let (_, host_render) = self.nav.modals.host_policy();
+        self.budget.begin_frame(rig.now_us());
+        let parts = self.parts(tick);
+        {
+            let Dispatcher { nav, budget, .. } = self;
+            let Split { views, measure, .. } = rig.split();
+            let cx = parts.cx::<H>(views, measure);
+            if host_render == HostRender::Live {
+                if let Some(inst) = nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
+                    inst.screen.prepare(budget, &cx);
+                }
+            }
+            for s in &mut nav.modals.surfaces {
+                if let Some(inst) = s.entry.inst.as_mut() {
+                    inst.screen.prepare(budget, &cx);
+                }
+            }
+        }
+        let Dispatcher {
+            budget, present, ..
+        } = self;
+        rig.prepare(budget, present);
+    }
+
+    /// Step 10 on a frame the CALLER presents (the legacy loop's own gate, phase 5b): the
+    /// prepare pass first if this frame's steps did not run it, then the draw. The surfaces
+    /// alone or the whole tree — `pages` says whether the page pass is drawn here too (the
+    /// legacy loop draws its own pages and reserves this call for the dispatcher's surfaces
+    /// and its OWNED pages).
+    pub fn draw(&mut self, rig: &mut dyn Rig<H>, pages: bool) -> FrameReport {
+        let tick = self.last_tick;
+        if !self.prepared {
+            self.prepare_pass(rig, tick);
+        }
+        let mut report = FrameReport::default();
+        self.draw_with(rig, tick, &mut report, pages);
+        report
+    }
+
+    fn draw_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport) {
+        self.draw_with(rig, tick, report, true);
+    }
+
+    fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool) {
+        let (_, host_render) = self.nav.modals.host_policy();
+        rig.clear_opaque_region();
+        let parts = self.parts(tick);
+        let Dispatcher { nav, .. } = self;
+        let Split { views, measure, .. } = rig.split();
+        let cx = parts.cx::<H>(views, measure);
+        let mut stops = Vec::new();
+        let mut set = RenderSet::default();
+        // the page pass: the top page (and, under a push, the level beneath it), unless the
+        // host fold REPLACED it
+        if pages && host_render != HostRender::Replaced {
+            let draws_below = nav.tabs.stack.transition.draws_below();
+            let n = nav.tabs.stack.entries.len();
+            let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
+            for e in nav.tabs.stack.entries[from..].iter_mut() {
+                if let Some(inst) = e.inst.as_mut() {
+                    let mut f = DrawFrame::new(&cx, Painter::root());
+                    f.page_alpha = nav.tabs.stack.transition.page_alpha();
+                    inst.screen.draw(&mut f);
+                    stops.extend(f.into_stops());
+                    set.pages += 1;
+                    set.bytes += inst.screen.render_bytes();
+                }
+            }
+        }
+        if host_render == HostRender::Cached {
+            set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
+        }
+        // the surfaces, bottom to top; a later stop is above an earlier one
+        for s in &mut nav.modals.surfaces {
+            if let Some(inst) = s.entry.inst.as_mut() {
+                let mut f = DrawFrame::new(&cx, Painter::root());
+                f.page_alpha = s.motion.appear;
+                inst.screen.draw(&mut f);
+                stops.extend(f.into_stops());
+                set.surfaces.push((s.entry.id, 1));
+                set.bytes += inst.screen.render_bytes();
+                // an Opaque surface's ground has drawn: the fold REPLACES the host from here
+                s.ground_ready = inst.screen.ground_ready();
+            }
+        }
+        // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
+        let hit_page = self.hit_page();
+        self.input.hit.fill(if hit_page { stops } else { Vec::new() });
+        self.input.hit.swap();
+        if let Err(breach) = set.check() {
+            debug_assert!(false, "render set breach: {breach}");
+            if !self.render_breach_logged {
+                self.render_breach_logged = true;
+                rig.log(&format!("dispatch: render set breach: {breach}"));
+            }
+        }
+        report.render_set = set;
+        if let Some(fault) = self.present.take_fault() {
+            rig.log(&format!("dispatch: fault {fault:?}"));
+        }
     }
 
     /// The logical-state hash (spec §5.4): every live instance's `LogicalState`, the tree's
@@ -998,7 +1090,12 @@ where
                 let handled = inst.screen.step(&ev, &cx, &mut fx);
                 drop(fx);
                 present.set_scope(super::present::Scope::Page);
-                // §7.3 step 1: the owner had first refusal; an unhandled BACK is the container's
+                // §7.3 step 1: the owner had first refusal; an unhandled BACK is the container's.
+                // This is the ONE place a BACK becomes `pending_back`, and it is reached by two
+                // roads: the physical key, and an `EdgeRule::Nav(NavOpKind::Back)` that
+                // `after_step` re-delivered as a synthetic one (see that arm). The detection is
+                // deliberately blind to `at_edge` and to the wcode, so the two roads cannot
+                // diverge.
                 let is_owner = matches!(parts.owner, InputOwner::Entry(e) if nav.instance_of(e) == Some(id));
                 if back && handled == Handled::No && is_owner {
                     self.pending_back = true;
@@ -1109,7 +1206,60 @@ where
                                 });
                             }
                         }
-                        Outcome::Edge(EdgeRule::Nav(super::machine::NavOpKind::Back)) => self.pending_back = true,
+                        // An edge-rule BACK is a BACK KEY, not a container op — so it takes the
+                        // road a real BACK press takes and the OWNER gets first refusal. It is
+                        // re-delivered as a synthetic `Key::Back` at `Edge::Down`, and only
+                        // `execute_deliver`'s existing unhandled-BACK arm — the same one a
+                        // physical BACK goes through — turns a refusal into `pending_back`.
+                        //
+                        // It used to set `pending_back` here, which skipped the owner entirely,
+                        // and `Navigation::back` answers `Dismissed` for ANY surface owner
+                        // whatever its own depth. So LEFT inside the Settings family dismissed
+                        // the WHOLE surface where a BACK press walked its inner stack: LEFT in a
+                        // legal document left Settings instead of returning to the index
+                        // (`ui/legal.rs`'s
+                        // `right_enters_a_document_and_left_walks_all_the_way_back_out` is the
+                        // legacy behaviour it broke; that module and its test went out of the tree
+                        // with phase 5b, and `screens/settings.rs`'s composed LEFT-road tests are
+                        // what execute the same property now — do not go looking for the old name).
+                        // Every other owner is unchanged, because a
+                        // screen that does not answer a BACK still ends at `pending_back`.
+                        //
+                        // Three details are load-bearing:
+                        //  * `Edge::Down`, never the incoming edge. A held LEFT arrives as
+                        //    `Edge::Repeat`, and both a screen's BACK arm and the unhandled-BACK
+                        //    detection match the DOWN edge only — forwarding a Repeat would be
+                        //    delivered to nobody and silently swallow the press.
+                        //  * `at_edge: true`, which is what this flag is for ("re-delivered to
+                        //    the owner's step"). It cannot loop: `after_step`'s only `at_edge`
+                        //    consumer is the direction branch below, and `Key::Back` has no
+                        //    direction, so an unhandled synthetic BACK reaches `pending_back`
+                        //    and stops there. Nothing re-enters the engine.
+                        //  * `at`/`source` are the originating press's, so a recording replays
+                        //    the same provenance; `sym`/`wcode` are 0 because no hardware key
+                        //    produced this event and inventing a code would let a screen match
+                        //    on one that never came off the remote.
+                        Outcome::Edge(EdgeRule::Nav(super::machine::NavOpKind::Back)) => {
+                            if let ScreenEvent::Input(iev) = ev {
+                                out.push(Stamped {
+                                    from: MachineId::Input,
+                                    fx: Fx::Deliver(
+                                        MachineId::Instance(id),
+                                        Delivery::Screen(ScreenEvent::Input(InputEvent {
+                                            at: iev.at,
+                                            source: iev.source,
+                                            kind: InputKind::Key {
+                                                key: Key::Back,
+                                                sym: 0,
+                                                wcode: 0,
+                                                edge: Edge::Down,
+                                                at_edge: true,
+                                            },
+                                        })),
+                                    ),
+                                });
+                            }
+                        }
                         Outcome::Edge(EdgeRule::Nav(super::machine::NavOpKind::Dismiss)) => {
                             self.parked.push(Stamped {
                                 from: MachineId::Input,
@@ -1332,5 +1482,378 @@ where
 
     pub fn viewport() -> Rect {
         Rect::FULL
+    }
+}
+
+// ==============================================================================================
+// §7.3 — an edge-rule BACK takes the BACK KEY's road
+// ==============================================================================================
+
+/// What `EdgeRule::Nav(NavOpKind::Back)` does when a direction runs off a group that declares it
+/// — which is what LEFT resolves to on the Settings family's table and document groups, and on
+/// anything else that follows its crumb leftwards.
+///
+/// It cannot be graded through `ui::fixture`'s screens: every group there declares
+/// `EdgeRule::Geometric` on all four sides, so no key any fixture screen can be sent ever reaches
+/// the arm under test. The bundle is still `FixtureHost` — the `Arg`, the views and the measure
+/// are the fixture's — but this module brings its own `Mounter` (a `Rig` is the only way to
+/// choose one) and one screen with a `Nav(Back)` rule on its LEFT edge, carrying an inner DEPTH
+/// it walks down exactly as `screens::settings::RouteSurface` walks its own stack: it HANDLES a
+/// BACK while it has depth and DECLINES one at its root.
+#[cfg(test)]
+mod edge_back_tests {
+    use std::borrow::Cow;
+
+    use super::*;
+    use crate::ui::containers::modal::{Phase, Style};
+    use crate::ui::fixture::{key, tick, FixtureArg, FixtureFx, FixtureHost, FixtureMeasure, FixtureMsg, FixtureView, FixtureViews};
+    use crate::ui::machine::{Canon, LogicalState, Machine, NavOpKind};
+    use crate::ui::screen::{AxisMask, GroupKind, RenderStrategy, Seat};
+
+    /// The one group the test screen contributes.
+    const G: GroupId = GroupId(11);
+    /// `FixtureArg::Page(DEPTH_BASE + n)` mounts a screen with an inner depth of `n`.
+    const DEPTH_BASE: u32 = 900;
+
+    #[derive(Default)]
+    struct EdgeBackState {
+        /// The screen's own inner stack depth; 1 is its root, where BACK is declined.
+        depth: usize,
+        /// Every `Key::Back` at `Edge::Down` this screen was stepped with…
+        backs: u32,
+        /// …and how many of those carried `at_edge: true`, i.e. came from the engine's edge rule
+        /// rather than off the remote.
+        at_edge_backs: u32,
+    }
+
+    impl LogicalState for EdgeBackState {
+        fn write(&self, w: &mut Canon) {
+            w.u32(self.depth as u32).u32(self.backs).u32(self.at_edge_backs);
+        }
+        fn probe(&self, out: &mut String) {
+            out.push_str(&format!(
+                "depth={} backs={} at_edge_backs={}",
+                self.depth, self.backs, self.at_edge_backs
+            ));
+        }
+    }
+
+    struct EdgeBackScreen {
+        entry: EntryId,
+        state: EdgeBackState,
+    }
+
+    const EXTENT: Rect = Rect::new(600.0, 200.0, 720.0, 600.0);
+
+    impl Focusable<FixtureHost> for EdgeBackScreen {
+        fn groups(&self, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<GroupSpec>) {
+            out.push(GroupSpec {
+                id: G,
+                kind: GroupKind::Column,
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                // `[up, down, left, right]` — LEFT follows the crumb, which is the rule under test.
+                edge: [
+                    EdgeRule::Geometric,
+                    EdgeRule::Geometric,
+                    EdgeRule::Nav(NavOpKind::Back),
+                    EdgeRule::Geometric,
+                ],
+                extent: EXTENT,
+                len: 1,
+                elem: ElemKind::Control,
+            });
+        }
+        fn group_of(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+            (*key == 0).then_some(G)
+        }
+        fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
+            Step::Edge // one element: every direction runs off the group at once
+        }
+        fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+            (*key == 0).then_some(Placed {
+                rect: EXTENT,
+                rest_rect: EXTENT,
+                clip: Rect::FULL,
+                index: Some(0),
+            })
+        }
+        fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            want
+        }
+        fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            FocusKey {
+                entry: self.entry,
+                elem: 0,
+            }
+        }
+    }
+
+    impl Machine<FixtureHost> for EdgeBackScreen {
+        type Ev = ScreenEvent<FixtureHost>;
+        fn step(
+            &mut self,
+            ev: &Self::Ev,
+            _cx: &Cx<'_, FixtureHost>,
+            _fx: &mut Effects<'_, FixtureHost>,
+        ) -> Handled {
+            match ev {
+                ScreenEvent::Input(InputEvent {
+                    kind: InputKind::Key {
+                        key: Key::Back,
+                        edge: Edge::Down,
+                        at_edge,
+                        ..
+                    },
+                    ..
+                }) => {
+                    self.state.backs += 1;
+                    if *at_edge {
+                        self.state.at_edge_backs += 1;
+                    }
+                    if self.state.depth > 1 {
+                        self.state.depth -= 1;
+                        Handled::Yes
+                    } else {
+                        Handled::No // its own root: the container decides what BACK means
+                    }
+                }
+                _ => Handled::No,
+            }
+        }
+    }
+
+    impl Screen<FixtureHost> for EdgeBackScreen {
+        fn name(&self) -> &'static str {
+            "edgeback"
+        }
+        fn state(&self) -> &dyn LogicalState {
+            &self.state
+        }
+        fn crumb(&self, _cx: &Cx<'_, FixtureHost>) -> Option<Cow<'_, str>> {
+            None
+        }
+        fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+        fn draw(&mut self, _f: &mut DrawFrame<'_, FixtureHost>) {}
+        fn render(&self) -> RenderStrategy {
+            RenderStrategy::Page
+        }
+    }
+
+    struct EdgeBackMounter;
+
+    impl Mounter<FixtureHost> for EdgeBackMounter {
+        fn mount(
+            &mut self,
+            _id: InstanceId,
+            arg: &FixtureArg,
+            _ret: &ReturnState<u32>,
+            cx: &Cx<'_, FixtureHost>,
+            _fx: &mut Effects<'_, FixtureHost>,
+        ) -> Box<dyn Screen<FixtureHost>> {
+            // `mount` is handed the mounting body's OWN entry as `cx.owner` (see `Dispatcher::mount`)
+            let entry = match cx.owner {
+                InputOwner::Entry(e) => e,
+                _ => EntryId(0),
+            };
+            let depth = match arg {
+                FixtureArg::Page(n) if *n >= DEPTH_BASE => (*n - DEPTH_BASE) as usize,
+                _ => 1,
+            };
+            Box::new(EdgeBackScreen {
+                entry,
+                state: EdgeBackState {
+                    depth,
+                    ..EdgeBackState::default()
+                },
+            })
+        }
+    }
+
+    struct EdgeBackRig {
+        mounter: EdgeBackMounter,
+        view: FixtureView,
+        measure: FixtureMeasure,
+        /// How many times the application was told BACK reached the root of the root stack.
+        roots: u32,
+    }
+
+    impl EdgeBackRig {
+        fn new() -> Self {
+            Self {
+                mounter: EdgeBackMounter,
+                view: FixtureView::default(),
+                measure: FixtureMeasure,
+                roots: 0,
+            }
+        }
+    }
+
+    impl Rig<FixtureHost> for EdgeBackRig {
+        fn split(&mut self) -> Split<'_, FixtureHost> {
+            Split {
+                mounter: &mut self.mounter,
+                views: FixtureViews { store: &self.view },
+                measure: &self.measure,
+            }
+        }
+        fn deliver(
+            &mut self,
+            _to: MachineId,
+            _msg: &FixtureMsg,
+            _parts: &CxParts<u32>,
+            _fx: &mut Effects<'_, FixtureHost>,
+        ) -> Handled {
+            Handled::No
+        }
+        fn timer(
+            &mut self,
+            _owner: MachineId,
+            _id: TimerId,
+            _parts: &CxParts<u32>,
+            _fx: &mut Effects<'_, FixtureHost>,
+        ) {
+        }
+        fn app_fx(
+            &mut self,
+            _from: MachineId,
+            _fx: FixtureFx,
+            _parts: &CxParts<u32>,
+            _out: &mut Effects<'_, FixtureHost>,
+        ) {
+        }
+        fn log(&mut self, _line: &str) {}
+        fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
+        fn ls2_pump(&mut self) {}
+        fn opaque_route(&mut self, _bound: bool) {}
+        fn clear_opaque_region(&mut self) {}
+        fn now_us(&self) -> u64 {
+            0
+        }
+        fn back_at_root(&mut self) {
+            self.roots += 1;
+        }
+    }
+
+    fn booted() -> (Dispatcher<FixtureHost>, EdgeBackRig) {
+        let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+        let mut rig = EdgeBackRig::new();
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+        (d, rig)
+    }
+
+    /// Present an `Opaque` surface (the Settings family's style) whose screen starts at `depth`.
+    fn open(d: &mut Dispatcher<FixtureHost>, rig: &mut EdgeBackRig, depth: u32, ms: u32) -> EntryId {
+        d.nav.next_style = Style::Opaque { snapshot: true };
+        d.request(MachineId::Nav, NavOp::Present(FixtureArg::Page(DEPTH_BASE + depth)));
+        d.frame(rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.nav.modals.top().expect("presented").entry.id
+    }
+
+    fn probe(d: &Dispatcher<FixtureHost>, id: EntryId) -> String {
+        let mut s = String::new();
+        d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.state().probe(&mut s);
+        s
+    }
+
+    /// Seat focus on the owner's one element, as the test's PREMISE. Without it the first
+    /// direction would be spent by `move_dir`'s no-focus fallback (it seats and returns `Moved`),
+    /// which never reaches an edge rule at all — so the assertion would be about seating rather
+    /// than about the arm under test.
+    fn seat(d: &mut Dispatcher<FixtureHost>, entry: EntryId) {
+        d.set_focus(Some(FocusKey { entry, elem: 0 }));
+    }
+
+    /// **The blocker, first half.** LEFT off a group whose left edge rule is `Nav(Back)` reaches
+    /// the owner's `step` as a synthetic BACK, and a screen that HANDLES it walks its own inner
+    /// stack. The surface stays up and keeps input — where the engine's old shortcut
+    /// (`pending_back` straight from the edge rule) sent the press to `Navigation::back`, which
+    /// answers `Dismissed` for any surface owner whatever its depth.
+    #[test]
+    fn an_edge_rule_back_the_owner_handles_walks_its_stack_and_does_not_dismiss_it() {
+        let (mut d, mut rig) = booted();
+        let id = open(&mut d, &mut rig, 3, 16);
+        seat(&mut d, id);
+        d.frame(&mut rig, tick(32), vec![key(Key::Left, tick(32))], vec![], &mut NoTap);
+        let p = probe(&d, id);
+        assert!(p.contains("backs=1"), "the owner was stepped with the BACK: {p}");
+        assert!(p.contains("at_edge_backs=1"), "…and it carried at_edge, as a re-delivery must: {p}");
+        assert!(p.contains("depth=2"), "…and it walked ONE level of its own stack: {p}");
+        assert_ne!(
+            d.nav.modals.top().unwrap().phase,
+            Phase::Closing,
+            "a handled BACK is not the container's"
+        );
+        assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)), "the surface still owns input");
+
+        // and a second LEFT walks the next one, still without dismissing
+        d.frame(&mut rig, tick(48), vec![key(Key::Left, tick(48))], vec![], &mut NoTap);
+        assert!(probe(&d, id).contains("depth=1"), "{}", probe(&d, id));
+        assert_ne!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    }
+
+    /// **The blocker, second half** — and the half that must NOT change. At its own root the
+    /// screen declines the synthetic BACK, and the unhandled-BACK path the physical key already
+    /// used dismisses the surface, on the same frame's NAV COMMIT.
+    #[test]
+    fn an_edge_rule_back_the_owner_declines_still_dismisses_the_surface() {
+        let (mut d, mut rig) = booted();
+        let id = open(&mut d, &mut rig, 1, 16);
+        seat(&mut d, id);
+        d.frame(&mut rig, tick(32), vec![key(Key::Left, tick(32))], vec![], &mut NoTap);
+        let p = probe(&d, id);
+        assert!(p.contains("backs=1") && p.contains("depth=1"), "declined at its root: {p}");
+        assert_eq!(
+            d.nav.modals.top().unwrap().phase,
+            Phase::Closing,
+            "the refusal became the container's BACK, in the same frame"
+        );
+        assert_ne!(d.nav.input_owner(), Some(InputOwner::Entry(id)), "input left with it");
+    }
+
+    /// The engine cannot loop the synthetic BACK back onto itself: `at_edge` is consumed only by
+    /// `after_step`'s DIRECTION branch, and `Key::Back` has no direction, so exactly one BACK is
+    /// delivered per LEFT however many frames run afterwards.
+    #[test]
+    fn the_synthetic_back_is_delivered_once_and_never_re_enters_the_engine() {
+        let (mut d, mut rig) = booted();
+        let id = open(&mut d, &mut rig, 3, 16);
+        seat(&mut d, id);
+        d.frame(&mut rig, tick(32), vec![key(Key::Left, tick(32))], vec![], &mut NoTap);
+        for i in 0..5u32 {
+            d.frame(&mut rig, tick(48 + i * 16), vec![], vec![], &mut NoTap);
+        }
+        let p = probe(&d, id);
+        assert!(p.contains("backs=1"), "one LEFT, one BACK, and no carried storm: {p}");
+        assert_eq!(d.queued(), 0, "nothing was left circulating");
+    }
+
+    /// Every OTHER owner is unchanged. A page-stack owner that declines the synthetic BACK pops
+    /// its stack exactly as a physical BACK does…
+    #[test]
+    fn an_edge_rule_back_still_pops_a_page_stack() {
+        let (mut d, mut rig) = booted();
+        d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(DEPTH_BASE + 1)));
+        d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+        assert_eq!(d.nav.tabs.stack.depth(), 2, "the page is up");
+        let top = d.nav.top_page().unwrap().id;
+        seat(&mut d, top);
+        let r = d.frame(&mut rig, tick(32), vec![key(Key::Left, tick(32))], vec![], &mut NoTap);
+        assert_eq!(d.nav.tabs.stack.depth(), 1, "LEFT popped it");
+        assert!(!r.back_at_root, "a pop is not the platform's BACK");
+    }
+
+    /// …and at the root of the root stack it is still the APPLICATION's answer (the platform's
+    /// Home), reported once and asked of the rig exactly once.
+    #[test]
+    fn an_edge_rule_back_at_the_root_is_still_the_applications() {
+        let (mut d, mut rig) = booted();
+        let home = d.nav.top_page().unwrap().id;
+        seat(&mut d, home);
+        let r = d.frame(&mut rig, tick(16), vec![key(Key::Left, tick(16))], vec![], &mut NoTap);
+        assert!(r.back_at_root, "the root refused it");
+        assert_eq!(rig.roots, 1, "…and the application heard it once");
+        assert_eq!(d.nav.tabs.stack.depth(), 1, "the stack never moved");
     }
 }

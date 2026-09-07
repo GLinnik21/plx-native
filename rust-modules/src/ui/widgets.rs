@@ -6527,7 +6527,7 @@ pub struct Button {
 const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
 /// Total horizontal air a pill carries around its icon+label run.
-const BTN_PILL_AIR: f32 = 68.0;
+pub(crate) const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
 const BTN_KEYLINE_W: f32 = 1.5;
 

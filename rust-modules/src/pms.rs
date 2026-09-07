@@ -987,7 +987,8 @@ pub(crate) fn hub_state() -> HubState {
 /// "is this server in that list": an EMPTY list means the pin store knows nothing yet, not that
 /// nothing is pinned. `/library/sections` and `/hubs` land independently and asynchronously,
 /// and the never-empty floor (the Home editor's draft refuses to unpin the last library —
-/// `ui::onboard::toggle_draft` — and `plex::pins` applies the same floor to a recorded selection)
+/// `screens::onboard`'s `OnboardScreen::toggle_row` — and `plex::pins` applies the same floor to
+/// a recorded selection)
 /// forbids an empty pinned set — so "empty" can only mean "no
 /// section has been discovered anywhere", and treating it as "nothing is pinned" would leave Home
 /// with no sources at all on the frame it boots.

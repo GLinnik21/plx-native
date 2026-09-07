@@ -82,8 +82,20 @@ use crate::ui::player_hud::ControlSlot;
 pub(crate) enum Screen {
     Login,
     Profiles,
-    /// the first-run *Favorite libraries* route (`ui::onboard`)
-    Onboard,
+    /// The first-run *Favorite libraries* route (`screens::onboard`), an OWNED screen since
+    /// phase 5b — so unlike every other variant here its fields are handed IN rather than read
+    /// out of a module global: the cursor lives in the focus engine, and `app/run.rs` reads it
+    /// off `Dispatcher::focus_record` on the frame it samples.
+    Onboard {
+        /// The engine's key is a table ROW (below `registry::BAND`) rather than a band control.
+        list: bool,
+        /// That row, or `-1` when focus is on the action band. **This is where the grammar's
+        /// VALUES changed**: `TableView::sel` retained the last row while focus sat on the pill,
+        /// and the engine's cursor simply is not on a row then. The field set is identical, so
+        /// anything parsing this line is unaffected; a committed fixture recorded before 5b is
+        /// not, and has to be re-recorded.
+        row: i32,
+    },
     /// the home hero + grid
     Home,
     /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
@@ -205,6 +217,12 @@ pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) {
 
 /// The fingerprint as a value, for the recorder's logical-state hash (`app::recorder`): the
 /// legacy screens' focus state as one ordered line, whether or not the probe is armed.
+///
+/// **It is no longer the whole of that hash, and must not be treated as it.** Since phase 5b the
+/// Settings family's state lives on the container tree, where this module cannot see it — every
+/// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
+/// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
+/// replay graded on this alone would call a press that opened the wrong family page `SAME`.
 pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
     fingerprint(route, screen, hud, ctrl)
 }
@@ -240,13 +258,15 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // another, and cannot see a keypad move at all.
             let _ = write!(s, " avatar={}", b(crate::ui::profiles::focus_is_avatar()));
         }
-        Screen::Onboard => {
+        Screen::Onboard { list, row } => {
             // Two focus stops and a row cursor — the whole of what a press can move here. The list
             // flag and the selection are read together because `TableView::list_focused` gates the
-            // pill AND the ink: a fingerprint carrying only `sel` could not tell a focused row
-            // from the same row with focus parked on the action beside it.
-            let (in_list, sel) = crate::ui::onboard::probe_fields();
-            let _ = write!(s, " list={} row={sel}", b(in_list));
+            // pill AND the ink: a fingerprint carrying only `row` could not tell a focused row
+            // from the same row with focus parked on the action beside it. Both are the ENGINE's
+            // answer now (`Screen::Onboard`'s doc), which is also why they arrive as fields: this
+            // module reads module globals for every legacy screen and must not reach into the
+            // dispatcher to get one screen's cursor.
+            let _ = write!(s, " list={} row={row}", b(list));
         }
         Screen::Home => push_home(s),
         Screen::Account { over } => {
@@ -576,7 +596,9 @@ mod tests {
         vec![
             ("login", Screen::Login),
             ("profiles", Screen::Profiles),
-            ("onboard", Screen::Onboard),
+            // both focus zones, because the two print different values through one grammar
+            ("onboard", Screen::Onboard { list: true, row: 0 }),
+            ("onboard", Screen::Onboard { list: false, row: -1 }),
             ("home", Screen::Home),
             // one per bar-wearing HOST, for the `itemmenu` rows' reason below
             ("account", Screen::Account { over: Host::Home }),

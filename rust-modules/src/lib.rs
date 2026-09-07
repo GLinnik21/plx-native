@@ -46,6 +46,7 @@ mod player; // buffer-feed video engine (was playback.c) — step 5
 mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
 mod pms;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
+mod screens; // the application's OWNED screens (restructure phase 5b): the Settings family on the dispatcher
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 mod sha256; // SHA-256 / HMAC / PBKDF2, hand-written: the offline PIN verifier's hash (no crypto dependency)

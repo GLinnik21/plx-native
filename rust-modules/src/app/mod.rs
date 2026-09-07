@@ -119,7 +119,7 @@ mod lifecycle;
 mod playback;
 mod nav;
 mod input;
-mod legacy;
+mod bridge;
 mod run;
 use self::boot::*;
 use self::events::*;
@@ -219,6 +219,8 @@ struct App {
     modal_osc_last: u32,
     legal_doc_tried: bool,
     alert_tried: bool,
+    /// dev: how many DOWN presses `plxnative-alert` has spent walking to the delete row.
+    alert_step: u8,
     account_osc_last: u32,
     account_osc_down: bool,
     consent_osc_last: u32,
@@ -298,11 +300,17 @@ struct App {
     present: crate::ui::present::Present,
     /// The frame budget (spec §8.1): the poster upload quota, spent by the render cache.
     budget: crate::ui::frame::Budget,
-    /// The SHADOW container tree (phase 3b(c), `app/legacy.rs`): a dispatcher over
-    /// `LegacyPage(Route)`, mirrored from the committed route after every NAV COMMIT.
-    pages: crate::ui::dispatch::Dispatcher<legacy::AppHost>,
-    /// What that dispatcher borrows: a mounter that only knows `LegacyPage`, no-op hooks.
-    shadow: legacy::ShadowRig,
+    /// **The container tree, and since phase 5b it is no longer only a shadow.** It still
+    /// mirrors the committed route after every NAV COMMIT — a `LegacyPage` for each route the
+    /// ladders still own — but the Settings family is REAL on it: the surfaces and the first-run
+    /// Favourites page are owned screens the loop hands its input to and asks to draw
+    /// (`app/bridge.rs`'s coexistence contract).
+    pages: crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
+    inputs: Vec<crate::ui::machine::InputEvent<u32>>,
+    /// What that dispatcher borrows: the mounter, the real `TtfMeasure`, the store deliveries,
+    /// the consent machine and the queue of requests an owned screen makes of this loop.
+    bridge: bridge::Bridge,
 }
 
 /// The dev triggers read ONCE at boot and consulted by the loop (each is documented where it
@@ -895,39 +903,41 @@ fn route_word(route: Route) -> &'static str {
     }
 }
 
-/// The heartbeat's ` overlay=<word>` suffix (leading space included, empty when there is none),
-/// from the SAME open-state reads the key ladder uses. The Settings family outranks the player's
-/// overlays because it can only be open over a bar page, where no player overlay exists.
-fn overlay_word(route: Route) -> &'static str {
-    if crate::ui::settings::is_open() {
-        if crate::ui::legal::is_open() {
-            " overlay=legal"
-        } else if crate::ui::consent::is_open() {
-            " overlay=privacy"
-        } else {
-            " overlay=settings"
-        }
-    } else if crate::ui::consent::is_open() {
-        " overlay=consent"
-    } else {
-        match route {
-            Route::Player {
-                overlay: Overlay::Info,
-            } => " overlay=info",
-            Route::Player {
-                overlay: Overlay::Chapters,
-            } => " overlay=chapters",
-            Route::Player {
-                overlay: Overlay::Menu,
-            } => " overlay=menu",
-            Route::Player {
-                overlay: Overlay::More,
-            } => " overlay=more",
-            Route::Player {
-                overlay: Overlay::None,
-            } => " overlay=none",
-            _ => "",
-        }
+/// The heartbeat's ` overlay=<word>` suffix (leading space included, empty when there is none).
+///
+/// **The Settings family's half is now the TREE's, and it is asked FIRST** (phase 5b): the word is
+/// the topmost surface's own `Screen::name`, so `settings`/`privacy`/`legal`/`consent` come from
+/// the screen that is actually on top rather than from four `is_open()` flags a ladder had to
+/// order by hand. It still outranks the player's overlays for the same reason it always did — the
+/// family can only be up over a bar page, where no player overlay exists. **The alphabet gained a
+/// fifth family word, `onboard`, after phase 5b shipped WITHOUT it**: the Home-sources editor
+/// mounted inside the family (`SettingsPage::Favourites`) used to answer `Screen::name` with the
+/// same `settings` word the family ROOT does, so the `fps:settings-home` scene could not be told
+/// apart from `settings-root`/`settings-idle` by anything the heartbeat prints — see
+/// `heartbeat_word_tests` below for the full account and why fixing it needed a matching change
+/// in `screens/onboard.rs`, outside this module. Every other word here still keeps every
+/// `overlay:` fps scene armed (§15.3).
+fn overlay_word(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route: Route) -> &'static str {
+    if let Some(w) = bridge::overlay_word(pages) {
+        return w;
+    }
+    match route {
+        Route::Player {
+            overlay: Overlay::Info,
+        } => " overlay=info",
+        Route::Player {
+            overlay: Overlay::Chapters,
+        } => " overlay=chapters",
+        Route::Player {
+            overlay: Overlay::Menu,
+        } => " overlay=menu",
+        Route::Player {
+            overlay: Overlay::More,
+        } => " overlay=more",
+        Route::Player {
+            overlay: Overlay::None,
+        } => " overlay=none",
+        _ => "",
     }
 }
 
@@ -940,8 +950,8 @@ const ROUTE_WORDS: [&str; 11] = [
     "search", "player", "home",
 ];
 #[cfg(test)]
-const OVERLAY_WORDS: [&str; 9] = [
-    "legal", "privacy", "settings", "consent", "info", "chapters", "menu", "more", "none",
+const OVERLAY_WORDS: [&str; 10] = [
+    "legal", "privacy", "settings", "consent", "onboard", "info", "chapters", "menu", "more", "none",
 ];
 
 /// The heartbeat word table versus `tests/manifest.json`. Every fps scene selects its samples by
@@ -1008,6 +1018,10 @@ mod heartbeat_word_tests {
         for w in &seen {
             assert!(ROUTE_WORDS.contains(w), "route_word prints {w:?}, missing from ROUTE_WORDS");
         }
+        // An EMPTY tree, so the player half of `overlay_word` is what answers: with no surface up
+        // the function's first arm returns `None` and the route decides, which is exactly the
+        // state every playback frame is in.
+        let empty = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
         for (ov, word) in [
             (Overlay::Info, " overlay=info"),
             (Overlay::Chapters, " overlay=chapters"),
@@ -1015,12 +1029,52 @@ mod heartbeat_word_tests {
             (Overlay::More, " overlay=more"),
             (Overlay::None, " overlay=none"),
         ] {
-            let got = overlay_word(Route::Player { overlay: ov });
+            let got = overlay_word(&empty, Route::Player { overlay: ov });
             assert_eq!(got, word);
             let bare = word.trim_start_matches(" overlay=");
             assert!(OVERLAY_WORDS.contains(&bare));
         }
-        assert_eq!(overlay_word(Route::Home), "");
+        assert_eq!(overlay_word(&empty, Route::Home), "");
+        // The Settings family's words come from `Screen::name` now (`bridge::overlay_word` maps
+        // them one-for-one), so the alphabet the fps tier selects on is the screens' own.
+        // `bridge`'s `the_settings_surface_owns_input_and_walks_its_own_stack` drives the mapping
+        // for real; this half is the table's side of the same coupling, and it is what fails if a
+        // screen is renamed without `OVERLAY_WORDS` following it. `ONBOARD` belongs in this list
+        // too, and not only in `ROUTE_WORDS` below: the Home-sources editor is "Onboard ×2"
+        // (`screens/onboard.rs`'s own module doc) — the SAME `Screen` impl is mounted once as a
+        // page of the app's own outer stack (first run) and once as a page of the Settings
+        // family's INNER stack (`SettingsPage::Favourites`), and `RouteSurface::top_word` reads
+        // whichever page is on top through the identical `Screen::name` call regardless of which
+        // stack it sits in. Before this word was added here, both mountings answered
+        // `word::SETTINGS` while inside the family, so the `fps:settings-home` scene printed a
+        // heartbeat BYTE-IDENTICAL to `settings-root`/`settings-idle` — the harness could not
+        // tell "opened the Home-sources editor" from "opened Settings and did nothing", and a
+        // route that silently failed to reach `SettingsPage::Favourites` (a typo'd trigger, or a
+        // future regression in the boot-target match below) still produced a scene that passed,
+        // measuring the wrong screen. Giving the editor its own overlay word here is only half
+        // the fix — `overlay_word` below has the matching arm — and even that pair is not the
+        // WHOLE fix: `Screen::name` for `OnboardScreen` (not a file this lane owns) still has to
+        // answer `word::ONBOARD` rather than `word::SETTINGS` when `self.settings` is true, or
+        // this alphabet entry stays a word nothing ever actually prints.
+        for w in [
+            crate::screens::registry::word::SETTINGS,
+            crate::screens::registry::word::PRIVACY,
+            crate::screens::registry::word::LEGAL,
+            crate::screens::registry::word::CONSENT,
+            crate::screens::registry::word::ONBOARD,
+        ] {
+            assert!(
+                OVERLAY_WORDS.contains(&w),
+                "a family screen names {w:?}, missing from OVERLAY_WORDS"
+            );
+        }
+        // …and the SAME constant is also a ROUTE word: the first-run mounting of this screen sits
+        // directly on the app's own outer stack rather than inside a surface, so `route_word`
+        // (not `overlay_word`) is what a `fps` scene selects it with — `route=onboard`, no
+        // overlay. One string, two positions, because it names one screen wearing two hats; there
+        // is no ambiguity in the LOG itself, since `tests/run.py`'s `LOOP_RE` matches the `route=`
+        // and ` overlay=` groups independently and a scene declares only the one field it needs.
+        assert!(ROUTE_WORDS.contains(&crate::screens::registry::word::ONBOARD));
     }
 }
 
@@ -1133,10 +1187,15 @@ mod root_back_tests {
         );
     }
 
-    /// The first-run sources question is NOT a root: the picker is behind it and `Action::Back`
-    /// returns there. Pinned because it is the one onboarding route where "nothing is behind this
-    /// screen" is false, and a rule that swept it in would strand the user outside the app halfway
-    /// through setting it up.
+    /// The first-run sources question is NOT a root. **The mechanism this comment used to name
+    /// (`Action::Back` → the picker) no longer exists**: since phase 5b `Route::Onboard` is an
+    /// owned screen, filtered out at `key_onboarding`'s call site before `onboarding_back` is ever
+    /// called with it in production — the screen answers its own BACK with `LoopReq::OnboardBack`,
+    /// which the loop turns into `enter_profiles_from_onboard`. What is still worth pinning here is
+    /// the RULE's conservative default should a caller ever reach this function with that route
+    /// again: `Screen`, not `Root` — a regression that flipped it would strand the user on the
+    /// television's Home halfway through the first-run sources question, the one onboarding route
+    /// where "nothing is behind this screen" is false.
     #[test]
     fn the_first_run_sources_question_still_steps_back_into_the_picker() {
         assert_eq!(

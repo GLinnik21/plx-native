@@ -946,7 +946,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **The in-player action set is scattered across three controls with no single "More" list, and no Settings entry** — `minor` / `medium`  
   The official player's More menu is one list: Subtitle Track, Audio Track, Settings, Go to Show, Watch Together, Shuffle Season, Delete. Ours splits the two track pickers onto right-edge discs and buries Go to Show inside the Info card's button column; there is no consolidated list, and no Settings row at all (no playback-quality, subtitle-appearance, or player-preferences screen exists anywhere in the app).  
-  *Where:* ui/player_hud.rs (a third bottom tab or a new ControlSlot for "More"), a new ui/more_menu.rs on Popover+TableView, app.rs (a new Overlay variant beside Menu/Info/Chapters and its modal key arm); a Settings row needs a new ui/settings.rs plus persisted prefs (auth.json's store in plex/session.rs is the existing precedent).  
+  *Where:* ui/player_hud.rs (a third bottom tab or a new ControlSlot for "More"), a new ui/more_menu.rs on Popover+TableView, app.rs (a new Overlay variant beside Menu/Info/Chapters and its modal key arm); a Settings row needs a new section in `screens/settings.rs` plus persisted prefs (auth.json's store in plex/session.rs is the existing precedent).  
   *Verified:* CONFIRMED. player_hud.rs:200-208 ControlSlot = Discs | Skip(Prompt) | UpNext(Marker); player_hud.rs:468-471 tabs are exactly ["Info"] or ["Info","Chapters"]; info_panel.rs:48-50 actions() returns exactly ["From Beginning", "Go to Show"/"Go to Movie"]; app.rs:579-584 Overlay = None|Menu|Info|Chapters and its Modal twin at app.rs:600-607 matches. The Settings half is the stronger finding and the auditor understates it: grep for settings/preference over rust-modules/src finds ONLY table.rs:1/:8 ('Apple-TV settings look' — the widget's visual reference, and its doc explicitly anticipates 'a settin
 
 - **No "Report Issue"** — `polish` / `small`  
@@ -1052,9 +1052,32 @@ player, transport and tracks auditors, and is counted once in the themes above.
   ranking, status-vs-reachability and media byte ranges. The remaining gate is a real-TV
   remote/relay browse-and-play session, not missing transport code.
 - ~~**No Settings screen exists at all**~~ **A Settings shell exists; the preference coverage remains narrow** — `major` / `large`
-  **Partially implemented 2026-09-01.** `ui/settings.rs` is a shared `Popover` + `TableView` surface reached from every account-menu state. It hosts Home/server selection, Privacy & data (including reversible crash/usage choices), Legal notices and About. It deliberately remains a modal over the current page, so it does not require a `Route::Settings` arm. The official client's playback preferences (video quality per network, auto-skip intro/credits, subtitle appearance, audio options and Continue Watching behaviour) and a general persisted preference store are still absent. The credentials session remains separate from preferences so a bad preference parse can never cost the account token.
-  *Where next:* add a versioned preference file alongside `plex/session.rs`, then add the missing sections to `ui/settings.rs`. No PMS endpoint is needed for the shell itself.
-  *Verified:* `ui/settings.rs` defines the four current destinations; `ui/account_menu.rs` exposes `Action::Settings` in signed-in, signed-out and switching states; `app.rs` gives the modal first refusal in key, pointer, update and draw dispatch. There is still no general-purpose prefs module.
+  **Partially implemented 2026-09-01; the shell was rebuilt, not the finding, in phase 5b
+  (2026-09-07) — every `ui/settings.rs` path below is now `screens/settings.rs`, and the surface
+  itself is no longer the `Popover` this paragraph describes.** As of 2026-09-01, `ui/settings.rs`
+  was a shared `Popover` + `TableView` surface reached from every account-menu state. Phase 5b
+  moved that behaviour, unchanged in substance, onto an OWNED `Screen` (`screens::settings`'s
+  `RouteSurface`, a stack of pages — root, Privacy, Legal, Favourites, Document — mounted on the
+  dispatcher's `ModalStack` and walking its own BACK before the container hears anything) rather
+  than a `Popover` instance; the "no `Route::Settings` arm" fact this paragraph originally noted
+  still holds today, for the same reason it held before — the surface is a modal presentation, not
+  a value the legacy `Route` enum takes. It still hosts Home/server selection (*Favourite
+  libraries*), Privacy & data (including reversible crash/usage choices), Legal notices and About.
+  The official client's playback preferences (video quality per network, auto-skip intro/credits,
+  subtitle appearance, audio options and Continue Watching behaviour) and a general persisted
+  preference store are still absent — that is the actual finding, and phase 5b did not touch it.
+  The credentials session remains separate from preferences so a bad preference parse can never
+  cost the account token.
+  *Where next:* add a versioned preference file alongside `plex/session.rs`, then add the missing
+  sections to `screens/settings.rs`. No PMS endpoint is needed for the shell itself.
+  *Verified:* `screens/settings.rs` defines the four current destinations (its `SettingsPage` in
+  `screens/family.rs`); `ui/account_menu.rs` exposes `Action::Settings` in signed-in, signed-out
+  and switching states; `app/bridge.rs` mounts the surface and gives it input ownership ahead of
+  the legacy ladders (`Dispatcher::owns_input`) — the current equivalent of the "modal first
+  refusal in key, pointer, update and draw dispatch" this line originally attributed to `app.rs`,
+  a file phase 1a's decomposition retired well before this restructure reached Settings; the
+  mechanism this bullet is actually verifying (Settings gets first look at input) is unchanged,
+  only the file and the dispatch shape are. There is still no general-purpose prefs module.
 
 - **No Watchlist — not readable, not addable, not removable** — `major` / `large`  
   The official client has Watchlist as a first-class sidebar destination spanning owned-library and Discover-only titles, plus an add/remove action on every detail page. We have none of it: no watchlist fetch, no watchlist shelf or grid, and no watchlist control on the detail page.  
@@ -1085,7 +1108,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No preferred audio / subtitle language setting** — `major` / `medium`  
   The official client lets you set preferred audio and subtitle languages (and "always show subtitles"). Our audio auto-pick hardcodes English and there is no subtitle-language preference at all, so a non-English household gets an English track forced on every single play with no way to change the default.  
-  *Where:* route.rs:654-657 and `pick_dp_audio` (route.rs:663-700) to read the preference instead of a const; an equivalent subtitle auto-pick beside it; the preference values from the new settings store (see the Settings-screen gap) with rows in ui/settings.rs.  
+  *Where:* route.rs:654-657 and `pick_dp_audio` (route.rs:663-700) to read the preference instead of a const; an equivalent subtitle auto-pick beside it; the preference values from the new settings store (see the Settings-screen gap) with rows in `screens/settings.rs`.  
   *Verified:* CONFIRMED. route.rs:657 `const PREF_AUDIO_LANG: &str = "eng";` is the whole policy, ranked first at route.rs:685 inside pick_dp_audio (663-698). There is no subtitle auto-pick at all: subtitles start OFF (route.rs:70-73 set_subtitle(0), transcoder.rs:86-88 only burns when subtitle_stream_id > 0) and the only way to enable one is the in-player menu → route::commit_subtitle_selection (route.rs:940-950). One correction to 'nothing persists the choice': a user pick IS persisted SERVER-side — commit_subtitle_selection/commit_audio_selection call put_selection → PUT /library/parts/{id}?allParts=1&su
 
 - **No auto-skip intro / credits preference** — `minor` / `small`  
@@ -1095,27 +1118,27 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No subtitle appearance settings (size, colour, background)** — `minor` / `medium`  
   The official client exposes subtitle size, position, colour and background/outline. Ours are compile-time constants: one size, pure white, no background box, no user control.  
-  *Where:* ui/player_hud.rs:59-110 (parameterise size/colour/background from the preference store) and the image-subtitle composite at ui/player_hud.rs:104-110 for scaling; rows in ui/settings.rs. Server-side burn size already has a knob we hardcode at plex/transcoder.rs:87 (`subtitleSize=100`).  
+  *Where:* ui/player_hud.rs:59-110 (parameterise size/colour/background from the preference store) and the image-subtitle composite at ui/player_hud.rs:104-110 for scaling; rows in `screens/settings.rs`. Server-side burn size already has a knob we hardcode at plex/transcoder.rs:87 (`subtitleSize=100`).  
   *Verified:* CONFIRMED verbatim. ui/player_hud.rs:82 `let sz = 36;`, :83 `let lh = 48.0`, :89 `let white = [1.0,1.0,1.0,1.0]`, outline = theme::scrim_black(0.85) drawn as four 2px offsets (player_hud.rs:95-99) — no background box, no position control beyond the hud_up/hud_down baseline at player_hud.rs:86. draw_subtitles takes only `hud_up: bool`; draw_subtitle_bitmap (player_hud.rs:107+) takes nothing and composites at the fixed 1920x1080 PGS canvas. The server-side burn size is likewise pinned at plex/transcoder.rs:87 (`subtitleSize=100`). minor/medium is right.
 
 - **No video-quality setting for local vs remote playback** — `minor` / `medium`  
   The official client lets you cap streaming quality separately for local and remote playback (e.g. "Original" on LAN, 8 Mbps remote). Our capability profile and transcode caps are compile-time constants — the user cannot lower quality to fight buffering or raise a cap.  
-  *Where:* plex/transcoder.rs:36-46 and 68-98 (take the caps from the preference store instead of consts; `TranscodeSpec` in plex/params.rs would carry them), driven by rows in ui/settings.rs.  
+  *Where:* plex/transcoder.rs:36-46 and 68-98 (take the caps from the preference store instead of consts; `TranscodeSpec` in plex/params.rs would carry them), driven by rows in `screens/settings.rs`.  
   *Verified:* CONFIRMED. plex/transcoder.rs:36-46 profile_extra() is a fixed format! with no inputs (width 3840 / height 2176 / bitDepth 10 upper bounds + one hevc+ac3 transcode target); transcoder.rs:82 hardcodes videoResolution=3840x2160 and maxVideoBitrate=60000 for the re-encode flavour, and the remux flavour (transcoder.rs:80) deliberately sets no cap at all. TranscodeSpec (plex/params.rs) carries no quality fields. There is no local/remote distinction to hang the two settings off, since only local connections are ever used (see the remote-server gap). minor/medium is fair given remote playback does no
 
 - **No "autoplay next episode" toggle or countdown length** — `minor` / `small`  
   The official client lets you turn off auto-play of the next episode (and the post-play behaviour). Ours always auto-advances after a fixed 10s countdown and the module documents that as a deliberate absolute.  
-  *Where:* ui/up_next.rs:28,46-54 (gate arming on the preference, take the duration from it) and app.rs:2094-2099; toggle row in ui/settings.rs.  
+  *Where:* ui/up_next.rs:28,46-54 (gate arming on the preference, take the duration from it) and app.rs:2094-2099; toggle row in `screens/settings.rs`.  
   *Verified:* CONFIRMED. ui/up_next.rs:28 COUNTDOWN_MS = 10_000, armed unconditionally in tick (up_next.rs:47-56 — the only guard is the per-segment CANCELLED latch), consumed by the button's own fill sweep at up_next.rs:191; app.rs fires the advance on expiry and app.rs:762-772 finish_playback calls play_up_next first with the 'There is no interstitial: "always the next episode"' comment. Worth adding as partial: there IS a per-segment escape — moving focus off the tile calls up_next::cancel (app.rs:2229-2233 / up_next.rs:116-121) and latches for that segment — so the user can stop one advance in the momen
 
 - **No account information anywhere (email, username, subscription)** — `minor` / `medium`  
   The official Settings screen shows the signed-in account — username/email, avatar, Plex Pass status — and a way to manage it. We never fetch the plex.tv user object; the account popover's header is just the Plex Home profile title (or the literal string "Account").  
-  *Where:* plex/account.rs (add `GET https://plex.tv/api/v2/user` + a `User` DTO beside HomeUser at plex/account.rs:191-211), plex/session.rs:84-91 to persist the display fields, and an account section in the new ui/settings.rs (or an expanded ui/account_menu.rs header).  
+  *Where:* plex/account.rs (add `GET https://plex.tv/api/v2/user` + a `User` DTO beside HomeUser at plex/account.rs:191-211), plex/session.rs:84-91 to persist the display fields, and an account section in `screens/settings.rs` (or an expanded ui/account_menu.rs header).  
   *Verified:* CONFIRMED. plex/account.rs's entire method set is create_pin (73), poll_pin (79), resources (88), home_users (96), switch_user (104) — no /api/v2/user, no subscription anywhere. UserRef (plex/session.rs:84-91) is id/uuid/title/thumb/token; HomeUser (account.rs:191-211) deliberately omits every nullable string, and its comment at account.rs:203-206 explains why (plex.tv sends `null` for username/email on managed users and serde's `default` does not cover an explicit null) — so adding email/username needs Option<String> fields, not bare `default`, which is the one real trap in this gap's impleme
 
 - **No audio settings (boost / passthrough / downmix)** — `minor` / `medium`  
   The official client exposes audio boost for quiet dialogue and a passthrough/stereo-downmix choice. We have no audio preferences: the direct-play audio codec set and the Starfish Load payload are fixed.  
-  *Where:* player/engine.rs:22-31 (payload construction would have to become parameterised rather than three consts) and plex/transcoder.rs:22-25/68-98 for the server-side downmix (`audioBoost`/`maxAudioChannels` on the universal-transcoder query); rows in ui/settings.rs.  
+  *Where:* player/engine.rs:22-31 (payload construction would have to become parameterised rather than three consts) and plex/transcoder.rs:22-25/68-98 for the server-side downmix (`audioBoost`/`maxAudioChannels` on the universal-transcoder query); rows in `screens/settings.rs`.  
   *Verified:* CONFIRMED, with one evidence correction. plex/transcoder.rs:22-25 DP_AUDIO_CODECS/is_dp_audio are fixed; no audioBoost/maxAudioChannels/downmix param is ever sent (transcode_query, transcoder.rs:65-98, sets only audioStreamID + directStreamAudio); a whole-crate grep for audioBoost|passthrough|downmix hits only two unrelated doc comments (plex/client.rs's 'passthrough' in the encoder doc, ui/profile.rs:32 'a passthrough when disabled'). The correction: the Load payloads are NOT fully literal — player/engine.rs:174-194 build_av_payload string-substitutes the real video/audio codec, sink dimensio
 
 - **Discover / "Movies & Shows on Plex" catalog is absent (adjacent-catalog feature)** — `minor` / `large`  
@@ -1271,9 +1294,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No settings for Allow Direct Play / Allow Direct Stream / Force Direct Play — the policy is hardwired and unreachable by the user** — `major` / `medium`  
   Plex clients expose these three toggles and they change the decision the server is asked for. We send a fixed `directPlay=0&directStream=1` on every transcode request and a fixed `directPlay=1&directStream=1&directStreamAudio=1` on every MDE ask, and the local gates are unconditional. The Settings shell now exists, but has no playback-policy section or backing preferences for these values.
-  *Where:* Add a Playback section to `ui/settings.rs`; read its persisted values at plex/transcoder.rs:68-98 and at the route.rs:561-585 gates.
+  *Where:* Add a Playback section to `screens/settings.rs`; read its persisted values at plex/transcoder.rs:68-98 and at the route.rs:561-585 gates.
   *Device:* HIGH for one of the three, and this is the important part: "Force Direct Play" is genuinely unsafe on this device. The gates it would bypass are not policy, they are physics — route.rs:571-576 refuses AV1/VP9/MPEG-2 because the buffer-feed Load payload only ever declares H264 or H265 (player/engine.rs:22-31, 272-296), and route.rs:577-578 refuses non-MKV because the reopen-per-seek HTTP AVIO cannot sustain mp4's per-sample random access (the comment records it dying after AU#0 with a black screen). A Force toggle that reached those paths would produce a black screen with no error. If the toggle ships, it must sit ABOVE the server ask and BELOW the two local gates. "Allow Direct Stream" (off = force a full re-encode) and "Allow Direct Play" (off = always ask for a transcode) are both safe here — they only ever move work to the server.  
-  *Verified:* CONFIRMED on the missing-policy half. Fixed params: plex/transcoder.rs:74-75 (directPlay=0, directStream=1) and 110-113 (hasMDE=1, directPlay=1, directStream=1, directStreamAudio=1) — never varied, no caller input. Local gates route.rs:561-585 take no user input. `ui/settings.rs` has no playback-policy rows. The auditor's HIGH device_risk on Force Direct Play is CORRECT and I verified the mechanism: route.rs:571-57
+  *Verified:* CONFIRMED on the missing-policy half. Fixed params: plex/transcoder.rs:74-75 (directPlay=0, directStream=1) and 110-113 (hasMDE=1, directPlay=1, directStream=1, directStreamAudio=1) — never varied, no caller input. Local gates route.rs:561-585 take no user input. `screens/settings.rs` (`ui/settings.rs` before phase 5b, 2026-09-07) has no playback-policy rows. The auditor's HIGH device_risk on Force Direct Play is CORRECT and I verified the mechanism: route.rs:571-57
 
 - **No media-version picker: mediaIndex is hard-coded to 0 and every consumer takes Media[0]** — `major` / `medium`  
   A Plex item can carry several `Media[]` versions (the documented example is a 4K HDR original plus a 1080p copy), and clients let the user choose which version plays. We always take the first and always tell the transcoder `mediaIndex=0`, so a library with optimized versions silently plays only one of them — and the cheap 1080p version that would avoid a transcode entirely is invisible.  
@@ -1659,9 +1682,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No auto-skip preference for intro/credits** — `minor` / `medium`
   Plex offers "Skip intro automatically" / "Skip credits automatically". Our Skip button is always manual; entering an intro raises the HUD and parks focus on the button, which is the opposite behaviour for a user who has opted into auto-skip.  
-  *Where:* ui/skip_pill.rs (an arm/expire pair modelled on ui/up_next.rs:46-93), app.rs:2202-2230 (fire the skip when the preference is on), plus a persisted preference and rows in the existing `ui/settings.rs` surface.
+  *Where:* ui/skip_pill.rs (an arm/expire pair modelled on ui/up_next.rs:46-93), app.rs:2202-2230 (fire the skip when the preference is on), plus a persisted preference and rows in the existing `screens/settings.rs` surface (`ui/settings.rs` before phase 5b, 2026-09-07).
   *Device:* none known for the skip itself. The absent piece is infrastructure, not device: there is no client-preference persistence at all today (plex/session.rs stores only auth state), so the first preference pays for the store.  
-  *Verified:* CONFIRMED. ui/skip_pill.rs is 86 lines of prompt_for/rect/draw with no timer and no auto-fire; app.rs:2202-2246 is the whole marker reaction and only logs the offer, extend_hud's the HUD and moves hud_nav.focus to row 1 — it never calls request_seek. No general preference store exists; `ui/settings.rs` has no auto-skip rows. CORRECTION worth flagging: the app already ships an unconditional AUTOMATIC behaviour of exactly this class with
+  *Verified:* CONFIRMED. ui/skip_pill.rs is 86 lines of prompt_for/rect/draw with no timer and no auto-fire; app.rs:2202-2246 is the whole marker reaction and only logs the offer, extend_hud's the HUD and moves hud_nav.focus to row 1 — it never calls request_seek. No general preference store exists; `screens/settings.rs` has no auto-skip rows. CORRECTION worth flagging: the app already ships an unconditional AUTOMATIC behaviour of exactly this class with
 
 - **No playback speed control (0.5x-2x)** — `minor` / `large`  
   Plex HTPC offers variable-rate playback. We have exactly one rate. There is no UI, no key binding, and no engine call.  
