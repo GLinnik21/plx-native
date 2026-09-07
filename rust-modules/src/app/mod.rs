@@ -119,6 +119,7 @@ mod lifecycle;
 mod playback;
 mod nav;
 mod input;
+mod legacy;
 mod run;
 use self::boot::*;
 use self::events::*;
@@ -297,6 +298,11 @@ struct App {
     present: crate::ui::present::Present,
     /// The frame budget (spec §8.1): the poster upload quota, spent by the render cache.
     budget: crate::ui::frame::Budget,
+    /// The SHADOW container tree (phase 3b(c), `app/legacy.rs`): a dispatcher over
+    /// `LegacyPage(Route)`, mirrored from the committed route after every NAV COMMIT.
+    pages: crate::ui::dispatch::Dispatcher<legacy::AppHost>,
+    /// What that dispatcher borrows: a mounter that only knows `LegacyPage`, no-op hooks.
+    shadow: legacy::ShadowRig,
 }
 
 /// The dev triggers read ONCE at boot and consulted by the loop (each is documented where it

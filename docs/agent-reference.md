@@ -1375,7 +1375,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   inputs through the remote FIFO's own synthesis, grades the state hash frame by frame — every
   mismatch is its own `replay: diverge` line and the run continues — and ends with one `replay:
   done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --replay` drives it over the committed
-  fixtures. Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  fixtures. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
+  element, group), and the library replay has two MODES: targets — every input replayed with its
+  recorded resolution, what `plxnative-recplay` runs — and resolve, which runs the focus engine
+  and the hit map for real on every engine page, reports each focus mismatch as its own line and
+  CONTINUES from the recording (`ui::replay::run_resolve`; exercised by the host suite, since
+  every product page is still a `LegacyPage` whose inputs replay by target). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
   it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part

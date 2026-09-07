@@ -306,6 +306,12 @@ impl Writer {
         self.line(json!({"f": f, "t": "st", "hash": hash}));
     }
 
+    /// The engine's resolved focus after the frame's drains (`--resolve` replay grades it):
+    /// `(entry, elem)` or none.
+    pub fn focus(&mut self, f: u64, focus: Option<(u32, u32, Option<u32>)>) {
+        self.line(json!({"f": f, "t": "fo", "entry": focus.map(|x| x.0), "elem": focus.map(|x| x.1), "group": focus.and_then(|x| x.2)}));
+    }
+
     /// One write per frame. Rotates at `SEGMENT_BYTES`, stops at `CAP_BYTES` with a final note.
     pub fn flush_frame(&mut self) -> Result<(), RecError> {
         self.frames += 1;
@@ -367,6 +373,8 @@ pub struct Frame {
     pub results: Vec<Value>,
     pub life: Vec<Value>,
     pub st: Option<u64>,
+    /// The recorded focus after the drains: `Some(None)` is "recorded as none".
+    pub focus: Option<Option<(u32, u32, Option<u32>)>>,
 }
 
 /// A loaded recording.
@@ -447,6 +455,12 @@ impl Recording {
                         );
                     }
                     "st" => fr.st = v["hash"].as_u64(),
+                    "fo" => {
+                        fr.focus = Some(match (v["entry"].as_u64(), v["elem"].as_u64()) {
+                            (Some(e), Some(k)) => Some((e as u32, k as u32, v["group"].as_u64().map(|g| g as u32))),
+                            _ => None,
+                        })
+                    }
                     "stopped" => stopped_at = Some(f),
                     other => return Err(malformed(n, other)),
                 }

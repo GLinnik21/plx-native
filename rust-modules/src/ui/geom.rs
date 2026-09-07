@@ -17,7 +17,7 @@
 #![allow(dead_code)] // phase 3a: the screens compose through these from 3b (the engine) and 5b on
 
 use super::machine::{Cx, EntryId, FocusKey, GroupId, Host};
-use super::screen::{At, AxisMask, Dir, EdgeRule, Focusable, GroupKind, GroupSpec, Placed, Seat, Step};
+use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, Seat, Step};
 use super::{card_row, Rect};
 
 /// An element key that is an INDEX into a widget's items. `u32` is one (the fixture host); the
@@ -95,7 +95,11 @@ where
             edge: [EdgeRule::Geometric; 4],
             extent: self.extent,
             len: self.n,
+            elem: ElemKind::Card,
         });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < self.n).then_some(self.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         step_index(self.entry, k, dir, self.n, true)
@@ -120,6 +124,7 @@ where
             rect: rest.scaled(s),
             rest_rect: rest,
             clip: self.extent,
+            index: Some(i as u32),
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
@@ -128,7 +133,8 @@ where
     fn seat(&self, _g: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         let cx_ = from.rect.x + from.rect.w * 0.5;
         let guess = ((cx_ - self.sty.margin_x + self.row.scroll_x()) / self.pitch).max(0.0) as usize;
-        let i = card_row::column_near_x(cx_, self.sty.margin_x, self.pitch, self.size.0, self.row.scroll_x(), self.n, guess);
+        let from_i = from.index.map_or(guess, |i| i as usize);
+        let i = card_row::column_near_x(cx_, self.sty.margin_x, self.pitch, self.size.0, self.row.scroll_x(), self.n, from_i);
         key(self.entry, i)
     }
 }
@@ -155,7 +161,11 @@ where
             edge: [EdgeRule::Geometric; 4],
             extent: self.frame,
             len: self.table.n_rows().max(0) as usize,
+            elem: ElemKind::Control,
         });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as i32) < self.table.n_rows()).then_some(self.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         let Some(i) = k.elem.index() else {
@@ -172,11 +182,13 @@ where
         }
     }
     fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let r = self.table.row_frame(self.frame, key.index()? as i32)?;
+        let i = key.index()?;
+        let r = self.table.row_frame(self.frame, i as i32)?;
         Some(Placed {
             rect: r,
             rest_rect: r,
             clip: self.frame,
+            index: Some(i),
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
@@ -228,17 +240,23 @@ where
             edge: [EdgeRule::Geometric; 4],
             extent,
             len: self.rects.len(),
+            elem: ElemKind::Control,
         });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < self.rects.len()).then_some(self.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         step_index(self.entry, k, dir, self.rects.len(), true)
     }
     fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let r = *self.rects.get(key.index()? as usize)?;
+        let i = key.index()?;
+        let r = *self.rects.get(i as usize)?;
         Some(Placed {
             rect: r,
             rest_rect: r,
             clip: Rect::FULL,
+            index: Some(i),
         })
     }
     fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
@@ -285,6 +303,11 @@ where
         for s in self.shelves {
             Focusable::<H>::groups(s, cx, out);
         }
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        let (r, c) = self.split(key.index()?);
+        let s = self.shelves.get(r)?;
+        (c < s.n).then_some(s.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         let Some(i) = k.elem.index() else {
@@ -343,7 +366,11 @@ where
             edge: [EdgeRule::Geometric; 4],
             extent: self.frame,
             len: 1,
+            elem: ElemKind::Control,
         });
+    }
+    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        (key.index()? == 0).then_some(self.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         // A move INSIDE the document is a scroll the owner performs on `FocusMoved`; the key
@@ -359,6 +386,7 @@ where
             rect: self.frame,
             rest_rect: self.frame,
             clip: self.frame,
+            index: Some(0),
         })
     }
     fn reconcile(&self, _want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {

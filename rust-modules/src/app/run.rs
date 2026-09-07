@@ -124,6 +124,17 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         app.instr.mark(crate::diag::heartbeat::Phase::Results); // results
         // NAV COMMIT — the route flips here (a transition at its floor, a cut now).
         nav_commit(app, mt, fr);
+        // The shadow container tree follows the committed route (phase 3b(c)): a Replace CUT
+        // on a flip, one dispatcher frame with no input. `app/legacy.rs` says what it buys.
+        super::legacy::mirror(
+            &mut app.pages,
+            &mut app.shadow,
+            app.route,
+            crate::ui::machine::Tick {
+                ms: fr.now,
+                dt_us: (fr.dt * 1_000_000.0) as u32,
+            },
+        );
         app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, mt, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain

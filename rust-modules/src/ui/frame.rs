@@ -108,6 +108,63 @@ impl Default for Budget {
     }
 }
 
+/// The residency ceiling for every render alive in one frame (§8.3): a placeholder until phase 11
+/// sets it from the 160 MB `requiredMemory` measurement.
+pub const RENDER_BYTES_MAX: usize = 48 << 20;
+/// One full-viewport `FrameCache` (1920×1080×4), the single one a Cached host is served from.
+pub const FRAME_CACHE_BYTES: usize = 1920 * 1080 * 4;
+
+/// Every `ScreenRender` alive this frame (§8.3): the frame plan's list, checked as a whole rather
+/// than as the page pair alone.
+#[derive(Clone, Debug, Default)]
+pub struct RenderSet {
+    /// Page renders drawn: the top page, plus the level beneath it under a push.
+    pub pages: u32,
+    /// `(surface, renders)` per Active surface.
+    pub surfaces: Vec<(super::machine::EntryId, u32)>,
+    /// The sum of every render's backing-texture bytes.
+    pub bytes: usize,
+    /// The one shared `FrameCache`, when a Cached host is being served from it.
+    pub frame_cache_bytes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RenderBreach {
+    /// More than two page renders.
+    Pages(u32),
+    /// A surface holding more than one render.
+    Surface(super::machine::EntryId, u32),
+    /// The sum of every render plus the `FrameCache` is over `RENDER_BYTES_MAX`.
+    Bytes(usize),
+}
+
+impl std::fmt::Display for RenderBreach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenderBreach::Pages(n) => write!(f, "{n} page renders (max 2)"),
+            RenderBreach::Surface(e, n) => write!(f, "surface {} holds {n} renders (max 1)", e.0),
+            RenderBreach::Bytes(b) => write!(f, "{b} render bytes (max {RENDER_BYTES_MAX})"),
+        }
+    }
+}
+
+impl RenderSet {
+    /// (a) pages ≤ 2, (b) one render per surface, (c) bytes + the `FrameCache` under the ceiling.
+    pub fn check(&self) -> Result<(), RenderBreach> {
+        if self.pages > 2 {
+            return Err(RenderBreach::Pages(self.pages));
+        }
+        if let Some((e, n)) = self.surfaces.iter().find(|(_, n)| *n > 1) {
+            return Err(RenderBreach::Surface(*e, *n));
+        }
+        let total = self.bytes + self.frame_cache_bytes;
+        if total > RENDER_BYTES_MAX {
+            return Err(RenderBreach::Bytes(total));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

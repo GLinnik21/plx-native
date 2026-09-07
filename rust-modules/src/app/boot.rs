@@ -1123,6 +1123,8 @@ pub(super) unsafe fn boot(
         rec: super::recorder::Recplay::Off,
         present: crate::ui::present::Present::new(),
         budget: crate::ui::frame::Budget::new(),
+        pages: crate::ui::dispatch::Dispatcher::new(),
+        shadow: super::legacy::ShadowRig::new(crate::diag::heartbeat::now_us),
         dev: DevFlags {
             detail_osc,
             home_osc,

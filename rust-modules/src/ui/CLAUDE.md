@@ -214,6 +214,17 @@ The behaviour and the mark now read the same flag (`Shelf::is_continue` /
 | `geom.rs` | **`Focusable` for the widgets (restructure spec §7.1): geometry IS `place`.** Five VIEWS a screen builds for the frame from a widget's live state plus the arguments its draw takes — `Shelf` over a `CardRow`, `Table` over a `TableView`, `TabRow` over the strip's drawn pills, `Grid` over a column of shelves (one `Row` group per shelf, so a vertical move seats by `card_row::column_near_x`'s contract), `Document` over a `DocumentReader` — each answering `groups`/`neighbour`/`place`/`reconcile`/`seat`. The rule that makes them honest: the DRAW reads the same formula (`card_row::tile_rect` is what `strip` places tiles by; `TableView::row_frame` is the walk `row_rect`/`hit_row` share), and a host test per widget pins the two. Elements are indices (`IndexElem`); the engine (3b) maps a screen's keys onto them. |
 | `tile.rs` | **`Tile` — the library's item abstraction for a shelf tile (spec §10)**: title, poster `(server, path)`, resume progress, the two watch facts. `pms.rs` implements it for `PmsMovie`; `widgets::poster_mark`/`row_watch_state` read through it, so a mark is resolved from the trait and never from a Plex type. |
 | `adapters.rs` | **The one door out of the machine world (spec §2.2)**: `Adapters<H>::execute` receives every `Fx::App` effect (the dispatcher reaches it through `Rig::app_fx`); `StubAdapters` answers by script in tests. `app/adapters/poster.rs` is the first real adapter — the poster SOURCE half of image caching, whose render half is `tex.rs`. |
+| `containers/mod.rs` | **`Navigation` — the container TREE (spec §6.2, phase 3b)**: `TabContainer` → one shared `NavStack` → `ModalStack`, the ONE minter of `EntryId`/`InstanceId` (`Minter`), the `Life` steps a structural op unfolds into (`Mount`/`Unmount`/lifecycle events in §3.4's order), `input_owner()` resolved over the shared modal stack first and then the top page, and `BackAnswer` (`Popped`, `Dismissed`, `AtRoot` — the last is the application's call, `Rig::back_at_root`). It holds the tree; `dispatch.rs` steps it. |
+| `containers/stack.rs` | `NavStack<T: Transition>` — `Entry { id, arg, ret, inst }`; `request` captures `ReturnState` NOW (§6.1 tier 2), the op applies at the transition's commit point; `CAP = 16` evicts the oldest BODY but keeps its `EntryId` and return state so focus identity survives a remount; a retired list holds an unmounted entry until its `Unmount` was delivered. |
+| `containers/modal.rs` | `ModalStack` — a surface is an `Entry` with a `phase` (`Hidden` / `Opening` / `Open` / `Closing`), a `Style` (`Compact` / `Sheet` / `Alert` / `Opaque { snapshot }` / `PlayerPanel { survives_failure }`) and a `PopoverMotion` (`APPEAR_K` 300); the container is the ONE owner of phase, `prune()` the only place `Closing` clears (so a Closing surface steps unconditionally), `on_miss(style)` consulted only while `Open`, and `surface_policy` the bottom-to-top fold to `(HostUpdate, HostRender)` that reproduces today's host table. |
+| `containers/tabs.rs` | `TabContainer` — the strip as the container's OWN group (`STRIP`, `GroupId(0xFFFF_0001)`) above the page's, its `pill_rects` recorded per frame, and `select` as a `NavOp::Root` on the shared stack (Home is the single root). |
+| `containers/transition.rs` | The `Transition` trait and its three: `Immediate` (a cut — the fixture's and the shadow's), `PageDip` (`DIP_OUT_MS` 70 / `DIP_IN_MS` 140, the continuous-chrome rule for a destination that shares the tab bar) and `RoutePush` (`PUSH_K` 200, parent −0.35 / child +0.22, both levels drawn). The product's `nav.rs`/`route_screen::RoutePush` stay the live motion until the screens migrate; these are the same numbers as a contract. |
+| `containers/tests.rs` | The container tests of spec §6 and §15.1 (`settings_back_walks_its_own_stack_not_the_apps`, `an_evicted_entry_keeps_its_focus_identity_on_remount`, `the_closing_phase_is_stepped_even_when_the_host_is_frozen`, …). |
+| `focus.rs` | **`FocusEngine` — THE focus state (spec §7.3 step 5)**: the current `FocusKey` per input scope and every group's remembered cursor, owned by `Input`, hashed and recorded; screens keep no copy. `enter`/`move_dir`/`reconcile`/`kind_of`: a direction asks the group's `neighbour`, at an edge a declared `Link` wins, else the `EdgeRule` — the default `Geometric` search is nearest by axis distance weighted 3:1 against orthogonal offset, judged CENTRE-based (an overlapping toolbar must not win a LEFT), excluding groups whose `AxisMask` omits the axis — then the destination's `Seat` policy (`Nearest` = `card_row::column_near_x`'s contract with the index tie-break; `Remembered` unconditional; `RememberedNear { rows }` within `(rows + 0.5) × size` of slack; `Projected` through `seat()`; `First`). Every method of the page it asks takes `&self`. |
+| `hit.rs` | **`HitMap` (spec §7.5, §7.6)** — DOUBLE-BUFFERED: the draw fills the back map through `DrawFrame::stop`, the swap happens only on a PRESENTED frame, so a click on an idle frame resolves against the last frame the panel showed. `top_at` is the last stop whose `rect ∩ clip` contains the point (painter order IS z); `dpad_mode` suppresses hover until the pointer travels `DPAD_TRAVEL_PX` 120 after a D-pad press; `Hover::{Focus, Ignore, OnlyIfFocused}` and `Activate::{Press, Immediate, Direct}` are the STOP's policies; `suppressed` is the fading-surface gate. Inert for a `LegacyPage`. |
+| `input_tests.rs` | The press / pointer / keyboard half of spec §7.7 over the dispatcher (`a_pointer_press_is_cancelled_when_the_hit_leaves_its_arm`, `a_press_commit_fires_from_tick_with_no_key_up`, `a_bare_element_activates_on_the_down_edge`, `the_system_keyboard_is_an_input_owner`, `a_legacy_page_never_consults_the_map_or_the_engine`, …). |
+| `testapp.rs` | `TestApp` (spec §15.1 `a_new_screen_is_unit_tested_with_no_sdl`): the dispatcher over the fixture rig on a `VirtualClock` — boot, press, read. Every migrated screen ships one test through it. |
+| `pill.rs` | The blended-capsule OUTLINE solver behind every control face wider than it is tall (`widgets.rs` says why a capsule is not a stadium): three circular arcs per corner solved in `f64` from a closed form, `box_h` (the drawn box is taller than the laid-out frame so the ends come out at the frame's height), `PILL_END_R` the one dial; `fs_src.frag`'s `sdPill` evaluates it. |
 | `tex.rs` | **`TexCache<PosterKey>` — the RENDER-RESOURCE half of image caching (spec §10)**: GL residency and its LRU, `accept` in the drain (owned decoded pixels in, no GL), upload in PREPARE under `Budget`'s Poster class (3 per frame), `warm` inside the presented frame's GL scope, one `Provenance::Resource` note per landed texture, `free` when the source recycles a slot. The library reaches images ONLY through its free functions (`resolve_on`, `resolve_wh_on`, `warm_on`, `logo_src`, `logo_warm`, `source_idle`), backed by the `Source` the application installs at boot; a `ServerId` crosses as its raw id. |
 | `document_reader.rs` | `DocumentReader` — a route-sized document reader: measured text flow (the line layout cached by body hash and wrap width), spring scrolling in `STEP`s, a continuous rail; `at_top`/`at_end` are what `geom::Document` leaves by. Privacy Policy, the payload preview and every Legal document read through it. |
 | `source_list.rs` | **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on two surfaces: the Library's Sources picker (`Level::Browse`) and the Favorite libraries editor (`Level::OnHome`). |
@@ -417,7 +428,7 @@ next day — the regression was `fs_ambient.frag`'s dither hash — and with it 
 surround costs nothing the `home-hero` / `home-fold` gates can see. The record is
 `docs/backdrop-blur-profiling.md`, the 2026-09-02 section.
 
-### The restructure spike (phases 2-i → 3a of `~/.claude/plans/ui-plxnative-structured-phoenix.md`)
+### The restructure spike (phases 2-i → 3b of `~/.claude/plans/ui-plxnative-structured-phoenix.md`)
 
 The library half of the restructure, in `ui/`. Modules with NO product caller yet carry
 `#![allow(dead_code)]` with the same one-line reason: `screen.rs` (`Screen`, `ScreenArg`,
@@ -427,9 +438,12 @@ blanket impl, because the widgets implement `Focusable` themselves now and a bla
 `Composed` collides with them — and `DrawFrame`, whose `stop` folds the painter's scale/clip
 cascade into screen space and whose `clip` is the RAII scissor scope), `present.rs` (the gate as
 a machine: `note`/`peek`/`take`), `landing.rs` (the bounded two-lane result queue), `frame.rs`
-(`Budget`, the Poster class), `geom.rs` (the widgets' `Focusable` views, phase 3a), `dispatch.rs`
-(the ten-step frame over a one-stack `NavTree`, taking a `Rig` for everything it does not own)
-and `replay.rs` (`--targets` over a dispatcher). Product code already: `tex.rs` (phase 3a — every
+(`Budget`, the Poster class), `geom.rs` (the widgets' `Focusable` views, phase 3a) and
+`replay.rs` (`--targets` and, since 3b, `--resolve` over a dispatcher). `dispatch.rs` (the
+ten-step frame over `containers::Navigation`, owning the `InputMachine` — engine, hit map, press
+and arm — and taking a `Rig` for everything else) left that list in 3b: it runs every frame for
+`app/legacy.rs`'s shadow tree, while `focus.rs` and `hit.rs` stay inert because a `LegacyPage`
+routes around them, not around the frame algorithm. Product code already: `tex.rs` (phase 3a — every
 poster the library draws is resolved through `TexCache`, fed by `app/adapters/poster.rs`;
 `ui::frame::Budget` and `ui::present::Present` are `App` fields because `tex::prepare` spends the
 one and wakes the other), `tile.rs` (phase 3a — `poster_mark`/`row_watch_state` read a `Tile`), the
@@ -446,6 +460,18 @@ writes through (`plxnative-rec`) and loads for `plxnative-recplay`, and `input.r
 attribute — count them with `grep -c 'pending!' rust-modules/src/ui/fixture.rs`, never from here.
 Until the screens migrate, `idle.rs`, `nav.rs` and `app/run.rs` remain the product's gate,
 transition and loop; the recorder hashes what IS a machine today and says so in its module doc.
+
+**Phase 3b (2026-09-07) made the containers, the engine and the hit map real and put ONE product
+consumer on them: `app/legacy.rs`.** The application's `Host` is `AppHost`, its screen argument
+the legacy `Route` itself (`LegacyArg`, chrome from `route_wears_tab_bar`), its only screen
+`LegacyPage` — `name()` is `route_word`, `FocusSource::Legacy`/`HitSource::Legacy`, so the
+engine and the map are INERT for it and `app/input.rs`'s ladders remain the single writer of
+focus and hits (§14). `App.pages` is a `Dispatcher<AppHost>` the loop mirrors after every NAV
+COMMIT (`legacy::mirror`: a `Replace` CUT on a route flip, one frame with no input); the rig's
+privileged hooks are no-ops because `app/run.rs` makes the real calls. It receives no input and
+is not in the recorder's state hash (the phase-2 anchor fixture pins that shape). What it proves
+on every device run is that the tree steps, and that the heartbeat word has two sources that
+agree (a debug assert). The first screen to mount here for real is Settings (phase 5b).
 
 ## Gotchas that bite
 

@@ -111,6 +111,23 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
     fn draw(&mut self, f: &mut DrawFrame<'_, H>);
     fn render(&self) -> RenderStrategy;
+    /// May the container's strip be reached from this page right now (§6.2)? Home answers
+    /// `false` while snapped to the grid.
+    fn strip_reachable(&self) -> bool {
+        true
+    }
+    /// The page's declared `Link`s (§7.3 step 3) — the strip→hero door among them.
+    fn links(&self, _out: &mut Vec<Link>) {}
+    fn focus_source(&self) -> FocusSource {
+        FocusSource::Engine
+    }
+    fn hit_source(&self) -> HitSource {
+        HitSource::Engine
+    }
+    /// The bytes of render this screen holds (its backing textures), for the `RenderSet` check.
+    fn render_bytes(&self) -> usize {
+        0
+    }
 }
 
 /// The application's screen argument (§6.1).
@@ -200,6 +217,15 @@ impl AxisMask {
     pub const VERTICAL: AxisMask = AxisMask(0b10);
 }
 
+/// What a group's elements ARE for the press (§7.4): a `Card` arms a holdable press, a `Control`
+/// a non-holdable one, `Bare` delivers `Activate` on the DOWN edge and never arms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ElemKind {
+    Card,
+    Control,
+    Bare,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct GroupSpec {
     pub id: GroupId,
@@ -210,6 +236,30 @@ pub struct GroupSpec {
     pub edge: [EdgeRule; 4],
     pub extent: Rect,
     pub len: usize,
+    pub elem: ElemKind,
+}
+
+/// A declared non-standard transition (§7): at `from`'s `dir` edge, focus goes to `to` — and
+/// wins over the group's `EdgeRule` for that direction only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Link {
+    pub from: GroupId,
+    pub dir: Dir,
+    pub to: GroupId,
+}
+
+/// Who answers a direction for this screen (§7.6): the engine, or the legacy ladders — for a
+/// `LegacyPage` the engine and the hit map are INERT.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FocusSource {
+    Engine,
+    Legacy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HitSource {
+    Engine,
+    Legacy,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -218,7 +268,7 @@ pub enum Step<K> {
     Edge,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum At {
     SpringTarget,
     Drawn,
@@ -230,11 +280,17 @@ pub struct Placed {
     pub rect: Rect,
     pub rest_rect: Rect,
     pub clip: Rect,
+    /// The element's INDEX in its group when it is one — the `from` tie-break of
+    /// `card_row::column_near_x` (an exact tie keeps the index you had; any direction-only rule
+    /// ratchets), carried on the placement so `seat` can read it without a second argument.
+    pub index: Option<u32>,
 }
 
 /// EVERY method takes `&self`: the engine never mutates a screen (§7.3 step 5 says who does).
 pub trait Focusable<H: Host> {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>);
+    /// Which group an element belongs to — what the engine consults an `EdgeRule` on.
+    fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId>;
     fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem>;
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, at: At) -> Option<Placed>;
     fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem>;
@@ -265,6 +321,12 @@ pub fn composed_groups<H: Host, T: Composed<H> + ?Sized>(s: &T, cx: &Cx<'_, H>, 
     }
 }
 
+pub fn composed_group_of<H: Host, T: Composed<H> + ?Sized>(s: &T, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
+    s.layout(cx)
+        .into_iter()
+        .find_map(|(id, _)| s.part(id).group_of(key, cx))
+}
+
 pub fn composed_neighbour<H: Host, T: Composed<H> + ?Sized>(
     s: &T,
     key: FocusKey<H::Elem>,
@@ -291,10 +353,13 @@ pub fn composed_reconcile<H: Host, T: Composed<H> + ?Sized>(
     want: FocusKey<H::Elem>,
     cx: &Cx<'_, H>,
 ) -> FocusKey<H::Elem> {
+    // the element may no longer PLACE (a shelf that shrank under it): every part is asked, and
+    // the first answer that places is the reconciliation
     for (id, _) in s.layout(cx) {
         let part = s.part(id);
-        if part.place(&want.elem, cx, At::SpringTarget).is_some() {
-            return part.reconcile(want, cx);
+        let r = part.reconcile(want, cx);
+        if part.place(&r.elem, cx, At::SpringTarget).is_some() {
+            return r;
         }
     }
     want
@@ -326,6 +391,13 @@ macro_rules! focusable_via_composed {
         impl $crate::ui::screen::Focusable<$h> for $t {
             fn groups(&self, cx: &$crate::ui::machine::Cx<'_, $h>, out: &mut Vec<$crate::ui::screen::GroupSpec>) {
                 $crate::ui::screen::composed_groups(self, cx, out)
+            }
+            fn group_of(
+                &self,
+                key: &<$h as $crate::ui::machine::Host>::Elem,
+                cx: &$crate::ui::machine::Cx<'_, $h>,
+            ) -> Option<$crate::ui::machine::GroupId> {
+                $crate::ui::screen::composed_group_of(self, key, cx)
             }
             fn neighbour(
                 &self,

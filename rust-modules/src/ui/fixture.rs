@@ -22,7 +22,7 @@ use super::machine::{
 use super::present::{Present, Provenance};
 use super::screen::{
     composed_draw, composed_prepare, Activate, At, AxisMask, Composed, Dir, DrawFrame, EdgeRule,
-    Focusable, GroupKind, GroupSpec, Hover, Mounter, Part, Placed, RenderStrategy, ReturnState,
+    ElemKind, Focusable, GroupKind, GroupSpec, Hover, Mounter, Part, Placed, RenderStrategy, ReturnState,
     Screen, ScreenArg, ScreenEvent, Seat, Step, Stop,
 };
 use super::tex::{Decoded, PosterReady, Tex, TexCache, Uploader};
@@ -40,19 +40,29 @@ pub struct FixtureHost;
 pub enum FixtureArg {
     Home,
     Page(u32),
+    /// A modal surface with a stack of its OWN (the `SettingsSurface` shape, §6.2).
+    Modal,
+    /// A page that answers focus and hits by its own ladders (`FocusSource::Legacy`).
+    Legacy,
+    /// A page snapped to its grid: the strip is unreachable from it (§6.2).
+    Snapped,
 }
 
 impl ScreenArg for FixtureArg {
     fn chrome(&self) -> Chrome {
         match self {
             FixtureArg::Home => Chrome::TabBar,
-            FixtureArg::Page(_) => Chrome::None,
+            FixtureArg::Page(_) | FixtureArg::Modal => Chrome::None,
+            FixtureArg::Legacy | FixtureArg::Snapped => Chrome::TabBar,
         }
     }
     fn id(&self) -> ScreenId {
         match self {
             FixtureArg::Home => ScreenId(1),
             FixtureArg::Page(_) => ScreenId(2),
+            FixtureArg::Modal => ScreenId(3),
+            FixtureArg::Legacy => ScreenId(4),
+            FixtureArg::Snapped => ScreenId(5),
         }
     }
     fn title(&self) -> Option<&str> {
@@ -123,7 +133,14 @@ pub struct FixtureStore {
 }
 
 impl FixtureStore {
-    fn add(&mut self, v: u32) {
+    /// A landing that SHRINKS the list (the reconcile tests' case).
+    pub fn truncate(&mut self, n: usize) {
+        self.state.truncate(n);
+        self.view.items = self.state.clone();
+        self.view.gen += 1;
+    }
+
+    pub(crate) fn add(&mut self, v: u32) {
         self.state.push(v);
         self.view.items = self.state.clone();
         self.view.gen += 1;
@@ -140,6 +157,9 @@ pub struct FixtureRow {
     pub entry: super::machine::EntryId,
     pub prepared: u32,
     pub drawn: u32,
+    /// What the row's elements are for the press: `Page(5xx)` rows are `Bare`, `Page(6xx)`
+    /// rows `Control`, everything else `Card`.
+    pub kind: ElemKind,
 }
 
 impl Focusable<FixtureHost> for FixtureRow {
@@ -150,9 +170,13 @@ impl Focusable<FixtureHost> for FixtureRow {
             seat: Seat::Nearest,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Geometric; 4],
-            extent: Rect::new(0.0, 0.0, 1920.0, 200.0),
+            extent: Rect::new(0.0, 100.0, 1920.0, 200.0),
             len: self.len,
+            elem: self.kind,
         });
+    }
+    fn group_of(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+        ((*key as usize) < self.len).then_some(self.group)
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
         let i = key.elem as usize;
@@ -170,11 +194,12 @@ impl Focusable<FixtureHost> for FixtureRow {
     }
     fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
         if (*key as usize) < self.len {
-            let r = Rect::new(*key as f32 * 200.0, 0.0, 180.0, 180.0);
+            let r = Rect::new(*key as f32 * 200.0, 100.0, 180.0, 180.0);
             Some(Placed {
                 rect: r,
                 rest_rect: r,
                 clip: Rect::FULL,
+                index: Some(*key),
             })
         } else {
             None
@@ -289,12 +314,16 @@ impl Machine<FixtureHost> for FixtureScreen {
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: Key::Ok, .. },
                 ..
-            }) => {
-                // OK on Home opens a page: the structural op that must mount THIS frame
+            }) if self.row.kind == ElemKind::Card => {
+                // OK on a card page opens a page: the structural op that must mount THIS frame.
+                // A Bare or Control row leaves OK to the engine (`after_step`): activation on the
+                // down edge, or a non-holdable press.
                 self.state.keys += 1;
                 let next = match self.arg {
                     FixtureArg::Home => self.state.keys,
                     FixtureArg::Page(n) => n + 1,
+                    FixtureArg::Modal => 200,
+                    FixtureArg::Legacy | FixtureArg::Snapped => 300,
                 };
                 fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(next))));
                 fx.invalidate(Provenance::Input);
@@ -304,8 +333,9 @@ impl Machine<FixtureHost> for FixtureScreen {
                 kind: InputKind::Key { key: Key::Back, .. },
                 ..
             }) => {
-                fx.push(Fx::Nav(NavOp::Pop));
-                Handled::Yes
+                // §7.3 step 1: the owner had first refusal and declines — BACK is resolved by
+                // the container over the owner's own stack (a pop, a dismiss, or the root)
+                Handled::No
             }
             ScreenEvent::Input(_) => Handled::No,
             ScreenEvent::Mount => {
@@ -330,8 +360,10 @@ impl Machine<FixtureHost> for FixtureScreen {
                 }
                 Handled::Yes
             }
-            ScreenEvent::Enter(_) if self.arg == FixtureArg::Page(2) => {
-                // a structural op emitted from Enter: parked for the NEXT frame's commit (§3.3)
+            ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {
+                // a structural op emitted from a FRESH Enter: parked for the NEXT frame's commit
+                // (§3.3); a Restored Enter (a pop back onto this page) pushes nothing, or a BACK
+                // through it would ping-pong forever
                 fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(3))));
                 Handled::Yes
             }
@@ -343,8 +375,26 @@ impl Machine<FixtureHost> for FixtureScreen {
 impl Screen<FixtureHost> for FixtureScreen {
     fn name(&self) -> &'static str {
         match self.arg {
-            FixtureArg::Home => "home",
+            FixtureArg::Home | FixtureArg::Legacy | FixtureArg::Snapped => "home",
             FixtureArg::Page(_) => "detail",
+            FixtureArg::Modal => "settings",
+        }
+    }
+    fn strip_reachable(&self) -> bool {
+        self.arg != FixtureArg::Snapped
+    }
+    fn focus_source(&self) -> super::screen::FocusSource {
+        if self.arg == FixtureArg::Legacy {
+            super::screen::FocusSource::Legacy
+        } else {
+            super::screen::FocusSource::Engine
+        }
+    }
+    fn hit_source(&self) -> super::screen::HitSource {
+        if self.arg == FixtureArg::Legacy {
+            super::screen::HitSource::Legacy
+        } else {
+            super::screen::HitSource::Engine
         }
     }
     fn state(&self) -> &dyn LogicalState {
@@ -358,6 +408,214 @@ impl Screen<FixtureHost> for FixtureScreen {
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
         composed_draw(self, f);
+    }
+    fn render(&self) -> RenderStrategy {
+        RenderStrategy::Page
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// the modal — a surface with a stack of its OWN (the `SettingsSurface` shape, §6.2)
+// ---------------------------------------------------------------------------------------------
+
+/// A modal surface whose BACK walks its own `NavStack<RoutePush>` before the app's: `Ok` pushes
+/// an inner page, `Back` pops one while there is one to pop and otherwise DECLINES (`Handled::No`),
+/// which is what lets the container dismiss it. Its inner bodies are `FixtureScreen`s it mounts
+/// itself from the stack's `Life` steps — a screen-owned stack in the test bundle, registered
+/// through `Navigation` in the product's screen phases.
+pub struct FixtureModal {
+    pub inner: super::containers::stack::NavStack<FixtureHost>,
+    ids: super::containers::Minter,
+    pub state: FixtureState,
+    entry: super::machine::EntryId,
+    /// A foreground spring of the surface's own (the appear pop), reported as motion on Tick.
+    pub pop: f32,
+}
+
+impl FixtureModal {
+    pub fn new(entry: super::machine::EntryId) -> Self {
+        Self {
+            inner: super::containers::stack::NavStack::new(Box::new(
+                super::containers::transition::RoutePush::new(),
+            )),
+            ids: super::containers::Minter::default(),
+            state: FixtureState::default(),
+            entry,
+            pop: 0.0,
+        }
+    }
+
+    /// Execute the inner stack's lifecycle steps against its own bodies.
+    fn run_inner(&mut self) {
+        for step in self.inner.commit(&mut self.ids) {
+            match step {
+                super::containers::Life::Mount(eid) => {
+                    let inst_id = self.ids.instance();
+                    if let Some(e) = self.inner.entry_mut(eid) {
+                        e.inst = Some(super::containers::stack::Instance {
+                            id: inst_id,
+                            screen: Box::new(FixtureScreen {
+                                arg: e.arg.clone(),
+                                state: FixtureState::default(),
+                                row: FixtureRow {
+                                    len: 1,
+                                    group: GroupId(7),
+                                    entry: eid,
+                                    prepared: 0,
+                                    drawn: 0,
+                                    kind: ElemKind::Card,
+                                },
+                            }),
+                            inflight: Vec::new(),
+                        });
+                    }
+                }
+                super::containers::Life::Ev(eid, ev) => {
+                    if let Some(i) = self.inner.entry_mut(eid).and_then(|e| e.inst.as_mut()) {
+                        self.state.events.push(ev.name());
+                        let _ = i.id;
+                    }
+                }
+                super::containers::Life::Unmount(eid) | super::containers::Life::Evict(eid) => {
+                    if let Some(e) = self.inner.entry_mut(eid) {
+                        e.inst = None;
+                    }
+                    let ids: Vec<_> = Vec::new();
+                    self.inner.prune(&ids);
+                }
+            }
+        }
+    }
+
+    pub fn inner_depth(&self) -> usize {
+        self.inner.depth()
+    }
+}
+
+impl Focusable<FixtureHost> for FixtureModal {
+    fn groups(&self, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: GroupId(9),
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Geometric; 4],
+            extent: Rect::new(600.0, 200.0, 720.0, 600.0),
+            len: 1,
+            elem: ElemKind::Control,
+        });
+    }
+    fn group_of(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+        (*key == 0).then_some(GroupId(9))
+    }
+    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
+        Step::Edge
+    }
+    fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+        (*key == 0).then_some(Placed {
+            rect: Rect::new(600.0, 200.0, 720.0, 600.0),
+            rest_rect: Rect::new(600.0, 200.0, 720.0, 600.0),
+            clip: Rect::FULL,
+            index: Some(0),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+        want
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+        FocusKey {
+            entry: self.entry,
+            elem: 0,
+        }
+    }
+}
+
+impl Machine<FixtureHost> for FixtureModal {
+    type Ev = ScreenEvent<FixtureHost>;
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        _cx: &Cx<'_, FixtureHost>,
+        fx: &mut Effects<'_, FixtureHost>,
+    ) -> Handled {
+        self.state.events.push(ev.name());
+        match ev {
+            ScreenEvent::Mount => {
+                self.inner
+                    .request(NavOp::Root(FixtureArg::Page(100)), ReturnState::default());
+                self.run_inner();
+                Handled::Yes
+            }
+            ScreenEvent::Input(InputEvent {
+                kind: InputKind::Key { key: Key::Ok, .. },
+                ..
+            }) => {
+                self.state.keys += 1;
+                let n = 100 + self.state.keys;
+                self.inner
+                    .request(NavOp::Push(FixtureArg::Page(n)), ReturnState::default());
+                self.run_inner();
+                fx.invalidate(Provenance::Input);
+                Handled::Yes
+            }
+            ScreenEvent::Input(InputEvent {
+                kind: InputKind::Key { key: Key::Up | Key::Down, .. },
+                ..
+            }) => {
+                // a control that handles a direction keeps it from the engine (a slider's arm)
+                self.state.keys += 10;
+                Handled::Yes
+            }
+            ScreenEvent::Input(InputEvent {
+                kind: InputKind::Key { key: Key::Back, .. },
+                ..
+            }) => {
+                if self.inner.depth() > 1 {
+                    self.inner.request(NavOp::Pop, ReturnState::default());
+                    self.run_inner();
+                    Handled::Yes
+                } else {
+                    Handled::No // depth 0 of its own stack: the container dismisses it
+                }
+            }
+            ScreenEvent::Tick(_) => {
+                // the surface's own foreground spring: reports motion while it settles
+                if self.pop < 1.0 {
+                    self.pop = (self.pop + 0.25).min(1.0);
+                    fx.note(super::present::PresentEvent::Motion);
+                }
+                Handled::Yes
+            }
+            _ => Handled::No,
+        }
+    }
+}
+
+impl Screen<FixtureHost> for FixtureModal {
+    fn name(&self) -> &'static str {
+        "settings"
+    }
+    fn state(&self) -> &dyn LogicalState {
+        &self.state
+    }
+    fn crumb(&self, _cx: &Cx<'_, FixtureHost>) -> Option<Cow<'_, str>> {
+        Some(Cow::Borrowed("Settings"))
+    }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
+        let p = f.painter;
+        let r = Rect::new(600.0, 200.0, 720.0, 600.0);
+        f.stop(p, Stop {
+            key: FocusKey {
+                entry: self.entry,
+                elem: 0,
+            },
+            rect: r,
+            rest_rect: r,
+            clip: Rect::FULL,
+            hover: Hover::Focus,
+            activate: Activate::Press,
+        });
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
@@ -417,15 +675,24 @@ impl Mounter<FixtureHost> for FixtureMounter {
             super::machine::InputOwner::Entry(e) => e,
             _ => super::machine::EntryId(0),
         };
+        if *arg == FixtureArg::Modal {
+            return Box::new(FixtureModal::new(entry));
+        }
+        let kind = match arg {
+            FixtureArg::Page(n) if (500..600).contains(n) => ElemKind::Bare,
+            FixtureArg::Page(n) if (600..700).contains(n) => ElemKind::Control,
+            _ => ElemKind::Card,
+        };
         Box::new(FixtureScreen {
             arg: arg.clone(),
             state: FixtureState::default(),
             row: FixtureRow {
-                len: cx.views.store.items.len(),
+                len: cx.views.store.items.len().max(3),
                 group: GroupId(1),
                 entry,
                 prepared: 0,
                 drawn: 0,
+                kind,
             },
         })
     }
@@ -433,7 +700,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
 
 pub struct FixtureRig {
     mounter: FixtureMounter,
-    store: FixtureStore,
+    pub store: FixtureStore,
     measure: FixtureMeasure,
     pub cache: TexCache<PosterKey>,
     uploader: StubUploader,
@@ -579,11 +846,11 @@ impl super::adapters::Adapters<FixtureHost> for FixtureRig {
 // the smoke test — the spike's proof that the contracts compose
 // ---------------------------------------------------------------------------------------------
 
-fn tick(ms: u32) -> Tick {
+pub(crate) fn tick(ms: u32) -> Tick {
     Tick { ms, dt_us: 16_000 }
 }
 
-fn key(k: Key, at: Tick) -> InputEvent<u32> {
+pub(crate) fn key(k: Key, at: Tick) -> InputEvent<u32> {
     InputEvent {
         at,
         source: super::machine::Source::Script,
@@ -613,7 +880,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     assert_eq!(rig.clears, 1, "clear_opaque_region at draw entry");
     assert_eq!(rig.net_requests.len(), 1, "a request emitted from Mount is addressable");
     assert!(rig.log.iter().any(|l| l.contains("mounted Home")));
-    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     d.track_inflight(home, RequestId(1));
 
     // frame 2: an HTTP result lands on Home; nothing moved on screen, so no present unless damaged
@@ -649,12 +916,12 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     let r3 = d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![notice], &mut NoTap);
     assert_eq!(r3.mounted.len(), 1, "the page mounted in the same frame as the key");
     assert!(r3.presented, "the key invalidated");
-    assert_eq!(d.nav.stack.len(), 2);
-    assert_eq!(d.nav.top().unwrap().arg, FixtureArg::Page(1));
+    assert_eq!(d.nav.tabs.stack.depth(), 2);
+    assert_eq!(d.nav.top_page().unwrap().arg, FixtureArg::Page(1));
     assert!(r3.steps_post > 0, "the post-commit drain ran on its own budget");
-    let page = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap();
+    let page = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap();
     assert_eq!(page.screen.name(), "detail");
-    assert_eq!(d.last_stops().len(), 1, "the page drew one stop: the store has one item");
+    assert_eq!(d.last_stops().len(), 3, "the page drew its row: three slots at least (the store has one item)");
 
     // frame 4: a poster arrives as an app effect and is accepted, then uploaded in PREPARE
     // (a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare — the spike's half)
@@ -679,8 +946,8 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     let r5 = d.frame(&mut rig, tick(64), vec![key(Key::Back, tick(64))], vec![], &mut NoTap);
     assert_eq!(r5.unmounted.len(), 1);
     d.prune(&r5.unmounted);
-    assert_eq!(d.nav.stack.len(), 1);
-    let home_inst = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap();
+    assert_eq!(d.nav.tabs.stack.depth(), 1);
+    let home_inst = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap();
     let mut probe = String::new();
     home_inst.screen.state().probe(&mut probe);
     assert!(probe.contains("\"uncover\", \"enter\""), "{probe}");
@@ -754,6 +1021,9 @@ impl Tap<FixtureHost> for RecTap {
     fn state(&mut self, f: u64, hash: u64) {
         self.w.state(f, hash);
     }
+    fn focus(&mut self, f: u64, focus: Option<(u32, u32, Option<u32>)>) {
+        self.w.focus(f, focus);
+    }
     fn frame_done(&mut self, _f: u64) {
         self.w.flush_frame().expect("the memory sink never fails");
     }
@@ -798,7 +1068,7 @@ impl Codec<FixtureHost> for FixtureCodec {
 fn drive(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Tap<FixtureHost>) {
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
     d.frame(rig, tick(0), vec![], vec![], tap);
-    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     d.track_inflight(home, RequestId(1));
     d.track_inflight(home, RequestId(0));
     let addr = |req: u32| Addr {
@@ -861,7 +1131,7 @@ fn replay(rec: &Recording, codec: &dyn Codec<FixtureHost>) -> super::replay::Rep
         stopped_at: None,
     };
     let r0 = run_targets(&head, codec, &mut d, &mut rig, &|| None);
-    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     d.track_inflight(home, RequestId(1));
     d.track_inflight(home, RequestId(0));
     let tail = Recording {
@@ -925,18 +1195,18 @@ fn the_fixture_bundles_state_shape_is_pinned() {
     assert_eq!(fixture_state_fp(), 0x7fa4_0b1a_c484_3abf);
 }
 
-fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {
+pub(crate) fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
     d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
-    let home = d.nav.top().and_then(|e| e.inst.as_ref()).unwrap().id;
+    let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     (d, rig, home)
 }
 
-fn events_of(d: &Dispatcher<FixtureHost>, idx: usize) -> String {
+pub(crate) fn events_of(d: &Dispatcher<FixtureHost>, idx: usize) -> String {
     let mut s = String::new();
-    d.nav.stack[idx].inst.as_ref().unwrap().screen.state().probe(&mut s);
+    d.nav.tabs.stack.entries[idx].inst.as_ref().unwrap().screen.state().probe(&mut s);
     s
 }
 
@@ -966,7 +1236,7 @@ fn the_tick_is_delivered_after_every_result_and_before_nav_commit() {
     let wl = home_ev.find("\"will_leave\"").unwrap();
     assert!(t < wl, "the tick precedes the commit's lifecycle: {home_ev}");
     let page_ev = events_of(&d, 1);
-    assert!(page_ev.contains("[\"mount\", \"enter\"]"), "{page_ev}");
+    assert!(page_ev.contains("\"mount\", \"enter\""), "{page_ev}");
 }
 
 #[test]
@@ -983,7 +1253,7 @@ fn a_key_that_opens_a_page_mounts_in_the_same_frame() {
     let (mut d, mut rig, _home) = booted();
     let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
     assert_eq!(r.mounted.len(), 1);
-    assert_eq!(d.nav.stack.len(), 2);
+    assert_eq!(d.nav.tabs.stack.depth(), 2);
 }
 
 #[test]
@@ -993,10 +1263,10 @@ fn a_nav_emitted_from_enter_commits_next_frame() {
     d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
     let r2 = d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![], &mut NoTap);
     assert_eq!(r2.mounted.len(), 1, "one commit per frame: Page(3) waits");
-    assert_eq!(d.nav.top().unwrap().arg, FixtureArg::Page(2));
+    assert_eq!(d.nav.top_page().unwrap().arg, FixtureArg::Page(2));
     let r3 = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
     assert_eq!(r3.mounted.len(), 1);
-    assert_eq!(d.nav.top().unwrap().arg, FixtureArg::Page(3));
+    assert_eq!(d.nav.top_page().unwrap().arg, FixtureArg::Page(3));
 }
 
 #[test]
@@ -1091,51 +1361,6 @@ mod phase_3a {
     );
 }
 
-mod phase_3b {
-    pending!("3b":
-        the_render_set_is_checked_over_the_whole_frame,
-        slot_to_item_promotion_is_an_explicit_reconcile,
-        resolve_mode_reports_every_mismatch_and_continues_from_the_recording,
-        prepare_does_not_change_the_logical_state_hash,
-        a_modal_foreground_spring_does_not_invalidate_the_host_snapshot,
-        a_new_screen_is_unit_tested_with_no_sdl,
-        // §7.7
-        every_stop_times_every_direction_on_the_fixture_trees,
-        down_from_a_row_lands_nearest_by_the_column_near_x_contract,
-        bouncing_between_two_rows_is_stable,
-        remembered_entry_reveals_an_off_screen_element,
-        remembered_near_falls_to_nearest_beyond_its_rows,
-        a_seated_door_projects_through_the_container,
-        a_grid_hole_is_skipped_along_the_direction_of_travel,
-        a_document_scrolls_inside_and_leaves_at_its_ends,
-        a_control_that_handles_a_direction_keeps_it_from_the_engine,
-        a_link_replaces_the_geometric_answer_for_its_direction_only,
-        an_unreachable_axis_group_is_never_a_destination,
-        a_modal_scopes_focus_to_its_own_groups,
-        the_strip_is_the_containers_group_and_the_page_gates_it,
-        reconcile_runs_after_a_landing_and_before_draw,
-        the_same_film_keeps_its_key_after_a_shelf_reorder,
-        two_fast_presses_resolve_against_the_spring_target,
-        a_click_on_a_clipped_stop_hits_only_its_visible_part,
-        a_scaled_focused_tile_registers_its_popped_rect,
-        a_pointer_press_is_cancelled_when_the_hit_leaves_its_arm,
-        a_press_commit_fires_from_tick_with_no_key_up,
-        a_bare_element_activates_on_the_down_edge,
-        the_system_keyboard_is_an_input_owner,
-        a_legacy_page_never_consults_the_map_or_the_engine,
-        a_click_on_an_idle_frame_resolves_against_the_last_presented_map,
-        // §6 containers
-        the_closing_phase_is_stepped_even_when_the_host_is_frozen,
-        a_fixture_screen_mounts_with_no_app_change,
-        settings_back_walks_its_own_stack_not_the_apps,
-        back_off_a_detail_restores_the_spot_captured_at_the_press,
-        person_detail_person_is_three_entries,
-        library_remembers_its_section_scroll_and_cursor_across_a_detail_push,
-        search_keeps_its_query_and_shelves_across_a_result_push,
-        switching_profile_drops_every_tab_instance,
-        an_evicted_entry_keeps_its_focus_identity_on_remount,
-    );
-}
 
 mod phase_4 {
     pending!("4":

@@ -16,6 +16,7 @@ pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
 pub(crate) mod consent;
+pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
 pub(crate) mod decision_alert;
 pub mod detail;
@@ -25,14 +26,18 @@ pub(crate) mod geom; // RESTRUCTURE (spec §7.1): `Focusable` for the widgets �
 pub(crate) mod tile; // RESTRUCTURE (spec §10): the library's item abstraction for a shelf tile
 pub(crate) mod document_reader;
 pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
+pub(crate) mod focus; // RESTRUCTURE (spec §7.3): the focus ENGINE — one owner of focus, the golden tables
 pub mod fmt; // shared duration/clock display formatters
 pub(crate) mod frame; // RESTRUCTURE spike (spec §8.1): `Budget`, admission control for prepare work
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
+pub(crate) mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and the pointer gates
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
 pub mod home;
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
+#[cfg(test)]
+mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — engine, map, press, keyboard, legacy
 pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 #[cfg(feature = "lab-diagnostics")]
@@ -69,6 +74,7 @@ pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and t
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod table;
 pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
+pub(crate) mod testapp; // RESTRUCTURE (spec §15.1): a screen under test with no SDL — dispatcher + fixture rig + virtual clock
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
 pub mod theme;

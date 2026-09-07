@@ -76,9 +76,22 @@ pub enum PresentEvent {
 /// The keepalive: a settled screen still presents at least this often (`ui::idle`'s bound).
 pub const KEEPALIVE_MS: u32 = 2000;
 
+/// Whose springs are reporting (§4.4 `MotionScope`, structural): the dispatcher sets the scope
+/// around each body's step, so a surface's foreground motion never counts as the host page
+/// moving — the host snapshot is re-taken only for PAGE motion.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scope {
+    #[default]
+    Page,
+    Surface,
+}
+
 pub struct Present {
     dirty: bool,
     motion: bool,
+    /// Motion reported under `Scope::Page` since the last take.
+    page_motion: bool,
+    scope: Scope,
     video_plane: bool,
     fault: Option<Fault>,
     last_present_ms: u32,
@@ -99,6 +112,8 @@ impl Present {
         Self {
             dirty: true, // the first frame always draws
             motion: false,
+            page_motion: false,
+            scope: Scope::Page,
             video_plane: false,
             fault: None,
             last_present_ms: 0,
@@ -120,7 +135,12 @@ impl Present {
                     self.why = Some(p);
                 }
             }
-            PresentEvent::Motion => self.motion = true,
+            PresentEvent::Motion => {
+                self.motion = true;
+                if self.scope == Scope::Page {
+                    self.page_motion = true;
+                }
+            }
             PresentEvent::VideoPlane(b) => self.video_plane = b,
             PresentEvent::Fault(f) => self.fault = Some(f),
         }
@@ -142,6 +162,7 @@ impl Present {
         self.door.swap(false, Ordering::AcqRel);
         self.dirty = false;
         self.motion = false;
+        self.page_motion = false;
         self.why = None;
         if will {
             self.last_present_ms = tick_ms;
@@ -151,6 +172,16 @@ impl Present {
 
     pub fn video_plane(&self) -> bool {
         self.video_plane
+    }
+
+    /// Open a motion scope: what `Motion` reported from here on is attributed to.
+    pub fn set_scope(&mut self, scope: Scope) {
+        self.scope = scope;
+    }
+
+    /// Did the PAGE move since the last take (the host-snapshot question)? Cleared by `take`.
+    pub fn page_moving(&self) -> bool {
+        self.page_motion
     }
 
     /// The fault the tail logs once, if any, and clears.
