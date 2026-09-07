@@ -966,7 +966,7 @@ pub(super) fn activate_ctrl_row(
                     // Retire the segment FIRST: the seek lands on the preceding keyframe, which
                     // is usually still inside it, so without this the button comes straight back
                     // (see `metadata::mark_skipped`).
-                    crate::metadata::mark_skipped(pr.marker);
+                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
                     request_seek(ns);
                     resume_if_paused(mt);
                     false
@@ -1025,8 +1025,8 @@ pub(super) fn play_up_next(
     let sid = crate::metadata::playing()
         .map(|p| p.sid)
         .unwrap_or_else(crate::plex::current_server);
-    crate::metadata::retire_playing();
-    crate::metadata::request_detail(sid, &rk);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlaying);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         mt,
         resume,
@@ -1072,8 +1072,8 @@ pub(super) unsafe fn play_item_now(
     // playback with the last one's title for the whole pre-roll. None is honest (the
     // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
     // this item), and the landing refills it via sync_now_playing.
-    crate::metadata::set_now_playing(None);
-    crate::metadata::request_detail(mm.sid, &mm.rk);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: mm.sid, rk: mm.rk.to_string() });
     start_playback(
         mt,
         if from_start {

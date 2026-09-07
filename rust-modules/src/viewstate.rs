@@ -291,21 +291,51 @@ fn edit_local(sid: ServerId, rk: &str, w: Write) {
             //
             // All five are no-ops where the item does not appear — a walk of an empty or unrelated
             // store — so a press from any one screen still costs about what it did.
-            crate::pms::edit_item(sid, rk, crate::pms::LocalEdit::Watched(on));
-            crate::metadata::set_watched_local(sid, rk, on);
-            crate::browse::set_watched_local(sid, rk, on);
-            crate::browse::section_hubs::set_watched_local(sid, rk, on);
-            crate::search::set_watched_local(sid, rk, on);
-            crate::person::set_watched_local(sid, rk, on);
+            //
+            // Through the store VOCABULARY (`crate::stores`, restructure phase 4) rather than the
+            // data modules directly, so every store a press flips raises its own notice and a
+            // migrated screen hears the optimistic edit the same way it hears a landing.
+            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::EditItem {
+                sid,
+                rk: rk.to_string(),
+                edit: crate::pms::LocalEdit::Watched(on),
+            });
+            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetWatchedLocal {
+                sid,
+                rk: rk.to_string(),
+                on,
+            });
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetWatchedLocal {
+                sid,
+                rk: rk.to_string(),
+                on,
+            });
+            crate::stores::search::apply(crate::stores::search::SearchCmd::SetWatchedLocal {
+                sid,
+                rk: rk.to_string(),
+                on,
+            });
+            crate::stores::person::apply(crate::stores::person::PersonCmd::SetWatchedLocal {
+                sid,
+                rk: rk.to_string(),
+                on,
+            });
         }
         // The one edit that can be stated with certainty: the server hides the item from the deck
         // and keeps everything else about it (`plex::Client::remove_from_continue_watching`).
         Write::RemoveFromDeck => {
-            crate::pms::edit_item(sid, rk, crate::pms::LocalEdit::LeftTheDeck);
+            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::EditItem {
+                sid,
+                rk: rk.to_string(),
+                edit: crate::pms::LocalEdit::LeftTheDeck,
+            });
             // …and the LIBRARY's own deck, which is a different shelf on a different screen and is
             // where this row is now reachable from at all (the Library's section Continue Watching
             // shelf, 2026-09-05).
-            crate::browse::section_hubs::left_the_deck(sid, rk);
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::LeftTheDeck {
+                sid,
+                rk: rk.to_string(),
+            });
         }
     }
     crate::ui::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
@@ -447,10 +477,10 @@ pub(crate) fn pump() {
         crate::ui::detail::refresh_view_state(&keep);
     }
     if hubs {
-        crate::pms::request_refetch_hubs();
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
-        crate::browse::section_hubs::invalidate_all();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
         crate::ui::idle::invalidate();
     }
 }

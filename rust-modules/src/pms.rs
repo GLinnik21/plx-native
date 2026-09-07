@@ -944,6 +944,13 @@ static HUB_GEN: AtomicU32 = AtomicU32::new(0);
 /// see the read in [`pump`]. Starts at 0, which is also the table's own starting generation, so a
 /// boot that discovers nothing does not merge twice for nothing.
 static LAST_SECTIONS_GEN: AtomicU32 = AtomicU32::new(0);
+/// Moves every time the PUBLISHED catalog is replaced — a merge committed, or a reset — and
+/// nothing else. What `stores::hubs` raises its notice on (restructure phase 4): `pump` reports
+/// no change of its own, and a landing that failed rewrites no shelf.
+static CATALOG_GEN: AtomicU32 = AtomicU32::new(0);
+pub(crate) fn catalog_gen() -> u32 {
+    CATALOG_GEN.load(Ordering::SeqCst)
+}
 
 /// The backoff ladder's ends. A TV parked on a sleeping server must keep trying — that IS the
 /// feature — without ever becoming a request loop, so the wait doubles from `MIN` to a `MAX`
@@ -1391,6 +1398,7 @@ pub(crate) fn pump(dt: f32) {
     }
     if let Some(build) = build {
         let n = commit(build);
+        CATALOG_GEN.fetch_add(1, Ordering::SeqCst);
         crate::log(&format!(
             "hubs: landed — {n} items, {} shelves",
             hub_count()
@@ -1453,6 +1461,7 @@ pub(crate) fn seed_for_test(items: usize, state: HubState) {
 /// a profile switch whose fetch fails would otherwise leave the previous user's shelves on screen;
 /// this is the one place that must still wipe them.
 pub(crate) fn reset() {
+    CATALOG_GEN.fetch_add(1, Ordering::SeqCst);
     HUB_GEN.fetch_add(1, Ordering::SeqCst); // a worker still running belongs to the old identity
     *RESULTS.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
     *lock_srcs() = Vec::new();

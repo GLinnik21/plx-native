@@ -1823,10 +1823,10 @@ pub(crate) fn home_update(dt: f32) {
         // automatic retry. It ticks HERE because Home is the only screen that shows the result —
         // so nothing spawns a background fetch behind the player, and a Home that came up empty
         // heals itself the moment the server answers again.
-        crate::pms::pump(dt);
+        crate::stores::hubs::pump(dt);
         // Library discovery shares the same route policy: Home may schedule/land section jobs,
         // while Player never drives this pump behind playback.
-        crate::browse::discover_pump();
+        crate::stores::browse::discover_pump();
         // The LIVE half of [`pinned_snap`]: a catalog can empty UNDER a committed snap (a profile
         // switch whose fetch fails does exactly that), and a filter on new writes cannot undo one
         // already made. Re-applied every frame, so every snap reader falls into line for free.
@@ -2061,7 +2061,7 @@ pub(crate) fn status_activate(hf: c_int) -> bool {
     if !status_takes(hf) {
         return false;
     }
-    crate::pms::request_retry();
+    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Retry);
     true
 }
 

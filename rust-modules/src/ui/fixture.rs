@@ -1361,12 +1361,3 @@ mod phase_3a {
     );
 }
 
-
-mod phase_4 {
-    pending!("4":
-        the_landing_cap_drops_the_newest_and_hashes_the_count,
-        a_full_landing_replies_dropped_and_retires_inflight,
-        a_same_rating_key_on_a_different_server_is_skipped,
-        a_refused_spawn_lands_a_refusal_event,
-    );
-}

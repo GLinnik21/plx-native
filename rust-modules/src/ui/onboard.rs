@@ -399,7 +399,7 @@ pub fn update(dt: f32) {
     // `pump` because this screen wants no items: paging a grid nobody is looking at would be a
     // page of requests per library for a list of NAMES.
     unsafe { PHASE_MS += dt * 1000.0 };
-    crate::browse::discover_pump();
+    crate::stores::browse::discover_pump();
     // …and the generation watched is `source_list_gen`, not the table's SHAPE: a library's count
     // and a server's own name land without adding a row, and a screen keyed on the shape alone
     // sits there reading "Films" under a group with no header.
@@ -567,12 +567,12 @@ fn join_names(who: &[String]) -> Option<String> {
 /// would have cost.
 fn commit() -> Action {
     if crate::browse::section_count() == 0 {
-        crate::browse::retry_discovery();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::RetryDiscovery);
         crate::log("onboard: no discovered libraries yet — retry queued");
         return Action::None;
     }
     let draft = unsafe { addr_of!(DRAFT).as_ref().cloned().unwrap_or_default() };
-    crate::browse::apply_pins(&draft);
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::ApplyPins(draft));
     crate::log(&format!(
         "onboard: Home selection recorded — {} of {} libraries on",
         crate::browse::pinned_count(),

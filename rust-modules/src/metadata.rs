@@ -1185,6 +1185,7 @@ pub(crate) fn set_current_for_test(d: Option<Detail>) {
 /// **leaf**: an episode carries the show title + SxEy + episode name + its still; a movie carries the
 /// movie title + landscape art. Set by the play paths — `sync_now_playing()` after a leaf load, or
 /// explicitly by show-page episode play (where `current()` is still the show).
+#[derive(Clone, Debug)]
 pub(crate) struct NowPlaying {
     pub(crate) is_episode: bool,
     pub(crate) title: String, // big title: show title (episode) or movie title
@@ -1914,7 +1915,7 @@ fn related_rows(mc: &crate::plex::MediaContainer, sid: crate::plex::ServerId) ->
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is exactly what lets it run either
 /// on the main thread ([`load_detail_now`]) or on a worker ([`request_detail`]). Keep it that way:
 /// installing the result is the caller's job, and on the async path that must happen on the main
-/// thread (see the DETAIL_SLOT note).
+/// thread (see the `DETAIL_LANDING`/`land_detail` note).
 fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
@@ -2018,32 +2019,72 @@ pub(crate) fn load_detail_now(sid: crate::plex::ServerId, rk: &str) {
 // what makes that `&'static` sound, so the worker's only output is the mailbox.
 static DETAIL_GEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static DETAIL_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-struct DetailResult {
-    gen: u32,
-    d: Option<Detail>, // None = the fetch failed or panicked — the page keeps the previous item
+
+/// The detail landing — a `Landing` (restructure spec §5.2; `docs/stores-as-machines.md` §2.5)
+/// rather than the one-slot mailbox it was until phase 4, and keyed on the item's IDENTITY:
+/// `(server, ratingKey)`. Both servers in a household number their items from 1, so a rating key
+/// alone cannot say whose page a landing belongs to; the key carries the server, and
+/// [`pump_detail`] asks only for the item the page is awaiting ([`DETAIL_WANT`]). A landing for
+/// another server's item of the same number is skipped and counted, never installed. The data
+/// lane holds two (the awaited landing and one it superseded); the addressee is the store
+/// itself while the page is a `LegacyPage`. A worker that panicked lands `None`.
+static DETAIL_LANDING: crate::ui::landing::Landing<DetailKey, Option<Detail>> =
+    crate::ui::landing::Landing::with_inflight(2, 4);
+type DetailKey = (crate::plex::ServerId, String);
+/// The item the page is awaiting, or `None` when nothing is (then every landing is wanted —
+/// the shape the tests drive through a bare generation bump).
+static DETAIL_WANT: std::sync::Mutex<Option<DetailKey>> = std::sync::Mutex::new(None);
+
+fn detail_addr(gen: u32) -> crate::ui::machine::Addr {
+    crate::ui::machine::Addr {
+        to: crate::ui::machine::MachineId::Store(crate::stores::StoreId::Metadata.ord()),
+        req: crate::ui::machine::RequestId(gen),
+    }
 }
-static DETAIL_SLOT: std::sync::Mutex<Option<DetailResult>> = std::sync::Mutex::new(None);
 
 /// Invalidate any in-flight/pending detail fetch and mark the mailbox settled: bump the
 /// generation (so a late landing is discarded by `pump_detail`), catch DETAIL_DONE up to it
-/// (`detail_loading()` → false), and clear the slot. Returns the fresh generation.
+/// (`detail_loading()` → false), and clear the landing. Returns the fresh generation.
 fn supersede_detail() -> u32 {
     use std::sync::atomic::Ordering;
     let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     DETAIL_DONE.store(gen, Ordering::SeqCst);
-    *DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    DETAIL_LANDING.clear();
+    *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     gen
 }
 
-/// Post a finished fetch to the mailbox. MONOTONE: an older fetch landing late must never clobber
-/// a newer result the pump hasn't consumed yet. Called from the worker (and from the tests, which
-/// is the point of it being a named function rather than inline in the closure — the guard is the
-/// one piece of this machinery that a test can't reach through `request_detail`).
-fn land_detail(gen: u32, d: Option<Detail>) {
-    let mut slot = DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
-        *slot = Some(DetailResult { gen, d });
+/// Post a finished fetch to the landing, addressed by the generation the request minted and
+/// keyed by the item it fetched. An older fetch landing late is refused by [`pump_detail`]'s
+/// generation check, so ordering in the queue is never what protects a newer result. Called from
+/// the worker (and from the tests, which is the point of it being a named function).
+fn land_detail(sid: crate::plex::ServerId, rk: &str, gen: u32, d: Option<Detail>) {
+    let addr = detail_addr(gen);
+    if DETAIL_LANDING.put(addr, (sid, rk.to_string()), d).is_err() {
+        // the data lane is full: the NEWEST result is what goes (re-requestable), and the
+        // addressee still hears exactly one event for the request
+        DETAIL_LANDING.dropped(addr);
     }
+}
+
+/// Mint the request: supersede the season, bump the generation, record what the page awaits
+/// and admit the request. The spawn is the caller's; a refused one is `refused` back.
+fn begin_detail_request(sid: crate::plex::ServerId, rk: &str) -> (u32, crate::ui::machine::Addr) {
+    use std::sync::atomic::Ordering;
+    // drop any season fetch in flight for the OLD item — its landing would patch the new one
+    supersede_season();
+    // NOT supersede_detail(): the generation must move (a stale landing is discarded) but
+    // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
+    let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    DETAIL_LANDING.clear();
+    *DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
+    let addr = detail_addr(gen);
+    if !DETAIL_LANDING.admit(addr) {
+        // beyond the admission cap: the refusal is on the control lane already and the pump
+        // settles the spinner off it
+        crate::log(&format!("detail: request rk={rk} REFUSED — {} in flight", DETAIL_LANDING.inflight(addr.to)));
+    }
+    (gen, addr)
 }
 
 /// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
@@ -2053,24 +2094,21 @@ fn land_detail(gen: u32, d: Option<Detail>) {
 /// must not read the current server (see the fetch block's note), and the page being opened may
 /// belong to a machine that is not the current one at all.
 pub(crate) fn request_detail(sid: crate::plex::ServerId, rk: &str) {
-    use std::sync::atomic::Ordering;
-    // drop any season fetch in flight for the OLD item — its landing would patch the new one
-    supersede_season();
-    // NOT supersede_detail(): the generation must move (a stale landing is discarded) but
-    // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
-    let gen = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    *DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let (gen, addr) = begin_detail_request(sid, rk);
+    if DETAIL_LANDING.inflight(addr.to) == 0 {
+        return; // admission refused it; the pump answers the Refused record
+    }
     let rk = rk.to_string();
     let spawned = crate::task::spawn_small("detail", move || {
-        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands (as None) —
+        // the landing is filled OUTSIDE the guard so a panicking fetch still lands (as None) —
         // otherwise detail_loading() would report an in-flight fetch forever
         let d = catch_unwind(|| fetch_full(sid, &rk)).unwrap_or(None);
-        land_detail(gen, d);
+        land_detail(sid, &rk, gen, d);
     });
     if !spawned {
-        // no worker means nothing will ever land: catch DONE up or detail_loading() latches true
-        // forever behind a spinner that can never resolve
-        DETAIL_DONE.store(gen, Ordering::SeqCst);
+        // no worker means nothing will ever land on its own: the refusal record is what settles
+        // the spinner (`pump_detail`), exactly one event for the request (§5.2)
+        DETAIL_LANDING.refused(addr);
     }
 }
 
@@ -2080,20 +2118,46 @@ pub(crate) fn request_detail(sid: crate::plex::ServerId, rk: &str) {
 /// superseded by a newer request, by a blocking load, or by `clear()` when the page closed — is
 /// dropped.
 pub(crate) fn pump_detail() -> bool {
+    use crate::ui::landing::Lane;
     use std::sync::atomic::Ordering;
-    let taken = DETAIL_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let Some(r) = taken else { return false };
-    if r.gen != DETAIL_GEN.load(Ordering::SeqCst) {
-        return false; // superseded while in flight
+    let want = DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut out = Vec::new();
+    DETAIL_LANDING.take_for(
+        &|_| true,
+        &|k| match &want {
+            // the item the page awaits, by SERVER and key — a same-numbered item on another
+            // server is a different film (§5.2's identity rule)
+            Some((sid, rk)) => k.0 == *sid && k.1 == *rk,
+            None => true,
+        },
+        &mut out,
+    );
+    let mut fresh = false;
+    for rec in out {
+        let gen = rec.addr.req.0;
+        if gen != DETAIL_GEN.load(Ordering::SeqCst) {
+            continue; // superseded while in flight
+        }
+        DETAIL_DONE.store(gen, Ordering::SeqCst);
+        let d = match rec.lane {
+            Lane::Data(_, d) => d,
+            // nothing arrived and nothing will: the spinner is settled, the page keeps its item
+            Lane::Dropped(_) | Lane::Refused(_) => None,
+        };
+        fresh |= install_landed_detail(d);
     }
-    DETAIL_DONE.store(r.gen, Ordering::SeqCst);
-    // fetch failed: keep the previously loaded item. The mailbox carries no rk of its own, so the
-    // line naming WHICH page it was is written at the fetch site (`fetch_full`) — read it there
-    // rather than adding an anonymous one here. ONE arrival is not covered by that: a worker that
-    // PANICKED lands `None` too, and never reached `fetch_full`'s line. `task`'s panic logger names
-    // the thread and the source location, so the failure is in the log — it just is not in these
-    // words, and a `None` here with no `detail:` line above it is that case.
-    let Some(d) = r.d else { return false };
+    fresh
+}
+
+/// Install a landed fetch: a `None` (the fetch failed or panicked) keeps the previously loaded
+/// item. The landing carries no title of its own, so the line naming WHICH page it was is
+/// written at the fetch site (`fetch_full`) — read it there rather than adding an anonymous one
+/// here. ONE arrival is not covered by that: a worker that PANICKED lands `None` too, and never
+/// reached `fetch_full`'s line. `task`'s panic logger names the thread and the source location,
+/// so the failure is in the log — it just is not in these words, and a `None` here with no
+/// `detail:` line above it is that case.
+fn install_landed_detail(d: Option<Detail>) -> bool {
+    let Some(d) = d else { return false };
     // The LANDING is what defines which show's episodes are current, so the season supersede has
     // to happen here as well as at request time: a tab hop issued while this load was in flight
     // spawned a fetch against the OLD item, and its landing would patch these fresh episodes.
@@ -2943,20 +3007,14 @@ mod tests {
     /// bypassed (an unconditional store here would make the "older lands late" case vacuous)
     fn landing(gen: u32, rk: &str) {
         land_detail(
+            crate::plex::ServerId::UNSET,
+            rk,
             gen,
             Some(Detail {
                 rk: rk.to_string(),
                 ..Default::default()
             }),
         );
-    }
-    fn slot_rk() -> Option<String> {
-        DETAIL_SLOT
-            .lock()
-            .unwrap()
-            .as_ref()
-            .and_then(|r| r.d.as_ref())
-            .map(|d| d.rk.clone())
     }
     fn cur_rk() -> Option<String> {
         current().map(|d| d.rk.clone())
@@ -3303,17 +3361,12 @@ mod tests {
         // mailbox before its guard existed: losing the newest result stalled the spinner on.)
         landing(new, "fresh-show");
         landing(old, "stale-show");
-        assert_eq!(
-            slot_rk().as_deref(),
-            Some("fresh-show"),
-            "the late older landing is refused"
-        );
-        assert!(pump_detail());
+        assert!(pump_detail(), "the late older landing is refused by its generation");
         assert_eq!(cur_rk().as_deref(), Some("fresh-show"));
 
         // a FAILED fetch (None) settles the spinner but keeps the previously loaded item
         let g = DETAIL_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        *DETAIL_SLOT.lock().unwrap() = Some(DetailResult { gen: g, d: None });
+        land_detail(crate::plex::ServerId::UNSET, "fresh-show", g, None);
         assert!(!pump_detail(), "a failed fetch reports no fresh item");
         assert_eq!(
             cur_rk().as_deref(),
@@ -3330,6 +3383,66 @@ mod tests {
         landing(inflight, "arrived-after-close");
         assert!(!pump_detail(), "a landing after close is dropped");
         assert_eq!(cur_rk(), None, "the page stays closed");
+    }
+
+    /// Spec §5.2 / `docs/stores-as-machines.md` §2.5: the landing is keyed on `(server, rk)`.
+    /// The page awaits server A's item 7; server B's item 7 landing under the same generation is
+    /// skipped and counted, and A's own installs. Until phase 4 the mailbox carried no server at
+    /// all, which is the gap the spec's evidence line names.
+    #[test]
+    fn a_detail_landing_for_another_servers_item_of_the_same_key_is_skipped() {
+        let _serial = crate::testlock::serial();
+        clear();
+        let a = crate::plex::ServerId::from_raw(0);
+        let b = crate::plex::ServerId::from_raw(1);
+        let (gen, addr) = begin_detail_request(a, "7");
+        assert!(detail_loading());
+        let before = DETAIL_LANDING.dropped_for(addr.to);
+        land_detail(
+            b,
+            "7",
+            gen,
+            Some(Detail {
+                rk: "7".into(),
+                title: "theirs".into(),
+                ..Default::default()
+            }),
+        );
+        assert!(!pump_detail(), "the other server's copy is not the awaited item");
+        assert_eq!(cur_rk(), None);
+        assert!(detail_loading(), "…and the page is still waiting for its own");
+        assert_eq!(DETAIL_LANDING.dropped_for(addr.to), before + 1, "counted");
+        land_detail(
+            a,
+            "7",
+            gen,
+            Some(Detail {
+                rk: "7".into(),
+                title: "ours".into(),
+                ..Default::default()
+            }),
+        );
+        assert!(pump_detail());
+        assert_eq!(current().map(|d| d.title.clone()).as_deref(), Some("ours"));
+        assert!(!detail_loading());
+        clear();
+    }
+
+    /// Spec §15.1 `a_refused_spawn_lands_a_refusal_event`, on the real store: a request whose
+    /// worker the OS refused is answered by a `Refused` record, and the pump settles the spinner
+    /// off it — exactly one event for the request, nothing latched.
+    #[test]
+    fn a_refused_detail_spawn_settles_the_spinner_through_the_landing() {
+        let _serial = crate::testlock::serial();
+        clear();
+        let a = crate::plex::ServerId::from_raw(0);
+        let (_gen, addr) = begin_detail_request(a, "9");
+        assert!(detail_loading());
+        DETAIL_LANDING.refused(addr);
+        assert!(!pump_detail(), "no item arrived");
+        assert!(!detail_loading(), "but the refusal settled the wait");
+        assert_eq!(DETAIL_LANDING.inflight(addr.to), 0);
+        clear();
     }
 
     // ---- the season mailbox -----------------------------------------------------------------

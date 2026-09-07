@@ -930,7 +930,7 @@ pub(crate) fn reopen(sid: crate::plex::ServerId, key: &str, guid: &str, name: &s
     // Person again, and the route overlay is still up holding A's model — so B's page draws A's
     // filmography over it, and a press there acts on A's credit while the trail says B.
     hide_overlays();
-    crate::person::open(sid, key, guid, name, thumb);
+    crate::stores::person::apply(crate::stores::person::PersonCmd::Open { sid, key: key.to_string(), guid: guid.to_string(), name: name.to_string(), thumb: thumb.to_string() });
     let sc = scene();
     // A WHOLESALE reset, not a field-by-field one: every default this page mounts with — focus on
     // the header, scroll and condense at 0, shelves at their left edge, EMPTY text runs — is already
@@ -980,7 +980,7 @@ pub(crate) fn leave() {
     // some unrelated OK several screens later
     scene().requested = false;
     hide_overlays();
-    crate::person::close();
+    crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
 }
 
 /// A panel this SCREEN has open takes the BACK press, and the page stays — `detail::back()`'s shape
@@ -1235,7 +1235,7 @@ pub(crate) fn update(dt: f32) {
     // `clamp_focus` and the dirty flag below both reach `scene()` themselves, so they run BEFORE
     // this function takes its own `&'static mut` — holding one across a call that mints a second is
     // aliasing UB, not a lint. (`detail.rs::update` carries the same note for the same reason.)
-    if crate::person::pump() {
+    if crate::stores::person::pump() {
         reseat(was);
         clamp_focus();
         scene().header_dirty = true; // a landing changes the header runs AND the flow

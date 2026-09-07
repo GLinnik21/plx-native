@@ -23,11 +23,12 @@
 use std::borrow::Cow;
 use std::ffi::CStr;
 
+use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
-    Canon, Chrome, Cx, Effects, EntryId, FocusKey, GroupId, Handled, Host, InstanceId,
-    LogicalState, Machine, MachineId, Measure, NavOp, ScreenId, Tick, TimerId,
+    Canon, Chrome, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host,
+    InstanceId, LogicalState, Machine, MachineId, Measure, NavOp, ScreenId, Tick, TimerId,
 };
 use crate::ui::present::Present;
 use crate::ui::screen::{
@@ -86,11 +87,19 @@ impl crate::ui::screen::ScreenArg for LegacyArg {
     }
 }
 
-/// No application effect exists in the shadow: nothing it does reaches an adapter.
-pub(super) enum ShadowFx {}
+/// The application's effects (spec §3.1) — phase 4: the ONE that exists is a store command,
+/// executed by the shadow rig as a `Deliver` to the store machine. Constructed by a migrated
+/// screen (the first is Settings, 5b); until then the tests drive it and the legacy screens take
+/// the shim.
+#[allow(dead_code)]
+pub(super) enum AppFx {
+    Store(StoreId, StoreCmd),
+}
 
-/// No message either: nothing is delivered to it.
-pub(super) enum ShadowMsg {}
+/// The application's messages (spec §3.1) — phase 4: a store command on its way to the store.
+pub(super) enum AppMsg {
+    Store(StoreCmd),
+}
 
 /// The read side is empty until phase 4 puts a store behind `StoreOrd`.
 #[derive(Clone, Copy)]
@@ -109,8 +118,8 @@ impl LogicalState for ShadowInit {
 
 impl Host for AppHost {
     type Arg = LegacyArg;
-    type Fx = ShadowFx;
-    type Msg = ShadowMsg;
+    type Fx = AppFx;
+    type Msg = AppMsg;
     type Elem = u32;
     type Views<'a> = ShadowViews;
     type Init = ShadowInit;
@@ -130,6 +139,9 @@ pub(super) struct LegacyPage {
 
 struct LegacyState {
     word: &'static str,
+    /// `StoreChanged` notices heard — a probe, not hashed: the shadow's hash is the route word
+    /// alone until a real screen stands here.
+    notices: u32,
 }
 
 impl LogicalState for LegacyState {
@@ -137,7 +149,7 @@ impl LogicalState for LegacyState {
         w.str(self.word);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(self.word);
+        out.push_str(&format!("{} notices={}", self.word, self.notices));
     }
 }
 
@@ -147,6 +159,7 @@ impl LegacyPage {
             route,
             state: LegacyState {
                 word: route_word(route),
+                notices: 0,
             },
         }
     }
@@ -155,8 +168,12 @@ impl LegacyPage {
 impl Machine<AppHost> for LegacyPage {
     type Ev = ScreenEvent<AppHost>;
     /// The ladders answer everything; the shadow receives no input, so `No` is a statement of
-    /// ownership rather than a fallback.
-    fn step(&mut self, _ev: &Self::Ev, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHost>) -> Handled {
+    /// ownership rather than a fallback. A store notice is counted (the probe) and otherwise
+    /// ignored — the legacy screens read the stores' own generations.
+    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHost>) -> Handled {
+        if let ScreenEvent::StoreChanged(..) = ev {
+            self.state.notices += 1;
+        }
         Handled::No
     }
 }
@@ -272,18 +289,32 @@ impl Rig<AppHost> for ShadowRig {
             measure: &self.measure,
         }
     }
-    fn deliver(
-        &mut self,
-        _to: MachineId,
-        msg: &ShadowMsg,
-        _parts: &CxParts<u32>,
-        _fx: &mut Effects<'_, AppHost>,
-    ) -> Handled {
-        match *msg {}
+    /// A store command on the dispatcher path: step the store MACHINE it names (spec §3.4). The
+    /// ordinal is checked against the command's own store, so a mis-addressed command is a
+    /// dropped delivery rather than a mutation of the wrong store.
+    fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        let AppMsg::Store(cmd) = msg;
+        let MachineId::Store(ord) = to else {
+            return Handled::No;
+        };
+        if StoreId::from_ord(ord) != Some(cmd.store()) {
+            crate::log(&format!(
+                "stores: a {} command was addressed to store ordinal {} — dropped",
+                cmd.store().name(),
+                ord.0
+            ));
+            return Handled::No;
+        }
+        let cx = parts.cx::<AppHost>(ShadowViews, &self.measure);
+        step_store(cmd, &cx, fx)
     }
     fn timer(&mut self, _owner: MachineId, _id: TimerId, _parts: &CxParts<u32>, _fx: &mut Effects<'_, AppHost>) {}
-    fn app_fx(&mut self, _from: MachineId, fx: ShadowFx, _parts: &CxParts<u32>, _out: &mut Effects<'_, AppHost>) {
-        match fx {}
+    /// The application's effects against its adapters — phase 4: a store command becomes a
+    /// delivery to the store machine, in this same drain.
+    fn app_fx(&mut self, _from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
+        match fx {
+            AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
+        }
     }
     fn log(&mut self, line: &str) {
         crate::log(line);
@@ -294,6 +325,20 @@ impl Rig<AppHost> for ShadowRig {
     fn clear_opaque_region(&mut self) {}
     fn now_us(&self) -> u64 {
         (self.now_us)()
+    }
+}
+
+/// Step the store machine a command names. The six machines are unit structs over the legacy
+/// modules (`stores/`), so they are made on the spot.
+fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
+    use crate::stores::{browse, hubs, metadata, person, search, viewstate};
+    match cmd {
+        StoreCmd::Browse(c) => browse::BrowseStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Hubs(c) => hubs::HubsStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Search(c) => search::SearchStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Person(c) => person::PersonStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::ViewState(c) => viewstate::ViewStateStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
     }
 }
 
@@ -311,6 +356,11 @@ pub(super) fn mirror(d: &mut Dispatcher<AppHost>, rig: &mut ShadowRig, route: Ro
         None => d.request(MachineId::Nav, NavOp::Root(LegacyArg(route))),
         Some(r) if r != route => d.request(MachineId::Nav, NavOp::Replace(LegacyArg(route))),
         Some(_) => {}
+    }
+    // the stores' owed notices (phase 4): every store that changed since the last frame, as one
+    // `StoreChanged` per live instance, delivered in this frame's drain
+    for (id, gen) in crate::stores::take_notices() {
+        d.store_changed(id.ord(), gen);
     }
     let report = d.frame(rig, tick, vec![], vec![], &mut NoTap);
     d.prune(&report.unmounted);
@@ -370,6 +420,50 @@ mod tests {
         for r in EVERY_ROUTE {
             assert_eq!(LegacyPage::new(r).name(), route_word(r));
         }
+    }
+
+    fn notices(d: &Dispatcher<AppHost>) -> String {
+        let mut s = String::new();
+        if let Some(sc) = d.top_screen() {
+            sc.state().probe(&mut s);
+        }
+        s
+    }
+
+    /// Phase 4: a store command on the DISPATCHER path (`AppFx::Store`) reaches the store machine
+    /// in the drain, and the store's notice reaches the page as `StoreChanged` on the next frame's
+    /// drain — the same notice the shim path raises.
+    #[test]
+    fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page() {
+        let _g = crate::testlock::serial();
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = ShadowRig::new(|| 0);
+        let _ = crate::stores::take_notices();
+        mirror(&mut d, &mut rig, Route::Home, tick(0));
+        let before = crate::stores::gen(StoreId::Search);
+        d.emit(
+            MachineId::Nav,
+            Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
+        );
+        mirror(&mut d, &mut rig, Route::Home, tick(1));
+        assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "the store was stepped in the drain");
+        mirror(&mut d, &mut rig, Route::Home, tick(2));
+        assert!(notices(&d).ends_with("notices=1"), "{}", notices(&d));
+        // …and the shim path raises the same notice
+        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+        mirror(&mut d, &mut rig, Route::Home, tick(3));
+        assert!(notices(&d).ends_with("notices=2"), "{}", notices(&d));
+        // a mis-addressed command mutates nothing
+        let g = crate::stores::gen(StoreId::Search);
+        d.emit(
+            MachineId::Nav,
+            Fx::Deliver(
+                MachineId::Store(StoreId::Browse.ord()),
+                Delivery::Machine(AppMsg::Store(StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
+            ),
+        );
+        mirror(&mut d, &mut rig, Route::Home, tick(4));
+        assert_eq!(crate::stores::gen(StoreId::Search), g);
     }
 
     /// The mirror: a `Root` on the first frame, a `Replace` CUT on a route flip, nothing on a

@@ -487,6 +487,14 @@ which the linking section explains is load-bearing rather than tidy.
   Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
   never call `session::peek()` from the log path — it takes the session lock and reads files, which
   deadlocked the whole `auth` test block and put five `read`s on every log line.
+- `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
+  phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
+  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`, `stores::<store>::apply(Cmd)` the
+  only way a screen or the loop changes one, and `ci/check-deps.sh`'s `mutators` gate refuses the
+  old `crate::browse::set_cur(` spelling on any production line of `ui/` or `app/`. Every applied
+  command raises the store's notice, which the shadow container tree (`app/legacy.rs`) delivers to
+  its pages as `StoreChanged`. The data and the workers are still in the legacy modules; the
+  vocabulary is what a migrated screen (5b on) emits as `AppFx::Store`.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;

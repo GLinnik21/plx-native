@@ -1525,7 +1525,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
                     if let Some(pmm) = crate::ui::home::movie_at(pidx / COLS, pidx % COLS) {
                         let requested = crate::route::request_play_movie(pmm);
                         if requested {
-                            crate::metadata::load_detail_now(pmm.sid, &pmm.rk);
+                            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid: pmm.sid, rk: pmm.rk.to_string() });
                         }
                         requested
                     } else {
@@ -1782,7 +1782,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
                             return false;
                         }
                     };
-                    crate::metadata::load_detail_now(sid, rk); // fetch ANY rk (movie/show/episode)
+                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid: sid, rk: rk.to_string() }); // fetch ANY rk (movie/show/episode)
                                                                // a movie/episode leaf carries its own part+codecs; a show has an
                                                                // empty part, so fall back to its first episode.
                     let leaf = crate::metadata::current().map(|d| {
@@ -2154,11 +2154,11 @@ pub(super) unsafe fn playback_tick(app: &mut App, mt: &crate::task::MainThread, 
             && !matches!(app.route, Route::Player { .. })
         {
             app.refresh_hubs_at = 0;
-            crate::pms::request_refetch_hubs();
+            crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
             // …and every library's OWN shelves, for the same reason and at the same moment:
             // a finished playback moves Continue Watching and watch state, and a section deck
             // is as stale as the global one (`browse::section_hubs::invalidate_all`).
-            crate::browse::section_hubs::invalidate_all();
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
         }
         // lost-keyup safety: the remote streams 0x101 repeats (~50ms) while a key is physically down,
@@ -3307,7 +3307,7 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
         // Async detail load: install the worker's item into CURRENT. Route-unconditional for
         // the same reason as pump_play — play_item_now requests a detail from Home and flips
         // straight to the player, so a Detail-gated pump would never land it.
-        if crate::metadata::pump_detail() {
+        if crate::stores::metadata::pump_detail() {
             crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
         }
         // Server-side view-state WRITES (Mark as Watched / Unwatched, Remove from Deck): send
@@ -3315,13 +3315,13 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
         // unconditional for the same reason as the two pumps around it — the user can walk off
         // Home or off the detail page between pressing and the server answering, and the refresh
         // is owed either way. Invalidates from inside, per landing.
-        crate::viewstate::pump();
+        crate::stores::viewstate::pump();
         // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
         // and separate because it lands one round trip per source LATER than the page does —
         // "Also available" appears when the other servers have answered, not when the page
         // mounts. It invalidates from inside `alt_sources::install`, since a landing that grows
         // the actions row must be drawn without waiting for a keypress.
-        crate::metadata::pump_alt_sources();
+        crate::stores::metadata::pump_alt_sources();
 }
 
 /// The draw phase, entered only on a presenting frame: `clear_opaque_region` at entry, the

@@ -6669,7 +6669,7 @@ fn request_play_inner(
     });
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
-    crate::metadata::retire_playing_item();
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
@@ -6979,7 +6979,7 @@ fn apply_plan(plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
-    crate::metadata::install_playing(plan.playing);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::InstallPlaying(plan.playing));
     // main thread only — `up_next()`/`with_queue()` lend out of this (see their docs). The rows
     // arrive already projected: the worker never retained a `Metadata` tree to install here.
     session_mut(|s| {

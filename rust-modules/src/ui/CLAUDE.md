@@ -437,7 +437,7 @@ The library half of the restructure, in `ui/`. Modules with NO product caller ye
 blanket impl, because the widgets implement `Focusable` themselves now and a blanket over
 `Composed` collides with them — and `DrawFrame`, whose `stop` folds the painter's scale/clip
 cascade into screen space and whose `clip` is the RAII scissor scope), `present.rs` (the gate as
-a machine: `note`/`peek`/`take`), `landing.rs` (the bounded two-lane result queue), `frame.rs`
+a machine: `note`/`peek`/`take`), `frame.rs`
 (`Budget`, the Poster class), `geom.rs` (the widgets' `Focusable` views, phase 3a) and
 `replay.rs` (`--targets` and, since 3b, `--resolve` over a dispatcher). `dispatch.rs` (the
 ten-step frame over `containers::Navigation`, owning the `InputMachine` — engine, hit map, press
@@ -472,6 +472,24 @@ privileged hooks are no-ops because `app/run.rs` makes the real calls. It receiv
 is not in the recorder's state hash (the phase-2 anchor fixture pins that shape). What it proves
 on every device run is that the tree steps, and that the heartbeat word has two sources that
 agree (a debug assert). The first screen to mount here for real is Settings (phase 5b).
+
+**Phase 4 (2026-09-07) put the STORES behind one vocabulary and one step — `rust-modules/src/stores/`,
+designed in `docs/stores-as-machines.md`.** Six unit machines (`BrowseStore`, `HubsStore`,
+`MetadataStore`, `SearchStore`, `PersonStore`, `ViewStateStore`) front the legacy data modules;
+`stores::StoreCmd` is the complete mutation set and `stores::apply` the one dispatch every shim
+(`stores::browse::apply(BrowseCmd::…)` and its siblings) and the dispatcher path
+(`AppFx::Store` → `Rig::deliver`, `app/legacy.rs`) come through. A screen never names
+`crate::browse::set_cur(` again — `ci/check-deps.sh`'s `mutators` gate refuses it on production
+lines of `ui/` and `app/`, with an EMPTY allowlist. Every applied command and every changed
+landing bumps the store's generation and owes a notice that `legacy::mirror` drains into
+`Dispatcher::store_changed` once a frame, so a migrated screen hears `StoreChanged` for a shim
+call and for its own effect alike. The shim applies IMMEDIATELY (the note's §3 says why a deferred
+queue is not implementable against screens written for synchronous mutators); the "same drain"
+ordering of spec §14 arrives with each screen's migration. `ui/landing.rs` has its first consumer:
+`metadata`'s detail landing, keyed on `(server, ratingKey)` with admission control, so a
+same-numbered item on another server is skipped and counted rather than installed. Store state
+is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`; 5b records a new
+one).
 
 ## Gotchas that bite
 

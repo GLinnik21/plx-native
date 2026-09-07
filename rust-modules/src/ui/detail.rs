@@ -1585,7 +1585,7 @@ pub(crate) fn close() {
     // information is the same argument about the same item.
     crate::ui::about_panel::hide();
     crate::ui::tracks_panel::hide();
-    metadata::clear();
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
     // Every latch dies with the page — `reset_view_state`'s rule restated for the exit that mounts
     // nothing.
     unsafe {
@@ -2011,7 +2011,7 @@ pub(crate) fn update(dt: f32) {
     // scroll to episode 0 — the remembered position belonged to the previous season). The ONE
     // exception is a refresh of the season already on screen (`KEEP_EP`), which lands the same list
     // with one field changed and must therefore hold the user's place rather than take it away.
-    if metadata::pump_season() {
+    if crate::stores::metadata::pump_season() {
         let keep = take_kept_episode(); // reads metadata, so resolved before `view()` is borrowed
         let v = view();
         v.saved_col[2] = keep.unwrap_or(0);
@@ -2166,7 +2166,7 @@ pub(crate) fn update(dt: f32) {
                 .map(|d| d.cur_season as c_int)
                 .unwrap_or(-1);
             if ps != cur {
-                metadata::load_season(ps.max(0) as usize);
+                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeason(ps.max(0) as usize));
             }
         }
     }
@@ -4295,7 +4295,7 @@ pub(crate) fn on_ok() -> bool {
                 if let Some((sid, rk, guid)) =
                     metadata::current().map(|d| (d.sid, d.rk.clone(), d.guid.clone()))
                 {
-                    crate::viewstate::request(sid, &rk, w, Some(String::new()), &guid);
+                    crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Request { sid, rk, write: w, detail: Some(String::new()), guid });
                 }
                 return false;
             }
@@ -4358,7 +4358,7 @@ pub(crate) fn on_ok() -> bool {
                 .map(|d| d.cur_season as c_int)
                 .unwrap_or(-1);
             if col != cur {
-                metadata::load_season(col.max(0) as usize);
+                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeason(col.max(0) as usize));
             }
             view().pending_season = -1; // explicit selection → cancel the debounced load
             false
@@ -4863,7 +4863,7 @@ pub(crate) fn refresh_view_state(keep_ep: &str) {
             keep_ep: keep_ep.to_string(),
         })
     };
-    metadata::request_detail(sid, &rk);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
 }
 
 /// The season restore a [`refresh_view_state`] owes once its re-read lands.
@@ -4912,7 +4912,7 @@ fn pump_refresh() {
     if !r.keep_ep.is_empty() {
         unsafe { *addr_of_mut!(KEEP_EP) = Some((r.keep_ep, r.season)) };
     }
-    metadata::load_season(r.season); // back to the season the user was browsing
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeason(r.season)); // back to the season the user was browsing
 }
 
 /// The episode the filmstrip must land back on when the next season fetch lands, and the season it
@@ -5040,8 +5040,8 @@ pub(crate) fn open_rk(sid: crate::plex::ServerId, rk: &str) {
     //
     // ORDER MATTERS: `clear()` supersedes the detail generation, so it must run BEFORE the
     // request that establishes the new one, or it would cancel the fetch it is preparing for.
-    metadata::clear();
-    metadata::request_detail(sid, rk);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
 }
 
 /// [`open_rk`] but BLOCKING — for the callers that act on the loaded item in the SAME frame:
@@ -5050,7 +5050,7 @@ pub(crate) fn open_rk(sid: crate::plex::ServerId, rk: &str) {
 /// replays move_focus/on_ok immediately). Each of those is a deliberate freeze.
 pub(crate) fn open_rk_now(sid: crate::plex::ServerId, rk: &str) {
     mount_rk(sid, rk);
-    metadata::load_detail_now(sid, rk);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid, rk: rk.to_string() });
 }
 
 /// A focus placement waiting for its data. Both variants are the same two-stage wait — the item,
@@ -5307,7 +5307,7 @@ fn pump_pending() {
             if let Some(pos) = season_pos {
                 if cur_season != pos {
                     if !metadata::season_loading() {
-                        metadata::load_season(pos);
+                        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeason(pos));
                     }
                     return; // that season's episodes aren't here yet
                 }
@@ -5334,7 +5334,7 @@ fn pump_pending() {
             }
             if let Some(pos) = gate {
                 if !metadata::season_loading() {
-                    metadata::load_season(pos);
+                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeason(pos));
                 }
                 return; // that season's episodes aren't here yet
             }
@@ -5379,7 +5379,7 @@ fn pump_pending() {
                 // `load_season` moves `cur_season` at once and fills the episodes on its landing,
                 // so the next pump finds the season selected and retires the latch.
                 SeasonStep::Request(pos) => {
-                    metadata::load_season(pos);
+                    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeason(pos));
                     unsafe {
                         *addr_of_mut!(PENDING) = Some(Pending::Season {
                             show_rk,
@@ -5404,7 +5404,7 @@ pub(crate) fn open_rk_season(sid: crate::plex::ServerId, show_rk: &str, season_n
         {
             // BLOCKING on purpose: home_activate's season arm plays episodes[0] right after this
             // returns — the async tab-switch path would still hold the previous season's list
-            metadata::load_season_now(pos);
+            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeasonNow(pos));
         }
     }
 }
@@ -5443,7 +5443,7 @@ fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
         .get(0..4)
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(0);
-    metadata::set_now_playing(Some(metadata::NowPlaying {
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(metadata::NowPlaying {
         is_episode: true,
         title: show.clone(),
         ep_title: ep.title.clone(),
@@ -5455,7 +5455,7 @@ fn play_episode(d: &metadata::Detail, ep: &metadata::Episode) -> bool {
         rating: ep.rating.clone(),
         thumb: ep.thumb.clone(),
         detail_rk: d.rk.clone(),
-    }));
+    })));
     set_resume(ep.resume_ms, ep.dur_ms);
     // An episode belongs to its SHOW's server — `d.sid` — because that is the page these rows were
     // fetched from. Same failure as the movie path if it is taken from the browsed surface instead.

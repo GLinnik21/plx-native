@@ -2,8 +2,9 @@
 //!
 //! Sibling of `pms.rs`'s hub catalog, which stays hub-only (256-cap, rebuilt wholesale by
 //! `pms`'s worker-driven hub catalog); this store pages arbitrarily large sections without blocking the
-//! main loop. Data model: one sparse `Vec<Option<PmsMovie>>` per section, sized to the
-//! listing's `totalSize`, filled page-by-page (`PAGE` items) by ONE background fetch at a
+//! main loop. Data model: one [`SecItems`] per section — a PAGE-CHUNKED table sized to the
+//! listing's `totalSize`, a page (`PAGE` items) allocated only when it lands (restructure phase
+//! 4's O(result) rule) — filled page-by-page by ONE background fetch at a
 //! time using the season-switch idiom from `metadata.rs` — [`crate::task::spawn_small`] + a
 //! `Mutex` mailbox + generation atomics (a re-query supersedes in-flight landings), applied
 //! on the main thread by [`pump`] once a frame while the Library screen is up.
@@ -299,10 +300,82 @@ struct SecState {
     // data
     fetch: SecFetch, // what the last page fetch for this section did
     total: i64,      // -1 = unknown (first fetch of this query still out)
-    items: Vec<Option<PmsMovie>>,
+    items: SecItems,
     // remembered view
     focus: usize,
     scroll: f32,
+}
+
+/// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
+/// `docs/stores-as-machines.md` §2.6). The outer vector holds one slot per page of `PAGE`
+/// items and a page is allocated only when its items land, so sizing the store to a listing's
+/// `totalSize` on the main thread costs `total / PAGE` words rather than an `Option<PmsMovie>`
+/// per item in the library — the previous shape allocated every slot of a 20 000-title section
+/// in the drain, on the first page's landing. `get`/`set` index by absolute item index exactly
+/// as the flat vector did; `page_missing` is the fetch scan, over pages.
+#[derive(Default)]
+struct SecItems {
+    pages: Vec<Option<Box<[Option<PmsMovie>]>>>,
+    len: usize,
+}
+
+impl SecItems {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn clear(&mut self) {
+        self.pages.clear();
+        self.len = 0;
+    }
+    /// Size to the listing: pages are kept where they still fit, dropped past the new end.
+    fn resize(&mut self, total: usize) {
+        self.len = total;
+        self.pages.resize_with(total.div_ceil(PAGE), || None);
+    }
+    fn get(&self, i: usize) -> Option<&PmsMovie> {
+        if i >= self.len {
+            return None;
+        }
+        self.pages.get(i / PAGE)?.as_ref()?.get(i % PAGE)?.as_ref()
+    }
+    /// Place `m` at `i`; a page is allocated on its first item. Out of range is ignored (the
+    /// listing shrank under a fetch, which the next page reconciles).
+    fn set(&mut self, i: usize, m: PmsMovie) {
+        if i >= self.len {
+            return;
+        }
+        let Some(slot) = self.pages.get_mut(i / PAGE) else { return };
+        let page = slot.get_or_insert_with(|| {
+            let n = PAGE.min(self.len - (i / PAGE) * PAGE);
+            (0..n).map(|_| None).collect::<Vec<_>>().into_boxed_slice()
+        });
+        if let Some(cell) = page.get_mut(i % PAGE) {
+            *cell = Some(m);
+        }
+    }
+    /// Does page `p` (items `p*PAGE ..`) have a slot not yet filled?
+    fn page_missing(&self, p: usize) -> bool {
+        match self.pages.get(p) {
+            None => false,
+            Some(None) => true,
+            Some(Some(page)) => page.iter().any(|o| o.is_none()),
+        }
+    }
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut PmsMovie> {
+        self.pages.iter_mut().flatten().flat_map(|page| page.iter_mut()).flatten()
+    }
+    #[cfg(test)]
+    fn from_vec(v: Vec<Option<PmsMovie>>) -> Self {
+        let mut s = SecItems::default();
+        s.resize(v.len());
+        for (i, m) in v.into_iter().enumerate() {
+            if let Some(m) = m {
+                s.set(i, m);
+            }
+        }
+        s
+    }
 }
 
 impl Default for SecState {
@@ -320,7 +393,7 @@ impl Default for SecState {
             hubs: Default::default(),
             fetch: SecFetch::Loading,
             total: -1,
-            items: Vec::new(),
+            items: SecItems::default(),
             focus: 0,
             scroll: 0.0,
         }
@@ -1849,9 +1922,7 @@ pub(crate) fn total() -> i64 {
 /// valid until the next [`pump`]/re-query (main-thread only, same lifetime rule as
 /// `pms::movie`).
 pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
-    cur_state()
-        .and_then(|s| s.items.get(i))
-        .and_then(|o| o.as_ref())
+    cur_state().and_then(|s| s.items.get(i))
 }
 /// Flip `(sid, rk)`'s watched state in every section's item store — the optimistic half of a
 /// view-state write, for the browse grid.
@@ -1874,7 +1945,7 @@ pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
 pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
     let states = unsafe { &mut *addr_of_mut!(STATES) };
     let mut hit = false;
-    for m in states.iter_mut().flat_map(|s| s.items.iter_mut()).flatten() {
+    for m in states.iter_mut().flat_map(|s| s.items.iter_mut()) {
         if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
             crate::pms::set_watched(m, on);
             hit = true;
@@ -2740,12 +2811,10 @@ pub(crate) fn pump() -> bool {
                             }
                             if st.total != r.total {
                                 st.total = r.total;
-                                st.items.resize_with(st.total as usize, || None);
+                                st.items.resize(st.total as usize);
                             }
                             for (k, m) in r.items.into_iter().enumerate() {
-                                if let Some(slot) = st.items.get_mut(r.start + k) {
-                                    *slot = Some(m);
-                                }
+                                st.items.set(r.start + k, m);
                             }
                             changed = true;
                         }
@@ -2777,8 +2846,7 @@ fn maybe_spawn() {
         let mut found: Option<usize> = None;
         let mut p = (lo / PAGE) * PAGE;
         while p < hi {
-            let end = (p + PAGE).min(st.total as usize);
-            if st.items[p..end].iter().any(|o| o.is_none()) {
+            if st.items.page_missing(p / PAGE) {
                 found = Some(p);
                 break;
             }
@@ -2946,17 +3014,19 @@ pub(crate) fn seed_items_for_test(n: usize) {
     let sid = section_sid(c).unwrap_or_default();
     if let Some(st) = state_mut(c) {
         st.total = n as i64;
-        st.items = (0..n)
-            .map(|i| {
-                Some(crate::pms::PmsMovie {
-                    sid,
-                    rk: format!("{}", i + 1),
-                    title: format!("Item {i}"),
-                    thumb: format!("/t/{i}"),
-                    ..Default::default()
+        st.items = SecItems::from_vec(
+            (0..n)
+                .map(|i| {
+                    Some(crate::pms::PmsMovie {
+                        sid,
+                        rk: format!("{}", i + 1),
+                        title: format!("Item {i}"),
+                        thumb: format!("/t/{i}"),
+                        ..Default::default()
+                    })
                 })
-            })
-            .collect();
+                .collect(),
+        );
         st.fetch = SecFetch::Ready;
     }
 }
@@ -3010,7 +3080,7 @@ mod tests {
         let state = state_mut(0).unwrap();
         state.fetch = SecFetch::Ready;
         state.total = 1;
-        state.items = vec![Some(PmsMovie::default())];
+        state.items = SecItems::from_vec(vec![Some(PmsMovie::default())]);
         (cleanup, sid, client)
     }
 
@@ -5130,8 +5200,8 @@ mod tests {
             *st = vec![SecState::default(), SecState::default()];
             // the section on screen, the one browsed a minute ago (which keeps its items), and a
             // FRIEND's row carrying the same key — both servers number their items from 1
-            st[0].items = vec![row(sid, "7", 90_000), row(other, "7", 0)];
-            st[1].items = vec![row(sid, "7", 0), row(sid, "9", 0)];
+            st[0].items = SecItems::from_vec(vec![row(sid, "7", 90_000), row(other, "7", 0)]);
+            st[1].items = SecItems::from_vec(vec![row(sid, "7", 0), row(sid, "9", 0)]);
         }
 
         assert!(
@@ -5140,7 +5210,7 @@ mod tests {
         );
         let watched = |sec: usize, i: usize| {
             let st = unsafe { &*addr_of!(STATES) };
-            let m = st[sec].items[i].as_ref().unwrap();
+            let m = st[sec].items.get(i).unwrap();
             (m.watched, m.unwatched, m.resume_ms)
         };
         assert_eq!(

@@ -434,7 +434,7 @@ pub enum NavOpKind {
 }
 
 /// Every addressable machine (§5.1). `Store` carries the library's ordinal, never the app's id.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum MachineId {
     Session,
     Consent,

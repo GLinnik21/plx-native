@@ -14,6 +14,14 @@
 #   present  — the present gate's worker door: ONE atomic static in ui/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
+#
+# Phase 4 rule:
+#   mutators — a screen (ui/) or the loop (app/) never calls a data module's MUTATOR directly
+#              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
+#              `stores::StoreCmd` applied through `stores::<store>::apply` (spec §14, the
+#              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
+#              a `#[cfg(test)] mod` seeds a store however it likes. The player side (route.rs,
+#              player/) joins in phase 9.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SRC=rust-modules/src
@@ -69,6 +77,27 @@ n=$(grep -cE '^static [A-Z_]+: Atomic' "$SRC/ui/present.rs"); d=$(grep -c 'pub f
 if [ "$n" -eq 1 ] && [ "$d" -eq 1 ]; then ok "present: one worker door"; else fail "present: $n atomic statics, $d doors (one of each)"; fi
 
 if [ -n "$(grep_code '\bEffect::' "$SRC")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
+
+# mutators: production lines of ui/ and app/ (everything before the file's first
+# `#[cfg(test)]` + `mod` pair, which is where every screen keeps its tests).
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_view|set_sort_by_key|set_sort|toggle_unwatched|set_genre_by_id|set_genre|retry_cur_source|recheck_shares|apply_pins|toggle_pin|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|load_detail_now|clear|load_season|load_season_now|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|request_refetch_hubs|request_retry|edit_item)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+# The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
+# `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
+# wherever it sits in the file — the first version cut at the FIRST such block and let ~700
+# production lines of ui/detail.rs go unscanned. `stores::<store>::apply(` lines are the new
+# spelling and are excluded by name; a SCREEN's own `crate::ui::person::open(` is not a store
+# call and is masked before the match.
+mut_bad=0
+while IFS= read -r f; do
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    if ! allowed mutators "$f"; then echo "    $f:$line"; mut_bad=$((mut_bad+1)); fi
+  done < <(awk '
+    skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
+    prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
+    { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
+done < <(find "$SRC/ui" "$SRC/app" -name '*.rs' | sort)
+if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
 # every allowlist's declared count equals its entries
 for f in ci/allow/*.txt; do

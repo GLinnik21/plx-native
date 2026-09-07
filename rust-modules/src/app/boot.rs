@@ -227,23 +227,23 @@ pub(super) enum BootTo {
 pub(super) fn activate_server() {
         // the browse store must never carry the previous user's (or server's) cached grid,
         // watched-state angles, or section tabs forward
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         // …and the search store, for the same reason: a query, its results and the recent
         // terms are all one person's.
-        crate::search::reset();
+        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
         // …and the hub twin: a FAILED fetch now keeps the catalog it already had (so one
         // wifi hiccup can't blank a populated Home), which makes this the one place that
         // must still wipe it — otherwise a profile switch whose fetch fails would leave the
         // previous user's shelves on screen.
-        crate::pms::reset();
-        crate::person::reset(); // ditto for an open person page's shelves
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Reset); // ditto for an open person page's shelves
                                 // …and any view-state write still queued or owed a refresh. It belongs to the account
                                 // that pressed it, and the refresh it owes would land on shelves this reset just wiped.
-        crate::viewstate::reset();
+        crate::stores::viewstate::apply(crate::stores::viewstate::ViewStateCmd::Reset);
         // Catalog activation is request-only. Home and section discovery both use their
         // existing worker/mailbox pumps, so a remote endpoint cannot park the SDL loop here.
-        crate::pms::request_refetch_hubs();
-        crate::browse::discover_pump();
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
+        crate::stores::browse::discover_pump();
         log("pms: catalog activation queued");
 }
 

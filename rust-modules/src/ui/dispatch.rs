@@ -392,6 +392,12 @@ where
         }
     }
 
+    /// Queue an effect from OUTSIDE a step (the application's loop handing a store command to the
+    /// dispatcher path): it drains in this frame's step 6 like any machine's emission.
+    pub fn emit(&mut self, from: MachineId, fx: Fx<H>) {
+        self.queue.push_back(Stamped { from, fx });
+    }
+
     /// Queue a structural op from OUTSIDE a step (boot's `Root`, a lifecycle `Suspend`): it is
     /// parked like any other and applies at this frame's NAV COMMIT.
     pub fn request(&mut self, from: MachineId, op: NavOp<H::Arg>) {

@@ -51,6 +51,7 @@ mod search; // Search data layer: /hubs/search fanned out across every source, m
 mod sha256; // SHA-256 / HMAC / PBKDF2, hand-written: the offline PIN verifier's hash (no crypto dependency)
 #[cfg(feature = "hostsim")]
 mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
+mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 mod stream;
 mod surface; // what we are actually drawing into — drawable vs the 1920x1080 logical canvas
 mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
