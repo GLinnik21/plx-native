@@ -225,6 +225,7 @@ The behaviour and the mark now read the same flag (`Shelf::is_continue` /
 | `input_tests.rs` | The press / pointer / keyboard half of spec §7.7 over the dispatcher (`a_pointer_press_is_cancelled_when_the_hit_leaves_its_arm`, `a_press_commit_fires_from_tick_with_no_key_up`, `a_bare_element_activates_on_the_down_edge`, `the_system_keyboard_is_an_input_owner`, `a_legacy_page_never_consults_the_map_or_the_engine`, …). |
 | `testapp.rs` | `TestApp` (spec §15.1 `a_new_screen_is_unit_tested_with_no_sdl`): the dispatcher over the fixture rig on a `VirtualClock` — boot, press, read. Every migrated screen ships one test through it. |
 | `pill.rs` | The blended-capsule OUTLINE solver behind every control face wider than it is tall (`widgets.rs` says why a capsule is not a stadium): three circular arcs per corner solved in `f64` from a closed form, `box_h` (the drawn box is taller than the laid-out frame so the ends come out at the frame's height), `PILL_END_R` the one dial; `fs_src.frag`'s `sdPill` evaluates it. |
+| `table_screen.rs` | **The route family's screens as COMPONENTS (spec §10, phase 5a)**: `Header` (crumb → title → copy — `RouteLayout::draw_narrative` as a `Part` that contributes no group), `TablePart`/`TableScreen` (a header beside a sectioned `TableView`: ONE `Column` group with `Seat::Remembered`, its LEFT edge `EdgeRule::Nav(Back)` — rule 9, the crumb is literal — or `Stop` while the screen holds an uncommitted edit, its RIGHT edge `EdgeRule::Screen` so a chevron row's RIGHT reaches the screen's `step` — rule 8; every selectable row a hit stop) and `DocumentPart`/`DocumentScreen` (a header beside a `DocumentReader`: one `Document` group that scrolls inside and leaves at its ends, LEFT = BACK). Each is `Composed` of `Part`s for the dispatcher AND has a `paint(Painter)` for the legacy loop — the same routine, so the pixels are one function whichever loop calls it. The Settings root and the Legal index/documents draw through them; their statics and `RouteFocus` ladders stay until 5b, and the band (`ActionRow`, rules 2/4/6/7) joins in 5b with the first owned screen. |
 | `tex.rs` | **`TexCache<PosterKey>` — the RENDER-RESOURCE half of image caching (spec §10)**: GL residency and its LRU, `accept` in the drain (owned decoded pixels in, no GL), upload in PREPARE under `Budget`'s Poster class (3 per frame), `warm` inside the presented frame's GL scope, one `Provenance::Resource` note per landed texture, `free` when the source recycles a slot. The library reaches images ONLY through its free functions (`resolve_on`, `resolve_wh_on`, `warm_on`, `logo_src`, `logo_warm`, `source_idle`), backed by the `Source` the application installs at boot; a `ServerId` crosses as its raw id. |
 | `document_reader.rs` | `DocumentReader` — a route-sized document reader: measured text flow (the line layout cached by body hash and wrap width), spring scrolling in `STEP`s, a continuous rail; `at_top`/`at_end` are what `geom::Document` leaves by. Privacy Policy, the payload preview and every Legal document read through it. |
 | `source_list.rs` | **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on two surfaces: the Library's Sources picker (`Level::Browse`) and the Favorite libraries editor (`Level::OnHome`). |
@@ -490,6 +491,13 @@ ordering of spec §14 arrives with each screen's migration. `ui/landing.rs` has 
 same-numbered item on another server is skipped and counted rather than installed. Store state
 is NOT in the recorder's hash yet (the phase-2 anchor fixture pins `state_fp`; 5b records a new
 one).
+
+**Phase 5a (2026-09-07): `table_screen.rs`** — `Header`, `TableScreen` and `DocumentScreen`
+EXTRACTED from the legacy Settings root and the Legal index/documents: those two modules keep
+their statics and their `RouteFocus` ladders and draw through the components' `paint`; the
+components' `Focusable` half (the route family's rules 1/3/5/8/9 as group policies) is exercised
+by the host tests only until 5b mounts the first owned screen. No container change, no static
+deleted — spec §13's own terms for 5a.
 
 ## Gotchas that bite
 

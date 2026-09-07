@@ -3,6 +3,7 @@
 use crate::ui::popover::Popover;
 use crate::ui::route_screen::{RouteFocus, RouteGround, RouteLayout, RoutePush, RouteShape, RouteStep};
 use crate::ui::table::{Row, Section, TableView};
+use crate::ui::table_screen::{Header, TableScreen};
 use crate::ui::widgets::ControlPalette;
 use crate::ui::{theme, Painter, Rect};
 use std::ptr::{addr_of, addr_of_mut};
@@ -365,14 +366,21 @@ pub(crate) fn draw() {
     // on a caption line above its title, but the root's BACK leaves the family altogether — it
     // dismisses the modal back onto Home, the way every other overlay in the app does.
     crate::ui::profile::phase("st.root", || {
-    RouteLayout::screen().draw_narrative(
-        p,
-        None,
-        "Settings",
-        "Settings apply to this Plex profile on this television. You can return here from the profile menu at any time.",
-        theme::size::LABEL,
-    );
-    table().draw(p, list_frame());
+        // Through the component (restructure phase 5a): the words and the table are this
+        // module's, the composition — narrative beside a sectioned table — is `TableScreen`'s.
+        // No crumb: this is the ROOT of the route family (see above).
+        TableScreen::new(
+            Header::new(
+                RouteLayout::screen(),
+                None,
+                "Settings",
+                "Settings apply to this Plex profile on this television. You can return here from the profile menu at any time.",
+            ),
+            table(),
+            crate::ui::machine::GroupId(0),
+            crate::ui::machine::EntryId(0),
+        )
+        .paint(p);
     });
 }
 

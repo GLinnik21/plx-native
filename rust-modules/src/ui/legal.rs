@@ -5,6 +5,7 @@ use crate::ui::document_reader::DocumentReader;
 use crate::ui::popover::Popover;
 use crate::ui::route_screen::{RouteFocus, RouteLayout, RoutePush, RouteShape, RouteStep};
 use crate::ui::table::{Row, Section, TableView};
+use crate::ui::table_screen::{DocumentScreen, Header, TableScreen};
 use crate::ui::theme;
 use std::ptr::{addr_of, addr_of_mut};
 
@@ -332,45 +333,53 @@ pub(crate) fn draw() {
         .content_painter(0.0)
         .alpha(a)
         .translate(SCR_W as f32 * (1.0 - a), 0.0);
+    // Through the components (restructure phase 5a): the words, the reader and the table are
+    // this module's; a header beside a sectioned table is `TableScreen`, a header beside a
+    // document is `DocumentScreen`.
     let layout = RouteLayout::screen();
+    let (g, e) = (crate::ui::machine::GroupId(0), crate::ui::machine::EntryId(0));
     if unsafe { ABOUT_MODE } {
         // About is this same document route entered directly from the Settings index, so its
         // crumb names Settings rather than the Legal index it never passed through.
-        layout.draw_narrative(
-            p,
-            Some(CRUMB_SETTINGS),
-            "About PlxNative",
-            "A native media client built for LG webOS.",
-            theme::size::LABEL,
-        );
-        reader().draw(p, layout.document(true), None, ABOUT);
+        DocumentScreen::new(
+            Header::new(layout, Some(CRUMB_SETTINGS), "About PlxNative", "A native media client built for LG webOS."),
+            reader(),
+            ABOUT,
+            g,
+            e,
+        )
+        .paint(p);
         return;
     }
     let t = unsafe { (*addr_of!(ROUTE_PUSH)).amount() };
     if t < 0.999 {
         let index = unsafe { (*addr_of!(ROUTE_PUSH)).parent(p) };
-        layout.draw_narrative(
-            index,
-            Some(CRUMB_SETTINGS),
-            INDEX_TITLE,
-            "Read the notices that apply to this build, its open-source components and its relationship with Plex and LG.",
-            theme::size::LABEL,
-        );
-        table().draw(index, layout.sectioned_table());
+        TableScreen::new(
+            Header::new(
+                layout,
+                Some(CRUMB_SETTINGS),
+                INDEX_TITLE,
+                "Read the notices that apply to this build, its open-source components and its relationship with Plex and LG.",
+            ),
+            table(),
+            g,
+            e,
+        )
+        .paint(index);
     }
     if t > 0.01 {
         let page = unsafe { PAGE };
         let document = unsafe { (*addr_of!(ROUTE_PUSH)).child(p) };
         // The pushed document's crumb names the index it came from, which is the whole reason
         // this family can be three deep without anyone having to remember how they got here.
-        layout.draw_narrative(
-            document,
-            Some(INDEX_TITLE),
-            page.title(),
-            page.subtitle(),
-            theme::size::LABEL,
-        );
-        reader().draw(document, layout.document(true), None, page.body());
+        DocumentScreen::new(
+            Header::new(layout, Some(INDEX_TITLE), page.title(), page.subtitle()),
+            reader(),
+            page.body(),
+            g,
+            e,
+        )
+        .paint(document);
     }
 }
 
