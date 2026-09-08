@@ -100,10 +100,6 @@ impl KeyRegistry {
         self.keys.iter().find(|key| key.elem == elem)
     }
 
-    pub(super) fn elem(&self, identity: &LibraryIdentity) -> Option<u32> {
-        self.keys.iter().find(|key| &key.identity == identity).map(|key| key.elem)
-    }
-
     pub(super) fn region(&self, elem: u32) -> Option<KeyRegion> {
         let typed = match &self.key(elem)?.identity {
             LibraryIdentity::Library(_) => KeyRegion::Library,

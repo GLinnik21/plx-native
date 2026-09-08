@@ -33,6 +33,7 @@ pub(super) struct GridPart {
     identity: Option<(u32, crate::plex::ServerId, i64, u32)>,
     layout: Layout,
     scroll: f32,
+    snapshot: Option<crate::stores::browse::ListingSnapshot>,
 }
 
 impl GridPart {
@@ -44,6 +45,7 @@ impl GridPart {
             identity: None,
             layout: Layout::new(false, &[], 0, false),
             scroll: 0.0,
+            snapshot: None,
         }
     }
 
@@ -52,8 +54,16 @@ impl GridPart {
         self.scroll = scroll;
     }
 
+    pub(super) fn restore_keys(&mut self, keys: &KeyRegistry) {
+        self.known = keys.keys().iter().filter(|key| matches!(key.identity,
+            LibraryIdentity::Grid { .. } | LibraryIdentity::GridSlot { .. }))
+            .map(|key| (key.elem, key.last_index as usize)).collect();
+    }
+
     pub(super) fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry) {
         let view = H::listing(cx);
+        if self.snapshot.as_ref().is_some_and(|old| view.same_items(old.view())) { return; }
+        self.snapshot = Some(view.retain());
         let Some(id) = view.id() else {
             self.elems.clear();
             self.identity = None;

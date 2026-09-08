@@ -20,6 +20,7 @@ pub(crate) struct ListingSnapshot {
 
 #[derive(Clone)]
 struct ListingData {
+    saved: (usize, f32),
     id: ListingId,
     total: i64,
     fetch: SecFetch,
@@ -37,12 +38,35 @@ impl ListingSnapshot {
     pub(crate) fn view(&self) -> ListingView<'_> {
         ListingView(self)
     }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(sid: ServerId, items: Vec<Option<crate::pms::PmsMovie>>, letters: Vec<(String, i64)>) -> Self {
+        Self { data: Some(ListingData {
+            id: ListingId { epoch: 1, query: 1, sid, section: 1 }, total: items.len() as i64, saved: (0, 0.0),
+            fetch: SecFetch::Ready, items: SecItems::from_vec(items),
+            sorts: Arc::new(vec![SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false }]),
+            genres: Arc::new(Vec::new()), letters: Arc::new(letters), sort_idx: 0, sort_desc: false,
+            genre: None, unwatched: false,
+        }) }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct ListingView<'a>(&'a ListingSnapshot);
 
 impl<'a> ListingView<'a> {
+    pub(crate) fn saved_view(self) -> (usize, f32) { self.0.data.as_ref().map_or((0, 0.0), |s| s.saved) }
+    pub(crate) fn retain(self) -> ListingSnapshot { self.0.clone() }
+
+    /// Placement keys need rebuilding only when item membership or listing identity changes.
+    pub(crate) fn same_items(self, other: ListingView<'_>) -> bool {
+        match (&self.0.data, &other.0.data) {
+            (Some(a), Some(b)) => a.id == b.id && a.total == b.total
+                && Arc::ptr_eq(&a.items.pages, &b.items.pages),
+            (None, None) => true,
+            _ => false,
+        }
+    }
     pub(crate) fn id(self) -> Option<ListingId> {
         self.0.data.as_ref().map(|s| s.id)
     }
@@ -112,6 +136,7 @@ pub(crate) fn snapshot() -> ListingSnapshot {
     ListingSnapshot {
         // No empty Arc allocations on Login or before discovery has produced a section.
         data: id.zip(super::states().get(sec)).map(|(id, s)| ListingData {
+            saved: (s.focus, s.scroll),
             id,
             total: s.total,
             fetch: s.fetch,

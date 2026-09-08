@@ -72,12 +72,37 @@ pub(crate) enum HomeCmd {
 /// Bounded actions emitted by an owned Library instance. Every media action carries its server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryReq {
+    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: crate::stores::browse::SectionAddress },
     Play { sid: crate::plex::ServerId, rk: String, resume_ns: i64 },
     Detail { sid: crate::plex::ServerId, rk: String },
     ItemMenu { sid: crate::plex::ServerId, rk: String, from_deck: bool },
     Account,
     Tab(HomeTab),
     BackToHome { kind: crate::browse::SecKind },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LibraryMenuArg {
+    pub host: crate::ui::machine::InstanceId,
+    pub target: crate::stores::browse::SectionAddress,
+    pub kind: LibraryMenuKind,
+    /// Bit-preserving rest rectangle; valid in canonical arguments without float equality.
+    pub anchor: [u32; 4],
+}
+
+impl crate::ui::machine::LogicalState for LibraryMenuArg {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        c.u32(self.host.0).u32(self.target.epoch).u32(u32::from(self.target.sid.raw()))
+            .u64(self.target.section as u64).u32(match self.kind {
+                LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
+                LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3,
+            });
+        for value in self.anchor { c.u32(value); }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("library_menu_arg"); }
 }
 
 /// Addressed simulator/harness intentions. They are resolved by the mounted instance.
@@ -445,6 +470,8 @@ pub(crate) enum AppMsg {
     HubsResult(crate::stores::hubs::HubsResult),
     Home(HomeCmd),
     Library(LibraryCmd),
+    LibraryEdit { target: crate::stores::browse::SectionAddress, edit: crate::stores::browse::QueryEdit },
+    LibrarySelect(crate::stores::browse::SectionAddress),
     DetailRestore { spot: crate::metadata::Spot, episode: Option<String> },
 }
 

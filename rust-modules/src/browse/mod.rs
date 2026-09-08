@@ -2490,6 +2490,13 @@ pub(crate) fn kick_letters() {
 
 // ---- remembered view ------------------------------------------------------------------------
 
+/// Resolve an addressed Library command without leaking a borrowed global section table.
+pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
+    if epoch != table_epoch() { return None; }
+    sections().iter().enumerate().find_map(|(i, section)|
+        (section.key == key && section_sid(i) == Some(sid)).then_some(i))
+}
+
 pub(crate) fn saved_view() -> (usize, f32) {
     cur_state().map(|s| (s.focus, s.scroll)).unwrap_or((0, 0.0))
 }

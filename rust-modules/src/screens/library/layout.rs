@@ -149,6 +149,28 @@ impl Layout {
     }
 }
 
+/// Preserve the selected favourite while reserving a visible overflow control.
+pub(super) fn library_window(widths: &[f32], selected: usize, available: f32, gap: f32, more: f32, cap: usize) -> (usize, usize) {
+    if widths.is_empty() || cap == 0 { return (0, 0); }
+    let total = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
+    if widths.len() <= cap && total <= available { return (0, widths.len()); }
+    let budget = available - more - gap;
+    let room = cap.saturating_sub(1).max(1);
+    let selected = selected.min(widths.len() - 1);
+    for start in 0..=selected {
+        let mut width = 0.0;
+        let mut len = 0;
+        for &pill in widths.iter().skip(start).take(room) {
+            let step = pill + if len == 0 { 0.0 } else { gap };
+            if len > 0 && width + step > budget { break; }
+            width += step;
+            len += 1;
+        }
+        if selected < start + len { return (start, len); }
+    }
+    (selected, 1)
+}
+
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
     let art = if landscape { 236.0 } else { CARD_H };
     crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY + art

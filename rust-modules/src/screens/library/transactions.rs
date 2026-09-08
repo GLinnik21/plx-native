@@ -60,10 +60,6 @@ impl PendingTransactions {
         self.section.take().filter(|target| target.epoch == epoch)
     }
 
-    pub(super) fn take_grid(&mut self, view: ListingView<'_>) -> Option<GridAction> {
-        self.grid.take().and_then(|(target, action)| target.matches(view).then_some(action))
-    }
-
     pub(super) fn cancel(&mut self) {
         self.section = None;
         self.grid = None;

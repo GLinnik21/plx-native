@@ -2728,7 +2728,7 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // ever reaches the grid — and the seam between the last shelf and the poster
                 // wall is the thing this scene exists to sweep. `osc_step` reverses at the
                 // document's own ends instead (`ui::library::osc_step`).
-                crate::ui::library::osc_step();
+                super::bridge::Bridge::library_command(&mut app.pages, crate::screens::registry::LibraryCmd::Sweep);
             }
             // dev: libswitch cycles EVERY switch (tabs, sort menu, unwatched, filter) on a
             // timer so the re-query + popover paths are FPS-gated too
@@ -2737,13 +2737,13 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 && fr.now.wrapping_sub(app.lib_switch_last) > 1400
             {
                 app.lib_switch_last = fr.now;
-                crate::ui::library::switch_step(app.lib_switch_step);
+                super::bridge::Bridge::library_command(&mut app.pages, crate::screens::registry::LibraryCmd::SwitchStep(app.lib_switch_step));
                 app.lib_switch_step = app.lib_switch_step.wrapping_add(1);
             }
             // scoped like Home's above, because this page can be the one UNDER the account
             // popover now and its glass backdrop is refreshed off the underlay's motion
             let (_, moving) = crate::ui::idle::scoped_motion(|| {
-                crate::ui::library::update(fr.dt);
+                app.bridge.update_home_chrome(&mut app.pages, fr.dt);
             });
             fr.underlay_moving |= moving;
         }

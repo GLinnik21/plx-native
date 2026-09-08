@@ -73,6 +73,7 @@ pub(super) struct AppHost;
 /// `decision-alert`, `settings-*`) never press.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum AppArg {
+    LibraryMenu(crate::screens::registry::LibraryMenuArg),
     Legacy(Route),
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
@@ -87,6 +88,7 @@ pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,H
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
         match self {
+            Self::LibraryMenu(arg) => { c.u32(4); arg.write(c); }
             Self::Legacy(route) => {
                 c.u32(0);
                 match route {
@@ -120,6 +122,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
     }
     fn id(&self) -> ScreenId {
         ScreenId(match self {
+            AppArg::LibraryMenu(_) => 15,
             AppArg::Legacy(Route::Login) => 1,
             AppArg::Legacy(Route::Profiles) => 2,
             AppArg::Legacy(Route::Onboard) => 3,
@@ -242,6 +245,12 @@ impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
 }
 
+impl crate::screens::registry::LibraryLike for AppHost {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
+}
+
 // ---------------------------------------------------------------------------------------------
 // the legacy page
 // ---------------------------------------------------------------------------------------------
@@ -360,6 +369,7 @@ impl Mounter<AppHost> for AppMounter {
             _ => EntryId(0),
         };
         match arg {
+            AppArg::LibraryMenu(arg) => Box::new(crate::screens::library::menu::LibraryMenu::new(entry, arg.clone())),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
                 if let PageMemory::Detail(spot) = &ret.memory {
@@ -394,6 +404,13 @@ impl Mounter<AppHost> for AppMounter {
             AppArg::Legacy(Route::Home) => {
                 let mut page = crate::screens::home::HomeScreen::new(entry, id);
                 if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Library) => {
+                let kind = cx.views.directory.current().map(|i| cx.views.directory.sections()[i].kind)
+                    .unwrap_or(crate::browse::SecKind::Movie);
+                let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
+                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
             AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
@@ -526,6 +543,26 @@ impl Bridge {
 
     pub(super) fn take_library_reqs(&mut self) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.library_reqs)
+    }
+
+    pub(super) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+        -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(entry) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+            directory: self.directory.view(), section_hubs: self.section_hubs.view() }, self.measure);
+        let item = page.focused_item(focus, &cx)?.clone();
+        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
+        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+    }
+
+    pub(super) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
+        let Some(entry) = d.nav.top_page() else { return };
+        if entry.arg.route() != Some(Route::Library) { return; }
+        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
     }
 
     pub(super) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
@@ -733,6 +770,8 @@ impl Bridge {
             page.redraw_focused::<AppHost>(&mut frame, focus);
         } else if let Some(page) = screen.downcast_ref::<crate::screens::home::HomeScreen>() {
             page.redraw_focused::<AppHost>(&mut frame, focus);
+        } else if let Some(page) = screen.downcast_ref::<crate::screens::library::LibraryScreen>() {
+            page.redraw_focused::<AppHost>(&mut frame, focus);
         }
     }
 
@@ -872,6 +911,9 @@ impl Rig<AppHost> for Bridge {
             AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
                 crate::stores::browse::discover_pump();
                 Handled::Yes
+            }
+            AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
+                crate::stores::browse::BrowseStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
             _ => Handled::No,
         }
