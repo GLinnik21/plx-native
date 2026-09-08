@@ -261,3 +261,59 @@ impl<H: Host> Machine<H> for BrowseStore {
         Handled::Yes
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn library_switch_events_count_only_new_committed_choices() {
+        let _guard = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("library-switch-events");
+        session.watching("u-library-switch-events");
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                apply(BrowseCmd::Reset);
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _cleanup = Cleanup;
+        apply(BrowseCmd::Reset);
+        crate::plex::reset_servers_for_test();
+        let own = crate::plex::register_for_test("switch-own", "127.0.0.1", 9, "synthetic", "fixture");
+        let shared = crate::plex::register_for_test("switch-shared", "127.0.0.1", 10, "synthetic", "fixture");
+        crate::browse::seed_registered_table_for_test([own, shared]);
+        apply(BrowseCmd::SetCur(0));
+        let a = SectionAddress { epoch: crate::browse::table_epoch(), sid: own, section: 1 };
+        let b = SectionAddress { sid: shared, ..a };
+        assert_eq!(crate::browse::resolve_section(b.epoch, b.sid, b.section), Some(2));
+        let commit = |target, select, choice| apply(BrowseCmd::Addressed {
+            target, work: LibraryWork::Commit { select, choice, query: None },
+        });
+        let observe = |target, select, choice| crate::diag::test_events::capture(|| commit(target, select, choice));
+        let switched = crate::diag::schema::DiagEvent::FeatureUsed {
+            feature: crate::diag::schema::Feature::LibrarySwitch,
+        };
+
+        // Same-current includes the final A commit after a pending A→B→A was superseded.
+        assert_eq!(observe(a, true, true), (true, vec![]));
+        assert_eq!(observe(SectionAddress { section: 999, ..b }, true, true), (false, vec![]));
+        assert_eq!(observe(SectionAddress { epoch: b.epoch.wrapping_add(1), ..b }, true, true), (false, vec![]));
+        assert_eq!(observe(b, false, true), (false, vec![]), "foreign work without selection cannot count");
+        assert_eq!(crate::browse::cur(), 0);
+        assert_eq!(observe(b, true, false), (true, vec![]), "boot/repoint is not a viewer choice");
+        assert_eq!(crate::browse::cur(), 2);
+        assert_eq!(observe(b, true, true), (true, vec![]), "choosing the current library is quiet");
+        assert_eq!(observe(a, true, true), (true, vec![switched]));
+        assert_eq!(crate::browse::cur(), 0);
+        assert_eq!(observe(a, true, true), (true, vec![]), "repeated delivery cannot count twice");
+        assert_eq!(observe(b, true, true), (true, vec![switched]), "a later real switch counts once");
+        let (accepted, events) = crate::diag::test_events::capture(|| apply(BrowseCmd::Addressed {
+            target: b, work: LibraryWork::Commit { select: false, choice: false,
+                query: Some(QueryEdit::Unwatched(true)) },
+        }));
+        assert!(accepted);
+        assert!(events.is_empty(), "query changes are not library switches");
+    }
+}

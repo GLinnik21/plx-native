@@ -27,6 +27,9 @@ pub(crate) mod scrub;
 // assertions sat unexecuted for as long as they existed.
 pub(crate) mod schema;
 
+#[cfg(test)]
+pub(crate) mod test_events;
+
 /// **Report one event.** The single door, so a call site carries no `#[cfg]` and cannot know
 /// whether anything is listening — which is what `lab/mod.rs` does and what keeps the feature
 /// attributes off ~25 scattered sites (the hazard `.claude/hooks/release-config-check.py` exists
@@ -55,6 +58,9 @@ pub(crate) fn event_for_server(e: schema::DiagEvent, server: crate::plex::Server
 }
 
 fn event_for(e: schema::DiagEvent, server: Option<crate::plex::ServerId>) {
+    // Observe producer intent in scoped tests without consenting, queuing, or sending anything.
+    #[cfg(test)]
+    if test_events::intercept(e) { return; }
     // **The gate, and it is here rather than at the call sites on purpose**: one place to be right,
     // and no site can forget it. Reads a published snapshot — never the disk, never a lock — which
     // is the shape `diag::scrub`'s identity list had to be rebuilt into after wiring it to

@@ -41,6 +41,31 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    let layout = page.layout;
+    let index = 2 * COLS;
+    let y = crate::ui::widgets::TOP_BAR_BOTTOM - crate::ui::consts::CARD_H - 8.0;
+    let scroll = layout.row_y(2, 0.0) - y;
+    page.pair.detail.set_geometry(layout, scroll, layout, scroll);
+    let rect = page.pair.detail.rect_at(index, false, 1.0);
+    assert!(rect.y + rect.h > 0.0 && rect.y + rect.h < crate::ui::widgets::TOP_BAR_BOTTOM);
+    let (lo, hi) = page.pair.detail.visible_window();
+    assert!((lo..hi).contains(&index), "the real paint iterator must include this visible card");
+
+    // The paint iterator conservatively retains overscan rows, but never the entire catalog.
+    // Far outside that window, the same card must be excluded on either side of the screen.
+    for y in [-2.0 * SCR_H, 2.0 * SCR_H] {
+        let scroll = layout.row_y(2, 0.0) - y;
+        page.pair.detail.set_geometry(layout, scroll, layout, scroll);
+        let (lo, hi) = page.pair.detail.visible_window();
+        assert!(!(lo..hi).contains(&index), "far-offscreen card at {y} must not enter paint iteration");
+    }
+}
+
+#[test]
 fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();

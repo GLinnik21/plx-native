@@ -15,8 +15,22 @@ fn layers(mut visit: impl FnMut(Layer)) {
     for layer in [Layer::Grid, Layer::Document, Layer::Rail] { visit(layer); }
 }
 
+fn shelf_on_screen(origin: f32, pitch: f32) -> bool {
+    on_axis(origin - crate::ui::consts::TITLE_DY, pitch, SCR_H, 0.0)
+}
+
 #[cfg(test)]
 mod layer_tests {
+    #[test]
+    fn shelf_culling_keeps_the_visible_band_above_the_centered_tab_track() {
+        use crate::ui::consts::{CARD_H, ROW_PITCH, SCR_H, TITLE_DY};
+        let y = crate::ui::widgets::TOP_BAR_BOTTOM - CARD_H - 8.0;
+        assert!(y + CARD_H > 0.0);
+        assert!(super::shelf_on_screen(y, ROW_PITCH));
+        assert!(!super::shelf_on_screen(TITLE_DY - ROW_PITCH - 1.0, ROW_PITCH));
+        assert!(!super::shelf_on_screen(SCR_H + TITLE_DY + 1.0, ROW_PITCH));
+    }
+
     #[test]
     fn library_paint_and_stop_order_keeps_controls_above_grid_and_rail_above_document() {
         use super::{layers, Layer};
@@ -74,7 +88,7 @@ impl LibraryScreen {
         for (index, row) in self.shelves.iter().enumerate() {
             let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
             let origin = self.layout.shelf_y(index, self.scroll.pos);
-            if !on_axis(origin - crate::ui::consts::TITLE_DY, self.layout.shelf_pitch(index), SCR_H, 0.0) { continue; }
+            if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
             card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
                 origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X);
             let focused = f.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
@@ -117,7 +131,7 @@ impl LibraryScreen {
         }
         for (index, row) in self.shelves.iter().enumerate() {
             let origin = self.layout.shelf_y(index, self.scroll.pos);
-            if !on_axis(origin - crate::ui::consts::TITLE_DY, self.layout.shelf_pitch(index), SCR_H, 0.0) { continue; }
+            if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
             let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
             for &elem in row.elems.iter().filter(|elem| Some(**elem) != focused) { self.stop(elem, f); }
             if let Some(elem) = focused.filter(|elem| row.elems.contains(elem)) { self.stop(elem, f); }
