@@ -148,7 +148,7 @@ const BTN_GAP: f32 = theme::space::MD;
 /// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha — the LIBRARY toolbar chip menu's (`ui::library`), deliberately, because this
+/// Scrim peak alpha — the Library toolbar chip menu's design, deliberately, because this
 /// is the same object one page over: a chip-shaped control on a live page opening a list over it.
 /// The page recedes; it is not blanked, and the hero behind stays readable.
 const SCRIM_A: f32 = 0.45;

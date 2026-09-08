@@ -1532,8 +1532,8 @@ mod tests {
     //! Zones, the ▼ handoff and the scroll rule. Focus lives in this module's `static mut`s and the
     //! query lives in `crate::search`'s, so every test here holds BOTH the module's own [`ZLOCK`]
     //! and `testlock::serial()` — the query is a crate-wide global that `browse`/`route` tests also
-    //! move, which a per-module mutex cannot see (`ui/library.rs`'s test module states the same
-    //! rule for the same reason).
+    //! move, which a per-module mutex cannot see. Owned Library tests share that same crate-wide
+    //! lock when they exercise the stores.
     use super::*;
     use std::sync::Mutex;
 

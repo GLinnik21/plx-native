@@ -1169,7 +1169,8 @@ pub fn current_profile_key() -> String {
 /// It is held across the whole write, [`write_atomic`]'s `sync_all` included, so a reader that
 /// takes it can be parked for as long as the flash takes. That is affordable because of who the
 /// readers are — a keypress (`ui::account_menu::open`), a boot, and one read-out that was already
-/// doing an `fs::read` per frame (`ui::library`'s failed-source labels). **Do not add a per-frame
+/// doing an `fs::read` per frame (the legacy Library's failed-source labels; the owned screen now
+/// uses retained views). **Do not add a per-frame
 /// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
 /// `ui::search::recents` caches by [`current_gen`].
 static IO: Mutex<()> = Mutex::new(());

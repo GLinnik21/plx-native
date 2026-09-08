@@ -57,7 +57,7 @@ pub mod label;
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
 pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/return/follow policy
-pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
+// Library is owned by screens::library; its legacy state/focus model is retired.
 // `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
 // `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
 // ladders. Its one surviving reader was `screens::login::LoginScreen::resync`'s

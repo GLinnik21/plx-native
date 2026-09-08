@@ -2628,8 +2628,8 @@ pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                 // …but NOT on homeosc's 3s reversal: this document opens with the library chip
                 // and one rung per shelf, so at 350ms a 12-shelf library reverses before it
                 // ever reaches the grid — and the seam between the last shelf and the poster
-                // wall is the thing this scene exists to sweep. `osc_step` reverses at the
-                // document's own ends instead (`ui::library::osc_step`).
+                // wall is the thing this scene exists to sweep. The owned Library's Sweep
+                // command reverses at the document's own ends instead.
                 super::bridge::Bridge::library_command(&mut app.pages, crate::screens::registry::LibraryCmd::Sweep);
             }
             // dev: libswitch cycles EVERY switch (tabs, sort menu, unwatched, filter) on a

@@ -353,8 +353,10 @@ re-seated in `reset_view_state` so a new item's capsules land rather than glide 
 the last item was parked on. `tabs_layout` is CACHED per season set for that: it is now asked for
 three times a frame (scroll target, capsule spans, draw) and this row has no FPS scene to catch the
 cost — `fps:detail-transition` is a movie and returns before reaching it.
-`screens/library/` owns the runtime Library; `ui/library.rs` remains a test-only legacy corpus
-while its assertions are migrated. Since 2026-09-05 the Library is **ONE VERTICAL DOCUMENT** rather than a
+`screens/library/` owns the Library. The test-only legacy `ui/library.rs` model was removed after
+its 67 test bodies were reconciled against owned screen, store and shared-component contracts.
+This deletion does not replace the separate native visual verification obligation.
+Since 2026-09-05 the Library is **ONE VERTICAL DOCUMENT** rather than a
 poster wall under a fixed bar: the LIBRARY ROW at the head of the scroll, then the library's own
 server-published shelves (`browse::section_hubs`, one `card_row::CardRow` each), then the grid's
 heading with its Sort/Filter row under it, then the 6-across A–Z grid — all in one scroll, with the

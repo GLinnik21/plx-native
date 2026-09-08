@@ -47,8 +47,10 @@
 //!
 //! ## Who drives it
 //!
-//! [`kick`] is the only thing that issues a request, and `ui::library`'s `update` calls it for the
-//! section being browsed. It was dormant for one landing — deliberately, since a fetch is
+//! [`kick`] is the only thing that issues a request. The owned Library emits `PublishShelves`;
+//! the application combines its visibility flags with live press state and delivers addressed
+//! `LibraryWork::Hubs` to `stores::browse`, which calls `kick` and gates staged publication.
+//! It was dormant for one landing — deliberately, since a fetch is
 //! production network, task and retry behaviour and "fetched but not drawn" would not have been
 //! dormancy at all — and the screen that draws the shelves is what woke it.
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above

@@ -28,39 +28,12 @@ pub(crate) enum BrowseCmd {
     /// Point the listing at section `i` (a pill or library-row press, committed at the fade floor).
     #[cfg(test)]
     SetCur(usize),
-    /// Remember a library the viewer CHOSE (never a boot settle or a re-point).
-    #[cfg(test)]
-    NoteLibraryChoice(usize),
-    #[cfg(test)]
-    KickLetters,
-    #[cfg(test)]
-    KickGenres,
-    /// The grid's wanted index window — drives which page fetches next.
-    #[cfg(test)]
-    Want { lo: usize, hi: usize },
-    #[cfg(test)]
-    SaveView { focus: usize, scroll: f32 },
-    /// Answers `false` when the key names no sort entry.
-    #[cfg(test)]
-    SetSortByKey { key: String, desc: bool },
-    #[cfg(test)]
-    ToggleUnwatched,
-    /// `None` is "All genres"; answers `false` when the id names no genre.
-    #[cfg(test)]
-    SetGenreById(Option<String>),
-    #[cfg(test)]
-    RetryCurSource,
     RecheckShares,
     /// The Home editor's draft commit: one record for the whole session.
     ApplyPins(Vec<(usize, bool)>),
     RetryDiscovery,
     /// The profile/account switch: wipe everything and supersede everything in flight.
     Reset,
-    /// The library's own shelves (`browse::section_hubs`).
-    #[cfg(test)]
-    HubsKick(usize),
-    #[cfg(test)]
-    HubsCommitStaged { sec: usize, may_move: bool },
     HubsInvalidateAll,
     /// The optimistic half of a view-state write, on the grid and the shelves.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
@@ -155,45 +128,6 @@ pub(super) fn run(cmd: BrowseCmd) -> bool {
             crate::browse::set_cur(i);
             true
         }
-        #[cfg(test)]
-        BrowseCmd::NoteLibraryChoice(i) => {
-            crate::browse::note_library_choice(i);
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::KickLetters => {
-            crate::browse::kick_letters();
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::KickGenres => {
-            crate::browse::kick_genres();
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::Want { lo, hi } => {
-            crate::browse::want(lo, hi);
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::SaveView { focus, scroll } => {
-            crate::browse::save_view(focus, scroll);
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::SetSortByKey { key, desc } => crate::browse::set_sort_by_key(&key, desc),
-        #[cfg(test)]
-        BrowseCmd::ToggleUnwatched => {
-            crate::browse::toggle_unwatched();
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::SetGenreById(id) => crate::browse::set_genre_by_id(id.as_deref()),
-        #[cfg(test)]
-        BrowseCmd::RetryCurSource => {
-            crate::browse::retry_cur_source();
-            true
-        }
         BrowseCmd::RecheckShares => {
             crate::browse::recheck_shares();
             true
@@ -210,13 +144,6 @@ pub(super) fn run(cmd: BrowseCmd) -> bool {
             crate::browse::reset();
             true
         }
-        #[cfg(test)]
-        BrowseCmd::HubsKick(sec) => {
-            crate::browse::section_hubs::kick(sec);
-            true
-        }
-        #[cfg(test)]
-        BrowseCmd::HubsCommitStaged { sec, may_move } => crate::browse::section_hubs::commit_staged(sec, may_move),
         BrowseCmd::HubsInvalidateAll => {
             crate::browse::section_hubs::invalidate_all();
             true

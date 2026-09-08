@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(initial.view().letter_start(1), 3);
         assert_eq!(initial.view().letter_start(99), 7);
         crate::browse::set_genre_by_id(Some("7"));
-        crate::browse::toggle_unwatched();
+        crate::browse::set_unwatched(true);
         crate::browse::set_sort_by_key("titleSort", true);
         let filtered = snapshot();
         assert!(filtered.view().unwatched());

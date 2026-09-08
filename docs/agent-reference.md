@@ -1466,7 +1466,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
   whole DOCUMENT — the chip at the head, each published shelf, the grid's control row, then the
   poster grid — reversing at the document's own ENDS rather than on a clock, which is the one
-  oscillator here that does. `ui::library::osc_step`, since 2026-09-05: at the shared 350 ms
+  oscillator here that does. The owned Library handles `LibraryCmd::Sweep`; the rule dates to
+  2026-09-05: at the shared 350 ms
   cadence a clock reversing every 3 s gives about eight presses a leg, and a twelve-shelf library
   spends more than four of those seconds just reaching the grid — so `fps:library-scroll`, whose
   whole purpose is to sweep the seam between the last shelf and the poster wall, graded a sweep

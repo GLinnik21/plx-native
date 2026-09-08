@@ -254,7 +254,7 @@ pub(crate) struct GenreEntry {
 ///
 /// `Failed` describes the last FETCH, not the store: a mid-scroll page failure on a populated
 /// section is Failed with items still on screen, which is why the screen's read-out projects this
-/// state and the store TOGETHER (`ui::library`'s `readout_of`, where that whole decision lives as
+/// state and the store TOGETHER (`screens::library`'s `readout`, where that whole decision lives as
 /// one pure function) rather than reading the state alone — the same rule `pms::HubState` and
 /// `StatusKind::Empty` state, that an empty answer is an answer and only a fault is a fault.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -317,12 +317,6 @@ struct SecState {
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
-    // Retired Library characterization only. Production focus memory belongs to FocusEngine;
-    // production section viewport bookmarks belong to LibraryScreen/PageMemory.
-    #[cfg(test)]
-    focus: usize,
-    #[cfg(test)]
-    scroll: f32,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -445,10 +439,6 @@ impl Default for SecState {
             total: -1,
             items: SecItems::default(),
             cursor: None,
-            #[cfg(test)]
-            focus: 0,
-            #[cfg(test)]
-            scroll: 0.0,
         }
     }
 }
@@ -587,8 +577,6 @@ fn requery() {
         st.total = -1;
         st.items.clear();
         st.cursor = None; // A bookmark from the replaced query cannot seed a new entry.
-        #[cfg(test)]
-        { st.focus = 0; st.scroll = 0.0; }
     }
 }
 
@@ -657,7 +645,7 @@ pub(crate) fn table_epoch() -> u32 {
 static SRC_FACTS_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// **The generation of everything the Sources list DRAWS** — the table's shape plus the facts its
-/// rows state. The number both surfaces that draw that list watch (`ui::library`'s panel and
+/// rows state. The number both surfaces that draw that list watch (`screens::library::menu` and
 /// `screens::onboard`'s route), because a surface keyed on the SHAPE alone goes on saying "Films"
 /// long
 /// after the count arrived and heads an unnamed group with no header at all — which is precisely
@@ -1294,7 +1282,7 @@ fn load_remembered(sess: &crate::plex::session::Session, user: &str) {
 
 /// **Remember the library the viewer is now browsing, for its type.**
 ///
-/// Called from the COMMIT of a user-driven page change (`ui::library`'s `apply_section`), never
+/// Called by `stores::browse` when it applies an addressed Library choice commit, never
 /// from [`set_cur`] itself. The distinction is the whole correctness of the record: `set_cur` also
 /// runs from [`repoint_cur`], which MOVES the cursor when the library under it stops being a
 /// favourite, and from the boot path before discovery has settled. Recording either would write
@@ -1863,7 +1851,7 @@ pub(crate) fn source_rows() -> Vec<SrcRow> {
 /// the library chip's `1 of 2`.
 ///
 /// It answers the question the chip could not: the chip's PRESENCE already means "there is
-/// somewhere else to go" ([`crate::ui::library`]'s `lib_chip_on`), but that is knowledge the user
+/// somewhere else to go" (the legacy Library chip's presence rule), but that is knowledge the user
 /// has no way to have. Issue #68 is what it costs — two TV libraries behind one *TV Shows* pill,
 /// the second one read as missing rather than as one press away.
 ///
@@ -1989,13 +1977,6 @@ pub(crate) fn recheck_shares() {
 pub(crate) fn total() -> i64 {
     cur_state().map(|s| s.total).unwrap_or(-1)
 }
-/// Item at absolute index `i` — None = not yet fetched (draw a skeleton). The reference is
-/// valid until the next [`pump`]/re-query (main-thread only, same lifetime rule as
-/// `pms::movie`).
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
-    cur_state().and_then(|s| s.items.get(i))
-}
 /// Flip `(sid, rk)`'s watched state in every section's item store — the optimistic half of a
 /// view-state write, for the browse grid.
 ///
@@ -2040,8 +2021,8 @@ pub(crate) fn fetch_state() -> SecFetch {
 /// disagreed for the one that doesn't. A failed first page leaves `total` at -1 forever, so this
 /// used to spin forever with it.
 ///
-/// **Only the suite calls it now** — the screen asks `ui::library::readout()`, which folds this
-/// state together with the section TABLE's. Kept, and marked, because the three tests that assert
+/// **Only the suite calls it now** — `screens::library::readout` folds retained listing state
+/// together with the section TABLE's. Kept, and marked, because the tests that assert
 /// it are asserting exactly the distinction above; `rustc`'s dead-code warning does not count test
 /// callers, so this reads as removable and is not.
 #[allow(dead_code)]
@@ -2050,7 +2031,7 @@ pub(crate) fn loading_initial() -> bool {
 }
 
 /// The same three states for the SOURCE behind what the screen is showing — the layer above a
-/// page, and the other half of the Library's read-out ([`crate::ui::library`]'s `readout_of`).
+/// page, and the other half of `screens::library`'s pure `readout` projection.
 ///
 /// It is a PROJECTION of [`BrowseSource`]'s flags, not a fourth field: `reachable` and
 /// `sections_done` already carry the whole answer, per source, which is strictly more than the one
@@ -2074,7 +2055,7 @@ pub(crate) fn cur_source_state() -> SecFetch {
     }
 }
 /// Seed the roster with `n` sources in a chosen reachability, for a host test on the SCREEN side —
-/// `ui::library`'s read-out is a projection of these flags, and its tests cannot reach this
+/// the Library read-out is a projection of these flags, and its tests cannot reach this
 /// module's private ones. The real transition needs a server that refuses to answer, which no host
 /// tier has. Compiled out of every shipped build.
 #[cfg(test)]
@@ -2123,7 +2104,7 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
 }
 
 /// One reachable, named source with one library per entry of `pinned`, at exactly the pin state
-/// given — a host test on the PIN side's shortcut. [`seed_sources_for_test`] gives `ui::library`'s
+/// given — a host test on the PIN side's shortcut. [`seed_sources_for_test`] gives screen
 /// tests a roster with no libraries at all, which is right for grading a source's reachability word
 /// and wrong for anything that toggles or commits a pin: `plex::pins::record` needs a real
 /// `(machine_id, key)` pair to write anything down, and an empty-`machine_id` source (what
@@ -2239,21 +2220,6 @@ pub(crate) fn retry_source(epoch: u32, sid: ServerId) -> bool {
     true
 }
 
-/// The MACHINE name and the OWNER's handle of the source behind what the screen is showing.
-///
-/// These are the only two identifying strings the Library's failure read-out is allowed to say
-/// (`ui::library`'s `dead_strs` — no address, no path, no machineIdentifier: `ui::stats`' rule, for
-/// its reason). Either can be `""` and each means something different by it: an unknown machine has
-/// not named itself yet, while an empty HANDLE means the source is your OWN server and there is no
-/// owner to name — drawn as the absence of a line, never as an empty one.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn cur_source_labels() -> (&'static str, &'static str) {
-    cur_source_idx()
-        .and_then(|i| sources().get(i))
-        .map(|s| (s.name.as_str(), s.handle.as_str()))
-        .unwrap_or(("", ""))
-}
-
 /// The source behind what the screen is showing: the section at [`cur`], else the current server —
 /// an empty table has no section to ask about, and that is exactly the case the read-out one layer
 /// up exists for. Shared by [`cur_source_state`] and [`retry_cur_source`] so the state that draws
@@ -2274,26 +2240,6 @@ fn cur_source_idx() -> Option<usize> {
 pub(crate) fn sorts() -> &'static [SortEntry] {
     cur_state().map(|s| s.sorts.as_slice()).unwrap_or(&[])
 }
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn sort_idx() -> usize {
-    cur_state().map(|s| s.sort_idx).unwrap_or(0)
-}
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn sort_desc() -> bool {
-    cur_state().map(|s| s.sort_desc).unwrap_or(false)
-}
-/// Current sort's display title for the toolbar chip ("Title" until the menus land).
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn sort_label() -> &'static str {
-    let st = match cur_state() {
-        Some(s) => s,
-        None => return "",
-    };
-    st.sorts
-        .get(st.sort_idx)
-        .map(|s| s.title.as_str())
-        .unwrap_or("Title")
-}
 /// Apply a sort by its stable SERVER KEY rather than by its position in the current section's
 /// menu, and say whether it landed.
 ///
@@ -2313,17 +2259,6 @@ pub(crate) fn set_sort_by_key(key: &str, desc: bool) -> bool {
         st.sort_desc = desc;
     }
     true
-}
-
-/// The active sort's stable key and direction — what a queued action carries.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn sort_key_now() -> (String, bool) {
-    let st = cur_state();
-    let key = sorts()
-        .get(sort_idx())
-        .map(|s| s.key.clone())
-        .unwrap_or_default();
-    (key, st.map(|s| s.sort_desc).unwrap_or(false))
 }
 
 /// Apply an explicit unwatched-filter value. A deferred UI transaction carries intent, not a
@@ -2373,29 +2308,8 @@ pub(crate) fn set_sort(idx: usize) {
 
 // ---- public surface: filters ----------------------------------------------------------------
 
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn unwatched() -> bool {
-    cur_state().map(|s| s.unwatched).unwrap_or(false)
-}
-#[cfg(test)] // Retired toggle shim: owned Library commands carry the desired boolean.
-pub(crate) fn toggle_unwatched() {
-    let c = cur();
-    if let Some(st) = state_mut(c) {
-        st.unwatched = !st.unwatched;
-    }
-    requery();
-}
 pub(crate) fn genres() -> &'static [GenreEntry] {
     cur_state().map(|s| s.genres.as_slice()).unwrap_or(&[])
-}
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn genre_sel() -> Option<&'static GenreEntry> {
-    cur_state().and_then(|s| s.genre.as_deref())
-}
-/// Toolbar chip text: the active genre's name, else "All".
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn filter_label() -> &'static str {
-    genre_sel().map(|g| g.title.as_str()).unwrap_or("All")
 }
 /// Apply a genre pick (None = All). Re-queries.
 pub(crate) fn set_genre(idx: Option<usize>) {
@@ -2504,17 +2418,6 @@ pub(crate) fn kick_genres() {
 
 // ---- letter rail (firstCharacter index) -----------------------------------------------------
 
-/// Per-letter (label, count) of the current section, or empty until [`kick_letters`] lands.
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn letters() -> &'static [(String, i64)] {
-    cur_state().map(|s| s.letters.as_slice()).unwrap_or(&[])
-}
-/// Absolute item index of the first title under letter `i` — the prefix sum of the counts
-/// before it (jump = focus/scroll move, never a filter: Emby semantics).
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn letter_start(i: usize) -> usize {
-    letters().iter().take(i).map(|(_, n)| *n as usize).sum()
-}
 /// The rail is only truthful on the unfiltered ascending title listing: the letter counts
 /// describe exactly that ordering. Menus not landed yet ⇒ the server default (titleSort asc)
 /// is in effect, so the rail may show.
@@ -2554,19 +2457,6 @@ pub(crate) fn save_cursor(index: usize, cursor: Cursor) -> bool {
     if state.cursor.as_deref() == Some(&cursor) { return false; }
     state.cursor = Some(Arc::new(cursor));
     true
-}
-
-#[cfg(test)] // Legacy read facade; production Library reads retained views.
-pub(crate) fn saved_view() -> (usize, f32) {
-    cur_state().map(|s| (s.focus, s.scroll)).unwrap_or((0, 0.0))
-}
-#[cfg(test)]
-pub(crate) fn save_view(focus: usize, scroll: f32) {
-    let c = cur();
-    if let Some(st) = state_mut(c) {
-        st.focus = focus;
-        st.scroll = scroll;
-    }
 }
 
 // ---- source discovery, off the main thread ---------------------------------------------------
@@ -4616,7 +4506,7 @@ mod tests {
     }
 
     /// **The scope both the head's row and the panel it opens now share.** Two surfaces read this:
-    /// `ui::library`'s library row, and `build_source_menu` behind the row's `+N`. Neither may use
+    /// the owned Library row and its Sources menu behind `+N`. Neither may use
     /// [`source_rows`], which is scoped through `cur_kind()` and therefore lags a tab press by the
     /// length of the page fade — the row drew the MOVIE libraries under a *TV Shows* tab and kept
     /// them (its cache key is the viewed section, which does not move again at the commit), and the

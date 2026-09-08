@@ -23,6 +23,8 @@ mod deferred_tests;
 mod navigation_tests;
 #[cfg(test)]
 mod shelf_action_tests;
+#[cfg(test)]
+mod foreign_replacement_tests;
 
 use std::borrow::Cow;
 use crate::browse::{SecFetch, SecKind};
