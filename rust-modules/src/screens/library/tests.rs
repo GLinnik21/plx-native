@@ -41,6 +41,28 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.wanted_kind = None;
+    let target = page.address(&fixture.cx(None)).unwrap();
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present);
+    page.step(&ScreenEvent::Cover, &fixture.cx(None), &mut fx);
+    page.step(&ScreenEvent::App(AppMsg::LibraryEdit { target,
+        edit: crate::stores::browse::QueryEdit::Unwatched(true) }), &fixture.cx(None), &mut fx);
+    page.step(&ScreenEvent::Tick(Tick { ms: 80, dt_us: 80_000 }), &fixture.cx(None), &mut fx);
+    drop(fx);
+    assert!(out.iter().any(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
+            work: LibraryWork::Commit { query: Some(crate::stores::browse::QueryEdit::Unwatched(true)), .. }, .. }))))));
+    assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::App(AppFx::StoreWork(StoreWork::Browse)))),
+        "the store must fetch the just-committed query while the compact menu remains open");
+}
+
+#[test]
 fn published_library_projection_and_layout_enter_canonical_state() {
     let _guard = crate::testlock::serial();
     let fixture = Fixture::new();
@@ -115,6 +137,28 @@ struct Fixture {
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
+}
+
+#[test]
+fn discovery_failure_retry_targets_the_source_without_a_section() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = crate::plex::ServerId::from_raw(7);
+    fixture.listing = crate::stores::browse::listing_snapshot();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
+        crate::browse::SrcGroup { name: "Cinema server".into(), handle: "friend".into(),
+            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    let mut page = fixture.screen();
+    assert!(fixture.listing.view().id().is_none());
+    assert_eq!(page.readout, Readout::Failed);
+    assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Can't reach Cinema server");
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.activate(RETRY, false, &fixture.cx(Some(page.key(RETRY))),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(out.iter().any(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::RetrySource { epoch: 4, sid: target }))) if *target == sid)),
+        "Retry must issue work even when discovery never produced a section address");
 }
 
 #[test]
@@ -396,6 +440,33 @@ fn singleton_borrowed_library_opens_sources_and_uses_value_chip_geometry() {
 }
 
 #[test]
+fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = crate::plex::ServerId::from_raw(0);
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
+        crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: i as i64 + 1,
+            kind: if i < 2 { SecKind::Movie } else { SecKind::Show },
+            row: crate::browse::SrcRow { section: i, title: format!("Library {i}"), pinned: true,
+                current: i == 0, ..Default::default() } }).collect());
+    let mut page = fixture.screen();
+    let cx = fixture.cx(None);
+    let lays = crate::ui::widgets::strip_layout_measured(["Library 0".into(), "Library 1".into()].into_iter(),
+        MARGIN_X + crate::ui::widgets::STRIP_PAD, crate::ui::theme::size::BODY,
+        crate::ui::widgets::STRIP_GAP_WIDE, cx.measure);
+    for (i, lay) in lays.iter().enumerate() {
+        let expected = crate::ui::widgets::strip_pill_rect(lay, CONTENT_TOP, crate::ui::widgets::StatusOverlay::CTRL_H);
+        let actual = page.library_rect(i, &cx);
+        assert_eq!([actual.x, actual.y, actual.w, actual.h], [expected.x, expected.y, expected.w, expected.h]);
+    }
+    page.pending.request_section(SectionTarget { epoch: 1, index: 3,
+        identity: LibrarySectionIdentity { sid, key: 4 }, kind: SecKind::Show });
+    page.sync(&cx);
+    assert_eq!(page.libraries.iter().map(|(_, section)| *section).collect::<Vec<_>>(), vec![2, 3],
+        "the favorite row must not keep movie libraries beneath the incoming Shows type");
+}
+
+#[test]
 fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     let _guard = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-shelf-geometry");
@@ -417,6 +488,13 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     let mut engine = FocusEngine::new();
     let first = page.key(page.shelves[0].elems[3]);
     engine.set(OWNER, first, Some(page.shelves[0].group), By::Restore);
+    let resting = page.place(&first.elem, &fixture.cx(Some(first)), At::Drawn).unwrap();
+    let mut pressed_cx = fixture.cx(Some(first));
+    pressed_cx.press = PressRead { scale: 0.85, is_long: true };
+    let pressed = page.place(&first.elem, &pressed_cx, At::Drawn).unwrap();
+    assert!(pressed.rect.w < resting.rect.w);
+    let rect = |r: Rect| [r.x, r.y, r.w, r.h];
+    assert_eq!(rect(pressed.rest_rect), rect(resting.rest_rect), "hold/menu opener stays on the unpressed card rectangle");
     direction(&mut page, &mut engine, &fixture, Dir::Down);
     assert_eq!(engine.current_group(OWNER), Some(page.shelves[1].group), "the grid cannot stand geometrically above the shelves that precede it");
     let key = engine.current(OWNER).unwrap();

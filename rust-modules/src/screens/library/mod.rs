@@ -9,6 +9,8 @@ mod status;
 pub(crate) mod menu;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod window_tests;
 
 use std::borrow::Cow;
 use crate::browse::{SecFetch, SecKind};
@@ -244,6 +246,8 @@ impl LibraryScreen {
         if let Some(current) = directory.current() {
             self.kind = directory.sections()[current].kind;
             if self.wanted_kind == Some(self.kind) { self.wanted_kind = None; }
+        }
+        if let Some(current) = self.view_section(cx) {
             for (index, section) in directory.favorite_sections_for(current) {
                 let Some(sid) = section.sid else { continue };
                 let elem = self.keys.register(
@@ -251,10 +255,13 @@ impl LibraryScreen {
                     LIBRARY_GROUP, self.libraries.len());
                 self.libraries.push((elem, index));
             }
-            let widths: Vec<_> = self.libraries.iter().map(|(_, index)|
-                cx.measure.width(&std::ffi::CString::new(directory.sections()[*index].row.title.as_str()).unwrap_or_default(), crate::ui::theme::size::BODY, false) + 48.0).collect();
+            let widths: Vec<_> = self.library_lays(cx).iter().map(|lay|
+                crate::ui::widgets::strip_pill_rect(lay, 0.0, crate::ui::widgets::StatusOverlay::CTRL_H).w).collect();
             let selected = self.libraries.iter().position(|(_, index)| *index == current).unwrap_or(0);
-            let (start, len) = layout::library_window(&widths, selected, layout::GRID_RIGHT - MARGIN_X, 16.0, 96.0, 8);
+            let more = std::ffi::CString::new(format!("+{}", widths.len().saturating_sub(1))).unwrap_or_default();
+            let more_w = cx.measure.width(&more, crate::ui::theme::size::BODY, true) + 2.0 * crate::ui::widgets::STRIP_PAD;
+            let (start, len) = layout::library_window(&widths, selected, layout::GRID_RIGHT - MARGIN_X,
+                crate::ui::widgets::STRIP_GAP_WIDE, more_w, layout::MAX_LIBRARY_PILLS);
             if len < self.libraries.len() {
                 self.libraries = self.libraries[start..start + len].to_vec();
                 self.libraries.push((MORE, usize::MAX));
@@ -473,7 +480,15 @@ impl LibraryScreen {
         };
         if let Some(req) = req { fx.push(Fx::App(AppFx::Library(req))); return Handled::Yes; }
         if elem == RETRY {
-            if let Some(target) = self.address(cx) { self.store(target, LibraryWork::Retry, fx); }
+            if let Some(target) = self.address(cx) {
+                self.store(target, LibraryWork::Retry, fx);
+            } else {
+                let directory = H::directory(cx);
+                if let (Some(epoch), Some((sid, _))) = (directory.epoch(), directory.source()) {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Browse,
+                        StoreCmd::Browse(BrowseCmd::RetrySource { epoch, sid: *sid }))));
+                }
+            }
             return Handled::Yes;
         }
         Handled::No
@@ -513,6 +528,7 @@ impl LibraryScreen {
                 if col >= COLS { return Handled::No; }
                 let Some(index) = row.checked_mul(COLS).and_then(|i| i.checked_add(col)) else { return Handled::No };
                 let Some(elem) = self.pair.detail.elem_at(index) else { return Handled::No };
+                self.initial = false; // An explicit owned command supersedes the pending boot seat.
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
             LibraryCmd::FocusToolbar => self.reseat(FocusTarget::ContainerGroup(TOOLBAR_GROUP), fx),
@@ -636,17 +652,19 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         };
                         self.reseat(FocusTarget::ContainerGroup(group), fx);
                     }
-                    if let Some(target) = self.address(cx) {
-                        let (lo, hi) = self.layout.visible_rows(self.scroll.pos);
-                        self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * COLS, hi: (hi + 1) * COLS }, fx);
-                        self.store(target, LibraryWork::Letters, fx);
-                        let at_head = self.scroll.pos.abs() < 1.0 && self.scroll.vel.abs() < 1.0 && self.scroll_target.abs() < 0.5;
-                        fx.push(Fx::App(AppFx::Library(LibraryReq::PublishShelves {
-                            target, at_head, hidden_page: self.page_fade.is_swapping() && self.page_fade.alpha() <= 0.01,
-                        })));
-                    }
-                    fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
                 }
+                // The dispatcher ticks the top page beneath a compact menu, but not buried pages.
+                // Cover pauses its control motion; it must not stop the query just committed above.
+                if let Some(target) = self.address(cx) {
+                    let (lo, hi) = self.layout.visible_rows(self.scroll.pos);
+                    self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * COLS, hi: (hi + 1) * COLS }, fx);
+                    self.store(target, LibraryWork::Letters, fx);
+                    let at_head = self.scroll.pos.abs() < 1.0 && self.scroll.vel.abs() < 1.0 && self.scroll_target.abs() < 0.5;
+                    fx.push(Fx::App(AppFx::Library(LibraryReq::PublishShelves {
+                        target, at_head, hidden_page: self.page_fade.is_swapping() && self.page_fade.alpha() <= 0.01,
+                    })));
+                }
+                fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
             }
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
             ScreenEvent::PressHold(_) => {
@@ -723,15 +741,17 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         if matches!(region_of_elem(*elem), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             return self.pair.place(elem, cx, at);
         }
+        let mut rest_rect = None;
         let rect = if let Some(index) = self.libraries.iter().position(|(key, _)| key == elem) {
             self.library_rect(index, cx)
         } else if let Some((row, col)) = self.shelves.iter().enumerate().find_map(|(row, shelf)|
             shelf.elems.iter().position(|key| key == elem).map(|col| (row, col))) {
+            if at == At::Drawn { rest_rect = Some(self.shelf_rect(row, col)); }
             self.shelf_rect_at(row, col, cx, at)
         } else if matches!(*elem, SORT | FILTER) && self.layout.grid_head { self.toolbar_chip_rect(*elem, cx, at) }
         else if *elem == RETRY && self.readout == Readout::Failed { self.status_rect() }
         else { return None };
-        Some(Placed { rect, rest_rect: rect, clip: Rect::new(0.0, crate::ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM), index: None })
+        Some(Placed { rect, rest_rect: rest_rect.unwrap_or(rect), clip: Rect::new(0.0, crate::ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM), index: None })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
         if matches!(self.keys.region(want.elem).or_else(|| region_of_elem(want.elem)), Some(KeyRegion::Grid | KeyRegion::Rail)) {
@@ -793,16 +813,13 @@ impl LibraryScreen {
             .scaled(if focused == Some(col) { style.focus_scale } else { 1.0 })
     }
     fn library_rect<H: LibraryLike>(&self, index: usize, cx: &Cx<'_, H>) -> Rect {
+        let y = CONTENT_TOP - self.scroll.pos - self.shelves.first().map_or(0.0, |row| row.motion.lift());
         if let Some(chip) = self.source_chip(cx) {
-            return Rect::new(MARGIN_X, CONTENT_TOP - self.scroll.pos, chip.width(cx.measure), 52.0);
+            return Rect::new(MARGIN_X, y, chip.width(cx.measure), 52.0);
         }
-        let directory = H::directory(cx);
-        let widths = self.libraries.iter().map(|(_, section)| {
-            let title = directory.sections().get(*section).map(|s| s.row.title.as_str()).unwrap_or("More");
-            cx.measure.width(&std::ffi::CString::new(title).unwrap_or_default(), crate::ui::theme::size::BODY, false) + 48.0
-        }).collect::<Vec<_>>();
-        Rect::new(MARGIN_X + widths.iter().take(index).map(|width| width + 16.0).sum::<f32>(),
-            CONTENT_TOP - self.scroll.pos, widths.get(index).copied().unwrap_or(100.0), 52.0)
+        self.library_lays(cx).get(index).map(|lay|
+            crate::ui::widgets::strip_pill_rect(lay, y, crate::ui::widgets::StatusOverlay::CTRL_H))
+            .unwrap_or(Rect::new(MARGIN_X, y, 0.0, 0.0))
     }
 }
 fn row_style(row: &Shelf) -> &'static RowStyle { if row.landscape { &RowStyle::EPISODE } else { &RowStyle::HOME } }

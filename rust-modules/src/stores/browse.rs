@@ -22,6 +22,7 @@ pub(crate) fn listing_snapshot() -> ListingSnapshot {
 /// Every mutation of the browse store a screen may ask for.
 #[derive(Clone, Debug)]
 pub(crate) enum BrowseCmd {
+    RetrySource { epoch: u32, sid: ServerId },
     /// Execute deferred Library work against the source and table epoch captured by the screen.
     Addressed { target: SectionAddress, work: LibraryWork },
     /// Point the listing at section `i` (a pill or library-row press, committed at the fade floor).
@@ -141,6 +142,7 @@ pub(crate) fn apply(cmd: BrowseCmd) -> bool {
 /// The store's own step, reached only through [`super::apply`].
 pub(super) fn run(cmd: BrowseCmd) -> bool {
     let answer = match cmd {
+        BrowseCmd::RetrySource { epoch, sid } => crate::browse::retry_source(epoch, sid),
         BrowseCmd::Addressed { target, work } => addressed(target, work),
         #[cfg(test)]
         BrowseCmd::SetCur(i) => {

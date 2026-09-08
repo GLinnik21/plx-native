@@ -302,8 +302,11 @@ struct SecState {
     fetch: SecFetch, // what the last page fetch for this section did
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
-    // remembered view
+    // Retired Library characterization only. Production focus memory belongs to FocusEngine;
+    // production section viewport bookmarks belong to LibraryScreen/PageMemory.
+    #[cfg(test)]
     focus: usize,
+    #[cfg(test)]
     scroll: f32,
 }
 
@@ -426,7 +429,9 @@ impl Default for SecState {
             fetch: SecFetch::Loading,
             total: -1,
             items: SecItems::default(),
+            #[cfg(test)]
             focus: 0,
+            #[cfg(test)]
             scroll: 0.0,
         }
     }
@@ -565,8 +570,8 @@ fn requery() {
         st.fetch = SecFetch::Loading;
         st.total = -1;
         st.items.clear();
-        st.focus = 0;
-        st.scroll = 0.0;
+        #[cfg(test)]
+        { st.focus = 0; st.scroll = 0.0; }
     }
 }
 
@@ -2207,6 +2212,16 @@ pub(crate) fn retry_cur_source() {
     }
 }
 
+/// Discovery may fail before there is a section to address. Retry exactly this source
+/// publication; a retired profile/table or removed server cannot affect its replacement.
+pub(crate) fn retry_source(epoch: u32, sid: ServerId) -> bool {
+    if table_epoch() != epoch { return false; }
+    let Some(index) = sources().iter().position(|source| source.sid == sid) else { return false };
+    if cur_source_idx() == Some(index) { unsafe { RETRY_CD = 0 }; }
+    source_mut(index).unwrap().retry_cd = 0;
+    true
+}
+
 /// The MACHINE name and the OWNER's handle of the source behind what the screen is showing.
 ///
 /// These are the only two identifying strings the Library's failure read-out is allowed to say
@@ -3068,6 +3083,25 @@ pub(crate) fn seed_two_source_table_for_test() {
     );
 }
 
+/// The same fixture attached to real synthetic registry slots, for dispatcher tests that run
+/// the production store pump. The legacy fixture's UNSET sources intentionally have no client
+/// and are removed by roster reconciliation; they are only suitable for pure screen tests.
+#[cfg(test)]
+pub(crate) fn seed_registered_table_for_test(sids: [ServerId; 2]) {
+    seed_two_source_table_for_test();
+    for (index, sid) in sids.into_iter().enumerate() {
+        let client = crate::plex::client_for(sid).expect("registered fixture source");
+        let source = source_mut(index).unwrap();
+        source.sid = sid;
+        source.client_addr = client as *const _ as usize;
+        source.token_gen = client.token_gen();
+        crate::plex::describe_server(sid, &source.name, &source.handle, source.owned);
+    }
+    for state in unsafe { &mut *addr_of_mut!(STATES) }.iter_mut() {
+        state.letters_done = true;
+    }
+}
+
 /// One more library landing on source `src`, for tests OUTSIDE this module — the discovery
 /// worker's answer arriving late, which the Library screen's open Sources panel has to rebuild
 /// for. Goes through the real [`append_sections`], so it moves [`sections_gen`] exactly as the
@@ -3195,6 +3229,26 @@ mod tests {
     use super::*;
 
     struct RegisteredCleanup;
+
+    #[test]
+    fn addressed_discovery_retry_rejects_retired_tables_and_other_sources() {
+        let _guard = crate::testlock::serial();
+        reset();
+        seed_sources_for_test(2, false);
+        source_mut(0).unwrap().retry_cd = 9;
+        source_mut(1).unwrap().retry_cd = 13;
+        let sid = sources()[1].sid;
+        let epoch = table_epoch();
+        assert!(retry_source(epoch, sid));
+        assert_eq!(sources()[0].retry_cd, 9);
+        assert_eq!(sources()[1].retry_cd, 0);
+        source_mut(1).unwrap().retry_cd = 17;
+        assert!(!retry_source(epoch.wrapping_add(1), sid));
+        assert!(!retry_source(epoch, ServerId::from_raw(99)));
+        assert_eq!(sources()[1].retry_cd, 17);
+        reset();
+    }
+
     impl Drop for RegisteredCleanup {
         fn drop(&mut self) {
             reset();

@@ -15,6 +15,33 @@ impl Chip {
 }
 
 impl LibraryScreen {
+    pub(super) fn view_section<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<usize> {
+        let directory = H::directory(cx);
+        self.pending.section().filter(|target| Some(target.epoch) == directory.epoch())
+            .map(|target| target.index).or(directory.current())
+            .filter(|index| *index < directory.sections().len())
+    }
+
+    pub(super) fn library_label<H: LibraryLike>(&self, section: usize, cx: &Cx<'_, H>) -> CString {
+        let directory = H::directory(cx);
+        let value = if let Some(section) = directory.sections().get(section) {
+            let owner = section.sid.and_then(|sid| directory.sources().iter().find(|(id, _)| *id == sid))
+                .map(|(_, source)| source.handle.as_str()).unwrap_or("");
+            if owner.is_empty() { section.row.title.clone() } else { format!("{} {owner}", section.row.title) }
+        } else {
+            let total = self.view_section(cx).map(|section| directory.favorite_sections_for(section).count()).unwrap_or(0);
+            format!("+{}", total.saturating_sub(self.libraries.len().saturating_sub(1)))
+        };
+        CString::new(value).unwrap_or_default()
+    }
+
+    pub(super) fn library_lays<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Vec<crate::ui::widgets::StripLay> {
+        crate::ui::widgets::strip_layout_measured(
+            self.libraries.iter().map(|(_, section)| self.library_label(*section, cx).to_string_lossy().into_owned()),
+            MARGIN_X + crate::ui::widgets::STRIP_PAD, crate::ui::theme::size::BODY,
+            crate::ui::widgets::STRIP_GAP_WIDE, cx.measure)
+    }
+
     pub(super) fn source_chip<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Chip> {
         if self.libraries.len() != 1 { return None; }
         let directory = H::directory(cx);

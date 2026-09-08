@@ -1,5 +1,4 @@
 //! Library paint consumes the same placement queries as keyboard and pointer navigation.
-use std::ffi::CString;
 use super::*;
 use crate::ui::card_row;
 use crate::ui::screen::{Activate, Hover, Stop};
@@ -14,14 +13,13 @@ impl LibraryScreen {
         self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
-        let directory = H::directory(f.cx);
         let source_chip = self.source_chip(f.cx);
-        if source_chip.is_none() {
-            self.library_capsules.draw(p, CONTENT_TOP - self.scroll.pos, 52.0,
+        if source_chip.is_none() && !self.libraries.is_empty() {
+            self.library_capsules.draw(p, self.library_rect(0, f.cx).y, crate::ui::widgets::StatusOverlay::CTRL_H,
                 crate::ui::widgets::TabGround::Plated { pop: self.library_pop.scale_with(0, f.press.scale) });
         }
         for (index, (elem, section)) in self.libraries.iter().enumerate() {
-            let label = CString::new(directory.sections().get(*section).map(|s| s.row.title.as_str()).unwrap_or("More")).unwrap_or_default();
+            let label = self.library_label(*section, f.cx);
             let rect = self.library_rect(index, f.cx);
             if !on_axis(rect.y, rect.h, SCR_H, 0.0) { continue; }
             if let Some(chip) = &source_chip {

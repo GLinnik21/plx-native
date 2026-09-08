@@ -4,10 +4,11 @@ use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
 use crate::ui::theme;
 
 pub(super) const COLS: usize = 6;
+pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) const MAX_SHELVES: usize = 12;
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
-pub(super) const LIBRARY_ROW_H: f32 = 52.0 + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
+pub(super) const LIBRARY_ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
 pub(super) const GRID_HEAD_H: f32 = crate::ui::consts::TITLE_DY
     + crate::ui::consts::CARD_DY
     + 52.0

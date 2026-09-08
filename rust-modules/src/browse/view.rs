@@ -204,6 +204,13 @@ impl Default for DirectorySnapshot {
 }
 
 impl DirectorySnapshot {
+    #[cfg(test)]
+    pub(crate) fn fixture_source(epoch: u32, sid: ServerId, source: super::SrcGroup, fetch: SecFetch) -> Self {
+        Self { preferred: [None; 2], kind_fetch: [fetch; 2], stamp: Some((epoch, 0, 0, 1)),
+            data: Arc::new(DirectoryData { sources: vec![(sid, source)], sections: Vec::new() }),
+            source: Some(0), source_fetch: fetch, discovery: fetch }
+    }
+
     pub(crate) fn same_publication(&self, other: &Self) -> bool {
         self.stamp == other.stamp && self.source == other.source
             && self.source_fetch == other.source_fetch && self.discovery == other.discovery
