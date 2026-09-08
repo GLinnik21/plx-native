@@ -79,7 +79,9 @@ use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+pub(crate) mod view;
 
 /// Below this many characters the server answers with nothing, so asking is pure latency.
 /// Measured, not guessed — see the module doc.
@@ -280,6 +282,7 @@ pub(crate) fn section_is_fav(favs: &[(ServerId, i64, bool)], sid: ServerId, key:
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Shelf {
     pub(crate) kind: Kind,
     pub(crate) items: Vec<Item>,
@@ -324,13 +327,15 @@ impl State {
     }
 }
 
-static mut QUERY: String = String::new();
-static mut SHELVES: Vec<Shelf> = Vec::new();
+// Published buffers are shared with retained frame views. Only the main-thread store writes
+// them; replacing a query or landing cannot invalidate a frame that still owns the old Arc.
+static mut QUERY: Option<Arc<str>> = None;
+static mut SHELVES: Option<Arc<Vec<Shelf>>> = None;
 static mut STATE: State = State::Idle;
 
 /// The query as typed, verbatim — trailing space and all, because the FIELD draws this.
 pub(crate) fn query() -> &'static str {
-    unsafe { &*addr_of!(QUERY) }
+    unsafe { (&*addr_of!(QUERY)).as_deref().unwrap_or("") }
 }
 
 /// **THE predicate for "is this a real query"**, and the terms a fetch would actually be addressed
@@ -361,14 +366,17 @@ pub(crate) fn set_query(q: &str) {
     // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
     // that same space must not supersede an answer that is still correct). Collapsing the two
     // re-asks the whole roster for the identical terms every time the space bar is pressed.
+    // Finish reading the caller's string before replacing storage: even a caller deriving
+    // a shorter query from the legacy read facade must not leave us reading a retired buffer.
+    let real_query = terms(q).is_some();
     let restart = unsafe {
         let cur = &mut *addr_of_mut!(QUERY);
-        if cur == q {
+        let old = cur.as_deref().unwrap_or("");
+        if old == q {
             return;
         }
-        let restart = cur.trim() != q.trim();
-        cur.clear();
-        cur.push_str(q);
+        let restart = old.trim() != q.trim();
+        *cur = Some(Arc::from(q));
         restart
     };
     if restart {
@@ -376,8 +384,8 @@ pub(crate) fn set_query(q: &str) {
         // while the next lands would show results for a string that is no longer on screen.
         supersede();
         unsafe {
-            (*addr_of_mut!(SHELVES)).clear();
-            *addr_of_mut!(STATE) = if terms(q).is_some() {
+            *addr_of_mut!(SHELVES) = None;
+            *addr_of_mut!(STATE) = if real_query {
                 State::Searching
             } else {
                 State::Idle
@@ -385,7 +393,7 @@ pub(crate) fn set_query(q: &str) {
             // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
             // the first one of the burst.
             *addr_of_mut!(SETTLE) = 0.0;
-            *addr_of_mut!(ARMED) = terms(q).is_some();
+            *addr_of_mut!(ARMED) = real_query;
         }
     }
     crate::ui::idle::invalidate();
@@ -406,7 +414,7 @@ pub(crate) fn query_gen() -> u32 {
 /// The shelves, already in [`KINDS`] order, with empty ones omitted — an empty type draws nothing
 /// at all, so the UI never has to test for it.
 pub(crate) fn shelves() -> &'static [Shelf] {
-    unsafe { &*addr_of!(SHELVES) }
+    unsafe { (&*addr_of!(SHELVES)).as_deref().map(Vec::as_slice).unwrap_or(&[]) }
 }
 
 /// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
@@ -436,8 +444,13 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     {
         flip(it);
     }
-    for it in unsafe { (&mut *addr_of_mut!(SHELVES)).iter_mut() }.flat_map(|s| s.items.iter_mut()) {
-        flip(it);
+    if let Some(shelves) = unsafe { &mut *addr_of_mut!(SHELVES) } {
+        // A write outside the visible result cap must not clone a retained catalog it cannot
+        // change. The catalog itself is bounded by KINDS × SHELF_MAX, never library-sized.
+        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
+            Item::Media(m) if crate::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
+            for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
+        }
     }
     hit
 }
@@ -690,7 +703,7 @@ pub(crate) fn pump(dt: f32) -> bool {
         // generation so a slot reactivated for another profile cannot surface rows fetched with
         // the credential it held before it was hidden.
         supersede();
-        unsafe { (*addr_of_mut!(SHELVES)).clear() };
+        unsafe { *addr_of_mut!(SHELVES) = None };
     }
     // **The second generation, and it moves without the first.** Discovery appending a library and
     // a favourites edit both bump `SECTIONS_GEN`, and this screen runs discovery immediately before
@@ -705,7 +718,7 @@ pub(crate) fn pump(dt: f32) -> bool {
         if terms(query()).is_some() {
             supersede();
             unsafe {
-                (*addr_of_mut!(SHELVES)).clear();
+                *addr_of_mut!(SHELVES) = None;
                 *addr_of_mut!(SETTLE) = 0.0;
                 *addr_of_mut!(ARMED) = true;
             }
@@ -854,7 +867,7 @@ fn rebuild() {
         shelves.len(),
         items
     ));
-    unsafe { *addr_of_mut!(SHELVES) = shelves };
+    unsafe { *addr_of_mut!(SHELVES) = Some(Arc::new(shelves)) };
 }
 
 /// The merged result set: [`KINDS`] order, empty shelves omitted, sources taken **round robin** so
@@ -1139,8 +1152,8 @@ pub(crate) fn reset() {
     supersede();
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
     unsafe {
-        (*addr_of_mut!(QUERY)).clear();
-        (*addr_of_mut!(SHELVES)).clear();
+        *addr_of_mut!(QUERY) = None;
+        *addr_of_mut!(SHELVES) = None;
         *addr_of_mut!(STATE) = State::Idle;
         *addr_of_mut!(SETTLE) = 0.0;
         *addr_of_mut!(ARMED) = false;
@@ -1267,12 +1280,12 @@ mod tests {
         register(3);
         hold_off();
         unsafe {
-            (*addr_of_mut!(QUERY)).push_str("wallace");
+            *addr_of_mut!(QUERY) = Some(Arc::from("wallace"));
             (*addr_of_mut!(SRC))[0].status = Status::Answered;
-            *addr_of_mut!(SHELVES) = vec![Shelf {
+            *addr_of_mut!(SHELVES) = Some(Arc::new(vec![Shelf {
                 kind: Kind::Movie,
                 items: vec![media("old-profile")],
-            }];
+            }]));
             *addr_of_mut!(STATE) = State::Ready;
         }
 
