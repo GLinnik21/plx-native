@@ -1125,12 +1125,16 @@ where
                         MachineId::Instance(id) => self.nav.entry_of_instance(id),
                         _ => None,
                     };
-                    let valid = entry.filter(|entry| self.owner_entry() == Some(*entry)).filter(|entry| {
+                    // A covered top page still processes store/query changes. It may update
+                    // its own remembered seat without moving either scope's current focus.
+                    // Buried/retired pages are excluded, including late effects after Unmount.
+                    let valid = entry.filter(|entry| self.owner_entry() == Some(*entry)
+                        || self.nav.top_page().is_some_and(|page| page.id == *entry)).filter(|entry| {
                         let Some(view) = Self::owner_view(&self.nav, *entry) else { return false };
                         let Split { views, measure, .. } = rig.split();
                         let mut cx = parts.cx::<H>(views, measure);
                         cx.owner = InputOwner::Entry(*entry);
-                        cx.focus.current = self.input.engine.current(cx.owner);
+                        cx.focus = self.input.engine.read(cx.owner);
                         view.group_of(&elem, &cx) == Some(group)
                             && view.place(&elem, &cx, At::SpringTarget).is_some()
                     });
@@ -2024,6 +2028,39 @@ mod edge_back_tests {
             assert_eq!(d.input.engine.current(InputOwner::Entry(entry)), None);
             assert!(d.input.engine.remembered_snapshot(entry).is_empty());
         }
+    }
+
+    #[test]
+    fn covered_top_page_can_refresh_its_own_group_memory_but_retired_page_cannot() {
+        let _guard = crate::testlock::serial();
+        let (mut d, mut rig) = booted();
+        d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+        let home = d.nav.top_page().unwrap().id;
+        let instance = d.nav.instance_of(home).unwrap();
+        let modal = open(&mut d, &mut rig, 2, 16);
+        let owner = InputOwner::Entry(modal);
+        let current = d.input.engine.current(owner);
+        let modal_memory = d.input.engine.remembered_snapshot(modal);
+        d.input.engine.remember_projected(home, G, 99); // A former item in a replaced listing.
+        d.emit(MachineId::Instance(instance), Fx::Remember { group: G, elem: 0 });
+        let report = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+        assert_eq!(d.input.engine.read(InputOwner::Entry(home)).remembered(G), Some(0));
+        assert_eq!(report.dropped_deliveries, 0);
+        assert_eq!(d.input.engine.current(owner), current, "memory refresh never moves the input owner's focus");
+        assert_eq!(&*d.input.engine.remembered_snapshot(modal), &*modal_memory);
+
+        d.emit(MachineId::Instance(instance), Fx::Remember { group: GroupId(9000), elem: 0 });
+        let report = d.frame(&mut rig, tick(40), vec![], vec![], &mut NoTap);
+        assert!(report.dropped_deliveries > 0, "covered memory writes still validate group membership");
+        assert_eq!(d.input.engine.read(InputOwner::Entry(home)).remembered(GroupId(9000)), None);
+
+        d.request(MachineId::Nav, NavOp::Replace(FixtureArg::Page(1)));
+        d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+        assert!(d.nav.entry(home).is_some(), "retired body remains until the frame-tail prune");
+        d.emit(MachineId::Instance(instance), Fx::Remember { group: G, elem: 0 });
+        let report = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+        assert!(report.dropped_deliveries > 0);
+        assert!(d.input.engine.remembered_snapshot(home).is_empty(), "late effects cannot resurrect retired focus memory");
     }
 
     /// Present an `Opaque` surface (the Settings family's style) whose screen starts at `depth`.
