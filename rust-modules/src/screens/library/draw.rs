@@ -10,17 +10,19 @@ use crate::ui::{Env, View, on_axis};
 impl LibraryScreen {
     pub(super) fn draw_page<H: LibraryLike>(&mut self, f: &mut DrawFrame<'_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         let directory = H::directory(f.cx);
+        self.library_capsules.draw(p, CONTENT_TOP - self.scroll.pos, 52.0,
+            crate::ui::widgets::TabGround::Plated { pop: self.library_pop.scale_with(0, f.press.scale) });
         for (index, (elem, section)) in self.libraries.iter().enumerate() {
             let label = CString::new(directory.sections().get(*section).map(|s| s.row.title.as_str()).unwrap_or("More")).unwrap_or_default();
             let rect = self.library_rect(index, f.cx);
             if !on_axis(rect.y, rect.h, SCR_H, 0.0) { continue; }
-            let selected = directory.current() == Some(*section);
-            let focused = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == *elem);
+            let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
             TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
-                .mix(f32::from(focused), f32::from(selected)).draw(&env, p);
+                .mix(focused, selected).draw(&env, p);
             self.stop(*elem, f);
         }
         for (index, row) in self.shelves.iter().enumerate() {
@@ -70,7 +72,7 @@ impl LibraryScreen {
             if self.readout == Readout::Failed { self.stop(RETRY, f); }
         }
         // MasterDetail is the production render composition, sharing children with focus queries.
-        self.pair.draw(f, Rect::FULL);
+        draw_faded_part(&mut self.pair, f, self.page_fade.alpha() * self.grid_fade.alpha());
     }
 
     fn stop<H: LibraryLike>(&self, elem: u32, f: &mut DrawFrame<'_, H>) {
@@ -111,6 +113,13 @@ impl LibraryScreen {
             self.draw_shelf_tile(row, col, true, f);
         }
     }
+}
+
+pub(super) fn draw_faded_part<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame<'_, H>, alpha: f32) {
+    let parent = f.page_alpha;
+    f.page_alpha = parent * alpha;
+    part.draw(f, Rect::FULL);
+    f.page_alpha = parent;
 }
 
 fn shelf_label(shelf: &crate::browse::section_hubs::Shelf, col: usize) -> card_row::TileLabel {

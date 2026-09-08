@@ -3324,6 +3324,21 @@ pub(crate) struct PageGround {
 }
 
 impl PageGround {
+    pub(crate) const SHAPE: &'static str = "PageGround{target:[[f32;4];4],corners:[[Spring{pos:f32,vel:f32};3];4]}";
+
+    /// Canonical animation state, not GL resources. A held target and spring velocity influence
+    /// subsequent frames even when two grounds currently draw the same colours.
+    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { wash, target } = self;
+        let AmbientWash { corners } = wash;
+        for corner in target {
+            for component in corner { c.f32(*component); }
+        }
+        for corner in corners {
+            for spring in corner { c.f32(spring.pos).f32(spring.vel); }
+        }
+    }
+
     /// The corner arrangement every item-keyed page ground leans by: [`AmbientWash::GROUND_W`]
     /// across the top, nearly gone by the bottom. Strongest where the page's own subject is and
     /// faint under the content rows, which is what keeps it atmosphere rather than a tint.
@@ -8964,6 +8979,46 @@ mod tests {
     // ── PageGround: the policy every browsing screen shares ────────────────────────────────────
     //
     // Pure over `theme` tokens and the real corner springs, as the block above is.
+
+    fn ground_hash(ground: &PageGround) -> u64 {
+        let mut c = crate::ui::machine::Canon::new();
+        ground.write_motion(&mut c);
+        c.finish()
+    }
+
+    #[test]
+    fn page_ground_canonical_state_covers_every_held_target_and_spring_component() {
+        let base = ground_hash(&PageGround::new());
+        for corner in 0..4 {
+            for component in 0..4 {
+                let mut changed = PageGround::new();
+                changed.target[corner][component] += 0.125;
+                assert_ne!(ground_hash(&changed), base, "held target {corner}/{component}");
+            }
+            for component in 0..3 {
+                let mut changed = PageGround::new();
+                changed.wash.corners[corner][component].pos += 0.125;
+                assert_ne!(ground_hash(&changed), base, "position {corner}/{component}");
+                let mut changed = PageGround::new();
+                changed.wash.corners[corner][component].vel = 0.125;
+                assert_ne!(ground_hash(&changed), base, "velocity {corner}/{component}");
+            }
+        }
+    }
+
+    #[test]
+    fn page_ground_canonical_state_is_repeatable_and_read_only_through_a_held_dissolve() {
+        let _guard = crate::testlock::serial();
+        let (mut left, mut right) = (PageGround::new(), PageGround::new());
+        for frame in 0..20 {
+            let source = (frame == 0).then_some([[0.8, 0.1, 0.2]; 4]);
+            left.key(source, PageGround::CARD_W, 1.0 / 60.0);
+            right.key(source, PageGround::CARD_W, 1.0 / 60.0);
+            let hash = ground_hash(&left);
+            assert_eq!(hash, ground_hash(&left), "hashing must not step motion");
+            assert_eq!(hash, ground_hash(&right), "equal inputs must have equal canonical state");
+        }
+    }
 
     /// **The rule the type exists for**: an item with no `UltraBlurColors` envelope must leave the
     /// ground where it is, not clear it. Without this, one artless poster between two coloured ones

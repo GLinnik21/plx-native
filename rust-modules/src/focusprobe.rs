@@ -344,23 +344,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
             );
             push_sid(s, crate::ui::item_menu::item_sid());
         }
-        Screen::Library => {
-            // the DRAWN index, resolved here rather than stored — the focus cursor is a `Pill`
-            // identity now, and a probe that printed a raw discriminant would report a number that
-            // is not the position anything on screen is at
-            let pill = crate::ui::library::focused_pill()
-                .and_then(crate::ui::widgets::pill_of)
-                .map(|p| p as i64)
-                .unwrap_or(-1);
-            let _ = write!(
-                s,
-                " pill={} card={} menu={}",
-                pill,
-                b(crate::ui::library::focus_is_card()),
-                b(crate::ui::library::menu_open())
-            );
-            push_item(s, crate::ui::library::focused_item());
-        }
+        Screen::Library => s.push_str(content),
         Screen::Detail | Screen::Person => s.push_str(content),
         Screen::Search => {
             // The whole state machine, from the snapshot the screen's own regions already draw off

@@ -33,6 +33,8 @@ pub(super) struct GridPart {
     identity: Option<(u32, crate::plex::ServerId, i64, u32)>,
     layout: Layout,
     scroll: f32,
+    target_layout: Layout,
+    scroll_target: f32,
     snapshot: Option<crate::stores::browse::ListingSnapshot>,
 }
 
@@ -45,13 +47,17 @@ impl GridPart {
             identity: None,
             layout: Layout::new(false, &[], 0, false),
             scroll: 0.0,
+            target_layout: Layout::new(false, &[], 0, false),
+            scroll_target: 0.0,
             snapshot: None,
         }
     }
 
-    pub(super) fn set_geometry(&mut self, layout: Layout, scroll: f32) {
+    pub(super) fn set_geometry(&mut self, layout: Layout, scroll: f32, target_layout: Layout, scroll_target: f32) {
         self.layout = layout;
         self.scroll = scroll;
+        self.target_layout = target_layout;
+        self.scroll_target = scroll_target;
     }
 
     pub(super) fn restore_keys(&mut self, keys: &KeyRegistry) {
@@ -154,7 +160,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Geometric; 4],
-            extent: Rect::new(MARGIN_X, CONTENT_TOP, GRID_RIGHT - MARGIN_X, SCR_H - CONTENT_TOP),
+            extent: Rect::new(MARGIN_X, self.target_layout.row_y(0, self.scroll_target), GRID_RIGHT - MARGIN_X, CARD_H),
             len: self.elems.len(),
             elem: ElemKind::Card,
         });
@@ -178,11 +184,17 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
         next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: key.entry, elem: self.elems[i] }))
     }
 
-    fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let index = self.index_of(*key)?;
         let focused = cx.focus.current.is_some_and(|focus| focus.entry == self.entry && focus.elem == *key);
-        let rect = self.rect_at(index, focused, cx.press.scale);
-        let rest_rect = self.rect_at(index, focused, 1.0);
+        let (rect, rest_rect) = match at {
+            At::Drawn => (self.rect_at(index, focused, cx.press.scale), self.rect_at(index, focused, 1.0)),
+            At::SpringTarget => {
+                let rect = Rect::new(Layout::grid_x(index % COLS), self.target_layout.row_y(index / COLS, self.scroll_target), CARD_W, CARD_H)
+                    .scaled(if focused { RowStyle::HOME.focus_scale } else { 1.0 });
+                (rect, rect)
+            }
+        };
         Some(Placed {
             rect,
             rest_rect,

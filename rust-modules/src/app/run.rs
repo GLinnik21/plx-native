@@ -778,10 +778,6 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     && matches!(key, Key::Left { .. } | Key::Right { .. })
                 {
                     key_scrub(key, app.last_input, fr.ctrl, &mut app.hud, &mut app.ptr, &mut app.scrubber);
-                } else if let (Route::Library, Some(dir)) =
-                    (app.route, crate::ui::consts::page_dir(sym, wcode))
-                {
-                    key_library_page(dir);
                 } else if matches!(key, Key::Back) {
                     key_back(
                         mt,
@@ -855,14 +851,6 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     crate::ui::account_menu::pointer_focus(mx, my);
                 } else if matches!(app.route, Route::ItemMenu { .. }) {
                     crate::ui::item_menu::pointer_focus(mx, my);
-                } else if matches!(app.route, Route::Library) {
-                    // the same trade Detail makes below: hover that MOVES the focus stop
-                    // aborts a press armed on the stop it left, or the click commits — or the
-                    // press-and-hold menu opens — on a tile the user is no longer pressing
-                    if crate::ui::library::pointer_focus(mx, my) && app.ok_armed {
-                        app.input.press.cancel();
-                        app.ok_armed = false;
-                    }
                 } else if matches!(app.route, Route::Search) {
                     let (mx, my) = ptr_xy(&app.ev);
                     crate::ui::search::pointer_focus(mx, my);
@@ -1062,48 +1050,6 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     {
                         nav_open(app.route, node, None, &mut app.nav_pending);
                     }
-                } else if matches!(app.route, Route::Library) {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    match crate::ui::library::click(cx, cy) {
-                        crate::ui::library::Action::GoSearch => {
-                            nav_to(app.route, Nav::Search, &mut app.nav_pending);
-                        }
-                        crate::ui::library::Action::GoHome => {
-                            // `library::click` has already parked focus on the Home pill, so
-                            // `focused_pill()` is the pill the capsule is under
-                            nav_to(
-                                app.route,
-                                Nav::Home {
-                                    focus_pill: crate::ui::library::focused_pill(),
-                                },
-                                &mut app.nav_pending,
-                            )
-                        }
-                        crate::ui::library::Action::Card => {
-                            open_library_card(app.route, &mut app.nav_pending);
-                        }
-                        // a CLICK on a shelf tile: same rule as the OK press above, and it
-                        // reaches the same `activate_card`, so the pointer and the remote
-                        // cannot disagree about what a deck tile does
-                        crate::ui::library::Action::ShelfCard { from_deck } => {
-                            if let Some(mm) = crate::ui::library::focused_item() {
-                                // the DECK plays; every other shelf navigates — see `home_activate`
-                                let want_play = from_deck;
-                                activate_card(
-                                    mt,
-                                    mm,
-                                    want_play,
-                                    HUD_LINGER_MS,
-                                    &mut app.route,
-                                    &mut app.play_from,
-                                    &app.trail,
-                                    &mut app.hud.nav,
-                                    &mut app.nav_pending,
-                                );
-                            }
-                        }
-                        crate::ui::library::Action::None => {}
-                    }
                 } else if let Route::Account { over } = app.route {
                     let (cx, cy) = ptr_xy(&app.ev);
                     // a click on a row commits it; anywhere else dismisses the popover
@@ -1240,8 +1186,6 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                             dy,
                             crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
                         ));
-                    } else if matches!(app.route, Route::Library) {
-                        crate::ui::library::wheel(dy);
                     } else if matches!(app.route, Route::Search) {
                         crate::ui::search::wheel(dy as f32);
                     }
@@ -1343,7 +1287,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
                 // here belongs to the screen (`enter`'s own `xf().mount()`); dipping the whole
                 // page would fade the tab bar up from nothing too, which reads as a slow app
                 // rather than a navigated one.
-                crate::ui::library::enter(kind, crate::ui::library::Arrival::Cut);
+                app.bridge.enter_library(kind);
                 app.route = Route::Library;
             }
             // dev: /tmp/plxnative-search[=<query>] boots straight into Search, with the field
@@ -1424,15 +1368,10 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
             app.press_tried = true;
             if crate::dev::flag("press")
                 && ((matches!(app.route, Route::Home) && app.bridge.home_grid_focused(&app.pages))
-                    || (matches!(app.route, Route::Library) && crate::ui::library::focus_is_card()))
+                    || (matches!(app.route, Route::Library) && super::bridge::Bridge::library_card_focused(&app.pages)))
             {
-                if matches!(app.route, Route::Home) {
-                    app.inputs.push(super::bridge::script_key(crate::ui::machine::Key::Ok,
-                        crate::ui::machine::Tick { ms: fr.now, dt_us: 0 })[0]);
-                } else {
-                    app.input.press.begin(fr.now);
-                    app.ok_armed = true;
-                }
+                app.inputs.push(super::bridge::script_key(crate::ui::machine::Key::Ok,
+                    crate::ui::machine::Tick { ms: fr.now, dt_us: 0 })[0]);
                 // past MIN_DIP_MS (the dip must be seen), well short of LONG_MS
                 app.press_release_at = fr.now.wrapping_add(150).max(1);
             }
@@ -1926,7 +1865,6 @@ pub(super) unsafe fn playback_tick(app: &mut App, mt: &crate::task::MainThread, 
                 Route::ItemMenu { .. } => {
                     crate::ui::item_menu::move_focus(app.held_key.sym as c_int)
                 }
-                Route::Library => crate::ui::library::move_focus(app.held_key.sym),
                 Route::Search => crate::ui::search::move_focus(app.held_key.sym),
                 Route::Player {
                     overlay: Overlay::Menu,
@@ -2150,18 +2088,6 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                     // ordinary spring-back, deliberately: a headshot is a person, with no
                     // ratingKey and no watch state, so every row this menu builds would be
                     // absent and the panel would open empty.
-                    Route::Library => open_tile_menu(
-                        &mut app.route,
-                        MenuHost::Library,
-                        crate::ui::library::focused_item(),
-                        Opener {
-                            rect: crate::ui::library::focused_card_rect(),
-                            redraw: crate::ui::library::redraw_focused_card,
-                        },
-                        // …and THIS is the caller that has a deck: the library's own Continue
-                        // Watching shelf, which the A–Z grid below it never is.
-                        crate::ui::library::focused_from_deck(),
-                    ),
                     Route::Search => open_tile_menu(
                         &mut app.route,
                         MenuHost::Search,
@@ -2205,30 +2131,6 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                     // both here rather than calling `open_library_card` unconditionally is
                     // what stops a held-then-released press on a Continue Watching tile
                     // opening the detail page the immediate path would have resumed past.
-                    Route::Library => match crate::ui::library::on_ok() {
-                        crate::ui::library::Action::ShelfCard { from_deck } => {
-                            if let Some(mm) = crate::ui::library::focused_item() {
-                                // the DECK plays; every other shelf navigates — see `home_activate`
-                                let want_play = from_deck;
-                                activate_card(
-                                    mt,
-                                    mm,
-                                    want_play,
-                                    HUD_LINGER_MS,
-                                    &mut app.route,
-                                    &mut app.play_from,
-                                    &app.trail,
-                                    &mut app.hud.nav,
-                                    &mut app.nav_pending,
-                                );
-                            }
-                        }
-                        // the paged grid, and — for totality — the zones that cannot arm a
-                        // press at all (`focus_is_card` is Grid or Shelf only)
-                        _ => open_library_card(app.route, &mut app.nav_pending),
-                    },
-                    // ONE arm for the page's cards AND its hero control row: `on_ok`
-                    // already resolves which, exactly as it does on the immediate path.
                     Route::Search => {
                         if let crate::ui::search::Action::Open(node) =
                             crate::ui::search::on_ok()
@@ -2485,7 +2387,7 @@ pub(super) unsafe fn nav_commit(app: &mut App, _mt: &crate::task::MainThread, fr
                     Nav::Library(kind) => {
                         // every teleport `enter` performs (the store swap, `restore_view`'s
                         // scroll jump, the focus band) happens HERE, at alpha 0, off screen
-                        crate::ui::library::enter(kind, crate::ui::library::Arrival::Faded);
+                        app.bridge.enter_library(kind);
                         // The grid sits directly on Home. `home_activate` truncates on the press
                         // frame for the Home→Library case, but the strip is a row of PEERS and
                         // Search is now one of them that stands on the trail — so arriving from
@@ -3282,8 +3184,6 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                             // page pass — see the `page_owned`/`host_replaced` guards below.
                             if page_owned {
                                 app.pages.draw(&mut app.bridge, true);
-                            } else if matches!(page_route, Route::Library) {
-                                crate::ui::library::draw();
                             } else if matches!(page_route, Route::Search) {
                                 crate::ui::search::draw();
                             } else {

@@ -20,6 +20,7 @@ pub(crate) struct ListingSnapshot {
 
 #[derive(Clone)]
 struct ListingData {
+    cursor: Option<Arc<super::CursorAt>>,
     saved: (usize, f32),
     id: ListingId,
     total: i64,
@@ -42,7 +43,7 @@ impl ListingSnapshot {
     #[cfg(test)]
     pub(crate) fn fixture(sid: ServerId, items: Vec<Option<crate::pms::PmsMovie>>, letters: Vec<(String, i64)>) -> Self {
         Self { data: Some(ListingData {
-            id: ListingId { epoch: 1, query: 1, sid, section: 1 }, total: items.len() as i64, saved: (0, 0.0),
+            id: ListingId { epoch: 1, query: 1, sid, section: 1 }, total: items.len() as i64, saved: (0, 0.0), cursor: None,
             fetch: SecFetch::Ready, items: SecItems::from_vec(items),
             sorts: Arc::new(vec![SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false }]),
             genres: Arc::new(Vec::new()), letters: Arc::new(letters), sort_idx: 0, sort_desc: false,
@@ -55,6 +56,7 @@ impl ListingSnapshot {
 pub(crate) struct ListingView<'a>(&'a ListingSnapshot);
 
 impl<'a> ListingView<'a> {
+    pub(crate) fn cursor(self) -> Option<&'a super::CursorAt> { self.0.data.as_ref()?.cursor.as_deref() }
     pub(crate) fn saved_view(self) -> (usize, f32) { self.0.data.as_ref().map_or((0, 0.0), |s| s.saved) }
     pub(crate) fn retain(self) -> ListingSnapshot { self.0.clone() }
 
@@ -136,6 +138,7 @@ pub(crate) fn snapshot() -> ListingSnapshot {
     ListingSnapshot {
         // No empty Arc allocations on Login or before discovery has produced a section.
         data: id.zip(super::states().get(sec)).map(|(id, s)| ListingData {
+            cursor: s.cursor.clone(),
             saved: (s.focus, s.scroll),
             id,
             total: s.total,
@@ -156,6 +159,7 @@ pub(crate) fn snapshot() -> ListingSnapshot {
 /// inside `epoch`; stable identities always include the server and its own section key.
 #[derive(Clone)]
 pub(crate) struct SectionView {
+    pub(crate) borrowed: bool,
     pub(crate) sid: Option<ServerId>,
     pub(crate) key: i64,
     pub(crate) kind: super::SecKind,
@@ -172,6 +176,8 @@ struct DirectoryData {
 /// only when the table, source facts or chosen section changes, not at every prepare/draw split.
 #[derive(Clone)]
 pub(crate) struct DirectorySnapshot {
+    preferred: [Option<usize>; 2],
+    kind_fetch: [SecFetch; 2],
     stamp: Option<(u32, u32, usize, usize)>,
     data: Arc<DirectoryData>,
     source: Option<usize>,
@@ -182,6 +188,7 @@ pub(crate) struct DirectorySnapshot {
 impl Default for DirectorySnapshot {
     fn default() -> Self {
         Self {
+            preferred: [None; 2], kind_fetch: [SecFetch::Loading; 2],
             stamp: None,
             data: Arc::default(),
             source: None,
@@ -192,6 +199,17 @@ impl Default for DirectorySnapshot {
 }
 
 impl DirectorySnapshot {
+    pub(crate) fn same_publication(&self, other: &Self) -> bool {
+        self.stamp == other.stamp && self.source == other.source
+            && self.source_fetch == other.source_fetch && self.discovery == other.discovery
+            && self.preferred == other.preferred && self.kind_fetch == other.kind_fetch
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture(epoch: u32, current: usize, sections: Vec<SectionView>) -> Self {
+        let preferred = [super::SecKind::Movie, super::SecKind::Show].map(|kind| sections.iter().position(|s| s.kind == kind && s.row.pinned));
+        Self { preferred, kind_fetch: [SecFetch::Ready; 2], stamp: Some((epoch, 0, current, 0)), data: Arc::new(DirectoryData { sources: Vec::new(), sections }),
+            source: None, source_fetch: SecFetch::Ready, discovery: SecFetch::Ready }
+    }
     /// Main-thread capture. The existing source-list generation covers names, reachability,
     /// counts and pins. Current section is separate because its tick can move without a landing;
     /// source count also catches a newly granted source before it has any sections to append.
@@ -213,6 +231,7 @@ impl DirectorySnapshot {
                     .iter()
                     .zip(super::all_source_rows())
                     .map(|(s, row)| SectionView {
+                        borrowed: super::section_sid_is_borrowed(row.section),
                         sid: super::sources().get(s.src).map(|source| source.sid),
                         key: s.key,
                         kind: s.kind,
@@ -226,6 +245,10 @@ impl DirectorySnapshot {
         self.source = super::cur_source_idx();
         self.source_fetch = super::cur_source_state();
         self.discovery = super::discovery_state();
+        for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
+            self.preferred[i] = super::tab_of_kind(kind).and_then(super::tab_section);
+            self.kind_fetch[i] = super::kind_state(kind);
+        }
     }
 
     pub(crate) fn view(&self) -> DirectoryView<'_> {
@@ -237,6 +260,12 @@ impl DirectorySnapshot {
 pub(crate) struct DirectoryView<'a>(&'a DirectorySnapshot);
 
 impl<'a> DirectoryView<'a> {
+    pub(crate) fn preferred(self, kind: super::SecKind) -> Option<usize> {
+        self.0.preferred[match kind { super::SecKind::Movie => 0, super::SecKind::Show => 1 }]
+    }
+    pub(crate) fn kind_fetch(self, kind: super::SecKind) -> SecFetch {
+        self.0.kind_fetch[match kind { super::SecKind::Movie => 0, super::SecKind::Show => 1 }]
+    }
     pub(crate) fn epoch(self) -> Option<u32> {
         self.0.stamp.map(|s| s.0)
     }

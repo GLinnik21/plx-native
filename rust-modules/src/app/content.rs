@@ -260,8 +260,17 @@ fn library_requests(app: &mut App, mt: &crate::task::MainThread) {
     for (source, request, ret) in app.bridge.take_library_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if let LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
+            if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && page_of(app.route) == Route::Library {
+                // Apply through the store vocabulary at this boundary. The press check and commit
+                // are adjacent; no queued boolean can outlive an input arm created later.
+                crate::stores::browse::apply(library_publication_command(&app.pages, target, hidden_page, at_head));
+            }
+            continue;
+        }
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || app.route != Route::Library { continue; }
         match request {
+            LibraryReq::PublishShelves { .. } => unreachable!(),
             LibraryReq::Menu { kind, anchor, target } => {
                 app.pages.nav.next_style = crate::ui::containers::modal::Style::Compact;
                 app.pages.request(source, NavOp::Present(bridge::AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
@@ -300,6 +309,41 @@ fn library_requests(app: &mut App, mt: &crate::task::MainThread) {
                 freeze_request(app, Some(entry), ret);
             }
         }
+    }
+}
+
+fn library_publication_command(
+    dispatcher: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    target: crate::stores::browse::SectionAddress,
+    hidden_page: bool,
+    at_head: bool,
+) -> crate::stores::browse::BrowseCmd {
+    crate::stores::browse::BrowseCmd::Addressed { target,
+        work: crate::stores::browse::LibraryWork::Hubs {
+            may_publish: hidden_page || (at_head && !dispatcher.input.press.is_live()),
+        },
+    }
+}
+
+#[cfg(test)]
+mod library_publication_tests {
+    use super::*;
+    #[test]
+    fn a_fresh_arm_at_rest_scale_still_blocks_visible_shelf_publication() {
+        let mut dispatcher = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let target = crate::stores::browse::SectionAddress { epoch: 1, sid: crate::plex::ServerId::from_raw(0), section: 1 };
+        let allowed = |d: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
+            matches!(library_publication_command(d, target, hidden, head),
+                crate::stores::browse::BrowseCmd::Addressed { work: crate::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
+        };
+        assert!(allowed(&dispatcher, false, true));
+        dispatcher.input.press.begin(0);
+        assert_eq!(dispatcher.input.press.scale(), 1.0);
+        assert!(!allowed(&dispatcher, false, true));
+        assert!(!allowed(&dispatcher, false, false));
+        assert!(allowed(&dispatcher, true, false));
+        dispatcher.input.press.cancel();
+        assert!(allowed(&dispatcher, false, true));
     }
 }
 

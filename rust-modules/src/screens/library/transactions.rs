@@ -71,6 +71,30 @@ impl PendingTransactions {
     }
 }
 
+pub(super) const SHAPE: &str = "PendingTransactions{section:Option<{epoch:u32,index:u32,identity:{sid:u32,key:u64},kind:u32}>,grid:Option<{target:{epoch:u32,sid:u32,section:u64,query:u32},action:Sort{key:str,desc:bool}|Unwatched{desired:bool}|Genre{id:Option<str>}}>}";
+
+impl crate::ui::machine::LogicalState for PendingTransactions {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { section, grid } = self;
+        c.option(section.as_ref(), |c, target| {
+            let SectionTarget { epoch, index, identity, kind } = target;
+            let LibrarySectionIdentity { sid, key } = identity;
+            c.u32(*epoch).u32(*index as u32).u32(u32::from(sid.raw())).u64(*key as u64)
+                .u32(match kind { SecKind::Movie => 0, SecKind::Show => 1 });
+        });
+        c.option(grid.as_ref(), |c, (target, action)| {
+            let GridTarget { epoch, sid, section, query } = target;
+            c.u32(*epoch).u32(u32::from(sid.raw())).u64(*section as u64).u32(*query);
+            match action {
+                GridAction::Sort { key, desc } => { c.u32(0).str(key).bool(*desc); }
+                GridAction::Unwatched { desired } => { c.u32(1).bool(*desired); }
+                GridAction::Genre { id } => { c.u32(2).option(id.as_deref(), |c, id| { c.str(id); }); }
+            }
+        });
+    }
+    fn probe(&self, out: &mut String) { out.push_str("library_pending"); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -730,18 +730,6 @@ pub(super) fn set_origin(play_from: &mut Node, from: Origin) {
     }
 }
 
-/// Open the focused Library card's detail page — the ONE library-card activation
-/// (OK-press commit AND pointer click). Library cards are movies/shows, so activation is
-/// always the detail page (playback then starts from there).
-pub(super) fn open_library_card(cur: Route, nav: &mut Option<NavReq>) {
-    let Some(mm) = crate::ui::library::focused_item() else {
-        return;
-    };
-    if mm.rk.is_empty() {
-        return;
-    }
-    nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
-}
 
 /// Enter `rk`'s detail page with a HARD CUT — no transition. The one caller left is the
 /// `/tmp/plxnative-detail` boot trigger, and the reason is the same one the Library boot
