@@ -27,6 +27,13 @@ pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
 const NO_HOLES: &[(usize, usize)] = &[];
 const GRID_STYLE: RowStyle = RowStyle::HOME.with_right_reserve(crate::ui::consts::SCR_W - GRID_RIGHT);
 
+/// One label construction for the normal and modal-lifted focused grid card.
+pub(super) fn grid_label(item: &crate::pms::PmsMovie) -> card_row::TileLabel {
+    let mut label = card_row::TileLabel::title(&item.title);
+    label.caption = card_row::focused_caption(item, false);
+    label
+}
+
 #[derive(Default)]
 struct GridIndexes {
     elems: HashMap<u32, ElemPositions>,
@@ -308,7 +315,7 @@ impl GridPart {
         let Some(item) = H::listing(f.cx).item(index) else { return };
         let p = f.painter.alpha(f.page_alpha);
         let rect = self.rect_at(index, true, f.press.scale);
-        let label = card_row::TileLabel::title(&item.title);
+        let label = grid_label(item);
         card_row::draw_focused(p, Art::Poster(Some(item)), rect, RowStyle::HOME.focus_scale,
             &GRID_STYLE, item.resume_frac(), &label);
     }

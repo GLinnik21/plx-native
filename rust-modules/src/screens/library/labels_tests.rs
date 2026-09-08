@@ -7,6 +7,24 @@ use super::draw::shelf_label;
 use super::layout::{Layout, shelf_pitch, GRID_PITCH as PITCH};
 
 #[test]
+fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
+    for (kind, year) in [(0, 1994), (1, 2022)] {
+        let item = PmsMovie { kind, year, title: "Synthetic title".into(),
+            dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
+            ..Default::default() };
+        let label = super::parts::grid_label(&item);
+        assert_eq!(label.title.unwrap().to_str().unwrap(), "Synthetic title");
+        assert_eq!(label.caption.unwrap().to_str().unwrap(), year.to_string(),
+            "grid cards use the shared non-deck caption, not remaining playback time");
+    }
+    let item = PmsMovie { title: "Undated".into(), ..Default::default() };
+    assert!(super::parts::grid_label(&item).caption.is_none());
+    let episode = PmsMovie { kind: 3, year: 2020, season_index: 2, ep_index: 7,
+        ..Default::default() };
+    assert_eq!(super::parts::grid_label(&episode).caption.unwrap().to_str().unwrap(), "S2 • E7");
+}
+
+#[test]
 fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
     // Port the original Library assertion against the owned screen's production helper.
     let caption = |item: PmsMovie, is_continue| {
