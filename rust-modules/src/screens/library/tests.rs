@@ -41,6 +41,24 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = crate::plex::ServerId::from_raw(0);
+    fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
+        (0..8).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
+        Vec::new());
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let key = page.key(page.pair.detail.elems[5]);
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Down);
+    assert_eq!(engine.current(OWNER), Some(page.key(page.pair.detail.elems[7])));
+    direction(&mut page, &mut engine, &fixture, Dir::Down);
+    assert_eq!(engine.current(OWNER), Some(page.key(page.pair.detail.elems[7])), "the last row remains an edge");
+}
+
+#[test]
 fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
     let _guard = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("library-rail-layer");

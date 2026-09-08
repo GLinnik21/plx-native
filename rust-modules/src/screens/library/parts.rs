@@ -221,7 +221,8 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
             Dir::Left => col.checked_sub(1).map(|c| row * COLS + c),
             Dir::Right => (col + 1 < COLS).then_some(index + 1),
             Dir::Up => row.checked_sub(1).map(|r| r * COLS + col),
-            Dir::Down => Some((row + 1) * COLS + col),
+            Dir::Down => ((row + 1) * COLS < self.elems.len())
+                .then(|| ((row + 1) * COLS + col).min(self.elems.len() - 1)),
         }
         .filter(|&i| i < self.elems.len());
         next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: key.entry, elem: self.elems[i] }))
