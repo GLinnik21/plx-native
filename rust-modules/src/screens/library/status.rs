@@ -54,3 +54,9 @@ impl LibraryScreen {
             SCR_H - STATUS_TOP - crate::ui::consts::MARGIN_Y)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    include!("status_contract_tests.rs");
+}
