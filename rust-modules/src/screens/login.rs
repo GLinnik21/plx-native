@@ -543,7 +543,7 @@ impl LoginScreen {
 
     fn draw_readout<H: AppLike>(
         &self,
-        f: &mut DrawFrame<'_, H>,
+        f: &mut DrawFrame<'_, '_, H>,
         p: Painter,
         env: &Env,
         caption: &CStr,
@@ -576,7 +576,7 @@ impl LoginScreen {
         }
     }
 
-    fn draw_working<H: AppLike>(&self, f: &mut DrawFrame<'_, H>, p: Painter, env: &Env, msg: &str, focused: bool) {
+    fn draw_working<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, env: &Env, msg: &str, focused: bool) {
         let caption = CString::new(msg).unwrap_or_default();
         let stuck = self.has_control();
         self.draw_readout(
@@ -593,7 +593,7 @@ impl LoginScreen {
         );
     }
 
-    fn draw_failed<H: AppLike>(&self, f: &mut DrawFrame<'_, H>, p: Painter, env: &Env, focused: bool) {
+    fn draw_failed<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, env: &Env, focused: bool) {
         let reason = CString::new(self.error.clone()).unwrap_or_default();
         self.draw_readout(
             f,
@@ -611,7 +611,7 @@ impl LoginScreen {
     /// must not wear the danger tint — the same distinction `StatusKind::Empty` carries for a
     /// library with nothing in it. A partial one is still not a FAILURE either: what it did do, it
     /// did.
-    fn draw_deleted<H: AppLike>(&self, f: &mut DrawFrame<'_, H>, p: Painter, env: &Env, focused: bool) {
+    fn draw_deleted<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, env: &Env, focused: bool) {
         let (verdict, reason) = deleted_readout(self.delete_leftovers);
         self.draw_readout(f, p, env, verdict, StatusKind::Empty, Some(reason), Some(SIGN_IN), focused);
     }
@@ -628,7 +628,7 @@ impl LoginScreen {
     /// either, for the identical reason, so this is not a dropped behaviour. Giving this sentence a
     /// focus-dependent look would be a NEW affordance, and a visual one belongs in front of
     /// `ui/CLAUDE.md`'s own design review, not slipped in unreviewed by a bug-fix pass.
-    fn draw_waiting<H: AppLike>(&self, f: &mut DrawFrame<'_, H>, p: Painter) {
+    fn draw_waiting<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
         let layout = RouteLayout::screen();
         layout.draw_narrative(
             p,
@@ -858,7 +858,7 @@ impl<H: AppLike> Screen<H> for LoginScreen {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {
         self.prepare_qr_tex();
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter;
         // The QR screen is the first thing a new user sees, before Home has any artwork to lend
         // it. `Painter::root()`, not `p`, for the ground — the ambient wash must not ride whatever
@@ -1133,7 +1133,7 @@ mod tests {
             tick: crate::ui::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
-            focus: FocusRead { current: None },
+            focus: FocusRead { current: None , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }

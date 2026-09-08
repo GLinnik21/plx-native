@@ -41,6 +41,75 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = crate::plex::ServerId::from_raw(0);
+    let movie = |i| crate::pms::PmsMovie { sid, rk: format!("duplicate-test-{i}"), ..Default::default() };
+    let mut items = (0..120).map(movie).collect::<Vec<_>>();
+    items[85] = items[5].clone();
+    fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
+        items.iter().cloned().map(Some).collect(), Vec::new()).with_total(10_000);
+    let mut partial = fixture.screen();
+    let mut full = fixture.screen();
+    let duplicate = partial.pair.detail.elem_at(5).unwrap();
+    let group = partial.pair.groups_config().detail;
+    let mut observations = Vec::new();
+    let grid_hash = |page: &LibraryScreen| {
+        let mut canon = Canon::new();
+        page.pair.detail.write(&mut canon);
+        canon.finish()
+    };
+    let mut canonical = Vec::new();
+    // First change only unrelated data on the lower page; then remove both copies together.
+    // A second pass removes only the higher copy, leaving the lower unchanged.
+    for remove_high_only in [false, true] {
+        fixture.listing = fixture.listing.clone().with_page(0, items[..60].to_vec())
+            .with_page(60, items[60..].to_vec());
+        partial.sync(&fixture.cx(None));
+        full.pair.detail.clear_projection();
+        full.sync(&fixture.cx(None));
+        fixture.listing = fixture.listing.clone().with_page(0, vec![movie(1000)]);
+        partial.pair.detail.reset_publication_ops();
+        partial.sync(&fixture.cx(None));
+        full.pair.detail.clear_projection();
+        full.sync(&fixture.cx(None));
+        assert_eq!(partial.pair.detail.publication_ops().0, 60);
+        assert!(partial.pair.detail.publication_ops().1 <= 120);
+        canonical.push((grid_hash(&partial), grid_hash(&full)));
+        observations.push((partial.keys.last_place(duplicate), full.keys.last_place(duplicate)));
+        assert_eq!(partial.pair.detail.index_of(duplicate), Some(5));
+        if remove_high_only {
+            fixture.listing = fixture.listing.clone().with_page(85, vec![movie(85)]);
+        } else {
+            fixture.listing = fixture.listing.clone().with_page(5, vec![movie(1005)])
+                .with_page(85, vec![movie(85)]);
+        }
+        partial.sync(&fixture.cx(None));
+        full.pair.detail.clear_projection();
+        full.sync(&fixture.cx(None));
+        canonical.push((grid_hash(&partial), grid_hash(&full)));
+        observations.push((partial.keys.last_place(duplicate), full.keys.last_place(duplicate)));
+        observations.push((partial.pair.detail.fallback_for(duplicate).map(|e| (group, e as usize)),
+            full.pair.detail.fallback_for(duplicate).map(|e| (group, e as usize))));
+        if remove_high_only {
+            fixture.listing = fixture.listing.clone().with_page(5, vec![movie(1005)]);
+            partial.sync(&fixture.cx(None));
+            full.pair.detail.clear_projection();
+            full.sync(&fixture.cx(None));
+            canonical.push((grid_hash(&partial), grid_hash(&full)));
+            assert_eq!(partial.keys.last_place(duplicate), Some((group, 5)));
+            assert_eq!(partial.pair.detail.fallback_for(duplicate), partial.pair.detail.elem_at(5));
+        }
+    }
+    eprintln!("duplicate recovery partial/full: {observations:?}");
+    assert!(observations.iter().all(|(partial, full)| partial == full),
+        "partial publication must preserve full projection's last occurrence and tombstone fallback: {observations:?}");
+    assert!(canonical.iter().all(|(partial, full)| partial == full),
+        "ordered projection and known metadata must equal full projection: {canonical:?}");
+}
+
+#[test]
 fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page() {
     let _guard = crate::testlock::serial();
     const TOTAL: usize = 10_000;
@@ -578,7 +647,7 @@ impl Fixture {
     }
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
-            tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus },
+            tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus , ..Default::default() },
             press: PressRead::default(), owner: OWNER }
     }
     fn screen(&self) -> LibraryScreen {

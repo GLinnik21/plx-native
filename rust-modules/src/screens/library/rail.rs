@@ -115,7 +115,7 @@ impl RailPart {
         alpha.clamp(0.0, 1.0)
     }
 
-    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
+    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         if !self.in_region(f.cx) { return; }
         for (index, &elem) in self.elems.iter().enumerate() {
             if self.letter_alpha(index) <= 0.5 { continue; }
@@ -126,7 +126,7 @@ impl RailPart {
         }
     }
 
-    pub(super) fn draw_with_current<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>, _frame: Rect, grid_index: Option<usize>) {
+    pub(super) fn draw_with_current<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>, _frame: Rect, grid_index: Option<usize>) {
         if self.elems.is_empty() || (!self.in_region(f.cx) && self.alpha.pos <= 0.01) { return; }
         let p = f.painter.alpha(f.page_alpha * self.alpha.pos);
         let track = Rect::new(self.rect.x, self.rect.y - RAIL_CAP_PAD, self.rect.w, self.rect.h + 2.0 * RAIL_CAP_PAD);
@@ -186,7 +186,7 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
 }
 impl<H: LibraryLike> Part<H> for RailPart {
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, frame: Rect) { self.draw_with_current(f, frame, None); }
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, frame: Rect) { self.draw_with_current(f, frame, None); }
 }
 
 #[cfg(test)]

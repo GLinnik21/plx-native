@@ -112,7 +112,7 @@ impl Fixture {
             },
             tick: Tick::default(),
             measure: &self.measure,
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus, ..Default::default() },
             press: PressRead::default(),
             owner: OWNER,
         }

@@ -787,7 +787,7 @@ impl Screen<InnerHost> for ConsentPage {
         ConsentPage::crumb(self).map(Cow::Borrowed)
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let p = f.painter;
         let layout = RouteLayout::screen();
         Header::new(layout, self.crumb(), self.title(), self.body())
@@ -1033,7 +1033,7 @@ impl Screen<InnerHost> for PreviewPage {
         Some(Cow::Borrowed(self.crumb))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let Self { reader, crumb, title, subtitle, text, entry, .. } = self;
         let mut v = DocumentScreen::new(
             Header::new(RouteLayout::screen(), Some(crumb), title, subtitle),

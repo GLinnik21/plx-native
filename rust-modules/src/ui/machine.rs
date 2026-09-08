@@ -184,14 +184,22 @@ pub struct PressRead {
 }
 
 /// What a machine may read about focus (§7.3 step 5): the engine owns the state, screens read it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FocusRead<K> {
     pub current: Option<FocusKey<K>>,
+    /// Immutable projection minted by the engine for the receiving entry, not another cursor.
+    pub remembered: std::sync::Arc<[(GroupId, K)]>,
+}
+
+impl<K: Copy> FocusRead<K> {
+    pub fn remembered(&self, group: GroupId) -> Option<K> {
+        self.remembered.iter().find(|(g, _)| *g == group).map(|(_, elem)| *elem)
+    }
 }
 
 impl<K> Default for FocusRead<K> {
     fn default() -> Self {
-        Self { current: None }
+        Self { current: None, remembered: std::sync::Arc::from([]) }
     }
 }
 

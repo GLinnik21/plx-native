@@ -138,6 +138,12 @@ impl KeyRegistry {
         Some((GroupId(key.last_group), key.last_index as usize))
     }
 
+    pub(super) fn update_last_place(&mut self, elem: u32, group: GroupId, index: usize) {
+        let at = self.elem_index[&elem];
+        self.keys[at].last_group = group.0;
+        self.keys[at].last_index = index as u32;
+    }
+
     pub(super) fn keys(&self) -> &[LibraryKey] { &self.keys }
 
     #[cfg(test)]

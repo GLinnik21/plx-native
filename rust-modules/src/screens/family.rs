@@ -9,7 +9,7 @@
 //! them, and each names the destination through this vocabulary rather than through the module
 //! that implements it.
 
-use crate::ui::machine::{Canon, Chrome, Cx, FocusRead, Host, LogicalState, ScreenId};
+use crate::ui::machine::{Canon, Chrome, Cx, Host, LogicalState, ScreenId};
 use crate::ui::screen::ScreenArg;
 use crate::ui::table::TableView;
 use crate::ui::widgets::ControlPalette;
@@ -154,7 +154,7 @@ pub(crate) fn inner_cx<'o, 'a: 'o, H: Host<Elem = u32>>(cx: &Cx<'a, H>) -> Cx<'o
         tick: cx.tick,
         measure: cx.measure,
         press: cx.press,
-        focus: FocusRead { current: cx.focus.current },
+        focus: cx.focus.clone(),
         owner: cx.owner,
     }
 }
