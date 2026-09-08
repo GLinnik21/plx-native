@@ -182,6 +182,110 @@ pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn posters(libraries: bool, shelves: usize, rows: usize, grid_head: bool) -> Layout {
+        Layout::new(libraries, &vec![crate::ui::consts::ROW_PITCH; shelves], rows, grid_head)
+    }
+
+    #[test]
+    fn the_document_stacks_chip_then_shelves_then_the_grid() {
+        let bare = posters(false, 0, 40, true);
+        assert_eq!(bare.grid_block_top(), 0.0, "no chip, no shelves: the grid heads the page");
+        assert_eq!(bare.grid_top(), GRID_HEAD_H, "…under its own heading row");
+
+        let chipped = posters(true, 0, 40, true);
+        assert_eq!(chipped.grid_block_top(), LIBRARY_ROW_H, "the chip's block leads");
+
+        let shelved = posters(true, 12, 40, true);
+        assert_eq!(
+            shelved.grid_block_top(),
+            LIBRARY_ROW_H + 12.0 * crate::ui::consts::ROW_PITCH,
+            "twelve shelves push the grid exactly twelve pitches down"
+        );
+        // …and a shelf's own origin is the one Home hangs a shelf from, so `card_row` draws here
+        // unchanged: heading at origin − TITLE_DY, cards at origin + CARD_DY
+        assert_eq!(shelved.shelf_origin(0), LIBRARY_ROW_H);
+        assert_eq!(
+            shelved.shelf_origin(3) - shelved.shelf_origin(2),
+            crate::ui::consts::ROW_PITCH
+        );
+
+        // a grid with nothing in it draws no heading and no control row, so the block IS the grid
+        let empty = posters(true, 2, 0, false);
+        assert_eq!(empty.grid_top(), empty.grid_block_top());
+    }
+
+    /// **`doc_to_grid` is the fix for this screen's sharpest geometry bug.** `browse::want` derived
+    /// its page window straight from `SCROLL`, i.e. assuming scroll 0 is grid row 0 — so under a
+    /// document with a header and twelve shelves it asked for pages thirteen rows into the catalog
+    /// while row 0's own slots sat unloaded.
+    #[test]
+    fn the_page_window_is_grid_local_whatever_is_above_the_grid() {
+        let rows = 1667; // a 10k-item section
+        let flat = posters(false, 0, rows, true);
+        let deep = posters(true, 12, rows, true);
+
+        // at each document's own head, both ask for row 0 — the bug was that only the flat one did
+        assert_eq!(flat.visible_rows(0.0).0, 0);
+        assert_eq!(deep.visible_rows(0.0).0, 0);
+        assert_eq!(
+            deep.visible_rows(deep.grid_top()).0,
+            0,
+            "scrolled exactly to the grid's top, the first wanted row is still 0"
+        );
+        // …and one pitch further down, both have moved by exactly one row
+        assert_eq!(
+            deep.visible_rows(deep.grid_top() + GRID_PITCH).0,
+            flat.visible_rows(flat.grid_top() + GRID_PITCH).0
+        );
+        // the window never runs past the catalog
+        assert!(deep.visible_rows(1.0e9).1 <= rows);
+    }
+
+    /// **`max_scroll` and `row_reveal` are ONE invariant**, and this is the test that holds them to
+    /// it: if they disagree the last row's caption sits off the panel, which is the bug the old
+    /// hand-written `max_y`/`lo` pair carried a paragraph about.
+    #[test]
+    fn the_last_row_can_always_reach_its_own_caption() {
+        for shelves in [0usize, 1, 12] {
+            for rows in [1usize, 2, 40, 1667] {
+                let lay = posters(true, shelves, rows, true);
+                let last = lay.row_reveal(rows - 1);
+                assert!(
+                    last <= lay.max_scroll() + 0.001,
+                    "row_reveal must never ask past max_scroll ({shelves} shelves, {rows} rows)"
+                );
+                // the whole last row — card, label band and the air under it — is on the panel
+                let bottom = CONTENT_TOP + lay.grid_top() + rows as f32 * GRID_PITCH - last;
+                assert!(
+                    bottom <= SCR_H + 0.001,
+                    "the last row's caption is off the panel ({shelves} shelves, {rows} rows): {bottom}"
+                );
+            }
+        }
+    }
+
+    /// Row snapping puts the focused row's OWN TOP EDGE at the viewport, clamped — not the minimal
+    /// reveal `card_row::reveal` performs, which is right for a shelf inside a page and wrong for a
+    /// wall of posters you walk down.
+    #[test]
+    fn row_snapping_targets_the_rows_own_top_edge() {
+        let lay = posters(false, 0, 40, true);
+        // **Row 0 is the canvas's own exception**: its target is the grid BLOCK's top, so the
+        // heading and the two chips directly above it stay on screen. Snapping past them would
+        // scroll away the count and the controls the moment focus entered the grid.
+        assert_eq!(lay.row_reveal(0), lay.grid_block_top());
+        assert_ne!(
+            lay.row_reveal(0),
+            lay.grid_top(),
+            "…which is NOT the row's own top edge — every other row is"
+        );
+        assert_eq!(lay.row_reveal(3), lay.grid_top() + 3.0 * GRID_PITCH);
+        // …and the clamp is the document's, so the last rows share one resting scroll
+        assert_eq!(lay.row_reveal(39), lay.max_scroll());
+    }
+
+    // ---- the focus projection ----------------------------------------------------------------
+
     #[test]
     fn six_column_grid_fills_only_the_reserved_content_band() {
         assert_eq!(Layout::grid_x(0), MARGIN_X);
@@ -206,7 +310,7 @@ mod tests {
     fn page_window_is_grid_local_with_a_large_header() {
         let pitches = [shelf_pitch(false, 1.0); MAX_SHELVES];
         let lay = Layout::new(true, &pitches, 80, true);
-        assert_eq!(lay.visible_rows(0.0), (0, 0));
+        assert_eq!(lay.visible_rows(0.0), (0, 1), "the legacy window prefetches row zero above the grid");
         let at_grid = lay.row_reveal(8);
         let (lo, hi) = lay.visible_rows(at_grid);
         assert!(lo <= 8 && hi > 8, "{lo}..{hi}");

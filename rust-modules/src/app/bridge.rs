@@ -470,6 +470,7 @@ pub(super) struct Bridge {
     directory: crate::stores::browse::DirectorySnapshot,
     section_hubs: crate::stores::browse::HubsSnapshot,
     chrome: super::chrome::ChromeSnapshot,
+    chrome_selection: u32,
     legacy_host_live: bool,
     home_commands: std::collections::VecDeque<HomeCmd>,
     consent: ConsentMachine,
@@ -515,6 +516,7 @@ impl Bridge {
             directory,
             section_hubs: crate::stores::browse::hubs_snapshot(),
             chrome: super::chrome::ChromeSnapshot::default(),
+            chrome_selection: 0,
             legacy_host_live: true,
             home_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine,
@@ -618,10 +620,13 @@ impl Bridge {
 
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
         self.legacy_host_live = super::host_page_updates(route, false);
-        if matches!(super::page_of(route), Route::Home) {
+        if matches!(super::page_of(route), Route::Home | Route::Library) {
             d.nav.tabs.strip_fallback = Some(crate::screens::home::STRIP_HOME_ELEM);
             self.chrome.refresh(self.measure);
-            let selected = self.navigation_presentation().view_tab.unwrap_or(0) as i32;
+            self.chrome_selection = if super::page_of(route) == Route::Library {
+                self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
+            } else { 0 };
+            let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
             self.chrome.members(selected, Self::home_focus(d), &mut d.nav.tabs.strip);
         } else {
             d.nav.tabs.strip.clear();
@@ -645,7 +650,7 @@ impl Bridge {
     }
 
     pub(super) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
-        let selected = self.navigation_presentation().view_tab.unwrap_or(0) as i32;
+        let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
         crate::ui::widgets::tab_row_update_with(self.chrome.labels(), selected, self.chrome.focus(focus), dt);
         self.chrome.members(selected, focus, &mut d.nav.tabs.strip);
@@ -845,7 +850,7 @@ impl Drop for Bridge {
 impl Rig<AppHost> for Bridge {
     fn page_updates(&self) -> bool { self.legacy_host_live }
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>, nav: crate::ui::screen::NavPresentation) {
-        if !matches!(arg.route(), Some(Route::Home)) { return; }
+        if !matches!(arg.route(), Some(Route::Home | Route::Library)) { return; }
         let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
         let labels = self.chrome.labels();
         crate::ui::widgets::draw_tab_row_with(labels, p);
@@ -1716,6 +1721,21 @@ mod tests {
             }
         }
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn library_publishes_the_actual_container_strip() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let mut bridge = Bridge::for_test(|| 0);
+        bridge.capture_chrome(&mut dispatcher, Route::Library);
+        let base = crate::ui::dispatch::STRIP_BASE;
+        assert_eq!(dispatcher.nav.tabs.strip.iter().map(|member| member.elem).collect::<Vec<_>>(),
+            vec![base + 4, base, base + 1, base + 2, base + 3]);
+        assert_eq!(dispatcher.nav.tabs.strip_fallback, Some(base));
+        crate::browse::reset();
     }
 
     #[test]

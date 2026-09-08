@@ -2,6 +2,7 @@
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). A value passes if it equals one of `literals` or fully matches one of `patterns`. Recordings are taken against tests/mock_pms.py, whose every name is `s[0-9a-f]{8}`, so no household byte can enter; this file is the allowlist the guard (.claude/hooks/outbound-guard.py) and tests/test_harness.py verify against. A denylist for 'title-shaped' strings is undecidable (diag/scrub.rs's own conclusion), so the rule is an allowlist and a NEW protocol constant is added HERE, by name, in the commit that introduces it.",
   "patterns": [
     "s[0-9a-f]{8}",
+    "[ACFMZ] s[0-9a-f]{8}",
     "s[0-9a-f]{8}( s[0-9a-f]{8}){23}",
     "/library/metadata/[0-9]+/(thumb|art)/1",
     "/library/parts/[0-9]+/17[0-9]{8}/file\\.mkv",
@@ -21,6 +22,8 @@
     "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
   ],
   "literals": [
+    "A", "C", "F", "M", "Z", "S",
+    "a", "c", "f", "m", "z", "s",
     "",
     "hubs",
     "PG-13",

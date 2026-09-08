@@ -154,11 +154,11 @@ const fn region_base(region: KeyRegion) -> u32 {
 mod tests {
     use super::*;
 
-    fn section(sid: u8) -> LibrarySectionIdentity {
+    fn section(sid: u16) -> LibrarySectionIdentity {
         LibrarySectionIdentity { sid: crate::plex::ServerId::from_raw(sid), key: 1 }
     }
 
-    fn grid(sid: u8, rk: &str) -> LibraryIdentity {
+    fn grid(sid: u16, rk: &str) -> LibraryIdentity {
         LibraryIdentity::Grid {
             section: section(sid),
             sid: crate::plex::ServerId::from_raw(sid),

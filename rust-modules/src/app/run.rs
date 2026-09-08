@@ -3189,7 +3189,7 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                         // `Glass::prepare`'s contract, and the shared top tab track is an owner on
                         // every route that wears it.
                         if route_wears_tab_bar(app.route) {
-                            if matches!(page_of(app.route), Route::Home) {
+                            if matches!(page_of(app.route), Route::Home | Route::Library) {
                                 app.bridge.prepare_home_chrome();
                             } else {
                                 crate::ui::widgets::tab_glass_prepare();

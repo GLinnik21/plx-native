@@ -55,6 +55,11 @@ impl ChromeSnapshot {
         TabLabels { generation: self.tabs_generation.unwrap_or(0), labels: &self.labels }
     }
 
+    pub(super) fn library_selection(&self, kind: crate::browse::SecKind) -> u32 {
+        let elem = STRIP_BASE + match kind { crate::browse::SecKind::Movie => 1, crate::browse::SecKind::Show => 2 };
+        self.keys.iter().position(|key| *key == elem).unwrap_or(0) as u32
+    }
+
     pub(super) fn profile(&self) -> ProfileChipRead<'_> {
         ProfileChipRead { generation: self.profile_generation.unwrap_or(0), thumb: &self.thumb,
             label: &self.label, initial: &self.initial }
