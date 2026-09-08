@@ -83,7 +83,7 @@ pub(super) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8)}";
+pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
@@ -208,13 +208,9 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 
 #[derive(Clone, Copy)]
 pub(super) struct AppViews<'a> {
-    #[cfg_attr(not(test), allow(dead_code))] // Phase 8: Home mounter integration is the consumer.
     pub(super) hubs: crate::pms::HubsView<'a>,
-    #[allow(dead_code)] // Library adoption consumes this retained listing, not browse globals.
     pub(super) listing: crate::stores::browse::ListingView<'a>,
-    #[allow(dead_code)] // Phase-8 Library sources/menu consumer.
     pub(super) directory: crate::stores::browse::DirectoryView<'a>,
-    #[allow(dead_code)] // Phase-8 Library shelf consumer.
     pub(super) section_hubs: crate::stores::browse::HubsView<'a>,
 }
 
@@ -1776,6 +1772,63 @@ mod tests {
             }
         }
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn library_detail_return_restores_engine_card_and_viewport_after_stack_eviction() {
+        let _guard = crate::testlock::serial();
+        struct RegistryCleanup;
+        impl Drop for RegistryCleanup {
+            fn drop(&mut self) { crate::browse::reset(); crate::plex::reset_servers_for_test(); }
+        }
+        let _cleanup = RegistryCleanup;
+        let session = crate::plex::session::TempSession::new("owned-library-return");
+        session.watching("u-owned-library-return");
+        for evict in [false, true] {
+            crate::browse::reset();
+            crate::plex::reset_servers_for_test();
+            let sid = crate::plex::register_for_test("library-return-own", "127.0.0.1", 9, "synthetic", "fixture");
+            let shared = crate::plex::register_for_test("library-return-shared", "127.0.0.1", 10, "synthetic", "fixture");
+            crate::plex::set_current(sid);
+            crate::browse::seed_registered_table_for_test([sid, shared]);
+            let mut directory = crate::stores::browse::DirectorySnapshot::default();
+            directory.capture();
+            crate::browse::set_cur(0);
+            crate::browse::seed_items_for_test(120);
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+            d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+            Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
+            for i in 1..80 { frame(&mut d, &mut rig, Route::Library, tick(i), vec![]); }
+            let entry = d.nav.top_page().unwrap().id;
+            let focus = d.focus().unwrap();
+            let (item, opener) = rig.library_selection(&d, entry, Some(focus)).unwrap_or_else(|| panic!(
+                "fixture must reach grid: focus={focus:?}, listing={:?}, total={}, current={:?}",
+                rig.listing.view().id(), rig.listing.view().total(), rig.directory.view().current()));
+            let before = opener.rect.unwrap();
+            let count = if evict { crate::ui::containers::stack::CAP + 1 } else { 1 };
+            for i in 0..count {
+                d.request(MachineId::Nav, NavOp::Push(AppArg::Content(ContentArg::Detail {
+                    sid: item.sid, rk: if i == 0 { item.rk.clone() } else { format!("return-{i}") },
+                })));
+                let report = d.frame_with(&mut rig, tick(80 + i as u32), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+            }
+            assert_eq!(d.nav.entry(entry).unwrap().inst.is_none(), evict);
+            d.request(MachineId::Nav, NavOp::PopTo(entry));
+            for i in 100..180 {
+                let report = d.frame_with(&mut rig, tick(i), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+                assert_eq!(d.focus(), Some(focus), "every post-return frame keeps the engine card; evicted={evict}");
+                let (returned, opener) = rig.library_selection(&d, entry, d.focus()).unwrap();
+                assert_eq!((returned.sid, returned.rk.as_str()), (item.sid, item.rk.as_str()));
+                let after = opener.rect.unwrap();
+                assert!((before.x - after.x).abs() < 0.01 && (before.y - after.y).abs() < 0.01,
+                    "return geometry changed: {before:?} -> {after:?}, evicted={evict}, frame={i}");
+            }
+        }
+        crate::browse::reset();
     }
 
     #[test]

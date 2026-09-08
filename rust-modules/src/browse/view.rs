@@ -1,7 +1,6 @@
 //! Retained listing read contract for the owned Library screen. No borrowed global data:
 //! a frame can keep this publication across page arrivals, re-queries and account resets.
 //! Source rosters and section hubs are separate publications, not implied by this view.
-#![cfg_attr(not(test), allow(dead_code))] // Removed with phase-8 Library consumer adoption.
 
 use super::{Arc, GenreEntry, SecFetch, SecItems, ServerId, SortEntry};
 
@@ -20,8 +19,6 @@ pub(crate) struct ListingSnapshot {
 
 #[derive(Clone)]
 struct ListingData {
-    cursor: Option<Arc<super::CursorAt>>,
-    saved: (usize, f32),
     id: ListingId,
     total: i64,
     fetch: SecFetch,
@@ -36,6 +33,18 @@ struct ListingData {
 }
 
 impl ListingSnapshot {
+    #[cfg(test)]
+    pub(crate) fn with_fetch(mut self, fetch: SecFetch, total: i64) -> Self {
+        if let Some(data) = &mut self.data { data.fetch = fetch; data.total = total; }
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_section(mut self, epoch: u32, section: i64) -> Self {
+        if let Some(data) = &mut self.data { data.id.epoch = epoch; data.id.section = section; }
+        self
+    }
+
     pub(crate) fn view(&self) -> ListingView<'_> {
         ListingView(self)
     }
@@ -43,7 +52,7 @@ impl ListingSnapshot {
     #[cfg(test)]
     pub(crate) fn fixture(sid: ServerId, items: Vec<Option<crate::pms::PmsMovie>>, letters: Vec<(String, i64)>) -> Self {
         Self { data: Some(ListingData {
-            id: ListingId { epoch: 1, query: 1, sid, section: 1 }, total: items.len() as i64, saved: (0, 0.0), cursor: None,
+            id: ListingId { epoch: 1, query: 1, sid, section: 1 }, total: items.len() as i64,
             fetch: SecFetch::Ready, items: SecItems::from_vec(items),
             sorts: Arc::new(vec![SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false }]),
             genres: Arc::new(Vec::new()), letters: Arc::new(letters), sort_idx: 0, sort_desc: false,
@@ -56,8 +65,6 @@ impl ListingSnapshot {
 pub(crate) struct ListingView<'a>(&'a ListingSnapshot);
 
 impl<'a> ListingView<'a> {
-    pub(crate) fn cursor(self) -> Option<&'a super::CursorAt> { self.0.data.as_ref()?.cursor.as_deref() }
-    pub(crate) fn saved_view(self) -> (usize, f32) { self.0.data.as_ref().map_or((0, 0.0), |s| s.saved) }
     pub(crate) fn retain(self) -> ListingSnapshot { self.0.clone() }
 
     /// Placement keys need rebuilding only when item membership or listing identity changes.
@@ -119,8 +126,8 @@ impl<'a> ListingView<'a> {
         self.letters()
             .iter()
             .take(index)
-            .map(|(_, n)| *n as usize)
-            .sum()
+            .map(|(_, n)| (*n).max(0) as usize)
+            .fold(0usize, usize::saturating_add)
     }
 }
 
@@ -138,8 +145,6 @@ pub(crate) fn snapshot() -> ListingSnapshot {
     ListingSnapshot {
         // No empty Arc allocations on Login or before discovery has produced a section.
         data: id.zip(super::states().get(sec)).map(|(id, s)| ListingData {
-            cursor: s.cursor.clone(),
-            saved: (s.focus, s.scroll),
             id,
             total: s.total,
             fetch: s.fetch,
@@ -199,6 +204,13 @@ impl Default for DirectorySnapshot {
 }
 
 impl DirectorySnapshot {
+    #[cfg(test)]
+    pub(crate) fn fixture_source(epoch: u32, sid: ServerId, source: super::SrcGroup, fetch: SecFetch) -> Self {
+        Self { preferred: [None; 2], kind_fetch: [fetch; 2], stamp: Some((epoch, 0, 0, 1)),
+            data: Arc::new(DirectoryData { sources: vec![(sid, source)], sections: Vec::new() }),
+            source: Some(0), source_fetch: fetch, discovery: fetch }
+    }
+
     pub(crate) fn same_publication(&self, other: &Self) -> bool {
         self.stamp == other.stamp && self.source == other.source
             && self.source_fetch == other.source_fetch && self.discovery == other.discovery
@@ -304,11 +316,7 @@ impl<'a> DirectoryView<'a> {
         self,
         section: usize,
     ) -> impl Iterator<Item = (usize, &'a SectionView)> {
-        let kind = self.sections().get(section).map(|s| s.kind);
-        self.sections()
-            .iter()
-            .enumerate()
-            .filter(move |(_, s)| Some(s.kind) == kind && s.row.pinned)
+        self.rows_for(section).filter_map(move |row| self.sections().get(row.section).map(|s| (row.section, s)))
     }
 }
 

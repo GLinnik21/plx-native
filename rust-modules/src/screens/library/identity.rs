@@ -63,6 +63,8 @@ impl KeyRegistry {
         shelf_scroll: Vec<(String, f32)>,
     ) -> LibraryMemory {
         LibraryMemory {
+            epoch: None,
+            viewports: Vec::new(),
             keys: self.keys.clone(),
             next_elem: self.keys.len() as u32,
             section,

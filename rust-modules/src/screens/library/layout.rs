@@ -4,10 +4,11 @@ use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
 use crate::ui::theme;
 
 pub(super) const COLS: usize = 6;
+pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) const MAX_SHELVES: usize = 12;
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
-pub(super) const LIBRARY_ROW_H: f32 = 52.0 + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
+pub(super) const LIBRARY_ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
 pub(super) const GRID_HEAD_H: f32 = crate::ui::consts::TITLE_DY
     + crate::ui::consts::CARD_DY
     + 52.0
@@ -17,6 +18,7 @@ pub(super) const GRID_PITCH: f32 = CARD_H
     + crate::ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
 pub(super) const RAIL_PITCH: f32 = 34.0;
+pub(super) const RAIL_CAP_PAD: f32 = 10.0;
 pub(super) const RAIL_BAND: f32 = RAIL_TRACK_W + theme::space::XS;
 pub(super) const GRID_RIGHT: f32 = SCR_W - MARGIN_X - RAIL_BAND;
 pub(super) const GRID_GAP: f32 =
@@ -42,6 +44,14 @@ pub(super) struct Layout {
 }
 
 impl Layout {
+    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,pitches:[f32;12]}";
+
+    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { libraries, shelves, rows, grid_head, status, pitches } = self;
+        c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status);
+        for pitch in pitches { c.f32(*pitch); }
+    }
+
     pub(super) fn new(libraries: bool, shelf_pitches: &[f32], rows: usize, grid_head: bool) -> Self {
         let mut pitches = [crate::ui::consts::ROW_PITCH; MAX_SHELVES];
         for (to, from) in pitches.iter_mut().zip(shelf_pitches.iter().take(MAX_SHELVES)) {
@@ -143,10 +153,21 @@ impl Layout {
 
     pub(super) fn grid_x(col: usize) -> f32 { MARGIN_X + col as f32 * (CARD_W + GRID_GAP) }
 
-    pub(super) fn rail_rect(self, scroll: f32) -> crate::ui::Rect {
-        let top = self.row_y(0, scroll).max(CONTENT_TOP);
-        crate::ui::Rect::new(GRID_RIGHT + theme::space::XS, top, RAIL_TRACK_W, SCR_H - MARGIN_Y - top)
-    }
+}
+
+/// The original fixed rail band: it never follows the scrolling first grid row.
+pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
+    const TOP: f32 = 232.0 + 8.0;
+    let visible = ((SCR_H - MARGIN_Y - TOP - RAIL_CAP_PAD) / RAIL_PITCH).floor().max(1.0);
+    let height = visible.min(n as f32) * RAIL_PITCH;
+    (TOP, SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5, height, (n as f32 * RAIL_PITCH - height).max(0.0))
+}
+
+pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
+    let (_, _, height, max) = rail_geom(n);
+    let drive = drive.min(n.saturating_sub(1)) as f32;
+    crate::ui::card_row::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
+        (drive - 1.0) * RAIL_PITCH, max)
 }
 
 /// Preserve the selected favourite while reserving a visible overflow control.
@@ -172,7 +193,7 @@ pub(super) fn library_window(widths: &[f32], selected: usize, available: f32, ga
 }
 
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
-    let art = if landscape { 236.0 } else { CARD_H };
+    let art = if landscape { crate::ui::card_row::RowStyle::EPISODE.h } else { CARD_H };
     crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY + art
         + crate::ui::card_row::under_band(expanded)
         + crate::ui::consts::UNDER_LABEL_AIR

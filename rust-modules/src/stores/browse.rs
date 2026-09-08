@@ -22,6 +22,7 @@ pub(crate) fn listing_snapshot() -> ListingSnapshot {
 /// Every mutation of the browse store a screen may ask for.
 #[derive(Clone, Debug)]
 pub(crate) enum BrowseCmd {
+    RetrySource { epoch: u32, sid: ServerId },
     /// Execute deferred Library work against the source and table epoch captured by the screen.
     Addressed { target: SectionAddress, work: LibraryWork },
     /// Point the listing at section `i` (a pill or library-row press, committed at the fade floor).
@@ -84,7 +85,6 @@ pub(crate) enum QueryEdit {
 
 #[derive(Clone, Debug)]
 pub(crate) enum LibraryWork {
-    SaveView { at: Option<crate::browse::CursorAt>, scroll: f32 },
     /// Selection and query coexist and commit in this order, inside one store delivery.
     Commit { select: bool, choice: bool, query: Option<QueryEdit> },
     Want { lo: usize, hi: usize },
@@ -97,10 +97,6 @@ pub(crate) enum LibraryWork {
 fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
     let Some(index) = crate::browse::resolve_section(target.epoch, target.sid, target.section) else { return false };
     match work {
-        LibraryWork::SaveView { at, scroll } => {
-            crate::browse::save_section_view(index, at, scroll);
-            true
-        }
         LibraryWork::Commit { select, choice, query } => {
             let switched = crate::browse::cur() != index;
             if select { crate::browse::set_cur(index); }
@@ -131,7 +127,7 @@ fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
                 LibraryWork::Letters => crate::browse::kick_letters(),
                 LibraryWork::Genres => crate::browse::kick_genres(),
                 LibraryWork::Retry => crate::browse::retry_cur_source(),
-                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } | LibraryWork::SaveView { .. } => unreachable!(),
+                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } => unreachable!(),
             }
             true
         }
@@ -146,6 +142,7 @@ pub(crate) fn apply(cmd: BrowseCmd) -> bool {
 /// The store's own step, reached only through [`super::apply`].
 pub(super) fn run(cmd: BrowseCmd) -> bool {
     let answer = match cmd {
+        BrowseCmd::RetrySource { epoch, sid } => crate::browse::retry_source(epoch, sid),
         BrowseCmd::Addressed { target, work } => addressed(target, work),
         #[cfg(test)]
         BrowseCmd::SetCur(i) => {
