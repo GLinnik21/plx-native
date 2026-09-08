@@ -126,8 +126,8 @@ impl<'a> ListingView<'a> {
         self.letters()
             .iter()
             .take(index)
-            .map(|(_, n)| *n as usize)
-            .sum()
+            .map(|(_, n)| (*n).max(0) as usize)
+            .fold(0usize, usize::saturating_add)
     }
 }
 
@@ -309,11 +309,7 @@ impl<'a> DirectoryView<'a> {
         self,
         section: usize,
     ) -> impl Iterator<Item = (usize, &'a SectionView)> {
-        let kind = self.sections().get(section).map(|s| s.kind);
-        self.sections()
-            .iter()
-            .enumerate()
-            .filter(move |(_, s)| Some(s.kind) == kind && s.row.pinned)
+        self.rows_for(section).filter_map(move |row| self.sections().get(row.section).map(|s| (row.section, s)))
     }
 }
 

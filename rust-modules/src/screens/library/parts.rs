@@ -40,6 +40,23 @@ pub(super) struct GridPart {
 }
 
 impl GridPart {
+    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,elems:[u32],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32}";
+
+    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
+        // The retained snapshot is a read-publication cache, not another cursor. Its placement
+        // projection and identity are traversed below; its Arc address never enters logical state.
+        let Self { entry: _, group, elems, known, identity, layout, scroll, target_layout, scroll_target, snapshot: _ } = self;
+        c.u32(group.0).seq(elems.len());
+        for elem in elems { c.u32(*elem); }
+        c.seq(known.len());
+        for (elem, index) in known { c.u32(*elem).u32(*index as u32); }
+        c.option(*identity, |c, (epoch, sid, section, query)| {
+            c.u32(epoch).u32(u32::from(sid.raw())).u64(section as u64).u32(query);
+        });
+        layout.write(c); c.f32(*scroll);
+        target_layout.write(c); c.f32(*scroll_target);
+    }
+
     pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
         Self {
             entry, group,
@@ -270,6 +287,19 @@ pub(super) struct RailPart {
 }
 
 impl RailPart {
+    pub(super) const SHAPE: &'static str = "LibraryRail{group:u32,elems:[u32],labels:[str],starts:[u32],rect:{x:f32,y:f32,w:f32,h:f32},scroll:f32}";
+
+    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { entry: _, group, elems, labels, starts, rect, scroll } = self;
+        c.u32(group.0).seq(elems.len());
+        for elem in elems { c.u32(*elem); }
+        c.seq(labels.len());
+        for label in labels { c.str(label.to_str().unwrap_or("")); }
+        c.seq(starts.len());
+        for index in starts { c.u32(*index as u32); }
+        c.f32(rect.x).f32(rect.y).f32(rect.w).f32(rect.h).f32(*scroll);
+    }
+
     pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
         Self { entry, group, elems: Vec::new(), labels: Vec::new(), starts: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), scroll: 0.0 }
     }
@@ -287,10 +317,8 @@ impl RailPart {
         self.elems.clear();
         self.labels.clear();
         self.starts.clear();
-        let mut start = 0usize;
-        for (index, (label, count)) in view.letters().iter().take(MAX_LETTERS).enumerate() {
-            self.starts.push(start);
-            start = start.saturating_add((*count).max(0) as usize);
+        for (index, (label, _)) in view.letters().iter().take(MAX_LETTERS).enumerate() {
+            self.starts.push(view.letter_start(index));
             self.elems.push(keys.register(
                 LibraryIdentity::Rail { section: section.clone(), label: label.clone() },
                 self.group,

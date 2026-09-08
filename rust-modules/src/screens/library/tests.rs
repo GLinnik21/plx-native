@@ -41,6 +41,26 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn published_library_projection_and_layout_enter_canonical_state() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let hash = |page: &LibraryScreen| { let mut c = Canon::new(); page.write(&mut c); c.finish() };
+    let mut page = fixture.screen();
+    let initial = hash(&page);
+    page.pair.detail.elems.swap(0, 1);
+    assert_ne!(initial, hash(&page), "published item order determines the next navigation step");
+    let prior = hash(&page);
+    page.target_layout.rows += 1;
+    assert_ne!(prior, hash(&page), "target document geometry determines reveal and placement");
+    let prior = hash(&page);
+    page.libraries.push((MORE, usize::MAX));
+    assert_ne!(prior, hash(&page), "bounded favorite window determines available controls");
+    let prior = hash(&page);
+    page.readout = Readout::Failed;
+    assert_ne!(prior, hash(&page), "failure control availability is logical state");
+}
+
+#[test]
 fn library_capsule_and_control_motion_enter_canonical_state() {
     let hash = |page: &LibraryScreen| {
         let mut c = Canon::new();
@@ -213,7 +233,7 @@ fn section_viewport_bookmarks_survive_switch_and_evicted_body() {
 }
 impl Fixture {
     fn new() -> Self {
-        crate::browse::reset();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let sid = crate::plex::ServerId::from_raw(0);
         let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
             Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
@@ -383,7 +403,7 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     let mut fixture = Fixture::new();
     crate::browse::seed_two_source_table_for_test();
     fixture.directory.capture(); // Resolve this isolated profile's pins before choosing the subject.
-    crate::browse::set_cur(0);
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
     crate::browse::seed_items_for_test(120);
     crate::browse::section_hubs::seed_shelves_for_test(0, &["s0", "s1", "s2"], 12);
     fixture.directory.capture();
@@ -406,7 +426,7 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     direction(&mut page, &mut engine, &fixture, Dir::Down);
     assert_eq!(engine.current_group(OWNER), Some(page.shelves[2].group));
     assert_eq!(page.shelves[2].elems.iter().position(|elem| *elem == engine.current(OWNER).unwrap().elem), Some(3));
-    crate::browse::reset();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
 }
 
 #[test]

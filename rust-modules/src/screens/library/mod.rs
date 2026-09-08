@@ -5,6 +5,7 @@ mod parts;
 mod transactions;
 mod draw;
 mod toolbar;
+mod status;
 pub(crate) mod menu;
 #[cfg(test)]
 mod tests;
@@ -49,12 +50,15 @@ const RETRY: u32 = 3;
 const MORE: u32 = 4;
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
 
-pub(crate) const SHAPE: [&str; 5] = [
-    "LibraryScreen{kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,epoch:Option<u32>,query:Option<u32>,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},memory:PageMemory::Library,shelves:[{id:str,group:u32,motion:CardRow}],pending:PendingTransactions,ground_seeded:bool,ground:PageGround}",
+pub(crate) const SHAPE: [&str; 8] = [
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,epoch:Option<u32>,query:Option<u32>,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     crate::ui::widgets::PageGround::SHAPE,
     crate::ui::widgets::TabStrip::SHAPE,
     "LibraryChrome{capsules:TabStrip,pop:CtlPop{sp:[Spring{pos:f32,vel:f32}],focused:Option<u32>},pair_groups:{master:u32,detail:u32}}",
+    Layout::SHAPE,
+    GridPart::SHAPE,
+    RailPart::SHAPE,
 ];
 
 struct Regions;
@@ -234,7 +238,8 @@ impl LibraryScreen {
             self.scroll_target = self.scroll.pos;
         }
         self.query = listing.id().map(|id| id.query);
-        self.readout = readout(directory.source_fetch(), directory.sections().len(), listing.fetch(), listing.total());
+        let table = if directory.sections().is_empty() { directory.discovery() } else { directory.source_fetch() };
+        self.readout = readout(table, directory.sections().len(), listing.fetch(), listing.total());
         self.libraries.clear();
         if let Some(current) = directory.current() {
             self.kind = directory.sections()[current].kind;
@@ -255,7 +260,7 @@ impl LibraryScreen {
                 self.libraries.push((MORE, usize::MAX));
             }
             if self.libraries.len() == 1 && !directory.sections()[current].borrowed
-                && directory.sources().len() <= 1 {
+                && !(self.readout == Readout::Failed && directory.sources().len() > 1) {
                 self.libraries.clear();
             }
         }
@@ -826,6 +831,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
 
 impl LogicalState for LibraryScreen {
     fn write(&self, c: &mut Canon) {
+        c.u32(self.entry.0).u32(self.instance.0);
         c.u32(match self.kind { SecKind::Movie => 0, SecKind::Show => 1 });
         c.option(self.wanted_kind, |c, kind| { c.u32(match kind { SecKind::Movie => 0, SecKind::Show => 1 }); });
         c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.scroll_target);
@@ -849,7 +855,19 @@ impl LogicalState for LibraryScreen {
         c.seq(self.viewports.len());
         for viewport in &self.viewports { viewport.write(c); }
         c.seq(self.shelves.len());
-        for row in &self.shelves { c.str(&row.id).u32(row.group.0); row.motion.write_motion(c); }
+        for row in &self.shelves {
+            let Shelf { id, group, elems, landscape, motion } = row;
+            c.str(id).u32(group.0).bool(*landscape).seq(elems.len());
+            for elem in elems { c.u32(*elem); }
+            motion.write_motion(c);
+        }
+        c.seq(self.libraries.len());
+        for (elem, section) in &self.libraries { c.u32(*elem).u32(*section as u32); }
+        c.u32(match self.readout { Readout::Loading => 0, Readout::Empty => 1, Readout::Failed => 2, Readout::Grid => 3 });
+        self.layout.write(c);
+        self.target_layout.write(c);
+        self.pair.detail.write(c);
+        self.pair.master.write(c);
     }
     fn probe(&self, out: &mut String) { out.push_str("library"); }
 }

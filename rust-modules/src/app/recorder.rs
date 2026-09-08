@@ -123,6 +123,9 @@ pub(super) fn state_fp() -> u64 {
         crate::screens::library::SHAPE[2],
         crate::screens::library::SHAPE[3],
         crate::screens::library::SHAPE[4],
+        crate::screens::library::SHAPE[5],
+        crate::screens::library::SHAPE[6],
+        crate::screens::library::SHAPE[7],
         crate::screens::library::menu::SHAPE[0],
         crate::screens::library::menu::SHAPE[1],
         crate::pms::record::SHAPE,
@@ -763,9 +766,10 @@ mod tests {
         let mut p = String::new();
         init.probe(&mut p);
         assert_eq!(p, "route=home session=1 servers=1 consent=3/1/0 seed=7");
-        // Phase 8: Home initial contents and their canonical traversal join the recording shape.
-        // Older fixtures did not capture these contents and must be refused, not rebaselined.
-        assert_eq!(state_fp(), 0x6c35_6005_c114_626c);
+        // Phase 8: owned Library geometry, section memory, deferred actions, menus and shared
+        // animation state now join Home's captured initial contents in the shape inventory.
+        // This is a schema pin, not a fixture rebaseline: older shapes must still be refused.
+        assert_eq!(state_fp(), 0x9f77_4578_4bd2_1a5c);
     }
 
     #[test]

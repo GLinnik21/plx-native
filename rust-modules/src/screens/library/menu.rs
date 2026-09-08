@@ -873,8 +873,8 @@ mod tests {
             crate::browse::view::SectionView {
                 sid: Some(ServerId::from_raw(1)),
                 key: 7,
-                kind: SecKind::Movie,
                 borrowed: false,
+                kind: SecKind::Movie,
                 row: SrcRow {
                     src: 0,
                     section: 0,
@@ -888,8 +888,8 @@ mod tests {
             crate::browse::view::SectionView {
                 sid: Some(ServerId::from_raw(2)),
                 key: 7,
-                kind: SecKind::Movie,
                 borrowed: true,
+                kind: SecKind::Movie,
                 row: SrcRow {
                     src: 1,
                     section: 1,
@@ -1036,8 +1036,8 @@ mod tests {
             crate::browse::view::SectionView {
                 sid: Some(ServerId::from_raw(1)),
                 key: 8,
-                kind: SecKind::Movie,
                 borrowed: false,
+                kind: SecKind::Movie,
                 row: SrcRow {
                     src: 0,
                     section: 1,

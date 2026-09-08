@@ -42,6 +42,14 @@ pub(super) struct Layout {
 }
 
 impl Layout {
+    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,pitches:[f32;12]}";
+
+    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { libraries, shelves, rows, grid_head, status, pitches } = self;
+        c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status);
+        for pitch in pitches { c.f32(*pitch); }
+    }
+
     pub(super) fn new(libraries: bool, shelf_pitches: &[f32], rows: usize, grid_head: bool) -> Self {
         let mut pitches = [crate::ui::consts::ROW_PITCH; MAX_SHELVES];
         for (to, from) in pitches.iter_mut().zip(shelf_pitches.iter().take(MAX_SHELVES)) {

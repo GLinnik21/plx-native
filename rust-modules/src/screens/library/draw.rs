@@ -63,16 +63,24 @@ impl LibraryScreen {
             card_row::draw_heading(p, "All", "", MARGIN_X,
                 CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X);
         }
-        if self.readout != Readout::Grid {
-            let (text, kind) = match self.readout {
-                Readout::Failed => (c"Couldn't load this library", StatusKind::Failed),
-                Readout::Empty => (c"Nothing here matches", StatusKind::Empty),
-                Readout::Loading => (c"Loading…", StatusKind::Working),
+        if self.readout == Readout::Loading {
+            // Preserve the Library's standalone loading spinner, outside either content fade.
+            crate::ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
+                .phase(f.cx.tick.ms).draw(&env, f.painter.alpha(f.page_alpha));
+        } else if self.readout != Readout::Grid {
+            let (text, reason) = self.status_text(f.cx);
+            let kind = match self.readout {
+                Readout::Failed => StatusKind::Failed,
+                Readout::Empty => StatusKind::Empty,
+                Readout::Loading => StatusKind::Working,
                 Readout::Grid => unreachable!(),
             };
-            let mut status = StatusOverlay::new(Rect::FULL, text, kind);
+            let mut status = StatusOverlay::new(self.status_frame(), &text, kind)
+                .phase(f.cx.tick.ms).focused(f.focus.current.is_some_and(|key| key.elem == RETRY));
+            if let Some(reason) = &reason { status = status.reason(reason); }
             if self.readout == Readout::Failed { status = status.action(c"Try again"); }
-            status.draw(&env, p);
+            let alpha = if self.readout == Readout::Empty { self.page_fade.alpha() * self.grid_fade.alpha() } else { 1.0 };
+            status.draw(&env, f.painter.alpha(f.page_alpha * alpha));
             if self.readout == Readout::Failed { self.stop(RETRY, f); }
         }
         // MasterDetail is the production render composition, sharing children with focus queries.

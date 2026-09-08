@@ -83,7 +83,7 @@ pub(super) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8)}";
+pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
