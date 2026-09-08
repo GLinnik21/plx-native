@@ -353,6 +353,7 @@ impl Screen<AppHost> for LegacyPage {
 #[derive(Default)]
 struct AppMounter {
     seed: Option<super::Node>,
+    library_kind: Option<crate::browse::SecKind>,
 }
 
 impl Mounter<AppHost> for AppMounter {
@@ -407,7 +408,7 @@ impl Mounter<AppHost> for AppMounter {
                 Box::new(page)
             }
             AppArg::Legacy(Route::Library) => {
-                let kind = cx.views.directory.current().map(|i| cx.views.directory.sections()[i].kind)
+                let kind = self.library_kind.or_else(|| cx.views.directory.current().map(|i| cx.views.directory.sections()[i].kind))
                     .unwrap_or(crate::browse::SecKind::Movie);
                 let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
@@ -473,6 +474,7 @@ pub(super) struct Bridge {
     chrome_selection: u32,
     legacy_host_live: bool,
     home_commands: std::collections::VecDeque<HomeCmd>,
+    library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
     consent: ConsentMachine,
     /// Requests the owned screens made of the loop this frame (§14), drained by [`frame`]'s caller.
     reqs: Vec<LoopReq>,
@@ -519,6 +521,7 @@ impl Bridge {
             chrome_selection: 0,
             legacy_host_live: true,
             home_commands: std::collections::VecDeque::new(),
+            library_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine,
             reqs: Vec::new(),
             content_reqs: Vec::new(),
@@ -565,6 +568,17 @@ impl Bridge {
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+    }
+
+    pub(super) fn enter_library(&mut self, kind: crate::browse::SecKind) {
+        self.mounter.library_kind = Some(kind);
+        self.library_commands.clear();
+        self.library_commands.push_back(crate::screens::registry::LibraryCmd::Enter(kind));
+    }
+
+    fn deliver_library_commands(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
+        if route != Route::Library || d.nav.top_page().is_none_or(|page| page.arg.route() != Some(Route::Library) || page.inst.is_none()) { return; }
+        while let Some(command) = self.library_commands.pop_front() { Self::library_command(d, command); }
     }
 
     pub(super) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
@@ -635,9 +649,21 @@ impl Bridge {
     }
 
     fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) {
-        self.section_hubs = crate::stores::browse::hubs_snapshot();
+        let directory_before = self.directory.clone();
+        let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         self.directory.capture();
-        self.listing = crate::stores::browse::listing_snapshot();
+        // Directory capture resolves profile pins and may repoint the active section. Both
+        // content snapshots must name the resulting section, not opposite sides of that repoint.
+        self.section_hubs = crate::stores::browse::hubs_snapshot();
+        let listing = crate::stores::browse::listing_snapshot();
+        let listing_changed = !self.listing.view().same_items(listing.view())
+            || self.listing.view().fetch() != listing.view().fetch();
+        self.listing = listing;
+        if listing_changed || !self.directory.same_publication(&directory_before)
+            || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision()) {
+            // Bring Library's key projection up to the captured frame before any input uses it.
+            d.store_changed(StoreId::Browse.ord(), crate::stores::gen(StoreId::Browse));
+        }
         let before = (self.hubs.view().generation, self.hubs.view().state);
         self.hubs = crate::pms::hubs_snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
@@ -1026,6 +1052,7 @@ pub(super) fn frame_with_results(
     sync_page(d, route, trail);
     rig.capture_chrome(d, route);
     rig.deliver_home_commands(d, route);
+    rig.deliver_library_commands(d, route);
     for (id, gen) in crate::stores::take_notices() {
         d.store_changed(id.ord(), gen);
     }
@@ -1115,6 +1142,27 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
             (!<crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
         crate::focusprobe::push_item(&mut out, if grid { home.focused_item::<AppHost>(focus, &cx) } else { home.hero_item::<AppHost>(&cx) });
+        return out;
+    }
+    if matches!(page.arg, AppArg::Legacy(Route::Library)) {
+        let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return String::new() };
+        let focus = d.input.engine.current(InputOwner::Entry(page.id));
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(page.id) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view() }, rig.measure);
+        let menu = d.top_surface_name() == Some("library_menu");
+        let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
+            crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
+        }};
+        let item = library.focused_item(focus, &cx);
+        let (region, row, col, x, y) = library.probe_viewport(focus);
+        let mut out = format!(" pill={pill} card={} menu={} region={region} row={row} col={col} viewport_x={x:.3} viewport_y={y:.3} sid=", u8::from(item.is_some() && !menu), u8::from(menu));
+        if let Some(item) = item {
+            let _ = write!(out, "{} rk=", item.sid.raw());
+            crate::focusprobe::push_rk(&mut out, &item.rk);
+        } else { out.push_str("- rk=-"); }
         return out;
     }
     if !matches!(page.arg, AppArg::Content(_)) { return String::new(); }

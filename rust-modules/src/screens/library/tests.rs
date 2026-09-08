@@ -224,13 +224,21 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
 #[test]
 fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     let _guard = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("library-shelf-geometry");
+    session.watching("u-library-shelf-geometry");
     let mut fixture = Fixture::new();
     crate::browse::seed_two_source_table_for_test();
+    fixture.directory.capture(); // Resolve this isolated profile's pins before choosing the subject.
+    crate::browse::set_cur(0);
     crate::browse::seed_items_for_test(120);
     crate::browse::section_hubs::seed_shelves_for_test(0, &["s0", "s1", "s2"], 12);
-    fixture.listing = crate::stores::browse::listing_snapshot();
     fixture.directory.capture();
+    fixture.listing = crate::stores::browse::listing_snapshot();
     fixture.hubs = crate::stores::browse::hubs_snapshot();
+    let listing_id = fixture.listing.view().id().unwrap();
+    let hubs_id = fixture.hubs.view().id().unwrap();
+    assert_eq!((listing_id.epoch, listing_id.sid, listing_id.section), (hubs_id.epoch, hubs_id.sid, hubs_id.section));
+    assert_eq!(fixture.hubs.view().shelves().len(), 3);
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
     let first = page.key(page.shelves[0].elems[3]);
@@ -245,4 +253,29 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     assert_eq!(engine.current_group(OWNER), Some(page.shelves[2].group));
     assert_eq!(page.shelves[2].elems.iter().position(|elem| *elem == engine.current(OWNER).unwrap().elem), Some(3));
     crate::browse::reset();
+}
+
+#[test]
+fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_focus() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let grid = page.key(page.pair.detail.elem_at(0).unwrap());
+    let request = |page: &mut LibraryScreen| {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(Some(grid)),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        out.into_iter().find_map(|effect| match effect.fx {
+            Fx::App(AppFx::Library(LibraryReq::PublishShelves { hidden_page, at_head, .. })) => Some((hidden_page, at_head)), _ => None,
+        }).unwrap()
+    };
+    assert_eq!(request(&mut page), (false, true), "grid focus at a settled document head does not starve the first shelf publication");
+    page.scroll.jump(700.0);
+    page.scroll_target = 700.0;
+    page.grid_fade.reload();
+    assert_eq!(request(&mut page), (false, false), "a fading grid leaves the shelves visible");
+    page.page_fade.reload();
+    assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
 }

@@ -72,6 +72,8 @@ pub(crate) enum HomeCmd {
 /// Bounded actions emitted by an owned Library instance. Every media action carries its server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryReq {
+    /// Evaluated after dispatch by the application, where the input owner can report a live arm.
+    PublishShelves { target: crate::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
     Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: crate::stores::browse::SectionAddress },
     Play { sid: crate::plex::ServerId, rk: String, resume_ns: i64 },
     Detail { sid: crate::plex::ServerId, rk: String },
@@ -108,6 +110,7 @@ impl crate::ui::machine::LogicalState for LibraryMenuArg {
 /// Addressed simulator/harness intentions. They are resolved by the mounted instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryCmd {
+    Enter(crate::browse::SecKind),
     FocusGrid { row: usize, col: usize },
     FocusToolbar,
     Page(i32),

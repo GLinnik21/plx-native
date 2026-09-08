@@ -1343,7 +1343,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
                 // here belongs to the screen (`enter`'s own `xf().mount()`); dipping the whole
                 // page would fade the tab bar up from nothing too, which reads as a slow app
                 // rather than a navigated one.
-                crate::ui::library::enter(kind, crate::ui::library::Arrival::Cut);
+                app.bridge.enter_library(kind);
                 app.route = Route::Library;
             }
             // dev: /tmp/plxnative-search[=<query>] boots straight into Search, with the field
@@ -2485,7 +2485,7 @@ pub(super) unsafe fn nav_commit(app: &mut App, _mt: &crate::task::MainThread, fr
                     Nav::Library(kind) => {
                         // every teleport `enter` performs (the store swap, `restore_view`'s
                         // scroll jump, the focus band) happens HERE, at alpha 0, off screen
-                        crate::ui::library::enter(kind, crate::ui::library::Arrival::Faded);
+                        app.bridge.enter_library(kind);
                         // The grid sits directly on Home. `home_activate` truncates on the press
                         // frame for the Home→Library case, but the strip is a row of PEERS and
                         // Search is now one of them that stands on the trail — so arriving from

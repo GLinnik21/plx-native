@@ -192,6 +192,10 @@ impl Default for DirectorySnapshot {
 }
 
 impl DirectorySnapshot {
+    pub(crate) fn same_publication(&self, other: &Self) -> bool {
+        self.stamp == other.stamp && self.source == other.source
+            && self.source_fetch == other.source_fetch && self.discovery == other.discovery
+    }
     #[cfg(test)]
     pub(crate) fn fixture(epoch: u32, current: usize, sections: Vec<SectionView>) -> Self {
         Self { stamp: Some((epoch, 0, current, 0)), data: Arc::new(DirectoryData { sources: Vec::new(), sections }),
