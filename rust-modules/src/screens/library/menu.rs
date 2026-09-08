@@ -1092,4 +1092,6 @@ mod tests {
             "metadata/shape refresh preserves the focused source key"
         );
     }
+
+    include!("menu_contract_tests.rs");
 }
