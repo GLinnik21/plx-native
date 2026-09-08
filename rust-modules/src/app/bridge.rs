@@ -559,6 +559,17 @@ impl Bridge {
     }
 
     pub(super) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
+        if let crate::screens::registry::LibraryCmd::SwitchStep(_) = command {
+            if let Some(InputOwner::Entry(owner)) = d.nav.input_owner() {
+                if let Some(entry) = d.nav.entry(owner).filter(|entry| matches!(entry.arg, AppArg::LibraryMenu(_))) {
+                    if let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) {
+                        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+                            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+                        return;
+                    }
+                }
+            }
+        }
         let Some(entry) = d.nav.top_page() else { return };
         if entry.arg.route() != Some(Route::Library) { return; }
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
@@ -1527,6 +1538,8 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    include!("library_bookmark_tests.rs");
+    include!("library_diagnostic_tests.rs");
     #[test]
     fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};

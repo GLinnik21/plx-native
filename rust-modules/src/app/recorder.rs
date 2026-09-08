@@ -772,7 +772,8 @@ mod tests {
         // Rail viewport/presence springs and their target now join the owned Library shape.
         // No recording or anchor is rewritten: the previous shape remains incompatible.
         // The open Filter menu now records its immediate, not-yet-committed desired value.
-        assert_eq!(state_fp(), 0x4dc7_8286_b661_ad5b);
+        // The diagnostic's document-end reversal direction is owned logical state too.
+        assert_eq!(state_fp(), 0x5982f65981519425);
     }
 
     #[test]

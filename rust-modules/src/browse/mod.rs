@@ -276,6 +276,20 @@ pub(crate) enum SecFetch {
 pub(crate) mod section_hubs;
 pub(crate) mod view;
 
+/// A tier-three application bookmark, frozen only at navigation boundaries. It is not
+/// current focus; a live Library entry keeps its authoritative memory in FocusEngine.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Cursor {
+    pub at: CursorAt,
+    pub scroll: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CursorAt {
+    ItemKey { sid: ServerId, rk: String, slot: usize },
+    SlotIndex(usize),
+}
+
 /// Per-section browse state: the current query, the server-driven menus, the sparse item
 /// store, the library's own published shelves, and the remembered view (focus/scroll survive
 /// leaving the screen — state amnesia is the official app's loudest complaint).
@@ -302,6 +316,7 @@ struct SecState {
     fetch: SecFetch, // what the last page fetch for this section did
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
+    cursor: Option<Arc<Cursor>>,
     // Retired Library characterization only. Production focus memory belongs to FocusEngine;
     // production section viewport bookmarks belong to LibraryScreen/PageMemory.
     #[cfg(test)]
@@ -429,6 +444,7 @@ impl Default for SecState {
             fetch: SecFetch::Loading,
             total: -1,
             items: SecItems::default(),
+            cursor: None,
             #[cfg(test)]
             focus: 0,
             #[cfg(test)]
@@ -2532,6 +2548,13 @@ pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usi
         (section.key == key && section_sid(i) == Some(sid)).then_some(i))
 }
 
+pub(crate) fn save_cursor(index: usize, cursor: Cursor) -> bool {
+    let Some(state) = state_mut(index) else { return false };
+    if state.cursor.as_deref() == Some(&cursor) { return false; }
+    state.cursor = Some(Arc::new(cursor));
+    true
+}
+
 #[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn saved_view() -> (usize, f32) {
     cur_state().map(|s| (s.focus, s.scroll)).unwrap_or((0, 0.0))
@@ -3136,6 +3159,14 @@ pub(crate) fn seed_items_for_test(n: usize) {
                 .collect(),
         );
         st.fetch = SecFetch::Ready;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_letter_counts_for_test(letters: &[(&str, i64)]) {
+    if let Some(state) = state_mut(cur()) {
+        state.letters = Arc::new(letters.iter().map(|(label, count)| ((*label).into(), *count)).collect());
+        state.letters_done = true;
     }
 }
 

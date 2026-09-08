@@ -111,8 +111,8 @@ impl crate::ui::machine::LogicalState for LibraryMenuArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryCmd {
     Enter(crate::browse::SecKind),
+    #[cfg(test)]
     FocusGrid { row: usize, col: usize },
-    FocusToolbar,
     Page(i32),
     Sweep,
     SwitchStep(u32),

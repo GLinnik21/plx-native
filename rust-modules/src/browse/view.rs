@@ -32,9 +32,15 @@ struct ListingData {
     sort_desc: bool,
     genre: Option<Arc<GenreEntry>>,
     unwatched: bool,
+    cursor: Option<Arc<super::Cursor>>,
 }
 
 impl ListingSnapshot {
+    #[cfg(test)]
+    pub(crate) fn with_cursor(mut self, cursor: super::Cursor) -> Self {
+        if let Some(data) = &mut self.data { data.cursor = Some(Arc::new(cursor)); }
+        self
+    }
     #[cfg(test)]
     pub(crate) fn with_fetch(mut self, fetch: SecFetch, total: i64) -> Self {
         if let Some(data) = &mut self.data { data.fetch = fetch; data.total = total; }
@@ -75,7 +81,7 @@ impl ListingSnapshot {
             fetch: SecFetch::Ready, items: SecItems::from_vec(items),
             sorts: Arc::new(vec![SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false }]),
             genres: Arc::new(Vec::new()), letters: Arc::new(letters), sort_idx: 0, sort_desc: false,
-            genre: None, unwatched: false,
+            genre: None, unwatched: false, cursor: None,
         }) }
     }
 }
@@ -85,6 +91,11 @@ pub(crate) struct ListingView<'a>(&'a ListingSnapshot);
 
 impl<'a> ListingView<'a> {
     pub(crate) fn retain(self) -> ListingSnapshot { self.0.clone() }
+
+    /// Immutable tier-three bookmark; a live entry's engine memory takes precedence.
+    pub(crate) fn cursor(self) -> Option<&'a super::Cursor> {
+        self.0.data.as_ref()?.cursor.as_deref()
+    }
 
     /// Placement keys need rebuilding only when item membership or listing identity changes.
     pub(crate) fn same_items(self, other: ListingView<'_>) -> bool {
@@ -216,6 +227,7 @@ pub(crate) fn snapshot() -> ListingSnapshot {
             sort_desc: s.sort_desc,
             genre: s.genre.clone(),
             unwatched: s.unwatched,
+            cursor: s.cursor.clone(),
         }),
     }
 }
