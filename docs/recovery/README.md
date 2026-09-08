@@ -39,3 +39,9 @@ This backup is for recovery, not a completion or release claim.
 Source checkpoint: `6f3ec9fbd92aa99c8baf13204e10bcd49190ea21` on `codex/ui-phase8`.
 The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
 This backup is for recovery, not a completion or release claim.
+
+## Latest outage checkpoint
+
+Source checkpoint: `4d5ba3ef57866ee66009cc1b238568d5b3105081` on `codex/ui-phase8`.
+The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
+This backup is for recovery, not a completion or release claim.
