@@ -586,6 +586,7 @@ fn requery() {
         st.fetch = SecFetch::Loading;
         st.total = -1;
         st.items.clear();
+        st.cursor = None; // A bookmark from the replaced query cannot seed a new entry.
         #[cfg(test)]
         { st.focus = 0; st.scroll = 0.0; }
     }
@@ -3167,6 +3168,15 @@ pub(crate) fn seed_letter_counts_for_test(letters: &[(&str, i64)]) {
     if let Some(state) = state_mut(cur()) {
         state.letters = Arc::new(letters.iter().map(|(label, count)| ((*label).into(), *count)).collect());
         state.letters_done = true;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_query_choices_for_test(sorts: Vec<SortEntry>, genres: Vec<GenreEntry>) {
+    if let Some(state) = state_mut(cur()) {
+        state.sorts = Arc::new(sorts);
+        state.genres = Arc::new(genres);
+        state.genres_done = true;
     }
 }
 

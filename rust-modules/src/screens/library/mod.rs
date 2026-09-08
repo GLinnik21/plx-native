@@ -59,7 +59,7 @@ const MORE: u32 = 4;
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
 
 pub(crate) const SHAPE: [&str; 8] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     crate::ui::widgets::PageGround::SHAPE,
     crate::ui::widgets::TabStrip::SHAPE,
@@ -121,6 +121,7 @@ pub(crate) struct LibraryScreen {
     section: Option<LibrarySectionIdentity>,
     epoch: Option<u32>,
     query: Option<u32>,
+    grid_reset_pending: bool,
     shelf_publication: Option<(crate::browse::section_hubs::HubsId, u64)>,
     layout: Layout,
     target_layout: Layout,
@@ -153,7 +154,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), shelves: Vec::new(), section: None, epoch: None, query: None,
+            libraries: Vec::new(), shelves: Vec::new(), section: None, epoch: None, query: None, grid_reset_pending: false,
             shelf_publication: None, layout, target_layout: layout,
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(),
@@ -171,6 +172,9 @@ impl LibraryScreen {
         self.pair.detail.restore_keys(&self.keys);
         self.section = memory.section.clone();
         self.epoch = memory.epoch;
+        self.query = memory.query;
+        self.grid_reset_pending = memory.grid_reset_pending;
+        if self.grid_reset_pending { self.grid_fade.mount(); }
         self.viewports = memory.viewports.clone();
         self.restore_scroll = Some(memory.scroll);
         self.scroll.jump(memory.scroll);
@@ -209,6 +213,12 @@ impl LibraryScreen {
         let identity = listing.id().map(|id| LibrarySectionIdentity { sid: id.sid, key: id.section });
         let epoch = listing.id().map(|id| id.epoch).or(directory.epoch());
         let changed = self.section != identity || self.epoch != epoch;
+        if changed { self.grid_reset_pending = false; }
+        else if self.query.is_some() && self.query != listing.id().map(|id| id.query) {
+            self.grid_reset_pending = true;
+            self.restore_scroll = None;
+            if !self.grid_fade.is_swapping() { self.grid_fade.mount(); }
+        }
         if let (Some(section), Some(epoch)) = (&identity, epoch) {
             let mut group = |kind: &str| GroupId(self.keys.register(LibraryIdentity::Control {
                 section: section.clone(), kind: kind.into(), key: epoch.to_string(),
@@ -343,6 +353,10 @@ impl LibraryScreen {
             Layout::failed(!self.libraries.is_empty(), &pitches)
         } else { Layout::new(!self.libraries.is_empty(), &pitches, rows, grid_head) };
         self.target_layout = Layout::new(!self.libraries.is_empty(), &targets, rows, grid_head);
+        if self.grid_reset_pending {
+            self.scroll_target = self.target_layout.row_reveal(0);
+            self.scroll.jump(self.scroll_target);
+        }
         self.layout.status = self.readout == Readout::Failed;
         self.target_layout.status = self.layout.status;
         self.pair.detail.set_geometry(self.layout, self.scroll.pos, self.target_layout, self.scroll_target);
@@ -373,6 +387,8 @@ impl LibraryScreen {
         let mut memory = self.keys.remember(self.section.clone(), self.scroll.pos,
             self.shelves.iter().map(|row| (row.id.clone(), row.motion.scroll_x())).collect());
         memory.epoch = self.epoch;
+        memory.query = self.query;
+        memory.grid_reset_pending = self.grid_reset_pending;
         memory.viewports = self.viewports.clone();
         if let Some(viewport) = self.current_viewport() {
             memory.viewports.retain(|old| old.epoch != viewport.epoch || old.section != viewport.section);
@@ -672,6 +688,17 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.sync(cx);
+                if self.grid_reset_pending {
+                    if let Some(elem) = self.pair.detail.elem_at(0) {
+                        fx.remember(self.pair.groups_config().detail, elem);
+                        self.grid_reset_pending = false;
+                        if cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Grid)) {
+                            self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
+                        }
+                    } else if self.readout == Readout::Empty {
+                        self.grid_reset_pending = false;
+                    }
+                }
                 let current_grid = cx.focus.current.filter(|key| key.entry == self.entry)
                     .and_then(|key| self.pair.detail.index_of(key.elem));
                 self.pair.master.advance(cx, current_grid, self.live && self.readout == Readout::Grid, tick.dt());
@@ -951,6 +978,7 @@ impl LogicalState for LibraryScreen {
         c.bool(self.live).bool(self.initial).bool(self.sweep_down);
         c.option(self.epoch, |c, value| { c.u32(value); });
         c.option(self.query, |c, value| { c.u32(value); });
+        c.bool(self.grid_reset_pending);
         c.option(self.shelf_publication, |c, (id, revision)| {
             c.u32(id.epoch).u32(u32::from(id.sid.raw())).u64(id.section as u64).u64(revision);
         });

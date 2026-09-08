@@ -25,7 +25,7 @@ use super::layout::{
 pub(super) const GRID_GROUP: GroupId = GroupId(0x4c49_4201);
 pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
 const NO_HOLES: &[(usize, usize)] = &[];
-const GRID_STYLE: RowStyle = RowStyle::HOME.with_right_reserve(crate::ui::consts::SCR_W - GRID_RIGHT);
+pub(super) const GRID_STYLE: RowStyle = RowStyle::HOME.with_right_reserve(crate::ui::consts::SCR_W - GRID_RIGHT);
 
 /// One label construction for the normal and modal-lifted focused grid card.
 pub(super) fn grid_label(item: &crate::pms::PmsMovie) -> card_row::TileLabel {

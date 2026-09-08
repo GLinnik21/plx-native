@@ -528,7 +528,6 @@ mod tests {
 
         // ---- the shared chrome, and the screens composed on it ------------------------------
         probe("widgets", &crate::ui::widgets::overscan_rects);
-        probe("library", &crate::ui::library::overscan_rects);
         probe("detail", &crate::ui::detail_layout::overscan_rects);
         probe("player_hud", &crate::ui::player_hud::overscan_rects);
 

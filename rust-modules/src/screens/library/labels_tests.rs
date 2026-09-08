@@ -1,10 +1,15 @@
 //! Meaningful legacy caption and landscape assertions, on the owned production helpers.
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
-use crate::ui::consts::CARD_H;
+use crate::ui::consts::{self, CARD_H, CARD_W, MARGIN_X};
+use crate::ui::fixture::FixtureMeasure;
+use crate::ui::machine::{EntryId, InstanceId};
+use crate::ui::{Painter, Rect};
 use std::os::raw::c_int;
+use crate::browse::SecKind;
 use super::draw::shelf_label;
-use super::layout::{Layout, shelf_pitch, GRID_PITCH as PITCH};
+use super::layout::{self, Layout, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
+    RAIL_CAP_PAD, RAIL_TRACK_W, GRID_PITCH as PITCH};
 
 #[test]
 fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
@@ -22,6 +27,133 @@ fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
     let episode = PmsMovie { kind: 3, year: 2020, season_index: 2, ep_index: 7,
         ..Default::default() };
     assert_eq!(super::parts::grid_label(&episode).caption.unwrap().to_str().unwrap(), "S2 • E7");
+}
+
+#[test]
+fn a_focused_grid_caption_stays_inside_the_rail_reserved_band() {
+    let p = Painter::root();
+    let card = |col: usize| {
+        Rect::new(
+            MARGIN_X + col as f32 * (CARD_W + layout::GRID_GAP),
+            CONTENT_TOP + Layout::new(false, &[], 40, true).grid_top(),
+            CARD_W,
+            CARD_H,
+        )
+    };
+
+    let (x, w) = card_row::label_band(p, card(COLS - 1), &super::parts::GRID_STYLE);
+    assert!(
+        x + w <= GRID_RIGHT + 0.01,
+        "the last column's label reaches {} against the content edge {GRID_RIGHT}",
+        x + w,
+    );
+
+    let (x0, w0) = card_row::label_band(p, card(0), &super::parts::GRID_STYLE);
+    let (home_x0, _) = card_row::label_band(p, card(0), &RowStyle::HOME);
+    assert_eq!(
+        x0, home_x0,
+        "the right-edge rail reserve must not move the first-column label: {x0} vs {home_x0}",
+    );
+    assert!(x0 >= 0.0 && x0 + w0 <= GRID_RIGHT + 0.01);
+}
+
+#[test]
+fn owned_library_overscan_probe_covers_every_legacy_edge() {
+    let measure = FixtureMeasure;
+    let rail = layout::rail_geom(MAX_LETTERS);
+    let rail_rect = Rect::new(
+        rail.1 - RAIL_TRACK_W * 0.5,
+        rail.0 - RAIL_CAP_PAD,
+        RAIL_TRACK_W,
+        rail.2 + 2.0 * RAIL_CAP_PAD,
+    );
+    let bare = Layout::new(false, &[], 40, true);
+    let head = Layout::new(true, &[crate::ui::consts::ROW_PITCH], 40, true);
+    let screen = crate::screens::library::LibraryScreen::new(
+        EntryId(1),
+        InstanceId(1),
+        SecKind::Movie,
+    );
+    let chip_width = crate::ui::value_chip::ValueChip::width(
+        &measure,
+        c"Library",
+        c" · Cinema",
+        None,
+    );
+    let control_width = crate::ui::value_chip::ValueChip::width(
+        &measure,
+        c"Sort",
+        c" · Title",
+        None,
+    );
+    let rects = [
+        (
+            "library A–Z rail track",
+            rail_rect,
+        ),
+        (
+            "library grid, first column",
+            Rect::new(Layout::grid_x(0), bare.row_y(0, 0.0), CARD_W, CARD_H),
+        ),
+        (
+            "library grid, last column",
+            Rect::new(Layout::grid_x(COLS - 1), bare.row_y(0, 0.0), CARD_W, CARD_H),
+        ),
+        (
+            "library chip (document head)",
+            Rect::new(MARGIN_X, CONTENT_TOP, chip_width, crate::ui::widgets::StatusOverlay::CTRL_H),
+        ),
+        (
+            "library shelf heading (first)",
+            Rect::new(
+                MARGIN_X,
+                CONTENT_TOP + head.shelf_origin(0) - crate::ui::consts::TITLE_DY,
+                CARD_W,
+                crate::ui::consts::TITLE_DY,
+            ),
+        ),
+        (
+            "library shelf tile (first)",
+            Rect::new(
+                MARGIN_X,
+                CONTENT_TOP + head.shelf_origin(0) + crate::ui::consts::CARD_DY,
+                CARD_W,
+                CARD_H,
+            ),
+        ),
+        (
+            "library grid heading (no chip, no shelves)",
+            Rect::new(
+                MARGIN_X,
+                CONTENT_TOP + bare.grid_block_top(),
+                CARD_W,
+                crate::ui::consts::TITLE_DY,
+            ),
+        ),
+        (
+            "library grid control row (no chip, no shelves)",
+            Rect::new(
+                MARGIN_X,
+                CONTENT_TOP + bare.grid_block_top()
+                    + crate::ui::consts::TITLE_DY
+                    + crate::ui::consts::CARD_DY,
+                control_width,
+                crate::ui::widgets::StatusOverlay::CTRL_H,
+            ),
+        ),
+        ("library failure read-out band", screen.status_frame()),
+    ];
+    assert_eq!(rects.len(), 9, "the complete legacy Library probe must contribute nine bounds");
+    for (name, rect) in rects {
+        assert!(
+            consts::inside_safe(rect),
+            "{name} at ({}, {}) {}x{} leaves the safe area",
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+        );
+    }
 }
 
 #[test]

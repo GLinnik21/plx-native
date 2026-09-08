@@ -78,6 +78,8 @@ impl KeyRegistry {
     ) -> LibraryMemory {
         LibraryMemory {
             epoch: None,
+            query: None,
+            grid_reset_pending: false,
             viewports: Vec::new(),
             keys: self.keys.clone(),
             next_elem: self.keys.len() as u32,
