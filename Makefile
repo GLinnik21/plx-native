@@ -157,7 +157,8 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,8911)
 .DEFAULT_GOAL := all
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
-              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged
+              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
+              print-sentry-project
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -179,6 +180,7 @@ print-app-files:      ; @echo '$(APP_FILES)'
 print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
+print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
@@ -745,7 +747,7 @@ telemetry-local:
 	    echo "telemetry-local: neither PLX_SENTRY_DSN_DEV nor PLX_POSTHOG_KEY_DEV is set on the repo"; \
 	    exit 1; \
 	  fi; \
-	  python3 -c 'import json,sys; json.dump({"_comment":["Written by `make telemetry-local`. GITIGNORED. DEV credentials only — the production pair lives solely in GitHub repository variables and is injected by the release workflow.","No auth token here: gh cannot read secrets, and sentry-cli runs in CI."],"sentry_dsn_dev":sys.argv[1],"posthog_key_dev":sys.argv[2],"sentry_org":"gleb-linnik","sentry_project":"plx-native","posthog_host":"https://eu.i.posthog.com"}, open("$(TELEMETRY_JSON)","w"), indent=2)' "$$dsn" "$$key"; \
+	  python3 -c 'import json,sys; json.dump({"_comment":["Written by `make telemetry-local`. GITIGNORED. DEV credentials only — the production pair lives solely in GitHub repository variables and is injected by the release workflow.","No auth token here: gh cannot read secrets, and sentry-cli runs in CI."],"sentry_dsn_dev":sys.argv[1],"posthog_key_dev":sys.argv[2],"sentry_org":"gleb-linnik","sentry_project":"plx-native-dev","posthog_host":"https://eu.i.posthog.com"}, open("$(TELEMETRY_JSON)","w"), indent=2)' "$$dsn" "$$key"; \
 	  chmod 0600 $(TELEMETRY_JSON); \
 	  echo "telemetry-local: wrote $(TELEMETRY_JSON) (dev credentials; environment=development)"
 
@@ -1242,7 +1244,10 @@ endif
 # so a development build used for an on-device crash test gets the same fail-closed pairing as CI.
 # `SENTRY_AUTH_TOKEN` is read only from the process environment and is never echoed or written.
 SENTRY_ORG     ?= gleb-linnik
-SENTRY_PROJECT ?= plx-native
+# A local symbol build carries the development DSN, so its DIF belongs beside the events in the
+# development project. Release CI supplies SENTRY_PROJECT=plx-native explicitly; a checkout with
+# no telemetry cache keeps that production fallback for deliberate one-off invocations.
+SENTRY_PROJECT ?= $(or $(call telemetry_val,sentry_project),plx-native)
 SENTRY_CLI     ?= npx --yes @sentry/cli@latest
 sentry-symbols: symbols
 	@test -n "$${SENTRY_AUTH_TOKEN:-}" || { \
