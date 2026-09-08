@@ -49,6 +49,10 @@ impl PendingTransactions {
     pub(super) fn grid(&self) -> Option<&(GridTarget, GridAction)> { self.grid.as_ref() }
 
     pub(super) fn request_section(&mut self, target: SectionTarget) {
+        if self.grid.as_ref().is_some_and(|(grid, _)|
+            grid.epoch != target.epoch || grid.sid != target.identity.sid || grid.section != target.identity.key) {
+            self.grid = None;
+        }
         self.section = Some(target);
     }
 

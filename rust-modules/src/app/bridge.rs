@@ -1541,6 +1541,7 @@ mod tests {
     include!("library_bookmark_tests.rs");
     include!("library_diagnostic_tests.rs");
     include!("library_query_tests.rs");
+    include!("library_deferred_tests.rs");
     #[test]
     fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};

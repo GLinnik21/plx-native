@@ -310,6 +310,7 @@ pub(crate) struct LibraryMenu {
     stamp: Vec<u8>,
     glass: GlassState,
     desired_unwatched: Option<bool>,
+    #[cfg(test)] draft_rebuilds: usize,
 }
 
 impl LibraryMenu {
@@ -324,6 +325,7 @@ impl LibraryMenu {
             stamp: Vec::new(),
             glass: GlassState::new(),
             desired_unwatched: None,
+            #[cfg(test)] draft_rebuilds: 0,
         }
     }
     fn frame(&self) -> Rect {
@@ -357,6 +359,10 @@ impl LibraryMenu {
     fn apply_draft(&mut self, draft: MenuDraft) {
         if self.stamp == draft.stamp {
             return;
+        }
+        #[cfg(test)]
+        {
+            self.draft_rebuilds += 1;
         }
 
         let old_key = self

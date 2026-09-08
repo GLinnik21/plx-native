@@ -17,6 +17,8 @@ mod tests;
 mod window_tests;
 #[cfg(test)]
 mod labels_tests;
+#[cfg(test)]
+mod deferred_tests;
 
 use std::borrow::Cow;
 use crate::browse::{SecFetch, SecKind};
