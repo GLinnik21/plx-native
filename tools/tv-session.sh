@@ -243,16 +243,67 @@ ensure_installed() {
 }
 
 # ------------------------------------------------------------- deploy --------
+is_md5_hash() {
+  [ "${#1}" -eq 32 ] || return 1
+  case "$1" in
+    *[!0-9a-fA-F]*) return 1 ;;
+  esac
+}
+
+local_binary_hash() {
+  local raw hash
+  if raw=$(md5 -q "$REPO/pkg/plxnative" 2>/dev/null); then
+    :
+  else
+    raw=$(md5sum "$REPO/pkg/plxnative" 2>/dev/null) || return 1
+  fi
+  hash=${raw%%[[:space:]]*}
+  [ -z "$hash" ] && { printf '\n'; return 0; }
+  is_md5_hash "$hash" || return 1
+  printf '%s\n' "$hash"
+}
+
+remote_binary_hash() {
+  local raw hash
+  raw=$(tvq "md5sum $APPDIR/plxnative") || return 1
+  hash=${raw%%[[:space:]]*}
+  [ -z "$hash" ] && { printf '\n'; return 0; }
+  is_md5_hash "$hash" || return 1
+  printf '%s\n' "$hash"
+}
+
 ensure_binary() {
   [ -f "$REPO/pkg/plxnative" ] || { bad "no pkg/plxnative — run make"; return 1; }
-  local l t
-  l=$(md5 -q "$REPO/pkg/plxnative" 2>/dev/null || md5sum "$REPO/pkg/plxnative" | cut -d' ' -f1)
-  t=$(tvq "md5sum $APPDIR/plxnative" | cut -d' ' -f1)
+  local l t presence
+  if ! l=$(local_binary_hash); then
+    bad "could not read local binary hash"
+    return 1
+  fi
+  [ -n "$l" ] || { bad "local binary hash is empty"; return 1; }
+  # A registered install can have lost its executable. Only a successful, exact response
+  # from a searchable/readable app directory establishes absence; transport failures and
+  # dangling symlinks must not authorize a repair deploy.
+  if ! presence=$(tvq "cd '$APPDIR' && [ -r . ] && [ -x . ] || exit 1
+if [ -e plxnative ] || [ -L plxnative ]; then printf 'present\\n'; else printf 'missing\\n'; fi"); then
+    bad "could not determine deployed binary presence"
+    return 1
+  fi
+  case "$presence" in
+    present)
+      if ! t=$(remote_binary_hash); then
+        bad "could not read deployed binary hash"
+        return 1
+      fi
+      [ -n "$t" ] || { bad "deployed binary hash is empty"; return 1; }
+      ;;
+    missing) t=""; info "deployed binary is missing — repair required" ;;
+    *) bad "invalid deployed binary presence response"; return 1 ;;
+  esac
   # This compares BYTES, and `pkg/plxnative` is a path that every flavour and both configurations
   # write — so a match says "these are the bytes on my disk right now", never "this is the install
   # I asked for". That second question is settled by assert_install, on the app's own boot line.
   if [ "$l" = "$t" ]; then ok "deployed binary matches local build"; return 0; fi
-  info "binary differs — deploying to $APPID"
+  info "binary differs or is missing — deploying to $APPID"
   # THE SAME flavour that was resolved above. A deploy that fell back to the Makefile default
   # would write install A's directory and then launch install B below — SAM's stale-running no-op,
   # after which every assertion here grades the other app's log.
@@ -266,7 +317,16 @@ ensure_binary() {
     printf '%s\n' "$_deploy_out" | sed 's/^/    /'
     return 1
   fi
-  t=$(tvq "md5sum $APPDIR/plxnative" | cut -d' ' -f1)
+  if ! l=$(local_binary_hash); then
+    bad "could not re-read local binary hash after deploy"
+    return 1
+  fi
+  [ -n "$l" ] || { bad "local binary hash is empty after deploy"; return 1; }
+  if ! t=$(remote_binary_hash); then
+    bad "could not re-read deployed binary hash"
+    return 1
+  fi
+  [ -n "$t" ] || { bad "deployed binary hash is empty after deploy"; return 1; }
   # a standby can truncate an scp mid-flight, so verify rather than trust
   [ "$l" = "$t" ] && { ok "deployed + md5 verified"; return 0; }
   # Re-running `up` fixes the standby case and nothing else, so name the other one too — see

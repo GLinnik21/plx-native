@@ -513,7 +513,7 @@ world-readable `/tmp` on the TV across many runs.
 - `sshpass -p alpine` (`Makefile:24-25`) — **not a secret.** `alpine` is the published webosbrew
   dev-mode root password; the repo's own skill says so. Publishable. It does teach an insecure
   default and will authenticate against *any* rooted webOS TV a contributor points `TV=` at.
-- `192.168.0.114` / `192.168.0.3` — RFC1918, low risk, but they are the maintainer's home topology,
+- `192.0.2.20` / `192.0.2.21` — RFC1918, low risk, but they are the maintainer's home topology,
   they are the defaults every contributor inherits, **and one of them gets baked into the binary**.
   **FIXED 2026-08-02.** `git ls-files | xargs grep '192\.168\.0\.'` is now empty outside this
   section, which keeps its citations on purpose. The TV's address moved to the gitignored
@@ -530,7 +530,7 @@ world-readable `/tmp` on the TV across many runs.
 
 **What a public build would leak (verified by `strings` on `pkg/plxnative` and inside the ipk):**
 
-1. `192.168.0.3` — `PMS_HOST` from `config.local.h` is compiled in. *(Only used on the
+1. `192.0.2.21` — `PMS_HOST` from `config.local.h` is compiled in. *(Only used on the
    `/tmp/plxnative-token` automation branch — `app.rs:436-438` — so a public build with no
    `config.local.h` compiles the `"YOUR_PMS_HOST"` placeholder and never uses it. Still, don't ship a
    binary built on this machine.)*
@@ -628,7 +628,10 @@ Privacy & data. First run asks about the two purposes separately and offers the 
 preview before either answer: the first choice remains a draft, the second records both, and BACK
 records nothing either way — it steps back from the product question to the crash one, and on the
 crash question (which is asked once per sign-in, immediately after it and before the
-profile picker) there is nothing behind it, so it is swallowed rather than closing the ceremony.
+profile picker) there is nothing behind it *inside the app* — sign-in is the step behind it, and
+that cannot be undone — so BACK there is the platform's own root press (`docs/remote-keys.md` §8)
+rather than closing the ceremony: it neither answers nor dismisses the question, and returning to
+the app finds it still there.
 `PRIVACY.md` carries the schemas: usage is generated from
 `diag::schema::EVENT_SPECS`, native crashes are checked against their sanitizer allowlist, and
 handled playback errors use the same typed serializer/key-contract as the consent preview and

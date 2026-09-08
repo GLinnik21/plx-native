@@ -378,15 +378,18 @@ For a series, the page carries its seasons and episodes rather than a single act
 
 ### 5.9 The root press
 
-**BACK at a root shows the television's own Home screen, and the app keeps running.** Three roots
-today: Home's own root, the who's-watching picker and the QR sign-in.
+**BACK at a root shows the television's own Home screen, and the app keeps running.** Four roots,
+as of 2026-09-07: Home's own root, the who's-watching picker, the QR sign-in, and the first-run
+consent question's first stage.
 
-**One screen with nothing behind it is NOT yet covered**, and saying so is the point of writing the
-list out — the first-run consent question still swallows BACK at its first stage. Going to the LG
-Home would neither answer nor dismiss it, so nothing would be stranded and it ought to behave like
-the other three; what stops it is that `consent::on_back` reports the same value whether it stepped
-back a stage or swallowed the press, so the key arm cannot tell those apart. `app.rs`'s consent arm
-carries the whole account.
+**The fourth was the hard one, and it stayed open for a while for a reason worth keeping**: going
+to the LG Home neither answers nor dismisses the consent question, so nothing is stranded by it —
+but the old key arm could not tell the first stage's BACK apart from a later stage's ordinary
+step-back, because both reported the same value out of the legacy screen's `on_back`. Closing it
+took a screen change rather than a key-arm change: `ConsentPage` (`screens/consent.rs`) now answers
+`Handled::No` at an ordinary step-back and pushes `LoopReq::BackAtRoot` only at the first stage, and
+`app::input::back_at_root` performs the platform press. The question is left up — the LG Home
+neither answers nor dismisses it, and selecting the tile again lands straight back on it.
 
 There is no figure, because the screen it produces is LG's launcher and not ours.
 

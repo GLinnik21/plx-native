@@ -40,15 +40,24 @@ Store-distributed build, followed by factory reset, install/restore through the 
 distribution channel, and launch. That distribution evidence is not available yet, so this row is
 Open rather than N/A.
 
-### Root BACK on the entry page: three of four roots done 2026-09-03, device evidence not taken
+### Root BACK on the entry page: all four roots covered as of 2026-09-07, device evidence not taken for the fourth
 
 This was a submission-policy blocker in addition to the numbered checklist: the app raised a
 Cancel/Exit confirmation at Home root, where the webOS 23–25 submission expectation says entry-page
 BACK must show the television Home screen. The confirmation is gone. BACK at each of the THREE
-implemented roots — Home, the who's-watching picker, the QR sign-in — now calls `webos::go_home`,
-which asks SAM to launch the Home launcher and leaves the process running (`docs/remote-keys.md`
-§8). The first-run consent question is a fourth root and is NOT covered; `app.rs`'s consent arm
-says why, and it is a `ui/consent.rs` change rather than a BACK-arm one.
+roots implemented 2026-09-03 — Home, the who's-watching picker, the QR sign-in — calls
+`webos::go_home`, which asks SAM to launch the Home launcher and leaves the process running
+(`docs/remote-keys.md` §8). **The first-run consent question was the fourth root and was NOT
+covered as of that date; it was closed 2026-09-07 in the phase 5b restructure**, when the question
+stopped being a `Popover` (`ui/consent.rs`, whose `on_back` returned a bare `bool` that could not
+tell "stepped back a stage" from "the platform took the screen" — which is exactly the ambiguity
+that had kept a BACK-arm fix out of reach) and became an owned screen (`screens/consent.rs`) that
+answers with a request instead: BACK at the first stage asks the loop for the same `LoopReq` the
+other three roots use, going to television Home without answering or dismissing the question, so
+selecting the app's tile again returns straight to it. Proven on the host
+(`app/bridge.rs`'s `back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up`);
+**no device evidence has been taken for this fourth root**, same gap as the picker's root and the
+webOS 5+ full-screen-launcher case noted below.
 
 **Device evidence, taken 2026-09-04 on the dev set (webOS 4.10.2), for Home's root and the QR
 sign-in:** `gohome: SAM accepted in 16ms → {"returnValue":true}`, the launcher visible in the
@@ -154,8 +163,9 @@ full/original screen toggle · #47 live/real-time TV streaming · #48 subtitle a
 ## 7. Release verdict at this snapshot
 
 The integrated implementation and its automated/device suites are green. The LG submission is
-**not ready**: Store factory-reset evidence is unavailable, root BACK is implemented against the
-policy at three of its four roots — the first-run consent question is the fourth and is untouched —
-and neither that nor its device evidence has been taken, so the unrun device evidence in §3 cannot
-honestly be marked Pass. Automatic ABR and LG #43 CASE1 are no
+**not ready**: Store factory-reset evidence is unavailable, and root BACK — implemented against the
+policy at three of its four roots since 2026-09-03, and at all four since the first-run consent
+question closed 2026-09-07 (§2 above) — still has NO device evidence for that fourth root (nor for
+the who's-watching picker's, nor for a webOS 5+ full-screen-launcher set), so the unrun device
+evidence in §3 cannot honestly be marked Pass. Automatic ABR and LG #43 CASE1 are no
 longer blockers. Keep plan completion and submission readiness separate when reporting status.

@@ -427,7 +427,7 @@ fn commit_text(text: &str) {
         let mut s = q.to_string();
         s.replace_range(from..caret(), "");
         set_caret(from);
-        crate::search::set_query(&s);
+        crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(s));
     }
     insert_text(text);
 }
@@ -473,7 +473,7 @@ fn insert_text(text: &str) {
     let mut q = crate::search::query().to_string();
     q.insert_str(c, text);
     set_caret(c + text.len());
-    crate::search::set_query(&q); // invalidates
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q)); // invalidates
 }
 
 /// Delete the character BEFORE the caret.
@@ -486,14 +486,14 @@ fn backspace() {
     let prev = prev_boundary(&q, c);
     q.replace_range(prev..c, "");
     set_caret(prev);
-    crate::search::set_query(&q); // invalidates
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q)); // invalidates
 }
 
 /// The panel's **Clear all**: the whole query goes, caret to the front. Not "delete to the caret" —
 /// the button is one word and it says all of it.
 fn clear_query() {
     set_caret(0);
-    crate::search::set_query("");
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(String::new()));
 }
 
 /// The panel's `◀`/`▶`. One character, clamped at both ends rather than wrapping: a caret that
@@ -786,7 +786,7 @@ fn mount(seed: Option<&str>) {
         // commits cannot carry one (`textinput::decode_text_at` cuts the string AT the NUL) and a
         // recents pick is already refused by `recents::usable`.
         let q: String = q.chars().filter(|c| !c.is_control()).collect();
-        crate::search::set_query(&q);
+        crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q.clone()));
         // The caret lands at the END of a pre-seeded term, which is where a person who had just
         // typed it would be standing — and is what makes the boot trigger's field behave like a
         // typed one.
@@ -821,8 +821,8 @@ pub(crate) fn update(dt: f32) {
     // The roster's LIBRARY names, for the scope line below the field. Only the Library screen runs
     // the full `browse::pump`, so a boot straight into this one knew it had two sources and could
     // not name either of them.
-    crate::browse::discover_pump();
-    crate::search::pump(dt);
+    crate::stores::browse::discover_pump();
+    crate::stores::search::pump(dt);
     // After `pump_text`, so a frame that typed a character draws a solid bar rather than whichever
     // phase the clock happened to be in.
     step_blink(dt, editing());
@@ -1273,7 +1273,7 @@ pub(crate) fn on_ok() -> Action {
                 recents::clear();
             } else {
                 let t = terms[i].clone();
-                crate::search::set_query(&t);
+                crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(t.clone()));
                 set_caret(t.len()); // as if it had just been typed — see `start_editing`
                 recents::remember(&t); // picking a term is searching it: it moves to the front
             }

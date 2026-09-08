@@ -170,6 +170,12 @@ impl DecisionAlert {
             .map_or(0.0, |b| Self::body_view(b).measure_h(BODY_W));
         layout(qh, bh)
     }
+    /// The two answers' frames as drawn (Cancel, Delete) — the hit stops an owned screen
+    /// registers for them (restructure phase 5b). Measures text, so draw-time only.
+    pub(crate) fn frames(&self) -> (Rect, Rect) {
+        let l = self.measured();
+        (l.cancel, l.destructive)
+    }
     fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
             .h(HAlign::Center)

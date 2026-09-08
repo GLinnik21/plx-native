@@ -23,7 +23,7 @@
 //!
 //! ## Why an atomic pointer table and not an `RwLock<Vec<Arc<Client>>>`
 //!
-//! `client()` is a HOT path: `posters::poster_key` calls it three times per key, for every
+//! `client()` is a HOT path: `app::adapters::poster::built_key` calls it three times per key, for every
 //! visible art tile, every frame (~25–40 tiles × 60 fps). An `RwLock` there buys nothing and
 //! costs an atomic RMW pair per call plus a fairness stall whenever a login writes; an `Arc`
 //! clone would be a refcount bump per call on top of changing every call site's type. So a read
@@ -81,7 +81,7 @@ pub const MAX_SERVERS: usize = 16;
 
 /// A registry slot — a small `Copy` handle that names a server without borrowing it. Stable for
 /// the life of the process, so it can sit in UI state, a route, or a queued job.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct ServerId(u16);
 
 impl ServerId {

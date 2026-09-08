@@ -80,6 +80,20 @@ impl DocumentReader {
         // by content, not by identity, so nothing here can serve a stale layout.
     }
 
+    /// The scroll TARGET is at the top — UP leaves the document (spec §7.3 step 2).
+    pub(crate) fn at_top(&self) -> bool {
+        self.target <= 0.0
+    }
+    /// The scroll target is at the end — DOWN leaves. An empty document is at both ends.
+    pub(crate) fn at_end(&self) -> bool {
+        self.target >= self.max_scroll
+    }
+    /// Test seam: a content height without a draw (the real one is measured in `draw`).
+    #[cfg(test)]
+    pub(crate) fn set_extent_for_test(&mut self, max_scroll: f32) {
+        self.max_scroll = max_scroll;
+    }
+
     pub(crate) fn move_by(&mut self, delta: i32) {
         self.target = (self.target + delta as f32 * STEP).clamp(0.0, self.max_scroll);
         crate::ui::idle::invalidate();

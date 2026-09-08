@@ -168,6 +168,10 @@ pub(crate) fn is_open() -> bool {
     unsafe { (*addr_of!(POP)).is_open() }
 }
 
+pub(crate) fn visible() -> bool {
+    unsafe { (*addr_of!(POP)).visible() }
+}
+
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
 /// home shelves carry. Kept as a predicate so the caller can decline to open an empty popover.
 pub(crate) fn has_actions(m: &PmsMovie) -> bool {

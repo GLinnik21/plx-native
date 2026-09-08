@@ -62,7 +62,8 @@ use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
 use crate::ui::consts::*;
 // The Sources ROW MODEL lives one module over, because it is drawn on TWO surfaces: this
-// panel, and the first-run route that asks the same question before Home (`ui::onboard`).
+// panel, and the first-run route that asks the same question before Home
+// (`crate::screens::onboard`).
 use crate::ui::icons::Icon;
 use crate::ui::popover::{Opener, Popover};
 use crate::ui::source_list::{self, Level, SrcAction, Tail};
@@ -1121,19 +1122,19 @@ fn apply_pending() {
                 return;
             }
             let landed = match act {
-                GridAct::Sort { key, desc } => crate::browse::set_sort_by_key(&key, desc),
+                GridAct::Sort { key, desc } => crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetSortByKey { key, desc }),
                 GridAct::Unwatched(v) => {
                     // the target, re-checked against the store: two presses inside one fade
                     // collapse to a no-op, and a no-op must NOT re-query (nor reset the scroll —
                     // nothing changed)
                     if crate::browse::unwatched() != v {
-                        crate::browse::toggle_unwatched();
+                        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::ToggleUnwatched);
                         true
                     } else {
                         false
                     }
                 }
-                GridAct::Genre(id) => crate::browse::set_genre_by_id(id.as_deref()),
+                GridAct::Genre(id) => crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetGenreById(id)),
             };
             if landed {
                 grid_reset();
@@ -2559,7 +2560,7 @@ fn retry_source() {
     // both, which is the right answer either way. Nothing blocks and nothing re-enters the screen:
     // a table that lands arrives through `pump`'s worker like any other source's, and the read-out
     // clears itself on the frame `readout()` stops saying Failed.
-    crate::browse::retry_cur_source();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::RetryCurSource);
 }
 
 /// Keep the focus band and the read-out in agreement, every frame. The failure can arrive long
@@ -2838,8 +2839,8 @@ pub(crate) fn enter(kind: crate::browse::SecKind, arrival: Arrival) {
         // `tab` is a PILL index (`app.rs`'s `Nav::Library`, which derives it from the pill pressed),
         // and a pill is a type rather than a library — so it resolves owned-first/shared-second
         // here, at the ONE boundary where the strip's index space enters this screen.
-        crate::browse::set_cur(section);
-        crate::browse::kick_letters();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(section));
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::KickLetters);
         restore_view();
         // Put the selected permanent type pill on screen once, rather than dragging the row every
         // frame — but only on a CUT;
@@ -2946,14 +2947,14 @@ fn apply_section(i: usize) {
     if i >= crate::browse::section_count() || i == crate::browse::cur() {
         return;
     }
-    crate::browse::set_cur(i);
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(i));
     // **Remember it, HERE and not in `set_cur`.** This is the commit of a page change the viewer
     // asked for — a tab press or a library pill — so it is the only seam that can tell a choice
     // from `repoint_cur` moving the cursor off a library that stopped being a favourite, or from
     // the boot path settling before discovery has finished. Recording either would invent a
     // preference and then open there next launch.
-    crate::browse::note_library_choice(i);
-    crate::browse::kick_letters();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::NoteLibraryChoice(i));
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::KickLetters);
     restore_view();
 }
 
@@ -3175,9 +3176,9 @@ pub(crate) fn update(dt: f32) {
         // header and N shelves above the grid, a 12-shelf library asked `browse` for pages ~13 rows
         // into the catalog while row 0's own slots sat unloaded.
         let (lo_row, hi_row) = layout().visible_rows((*addr_of!(SCROLL)).pos);
-        crate::browse::want(lo_row.saturating_sub(1) * COLS, (hi_row + 1) * COLS);
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Want { lo: lo_row.saturating_sub(1) * COLS, hi: (hi_row + 1) * COLS });
     }
-    if crate::browse::pump() {
+    if crate::stores::browse::pump() {
         clamp_focus();
     }
     // …and AGAIN, because `pump` is one of the things that can replace the store under us: it
@@ -3190,8 +3191,8 @@ pub(crate) fn update(dt: f32) {
         && crate::browse::section_kind(crate::browse::cur()) != Some(wanted)
     {
         if let Some(section) = crate::browse::tab_section(wanted_tab()) {
-            crate::browse::set_cur(section);
-            crate::browse::kick_letters();
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(section));
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::KickLetters);
             restore_view();
             unsafe { EPOCH = crate::browse::query_gen() };
         }
@@ -3199,7 +3200,7 @@ pub(crate) fn update(dt: f32) {
     // **Ask this library for its own shelves.** The one call that takes `section_hubs` out of
     // dormancy, and it is idempotent — armed once, then owed a fetch only when something
     // invalidates it.
-    crate::browse::section_hubs::kick(crate::browse::cur());
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsKick(crate::browse::cur()));
     // …and publish a staged set when the ground may move. TWO cases, and they are different
     // situations rather than one predicate:
     //
@@ -3227,7 +3228,7 @@ pub(crate) fn update(dt: f32) {
     // away and back. What is NOT acceptable is doing it under an armed press, whose deferred
     // activation would then resolve against the zone focus was moved TO rather than the card that
     // was pressed. `ui::press`' "focus cannot move mid-press" contract, one more time.
-    if crate::browse::section_hubs::commit_staged(crate::browse::cur(), may_publish_shelves()) {
+    if crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsCommitStaged { sec: crate::browse::cur(), may_move: may_publish_shelves() }) {
         let lay = layout();
         unsafe {
             AREA = lay.first_content().unwrap_or(Area::Tabs);
@@ -3241,10 +3242,10 @@ pub(crate) fn update(dt: f32) {
     // waiting menu data re-kicks each frame (self-guarded): the single-flight fetch flags are
     // GLOBAL, so a fetch busy on another section must not permanently starve this one
     if crate::browse::letters().is_empty() {
-        crate::browse::kick_letters();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::KickLetters);
     }
     if matches!(menu(), Menu::Genre { .. }) && crate::browse::genres().is_empty() {
-        crate::browse::kick_genres();
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::KickGenres);
     }
     unsafe {
         // springs: focused pop + the one shrinking previous cell (NOT a spring per cell — a
@@ -3331,7 +3332,7 @@ pub(crate) fn update(dt: f32) {
         (*addr_of_mut!(RAIL_A)).step(rail_want, K_SCROLL, dt);
 
         // remember the view for re-entry (state amnesia is the official app's #2 complaint)
-        crate::browse::save_view(focus_idx(), (*addr_of!(SCROLL)).pos);
+        crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SaveView { focus: focus_idx(), scroll: (*addr_of!(SCROLL)).pos });
     }
     // the shared tab strip's horizontal scroll — with more libraries than fit the row, this is
     // what reaches the far pills. Drawn from `.pos`; the draw pass runs at dt=0. Off the tab row
@@ -4047,7 +4048,7 @@ fn open_filter_menu(keep: bool) {
 }
 
 fn build_genre_menu(keep: bool) {
-    crate::browse::kick_genres();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::KickGenres);
     let genres = crate::browse::genres();
     let selected = crate::browse::genre_sel().map(|g| g.id.clone());
     let mut sec = Section::new("Genre").row(Row::new("All Genres").checked(selected.is_none()));
@@ -4080,7 +4081,7 @@ fn menu_commit(sel: i32) {
                 close_menu();
             }
             SrcAction::Recheck => {
-                crate::browse::recheck_shares();
+                crate::stores::browse::apply(crate::stores::browse::BrowseCmd::RecheckShares);
                 build_source_menu(true);
             }
             SrcAction::None => {}
@@ -7275,13 +7276,14 @@ mod tests {
     /// resolve against the zone focus was moved to rather than the card that was pressed.
     #[test]
     fn a_shelf_commit_waits_for_an_armed_press_to_finish() {
+        let mut p = crate::ui::press::Press::new();
         let _g = crate::testlock::serial();
         let _t = crate::plex::session::TempSession::new("commitpress");
         _t.watching("u-commitpress");
         crate::browse::reset();
         crate::browse::seed_two_source_table_for_test();
         crate::browse::seed_items_for_test(120);
-        crate::ui::press::cancel();
+        p.cancel();
 
         // the page a single-library household actually has on arrival: no chip, no shelves yet,
         // focus in the grid block at scroll 0 — where the head and grid row 0 are ONE coordinate
@@ -7298,14 +7300,14 @@ mod tests {
         );
 
         // …and with a press armed on the card under the ring, it waits
-        crate::ui::press::begin(0);
-        assert!(crate::ui::press::is_live());
+        p.begin(0);
+        assert!(p.is_live());
         assert!(
             !may_publish_shelves(),
             "the deferred activation would resolve against the zone focus was moved TO"
         );
 
-        crate::ui::press::cancel();
+        p.cancel();
         assert!(may_publish_shelves(), "…and once the press is over, it may");
         crate::browse::reset();
     }

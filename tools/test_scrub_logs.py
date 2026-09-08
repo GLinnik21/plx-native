@@ -73,7 +73,7 @@ class PublicAddresses(unittest.TestCase):
         self.assertEqual(out, text)
 
     def test_private_addresses_still_get_the_lan_label_not_the_peer_one(self):
-        out, _ = scrub("serving http://192.168.0.3:55124")
+        out, _ = scrub("serving http://192.0.2.21:55124")
         self.assertIn("<lan-ip-1>", out)
         self.assertNotIn("<peer-ip-1>", out)
 

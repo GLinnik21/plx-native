@@ -157,7 +157,8 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,8911)
 .DEFAULT_GOAL := all
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
-              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged
+              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
+              print-sentry-project
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -179,6 +180,7 @@ print-app-files:      ; @echo '$(APP_FILES)'
 print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
+print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
@@ -745,7 +747,7 @@ telemetry-local:
 	    echo "telemetry-local: neither PLX_SENTRY_DSN_DEV nor PLX_POSTHOG_KEY_DEV is set on the repo"; \
 	    exit 1; \
 	  fi; \
-	  python3 -c 'import json,sys; json.dump({"_comment":["Written by `make telemetry-local`. GITIGNORED. DEV credentials only — the production pair lives solely in GitHub repository variables and is injected by the release workflow.","No auth token here: gh cannot read secrets, and sentry-cli runs in CI."],"sentry_dsn_dev":sys.argv[1],"posthog_key_dev":sys.argv[2],"sentry_org":"gleb-linnik","sentry_project":"plx-native","posthog_host":"https://eu.i.posthog.com"}, open("$(TELEMETRY_JSON)","w"), indent=2)' "$$dsn" "$$key"; \
+	  python3 -c 'import json,sys; json.dump({"_comment":["Written by `make telemetry-local`. GITIGNORED. DEV credentials only — the production pair lives solely in GitHub repository variables and is injected by the release workflow.","No auth token here: gh cannot read secrets, and sentry-cli runs in CI."],"sentry_dsn_dev":sys.argv[1],"posthog_key_dev":sys.argv[2],"sentry_org":"gleb-linnik","sentry_project":"plx-native-dev","posthog_host":"https://eu.i.posthog.com"}, open("$(TELEMETRY_JSON)","w"), indent=2)' "$$dsn" "$$key"; \
 	  chmod 0600 $(TELEMETRY_JSON); \
 	  echo "telemetry-local: wrote $(TELEMETRY_JSON) (dev credentials; environment=development)"
 
@@ -996,6 +998,19 @@ run-stream: tv-lock-require
 	  trap "kill $$LP 2>/dev/null" EXIT INT TERM HUP; \
 	  tail -F -n +1 $(EVENTLOG)'
 
+# make softfloat-probe — the ARM half of ui/motion.rs's differential claim (spec §4.2): boot the
+# deployed debug build with plxnative-softfloat armed, print the `softfloat:` line (its hash beside
+# the host's pinned one, MATCH or DIVERGE) and fetch the word table for a diff. Needs a prior
+# `make deploy`; the trigger is removed afterwards so the next boot is ordinary.
+softfloat-probe: tv-lock-require
+	@echo "softfloat probe on $(APPID) [$(FLAVOR)]"
+	$(SSH) 'mkdir -p $(RUNDIR) && chmod 1777 $(RUNDIR); touch $(RUNDIR)/plxnative-softfloat; \
+	  $(BOOT_SH) \
+	  sleep 12; kill $$LP 2>/dev/null; sleep 1; rm -f $(RUNDIR)/plxnative-softfloat; \
+	  $(CLOSE_SH) grep softfloat $(EVENTLOG) || echo "softfloat: NO LINE (was the build deployed with devtriggers?)"'
+	@mkdir -p tests/fixtures/softfloat
+	-$(SCP) root@$(TV_OR_DIE):$(RUNDIR)/plxnative-softfloat.tbl tests/fixtures/softfloat/arm.tbl 2>/dev/null && echo "table: tests/fixtures/softfloat/arm.tbl"
+
 kill: tv-lock-require
 	$(SSH) '$(CLOSE_SH) echo closed $(APPID)'
 
@@ -1079,12 +1094,16 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	python3 tools/test_tv_capture_bench.py
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
 	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
 	@# "neither shipped configuration", which is a SKIP, so three gates printed nothing and nobody
 	@# saw it. Free, and the one place the make-side and python-side spellings of the stamp meet.
 	python3 ci/check-package.py --selftest
+	@# The restructure's structure gates (spec §15.2): greps with counted allowlists under
+	@# ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
+	ci/check-deps.sh
 	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
 	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
 	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong
@@ -1117,6 +1136,7 @@ check: lint
 	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
 	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
 	tools/tv-session.sh selftest
+	python3 ci/test_tv_session.py
 	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
 	@# target until 2026-08-26, which meant the guard that decides whether a private value may
 	@# leave this machine was covered by a test nobody ran on a normal check -- the same shape as
@@ -1225,7 +1245,10 @@ endif
 # so a development build used for an on-device crash test gets the same fail-closed pairing as CI.
 # `SENTRY_AUTH_TOKEN` is read only from the process environment and is never echoed or written.
 SENTRY_ORG     ?= gleb-linnik
-SENTRY_PROJECT ?= plx-native
+# A local symbol build carries the development DSN, so its DIF belongs beside the events in the
+# development project. Release CI supplies SENTRY_PROJECT=plx-native explicitly; a checkout with
+# no telemetry cache keeps that production fallback for deliberate one-off invocations.
+SENTRY_PROJECT ?= $(or $(call telemetry_val,sentry_project),plx-native)
 SENTRY_CLI     ?= npx --yes @sentry/cli@latest
 sentry-symbols: symbols
 	@test -n "$${SENTRY_AUTH_TOKEN:-}" || { \
@@ -1361,6 +1384,13 @@ logmprobe: tools/logmprobe.c
 # by the in-app profiler.  It is standalone, never linked into or deployed with the application.
 mali-hwcnt-probe: tools/mali-hwcnt-probe.c
 	$(CC) $(CFLAGS) -o pkg/mali-hwcnt-probe tools/mali-hwcnt-probe.c
+
+# tools/tv-capture-bench.c — staged, standalone probe for the firmware planes a hardware screen
+# recorder would consume. Runtime dlopen keeps DILE/GAL out of the application's DT_NEEDED set;
+# the probe is copied to /tmp by hand, run under the TV lock, then deleted.
+tv-capture-bench: tools/tv-capture-bench.c
+	@mkdir -p pkg
+	$(CC) $(CFLAGS) -o pkg/tv-capture-bench tools/tv-capture-bench.c -ldl -lrt
 
 # Passive /proc/interrupts sampler used as the middle, non-attributable layer of the opt-in
 # graphics profile. Standalone and temporary like the HWCNT probe; never an application payload.
@@ -1599,5 +1629,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-run sim-shot sim-token sim-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

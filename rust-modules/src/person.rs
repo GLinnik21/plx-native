@@ -864,6 +864,21 @@ pub(crate) fn loading() -> bool {
     current().map(|p| !p.landed).unwrap_or(false)
 }
 
+/// Whether one server's contribution to this person's shelves is still unresolved.
+///
+/// This is deliberately narrower than [`loading`]: the page may stop its global spinner as soon
+/// as any source contributes content, while a saved card from another source still needs its own
+/// `/media` answer before the screen may decide that identity is gone. A failed resolve or media
+/// request remains pending here because [`maybe_spawn`] retries it after backoff. An absent source
+/// is not pending (the roster no longer offers a way for that card to return), and a successful
+/// empty media answer or resolved "no record" is settled through [`Src::settled`].
+pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
+    p.srcs
+        .iter()
+        .find(|source| source.sid == sid)
+        .is_some_and(|source| !source.settled())
+}
+
 /// MAIN THREAD, once a frame while the page is up: apply every landed fetch and schedule the next.
 /// Returns true when the store just changed — the screen re-clamps its focus and rebuilds its
 /// cached header strings on it.
@@ -956,7 +971,7 @@ fn seed_dev_credits(p: &mut Person) -> bool {
     let n: usize = arg.trim().parse().unwrap_or(9);
     let row = |i: usize, dept: &str| {
         let (title, id, thumb) = match held.get(i) {
-            Some((t, g, th)) => (t.clone(), g.clone(), th.clone()),
+            Some((t, g, th)) => (t.clone(), guid_tail(g).to_string(), th.clone()),
             // …and everything past them is the majority this screen exists to show: a career you
             // do not hold. The ID is deliberately one no server can answer for.
             None => (
@@ -1498,6 +1513,8 @@ const FOLD: usize = 5;
 
 /// One row of the Filmography route: a credit, and whether anybody you can reach holds it.
 pub(crate) struct Credit {
+    /// Discover's stable catalog identity, retained through the availability projection.
+    pub(crate) catalog_id: String,
     pub(crate) title: String,
     /// **The poster, as an ABSOLUTE URL on somebody else's host** — see
     /// [`crate::plex::discover::CreditItem::thumb`]. Carried through to the row rather than dropped
@@ -1552,6 +1569,7 @@ pub(crate) fn filmography(p: &Person) -> Vec<Department> {
             .filter_map(|c| {
                 let it = c.item.as_ref()?;
                 (!it.title.is_empty()).then(|| Credit {
+                    catalog_id: it.rating_key.clone(),
                     title: it.title.clone(),
                     role: c.role.clone(),
                     year: it.year.clamp(0, i32::MAX as i64) as i32,
@@ -1676,7 +1694,8 @@ pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
     };
     p.credits = groups
         .iter()
-        .map(|(title, n)| CreditGroup {
+        .enumerate()
+        .map(|(department, (title, n))| CreditGroup {
             kind: title.to_lowercase(),
             title: title.to_string(),
             size: *n as i64,
@@ -1685,6 +1704,7 @@ pub(crate) fn install_credits_for_test(groups: &[(&str, usize)]) {
                     order: i as i64,
                     role: format!("Part {i}"),
                     item: Some(CreditItem {
+                        rating_key: format!("s{:08x}", ((department as u32) << 16) | i as u32),
                         kind: "movie".into(),
                         title: format!("{title} {i}"),
                         year: 2000 + i as i64,
@@ -1735,6 +1755,27 @@ pub(crate) fn install_for_test(movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
     resettle(p);
 }
 
+/// TEST ONLY: land one named source's shelves through the same per-source ownership and merge
+/// projection as [`apply`]'s successful media arm. Unlike [`install_for_test`], this does not
+/// settle unrelated credits state and therefore supports multi-source pending-return tests.
+#[cfg(test)]
+pub(crate) fn install_source_for_test(sid: ServerId, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) {
+    let Some(p) = (unsafe { (*addr_of_mut!(CURRENT)).as_mut() }) else {
+        return;
+    };
+    let Some(source) = p.srcs.iter_mut().find(|source| source.sid == sid) else {
+        return;
+    };
+    source.shelves = [movies, shows].map(|items| Shelf {
+        total: items.len(),
+        items,
+        roles: Vec::new(),
+    });
+    source.landed = true;
+    source.roled = false;
+    resettle(p);
+}
+
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
@@ -1746,6 +1787,23 @@ mod tests {
     /// `None`) and every test below drives the mailbox by hand.
     const S0: ServerId = ServerId::from_raw(0);
     const S1: ServerId = ServerId::from_raw(1);
+
+    #[test]
+    fn filmography_preserves_provider_identity_without_a_local_library_copy() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset();
+        open(S0, "1001", "", "s00000001", "");
+        install_credits_for_test(&[("Actor", 4)]);
+        let departments = filmography(current().unwrap());
+        let rows: Vec<_> = departments.iter().flat_map(|d| &d.rows).collect();
+        assert_eq!(rows.iter().map(|r| r.catalog_id.as_str()).collect::<Vec<_>>(),
+            ["s00000003", "s00000002", "s00000001", "s00000000"]);
+        assert!(rows.iter().all(|r| r.local.is_none()),
+            "provider identity survives even when no PMS can supply a local ratingKey");
+        reset();
+        crate::plex::reset_servers_for_test();
+    }
 
     #[test]
     fn an_open_person_rebuilds_exact_sources_when_the_profile_roster_changes() {
@@ -1871,6 +1929,34 @@ mod tests {
             tag_key: guid.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn per_source_media_resolution_stays_pending_across_failure_until_an_answer() {
+        let _serial = crate::testlock::serial();
+        reset();
+        open(S0, "6059", "guid", "Somebody", "");
+        assert!(media_resolving(current().unwrap(), S0));
+
+        assert!(
+            !apply(at(S0, K_MEDIA), Landing::Media(None)),
+            "a transport failure changes no published shelves"
+        );
+        assert!(
+            media_resolving(current().unwrap(), S0),
+            "failure backs off and retries; it is not a terminal missing answer"
+        );
+
+        assert!(apply(at(S0, K_MEDIA), media(Vec::new(), Vec::new())));
+        assert!(
+            !media_resolving(current().unwrap(), S0),
+            "a successful empty media response is a terminal answer for this source"
+        );
+        assert!(
+            !media_resolving(current().unwrap(), S1),
+            "a source absent from the current roster cannot restore a card"
+        );
+        reset();
     }
 
     /// The shelves are filled from each ROW's `type`, never from the container's `viewGroup` —

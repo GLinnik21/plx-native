@@ -170,7 +170,8 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   needs DNS+TLS and therefore `net.rs`/libcurl, never the raw `stream.rs` socket. The typed client is
   `plex/discover.rs`.
 - **The filmography IS built** — `…/library/people/{tagKey}/credits` → `CreditGroup[]` of Discover
-  items, NOT local library rows. `AccountClient::person_credits`, drawn by `ui/filmography.rs`.
+  items, NOT local library rows. `AccountClient::person_credits`, drawn by the independently
+  mounted `screens/filmography.rs`.
   **The shape was measured 2026-09-06 and is not what the names suggest.** The container is
   `MediaContainer.CreditGroup[]` (never `Metadata`, which the DTO also accepted until a real
   response settled it). A group is `{title, type, Credit[]}` — `title` is "Actor"/"Producer"/

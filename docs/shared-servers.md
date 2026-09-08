@@ -320,8 +320,15 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   Film Club  friend ▾`, opening a 640-wide panel. The canvas gave it **two levels** switched by
   Browse / On Home pills at the panel top (the track menu's own swap); **the shipped panel has one**
   — it is the picker, and nothing else. The second level became its own route on 2026-09-05, when
-  the switch stopped governing Home alone: *Favorite libraries* (`ui::onboard`), which is also the
-  only surface listing every GRANTED library, so a non-favourite has a way back. A picker that could
+  the switch stopped governing Home alone: *Favorite libraries*, which is also the
+  only surface listing every GRANTED library, so a non-favourite has a way back. **As of phase 5b
+  (2026-09-07) that is no longer one mechanism for both entry points**: the screen itself moved off
+  the `static mut` `ui::onboard` module onto an owned `Screen` impl, `screens::onboard`'s
+  `OnboardScreen`, mounted twice (spec §6.2) — first-run still arrives as `Route::Onboard` (the
+  route this paragraph describes), but reached from Settings it is now a *page* of the Settings
+  family (`SettingsPage::Favourites`) rather than a second value the app's route enum takes, so the
+  once/sec heartbeat's `route=` field no longer reads `onboard` for the Settings-opened case — only
+  for the first-run one. A picker that could
   turn into an editor would let a library be un-favourited from inside the list of favourites and
   then vanish out of it under the cursor. **Browse** is a picker — one tick, OK closes, scoped to
   the FAVOURITES of the type being browsed. **On Home** is a toggle — the word `On`/`Off` at the
@@ -543,9 +550,13 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   selects alternatives.
 - **The Source chip and its panel** are `ui/library.rs`; the row model is pure and host-tested. The
   panel had two levels (`Browse` ⟷ `On Home`) until 2026-09-05 and is now a PICKER and nothing else
-  — one level, one tick, no words. The editor is its own route (*Favorite libraries*,
-  `ui::onboard`), which is the one surface listing every GRANTED library, so a non-favourite has a
-  way back. The chip itself now heads the Library's document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
+  — one level, one tick, no words. The editor was its own route (*Favorite libraries*,
+  `ui::onboard`) until phase 5b (2026-09-07); reached from Settings it is now a PAGE of the
+  Settings family (`SettingsPage::Favourites`, hosting `screens::onboard`'s owned `OnboardScreen`)
+  rather than a second value the route enum takes — deliverable A above has the mechanism, and
+  first-run alone still arrives as `Route::Onboard`. Either way it remains the one surface listing
+  every GRANTED library, so a non-favourite has a way back. The chip itself now heads the Library's
+  document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.
 - **The roster's own facts** (machine name, owner handle, owned) live beside the registry as
   `plex::ServerFacts`, merged rather than replaced so plex.tv and a server naming itself over `GET /`
@@ -614,8 +625,10 @@ local edit; the two-server round trip itself needs a television and both servers
 
 ## 12. The Home selection, per PROFILE — deliverable F (2026-08-21)
 
-The canvas's first-run route is built (`ui/onboard.rs`), and building it settled the question the
-canvas could not, because it was drawn before the owner ruled on it:
+The canvas's first-run route was built in `ui/onboard.rs` (phase 5b, 2026-09-07, moved it to
+`screens/onboard.rs` as the owned `OnboardScreen` described in deliverable A above — the route
+itself, and everything below about what it shows and why, is unchanged), and building it settled
+the question the canvas could not, because it was drawn before the owner ruled on it:
 
 > *"Servers are configured on a PC or phone. On the television we only CHOOSE from the available
 > servers. And it is separate for each profile."*
@@ -670,7 +683,7 @@ Four places, all recorded so the next reader does not "fix" them back:
 
 ### The screen, and how to look at it
 
-`ui/onboard.rs` mounts `ui::source_list` — the SAME row-model builder the Library toolbar's Sources
+`screens/onboard.rs` (`ui/onboard.rs` before phase 5b, 2026-09-07) mounts `ui::source_list` — the SAME row-model builder the Library toolbar's Sources
 panel uses, extracted out of `ui/library.rs` for exactly this reason. It differs by two arguments,
 not by a second builder: every library rather than the browsed type's (`browse::all_source_rows` —
 there is no tab bar here to be scoped to), and no *Check for new shares* tail.
@@ -818,7 +831,8 @@ Two say the whole phrase through `ui::fmt::shared_by`, which is words and not po
 hero's meta run and the detail page's facts row. The Library read-out, the Sources panel and
 Search's owner annotation draw the bare handle in their own sentence. The "Also available" rows
 carry it as `AltCopy::owner`, naming a row's source rather than captioning an item. And the
-first-run onboarding copy (`ui::onboard::body_copy`, "…has shared a library with you") lists the
+first-run onboarding copy (`screens::onboard`'s `OnboardScreen::body_copy` method — a free function
+of the same name, `ui::onboard::body_copy`, before phase 5b — "…has shared a library with you") lists the
 people from `browse::source_groups`, i.e. the same field one projection further out. Adding a screen
 means reading that field; it does not mean re-deciding this.
 

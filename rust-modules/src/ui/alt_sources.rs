@@ -183,7 +183,16 @@ static mut TABLE: TableView = TableView::new(); // main-thread only
 /// list IS the mapping).
 static mut DESTS: Vec<(ServerId, String)> = Vec::new();
 /// The button's drawn rect at open time, in screen coords — what the panel anchors to.
-static mut ANCHOR: Rect = Rect::new(0.0, 0.0, 0.0, 0.0);
+struct PanelAnchor {
+    rect: Rect,
+    sid: ServerId,
+    rk: String,
+}
+static mut ANCHOR: PanelAnchor = PanelAnchor {
+    rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+    sid: ServerId::UNSET,
+    rk: String::new(),
+};
 
 fn table() -> &'static mut TableView {
     unsafe { &mut *addr_of_mut!(TABLE) }
@@ -497,7 +506,7 @@ pub(crate) fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<A
 /// owner-reported. The tick answers "which of these am I looking at", and only the page knows.
 fn live_rows() -> Vec<AltRow> {
     rows(copies(), here_sid(), unsafe {
-        (*addr_of!(FOR_RK)).as_str()
+        (*addr_of!(ANCHOR)).rk.as_str()
     })
 }
 
@@ -518,7 +527,7 @@ fn live_rows() -> Vec<AltRow> {
 /// `detail::mount_rk`), and read only by [`install`]. They agree by construction — which is also
 /// what makes the tick and the landing gate answer about one page.
 fn here_sid() -> ServerId {
-    crate::ui::detail::mounted_sid()
+    unsafe { (*addr_of!(ANCHOR)).sid }
 }
 
 // ---- the panel -------------------------------------------------------------------------------
@@ -530,10 +539,16 @@ pub(crate) fn is_open() -> bool {
 /// Open the list, anchored to the control that opened it (the *Also available* pill's drawn rect).
 /// Selection starts on the copy you are on — the row the tick is against — because that is where
 /// the eye already is, and one DOWN from it is the alternative.
-pub(crate) fn open(anchor: Rect) {
-    unsafe { addr_of_mut!(ANCHOR).write(anchor) };
+pub(crate) fn open_for(sid: ServerId, rk: &str, anchor: Rect) {
+    unsafe { *addr_of_mut!(ANCHOR) = PanelAnchor { rect: anchor, sid, rk: rk.to_string() } };
     rebuild_table(Sel::OnTheCopyYouAreOn);
     pop().open();
+}
+
+/// A host test with no mounted page has no current-copy tick.
+#[cfg(test)]
+fn open(anchor: Rect) {
+    open_for(ServerId::UNSET, "", anchor);
 }
 
 /// Where the selection lands when [`rebuild_table`] runs.
@@ -615,7 +630,7 @@ pub(crate) fn move_focus(sym: c_int) {
 pub(crate) fn on_ok() -> Action {
     let sel = table().sel;
     let act = action_at(dests(), sel, here_sid(), unsafe {
-        (*addr_of!(FOR_RK)).as_str()
+        (*addr_of!(ANCHOR)).rk.as_str()
     });
     // A navigation replaces the page this menu stands on, so the menu goes at once; a press on the
     // row you are already on is a plain dismissal and fades like BACK would.
@@ -686,7 +701,7 @@ fn panel_at(a: Rect, content_h: f32) -> Rect {
 
 fn panel_rect() -> Rect {
     panel_at(
-        unsafe { addr_of!(ANCHOR).read() },
+        unsafe { (*addr_of!(ANCHOR)).rect },
         table().measured_height(),
     )
 }

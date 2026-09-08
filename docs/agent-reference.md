@@ -404,12 +404,12 @@ Two planes are composited by the TV: the app's **GLES/graphics plane** (UI, draw
 over the hardware **VIDEO overlay plane** (decoded frames). The UI plane is made non-opaque so
 video shows through.
 
-**UI (the Rust app core — `app.rs`'s event loop, entered via `plex_run()`):** SDL2 window + GLES2
+**UI (the Rust app core — the frame loop in `app/run.rs::run`, entered via `plex_run()` in `app/mod.rs` after `app/boot.rs::boot()`):** SDL2 window + GLES2
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples SDL2_ttf-rendered glyph
 textures (cached by string+size). Critically-damped springs animate focus scale and shelf scroll.
 Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary. (Wayland surface setup +
-input decoding live in `system.rs` / `app.rs`, not the C shim — see the gotchas below.)
+input decoding live in `system.rs` / `app/events.rs` + `app/input.rs`, not the C shim — see the gotchas below.)
 
 **Video playback (summary — `rust-modules/src/player/CLAUDE.md` is the deep-dive: pipeline,
 threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Read it before
@@ -444,7 +444,7 @@ which the linking section explains is load-bearing rather than tidy.
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap>` to fault the app deliberately ON the
   television — `segv` is a real null write, the rest are `raise`.
-- `rust-modules/src/` — the app core (Rust): `app.rs` (event loop/input), `system.rs` (wayland),
+- `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `plex_run` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `nav.rs`), `system.rs` (wayland),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/src/player/CLAUDE.md` is the
   playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
   pinned** libavformat shipped beside the binary, *not* the TV's), `stream.rs`/`aq.rs` (HTTP socket
@@ -455,7 +455,7 @@ which the linking section explains is load-bearing rather than tidy.
   token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
-  and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
+  and the remaining legacy screens (`home.rs`/`player_hud.rs`/…); owned content screens live under `screens/`. **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -487,6 +487,18 @@ which the linking section explains is load-bearing rather than tidy.
   Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
   never call `session::peek()` from the log path — it takes the session lock and reads files, which
   deadlocked the whole `auth` test block and put five `read`s on every log line.
+- `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
+  phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
+  of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`, `stores::<store>::apply(Cmd)` the
+  only way a screen or the loop changes one, and `ci/check-deps.sh`'s `mutators` gate refuses the
+  old `crate::browse::set_cur(` spelling on any production line of `ui/` or `app/`. Every applied
+  command raises the store's notice, which the shadow container tree delivers to its pages as
+  `StoreChanged`. That tree was `app/legacy.rs` through phase 4; phase 5b (2026-09-07) folded its
+  `Dispatcher<AppHost>`, `LegacyPage` and `Dispatcher::store_changed` into `app/bridge.rs` — the
+  same host module that now also mounts the Settings family's owned screens, so the shadow tree and
+  the real one are the same `Dispatcher` rather than two trees kept in sync. The data and the
+  workers are still in the legacy modules; the vocabulary is what a migrated screen (5b on) emits
+  as `AppFx::Store`.
 - `rust-modules/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Four** callers in a lab build and three in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
@@ -662,6 +674,19 @@ which the linking section explains is load-bearing rather than tidy.
   30-lattice case at 13.0 fps presented vs 24.1 with the rate declared correctly; and LG's `GST_DEBUG` was long avoided as perturbing, which is true of
   `dualsequencer:9` and **false of `:6`** (same scene, 123 misses uninstrumented vs 122 traced) —
   `:6` is the only per-frame cadence instrument this project has.
+- `tools/tv-capture-bench.c` — staged standalone ARM benchmark (`make tv-capture-bench`, scp, run,
+  delete) for a prospective hardware screen recorder. Its `vtm` mode measures the real rotating
+  video DMA-buffer cadence without mapping or copying the plane, `osd` times graphics-framebuffer
+  descriptor access, and `venc` feeds synthetic NV12 frames to the firmware H.264 encoder. Its
+  `stream` mode uses the source-video SCALER plane (DISPLAY advances but is blank here), maps each
+  `/dev/mem` Y/UV plane read-only, and serves firmware Annex-B H.264 over TCP. On the development TV
+  on 2026-09-07, a current YouTube picture reached the Mac as 300 decodable 1280x720 frames in 4.99 s
+  (60.08 fps, 6.74 Mbit/s; encode p95 12.22 ms, send p95 1.36 ms) without stopping playback. The TV
+  firewall refused a direct new LAN port, so that proof reached the probe's TCP listener through
+  an SSH local forward targeting the TV's loopback interface. The memory-input encoder rejected
+  every tested size above 1280x720, including
+  1920x1080. This benchmark therefore proves a 720p60 video-only path; it does **not** yet prove
+  full-plane OSD composition, audio, reconnect/backpressure policy, or a 1080p60 encoder path.
 - `tools/threadprobe.c` — standalone ARM diagnostic (`make threadprobe`, scp, run as root, delete):
   spawns under the app's uid until `pthread_create` refuses. Measured 2026-07-28 — **2 MB stacks
   die at 2043 threads on `RLIMIT_AS` (the full AArch32 4 GB), 256 KB stacks at 3745 on
@@ -739,7 +764,7 @@ which the linking section explains is load-bearing rather than tidy.
 - **SAM keeps stale "running" state after a hard kill**, so a launch is a silent no-op relaunch
   unless you close-first — `make run`/`kill` do the `closeByAppId` first (and `luna-send -i` must
   stay subscribed for the launch to take).
-- **App-switch lifecycle (was a black-screen bug), handled in `app.rs`:** the TV sends SDL app
+- **App-switch lifecycle (was a black-screen bug), handled in `app/run.rs` (the `0x103`–`0x106` arms of the frame loop):** the TV sends SDL app
   events — `0x103`/`0x104` (will/did enter **background**) and `0x105`/`0x106` (will/did enter
   **foreground**). On background during playback the loop **suspends the buffer-feed** (preserving the
   session) and drops to Home. On foreground `0x106` it tracks one exact Load attempt at a time,
@@ -1062,7 +1087,19 @@ gone. The remote FIFO's key and `ck:` tokens are safe because every field they s
 **Tier 2 — the device, which is still the real gate.** Nothing on the host decodes a frame or talks
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
-fails as "no line found", which reads exactly like a total regression. The **`tv-session` skill** is
+fails as "no line found", which reads exactly like a total regression. **The panel rule (the
+owner's standing directive, restated 2026-09-07):** the television's PANEL is **OFF and the sound
+is OFF for EVERY device run** — the playback tiers, the fps scenes, `shot` and capture alike; the
+set is in a living room. The owner's statement is that rendering continues with the LCD off, so an
+fps scene graded under `screen off` is a real measurement; the 2026-09-06 form of this rule (panel
+ON for fps, on the reasoning that `ui::idle` gates presents on what the panel shows) is SUPERSEDED,
+and the one number still owed is a same-session `fps=` comparison of one scene screen-on vs
+screen-off, to be taken at the next device session and written here. `tests/run.py --fps` says so
+in its banner; the command is `tools/tv-session.sh screen off` (a PANEL state, not an app state —
+the app keeps running and playback keeps decoding); there is still NO luna tooling for the sound
+half (do not guess a method — `power/turnOff` is the standing example of a plausible name this
+firmware answers `Unknown method` to; settle it from the set's `api-permissions.d` under the lock),
+so muting is the physical remote until then. The **`tv-session` skill** is
 the bring-up/observe/drive loop; **`profile-tv`** handles a live but slow or stuck process and the
 three-layer graphics profile; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
 FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/manifest.local.json`**
@@ -1075,7 +1112,8 @@ death** (since 2026-08-22) — absent or left as the example's `<ratingKey>`, it
 fps scenes naming it, prints the reason in the summary and in `--list`, and runs the rest. The
 matrix is a SUPERSET of what any one library holds (it names 4K DoVi P8, TrueHD, PGS, AV1-with-no-
 DP-audio), so before that change the suite ran for exactly one library in the world; one ordinary
-h264/ac3 movie now gets a stranger five playback cases and 13 of 16 fps scenes. Consequence when
+h264/ac3 movie now gets a stranger every playback case and fps scene naming that shape or no item
+at all — count it with `./tests/run.py --list`, never from here. Consequence when
 reading a result: **the pass count is meaningless without the skip count beside it** — `16 passed`
 can mean sixteen of the shapes that installation happens to own. Resolution happens once at load and
 writes `rk` back for the resolvable ones, so everything downstream still reads `case["rk"]`; a
@@ -1277,11 +1315,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
-  heartbeat. **Three assertions, and picking the wrong one is how a frozen animation ships:**
+  heartbeat. **Five assertions in two families. Three RATE gates — and picking the wrong one is how a frozen
+  animation ships:**
   `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
   see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
   RUNS (`login-spinner`, the two `*-nav` scenes, `search-type`); `fps_ceiling` grades `fps=` from the
-  other side and proves a still screen stops (`home-idle`, `search-idle`). The Search pair is the
+  other side and proves a still screen stops (`home-idle`, `search-idle`). **And two FRAME-TIME gates (2026-09-06)** — `worst_ceiling_ms`
+  (the 2nd-highest post-warmup `worstframe=`) and `stall_ceiling_ms` (the largest `FRAMEDROP`
+  total on the route, warmup INCLUDED) — which arm `plxnative-framedrop` themselves and answer
+  what no rate can: one 80 ms frame under a healthy median. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
@@ -1295,12 +1337,17 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   story is MEASURED AND REFUTED** (2026-08-19): a control leg holds 60/60/60 across six runs on a
   set up 2 h 15 m under continuous load, and what actually produces a 50 fps reading is **arming a
   profiler** — `frame.ui` brackets every frame with two `glFinish`es and drops a 60 fps leg to 45.
-  **Never quote `fps=` from a run with `/tmp/plxnative-profile` or `/tmp/plxnative-hwcnt` armed**;
+  **Never quote `fps=` from a run with `/tmp/plxnative-profile`, `/tmp/plxnative-hwcnt` or the
+  recorder (`/tmp/plxnative-rec`, whose ` rec=<n>us` heartbeat field makes `tests/run.py` refuse
+  to grade `fps=`/`worstframe=` at all) armed**;
   take pacing in a separate unarmed run. What this hardware WILL give you, priced in frames and
   milliseconds for design rather than in cycles, is **`docs/glass-hardware-budget.md`**; the
   instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
-  N ms — the file's content) with a pump/draw/swap/upload breakdown and adds `worstframe` to the
-  heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
+  N ms — the file's content) with an EIGHT-PHASE breakdown — `ingest results tick_drain navcommit
+  prepare draw capture swap`, the frame algorithm's names, timed from the TOP of the iteration since
+  2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus the
+  upload counts, and adds `worstframe` (the whole iteration, presented frames only) and `worstprep`
+  (the prepare phase, timed on EVERY iteration) to the heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly. For a reproducible three-layer account of one FPS scene use
   `./tests/run.py --fps --only <scene> --graphics-profile --profile-phase <phase>`: it preserves
   one unarmed pacing leg, samples global Mali IRQ activity with the selected install closed, then runs
@@ -1341,7 +1388,34 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
-  screen-to-trigger recipes. Named highlights: `/tmp/plxnative-url` (override the streamed part
+  screen-to-trigger recipes. Named highlights: **`/tmp/plxnative-rec[=blobs]`** (the RECORDER of
+  the UI restructure, spec §5.3 — every frame's tick and present bit, every input the loop acted
+  on and, on each input frame, the hash of the app's logical state: the press machine, the route
+  and overlay words and the focus fingerprint. It writes `plxnative-recordings/latest/` in the
+  runtime root — a DIFFERENT name from the trigger file, which is why the directory is not
+  `plxnative-rec/` — private, gitignored and refused by the outbound guard; `tests/focusfp.sh
+  --rec` records a flow and `tools/plxnative-rec import` turns a recording taken against
+  `tests/mock_pms.py` into a committed fixture), **`/tmp/plxnative-recplay=<dir>`** (REPLAY that
+  recording: the loop runs on the recorded ticks through `app::clock`, re-injects each frame's
+  inputs through the remote FIFO's own synthesis, grades the state hash frame by frame — every
+  mismatch is its own `replay: diverge` line and the run continues — and ends with one `replay:
+  done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --replay` drives it over the committed
+  fixtures. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
+  element, group), and the library replay has two MODES: targets — every input replayed with its
+  recorded resolution, what `plxnative-recplay` runs — and resolve, which runs the focus engine
+  and the hit map for real on every engine page, reports each focus mismatch as its own line and
+  CONTINUES from the recording (`ui::replay::run_resolve`; exercised only by the host suite's
+  `FixtureHost` pages — nothing wires it to a real screen, so an on-device recording never runs in
+  this mode. That is no longer because every product page is a `LegacyPage`: since phase 5b
+  (2026-09-07) the Settings family and first-run Favourites answer
+  `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
+  Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
+  recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
+  `targets` mode. Engine pages and the remaining `LegacyPage` routes alike replay on device by
+  target only). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
+  logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
+  it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
   tier drives and the only way to declare HEVC / `"AC3 PLUS"` / Dolby for a stream no PMS chose;
@@ -1397,7 +1471,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   spends more than four of those seconds just reaching the grid — so `fps:library-scroll`, whose
   whole purpose is to sweep the seam between the last shelf and the poster wall, graded a sweep
   that could not reach it), and
-  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), and the
+  `/tmp/plxnative-libswitch` (cycle every switch: tabs, sort menu, unwatched, filter→genre), the three
+  Settings-family scene triggers added 2026-09-06 for the frame-TIME gates (`worst_ceiling_ms` /
+  `stall_ceiling_ms`, graded from `worstframe=` and `FRAMEDROP`): `/tmp/plxnative-modalosc` (with
+  `plxnative-settings=root`, open and dismiss Settings every 1.5 s — `fps:modal-ramp`),
+  `/tmp/plxnative-legaldoc` (with `=legal`, one OK on the index so the boot lands on a pushed
+  document — `fps:legal-document`) and `/tmp/plxnative-alert` (with `=privacy`, open the
+  "Delete all local data?" decision alert, deleting nothing — `fps:decision-alert`); and the
   Search pair: `/tmp/plxnative-search[=<query>]` (boot straight into Search with the field already
   holding `<query>` — the seed is not a convenience, since neither the harness nor `sim-shot` can
   type and the TV's own keyboard is raised by a user, so without it every headless look at this
@@ -1476,13 +1556,22 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
   at **Home's own root** is the end of that chain and hands the screen back to the TELEVISION
-  (`app.rs::back_at_root` → `webos::go_home`), with the app still running — which is what the
+  (`app::input::back_at_root` → `webos::go_home`), with the app still running — which is what the
   platform itself does at an app's entry page on this firmware, and what LG's submission rules
   require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
   sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
-  both handed it to `auth::cancel` and ignored its `false`. **The first-run consent question is a
-  fourth and is NOT covered yet**; `app.rs`'s consent arm says why, and it is a `ui/consent.rs`
-  change rather than a BACK-arm one. BACK is no longer a quit anywhere — the remote's EXIT key
+  both handed it to `auth::cancel` and ignored its `false`. **The first-run consent question was a
+  fourth root and was NOT covered until phase 5b (2026-09-07), and the fix confirms what this
+  section used to say about the shape of the gap: it needed a screen change, not a BACK-arm one.**
+  While the question was a `Popover` (`ui/consent.rs`), `on_back` was a bare `bool` that could not
+  distinguish "stepped back a stage" from "the platform took the screen" — so the loop's BACK arm
+  had nothing to key the root press on. The owned replacement (`screens::consent.rs`) answers with
+  a request instead of a bool: BACK at the first stage asks the loop for `LoopReq::BackAtRoot`
+  (`app::input::back_at_root` → `webos::go_home`, the same call the other three roots use) rather
+  than stepping or dismissing, and doing so does NOT answer or dismiss the question — selecting the
+  app's tile again lands straight back on it, exactly as Home, the picker and QR sign-in do at
+  theirs (`app/bridge.rs`'s `back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up`
+  pins both halves). BACK is no longer a quit anywhere — the remote's EXIT key
   still is, and `closeByAppId` is still how `make kill`, `tests/run.py` and `tools/tv-session.sh`
   close the app — so the `/tmp/plxnative-noexitconfirm` bypass went with the "Exit PlxNative?"
   alert it existed for (both retired 2026-09-03). Text

@@ -529,7 +529,7 @@ mod tests {
         // ---- the shared chrome, and the screens composed on it ------------------------------
         probe("widgets", &crate::ui::widgets::overscan_rects);
         probe("library", &crate::ui::library::overscan_rects);
-        probe("detail", &crate::ui::detail::overscan_rects);
+        probe("detail", &crate::ui::detail_layout::overscan_rects);
         probe("player_hud", &crate::ui::player_hud::overscan_rects);
 
         // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
@@ -544,7 +544,7 @@ mod tests {
         // first shelf heading is the highest ink the page draws under the bar.
         r.push((
             "home hero text column",
-            Rect::new(MARGIN_X, 380.0, crate::ui::home::HERO_COL_W, 400.0),
+            Rect::new(MARGIN_X, 380.0, crate::ui::landing_hero::COL_W, 400.0),
         ));
         r.push((
             "home first shelf heading (grid view)",
@@ -583,7 +583,7 @@ mod tests {
         // Onboarding + login: both centre or hang off the same margin.
         r.push((
             "onboard copy column",
-            Rect::new(MARGIN_X, 150.0, crate::ui::home::HERO_COL_W, 500.0),
+            Rect::new(MARGIN_X, 150.0, crate::ui::landing_hero::COL_W, 500.0),
         ));
 
         for (name, rect) in r {

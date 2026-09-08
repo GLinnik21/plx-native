@@ -80,10 +80,59 @@ use crate::ui::player_hud::ControlSlot;
 /// string built by the same expression and a harness can join the two lines on it.
 #[derive(Clone, Copy)]
 pub(crate) enum Screen {
-    Login,
-    Profiles,
-    /// the first-run *Favorite libraries* route (`ui::onboard`)
-    Onboard,
+    /// The QR sign-in (`screens::login::LoginScreen`), an OWNED screen since phase 6.
+    ///
+    /// **This screen is not cursor-free, and this variant said so for a while after it stopped
+    /// being true.** Most of `LoginScreen` really has "no focus state of its own — the screen is
+    /// a projection of the auth phase" (see `push_fields`'s comment on `phase`), but it grows
+    /// exactly ONE focusable element while the escape/retry/restart control is on screen
+    /// (`LoginScreen::has_control`, on the `ESCAPE_AFTER_MS`/`QR_ESCAPE_AFTER_MS` clocks) — and a
+    /// (route × key) harness built on `phase=` alone cannot see OK land on that control, only the
+    /// phase change a beat later once the press's effect resolves. Read off the focus engine's
+    /// raw cursor exactly as [`Screen::Profiles`]/[`Screen::Onboard`] are, rather than a new
+    /// accessor into `screens::login`: `LoginScreen::groups` publishes nothing at all while
+    /// `!has_control()`, so there is nothing for the engine to seat and `focus_record()` reads
+    /// back `None`; once the control exists it is the screen's ONLY focusable element
+    /// (`Seat::First`, one group, `len: 1`), so `Some` means exactly "the control is focused"
+    /// with no further grammar to decode — the same one-element shortcut `Screen::Login`'s
+    /// sibling used to take before phase 6 gave it several.
+    Login {
+        has_control: bool,
+    },
+    /// The who's-watching picker (`screens::profiles`), an OWNED screen since phase 6 — so, like
+    /// [`Screen::Onboard`] below, its field is handed IN rather than read out of a module global:
+    /// `app/run.rs` reads the engine's raw cursor off `Dispatcher::focus_record` on the frame it
+    /// samples, because the roster/footer/PIN-pad state this used to read straight off
+    /// `ui::profiles`'s statics now lives on the owned screen's own focus engine, which this
+    /// crate-level module has no way to decode into an "avatar" bool without importing
+    /// `screens::profiles`'s own element vocabulary (this module sits below `screens/`, and
+    /// naming it would invert the layer the restructure draws between them).
+    Profiles {
+        /// The engine's raw focus element (`FocusKey::elem`) for the picker, or `-1` with no
+        /// input owner focused yet. **Grammar change from the legacy line**: the field used to be
+        /// `avatar=<bool>` (`ui::profiles::focus_is_avatar()`), which could say "an avatar has
+        /// focus" but not WHICH one, and could not see the Sign-out footer or the PIN pad move at
+        /// all; `elem=<int>` is coarser in one direction (a reader still cannot decode which
+        /// element number means what without `screens::profiles`'s own layout) and finer in
+        /// another (every distinct focus stop — including the ones the old field was blind to —
+        /// now prints a distinct number, so a (route × key) diff at least sees SOMETHING moved).
+        /// `tests/focusfp.sh`'s committed fixtures encode the old grammar and need re-recording.
+        elem: i32,
+    },
+    /// The first-run *Favorite libraries* route (`screens::onboard`), an OWNED screen since
+    /// phase 5b — so unlike every other variant here its fields are handed IN rather than read
+    /// out of a module global: the cursor lives in the focus engine, and `app/run.rs` reads it
+    /// off `Dispatcher::focus_record` on the frame it samples.
+    Onboard {
+        /// The engine's key is a table ROW (below `registry::BAND`) rather than a band control.
+        list: bool,
+        /// That row, or `-1` when focus is on the action band. **This is where the grammar's
+        /// VALUES changed**: `TableView::sel` retained the last row while focus sat on the pill,
+        /// and the engine's cursor simply is not on a row then. The field set is identical, so
+        /// anything parsing this line is unaffected; a committed fixture recorded before 5b is
+        /// not, and has to be re-recorded.
+        row: i32,
+    },
     /// the home hero + grid
     Home,
     /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
@@ -189,11 +238,11 @@ crate::dev::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) {
+pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     if !armed() {
         return;
     }
-    let line = fingerprint(route, screen, hud, ctrl);
+    let line = fingerprint_content(route, screen, hud, ctrl, content);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(line.as_str()) {
@@ -203,13 +252,30 @@ pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) {
     *last = Some(line);
 }
 
+/// The fingerprint as a value, for the recorder's logical-state hash (`app::recorder`): the
+/// legacy screens' focus state as one ordered line, whether or not the probe is armed.
+///
+/// **It is no longer the whole of that hash, and must not be treated as it.** Since phase 5b the
+/// Settings family's state lives on the container tree, where this module cannot see it — every
+/// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
+/// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
+/// replay graded on this alone would call a press that opened the wrong family page `SAME`.
+pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+    fingerprint_content(route, screen, hud, ctrl, content)
+}
+
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
+#[cfg(test)]
 fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
+    fingerprint_content(route, screen, hud, ctrl, "")
+}
+
+fn fingerprint_content(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
-    push_fields(&mut s, screen, hud, ctrl);
+    push_fields(&mut s, screen, hud, ctrl, content);
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
@@ -220,29 +286,32 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
 /// One screen's own fields. Split out of [`fingerprint`] so [`Screen::ItemMenu`] can spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
+fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     match screen {
-        Screen::Login => {
-            // `login.rs` holds no focus state of its own — the screen is a projection of the auth
-            // phase, and its `key` handler drives `auth`, not a cursor. So the phase IS the state.
-            let _ = write!(s, " phase={:?}", crate::auth::phase());
+        Screen::Login { has_control } => {
+            // The phase is still most of this screen's state — it is a projection of the auth
+            // phase, and its `key` handler mostly drives `auth`, not a cursor — but it is not
+            // ALL of it: see [`Screen::Login`]'s own doc for the one focusable control this used
+            // to leave unreported, invisible to a (route × key) harness reading `phase=` alone
+            // for the ~60/~12 seconds a stalled sign-in leaves it on screen with no phase change.
+            let _ = write!(s, " phase={:?} ctl={}", crate::auth::phase(), b(has_control));
         }
-        Screen::Profiles => {
-            // The picker's one read-only focus accessor. It leaves the avatar INDEX, the Sign-out
-            // footer and the whole PIN pad (its open flag and its own two-dimensional cursor)
-            // unreadable from outside `profiles.rs` — so a fingerprint cannot tell one avatar from
-            // another, and cannot see a keypad move at all.
-            let _ = write!(s, " avatar={}", b(crate::ui::profiles::focus_is_avatar()));
+        Screen::Profiles { elem } => {
+            // See the variant's own doc for the grammar change this replaced (`avatar=<bool>` →
+            // `elem=<int>`) and why: the picker's cursor is the engine's now, not a legacy static.
+            let _ = write!(s, " elem={elem}");
         }
-        Screen::Onboard => {
+        Screen::Onboard { list, row } => {
             // Two focus stops and a row cursor — the whole of what a press can move here. The list
             // flag and the selection are read together because `TableView::list_focused` gates the
-            // pill AND the ink: a fingerprint carrying only `sel` could not tell a focused row
-            // from the same row with focus parked on the action beside it.
-            let (in_list, sel) = crate::ui::onboard::probe_fields();
-            let _ = write!(s, " list={} row={sel}", b(in_list));
+            // pill AND the ink: a fingerprint carrying only `row` could not tell a focused row
+            // from the same row with focus parked on the action beside it. Both are the ENGINE's
+            // answer now (`Screen::Onboard`'s doc), which is also why they arrive as fields: this
+            // module reads module globals for every legacy screen and must not reach into the
+            // dispatcher to get one screen's cursor.
+            let _ = write!(s, " list={} row={row}", b(list));
         }
-        Screen::Home => push_home(s),
+        Screen::Home => s.push_str(content),
         Screen::Account { over } => {
             // The HOST is named, for [`Screen::ItemMenu`]'s reason one screen over: the profile chip
             // is shared CHROME, so this popover stands on any of the three bar-wearing pages and
@@ -251,7 +320,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // menu opened from the Library fingerprinted as though the user were standing on Home,
             // and a harness diffing two presses across it read the wrong screen's cursor.
             let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl);
+            push_fields(s, over.screen(), hud, ctrl, content);
             let _ = write!(
                 s,
                 " acct={} asel={}",
@@ -266,7 +335,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // two hosts have the same fields to print. Anything reading a schema off this line needs
             // `over=` as well as `route=`.
             let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl);
+            push_fields(s, over.screen(), hud, ctrl, content);
             let _ = write!(
                 s,
                 " imenu={} isel={} imsid=",
@@ -292,11 +361,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             );
             push_item(s, crate::ui::library::focused_item());
         }
-        Screen::Detail => push_detail(s),
-        Screen::Person => {
-            let _ = write!(s, " card={}", b(crate::ui::person::focus_is_card()));
-            push_item(s, crate::ui::person::focused_item());
-        }
+        Screen::Detail | Screen::Person => s.push_str(content),
         Screen::Search => {
             // The whole state machine, from the snapshot the screen's own regions already draw off
             // (`search::view`) — so the fingerprint and the picture are built from one read. `zone`
@@ -330,99 +395,6 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
     }
 }
 
-/// Home's hero band and grid, which are one screen with two focus models.
-///
-/// Both cursors are printed whichever view is showing, because both are RETAINED: a DOWN out of the
-/// hero leaves `hf` where it was and a UP back into it leaves `row`/`col` where they were, and the
-/// ladder's next press acts on whichever the snap selects.
-fn push_home(s: &mut String) {
-    // Two booleans, not the floats. `snapt` is the snap spring's TARGET, which a press flips on the
-    // press frame; `snapp` is its live POSITION crossing the same 0.5 the code compares it against.
-    // They disagree for the length of the snap animation, and `app.rs`'s OK arm reads the POSITION
-    // on purpose ("a quick DOWN→OK must still act on the hero shown") while its D-pad arm reads the
-    // target — so a harness needs both to explain a dispatch, and neither may be a raw float,
-    // which would jitter a fingerprint on every frame of the animation.
-    let target_is_grid = crate::ui::home::snap_target() > 0.5;
-    // Bound once and reused below: `home::col()` calls `home::row()` internally and both clamp
-    // against a live hub-length lookup, so asking twice pays for that walk twice.
-    let (row, col) = (crate::ui::home::row(), crate::ui::home::col());
-    let _ = write!(
-        s,
-        " snapt={} snapp={} hf={} row={row} col={col}",
-        b(target_is_grid),
-        b(crate::ui::home::focus_is_card()),
-        crate::ui::home::hero_focus()
-    );
-    // …and the item a press would act on, which is the hero's or the grid cell's by the TARGET.
-    // NB the hero rotates on an 8 s timer of its own, so on the hero view this field can change
-    // with no key involved. That is not noise — what Play would launch really did change.
-    let item = if target_is_grid {
-        crate::ui::home::movie_at(row, col)
-    } else {
-        crate::ui::home::hero_item()
-    };
-    push_item(s, item);
-}
-
-/// The detail page: its whole [`crate::ui::detail::Spot`], plus the panel that can be over it.
-fn push_detail(s: &mut String) {
-    let sp = crate::ui::detail::spot();
-    let _ = write!(
-        s,
-        " sec={} col={} eptext={}",
-        sp.section,
-        sp.col,
-        b(sp.ep_text)
-    );
-    match sp.season {
-        Some(n) => {
-            let _ = write!(s, " season={n}");
-        }
-        None => s.push_str(" season=-"),
-    }
-    // The per-section column memory: six integers the ladder writes on every move OFF a section and
-    // reads back on every move onto one, so a fingerprint without it cannot explain where a DOWN
-    // then UP lands.
-    s.push_str(" saved=");
-    for (i, c) in sp.saved_col.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        let _ = write!(s, "{c}");
-    }
-    let _ = write!(
-        s,
-        " card={} alt={} show={} sid=",
-        b(crate::ui::detail::focus_is_card()),
-        b(crate::ui::alt_sources::is_open()),
-        b(crate::ui::detail::is_show())
-    );
-    push_sid(s, crate::ui::detail::mounted_sid());
-    s.push_str(" rk=");
-    push_rk(s, &crate::ui::detail::mounted_rk());
-    // The focused EPISODE is a second identity on this page and not derivable from `col` alone: the
-    // filmstrip is per season, and this reads `None` while a season is still loading.
-    s.push_str(" ep=");
-    match crate::ui::detail::focused_episode() {
-        Some((rk, mark)) => {
-            push_rk(s, &rk);
-            // THREE-valued, not a bool: the still's context menu builds its row set from this exact
-            // state (one write row at either end, BOTH in the middle), so a fingerprint that reduced
-            // it to watched/not could not tell a 2-row menu from a 3-row one. A `&'static str` tag
-            // chosen here, like every other enum this line carries.
-            let _ = write!(
-                s,
-                " epwatched={}",
-                match mark {
-                    crate::ui::widgets::PosterMark::None => "no",
-                    crate::ui::widgets::PosterMark::InProgress => "part",
-                    crate::ui::widgets::PosterMark::Watched => "yes",
-                }
-            );
-        }
-        None => s.push_str("- epwatched=-"),
-    }
-}
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
 fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
@@ -483,7 +455,7 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
 ///
 /// A rating key is a server-local integer dense from 1, so it names an item only together with the
 /// server — and the slot number is a registry index (0, 1, …), not anything about the machine.
-fn push_item(s: &mut String, m: Option<&crate::pms::PmsMovie>) {
+pub(crate) fn push_item(s: &mut String, m: Option<&crate::pms::PmsMovie>) {
     match m {
         Some(m) => {
             s.push_str(" sid=");
@@ -515,7 +487,7 @@ fn push_sid(s: &mut String, sid: crate::plex::ServerId) {
 /// that gets pasted into public issues, and a field that simply trusted the server's string would
 /// be one upstream change away from carrying a path or a title into it. Bounded too, for the same
 /// reason: a key is a handful of digits, so anything longer is not a key.
-fn push_rk(s: &mut String, rk: &str) {
+pub(crate) fn push_rk(s: &mut String, rk: &str) {
     let mut n = 0;
     for c in rk.chars() {
         if n == RK_MAX {
@@ -552,25 +524,22 @@ mod tests {
         }
     }
 
-    /// The one screen precondition a host test does not get for free.
-    ///
-    /// `profiles::scene()` is an `expect("profiles::init not called")`, unlike every other screen
-    /// here, which lazily insert. `plex_run` calls `profiles::init()` unconditionally at boot,
-    /// before the loop this probe samples from, so the app cannot reach the fingerprint without it
-    /// — a test walking every screen has to mount the same precondition, through the screen's own
-    /// entry point rather than by reaching into its state. Held under `testlock::serial()` by every
-    /// caller, because it writes a process global.
-    fn mount_profiles() {
-        crate::ui::profiles::init();
-    }
-
     /// Every screen this app can end a frame on, so a grammar or determinism assertion covers the
     /// whole instrument rather than the one screen a test happened to pick.
     fn every_screen() -> Vec<(&'static str, Screen)> {
         vec![
-            ("login", Screen::Login),
-            ("profiles", Screen::Profiles),
-            ("onboard", Screen::Onboard),
+            // both "no control on screen" and "the control has focus", because the two print
+            // different values through one grammar — same reason `Screen::Profiles`'s two
+            // entries exist, and the exact gap `Screen::Login`'s own doc says this used to leave
+            ("login", Screen::Login { has_control: false }),
+            ("login", Screen::Login { has_control: true }),
+            // both a real cursor and "nothing focused yet", because the two print different
+            // values through one grammar — same reason `Screen::Onboard`'s two entries exist
+            ("profiles", Screen::Profiles { elem: 2 }),
+            ("profiles", Screen::Profiles { elem: -1 }),
+            // both focus zones, because the two print different values through one grammar
+            ("onboard", Screen::Onboard { list: true, row: 0 }),
+            ("onboard", Screen::Onboard { list: false, row: -1 }),
             ("home", Screen::Home),
             // one per bar-wearing HOST, for the `itemmenu` rows' reason below
             ("account", Screen::Account { over: Host::Home }),
@@ -611,7 +580,6 @@ mod tests {
     #[test]
     fn a_fingerprint_is_stable_while_nothing_moves() {
         let _g = crate::testlock::serial();
-        mount_profiles();
         for (rn, sc) in every_screen() {
             let a = fingerprint(rn, sc, hud(), ControlSlot::Discs);
             let b = fingerprint(rn, sc, hud(), ControlSlot::Discs);
@@ -625,7 +593,6 @@ mod tests {
     #[test]
     fn the_line_is_one_ordered_row_of_safe_key_value_pairs() {
         let _g = crate::testlock::serial();
-        mount_profiles();
         for (rn, sc) in every_screen() {
             let line = fingerprint(rn, sc, hud(), ControlSlot::Discs);
             assert!(
@@ -752,6 +719,25 @@ mod tests {
                 ControlSlot::Discs
             ),
             "the overlay tag is not observable"
+        );
+    }
+
+    /// **The stalled-sign-in control appearing must actually show up.** This is the exact gap
+    /// `Screen::Login`'s own doc names: `phase=` alone reports nothing for the ~12 s (a stalled
+    /// spinner) or ~60 s (an unscanned QR code) the escape/restart control sits on screen with the
+    /// phase unchanged, so a (route × key) harness reading `phase=` alone cannot see OK land on the
+    /// control at all — only the phase change a beat later, once the press has already been acted
+    /// on. This is the assertion that fails if a future edit prints a constant (`ctl=0` always, or
+    /// the field dropped) where `has_control` belongs — the same shape as
+    /// `moving_the_hud_cursor_changes_the_line` above, for this screen's own one cursor.
+    #[test]
+    fn the_login_screens_stalled_control_appearing_is_observable() {
+        let _g = crate::testlock::serial();
+        let without = fingerprint("login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
+        let with = fingerprint("login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
+        assert_ne!(
+            without, with,
+            "the login screen's escape/retry/restart control appearing is not observable"
         );
     }
 

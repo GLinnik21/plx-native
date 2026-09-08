@@ -321,7 +321,8 @@
     {
       "name": "settings-home",
       "tier": "ui",
-      "route": "onboard",
+      "route": "home",
+      "overlay": "onboard",
       "loop_floor": 50,
       "fps_floor": 50,
       "run_secs": 18,
@@ -330,7 +331,7 @@
         "plxnative-settings": "home",
         "plxnative-settingsosc": true
       },
-      "comment": "The shared Home-source picker opened as a Settings editor. settingsosc moves the real source TableView and grades the clean BACK composition over Settings rather than treating the visually similar first-run route as sufficient coverage; the dirty Done replacement is a pure state contract covered by the onboard unit suite."
+      "comment": "The shared Home-source picker opened as a Settings editor. Filters on route=home overlay=onboard rather than the old route=onboard: the picker is now a PAGE of the Settings family surface (`SettingsPage::Favourites`), not its own route, so `app.route` never leaves Home. Until 2026-09-07 this scene selected on overlay=settings — the family's ROOT word — because `bridge::overlay_word` prints whatever the topmost page's `Screen::name` answers, and the Home-sources editor answered the SAME `settings` word the root page does; the scene's heartbeat was therefore BYTE-IDENTICAL to settings-root/settings-idle, so a boot-target regression that left this run stuck on the root (a renamed `plxnative-settings=home` value, or a future bug in the boot-target match in `app/run.rs`) still produced >=5 matching samples and PASSED, at the wrong screen. `OnboardScreen::name` now answers its own `onboard` word while mounted inside the family (word chosen to match the FIRST-RUN mounting of the identical screen, which already prints route=onboard with no overlay — one screen, two positions, one name) and `bridge::overlay_word` maps it, so this scene can no longer be satisfied by any other page of the family. settingsosc moves the real source TableView and grades the clean BACK composition over Settings rather than treating the visually similar first-run route as sufficient coverage; the dirty Done replacement is a pure state contract covered by the onboard unit suite."
     },
     {
       "name": "settings-legal",
@@ -422,6 +423,82 @@
       "fps_floor": 50,
       "_fps_floor_note": "The oscillator keeps the profile menu's own selection spring moving and the present gate awake. A frozen white plate cannot pass this floor, while the removed repeated backdrop captures are no longer part of the intended composition.",
       "_route_note": "`account`, not `home`: the Account popover is a ROUTE of its own (app.rs names it in the heartbeat), so a scene keyed on home matches zero samples and fails as \"never entered this screen\" — which is exactly what the first run of this scene did."
+    },
+    {
+      "name": "modal-ramp",
+      "tier": "ui",
+      "route": "home",
+      "loop_floor": 30,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "worst_ceiling_ms": 75,
+      "comment": "Settings opened and dismissed every 1.5 s through the real open/on_back (plxnative-modalosc), so the samples are the appear/disappear RAMP — host snapshot, scrim, ground — rather than a settled modal. No fps_floor: the ramp is ~200 ms of a 1500 ms period, so the median is legitimately low; the frame-TIME gate is the point. BASELINE 2026-09-06 panel-ON (TV session 1): worst robust_max=66.8 ms, max=67.4 — a Settings ramp frame costs ~67 ms today; the ceiling HOLDS that cost (fps floors are held, not raised, during the migration) and phase 11 is what brings it down. BIMODAL (TV session 2, 2026-09-06, phase 1b-ii): the same scene reads EITHER ~65 ms OR ~94 ms, on main's build AND the branch's, in one session (main: 96/94/67; branch: 93/93/65/84/96; a rebuild is byte-identical, so it is not the binary). In the slow mode the Settings-open frame charges ~52 ms to tick_drain (the update phase, where the host snapshot is taken) and ~41 ms to draw; in the fast mode ~10 ms and ~74 ms — the same work, differently placed, plus ~25 ms. Which mode a run lands in is not understood; the ceiling stays at the fast mode so the slow one is VISIBLE, and a single FAIL here is not evidence about a change until it is A/B'd against main in the same session.",
+      "triggers": {
+        "plxnative-settings": "root",
+        "plxnative-modalosc": true
+      }
+    },
+    {
+      "name": "legal-document",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "legal",
+      "loop_floor": 30,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "fps_ceiling": 5,
+      "worst_ceiling_ms": 33,
+      "comment": "A pushed legal DOCUMENT (the reader over the frozen ground), reached by one OK on the index (plxnative-legaldoc). It must settle (fps_ceiling) and no settled-screen frame may exceed a vsync pair. BASELINE 2026-09-06 panel-ON (TV session 1): worst robust_max=2.3 ms; the ceiling stands.",
+      "triggers": {
+        "plxnative-settings": "legal",
+        "plxnative-legaldoc": true
+      }
+    },
+    {
+      "name": "page-panel",
+      "tier": "ui",
+      "route": "detail",
+      "item": "movie_h264_ac3_1080p",
+      "loop_floor": 30,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "fps_ceiling": 5,
+      "worst_ceiling_ms": 40,
+      "comment": "A page-owned glass panel (Track information, plxnative-tracks) over a caching host: the alert-over-a-static-page frame is what cost ~75 ms before the host cache. It must settle and its settled peaks must stay under the ceiling. BASELINE 2026-09-06 panel-ON (TV session 1): worst robust_max=5.3 ms (max=26.8, one poster landing); the ceiling stands.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-tracks": true
+      }
+    },
+    {
+      "name": "decision-alert",
+      "tier": "ui",
+      "route": "home",
+      "overlay": "privacy",
+      "loop_floor": 30,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "fps_ceiling": 5,
+      "worst_ceiling_ms": 40,
+      "comment": "The shared yes/no alert (Delete all local data?, plxnative-alert) over the privacy panel over Settings over Home — three glass layers, the deepest composition a bar page carries. Opening it deletes nothing. BASELINE 2026-09-06 panel-ON (TV session 1): worst robust_max=3.0 ms (max=3.7); the ceiling stands.",
+      "triggers": {
+        "plxnative-settings": "privacy",
+        "plxnative-alert": true
+      }
+    },
+    {
+      "name": "cold-open",
+      "tier": "ui",
+      "route": "detail",
+      "item": "movie_h264_ac3_1080p",
+      "loop_floor": 30,
+      "run_secs": 14,
+      "warmup_s": 0,
+      "stall_ceiling_ms": 160,
+      "comment": "The COLD MOUNT of a detail page: the largest FRAMEDROP total on route=detail over the WHOLE run, warmup included, because the frame that matters is the first one. Graded from FRAMEDROP in phase 0 and re-based on the `coldopen` line in phase 11 (restructure spec §8.4). BASELINE 2026-09-06 panel-ON (TV session 1): one FRAMEDROP line, total=143.1 ms, on the first detail frame; the ceiling holds that cost until phase 11.",
+      "triggers": {
+        "plxnative-detail": "$rk"
+      }
     }
   ],
   "cases": [

@@ -94,7 +94,7 @@ instead of adding a second one for the same machine.
 
 Three design choices carry the weight, and each is a prevented bug rather than a preference:
 
-- **An atomic-pointer table, not an `RwLock`.** `client()` is a HOT path: `posters::poster_key`
+- **An atomic-pointer table, not an `RwLock`.** `client()` is a HOT path: `app::adapters::poster::built_key`
   calls it **three times per key, for every visible art tile, every frame** (~25–40 tiles × 60 fps).
   A read is one relaxed load, one acquire load, a deref — no lock, no refcount, no allocation. An
   `RwLock` would add an atomic RMW pair per call plus a fairness stall every time a login writes,
@@ -108,7 +108,7 @@ Three design choices carry the weight, and each is a prevented bug rather than a
   server switch, never per frame.
 - **Token generations come from a process-global sequence, so no two clients ever share one.**
   `token_gen` was a single process-wide counter, which cannot express "server B's token changed".
-  Its only reader is `posters::poster_key`'s memo and that memo compares **one number** — so two
+  Its only reader is `app::adapters::poster::built_key`'s memo and that memo compares **one number** — so two
   servers whose generations happened to agree would mean that the moment `client()` started
   answering with B, the memo said nothing had changed and served B its cards from **A's memoised,
   token-bearing paths**. Uniqueness makes "did this number move" also answer "is this even the same
@@ -132,7 +132,11 @@ The whole shared-source feature rests on keeping these apart:
   removing results would invent a false negative for a film the user owns and can play. The
   unscoped list survives as `browse::all_source_rows`, which is the Favorite libraries editor's, and
   is the only way a non-favourite comes back. The rules are `pins.rs` (pure); the store is keyed by
-  the profile's `uuid`; the route that asks once is `ui::onboard`. Owner's ruling, 2026-08-21 — "it
+  the profile's `uuid`; the route that asks once is `Route::Onboard`, first-run *Favorite
+  libraries* — `ui::onboard` through phase 4, `screens::onboard`'s owned `OnboardScreen` since
+  phase 5b (2026-09-07); reached again later from Settings it is a page of that family rather than
+  this same route (`SettingsPage::Favourites` — the enum lives in `screens/family.rs`, not
+  `screens/settings.rs` — hosting the same screen type). Owner's ruling, 2026-08-21 — "it
   is separate for each profile" — and it hung off the whole `Session` (one per install) before that.
 - **reachable** — a fact about NOW: something answered at one of its addresses, *as the right
   machine*. It changes while nobody touches anything, and it is never a reason to forget the grant

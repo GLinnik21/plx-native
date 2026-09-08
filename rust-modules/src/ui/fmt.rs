@@ -2,6 +2,8 @@
 //! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
 //! drift this replaces).
 
+pub(crate) const CONVERTS_ON_SERVER: &str = "Converts on server";
+
 /// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
 pub(crate) fn dur_short(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
