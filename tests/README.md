@@ -42,6 +42,31 @@ half is bypassed and a regression there passes it green. Nor does it reach resum
 timeline reporting, subtitle or audio-track *selection*, or any transcode. **Never ship on the
 default alone.**
 
+## The synthetic PMS and the focus-fingerprint flows (host, no television)
+
+Two more host-side pieces landed with phase 0 of the UI restructure (2026-09-06), and both exist
+so that a recording of the UI can be COMMITTED to this public repository:
+
+- **`tests/mock_pms.py`** is a synthetic Plex Media Server — the endpoints `plex/*.rs` actually
+  request, answered with the fields `plex/models.rs` reads, from a library GENERATED from `--seed`
+  in which every title, name, summary and tag is one word of a closed alphabet (`s` + eight hex
+  digits). No household byte can enter a fixture recorded against it, so no scrub pass is needed
+  — and `scrub.rs` cannot recognise a title anyway. `--selftest` proves the shapes and the
+  determinism (two servers, one seed, byte-identical answers) with no app. Boot the simulator
+  against it with `make sim-shot SIM_PMS=127.0.0.1 SIM_PORT=32499` and any non-empty
+  `$SIM_DIR/plxnative-token`.
+- **`tests/focusfp.sh`** drives eleven focus flows (boot → grid, grid → detail → BACK, the
+  Library, Search with a seeded query, detail ↔ person, the Settings family, first-run consent,
+  press-and-hold, the player read-out, pointer clicks; flow 10 — root BACK — is a television flow
+  and is SKIPPED here) on the simulator against that server, and writes one `.fp` file per flow:
+  every `focus …` fingerprint (`crate::focusprobe`, `plxnative-focus`) and every heartbeat route
+  transition. In phase 0 it is a live-sim SMOKE (the app must survive and fingerprint); from
+  phase 2 the flows replay from a committed recording, and from 3b `--resolve` grades the focus
+  engine against these lines pointwise.
+
+Neither says anything about frame rate — the simulator's heartbeat is tagged `sim=1` and the
+harness refuses to grade it.
+
 ### What the synthetic cases actually cover
 
 The player direct-plays exactly `{h264, hevc}` × `{aac, ac3, eac3}` in `mkv`/`mp4`/`m4v` —
@@ -291,7 +316,8 @@ What that buys, concretely. One ordinary **h264/AC-3 1080p movie with embedded S
 nearly every library has — is enough for `dp_h264_ac3_1080p`, `seek_inplace_h264`,
 `seek_rapid_h264`, `resume_directplay` and `subtitle_text_srt`, i.e. the direct-play open, both
 seek tiers and the soft-subtitle renderer. Adding `movie_in_home_catalog` (any movie reachable from
-Home's recently-added or on-deck row) brings the UI fps tier to 13 of 16 scenes. The rest of the
+Home's recently-added or on-deck row) brings the UI fps tier to every scene naming that shape or no item at all — count it with
+`./tests/run.py --list`, never from here. The rest of the
 matrix unlocks shape by shape as your library supplies them.
 
 Three things are worth knowing before you read a green run as a portable claim:

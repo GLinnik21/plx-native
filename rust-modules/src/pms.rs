@@ -6,7 +6,10 @@ use crate::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex};
+
+pub(crate) mod record;
+pub(crate) mod initial;
 
 /// Catalog rows Home holds at most, across EVERY source. A hard ceiling on the store the whole
 /// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
@@ -38,7 +41,8 @@ const HUB_FETCH_COUNT: i64 = 12;
 
 /// A catalog row — owned strings (the old C-ABI fixed `[u8; N]` buffers are gone; no C
 /// consumer remains). Fields pub(crate) so the UI / route / player read them directly.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PmsMovie {
     /// WHICH SERVER this row came from. Every other identity on it — `rk`, `show_rk`, `part` — is a
     /// server-local key that a second server reuses from 1 (docs/shared-servers.md §2 measured the
@@ -47,6 +51,7 @@ pub struct PmsMovie {
     /// captured, never from `plex::current_server()` inside the worker — `parse_item` runs on the
     /// hub, page and person workers, and by the time one of them parses, "the current server" may
     /// already be a different machine than the one whose bytes it is holding.
+    #[serde(with = "record::server_id")]
     pub(crate) sid: ServerId,
     /// The LIBRARY on `sid` this row came from (`librarySectionID`), 0 when the server sent none.
     /// The pin's grain: a whole-server `/hubs` answers with rows from every library, so this is the
@@ -66,6 +71,7 @@ pub struct PmsMovie {
     pub(crate) rk: String,
     pub(crate) vcodec: String,
     pub(crate) acodec: String,
+    #[serde(with = "record::blur_bits")]
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: bool,
     pub(crate) kind: c_int,     // 0 = movie, 1 = show, 2 = season, 3 = episode
@@ -114,12 +120,25 @@ impl PmsMovie {
     }
 }
 
-// The catalog (private; the UI reads it through movie()/hub_item()/hero_pool_item()).
-// Main-thread only, like every UI static; rebuilt wholesale when worker landings commit.
-static mut CATALOG: Vec<PmsMovie> = Vec::new();
+// Published as one immutable allocation, on the main thread. Owned readers retain the Arc,
+// so a later store commit cannot invalidate their data. Legacy accessors below still have the
+// old main-thread/until-next-commit lifetime and are retired with their screens.
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HomeCatalog {
+    items: Vec<PmsMovie>,
+    hubs: Vec<HubRow>,
+    heroes: Vec<HeroSlot>,
+}
+static EMPTY_HOME: LazyLock<Arc<HomeCatalog>> = LazyLock::new(|| Arc::new(HomeCatalog::default()));
+static mut PUBLISHED_HOME: Option<Arc<HomeCatalog>> = None;
+
+fn published_home() -> &'static Arc<HomeCatalog> {
+    unsafe { (&*std::ptr::addr_of!(PUBLISHED_HOME)).as_ref().unwrap_or(&EMPTY_HOME) }
+}
 
 fn catalog() -> &'static Vec<PmsMovie> {
-    unsafe { &*std::ptr::addr_of!(CATALOG) }
+    &published_home().items
 }
 
 /// catalog row `i`, or None. The reference stays valid until the next refetch (main-thread
@@ -157,7 +176,7 @@ fn clean(s: &str) -> String {
         .collect()
 }
 
-/// percent-encode into a String (Rust callers, e.g. posters::poster_key)
+/// percent-encode into a String (Rust callers, e.g. app::adapters::poster::built_key)
 pub(crate) fn urlenc_str(src: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(src.len());
@@ -285,9 +304,12 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
 // module stays hub-only; `browse` reuses `parse_item` above for its listings.
 
 // ---- home hubs: each hub is a titled slice of the catalog ----
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HubRow {
     title: String,
     hub_id: String, // locale-independent hubIdentifier ("home.continue", "home.movies.recent", …)
+    key: String, // provider listing path: fallback when hubIdentifier is absent
     /// Which SERVER this shelf's items came from, as the owner's handle ("friend") — empty
     /// whenever the row came from the signed-in user's own server, which is every row today.
     /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
@@ -299,10 +321,8 @@ struct HubRow {
     start: usize,
     len: usize,
 }
-static mut HUBS: Vec<HubRow> = Vec::new();
-
 fn hubs() -> &'static Vec<HubRow> {
-    unsafe { &*std::ptr::addr_of!(HUBS) }
+    &published_home().hubs
 }
 
 // ---- rotating hero pool: curated catalog indices (Continue Watching then Recently Added) ----
@@ -317,14 +337,99 @@ const HERO_MAX: usize = 8;
 /// items OUT of their shelf order ([`own_items_first`] promotes an owned page to the front), so a
 /// pool entry that only knew its catalog index would have to find its way back to a hub through a
 /// range scan to answer "whose is this" — for a fact the build already had in its hand.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HeroSlot {
     idx: usize,
     source: String,
 }
-static mut HERO_POOL: Vec<HeroSlot> = Vec::new();
-
 fn pool() -> &'static Vec<HeroSlot> {
-    unsafe { &*std::ptr::addr_of!(HERO_POOL) }
+    &published_home().heroes
+}
+
+/// A retained publication, independent of subsequent store commits. Cloning copies one Arc,
+/// never a movie or string. The status is captured alongside the catalog, including failed
+/// fetches which keep the previous content and therefore do not move its generation.
+#[derive(Clone)]
+pub(crate) struct HubsSnapshot {
+    data: Arc<HomeCatalog>,
+    generation: u32,
+    state: HubState,
+}
+
+pub(crate) fn hubs_snapshot() -> HubsSnapshot {
+    HubsSnapshot { data: Arc::clone(published_home()), generation: catalog_gen(), state: hub_state() }
+}
+
+impl HubsSnapshot {
+    pub(crate) fn view(&self) -> HubsView<'_> {
+        HubsView { data: &self.data, generation: self.generation, state: self.state }
+    }
+}
+
+/// Frame-borrowed Home data. Every reference is tied to the retained publication, not a static
+/// catalog that an effect could replace. The bridge owns the snapshot; screens only get this.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))] // Phase 8: remove when the owned Home consumer is mounted.
+pub(crate) struct HubsView<'a> {
+    data: &'a HomeCatalog,
+    pub(crate) generation: u32,
+    pub(crate) state: HubState,
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))] // Phase 8 Home view contract, exercised by the retained-view tests.
+pub(crate) struct HubRef<'a> {
+    pub(crate) identity: Option<HubIdentity<'a>>,
+    pub(crate) title: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) items: &'a [PmsMovie],
+}
+
+/// Provider identities are tagged: a listing key cannot collide with an identifier that
+/// happens to contain the same bytes. Neither display text nor position participates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(not(test), allow(dead_code))] // Phase 8 Home identity contract.
+pub(crate) enum HubIdentity<'a> {
+    ContinueWatching,
+    Identifier { sid: ServerId, id: &'a str },
+    Key { sid: ServerId, key: &'a str },
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // Removed with the owned Home consumer.
+fn stable_hub_identity<'a>(row: &'a HubRow, items: &[PmsMovie]) -> Option<HubIdentity<'a>> {
+    if row.len == 0 { return None; }
+    let sid = items.get(row.start)?.sid;
+    if row.hub_id == "home.continue" { Some(HubIdentity::ContinueWatching) }
+    else if !row.hub_id.is_empty() { Some(HubIdentity::Identifier { sid, id: &row.hub_id }) }
+    else if !row.key.is_empty() { Some(HubIdentity::Key { sid, key: &row.key }) }
+    else { None }
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))] // Phase 8 Home view contract.
+pub(crate) struct HeroRef<'a> {
+    pub(crate) item: &'a PmsMovie,
+    pub(crate) source: &'a str,
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // Removed with the owned Home consumer.
+impl<'a> HubsView<'a> {
+    pub(crate) fn hub_count(self) -> usize { self.data.hubs.len() }
+    pub(crate) fn hero_count(self) -> usize { self.data.heroes.len() }
+    pub(crate) fn hub(self, index: usize) -> Option<HubRef<'a>> {
+        let row = self.data.hubs.get(index)?;
+        let end = row.start.checked_add(row.len)?;
+        Some(HubRef {
+            identity: stable_hub_identity(row, &self.data.items),
+            title: &row.title, source: &row.source,
+            items: self.data.items.get(row.start..end)?,
+        })
+    }
+    pub(crate) fn hero(self, index: usize) -> Option<HeroRef<'a>> {
+        let slot = self.data.heroes.get(index)?;
+        Some(HeroRef { item: self.data.items.get(slot.idx)?, source: &slot.source })
+    }
 }
 
 /// number of items in the rotating hero pool
@@ -381,6 +486,20 @@ pub(crate) fn hub_title(i: usize) -> &'static str {
 pub(crate) fn hub_source(i: usize) -> &'static str {
     hubs().get(i).map(|h| h.source.as_str()).unwrap_or("")
 }
+
+/// Locale-independent Home group identity. Non-merged rows belong to the server that supplied
+/// their items; Continue Watching is one merged group regardless of which server sorts first.
+/// Missing provider identities remain absent rather than masquerading as stable row positions.
+pub(crate) fn hub_identity(i: usize) -> Option<(Option<ServerId>, &'static str)> {
+    hub_identity_in(hubs().get(i)?, catalog())
+}
+
+fn hub_identity_in<'a>(hub: &'a HubRow, items: &[PmsMovie]) -> Option<(Option<ServerId>, &'a str)> {
+    if hub.hub_id.is_empty() || hub.len == 0 { return None; }
+    let first = items.get(hub.start)?;
+    let server = (hub.hub_id != "home.continue").then_some(first.sid);
+    Some((server, &hub.hub_id))
+}
 /// item count in hub `i`
 pub(crate) fn hub_len(i: usize) -> usize {
     hubs().get(i).map(|h| h.len).unwrap_or(0)
@@ -388,10 +507,7 @@ pub(crate) fn hub_len(i: usize) -> usize {
 /// whether hub `i` is the merged Continue Watching shelf (its tiles play directly on OK, so the
 /// home grid stamps the play-hint badge on them). Matched on the locale-independent hubIdentifier.
 pub(crate) fn hub_is_continue(i: usize) -> bool {
-    hubs()
-        .get(i)
-        .map(|h| h.hub_id == "home.continue")
-        .unwrap_or(false)
+    matches!(hub_identity(i), Some((None, "home.continue")))
 }
 /// item `col` of hub `hub`, or None
 pub(crate) fn hub_item(hub: usize, col: usize) -> Option<&'static PmsMovie> {
@@ -519,6 +635,8 @@ type HubBuild = (Vec<PmsMovie>, Vec<HubRow>, Vec<HeroSlot>);
 /// off the wire DTO and thrown away at parse time, because one server's hub arrived already in the
 /// right order; across sources the order has to be re-established after the fact, so the key has to
 /// survive the projection.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CwItem {
     last_viewed_at: i64,
     m: PmsMovie,
@@ -526,9 +644,12 @@ struct CwItem {
 
 /// One shelf as a source projected it: rows already parsed, filtered and stamped with the server
 /// they came from, so the merge is pure arithmetic over owned data and never touches a wire DTO.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Shelf {
     title: String,
     hub_id: String,
+    key: String,
     items: Vec<PmsMovie>,
 }
 
@@ -537,7 +658,8 @@ struct Shelf {
 ///
 /// Owned data only, so a worker can build it and hand it over through the mailbox, and a source can
 /// KEEP the last one it answered with across a failure.
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SourceBuild {
     cw: Vec<CwItem>,
     shelves: Vec<Shelf>,
@@ -619,6 +741,7 @@ fn project(
         out.shelves.push(Shelf {
             title: hub.title.clone(),
             hub_id: hub.hub_identifier.clone(),
+            key: hub.key.clone(),
             items,
         });
     }
@@ -713,6 +836,7 @@ fn merge(srcs: &[Src]) -> HubBuild {
             // `hub_is_continue`), rather than the dedicated hub's own "continueWatching"
             title: "Continue Watching".to_string(),
             hub_id: "home.continue".to_string(),
+            key: String::new(),
             source: String::new(),
             start: 0,
             len: new_cat.len(),
@@ -749,6 +873,7 @@ fn merge(srcs: &[Src]) -> HubBuild {
                 new_hubs.push(HubRow {
                     title: sh.title.clone(),
                     hub_id: sh.hub_id.clone(),
+                    key: sh.key.clone(),
                     source: (*handle).to_string(),
                     start,
                     len: new_cat.len() - start,
@@ -854,7 +979,8 @@ struct Src {
     /// refused, or where an authoritative fetch has invalidated everything in flight — drop one of
     /// those and this source never fetches again for the rest of the session.
     fetching: bool,
-    /// Bumped by every [`kick`]. A landing whose seq is not the latest is a superseded worker's and
+    /// Assigned by every [`kick`] from the store-wide request sequence. A landing whose seq is not
+    /// the latest is a superseded worker's and
     /// is dropped: [`HUB_GEN`] says "a different account or server set", this says "an older attempt
     /// at the same one", and only the pair rules out both double-applies.
     seq: u32,
@@ -867,6 +993,28 @@ struct Src {
 }
 
 impl Src {
+    /// The request-state transition, independent of thread creation and network I/O. Mint only
+    /// after admission to this source's single flight; the adapter receives the captured value.
+    fn begin_request(
+        &mut self,
+        client: &'static crate::plex::Client,
+        generation: u32,
+        mint: impl FnOnce() -> u32,
+    ) -> Option<HubRequest> {
+        if self.fetching { return None; }
+        let request = HubRequest {
+            gen: generation, seq: mint(), sid: self.sid,
+            client: LandingClient::live(client), token_gen: client.token_gen(),
+        };
+        self.client = Some(client);
+        self.token_gen = request.token_gen;
+        self.fetching = true;
+        self.state = HubState::Loading;
+        self.retry_s = 0.0;
+        self.seq = request.seq;
+        Some(request)
+    }
+
     fn new(sid: ServerId, handle: String) -> Src {
         let client = crate::plex::client_for(sid);
         Src {
@@ -922,17 +1070,57 @@ static SEEN: AtomicU64 = AtomicU64::new(u64::MAX);
 /// `u32`, and separate in MEANING because a re-described server is not a changed server set.
 static SEEN_FACTS: AtomicU32 = AtomicU32::new(u32::MAX);
 
-/// One source's finished (or failed) off-thread fetch. `build: None` deliberately carries no data,
-/// so a failure can never be mistaken for "the server returned nothing".
-struct Landing {
+/// One adapter resource and the logical identity under which this arrival knows it.
+#[derive(Clone, Copy)]
+struct LandingClient {
+    /// Logical identity in the recording's process, preserved when replay binds another resource.
+    instance: u32,
+    resource: &'static crate::plex::Client,
+}
+
+impl LandingClient {
+    fn live(resource: &'static crate::plex::Client) -> Self {
+        Self { instance: resource.instance_gen(), resource }
+    }
+}
+
+/// Everything a Home fetch needs from the main thread, captured before the adapter runs.
+/// Completing it reads no current source, registry, generation or token state.
+struct HubRequest {
     gen: u32,
     seq: u32,
     sid: ServerId,
-    client: Option<&'static crate::plex::Client>,
+    client: LandingClient,
+    token_gen: u32,
+}
+
+impl HubRequest {
+    fn complete(self, build: Option<SourceBuild>) -> Landing {
+        Landing { gen: self.gen, seq: self.seq, sid: self.sid,
+            client: Some(self.client), token_gen: self.token_gen, build }
+    }
+}
+
+/// One source's finished (or failed) off-thread fetch. `build: None` deliberately carries no data,
+/// so a failure can never be mistaken for "the server returned nothing".
+#[derive(Clone)]
+pub(crate) struct Landing {
+    gen: u32,
+    seq: u32,
+    sid: ServerId,
+    client: Option<LandingClient>,
     token_gen: u32,
     build: Option<SourceBuild>,
 }
 static RESULTS: Mutex<Vec<Landing>> = Mutex::new(Vec::new());
+// Main-thread request allocation, shared across sources so an addressed Hubs result has a unique
+// request id even when two servers are both on their first fetch. Never reset on a profile switch:
+// a still-running old worker must not reuse a new profile's address.
+static NEXT_REQUEST: AtomicU32 = AtomicU32::new(1);
+
+impl Landing {
+    pub(crate) fn request_id(&self) -> u32 { self.seq }
+}
 
 /// Bumped by every authoritative fetch ([`reset`] on an identity change, and the blocking install
 /// fetch): a worker spawned before it lands with a stale tag and is DROPPED. Without this, a retry
@@ -944,6 +1132,13 @@ static HUB_GEN: AtomicU32 = AtomicU32::new(0);
 /// see the read in [`pump`]. Starts at 0, which is also the table's own starting generation, so a
 /// boot that discovers nothing does not merge twice for nothing.
 static LAST_SECTIONS_GEN: AtomicU32 = AtomicU32::new(0);
+/// Moves every time the PUBLISHED catalog is replaced — a merge committed, or a reset — and
+/// nothing else. What `stores::hubs` raises its notice on (restructure phase 4): `pump` reports
+/// no change of its own, and a landing that failed rewrites no shelf.
+static CATALOG_GEN: AtomicU32 = AtomicU32::new(0);
+pub(crate) fn catalog_gen() -> u32 {
+    CATALOG_GEN.load(Ordering::SeqCst)
+}
 
 /// The backoff ladder's ends. A TV parked on a sleeping server must keep trying — that IS the
 /// feature — without ever becoming a request loop, so the wait doubles from `MIN` to a `MAX`
@@ -980,7 +1175,8 @@ pub(crate) fn hub_state() -> HubState {
 /// "is this server in that list": an EMPTY list means the pin store knows nothing yet, not that
 /// nothing is pinned. `/library/sections` and `/hubs` land independently and asynchronously,
 /// and the never-empty floor (the Home editor's draft refuses to unpin the last library —
-/// `ui::onboard::toggle_draft` — and `plex::pins` applies the same floor to a recorded selection)
+/// `screens::onboard`'s `OnboardScreen::toggle_row` — and `plex::pins` applies the same floor to
+/// a recorded selection)
 /// forbids an empty pinned set — so "empty" can only mean "no
 /// section has been discovered anywhere", and treating it as "nothing is pinned" would leave Home
 /// with no sources at all on the frame it boots.
@@ -1178,10 +1374,10 @@ fn sync_roster() {
 
 /// Install a finished merge — the whole post-mutation ritual, not just the stores.
 ///
-/// All three statics move together (they always have — a half-applied catalog once left a stale
-/// hero pool floating over emptied shelves), and so do the two surfaces that index INTO them:
-/// `detail::reselect` re-resolves an open page's selected row against the rebuilt catalog (indices
-/// move, the rk is the stable identity; home's focus self-clamps at its read accessors), and
+/// Catalog, hub ranges and hero slots publish as one immutable snapshot (a half-applied catalog
+/// once left a stale hero pool floating over emptied shelves). The generation moves on EVERY
+/// publication, including optimistic edits and roster changes, so retained views can refresh.
+/// Home's legacy focus self-clamps at its read accessors, and
 /// `idle::invalidate` repaints a screen that may have settled — a shelf gaining or losing a card
 /// has no spring behind it, so nothing else would report the change to the frame gate.
 ///
@@ -1198,11 +1394,11 @@ fn commit(build: HubBuild) -> c_int {
     let (new_cat, new_hubs, new_pool) = build;
     let n = new_cat.len();
     unsafe {
-        *std::ptr::addr_of_mut!(CATALOG) = new_cat;
-        *std::ptr::addr_of_mut!(HUBS) = new_hubs;
-        *std::ptr::addr_of_mut!(HERO_POOL) = new_pool;
+        *std::ptr::addr_of_mut!(PUBLISHED_HOME) = Some(Arc::new(HomeCatalog {
+            items: new_cat, hubs: new_hubs, heroes: new_pool,
+        }));
     }
-    crate::ui::detail::reselect();
+    CATALOG_GEN.fetch_add(1, Ordering::SeqCst);
     crate::ui::idle::invalidate();
     n as c_int
 }
@@ -1258,6 +1454,12 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
 /// this path, including the primary during boot/profile activation: a blocking fetch on the SDL
 /// loop would draw no frames while the loading spinner is supposed to be visible.
 fn kick(s: &mut Src) {
+    kick_with(s, spawn_fetch);
+}
+
+/// Keep request admission/state identical when another adapter holds the request instead of
+/// launching a worker. The returned admission decision still controls latch release/backoff.
+fn kick_with(s: &mut Src, launch: impl FnOnce(HubRequest) -> bool) {
     if s.fetching {
         return; // one in flight already — its spinner is the honest answer
     }
@@ -1269,29 +1471,10 @@ fn kick(s: &mut Src) {
         landed_fail(s); // a source whose slot holds no client has nothing to contribute
         return;
     };
-    s.client = Some(c);
-    s.token_gen = c.token_gen();
-    s.fetching = true;
-    s.state = HubState::Loading;
-    s.retry_s = 0.0;
-    s.seq = s.seq.wrapping_add(1);
-    let (gen, seq, sid, token_gen) = (HUB_GEN.load(Ordering::SeqCst), s.seq, s.sid, c.token_gen());
-    let spawned = crate::task::spawn_small("hubs", move || {
-        let build = catch_unwind(move || fetch_source(c, sid)).ok().flatten();
-        // pushed OUTSIDE the guard so a panicking fetch still lands (as a failure) rather than
-        // latching this source's single flight forever
-        RESULTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(Landing {
-                gen,
-                seq,
-                sid,
-                client: Some(c),
-                token_gen,
-                build,
-            });
-    });
+    let Some(request) = s.begin_request(c, HUB_GEN.load(Ordering::SeqCst),
+        || NEXT_REQUEST.fetch_add(1, Ordering::Relaxed)) else { return };
+    let sid = request.sid;
+    let spawned = launch(request);
     if !spawned {
         // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
         // here and back off — `pump` will try again on the ladder.
@@ -1300,6 +1483,17 @@ fn kick(s: &mut Src) {
     } else {
         crate::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
     }
+}
+
+/// The live worker adapter. Replay must replace this operation, not skip `begin_request` and
+/// thereby leave its recorded result with no matching in-flight state.
+fn spawn_fetch(request: HubRequest) -> bool {
+    crate::task::spawn_small("hubs", move || {
+        let (client, sid) = (request.client.resource, request.sid);
+        let build = catch_unwind(move || fetch_source(client, sid)).ok().flatten();
+        // Outside the panic guard: every admitted worker answers, including a panicking fetch.
+        RESULTS.lock().unwrap_or_else(|e| e.into_inner()).push(request.complete(build));
+    })
 }
 
 /// Try this source again NOW, from the bottom of the ladder.
@@ -1319,14 +1513,41 @@ pub(crate) fn request_retry() {
 }
 
 /// Once-a-frame main-thread tick: land finished fetches, then count each source down to its next
-/// automatic attempt. Driven by `ui::home::home_update`, so it runs exactly while Home is the
-/// screen that cares (and never spawns a background fetch behind the player).
+/// automatic attempt. Driven through the Hubs store's route-gated pump, so it runs while Home
+/// is the screen that cares (and never spawns a background fetch behind the player).
 pub(crate) fn pump(dt: f32) {
+    pump_with_landings(dt, take_landings);
+}
+
+/// Move the worker mailbox into one owned batch. No source or catalog state changes here, and
+/// the lock is released before the batch is handed to its consumer.
+pub(crate) fn take_landings() -> Vec<Landing> {
+    std::mem::take(&mut *RESULTS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Apply one explicitly supplied batch through the live landing rules. The supplier runs after
+/// roster reconciliation, exactly where the live mailbox used to be drained. Keeping it separate
+/// lets an adapter observe or substitute arrivals without a second state-application path.
+/// This is NOT an offline replay mode: retry scheduling and worker spawning remain live.
+fn pump_with_landings(dt: f32, take: impl FnOnce() -> Vec<Landing>) {
+    step_landings(Some(dt), take);
+}
+
+/// The owned store's tick never consumes the worker mailbox. Arrivals are delivered separately
+/// by the dispatcher; a worker finishing during its drain belongs to the next frame's ingest.
+pub(crate) fn tick(dt: f32) {
+    pump_with_landings(dt, Vec::new);
+}
+
+/// An addressed arrival may update the catalog behind another page, but must not advance retry
+/// timers or start a new hubs fetch there. The visible Home alone owes the store's tick.
+pub(crate) fn apply_landing(landing: &Landing) {
+    step_landings(None, || vec![landing.clone()]);
+}
+
+fn step_landings(dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>) {
     sync_roster();
-    // taken into a `let` FIRST: an `if let`/`for` scrutinee holds its temporary guard for the whole
-    // body under edition 2021, which would run the merge with the mailbox still locked — and the
-    // worker that fills it must never wait on a main-thread frame
-    let landed = std::mem::take(&mut *RESULTS.lock().unwrap_or_else(|e| e.into_inner()));
+    let landed = take();
     let any_landed = !landed.is_empty();
     let cur = HUB_GEN.load(Ordering::SeqCst);
     let mut srcs = lock_srcs();
@@ -1340,7 +1561,7 @@ pub(crate) fn pump(dt: f32) {
         };
         let lifecycle_matches = l.client.is_none_or(|client| {
             crate::plex::client_for(l.sid)
-                .is_some_and(|now| std::ptr::eq(now, client) && now.token_gen() == l.token_gen)
+                .is_some_and(|now| std::ptr::eq(now, client.resource) && now.token_gen() == l.token_gen)
         });
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
@@ -1362,9 +1583,11 @@ pub(crate) fn pump(dt: f32) {
     // Anything but Ready with nothing in flight is a state only a fetch can leave: Failed (with a
     // backoff owed) or a Loading whose worker landed stale and was dropped — the latter owes
     // nothing, so it re-kicks on the spot rather than wedging that source on a spinner forever.
-    for s in srcs.iter_mut() {
-        if s.state != HubState::Ready && !s.fetching && retry_due(s, dt) {
-            kick(s);
+    if let Some(dt) = dt {
+        for s in srcs.iter_mut() {
+            if s.state != HubState::Ready && !s.fetching && retry_due(s, dt) {
+                kick(s);
+            }
         }
     }
     // …and re-merge when the SECTION TABLE moves, not only when a build lands. `feeds_home` reads
@@ -1415,6 +1638,7 @@ fn build_test(n: usize) -> SourceBuild {
         shelves: vec![Shelf {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
+            key: String::new(),
             items: (0..n)
                 .map(|i| PmsMovie {
                     rk: (i + 1).to_string(),
@@ -1468,6 +1692,72 @@ pub(crate) fn reset() {
 }
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
+pub(crate) fn queue_test_landing(items: Option<usize>) -> u32 {
+    let srcs = lock_srcs();
+    let source = &srcs[0];
+    let seq = source.seq;
+    let landing = Landing {
+        gen: HUB_GEN.load(Ordering::SeqCst), seq, sid: source.sid,
+        client: None, token_gen: 0, build: items.map(build_test),
+    };
+    drop(srcs);
+    RESULTS.lock().unwrap_or_else(|e| e.into_inner()).push(landing);
+    seq
+}
+
+#[cfg(test)]
+pub(crate) fn reverse_test_shelves() {
+    let mut sources = lock_srcs();
+    for source in sources.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves { shelf.items.reverse(); }
+        }
+    }
+    let build = merge(&sources);
+    drop(sources);
+    commit(build);
+}
+
+#[cfg(test)]
+pub(crate) fn seed_grid_for_test(rows: usize, items: usize) {
+    seed_for_test(items, HubState::Ready);
+    let mut sources = lock_srcs();
+    let source = sources[0].last.as_mut().unwrap();
+    source.shelves = (0..rows).map(|row| {
+        let mut shelf = build_test(items).shelves.remove(0);
+        shelf.hub_id = format!("test.row.{row}");
+        shelf
+    }).collect();
+    let build = merge(&sources);
+    drop(sources);
+    commit(build);
+}
+
+#[cfg(test)]
+pub(crate) fn reverse_test_hubs() {
+    let mut sources = lock_srcs();
+    for source in sources.iter_mut() {
+        if let Some(build) = source.last.as_mut() { build.shelves.reverse(); }
+    }
+    let build = merge(&sources);
+    drop(sources);
+    commit(build);
+}
+
+#[cfg(test)]
+pub(crate) fn remove_test_item(rk: &str) {
+    let mut sources = lock_srcs();
+    for source in sources.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves { shelf.items.retain(|item| item.rk != rk); }
+        }
+    }
+    let build = merge(&sources);
+    drop(sources);
+    commit(build);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1481,6 +1771,63 @@ mod tests {
 
     fn sid(slot: u16) -> ServerId {
         ServerId::from_raw(slot)
+    }
+
+    #[test]
+    fn every_catalog_commit_advances_the_published_generation() {
+        let _guard = crate::testlock::serial();
+        reset();
+        let before = catalog_gen();
+        commit((vec![row(0, "new")], Vec::new(), Vec::new()));
+        assert_ne!(catalog_gen(), before, "an optimistic or roster commit must invalidate cached views too");
+        reset();
+    }
+
+    #[test]
+    fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
+        let _guard = crate::testlock::serial();
+        seed_for_test(3, HubState::Ready);
+        let first = hubs_snapshot();
+        let same = hubs_snapshot();
+        assert!(Arc::ptr_eq(&first.data, &same.data), "snapshot acquisition must not clone media");
+        let view = first.view();
+        let title = view.hub(0).unwrap().title;
+        let item = view.hero(0).unwrap().item;
+        assert_eq!(view.hub_count(), 1);
+        assert_eq!(view.hero_count(), 3);
+        assert_eq!(view.state, HubState::Ready);
+        assert!(std::ptr::eq(view.hub(0).unwrap().items.first().unwrap(), item));
+        assert_eq!(view.hub(0).unwrap().identity, Some(HubIdentity::ContinueWatching));
+        assert_eq!(view.hub(0).unwrap().source, "");
+        assert_eq!(view.hero(0).unwrap().source, "");
+        reset();
+        let empty = hubs_snapshot();
+        assert!(!Arc::ptr_eq(&first.data, &empty.data));
+        assert_ne!(view.generation, empty.view().generation);
+        assert_eq!(empty.view().hub_count(), 0);
+        assert_eq!(empty.view().state, HubState::Loading);
+        assert_eq!(title, "Continue Watching");
+        assert_eq!(item.rk, "1");
+        assert_eq!(view.hub(0).unwrap().items.len(), 3);
+        assert!(view.hub(1).is_none());
+        assert!(view.hero(3).is_none());
+    }
+
+    #[test]
+    fn home_group_falls_back_to_provider_key_not_label_or_position() {
+        let items = vec![row(0, "a"), row(1, "b")];
+        let mut hub = HubRow { title: "Display title".into(), hub_id: String::new(),
+            key: "/library/collections/7/children".into(), source: String::new(), start: 0, len: 1 };
+        let key = "/library/collections/7/children";
+        assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Key { sid: sid(0), key }));
+        hub.title = "Other locale".into();
+        hub.start = 1;
+        assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Key { sid: sid(1), key }));
+        hub.hub_id = key.into();
+        assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Identifier { sid: sid(1), id: key }));
+        hub.hub_id.clear();
+        hub.key.clear();
+        assert_eq!(stable_hub_identity(&hub, &items), None);
     }
 
     /// **An episode keeps its OWN still even when its show has no poster.** `still` used to be
@@ -1581,6 +1928,128 @@ mod tests {
     }
 
     #[test]
+    fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let a_sid = crate::plex::register_for_test("request-a", "a.invalid", 32400, "test", "cid");
+        let b_sid = crate::plex::register_for_test("request-b", "b.invalid", 32400, "test", "cid");
+        let ca = crate::plex::client_for(a_sid).unwrap();
+        let cb = crate::plex::client_for(b_sid).unwrap();
+        let mut first = Src::new(a_sid, String::new());
+        let mut second = Src::new(b_sid, String::new());
+        let mint = || NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        let mut held = None;
+        kick_with(&mut first, |request| { held = Some(request); true });
+        let a = held.unwrap().seq;
+        kick_with(&mut first, |_| panic!("an in-flight source must not invoke the adapter again"));
+        assert!(first.begin_request(ca, 1, || panic!("single flight must not mint again")).is_none());
+        let b = second.begin_request(cb, 1, mint).unwrap().seq;
+        first.fetching = false; // the prior attempt completed
+        let retry = first.begin_request(ca, 1, mint).unwrap().seq;
+        reset();
+        let next_profile = Src::new(a_sid, String::new()).begin_request(ca, 2, mint).unwrap().seq;
+        let mut ids = vec![a, b, retry, next_profile];
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn a_prepared_request_keeps_its_original_context_without_running_an_adapter() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("request", "old.invalid", 32400, "old", "cid");
+        let client = crate::plex::client_for(sid).unwrap();
+        let token_gen = client.token_gen();
+        let mut source = Src::new(sid, String::new());
+        source.last = Some(build_test(2));
+        source.state = HubState::Failed;
+        source.retry_n = 3;
+        source.retry_s = 8.0;
+        let generation = HUB_GEN.load(Ordering::SeqCst);
+        let request = source.begin_request(client, generation, || 23).unwrap();
+        assert!(source.fetching);
+        assert_eq!(source.state, HubState::Loading);
+        assert_eq!(source.retry_s, 0.0);
+        assert_eq!(source.retry_n, 3, "admission is not a successful fetch");
+        assert_eq!(source.last.as_ref().unwrap().shelves[0].items.len(), 2);
+        assert_eq!(source.seq, 23);
+        client.set_token("new");
+        assert_eq!(crate::plex::register_for_test("request", "new.invalid", 32400, "new", "cid"), sid);
+        reset(); // a different account epoch must not retag the request already handed out
+        assert_ne!(HUB_GEN.load(Ordering::SeqCst), generation);
+        let result = request.complete(None);
+        assert_eq!((result.gen, result.seq, result.sid, result.token_gen), (generation, 23, sid, token_gen));
+        assert!(std::ptr::eq(result.client.unwrap().resource, client));
+        assert!(result.build.is_none(), "a failed request is not an empty success");
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn addressed_arrivals_and_retry_ticks_do_not_drain_the_mailbox() {
+        let _g = crate::testlock::serial();
+        reset();
+        seed(vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
+        land(0, None);
+        let failed = take_landings().pop().unwrap();
+        land(0, Some(build_test(5)));
+        apply_landing(&failed);
+        assert_eq!(hub_len(0), 2, "a failure retains the last successful catalog");
+        assert_eq!(hub_state(), HubState::Failed);
+        assert_eq!(lock_srcs()[0].retry_s, RETRY_MIN_S, "delivery spends no retry time");
+        tick(0.5);
+        assert_eq!(lock_srcs()[0].retry_s, RETRY_MIN_S - 0.5);
+        assert_eq!(hub_len(0), 2, "the tick cannot consume the later success");
+        let success = take_landings().pop().unwrap();
+        apply_landing(&success);
+        assert_eq!(hub_len(0), 5);
+        assert_eq!(hub_state(), HubState::Ready);
+        reset();
+    }
+
+    #[test]
+    fn a_captured_batch_does_not_consume_later_worker_arrivals() {
+        let _g = crate::testlock::serial();
+        reset();
+        seed(vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
+        land(0, Some(build_test(3)));
+        let batch = take_landings();
+        assert_eq!(batch.len(), 1);
+        assert!(take_landings().is_empty(), "a drain transfers ownership once");
+        assert_eq!(hub_len(0), 2, "capture alone must not apply an arrival");
+
+        // The next worker can post while the captured batch is being observed. Applying that
+        // batch must neither hold the mailbox lock nor silently pick up this later arrival.
+        land(0, Some(build_test(5)));
+        pump_with_landings(0.0, || batch);
+        assert_eq!(hub_len(0), 3);
+        pump_with_landings(0.0, Vec::new);
+        assert_eq!(hub_len(0), 3, "an empty supplied batch does not drain live work");
+        pump(0.0);
+        assert_eq!(hub_len(0), 5, "the later arrival belongs to the next live drain");
+        let generation = catalog_gen();
+        pump(0.0);
+        assert_eq!(catalog_gen(), generation, "an arrival is not applied twice");
+        reset();
+    }
+
+    #[test]
+    fn a_captured_batch_is_still_rejected_after_an_identity_reset() {
+        let _g = crate::testlock::serial();
+        reset();
+        seed(vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
+        land(0, Some(build_test(9)));
+        let batch = take_landings();
+        reset();
+        seed(vec![src(0, "", HubState::Ready, Some(build_test(3)))]);
+        pump_with_landings(0.0, || batch);
+        assert_eq!(hub_len(0), 3);
+        assert_eq!(hub_state(), HubState::Ready);
+        reset();
+    }
+
+    #[test]
     fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
         let _g = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
@@ -1624,8 +2093,35 @@ mod tests {
         Shelf {
             title: title.into(),
             hub_id: hub_id.into(),
+            key: String::new(),
             items: rks.iter().map(|r| row(slot, r)).collect(),
         }
+    }
+
+    #[test]
+    fn home_group_identity_uses_provider_and_server_not_title_or_position() {
+        let mut hub = HubRow { title: "Recent movies".into(), hub_id: "home.movies.recent".into(),
+            key: String::new(), source: "Alice".into(), start: 0, len: 1 };
+        let items = vec![row(0, "a"), row(1, "b"), row(0, "c")];
+        assert_eq!(hub_identity_in(&hub, &items), Some((Some(sid(0)), "home.movies.recent")));
+        hub.title = "Localized title".into();
+        hub.source = "Renamed owner".into();
+        hub.start = 2;
+        assert_eq!(hub_identity_in(&hub, &items), Some((Some(sid(0)), "home.movies.recent")));
+        hub.start = 1;
+        assert_eq!(hub_identity_in(&hub, &items), Some((Some(sid(1)), "home.movies.recent")));
+        hub.hub_id.clear();
+        assert_eq!(hub_identity_in(&hub, &items), None);
+    }
+
+    #[test]
+    fn merged_home_deck_identity_survives_a_different_leading_server() {
+        let mut hub = HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(),
+            key: String::new(), source: String::new(), start: 0, len: 1 };
+        let items = vec![row(0, "a"), row(1, "b")];
+        assert_eq!(hub_identity_in(&hub, &items), Some((None, "home.continue")));
+        hub.start = 1;
+        assert_eq!(hub_identity_in(&hub, &items), Some((None, "home.continue")));
     }
     /// A source's projection: `(lastViewedAt, rk)` deck entries plus whole shelves.
     fn built(slot: u16, cw: &[(i64, &str)], shelves: Vec<Shelf>) -> SourceBuild {
@@ -1890,6 +2386,7 @@ mod tests {
             shelves: vec![Shelf {
                 title: "Recently Added".into(),
                 hub_id: "home.movies.recent".into(),
+                key: String::new(),
                 items: vec![started(0, "7")],
             }],
         };
@@ -2125,6 +2622,7 @@ mod tests {
         let hubs = vec![HubRow {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
+            key: String::new(),
             source: String::new(),
             start: 0,
             len: 3,
@@ -2848,5 +3346,25 @@ mod tests {
             "catalog row 1 is ours (row 0 is theirs, watched later)"
         );
         reset();
+    }
+}
+
+/// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
+/// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.
+impl crate::ui::tile::Tile for PmsMovie {
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn poster(&self) -> Option<(u16, &str)> {
+        (!self.thumb.is_empty()).then_some((self.sid.raw(), self.thumb.as_str()))
+    }
+    fn progress(&self) -> Option<f32> {
+        self.resume_frac()
+    }
+    fn watched(&self) -> bool {
+        self.watched
+    }
+    fn unwatched(&self) -> bool {
+        self.unwatched
     }
 }

@@ -177,6 +177,11 @@ extern "C" {
     #[cfg(feature = "devtriggers")]
     fn glFlush();
     fn glGenTextures(n: c_int, textures: *mut c_uint);
+    // `#[allow(dead_code)]` — the same shape as `app/mod.rs`'s SDL text-input externs: the sole
+    // caller (`delete_tex`, below) compiles its real call out under `cfg(test)`, so this
+    // declaration loses its only use in the TEST build alone and warns there. It stays live on
+    // device and in the simulator, where `delete_tex` still calls it for real.
+    #[allow(dead_code)]
     fn glDeleteTextures(n: c_int, textures: *const c_uint);
     fn glPixelStorei(pname: c_uint, param: c_int);
     fn glTexImage2D(
@@ -1284,7 +1289,7 @@ pub(crate) fn draw_shadow(
 pub(crate) fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
     unsafe {
         let w = k.sqrt(); // natural frequency; critical damping is c = 2ω
-        let e = (-w * dt).exp();
+        let e = crate::ui::motion::exp(-w * dt); // this crate's exp: what a recording can replay
         let x = *pos - target; // offset from target
         let b = *vel + w * x;
         *pos = target + (x + b * dt) * e;
@@ -1311,8 +1316,8 @@ pub(crate) fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zet
         let wd = w * (1.0 - z * z).sqrt(); // damped natural frequency
         let x0 = *pos - target; // offset from target
         let v0 = *vel;
-        let e = (-z * w * dt).exp();
-        let (s, c) = (wd * dt).sin_cos();
+        let e = crate::ui::motion::exp(-z * w * dt);
+        let (s, c) = crate::ui::motion::sin_cos(wd * dt);
         let a = x0;
         let b = (v0 + z * w * x0) / wd;
         *pos = target + e * (a * c + b * s);
@@ -1604,9 +1609,28 @@ pub(crate) fn warm_tex(tex: c_uint) {
 }
 
 /// Delete a texture created by upload_rgba (0 = no-op). Main-thread only.
+///
+/// **The real call is `cfg(not(test))`, and that is a boundary this module already had, only
+/// nowhere written down as code.** `poster.rs`'s own comments call this out twice — `lookup`
+/// "cannot be called from a host test binary (it reaches `gfx::delete_tex`, and nothing here
+/// links GL)" — which was true of every caller UNTIL `screens::login`'s `unmount_frees_the_qr_texture`
+/// passed a nonzero id through the real `Unmount` arm to prove the leak fix actually zeroes
+/// `qr_tex`. `build.rs` links `OpenGL.framework` for the host test binary (has to, since other
+/// tests make `gfx`'s `extern "C"` block reachable at link time), so the symbol resolves — but no
+/// host test ever creates a window or a GL context, so the driver's per-thread dispatch table is
+/// still a null vtable, and `glDeleteTextures` dereferences a fixed offset into it: an immediate
+/// SIGSEGV, not a graceful error, and it took the whole test binary down with it (confirmed under
+/// lldb — `EXC_BAD_ACCESS` inside `libGL.dylib`, not anywhere in this crate). The device and the
+/// simulator both keep the real delete (`cfg(not(test))` is false for both — the ARM cross build
+/// doesn't run `cargo test`, and `make sim` boots through a live SDL/GL context before anything
+/// calls this), so nothing about actual texture lifetime on either target changes. Removing this
+/// guard resurrects the crash the moment a host test calls `delete_tex` with a nonzero id again.
 pub(crate) fn delete_tex(tex: c_uint) {
     if tex != 0 {
-        unsafe { glDeleteTextures(1, &tex) };
+        #[cfg(not(test))]
+        unsafe {
+            glDeleteTextures(1, &tex)
+        };
     }
 }
 

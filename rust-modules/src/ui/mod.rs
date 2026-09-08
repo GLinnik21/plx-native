@@ -5,6 +5,16 @@
 //! fields on the views that own them; the `Painter` folds a cascading alpha (and
 //! optional translate) into every draw op. Single-threaded, main-thread-only.
 //! (Design: docs/ui-framework.md — synthesized from a 3-way design workflow.)
+// **This blankets the WHOLE `ui` tree, and that is wider than it reads.** An inner-attribute
+// `allow` on this module covers every `mod` beneath it, so no file under `ui/` — not
+// `dispatch.rs`, not `focus.rs`, not `hit.rs`, not a screen — can ever report dead code, and the
+// per-file `#![allow(dead_code)]` several of them carry are INERT: measured 2026-09-07 by removing
+// one and watching all three cargo configurations still compile clean. So a stale per-file reason
+// ("inert until phase 5b") is not load-bearing, and deleting one proves nothing about whether its
+// items have callers — which is exactly how three of them kept a reason that had stopped being
+// true. The real gate for this tree is THIS line, and taking it away is the experiment nobody has
+// run; spec §15.2 wants `ui/` at zero with render caches allowlisted BY NAME, which is the phase
+// that gets to do it.
 #![allow(dead_code)] // widgets are added module-by-module; some land before their first caller
 
 use std::os::raw::{c_char, c_int};
@@ -15,45 +25,67 @@ pub mod alt_sources; // "Also available": the same item on a second pinned sourc
 pub mod anim;
 pub mod card_row;
 pub mod chapters_panel;
-pub(crate) mod consent;
+pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
 pub(crate) mod decision_alert;
-pub mod detail;
+pub(crate) mod detail_layout;
+pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
+pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine world, and its test stub
+pub(crate) mod geom; // RESTRUCTURE (spec §7.1): `Focusable` for the widgets — geometry IS `place`
+pub(crate) mod tile; // RESTRUCTURE (spec §10): the library's item abstraction for a shelf tile
 pub(crate) mod document_reader;
+pub(crate) mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
+pub(crate) mod focus; // RESTRUCTURE (spec §7.3): the focus ENGINE — one owner of focus, the golden tables
 pub mod fmt; // shared duration/clock display formatters
+pub(crate) mod frame; // RESTRUCTURE spike (spec §8.1): `Budget`, admission control for prepare work
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
+pub(crate) mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and the pointer gates
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
+pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
 pub mod home;
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
+#[cfg(test)]
+mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — engine, map, press, keyboard, legacy
+pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
 pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
 pub mod label;
-pub mod legal; // Privacy / open-source / source-offer / trademarks — the LG, Plex and LGPL duties that must be readable ON the TV
+pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
+pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
+pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/return/follow policy
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
-pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+// `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
+// `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
+// ladders. Its one surviving reader was `screens::login::LoginScreen::resync`'s
+// `delete_leftovers` count, which moved to `auth::delete_leftovers()` in this same pass — see
+// `app/boot.rs`'s boot-order comment for the retirement note this module's own row in
+// `ui/CLAUDE.md` still needs updating to match.
+pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
-pub mod onboard; // first-run route: which sources feed Home, asked once per PROFILE
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
-pub mod filmography; // the person page's FILMOGRAPHY route — every credit, and which of them you hold
-pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod person_bio; // ...and that page's bio ALERT panel — the full biography behind its `MORE` mark
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
+pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod profile;
-pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub(crate) mod route_screen;
+pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
+pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
+pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
 pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
-pub mod settings; // reachable post-setup choices: Home sources, Privacy, Legal and About
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod table;
+pub mod table_screen; // Header / TableScreen / DocumentScreen — the route family's screens as components (phase 5a)
+pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
+pub(crate) mod testapp; // RESTRUCTURE (spec §15.1): a screen under test with no SDL — dispatcher + fixture rig + virtual clock
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
 pub mod theme;
@@ -127,7 +159,7 @@ pub fn guard(f: impl FnOnce()) {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -213,6 +245,13 @@ impl Rect {
             (self.y + self.h).min(o.y + o.h),
         );
         Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+    }
+    /// The smallest rect holding both — a group's extent from its elements (`ui::geom`).
+    #[inline]
+    pub fn union(&self, o: Rect) -> Rect {
+        let (x0, y0) = (self.x.min(o.x), self.y.min(o.y));
+        let (x1, y1) = ((self.x + self.w).max(o.x + o.w), (self.y + self.h).max(o.y + o.h));
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
     }
 }
 
@@ -302,6 +341,15 @@ pub struct Painter {
     dy: f32,
     a: f32,
     rgb: f32,
+    /// The focus POP carried on the cascade (spec §7.6): a popped tile draws through
+    /// `scaled(s)` so the stop it registers is its popped rect. A value, never applied by the
+    /// primitives themselves — a screen still hands them the rect it computed (`Rect::scaled`),
+    /// and `DrawFrame::stop` folds this in.
+    scale: f32,
+    /// The clip carried on the cascade, in SCREEN space: what `clipped(r)` intersects and what
+    /// `DrawFrame::stop` clips a registered rect to. The GL scissor is set by `ClipScope`
+    /// (`DrawFrame::clip`), never implicitly by a primitive.
+    clip: Rect,
 }
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
 /// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
@@ -328,7 +376,42 @@ impl Painter {
             dy: 0.0,
             a: 1.0,
             rgb: 1.0,
+            scale: 1.0,
+            clip: Rect::FULL,
         }
+    }
+    /// Carry a focus pop on the cascade (multiplicative). See the `scale` field.
+    pub fn scaled(self, s: f32) -> Self {
+        Self {
+            scale: self.scale * s,
+            ..self
+        }
+    }
+    /// The accumulated pop.
+    pub fn scale(self) -> f32 {
+        self.scale
+    }
+    /// Narrow the cascade's clip to `r` (in this painter's space; the translate is folded in and
+    /// the result intersected with the clip already carried). A VALUE: it sets no scissor —
+    /// `DrawFrame::clip` opens the GL scope for it.
+    pub fn clipped(self, r: Rect) -> Self {
+        let screen = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        Self {
+            clip: self.clip.intersect(screen),
+            ..self
+        }
+    }
+    /// The cascade's clip, in screen space.
+    pub fn clip_rect(self) -> Rect {
+        self.clip
+    }
+    /// A rect in this painter's space, as the SCREEN rect it lands on with the cascade's
+    /// translate and pop folded in (the pop about the rect's centre, as `Rect::scaled` does) and
+    /// clipped to the cascade's clip — the one conversion the hit map records (spec §7.6).
+    pub fn to_screen(self, r: Rect) -> (Rect, Rect, Rect) {
+        let moved = Rect::new(r.x + self.dx, r.y + self.dy, r.w, r.h);
+        let popped = if self.scale == 1.0 { moved } else { moved.scaled(self.scale) };
+        (popped, moved, self.clip)
     }
     pub fn alpha(self, m: f32) -> Self {
         Self {

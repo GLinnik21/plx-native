@@ -286,9 +286,9 @@ pub struct CreditItem {
     pub rating_key: String,
     /// **An ABSOLUTE URL on somebody else's host** — `https://image.tmdb.org/…` or
     /// `https://metadata-static.plex.tv/…`, never a PMS path. That is not a reason to skip the
-    /// artwork: `posters::poster_key` URL-encodes exactly such a URL into a
+    /// artwork: `app::adapters::poster::built_key` URL-encodes exactly such a URL into a
     /// `/photo/:/transcode?url=…` request and the SERVER fetches it, which is the same path the
-    /// Search screen's `actor` headshots already take (`posters.rs`'s own tests pin it). This
+    /// Search screen's `actor` headshots already take (`app/adapters/poster.rs`'s own tests pin it). This
     /// module's first draft asserted the opposite in a comment — "a tmdb URL no PMS transcoder will
     /// serve" — and hard-coded an empty plate on the strength of it, which is why the Filmography
     /// shipped with no posters at all. Nothing was measured before that claim was written down.

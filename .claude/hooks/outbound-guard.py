@@ -226,6 +226,20 @@ PRIVATE_FILES = (
     ".tv-remote-url",
 )
 
+# Gitignored DIRECTORIES whose every descendant is private (restructure spec §5.6 rule 1): a
+# recording taken against a real server carries the household's every keypress and every server
+# answer. Matched by path COMPONENT wherever the directory sits (the runtime root on the set, a
+# fetched copy under /tmp, a checkout).
+PRIVATE_DIRS = ("plxnative-recordings",)
+
+# The recording envelope's grammar (`ui/rec.rs`): a payload that carries it is a recording
+# leaving the machine, whatever it is called. The ONE exception the hook computes itself: a file
+# under FIXTURE_DIR whose every string value belongs to the synthetic alphabet
+# (tests/fixtures/replay/ALPHABET.json) may be committed and pushed.
+ENVELOPE = re.compile(r'\{"f":\s*\d+|"st":\s*\{|"t":\s*"st"|\bblobs/')
+FIXTURE_DIR = "tests/fixtures/replay"
+SYNTHETIC_ID = re.compile(r"^s[0-9a-f]{8}$")
+
 MIN_LITERAL = 8                 # see the docstring: below this the files hold only public things
 MAX_READ = 512 * 1024           # a payload file this big is not a PR body
 
@@ -787,6 +801,65 @@ TEXT_FLAGS = {
 SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 
 
+def load_alphabet(root):
+    """(literals, patterns) from tests/fixtures/replay/ALPHABET.json, or the id form alone."""
+    try:
+        with open(os.path.join(root, FIXTURE_DIR, "ALPHABET.json"), encoding="utf-8") as f:
+            a = json.load(f)
+        pats = [re.compile("^(?:%s)$" % p) for p in a.get("patterns", [])]
+        return frozenset(a.get("literals", [])), pats
+    except Exception:
+        return frozenset(), [SYNTHETIC_ID]
+
+
+def synthetic_strings(node, out):
+    """Every string VALUE in a JSON document (keys are the format's, not data)."""
+    if isinstance(node, str):
+        out.append(node)
+    elif isinstance(node, dict):
+        for v in node.values():
+            synthetic_strings(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            synthetic_strings(v, out)
+
+
+def offending_strings(text, alphabet):
+    """The string values of a JSON / JSONL text that are outside the alphabet (never printed)."""
+    literals, pats = alphabet
+    bad = []
+    docs = []
+    try:
+        docs.append(json.loads(text))
+    except Exception:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                docs.append(json.loads(line))
+            except Exception:
+                bad.append(line)
+    for d in docs:
+        vals = []
+        synthetic_strings(d, vals)
+        for v in vals:
+            if v in literals or any(p.match(v) for p in pats):
+                continue
+            bad.append(v)
+    return bad
+
+
+def under_private_dir(path):
+    parts = os.path.normpath(path).split(os.sep)
+    return any(p in PRIVATE_DIRS for p in parts)
+
+
+def under_fixture_dir(path, root):
+    rp = os.path.realpath(path)
+    return rp.startswith(os.path.realpath(os.path.join(root, FIXTURE_DIR)) + os.sep)
+
+
 def named_private_paths(seg, root, cwd):
     """[(gitignored file, how it got here)] for private files this segment actually READS or SENDS.
 
@@ -825,6 +898,18 @@ def named_private_paths(seg, root, cwd):
             if rel and rel not in seen:
                 seen.add(rel)
                 hits.append((rel, how))
+            if under_private_dir(t) and ("<recording>", how) not in hits:
+                hits.append(("<recording> (a plxnative-recordings/ directory: a recording never leaves "
+                             "this machine)", how))
+            elif os.path.isfile(rp) and under_fixture_dir(rp, root):
+                try:
+                    if os.path.getsize(rp) <= MAX_READ:
+                        text = open(rp, encoding="utf-8", errors="replace").read()
+                        if offending_strings(text, load_alphabet(root)):
+                            hits.append(("a replay fixture with a string outside the synthetic "
+                                         "alphabet (tests/fixtures/replay/ALPHABET.json)", how))
+                except OSError:
+                    pass
 
     base = os.path.basename(command_word(words(seg)))
     look(seg, "named as an argument", TEXT_FLAGS.get(base, frozenset()))
@@ -908,6 +993,15 @@ def verdict(cmd, root, cwd=None, secrets=None, published=None):
         for where, text in payload_parts(seg, bodies, cwd):
             for what, how in findings(text, secrets, published):
                 hits.append((what, how, where))
+            if ENVELOPE.search(text):
+                path = where if os.path.isabs(where) else os.path.join(cwd, where)
+                exempt = (where != "the command line" and where != "the heredoc body"
+                          and os.path.isfile(path) and under_fixture_dir(path, root)
+                          and not offending_strings(text, load_alphabet(root)))
+                if not exempt:
+                    hits.append(("the recording envelope grammar ({\"f\":…, \"t\":\"st\") — "
+                                 "a recording, unless it is a synthetic fixture under "
+                                 + FIXTURE_DIR, "matched by content", where))
         if hits:
             return (seg.strip(), reason, hits, secrets)
     return None

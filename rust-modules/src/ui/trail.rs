@@ -22,19 +22,19 @@
 //! host-testable at all: the BACK arm itself lives inside the SDL event loop, where no host test can
 //! reach it, so everything it decides has to be liftable into a value first.
 //!
-//! Main-thread only — an `app.rs` run-loop LOCAL, exactly like the booleans it replaces. Navigation
+//! Main-thread only — a field of `app::App` (`app/mod.rs`), exactly like the booleans it replaces. Navigation
 //! history belongs to the loop that navigates, not to a static.
 
 use crate::plex::ServerId;
-use crate::ui::detail::Spot;
+use crate::metadata::Spot;
 
 /// One page in the trail — everything needed to put it back WITHOUT the screen that pushed it.
 ///
 /// The payloads are the arguments each screen's own entry point already takes, so re-entry is a
-/// call rather than a reconstruction: [`Node::Person`]'s fields are `ui::person::reopen`'s
+/// call rather than a reconstruction: [`Node::Person`]'s fields become `ContentArg::Person`'s
 /// parameters (the header the cast row handed over — name and headshot — which is why a re-opened
 /// person page renders before its fetch lands), and [`Node::Detail`]'s `(sid, rk)` is
-/// `detail::open_rk`'s.
+/// `ContentArg::Detail`'s. The application bridge mounts the owned screens from these arguments.
 ///
 /// **Identity, never an index.** A hub refetch rebuilds the catalog wholesale (Continue Watching
 /// re-sorts by `lastViewedAt`), so an index stored here would name a different movie by the time
@@ -161,6 +161,9 @@ pub(crate) struct Trail {
 }
 
 impl Trail {
+    pub(crate) fn top(&self) -> &Node {
+        self.stack.last().expect("trail has a root")
+    }
     /// Trail ceiling. A Related chain is unbounded (PMS's related hubs are near-symmetric, so
     /// A→B→A is two presses) and so is person→detail→person, which makes this a MEMORY bound rather
     /// than a correctness one: 16 nodes is a couple of kilobytes and deeper than any real session,

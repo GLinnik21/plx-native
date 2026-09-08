@@ -191,7 +191,7 @@ make FLAVOR=<f> deploy             # the SAME flavour you are triaging, then rep
 ```
 
 `make` does not track `RUSTFLAGS` changes, so the Rust staticlib will not rebuild on its
-own — hence the `touch`. Verified output after that: `plex_run at rust-modules/src/app.rs:248`,
+own — hence the `touch`. Verified output after that: `plex_run at rust-modules/src/app/mod.rs:<line>` (it read `app.rs:248` before phase 1a moved the file),
 `main at src/main.c:92`. Same codegen, larger binary; deploy it only while chasing a crash.
 
 ## Prove the tracer works before reading its silence

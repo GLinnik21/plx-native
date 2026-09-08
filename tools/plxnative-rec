@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""plxnative-rec — inspect, verify and compare recordings (restructure spec §5.3–§5.6).
+
+    plxnative-rec info  <dir>                 frames, event frames, present count, header
+    plxnative-rec check <dir>                 every string value is in the synthetic alphabet
+    plxnative-rec diff  <a> <b> [--unsafe]    the st streams, pointwise; --safe is the default
+    plxnative-rec import <dir> <name>         copy a CHECKED recording into tests/fixtures/replay/<name>
+    plxnative-rec rebaseline <dir> <name> --log <events.log>
+                                              REPLACE fixture <name> with a new recording, allowed only
+                                              with a DIVERGENCE RECORD derived from the replay's own log
+                                              (spec §5.5), and never for an anchor fixture
+    plxnative-rec rerecord <dir> <name>       REPLACE fixture <name> after a SHAPE bump, allowed only when
+                                              the committed fixture's (schema, state_fp) differs from the
+                                              new recording's — i.e. the old artifact can no longer be
+                                              LOADED at all. Permitted for an anchor; see below
+
+A recording is `manifest.json` + `rec-NNNN.jsonl` (ui/rec.rs). `diff` prints frame indices, event
+kinds and hashes and never a string payload unless `--unsafe` is given, because a recording taken
+against a real server is private and the printer's output lands in transcripts. `import` refuses
+anything `check` refuses; the committed fixture is what tests/test_harness.py verifies on every
+`make check`, and the outbound guard applies the same alphabet before a push.
+
+**`rerecord` vs `rebaseline`, which is the whole reason there are two verbs.** A rebaseline says
+"the behaviour changed and the new stream is the truth" — a judgement, which is why it costs a
+divergence record the replay itself produced, and why an ANCHOR refuses it outright (spec §5.5):
+an anchor exists precisely to make a silent behaviour drift impossible. A rerecord says something
+weaker and machine-checkable: the state SHAPE moved (`schema` or `state_fp`), so `Recording::parse`
+refuses the committed artifact before it can grade anything at all, and no divergence record can
+exist because no replay can run. Nothing is being accepted, because nothing could be compared.
+That is why an anchor may be re-recorded and may not be rebaselined, and why this verb verifies the
+condition itself rather than trusting the caller: it reads both headers and refuses when the shape
+did NOT move — which is exactly the case a rebaseline is for. The anchor flag is preserved across
+the replacement, so a re-recorded anchor is still an anchor.
+"""
+import json
+import os
+import re
+import shutil
+import sys
+from collections import Counter
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+FIXTURES = os.path.join(ROOT, "tests", "fixtures", "replay")
+
+
+def load(d):
+    with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+        header = json.load(f)
+    frames = {}
+    order = []
+    segs = sorted(n for n in os.listdir(d) if n.startswith("rec-") and n.endswith(".jsonl"))
+    for n in segs:
+        with open(os.path.join(d, n), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                fr = rec["f"]
+                if fr not in frames:
+                    frames[fr] = {"f": fr, "kinds": [], "st": None, "present": None}
+                    order.append(fr)
+                frames[fr]["kinds"].append(rec["t"])
+                if rec["t"] == "st":
+                    frames[fr]["st"] = rec.get("hash")
+                if rec["t"] == "present":
+                    frames[fr]["present"] = rec.get("bit")
+    return header, [frames[f] for f in order]
+
+
+def alphabet():
+    with open(os.path.join(FIXTURES, "ALPHABET.json"), encoding="utf-8") as f:
+        a = json.load(f)
+    return frozenset(a.get("literals", [])), [re.compile("^(?:%s)$" % p) for p in a.get("patterns", [])]
+
+
+def strings(node, out):
+    if isinstance(node, str):
+        out.append(node)
+    elif isinstance(node, dict):
+        for v in node.values():
+            strings(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            strings(v, out)
+
+
+def check(d):
+    lits, pats = alphabet()
+    bad = 0
+    for n in sorted(os.listdir(d)):
+        p = os.path.join(d, n)
+        if not (n == "manifest.json" or (n.startswith("rec-") and n.endswith(".jsonl"))):
+            continue
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+        docs = [json.loads(text)] if n.endswith(".json") else [json.loads(l) for l in text.splitlines() if l.strip()]
+        for doc in docs:
+            vals = []
+            strings(doc, vals)
+            for v in vals:
+                if v in lits or any(pt.match(v) for pt in pats):
+                    continue
+                bad += 1
+                # the value is NOT printed: that is the leak by a shorter route
+                print("  %s: a string of %d chars outside the alphabet" % (n, len(v)))
+    return bad
+
+
+def cmd_info(d):
+    header, frames = load(d)
+    ev = sum(1 for f in frames if f["st"] is not None)
+    pres = sum(1 for f in frames if f["present"])
+    print("recording: %s" % d)
+    print("  schema=%s state_fp=%s build=%s features=%s" % (
+        header.get("schema"), header.get("state_fp"), header.get("build"), ",".join(header.get("features", []))))
+    print("  frames=%d event_frames=%d presented=%d" % (len(frames), ev, pres))
+    counts = Counter(kind for frame in frames for kind in frame["kinds"])
+    print("  inputs=%d effects=%d results=%d lifecycle=%d" % (
+        counts["in"], counts["eff"], counts["async"], counts["life"]))
+    return 0
+
+
+def cmd_check(d):
+    bad = check(d)
+    print("%s: %s" % (d, "synthetic" if bad == 0 else "%d string(s) outside the alphabet" % bad))
+    return 0 if bad == 0 else 1
+
+
+def cmd_diff(a, b, unsafe):
+    _, fa = load(a)
+    _, fb = load(b)
+    ia = {f["f"]: f for f in fa}
+    ib = {f["f"]: f for f in fb}
+    n = 0
+    for fr in sorted(set(ia) | set(ib)):
+        x, y = ia.get(fr), ib.get(fr)
+        if x is None or y is None:
+            print("only-in-%s f=%d" % ("a" if y is None else "b", fr))
+            n += 1
+            continue
+        if x["st"] != y["st"]:
+            kinds = ",".join(sorted(set(x["kinds"]) | set(y["kinds"])))
+            print("diverge f=%d a=%s b=%s kinds=[%s]" % (fr, x["st"], y["st"], kinds))
+            n += 1
+        if x["present"] != y["present"]:
+            print("present f=%d a=%s b=%s" % (fr, x["present"], y["present"]))
+            n += 1
+    if unsafe:
+        print("(--unsafe prints nothing more today: payloads are compared as hashes)")
+    print("%d difference(s)" % n)
+    return 0 if n == 0 else 1
+
+
+def cmd_import(d, name):
+    if check(d):
+        print("refused: the recording is not synthetic; it stays in %s" % d)
+        return 1
+    if not re.match(r"^[a-z0-9][a-z0-9-]{0,40}$", name):
+        print("refused: a fixture name is [a-z0-9-]")
+        return 2
+    dst = os.path.join(FIXTURES, name)
+    if os.path.exists(dst):
+        print("refused: %s exists (use --rebaseline through the replay driver, with a divergence record)" % dst)
+        return 1
+    os.makedirs(dst)
+    for n in sorted(os.listdir(d)):
+        if n == "manifest.json" or (n.startswith("rec-") and n.endswith(".jsonl")):
+            shutil.copy(os.path.join(d, n), os.path.join(dst, n))
+    print("imported %s -> %s" % (d, dst))
+    return 0
+
+
+def cmd_rerecord(d, name):
+    """Replace a fixture whose committed shape can no longer be loaded (see the module doc)."""
+    if check(d):
+        print("refused: the recording is not synthetic; it stays in %s" % d)
+        return 1
+    dst = os.path.join(FIXTURES, name)
+    old_manifest = os.path.join(dst, "manifest.json")
+    if not os.path.isdir(dst) or not os.path.exists(old_manifest):
+        print("refused: no fixture %s to re-record (use import)" % name)
+        return 2
+    with open(old_manifest, encoding="utf-8") as f:
+        old = json.load(f)
+    with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+        new = json.load(f)
+    old_shape = (old.get("schema"), old.get("state_fp"))
+    new_shape = (new.get("schema"), new.get("state_fp"))
+    if old_shape == new_shape:
+        # The committed fixture still LOADS, so a replay can grade it and a divergence record can
+        # exist. Replacing it here would be accepting a behaviour change with no evidence, which
+        # is the one thing this tool exists to prevent.
+        print("refused: %s still loads (schema=%s state_fp=%s unchanged) — this is a rebaseline, "
+              "not a re-record" % (name, new_shape[0], new_shape[1]))
+        return 1
+    was_anchor = bool(old.get("anchor"))
+    shutil.rmtree(dst)
+    os.makedirs(dst)
+    for n in sorted(os.listdir(d)):
+        if n == "manifest.json" or (n.startswith("rec-") and n.endswith(".jsonl")):
+            shutil.copy(os.path.join(d, n), os.path.join(dst, n))
+    if was_anchor:
+        # An anchor stays an anchor: the shape bump is why it could be replaced, not a demotion.
+        with open(os.path.join(dst, "manifest.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        m["anchor"] = True
+        with open(os.path.join(dst, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(m, f, indent=1, sort_keys=True)
+            f.write("\n")
+    print("re-recorded %s: shape %s -> %s%s"
+          % (name, old_shape, new_shape, " (anchor preserved)" if was_anchor else ""))
+    return 0
+
+
+DIVERGE_RE = re.compile(r"^replay: diverge f=(\d+) expected=(0x[0-9a-f]+) got=(0x[0-9a-f]+) inputs=(\d+)")
+DONE_RE = re.compile(r"^replay: done .*verdict=(SAME|DIVERGED)")
+RESULT_DIFFS_RE = re.compile(r"\bresult_diffs=(\d+)\b")
+
+
+def divergence_record(fixture_dir, log_path):
+    """The record CI verifies before a rebaseline lands (spec §5.5): the first diverging frame,
+    the event kinds recorded on it, and both state-shape fingerprints — derived from the replay
+    driver's OWN log lines, which is the only witness that a divergence was observed rather than
+    asserted. Returns (record, reason) with one of them None."""
+    header, frames = load(fixture_dir)
+    with open(log_path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    verdict = None
+    first = None
+    for ln in lines:
+        # The adoption record below proves a STATE divergence only. Do not erase a result
+        # mismatch by selecting some later state hash from the same log. Either witness is
+        # sufficient for refusal, including an inconsistent summary or missing detail lines.
+        if ln.startswith("replay: result diverge "):
+            return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
+        m = DONE_RE.match(ln)
+        if m:
+            results = RESULT_DIFFS_RE.search(ln)
+            if results and int(results.group(1)) != 0:
+                return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
+            verdict = m.group(1)
+        m = DIVERGE_RE.match(ln)
+        if m and first is None:
+            first = m
+    if verdict != "DIVERGED":
+        return None, "the log carries no `replay: done … verdict=DIVERGED` line"
+    if first is None:
+        return None, "the log reports DIVERGED but carries no `replay: diverge` line"
+    fr = int(first.group(1))
+    by_f = {x["f"]: x for x in frames}
+    if fr not in by_f or by_f[fr]["st"] is None:
+        return None, "the first diverging frame %d is not a graded frame of this fixture" % fr
+    if by_f[fr]["st"] != int(first.group(2), 16):
+        return None, "the log's expected hash at f=%d is not this fixture's" % fr
+    preceding = [k for k in by_f[fr]["kinds"] if k == "in"]
+    return {
+        "first_frame": fr,
+        "preceding_event_kinds": preceding,
+        "expected": first.group(2),
+        "got": first.group(3),
+        "from_state_fp": header.get("state_fp"),
+    }, None
+
+
+def cmd_rebaseline(d, name, log_path):
+    dst = os.path.join(FIXTURES, name)
+    if not os.path.isdir(dst):
+        print("refused: no fixture %s to rebaseline (use import)" % name)
+        return 1
+    with open(os.path.join(dst, "manifest.json"), encoding="utf-8") as f:
+        if json.load(f).get("anchor"):
+            print("refused: %s is an ANCHOR fixture; an anchor is never rebaselined" % name)
+            return 1
+    if log_path is None:
+        print("refused: a rebaseline needs a divergence record (--log <the replay's events log>)")
+        return 1
+    record, why = divergence_record(dst, log_path)
+    if record is None:
+        print("refused: %s" % why)
+        return 1
+    if check(d):
+        print("refused: the new recording is not synthetic; it stays in %s" % d)
+        return 1
+    with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+        record["to_state_fp"] = json.load(f).get("state_fp")
+    for n in os.listdir(dst):
+        if n == "manifest.json" or (n.startswith("rec-") and n.endswith(".jsonl")):
+            os.remove(os.path.join(dst, n))
+    for n in sorted(os.listdir(d)):
+        if n == "manifest.json" or (n.startswith("rec-") and n.endswith(".jsonl")):
+            shutil.copy(os.path.join(d, n), os.path.join(dst, n))
+    with open(os.path.join(dst, "divergence.json"), "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2, sort_keys=True)
+        f.write("\n")
+    print("rebaselined %s from %s (first diverging frame %d)" % (name, d, record["first_frame"]))
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    cmd = argv[1]
+    if cmd == "info" and len(argv) == 3:
+        return cmd_info(argv[2])
+    if cmd == "check" and len(argv) == 3:
+        return cmd_check(argv[2])
+    if cmd == "diff" and len(argv) >= 4:
+        return cmd_diff(argv[2], argv[3], "--unsafe" in argv[4:])
+    if cmd == "import" and len(argv) == 4:
+        return cmd_import(argv[2], argv[3])
+    if cmd == "rerecord" and len(argv) == 4:
+        return cmd_rerecord(argv[2], argv[3])
+    if cmd == "rebaseline" and len(argv) >= 4:
+        log_path = argv[argv.index("--log") + 1] if "--log" in argv[4:] and argv.index("--log") + 1 < len(argv) else None
+        return cmd_rebaseline(argv[2], argv[3], log_path)
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

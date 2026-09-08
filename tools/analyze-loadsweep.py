@@ -27,6 +27,21 @@ FPS_RE = re.compile(r"\bloop=(\d+) route=(\w+).*?\bfps=(\d+) load=(-?\d+)(?: sna
 DROP_RE = re.compile(
     r"FRAMEDROP total=([\d.]+) pump=([\d.]+) draw=([\d.]+) cap=([\d.]+) swap=([\d.]+).*?load=(-?\d+)"
 )
+# The eight-phase FRAMEDROP line (2026-09-06: `ingest= results= tick_drain= navcommit= prepare=
+# draw= capture= swap=`) is folded onto the four columns above before DROP_RE sees it: `pump` is
+# everything before draw, `cap` is `capture`. One analysis, both log generations.
+_EIGHT_RE = re.compile(
+    r"ingest=([\d.]+) results=([\d.]+) tick_drain=([\d.]+) navcommit=([\d.]+) prepare=([\d.]+) "
+    r"draw=([\d.]+) capture=([\d.]+) swap="
+)
+
+
+def _fold_eight_phase(line):
+    m = _EIGHT_RE.search(line)
+    if not m:
+        return line
+    pump = sum(float(m.group(k)) for k in range(1, 6))
+    return line[:m.start()] + f"pump={pump:.1f} draw={m.group(6)} cap={m.group(7)} swap=" + line[m.end():]
 STEP_RE = re.compile(r"GLASSLOAD step=(-?\d+)")
 ARMED_RE = re.compile(r"GLASSLOAD armed .*")
 CONFIG_RE = re.compile(r"PROFILE blur_config .*")
@@ -107,7 +122,7 @@ def main() -> None:
                 # cadence rather than believing it — a leg that silently refreshed every frame once
                 # read as an 11% regression of something unrelated.
                 snaps.setdefault(step, []).append(float(m.group(5)))
-        if (m := DROP_RE.search(line)) is not None:
+        if (m := DROP_RE.search(_fold_eight_phase(line))) is not None:
             step = int(m.group(6))
             drops.setdefault(step, []).append(
                 tuple(float(m.group(i)) for i in range(1, 6))

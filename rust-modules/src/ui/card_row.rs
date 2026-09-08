@@ -179,6 +179,16 @@ pub(crate) struct CardRow {
     pub base_y: f32,
 }
 impl CardRow {
+    /// Motion read by placement/reveal is behavioral state for an owned, replayable screen.
+    /// Destructure exhaustively so adding a field requires revisiting the census.
+    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { scale, overflow, focus, scroll_x, lift, band, base_y } = self;
+        c.seq(scale.len());
+        for spring in scale { c.f32(spring.pos).f32(spring.vel); }
+        for spring in [overflow, scroll_x, lift, band] { c.f32(spring.pos).f32(spring.vel); }
+        c.u32(*focus as u32).f32(*base_y);
+    }
+
     pub(crate) const fn new() -> Self {
         CardRow {
             scale: [Spring::at(1.0); MAX_ROW_ITEMS],
@@ -257,6 +267,18 @@ impl CardRow {
     #[inline]
     pub(crate) fn scroll_x(&self) -> f32 {
         self.scroll_x.pos
+    }
+    /// Restore a saved viewport without animating from the constructor's origin. Clamp against
+    /// current content because the row may have shrunk while its screen was covered or evicted.
+    pub(crate) fn restore_scroll(&mut self, scroll: f32, n: usize, sty: &RowStyle) {
+        let viewport = SCR_W - 2.0 * sty.margin_x;
+        let max = (n as f32 * (sty.w + sty.gap) - sty.gap - viewport).max(0.0);
+        self.scroll_x.jump(scroll.clamp(0.0, max));
+    }
+    /// Which cell holds focus (`-1` none), as `update` last recorded it.
+    #[inline]
+    pub(crate) fn focus(&self) -> i32 {
+        self.focus
     }
     /// How far this row's heading must rise, live — see [`heading_clearance`] for the rule and
     /// [`CardRow::update`] for the spring that holds it there.
@@ -354,6 +376,14 @@ pub(crate) fn column_near_x(
 #[inline]
 pub(crate) fn tile_centre_x(i: usize, origin: f32, adv: f32, w: f32, scroll: f32) -> f32 {
     origin + i as f32 * adv - scroll + w * 0.5
+}
+
+/// The SETTLED rect of tile `i` — the one formula [`strip`] draws by and `ui::geom::Shelf::place`
+/// answers with (spec §7.1: draw calls place). The focus pop is applied on top by the caller
+/// (`Rect::scaled` by the cell's spring), never here.
+#[inline]
+pub(crate) fn tile_rect(i: usize, origin: f32, pitch: f32, scroll: f32, row_y: f32, size: (f32, f32)) -> Rect {
+    Rect::new(origin + i as f32 * pitch - scroll, row_y, size.0, size.1)
 }
 
 /// THE clamp-into-view core every scroller shares — uniform slots ([`scroll_into_view`]),
@@ -721,21 +751,22 @@ pub(crate) fn strip<'a>(
         if i as std::os::raw::c_int == focus_col {
             continue; // focused tile drawn last
         }
-        let x = sty.margin_x + i as f32 * pitch;
+        // `tile_rect` in the row's own (unscrolled) space: `pr` carries the scroll
+        let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
         if !crate::ui::on_axis(x - sx, size.0, axis_span, 0.0) {
             continue;
         }
         let s = row.scale(i);
-        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
         draw_tile(pr, art(i), rect, s, sty, resume(i));
         extra(pr, i, x, false);
     }
     if focus_col >= 0 && (focus_col as usize) < n {
         let i = focus_col as usize;
-        let x = sty.margin_x + i as f32 * pitch;
+        let x = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).x;
         // fold the ui::press click dip into the focused tile's scale (1.0 when idle) — same as home
         let s = row.scale(i) * crate::ui::press::scale();
-        let rect = Rect::new(x, row_y, size.0, size.1).scaled(s);
+        let rect = tile_rect(i, sty.margin_x, pitch, 0.0, row_y, size).scaled(s);
         draw_focused(
             pr,
             art(i),
@@ -1273,6 +1304,18 @@ pub(crate) fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_scroll_is_retained_and_clamped_to_current_content() {
+        let mut row = CardRow::new();
+        row.restore_scroll(900.0, 24, &RowStyle::HOME);
+        assert_eq!(row.scroll_x(), 900.0);
+        assert_eq!(row.scroll_x.vel, 0.0);
+        row.restore_scroll(900.0, 2, &RowStyle::HOME);
+        assert_eq!(row.scroll_x(), 0.0);
+        row.restore_scroll(-50.0, 24, &RowStyle::HOME);
+        assert_eq!(row.scroll_x(), 0.0);
+    }
 
     const DT: f32 = 1.0 / 60.0;
     /// The full clearance a HOME shelf's heading needs over a popped tile — asked of

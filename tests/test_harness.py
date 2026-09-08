@@ -48,6 +48,7 @@ sys.path.append(os.path.join(REPO_ROOT, "tools"))
 import netcond  # noqa: E402
 import run  # noqa: E402  (path juggling above is the point)
 import serve_fixtures  # noqa: E402
+import focusfp_check  # noqa: E402
 
 _FIXTURE_GEN_SPEC = importlib.util.spec_from_file_location(
     "plx_make_fixtures", os.path.join(TESTS_DIR, "fixtures", "make_fixtures.py"))
@@ -82,6 +83,337 @@ class _Overlay:
     def __exit__(self, *exc):
         run.MANIFEST_LOCAL = self.saved
         os.unlink(self.fh.name)
+
+
+class ContentFocusFlows(unittest.TestCase):
+    def test_home_down_must_reach_the_second_shelf_not_bounce_to_the_hero(self):
+        log = ["focus route=home snapt=0 hf=-1 row=-1 col=-1",
+               "focus route=home snapt=0 hf=0 row=-1 col=-1",
+               "focus route=home snapt=1 hf=-1 row=0 col=0",
+               "focus route=home snapt=0 hf=0 row=-1 col=-1"]
+        self.assertIsNotNone(focusfp_check.check(1, log))
+        log[-1] = "focus route=home snapt=1 hf=-1 row=1 col=0"
+        self.assertIsNone(focusfp_check.check(1, log))
+        self.assertIsNotNone(focusfp_check.check(1, log[1:]))
+
+    def test_settings_family_must_visit_privacy_as_well_as_legal(self):
+        log = ["hb route=home overlay=settings", "hb route=home overlay=legal",
+               "hb route=home overlay=settings", "hb route=home"]
+        self.assertIsNotNone(focusfp_check.check(6, log))
+        log[1:1] = ["hb route=home overlay=privacy", "hb route=home overlay=settings"]
+        self.assertIsNone(focusfp_check.check(6, log))
+        self.assertIsNotNone(focusfp_check.check(6, log[:-1]))
+
+    def test_the_old_about_only_false_pass_does_not_prove_a_related_hold(self):
+        log = ["focus route=home sid=0 rk=200622",
+               "focus route=detail sec=5 col=0 card=0 sid=0 rk=1001",
+               "focus route=detail sec=5 col=0 card=0 sid=0 rk=1001 press=1"]
+        self.assertIn("never opened", focusfp_check.check(8, log))
+
+    def test_the_menu_must_open_over_detail_and_return_to_the_same_card(self):
+        log = ["focus route=detail sec=3 col=2 card=1 sid=0 rk=1001",
+               "focus route=itemmenu over=detail",
+               "focus route=detail sec=3 col=2 card=1 sid=0 rk=1001"]
+        self.assertIsNone(focusfp_check.check(8, log))
+        self.assertIsNotNone(focusfp_check.check(8, log[:-1]))
+        self.assertIsNotNone(focusfp_check.check(8, [log[0], log[1].replace("detail", "home"), log[2]]))
+        self.assertIsNotNone(focusfp_check.check(8, [*log[:-1], log[-1].replace("col=2", "col=0")]))
+
+    def test_detail_back_restores_the_home_card_identity_and_position(self):
+        log = ["focus route=home row=1 col=2 sid=0 rk=1001",
+               "focus route=detail sid=0 rk=1001",
+               "focus route=home row=1 col=2 sid=0 rk=1001"]
+        self.assertIsNone(focusfp_check.check(2, log))
+        self.assertIsNotNone(focusfp_check.check(2, log[:-1]))
+        self.assertIsNotNone(focusfp_check.check(2, [*log[:-1], log[-1].replace("rk=1001", "rk=1002")]))
+        self.assertIsNotNone(focusfp_check.check(2, ["focus route=home", "focus route=detail", "focus route=home"]))
+
+    @staticmethod
+    def _library_adoption_log():
+        return [
+            "focus route=home snapt=1 hf=-1 row=1 col=0 sid=0 rk=1046",
+            "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1046 row=2 col=4 viewport=2",
+            "focus route=detail sid=0 rk=1046",
+            "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1046 row=2 col=4 viewport=2",
+        ]
+
+    def test_library_flow_rejects_the_recorded_home_detail_home_false_pass(self):
+        # This is the shape from the verified false-PASS artifact: the old flow had enough lines
+        # to look alive, but it never entered the Library at all.
+        log = [
+            "focus route=home snapt=0 snapp=0 hf=-1 row=-1 col=-1 sid=- rk=- press=0",
+            "focus route=home snapt=1 snapp=1 hf=-1 row=1 col=0 sid=0 rk=1048 press=0",
+            "focus route=detail sec=0 col=0 sid=0 rk=1048 press=1",
+            "focus route=home snapt=1 snapp=1 hf=-1 row=1 col=0 sid=0 rk=1048 press=0",
+        ]
+        self.assertIsNotNone(focusfp_check.check(3, log))
+
+    def test_library_adoption_requires_the_same_card_and_focus_position(self):
+        log = self._library_adoption_log()
+        self.assertIsNone(focusfp_check.check(3, log))
+
+        for label, replacement in (
+            ("server slot", ("sid=0", "sid=1")),
+            ("rating key", ("rk=1046", "rk=1047")),
+            ("grid position", ("col=4", "col=5")),
+        ):
+            with self.subTest(label=label):
+                changed = list(log)
+                changed[-1] = changed[-1].replace(*replacement)
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_adoption_refuses_missing_identity_or_focus_fields(self):
+        log = self._library_adoption_log()
+        for label, missing in (("rating key", " rk=1046"), ("grid position", " col=4")):
+            with self.subTest(label=label):
+                changed = list(log)
+                changed[-1] = changed[-1].replace(missing, "")
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_adoption_requires_a_card_and_the_matching_detail(self):
+        log = self._library_adoption_log()
+        for field in ("pill", "card", "menu"):
+            changed = [re.sub(r" " + field + r"=[^ ]+", "", line) for line in log]
+            with self.subTest(missing_both_sides=field):
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+        for field, value in (("card", "0"), ("menu", "1")):
+            changed = [re.sub(r" " + field + r"=[^ ]+", " " + field + "=" + value, line) for line in log]
+            with self.subTest(not_a_card=field):
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+        for replacement in ("sid=1 rk=1046", "sid=0 rk=9999", "sid=0"):
+            changed = list(log)
+            changed[2] = "focus route=detail " + replacement
+            with self.subTest(wrong_detail=replacement):
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_flow_validates_every_focus_record_after_back(self):
+        log = self._library_adoption_log()
+        corruptions = (
+            ("wrong item", ("rk=1046", "rk=1047")),
+            ("wrong server", ("sid=0", "sid=1")),
+            ("missing identity", (" rk=1046", "")),
+            ("viewport drift", ("viewport=2", "viewport=3")),
+        )
+        for label, replacement in corruptions:
+            with self.subTest(label=label):
+                changed = log + [log[-1].replace(*replacement)]
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_flow_rejects_a_later_route_departure(self):
+        log = self._library_adoption_log()
+        self.assertIsNotNone(focusfp_check.check(3, log + ["focus route=home"]))
+
+    def test_library_flow_allows_press_only_changes_after_back(self):
+        log = self._library_adoption_log()
+        changed = log + [log[-1] + " press=1"]
+        self.assertIsNone(focusfp_check.check(3, changed))
+
+    def test_a_person_boot_alone_does_not_prove_a_nested_return(self):
+        log = ["focus route=" + r for r in ("home", "detail", "person", "person")]
+        self.assertIsNotNone(focusfp_check.check(5, log))
+        log[-1] += " sid=0 rk=1001"
+        log += ["focus route=detail", "focus route=person sid=0 rk=1001", "focus route=detail"]
+        self.assertIsNone(focusfp_check.check(5, log))
+
+    def test_person_return_preserves_the_selected_card(self):
+        log = ["focus route=person card=1 sid=0 rk=1001 group=2 elem=4096",
+               "focus route=detail sid=0 rk=1001",
+               "focus route=person card=1 sid=0 rk=1001 group=2 elem=4096",
+               "focus route=detail sid=0 rk=1001"]
+        self.assertIsNone(focusfp_check.check(5, log))
+        self.assertIsNotNone(focusfp_check.check(5, [*log[:2], log[2].replace("rk=1001", "rk=1002"), log[3]]))
+        self.assertIsNotNone(focusfp_check.check(5, [*log[:2], log[2].replace("elem=4096", "elem=4097"), log[3]]))
+
+    def test_filmography_is_restored_before_back_dismisses_it(self):
+        log = ["focus route=person filmography=1 group=0 elem=0",
+               "focus route=person filmography=1 group=1 elem=42",
+               "focus route=detail",
+               "focus route=person filmography=1 group=1 elem=42",
+               "focus route=person filmography=0 group=2 elem=1"]
+        self.assertIsNone(focusfp_check.check(12, log))
+        self.assertIsNotNone(focusfp_check.check(12, [*log[:3], log[-1]]))
+        self.assertIsNotNone(focusfp_check.check(12, [*log[:3], log[3].replace("elem=42", "elem=0"), log[-1]]))
+        self.assertIsNotNone(focusfp_check.check(12, log[:-1]))
+
+
+class ReplayFixtures(unittest.TestCase):
+    """Restructure spec §5.6 rule 2: every string value in a committed replay fixture belongs to
+    the closed synthetic alphabet (tests/fixtures/replay/ALPHABET.json). The guard applies the same
+    rule before a push; this is the copy that runs on every `make check`, so a fixture that slipped
+    in by any other route is still caught."""
+
+    FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "replay")
+
+    def _alphabet(self):
+        with open(os.path.join(self.FIXTURES, "ALPHABET.json"), encoding="utf-8") as f:
+            a = json.load(f)
+        return frozenset(a["literals"]), [re.compile("^(?:%s)$" % p) for p in a["patterns"]]
+
+    @staticmethod
+    def _strings(node, out):
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                ReplayFixtures._strings(v, out)
+        elif isinstance(node, list):
+            for v in node:
+                ReplayFixtures._strings(v, out)
+
+    def test_no_committed_fixture_string_leaves_the_synthetic_alphabet(self):
+        lits, pats = self._alphabet()
+        checked = 0
+        for name in sorted(os.listdir(self.FIXTURES)):
+            d = os.path.join(self.FIXTURES, name)
+            if not os.path.isdir(d):
+                continue
+            for fn in sorted(os.listdir(d)):
+                if not (fn == "manifest.json" or (fn.startswith("rec-") and fn.endswith(".jsonl"))):
+                    continue
+                with open(os.path.join(d, fn), encoding="utf-8") as f:
+                    text = f.read()
+                docs = ([json.loads(text)] if fn.endswith(".json")
+                        else [json.loads(l) for l in text.splitlines() if l.strip()])
+                for doc in docs:
+                    vals = []
+                    self._strings(doc, vals)
+                    for v in vals:
+                        checked += 1
+                        # the value is deliberately not in the message: a leak by a shorter route
+                        self.assertTrue(v in lits or any(p.match(v) for p in pats),
+                                        "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
+        self.assertGreaterEqual(checked, 0)
+
+    def _tool(self, *args):
+        tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
+        return subprocess.run([sys.executable, os.path.abspath(tool), *args],
+                              capture_output=True, text=True)
+
+    def test_recording_info_reports_adapter_event_counts_without_payloads(self):
+        with tempfile.TemporaryDirectory() as root:
+            recording = self._synthetic_recording(root)
+            result = self._tool("info", recording)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("effects=0 results=0", result.stdout)
+            with open(os.path.join(recording, "rec-0000.jsonl"), "a", encoding="utf-8") as f:
+                for kind in ["eff", "eff", "async", "life"]:
+                    f.write(json.dumps({"f": 1, "t": kind, "payload": "not-for-info-output"}) + "\n")
+            result = self._tool("info", recording)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("effects=2 results=1 lifecycle=1", result.stdout)
+            self.assertNotIn("not-for-info-output", result.stdout)
+
+    def _synthetic_recording(self, root, st=0x1234, anchor=False):
+        d = os.path.join(root, "rec")
+        os.makedirs(d)
+        manifest = {"schema": 1, "state_fp": 7, "build": "0.7.0-dev", "features": [], "triggers": [],
+                    "init": {"probe": "seed=0", "hash": 1}, "clock": {"start": 0}, "blobs": False}
+        if anchor:
+            manifest["anchor"] = True
+        with open(os.path.join(d, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        with open(os.path.join(d, "rec-0000.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"t": "tick", "f": 0, "ms": 0, "dt_us": 16000}) + "\n")
+            f.write(json.dumps({"t": "in", "f": 0, "kind": "key", "sym": 1, "wcode": 0, "down": True, "repeat": False}) + "\n")
+            f.write(json.dumps({"t": "st", "f": 0, "hash": st}) + "\n")
+        return d
+
+    def test_a_rebaseline_without_a_divergence_record_is_refused(self):
+        """Spec §5.5 / §15.1: `--rebaseline` is allowed only with a divergence record the replay
+        driver's own log supports, and never for an anchor fixture. The tool is the owner of the
+        rule, so its test lives here rather than in the Rust fixture list."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixtures = os.path.join(tmp, "fixtures")
+            os.makedirs(fixtures)
+            env_tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
+            src = open(os.path.abspath(env_tool), encoding="utf-8").read()
+            # point the tool at a throwaway fixture directory
+            tool = os.path.join(tmp, "plxnative-rec")
+            with open(tool, "w", encoding="utf-8") as f:
+                f.write(src.replace('FIXTURES = os.path.join(ROOT, "tests", "fixtures", "replay")',
+                                    'FIXTURES = %r' % fixtures))
+            shutil.copy(os.path.join(self.FIXTURES, "ALPHABET.json"), fixtures)
+            old = self._synthetic_recording(os.path.join(tmp, "a"), st=0x10)
+            run = lambda *a: subprocess.run([sys.executable, tool, *a], capture_output=True, text=True)
+            self.assertEqual(run("import", old, "flow").returncode, 0)
+            new = self._synthetic_recording(os.path.join(tmp, "b"), st=0x20)
+            # 1. no record at all
+            r = run("rebaseline", new, "flow")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("divergence record", r.stdout)
+            # 2. a log that says SAME is not a divergence record
+            log = os.path.join(tmp, "same.log")
+            open(log, "w").write("replay: done frames=1 graded=1 diverged=0 present_diffs=0 verdict=SAME\n")
+            r = run("rebaseline", new, "flow", "--log", log)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            # 3. a divergence about a DIFFERENT fixture (expected hash is not this one's)
+            log = os.path.join(tmp, "other.log")
+            open(log, "w").write("replay: diverge f=0 expected=0x0000000000000099 got=0x0000000000000020 inputs=1\n"
+                                 "replay: done frames=1 graded=1 diverged=1 present_diffs=0 verdict=DIVERGED\n")
+            r = run("rebaseline", new, "flow", "--log", log)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("not this fixture", r.stdout)
+            # Result mismatches cannot be hidden behind an otherwise valid state divergence.
+            # Until the adoption record can represent them, refuse without replacing the fixture.
+            kept = {}
+            for name in ("manifest.json", "rec-0000.jsonl"):
+                with open(os.path.join(fixtures, "flow", name), "rb") as f:
+                    kept[name] = f.read()
+            for result_line, count in [("replay: result diverge f=0 index=0 reason=changed\n", 1),
+                                       ("", 1),
+                                       ("replay: result diverge f=0 index=0 reason=missing\n", 0)]:
+                log = os.path.join(tmp, "result.log")
+                with open(log, "w") as f:
+                    f.write(result_line +
+                            "replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n" +
+                            "replay: done frames=1 graded=1 diverged=1 present_diffs=0 result_diffs=%d verdict=DIVERGED\n" % count)
+                r = run("rebaseline", new, "flow", "--log", log)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("result", r.stdout)
+                self.assertFalse(os.path.exists(os.path.join(fixtures, "flow", "divergence.json")))
+                for name, contents in kept.items():
+                    with open(os.path.join(fixtures, "flow", name), "rb") as f:
+                        self.assertEqual(f.read(), contents)
+            # 4. a real record: accepted, and divergence.json is written beside the new recording
+            log = os.path.join(tmp, "real.log")
+            open(log, "w").write("replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n"
+                                 "replay: done frames=1 graded=1 diverged=1 present_diffs=0 verdict=DIVERGED\n")
+            r = run("rebaseline", new, "flow", "--log", log)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            rec = json.load(open(os.path.join(fixtures, "flow", "divergence.json")))
+            self.assertEqual(rec["first_frame"], 0)
+            self.assertEqual(rec["preceding_event_kinds"], ["in"])
+            # 5. an anchor refuses even with a record
+            anchor = self._synthetic_recording(os.path.join(tmp, "c"), st=0x30, anchor=True)
+            self.assertEqual(run("import", anchor, "pinned").returncode, 0)
+            log = os.path.join(tmp, "anchor.log")
+            open(log, "w").write("replay: diverge f=0 expected=0x0000000000000030 got=0x0000000000000020 inputs=1\n"
+                                 "replay: done frames=1 graded=1 diverged=1 present_diffs=0 verdict=DIVERGED\n")
+            r = run("rebaseline", new, "pinned", "--log", log)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("ANCHOR", r.stdout)
+
+    def test_the_alphabet_refuses_a_title_shaped_string(self):
+        lits, pats = self._alphabet()
+        for v in ("Film Club Night", "The Godfather", "192.0.2.20", "nas-home"):
+            self.assertFalse(v in lits or any(p.match(v) for p in pats), v)
+        for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(4))", "plxnative-rec"):
+            self.assertTrue(v in lits or any(p.match(v) for p in pats), v)
+
+    def test_home_payload_alphabet_accepts_only_the_mock_protocol_and_synthetic_words(self):
+        lits, pats = self._alphabet()
+        accepts = lambda value: value in lits or any(p.match(value) for p in pats)
+        for value in ("", "hubs", "PG-13", "TV-14", "ac3", "h264", "home.movies.recent",
+                      "home.television.recent", "/library/sections/1/recentlyAdded",
+                      "/library/sections/2/recentlyAdded", "/library/metadata/1001/thumb/1",
+                      "/library/metadata/2001/art/1", "/library/parts/2/1700000002/file.mkv",
+                      "2024-03-14", " ".join(["s01234567"] * 24)):
+            self.assertTrue(accepts(value), value)
+        for value in ("A household summary", "s01234567 household", "/library/metadata/My Film/thumb/1",
+                      "/library/metadata/1001/thumb/1?X-Plex-Token=secret",
+                      "/library/parts/2/1700000002/household.mkv", "http://nas.local/library/metadata/1001",
+                      "s01234567\nThe Godfather", " ".join(["s01234567"] * 23 + ["household"])):
+            self.assertFalse(accepts(value), value)
 
 
 class TeardownProcessTable(unittest.TestCase):
@@ -203,6 +535,80 @@ class FpsIdentity(unittest.TestCase):
             [s["name"] for s in run.fps_for_tiers(scenes, True, "settings")],
             ["settings-root", "settings-player"],
         )
+
+
+class FrameCeilings(unittest.TestCase):
+    """The two frame-TIME gates (`worst_ceiling_ms`, `stall_ceiling_ms`) added for the restructure's
+    phase 0. Graded from synthetic heartbeat/FRAMEDROP lines so the arithmetic is pinned here and
+    not first exercised on the television."""
+
+    HB = "loop=60 route=home overlay=settings fps=12 worstframe={w}ms worstprep=0.4ms"
+
+    def _lines(self, worsts, drops=()):
+        out = [self.HB.format(w=w) for w in worsts]
+        out += [f"FRAMEDROP total={d} ingest=0.1 results=0.1 tick_drain=1.0 navcommit=0.0 "
+                f"prepare=0.5 draw=20.0 capture=0.2 swap=1.0 up=0 px=0 cards=1 off=0 route=home "
+                f"load=-1 snap=0.00" for d in drops]
+        return out
+
+    def test_worst_ceiling_is_the_second_highest_post_warmup_peak(self):
+        scene = {"worst_ceiling_ms": 30}
+        # one 80 ms outlier is tolerated (a poster landing); the second-highest decides
+        ok, detail = run.grade_frame_ceilings(scene, self._lines([80, 20, 22, 21, 25, 19, 24]),
+                                              "home", "settings", warmup=0)
+        self.assertTrue(ok, detail)
+        ok, _ = run.grade_frame_ceilings(scene, self._lines([80, 35, 22, 21, 25, 19, 24]),
+                                         "home", "settings", warmup=0)
+        self.assertFalse(ok)
+
+    def test_worst_ceiling_respects_warmup_and_the_overlay_word(self):
+        scene = {"worst_ceiling_ms": 30}
+        lines = self._lines([90, 90, 20, 22, 21, 25, 19, 24])
+        ok, _ = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=2)
+        self.assertTrue(ok)
+        # the same lines carry overlay=settings, so a privacy scene sees no samples and FAILS
+        ok, detail = run.grade_frame_ceilings(scene, lines, "home", "privacy", warmup=0)
+        self.assertFalse(ok)
+        self.assertIn("no worstframe= samples", detail)
+
+    def test_an_unarmed_detector_cannot_pass_a_ceiling_vacuously(self):
+        lines = ["loop=60 route=home overlay=settings fps=12"] * 8
+        for scene in ({"worst_ceiling_ms": 30}, {"stall_ceiling_ms": 80}):
+            ok, detail = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=0)
+            self.assertFalse(ok, scene)
+            self.assertIn("not armed", detail)
+
+    def test_stall_ceiling_reads_every_framedrop_line_warmup_included(self):
+        scene = {"stall_ceiling_ms": 80}
+        lines = self._lines([20] * 6, drops=[45.0, 79.9])
+        ok, detail = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=3)
+        self.assertTrue(ok, detail)
+        lines = self._lines([20] * 6, drops=[45.0, 80.1])
+        ok, _ = run.grade_frame_ceilings(scene, lines, "home", "settings", warmup=3)
+        self.assertFalse(ok)
+        # a drop on ANOTHER route is not this scene's
+        other = [ln.replace("route=home", "route=detail") for ln in self._lines([], drops=[200.0])]
+        ok, _ = run.grade_frame_ceilings(scene, self._lines([20] * 6) + other, "home", "settings", 0)
+        self.assertTrue(ok)
+
+    def test_the_armed_threshold_is_the_lower_ceiling(self):
+        self.assertIsNone(run.frame_ceiling_threshold({"loop_floor": 30}))
+        self.assertEqual(run.frame_ceiling_threshold({"worst_ceiling_ms": 40}), "40")
+        self.assertEqual(run.frame_ceiling_threshold({"worst_ceiling_ms": 40,
+                                                      "stall_ceiling_ms": 33}), "33")
+
+    def test_a_scene_without_a_ceiling_is_untouched(self):
+        ok, detail = run.grade_frame_ceilings({"loop_floor": 30}, [], "home", None, 0)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "")
+
+    def test_the_new_scenes_declare_a_ceiling_and_a_known_route_word(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        for name in ("modal-ramp", "legal-document", "page-panel", "decision-alert", "cold-open"):
+            s = scenes[name]
+            self.assertIsNotNone(run.frame_ceiling_threshold(s), name)
+        self.assertEqual(scenes["cold-open"].get("warmup_s"), 0,
+                         "a cold open grades its FIRST frames")
 
 
 class LoadManifest(unittest.TestCase):
@@ -3458,6 +3864,32 @@ class PresentedRate(unittest.TestCase):
         ok, why = run.a_presented_rate(lines2, {})
         self.assertTrue(ok, why)
         self.assertIn("median 25.0", why)
+
+class DepGates(unittest.TestCase):
+    """Restructure spec §15.2: `ci/check-deps.sh` is green, and every allowlist under ci/allow/
+    declares the count it actually has — so an allowlist grows only by editing both lines, and a
+    review sees the number move."""
+
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+    def test_check_deps_is_green(self):
+        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_every_allowlist_declares_its_own_count(self):
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        seen = 0
+        for fn in sorted(os.listdir(allow)):
+            with open(os.path.join(allow, fn), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            declared = int(lines[0].split(":")[1])
+            entries = [l for l in lines if l.strip() and not l.startswith("#")]
+            self.assertEqual(declared, len(entries), fn)
+            for e in entries:
+                self.assertTrue(os.path.exists(os.path.join(self.ROOT, e.split("\t")[0])), e)
+            seen += 1
+        self.assertGreaterEqual(seen, 3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

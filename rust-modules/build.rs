@@ -1,11 +1,23 @@
-//! Two jobs: the version string every build reports, and link configuration for the host UI
-//! simulator.
+//! Two jobs: the version string every build reports, and link configuration for everything cargo
+//! itself LINKS on the developer's own machine — the host UI simulator, and the host TEST BINARY.
 //!
-//! The first runs for EVERY build (see [`emit_version`]). The second is a **no-op for every build
-//! that matters**: the television binary is linked by the Makefile, not by cargo (the crate is a
-//! staticlib; a staticlib has no link step), so the ARM build reaches the early return below and
-//! emits nothing further. Only `--features hostsim`, which builds an actual executable, gets past
-//! it.
+//! The first runs for EVERY build (see [`emit_version`]). The second is a **no-op for the build
+//! that ships**: the television binary is linked by the Makefile, not by cargo (the crate is a
+//! staticlib; a staticlib has no link step), so the ARM cross build reaches the early return below
+//! and emits nothing further.
+//!
+//! **The gate is the TARGET, not the `hostsim` feature, and that distinction was paid for.** It
+//! used to be the feature, on the reasoning that the simulator is "the only configuration that
+//! links anything here" — which was true only for as long as no host test reached the drawing
+//! layer. `cargo test --lib` builds an executable too, and macOS `ld64` dead-strips BEFORE it
+//! reports undefined symbols, so a test binary that never made `gfx`/`text`/`svg` reachable linked
+//! happily against nothing but libSystem. Restructure phase 5b ended that: `app/bridge.rs`'s tests
+//! stand up the REAL rig — `Bridge` holds a `text::TtfMeasure`, and a real `Dispatcher` mounts real
+//! screens whose `draw` bodies call `gfx` — so those atoms are live, their `extern "C"` GL/SDL_ttf
+//! /nanosvg references become hard undefined symbols, and the default `make check` pass stopped
+//! linking. Gating on the target instead means any host build that cargo links gets what it needs,
+//! whether or not somebody remembered a feature flag; CI already installs `libsdl2-dev`,
+//! `libsdl2-ttf-dev` and `libgl1-mesa-dev` before `make check` for exactly this reason.
 //!
 //! Why a build script rather than `.cargo/config.toml`, which is where this crate's other
 //! target-bound flags live: the library search path is not a constant. Homebrew is at
@@ -22,10 +34,17 @@ fn main() {
     emit_version();
     emit_build_sha();
 
-    // The simulator is the only configuration that links anything here. Checked via the feature's
-    // env var rather than `cfg!`, because a build script is compiled for the HOST and its own
-    // `cfg!(feature = ...)` would answer for the script, not for the crate being built.
-    if std::env::var_os("CARGO_FEATURE_HOSTSIM").is_none() {
+    // The television target is the one build cargo does not link, so it is the one that wants
+    // none of this. It is identified by ARCHITECTURE rather than by the full triple: the target is
+    // `arm-unknown-linux-gnueabi` (32-bit ARM, `target_arch = "arm"`), while every host that runs
+    // this crate's tests is `aarch64` or `x86_64` — including CI's `ubuntu-24.04-arm` runner, whose
+    // own arch is `aarch64` and which only ever asks for the ARM32 target explicitly.
+    //
+    // Read from `CARGO_CFG_TARGET_ARCH` rather than `cfg!`, because a build script is compiled for
+    // the HOST: its own `cfg!` would answer for the script, not for the crate being built. Same
+    // trap the `CARGO_FEATURE_*` env vars exist for.
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if target_arch == "arm" {
         return;
     }
 
@@ -34,10 +53,12 @@ fn main() {
     if let Some(libdir) = sdl_search_path() {
         println!("cargo:rustc-link-search=native={}", libdir.display());
     } else {
-        // Not fatal — a system-wide install needs no search path. Say so anyway, because the
-        // alternative is an undefined-symbol wall with no explanation.
+        // Not fatal — a system-wide install needs no search path, which is the ordinary case on
+        // Linux, where CI installs the `-dev` packages into the default one. Say so anyway,
+        // because the alternative is an undefined-symbol wall with no explanation. Not labelled
+        // "hostsim" any more: this path is now reached by the plain `cargo test --lib` pass too.
         println!(
-            "cargo:warning=hostsim: no Homebrew lib dir found; relying on the default linker \
+            "cargo:warning=host link: no Homebrew lib dir found; relying on the default linker \
              search path for SDL2/SDL2_ttf"
         );
     }
@@ -186,17 +207,30 @@ fn compile_svg() {
         .status()
         .unwrap_or_else(|e| {
             panic!(
-                "hostsim: could not run {cc:?} to compile {}: {e}",
+                "host link: could not run {cc:?} to compile {}: {e}",
                 src.display()
             )
         });
     assert!(
         st.success(),
-        "hostsim: compiling {} failed ({st})",
+        "host link: compiling {} failed ({st})",
         src.display()
     );
     // Link the object directly; no intermediate archive, so no `ar` involved.
-    println!("cargo:rustc-link-arg-bins={}", out.display());
+    //
+    // The UNSUFFIXED form, which covers binaries, examples, benches and TESTS alike. It used to be
+    // `-bins`, which reaches the simulator executable and nothing else, so the host test binary was
+    // left without `svg.o`. That was invisible for as long as no test made `svg::rasterize`
+    // reachable, and it stopped being invisible in restructure phase 5b, when `app/bridge.rs`'s
+    // tests began mounting real screens that draw real icons: the hostsim test pass then failed on
+    // `_svg_free`/`_svg_rasterize_rgba` ALONE, having already got SDL and GL from the
+    // `rustc-link-lib` lines above, which do cover every target kind.
+    //
+    // Not `-tests` either, which looks like the precise answer and is not one: cargo rejects it
+    // outright here ("does not have a test target"), because that suffix addresses declared
+    // `[[test]]` integration targets and this crate has none — its tests are the LIB target
+    // rebuilt with `--test`, which only the unsuffixed form reaches.
+    println!("cargo:rustc-link-arg={}", out.display());
 }
 
 /// Publish `PLX_BUILD_SHA` — the short commit this binary was built from, so the About screen can

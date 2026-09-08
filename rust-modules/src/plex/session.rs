@@ -109,7 +109,8 @@ pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
 /// Three near-identical copies of this existed — `browse`'s `TempPins`, `ui::onboard`'s
 /// `TempSession` and an inline one in `auth` — and `onboard`'s own doc comment already said this
 /// module owned the original, which it did not. It does now. A screen with its own globals to put
-/// back wraps this one and adds its teardown to the wrapper's `Drop` (see `ui::onboard`), rather
+/// back wraps this one and adds its teardown to the wrapper's `Drop` (see `screens::onboard`,
+/// which is where that screen and its `TempSession` wrapper live since phase 5b), rather
 /// than forking the redirect a fourth time.
 ///
 /// **The caller must hold [`crate::testlock::serial`] for its whole body** — the redirected path is

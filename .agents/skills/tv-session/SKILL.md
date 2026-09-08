@@ -389,8 +389,10 @@ the TV is signed in as whatever the automation chose.
   opened the library).
 - **Dead ends, so nobody re-tries them:** external input injection cannot reach this app
   (the compositor opens a fixed evdev set at boot; LG's keymanager only reaches the web-app
-  layer) — the in-app FIFO is the only path. There is no continuous-capture API on this
-  build, only the one-shot service. `luna-send` silently no-ops without a controlling TTY,
+  layer) — the in-app FIFO is the only path. There is no continuous **LS2 capture-service** API on
+  this build, only the one-shot service. A rooted native process can separately use DILE_VT's
+  SCALER DMA ring; `tools/tv-capture-bench.c stream` proves that video-only path at 720p60, but it
+  is not a luna service and does not include the UI plane. `luna-send` silently no-ops without a controlling TTY,
   so on-device calls are wrapped in `script -qc` (never `ssh -tt` for a binary stream — it
   mangles the bytes).
 

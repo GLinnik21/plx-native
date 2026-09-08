@@ -49,12 +49,12 @@ net: curl rc=7 — transport error
 pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
 loop=47 route=home fps=47
 plex: server slot 0 re-pointed to https://192-168-0-3.57de9811e3364ad99554f9d72b0f42de.plex.direct:32400
-auth: reached "Gleb’s Mac mini" 192.168.0.3:32400 (ours) via https://192-168-0-3.57de9811e3364ad99554f9d72b0f42de.plex.direct:32400
+auth: reached "Gleb’s Mac mini" 192.0.2.21:32400 (ours) via https://192-168-0-3.57de9811e3364ad99554f9d72b0f42de.plex.direct:32400
 pms: server 0 version=1.43.3.10896-cb3ebc72d plexPass=true
 auto fixture: Original source=60000kbps armed
 esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
 load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0
-stream: 192.168.0.3:58118 path=/pipe_h264_aac_mp4.mp4
+stream: 192.0.2.21:58118 path=/pipe_h264_aac_mp4.mp4
 SMP: media thread spawned, stream=1
 SMP: calling Load (uid=NULL)
 ff: open status=200 clen=48012715
@@ -106,7 +106,7 @@ smp_cb type=23 num=0 str=true
 stop_bufferfeed: torn down
 esInfo: videoFps 24/1 + adaptiveResolution (src 24.000)
 load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0
-stream: 192.168.0.3:58118 path=/__abr/2000/master.m3u8?X-Plex-Token=<redacted>
+stream: 192.0.2.21:58118 path=/__abr/2000/master.m3u8?X-Plex-Token=<redacted>
 SMP: media thread spawned, stream=1
 SMP: calling Load (uid=NULL)
 hls: segmented demux start

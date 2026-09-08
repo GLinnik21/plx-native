@@ -1,0 +1,398 @@
+//! Retained listing read contract for the owned Library screen. No borrowed global data:
+//! a frame can keep this publication across page arrivals, re-queries and account resets.
+//! Source rosters and section hubs are separate publications, not implied by this view.
+#![cfg_attr(not(test), allow(dead_code))] // Removed with phase-8 Library consumer adoption.
+
+use super::{Arc, GenreEntry, SecFetch, SecItems, ServerId, SortEntry};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ListingId {
+    pub(crate) epoch: u32,
+    pub(crate) query: u32,
+    pub(crate) sid: ServerId,
+    pub(crate) section: i64,
+}
+
+#[derive(Clone)]
+pub(crate) struct ListingSnapshot {
+    data: Option<ListingData>,
+}
+
+#[derive(Clone)]
+struct ListingData {
+    id: ListingId,
+    total: i64,
+    fetch: SecFetch,
+    items: SecItems,
+    sorts: Arc<Vec<SortEntry>>,
+    genres: Arc<Vec<GenreEntry>>,
+    letters: Arc<Vec<(String, i64)>>,
+    sort_idx: usize,
+    sort_desc: bool,
+    genre: Option<Arc<GenreEntry>>,
+    unwatched: bool,
+}
+
+impl ListingSnapshot {
+    pub(crate) fn view(&self) -> ListingView<'_> {
+        ListingView(self)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ListingView<'a>(&'a ListingSnapshot);
+
+impl<'a> ListingView<'a> {
+    pub(crate) fn id(self) -> Option<ListingId> {
+        self.0.data.as_ref().map(|s| s.id)
+    }
+    /// -1 means the first page has not answered; zero is a known empty listing.
+    pub(crate) fn total(self) -> i64 {
+        self.0.data.as_ref().map_or(-1, |s| s.total)
+    }
+    pub(crate) fn fetch(self) -> SecFetch {
+        self.0.data.as_ref().map_or(SecFetch::Loading, |s| s.fetch)
+    }
+    /// Missing pages and out-of-range indices are None. The reference is bounded by the
+    /// retained snapshot, never a fictitious 'static lifetime ending at the next pump.
+    pub(crate) fn item(self, index: usize) -> Option<&'a crate::pms::PmsMovie> {
+        self.0.data.as_ref()?.items.get(index)
+    }
+    pub(crate) fn sorts(self) -> &'a [SortEntry] {
+        self.0.data.as_ref().map_or(&[], |s| s.sorts.as_slice())
+    }
+    pub(crate) fn genres(self) -> &'a [GenreEntry] {
+        self.0.data.as_ref().map_or(&[], |s| s.genres.as_slice())
+    }
+    pub(crate) fn letters(self) -> &'a [(String, i64)] {
+        self.0.data.as_ref().map_or(&[], |s| s.letters.as_slice())
+    }
+    pub(crate) fn sort_index(self) -> usize {
+        self.0.data.as_ref().map_or(0, |s| s.sort_idx)
+    }
+    pub(crate) fn sort_desc(self) -> bool {
+        self.0.data.as_ref().is_some_and(|s| s.sort_desc)
+    }
+    pub(crate) fn genre(self) -> Option<&'a GenreEntry> {
+        self.0.data.as_ref()?.genre.as_deref()
+    }
+    pub(crate) fn unwatched(self) -> bool {
+        self.0.data.as_ref().is_some_and(|s| s.unwatched)
+    }
+    pub(crate) fn rail_available(self) -> bool {
+        self.id().is_some()
+            && self
+                .sorts()
+                .get(self.sort_index())
+                .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
+            && !self.unwatched()
+            && self.genre().is_none()
+            && self.letters().len() > 1
+    }
+    pub(crate) fn letter_start(self, index: usize) -> usize {
+        self.letters()
+            .iter()
+            .take(index)
+            .map(|(_, n)| *n as usize)
+            .sum()
+    }
+}
+
+/// Main-thread capture, once per frame. O(1), including arbitrarily large loaded listings.
+pub(crate) fn snapshot() -> ListingSnapshot {
+    let sec = super::cur();
+    let id = super::sections().get(sec).and_then(|section| {
+        Some(ListingId {
+            epoch: super::table_epoch(),
+            query: super::query_gen(),
+            sid: super::section_sid(sec)?,
+            section: section.key,
+        })
+    });
+    ListingSnapshot {
+        // No empty Arc allocations on Login or before discovery has produced a section.
+        data: id.zip(super::states().get(sec)).map(|(id, s)| ListingData {
+            id,
+            total: s.total,
+            fetch: s.fetch,
+            items: s.items.clone(),
+            sorts: s.sorts.clone(),
+            genres: s.genres.clone(),
+            letters: s.letters.clone(),
+            sort_idx: s.sort_idx,
+            sort_desc: s.sort_desc,
+            genre: s.genre.clone(),
+            unwatched: s.unwatched,
+        }),
+    }
+}
+
+/// The source/section table in registration order. Section indices are meaningful only
+/// inside `epoch`; stable identities always include the server and its own section key.
+#[derive(Clone)]
+pub(crate) struct SectionView {
+    pub(crate) sid: Option<ServerId>,
+    pub(crate) key: i64,
+    pub(crate) kind: super::SecKind,
+    pub(crate) row: super::SrcRow,
+}
+
+#[derive(Default)]
+struct DirectoryData {
+    sources: Vec<(ServerId, super::SrcGroup)>,
+    sections: Vec<SectionView>,
+}
+
+/// Owned by the frame bridge (later BrowseStore), never a new global. Source prose is rebuilt
+/// only when the table, source facts or chosen section changes, not at every prepare/draw split.
+#[derive(Clone)]
+pub(crate) struct DirectorySnapshot {
+    stamp: Option<(u32, u32, usize, usize)>,
+    data: Arc<DirectoryData>,
+    source: Option<usize>,
+    source_fetch: SecFetch,
+    discovery: SecFetch,
+}
+
+impl Default for DirectorySnapshot {
+    fn default() -> Self {
+        Self {
+            stamp: None,
+            data: Arc::default(),
+            source: None,
+            source_fetch: SecFetch::Loading,
+            discovery: SecFetch::Loading,
+        }
+    }
+}
+
+impl DirectorySnapshot {
+    /// Main-thread capture. The existing source-list generation covers names, reachability,
+    /// counts and pins. Current section is separate because its tick can move without a landing;
+    /// source count also catches a newly granted source before it has any sections to append.
+    pub(crate) fn capture(&mut self) {
+        let stamp = (
+            super::table_epoch(),
+            super::source_list_gen(),
+            super::cur(),
+            super::sources().len(),
+        );
+        if self.stamp != Some(stamp) {
+            self.data = Arc::new(DirectoryData {
+                sources: super::sources()
+                    .iter()
+                    .map(|s| s.sid)
+                    .zip(super::source_groups())
+                    .collect(),
+                sections: super::sections()
+                    .iter()
+                    .zip(super::all_source_rows())
+                    .map(|(s, row)| SectionView {
+                        sid: super::sources().get(s.src).map(|source| source.sid),
+                        key: s.key,
+                        kind: s.kind,
+                        row,
+                    })
+                    .collect(),
+            });
+            self.stamp = Some(stamp);
+        }
+        // These can change without changing the directory's prose (for example a retry).
+        self.source = super::cur_source_idx();
+        self.source_fetch = super::cur_source_state();
+        self.discovery = super::discovery_state();
+    }
+
+    pub(crate) fn view(&self) -> DirectoryView<'_> {
+        DirectoryView(self)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DirectoryView<'a>(&'a DirectorySnapshot);
+
+impl<'a> DirectoryView<'a> {
+    pub(crate) fn epoch(self) -> Option<u32> {
+        self.0.stamp.map(|s| s.0)
+    }
+    pub(crate) fn current(self) -> Option<usize> {
+        self.0
+            .stamp
+            .map(|s| s.2)
+            .filter(|&i| i < self.0.data.sections.len())
+    }
+    pub(crate) fn sources(self) -> &'a [(ServerId, super::SrcGroup)] {
+        &self.0.data.sources
+    }
+    pub(crate) fn sections(self) -> &'a [SectionView] {
+        &self.0.data.sections
+    }
+    pub(crate) fn source(self) -> Option<&'a (ServerId, super::SrcGroup)> {
+        self.sources().get(self.0.source?)
+    }
+    pub(crate) fn source_fetch(self) -> SecFetch {
+        self.0.source_fetch
+    }
+    pub(crate) fn discovery(self) -> SecFetch {
+        self.0.discovery
+    }
+    /// Press-time section, not necessarily the committed one during a page fade.
+    pub(crate) fn rows_for(self, section: usize) -> impl Iterator<Item = &'a super::SrcRow> {
+        let kind = self.sections().get(section).map(|s| s.kind);
+        self.sections()
+            .iter()
+            .filter(move |s| Some(s.kind) == kind && s.row.pinned)
+            .map(|s| &s.row)
+    }
+
+    /// Favourite libraries represented by the current type pill, with their table indices.
+    pub(crate) fn favorite_sections_for(
+        self,
+        section: usize,
+    ) -> impl Iterator<Item = (usize, &'a SectionView)> {
+        let kind = self.sections().get(section).map(|s| s.kind);
+        self.sections()
+            .iter()
+            .enumerate()
+            .filter(move |(_, s)| Some(s.kind) == kind && s.row.pinned)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_retains_identity_and_refreshes_prose_only_on_change() {
+        let _guard = crate::testlock::serial();
+        crate::browse::seed_two_source_table_for_test();
+        super::super::source_mut(0).unwrap().sid = ServerId::from_raw(0);
+        super::super::source_mut(1).unwrap().sid = ServerId::from_raw(1);
+        crate::browse::set_cur(0);
+        let mut directory = DirectorySnapshot::default();
+        directory.capture();
+        let old = directory.clone();
+        directory.capture();
+        assert!(Arc::ptr_eq(&old.data, &directory.data));
+        let view = old.view();
+        assert_eq!(view.sections()[0].key, view.sections()[2].key);
+        assert_ne!(view.sections()[0].sid, view.sections()[2].sid);
+        assert_eq!(view.sources().len(), 2);
+        assert_eq!(view.current(), Some(0));
+        assert_eq!(view.source().unwrap().0, view.sections()[0].sid.unwrap());
+        assert_eq!(view.source_fetch(), crate::browse::cur_source_state());
+        assert_eq!(view.discovery(), crate::browse::discovery_state());
+        assert_eq!(
+            view.rows_for(0).cloned().collect::<Vec<_>>(),
+            crate::browse::source_rows_for(0)
+        );
+        assert_eq!(
+            view.rows_for(1).cloned().collect::<Vec<_>>(),
+            crate::browse::source_rows_for(1)
+        );
+        assert_eq!(view.rows_for(999).count(), 0);
+        super::super::source_mut(0).unwrap().name = "Changed".into();
+        super::super::SRC_FACTS_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        directory.capture();
+        assert_eq!(directory.view().sources()[0].1.name, "Changed");
+        assert_ne!(old.view().sources()[0].1.name, "Changed");
+        crate::browse::set_cur(1);
+        directory.capture();
+        assert_eq!(directory.view().current(), Some(1));
+        assert!(directory.view().sections()[1].row.current);
+        assert!(!directory.view().sections()[0].row.current);
+        crate::browse::reset();
+        directory.capture();
+        assert_ne!(directory.view().epoch(), old.view().epoch());
+        assert!(directory.view().sections().is_empty());
+        assert!(directory.view().current().is_none());
+        assert_eq!(old.view().sections().len(), 4);
+    }
+
+    #[test]
+    fn query_and_menus_are_one_retained_publication() {
+        let _guard = crate::testlock::serial();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::set_cur(0);
+        let state = super::super::state_mut(0).unwrap();
+        state.sorts = Arc::new(vec![SortEntry {
+            key: "titleSort".into(),
+            title: "Title".into(),
+            default_desc: false,
+        }]);
+        state.genres = Arc::new(vec![GenreEntry {
+            id: "7".into(),
+            title: "Drama".into(),
+        }]);
+        state.letters = Arc::new(vec![("A".into(), 3), ("B".into(), 4)]);
+        let initial = snapshot();
+        assert!(Arc::ptr_eq(
+            &initial.data.as_ref().unwrap().sorts,
+            &state.sorts
+        ));
+        assert!(Arc::ptr_eq(
+            &initial.data.as_ref().unwrap().genres,
+            &state.genres
+        ));
+        assert!(Arc::ptr_eq(
+            &initial.data.as_ref().unwrap().letters,
+            &state.letters
+        ));
+        assert_eq!(initial.view().sort_index(), 0);
+        assert!(!initial.view().sort_desc());
+        assert_eq!(initial.view().sorts()[0].key, "titleSort");
+        assert_eq!(initial.view().genres()[0].id, "7");
+        assert!(initial.view().rail_available());
+        assert_eq!(initial.view().letter_start(1), 3);
+        assert_eq!(initial.view().letter_start(99), 7);
+        crate::browse::set_genre_by_id(Some("7"));
+        crate::browse::toggle_unwatched();
+        crate::browse::set_sort_by_key("titleSort", true);
+        let filtered = snapshot();
+        assert!(filtered.view().unwatched());
+        assert!(filtered.view().sort_desc());
+        assert_eq!(filtered.view().genre().unwrap().id, "7");
+        assert!(!filtered.view().rail_available());
+        assert!(initial.view().genre().is_none());
+        assert!(!initial.view().unwatched());
+        assert!(initial.view().rail_available());
+        assert!(Arc::ptr_eq(
+            &initial.data.as_ref().unwrap().sorts,
+            &filtered.data.as_ref().unwrap().sorts
+        ));
+        assert_eq!(
+            filtered.view().rail_available(),
+            crate::browse::rail_available()
+        );
+        crate::browse::reset();
+        assert_eq!(filtered.view().genre().unwrap().title, "Drama");
+        assert!(!snapshot().view().rail_available());
+    }
+
+    #[test]
+    fn retained_listing_survives_edit_requery_and_reset() {
+        let _guard = crate::testlock::serial();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(2);
+        let first = snapshot();
+        let id = first.view().id().unwrap();
+        let before = first.view().item(0).unwrap().clone();
+        let retained = &first.data.as_ref().unwrap().items.pages;
+        assert!(std::sync::Arc::ptr_eq(
+            retained,
+            &super::super::cur_state().unwrap().items.pages
+        ));
+        crate::browse::set_watched_local(before.sid, &before.rk, false);
+        assert!(snapshot().view().item(0).unwrap().unwatched);
+        assert_eq!(first.view().item(0).unwrap().unwatched, before.unwatched);
+        super::super::requery();
+        assert_ne!(snapshot().view().id().unwrap().query, id.query);
+        assert_eq!(first.view().total(), 2);
+        assert_eq!(first.view().fetch(), SecFetch::Ready);
+        crate::browse::reset();
+        assert!(snapshot().view().id().is_none());
+        assert_eq!(snapshot().view().total(), -1);
+        assert_eq!(first.view().id(), Some(id));
+        assert_eq!(first.view().item(0).unwrap().rk, before.rk);
+    }
+}

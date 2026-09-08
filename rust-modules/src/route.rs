@@ -6669,7 +6669,7 @@ fn request_play_inner(
     });
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
-    crate::metadata::retire_playing_item();
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
@@ -6939,7 +6939,7 @@ pub(crate) fn pump_play() -> Option<i64> {
     // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
     // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
     // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
-    // evict-protection a draw takes (see `posters::poster_warm`). At the tile's OWN 480×270 —
+    // evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
     // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
     //
     // It sits HERE, in the once-a-frame pump, rather than inside `apply_plan`: that function's
@@ -6979,7 +6979,7 @@ fn apply_plan(plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
-    crate::metadata::install_playing(plan.playing);
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::InstallPlaying(plan.playing));
     // main thread only — `up_next()`/`with_queue()` lend out of this (see their docs). The rows
     // arrive already projected: the worker never retained a `Metadata` tree to install here.
     session_mut(|s| {
@@ -12383,6 +12383,12 @@ mod tests {
             while std::time::Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
+                        // Darwin inherits the listener's nonblocking flag on accepted sockets.
+                        // The accept deadline is not permission for read_line to race the writer.
+                        socket.set_nonblocking(false).expect("blocking request reader");
+                        let timeout = Some(std::time::Duration::from_secs(20));
+                        socket.set_read_timeout(timeout).expect("request timeout");
+                        socket.set_write_timeout(timeout).expect("response timeout");
                         let mut first = String::new();
                         BufReader::new(socket.try_clone().expect("clone socket"))
                             .read_line(&mut first)

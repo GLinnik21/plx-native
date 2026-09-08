@@ -28,10 +28,12 @@ CACHE="$REPO/.abi-cache"
 : "${WEBOS_SDK:=$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}"
 TOOL="$WEBOS_SDK/bin/arm-webos-linux-gnueabi"
 
-# TV address: explicit $TV wins, else whatever the Makefile declares (single source of truth).
+# TV address: explicit $TV wins, else ask the Makefile's side-effect-free query target.  Do not
+# scrape `make -p`: TV is recursive and that prints the literal `$(strip $(shell ...))`, which
+# scp then mistakes for a hostname.
 tv_host() {
   if [ -n "${TV:-}" ]; then echo "$TV"; return; fi
-  make -C "$REPO" -pn 2>/dev/null | sed -n 's/^TV *= *//p' | head -1
+  make -s -C "$REPO" print-tv 2>/dev/null | head -1
 }
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
 tv_ssh() { ssh "${SSH_OPTS[@]}" "root@$(tv_host)" "$@"; }

@@ -49,7 +49,7 @@
 //! # What this module does NOT do
 //!
 //! It does not slow the **loop** — only the **present**. Input polling, the remote FIFO drain,
-//! `ls2_pump`, `route::pump_play`, `metadata::pump_detail`, `posters::poster_pump` and every
+//! `ls2_pump`, `route::pump_play`, `metadata::pump_detail`, `app::adapters::poster::prepare` and every
 //! screen's `*_update` keep running at full rate, so key latency is unchanged, timers still fire
 //! (the hero billboard's 8 s auto-flip still flips), and async work still lands on schedule. Those
 //! cost ~0.3% of a core between them; the 16% was the draw.
@@ -228,7 +228,7 @@ pub(crate) fn note_jump(changed: bool) {
 ///   REFUSAL, which `app.rs` cannot see: `pump_play` returns false for a plan with no URL, so the
 ///   caller's invalidate is skipped for exactly the landing that flips the player from Resolving
 ///   to Error. It repainted anyway only because the player route bypasses this gate outright
-/// - a poster texture uploaded (`posters::poster_pump`)
+/// - a poster texture uploaded (`app::adapters::poster::prepare`)
 /// - a hub catalog being installed (`pms::commit`) — EVERY install, whichever path built it: the
 ///   boot fetch, a landing through `pms::pump`, a view-state edit, a roster sync, and the empty
 ///   commit `pms::reset` performs. The call used to sit at the call sites instead, where two of

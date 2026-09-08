@@ -117,7 +117,7 @@ pub struct Client {
     pub(super) version: String,   // "0.1.0"
     pub(super) platform: String,  // "webOS"
     // Token generation, PER SERVER. Bumped by `set_token`; read by caches keyed on a path that
-    // bakes the token in (`posters::poster_key`'s memo). This used to be a process-global
+    // bakes the token in (`app::adapters::poster::built_key`'s memo). This used to be a process-global
     // `static TOKEN_GEN`, which cannot express "server B's token changed" — with a registry that
     // would flush every server's cache on any server's profile switch, and (worse) would say
     // NOTHING changed when the CURRENT server switched from A to B, handing B's requests A's
@@ -125,6 +125,9 @@ pub struct Client {
     // share a value: a cache that only compares "did this number move" therefore also flushes
     // when `client()` starts answering with a different server.
     token_gen: AtomicU32,
+    /// Immutable process-local instance identity for adapter recordings, distinct from both the
+    /// secret token and the Plex device identifier. A token swap must not rename this instance.
+    instance_gen: u32,
     /// HOW this server is reached — the tier of the connection that won the probe, or "nobody has
     /// said yet" ([`LINK_UNKNOWN`]). A property of the SERVER, not of the request, which is why it
     /// lives beside its address rather than being recomputed at a call site.
@@ -216,6 +219,7 @@ impl Client {
         token: &str,
         client_id: &str,
     ) -> Client {
+        let generation = next_gen();
         Client {
             id,
             machine_id: machine_id.to_owned(),
@@ -226,7 +230,8 @@ impl Client {
             product: super::identity::PRODUCT.into(),
             version: super::identity::VERSION.into(),
             platform: super::identity::PLATFORM.into(),
-            token_gen: AtomicU32::new(next_gen()),
+            token_gen: AtomicU32::new(generation),
+            instance_gen: generation,
             link: AtomicU8::new(LINK_UNKNOWN),
             ip_version: AtomicU8::new(IP_UNKNOWN),
         }
@@ -302,11 +307,12 @@ impl Client {
     }
     /// Token generation for THIS server — moved by [`Client::set_token`]; caches keyed on paths
     /// that embed the token compare this to know when to flush. Signature unchanged from the
-    /// process-global era on purpose: `posters.rs` reads it through `client()` and must keep
+    /// process-global era on purpose: `app/adapters/poster.rs` reads it through `client()` and must keep
     /// compiling untouched.
     pub fn token_gen(&self) -> u32 {
         self.token_gen.load(Relaxed)
     }
+    pub(crate) fn instance_gen(&self) -> u32 { self.instance_gen }
     /// The host to DIAL — never bracketed, even for a v6 literal (see [`Origin::host`]). Unchanged
     /// in meaning and in bytes from when this was a plain field.
     pub fn host(&self) -> &str {
@@ -534,7 +540,7 @@ impl Client {
     /// there, the built `/photo/:/transcode?…&X-Plex-Token=…` path *is* the LRU key, so the key
     /// and the request must be the same bytes. Routing it through [`Client::get_bytes`] would
     /// append a second token — a URL with two `X-Plex-Token` params, whose meaning is the
-    /// server's business and not ours. `pub(crate)` because `posters.rs` lives outside this
+    /// server's business and not ours. `pub(crate)` because `app/adapters/poster.rs` lives outside this
     /// module tree; it exists so that file stops calling `crate::stream` behind this layer's
     /// back, which is what the module doc above has always claimed nothing does.
     ///
@@ -904,7 +910,7 @@ mod tests {
     }
 
     /// The token generation is per-CLIENT (it was a process-global `TOKEN_GEN`). Two properties
-    /// matter to `posters::poster_key`'s token-baked memo, which is the only reader: a swap must
+    /// matter to `app::adapters::poster::built_key`'s token-baked memo, which is the only reader: a swap must
     /// MOVE this server's number and no other's, and two servers must never share a value — the
     /// memo compares one number, so identical generations across servers would let server B be
     /// served server A's memoised, token-bearing paths.
@@ -913,10 +919,13 @@ mod tests {
         let (a, b) = (a_client("mach-A", "tok-a"), a_client("mach-B", "tok-b"));
         let (ga, gb) = (a.token_gen(), b.token_gen());
         assert_ne!(ga, gb, "distinct clients, distinct generations");
+        let instance = a.instance_gen();
+        assert_ne!(instance, b.instance_gen());
 
         a.set_token("tok-a2");
         assert_eq!(a.with_token("/x"), "/x?X-Plex-Token=tok-a2");
         assert_ne!(a.token_gen(), ga, "the swapped client's generation moved");
+        assert_eq!(a.instance_gen(), instance, "a token swap does not replace the client");
         assert_eq!(b.token_gen(), gb, "the other client's did not");
     }
 
