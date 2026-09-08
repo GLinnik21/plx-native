@@ -25,7 +25,10 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
         let cursor = crate::browse::Cursor { at, scroll: 1200.0 };
         let command = BrowseCmd::Addressed {
             target,
-            work: LibraryWork::SaveCursor(cursor.clone()),
+            work: LibraryWork::SaveCursor {
+                query: crate::browse::query_gen(),
+                cursor: cursor.clone(),
+            },
         };
         assert!(crate::stores::browse::apply(command.clone()));
         let snapshot = crate::stores::browse::listing_snapshot();
@@ -39,14 +42,41 @@ fn bookmark_commands_are_addressed_and_identical_snapshots_are_quiet() {
             );
         }
         retained = Some((snapshot, cursor.clone()));
+        crate::stores::take_notices();
+        let generation = crate::stores::gen(StoreId::Browse);
         assert!(!crate::stores::browse::apply(command));
+        assert_eq!(crate::stores::gen(StoreId::Browse), generation);
+        assert!(
+            crate::stores::take_notices().is_empty(),
+            "identical snapshots owe no store notice"
+        );
         assert!(!crate::stores::browse::apply(BrowseCmd::Addressed {
             target: SectionAddress {
                 epoch: target.epoch.wrapping_add(1),
                 ..target
             },
-            work: LibraryWork::SaveCursor(cursor),
+            work: LibraryWork::SaveCursor {
+                query: crate::browse::query_gen(),
+                cursor: cursor.clone()
+            },
         }));
+        assert_eq!(crate::stores::gen(StoreId::Browse), generation);
+        assert!(
+            crate::stores::take_notices().is_empty(),
+            "rejected snapshots owe no store notice"
+        );
+        assert!(!crate::stores::browse::apply(BrowseCmd::Addressed {
+            target,
+            work: LibraryWork::SaveCursor {
+                query: crate::browse::query_gen().wrapping_add(1),
+                cursor
+            },
+        }));
+        assert_eq!(crate::stores::gen(StoreId::Browse), generation);
+        assert!(
+            crate::stores::take_notices().is_empty(),
+            "an obsolete query snapshot is quiet too"
+        );
     }
     crate::stores::browse::apply(BrowseCmd::Reset);
     assert!(crate::stores::browse::listing_snapshot()
@@ -71,7 +101,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
                 _,
                 crate::stores::StoreCmd::Browse(crate::stores::browse::BrowseCmd::Addressed {
                     target,
-                    work: crate::stores::browse::LibraryWork::SaveCursor(cursor),
+                    work: crate::stores::browse::LibraryWork::SaveCursor { cursor, .. },
                 }),
             )) = &effect.fx
             {
@@ -83,14 +113,14 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     struct Cleanup;
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            crate::browse::reset();
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
             crate::plex::reset_servers_for_test();
         }
     }
     let _cleanup = Cleanup;
     let session = crate::plex::session::TempSession::new("library-bookmark-return");
     session.watching("u-library-bookmark-return");
-    crate::browse::reset();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
     crate::plex::reset_servers_for_test();
     let sid =
         crate::plex::register_for_test("bookmark-own", "127.0.0.1", 9, "synthetic", "fixture");

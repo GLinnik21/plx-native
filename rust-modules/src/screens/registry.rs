@@ -169,6 +169,8 @@ pub(crate) struct LibraryKey {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LibraryMemory {
     pub(crate) epoch: Option<u32>,
+    pub(crate) query: Option<u32>,
+    pub(crate) grid_reset_pending: bool,
     pub(crate) viewports: Vec<LibraryViewport>,
     pub(crate) keys: Vec<LibraryKey>,
     pub(crate) next_elem: u32,
@@ -418,6 +420,8 @@ impl crate::ui::machine::LogicalState for PageMemory {
                 c.seq(memory.shelf_scroll.len());
                 for (hub, scroll) in &memory.shelf_scroll { c.str(hub).f32(*scroll); }
                 c.option(memory.epoch, |c, epoch| { c.u32(epoch); });
+                c.option(memory.query, |c, query| { c.u32(query); });
+                c.bool(memory.grid_reset_pending);
                 c.seq(memory.viewports.len());
                 for viewport in &memory.viewports { viewport.write(c); }
             }
@@ -463,7 +467,7 @@ fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {

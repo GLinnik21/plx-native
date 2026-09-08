@@ -6,6 +6,45 @@ use std::os::raw::c_int;
 use super::draw::shelf_label;
 use super::layout::{Layout, shelf_pitch, GRID_PITCH as PITCH};
 
+#[test]
+fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
+    for (kind, year) in [(0, 1994), (1, 2022)] {
+        let item = PmsMovie { kind, year, title: "Synthetic title".into(),
+            dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
+            ..Default::default() };
+        let label = super::parts::grid_label(&item);
+        assert_eq!(label.title.unwrap().to_str().unwrap(), "Synthetic title");
+        assert_eq!(label.caption.unwrap().to_str().unwrap(), year.to_string(),
+            "grid cards use the shared non-deck caption, not remaining playback time");
+    }
+    let item = PmsMovie { title: "Undated".into(), ..Default::default() };
+    assert!(super::parts::grid_label(&item).caption.is_none());
+    let episode = PmsMovie { kind: 3, year: 2020, season_index: 2, ep_index: 7,
+        ..Default::default() };
+    assert_eq!(super::parts::grid_label(&episode).caption.unwrap().to_str().unwrap(), "S2 • E7");
+}
+
+#[test]
+fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
+    // Port the original Library assertion against the owned screen's production helper.
+    let caption = |item: PmsMovie, is_continue| {
+        let shelf = crate::browse::section_hubs::Shelf {
+            id: "x".into(), title: "Recently Added".into(), is_continue,
+            landscape: false, items: vec![item],
+        };
+        shelf_label(&shelf, 0).caption.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    };
+    assert_eq!(caption(PmsMovie { kind: 1, title: "The Bear".into(), year: 2022,
+        ..Default::default() }, false), "2022", "shows reserve the same caption rung as films");
+    assert_eq!(caption(PmsMovie { kind: 0, title: "Stardust".into(), year: 2007,
+        ..Default::default() }, false), "2007");
+    assert_eq!(caption(PmsMovie { kind: 0, title: "Stardust".into(), year: 2007,
+        dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
+        ..Default::default() }, true), "25 min left", "a Continue Watching tile reports time left");
+    assert_eq!(caption(PmsMovie { kind: 1, title: "Untitled".into(),
+        ..Default::default() }, false), "", "missing source data does not invent a caption");
+}
+
     #[test]
     fn home_and_library_leave_the_same_air_under_a_focused_label() {
         use crate::ui::consts::{CARD_DY, ROW_PITCH, TITLE_DY, UNDER_LABEL_AIR};

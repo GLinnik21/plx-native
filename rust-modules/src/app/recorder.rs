@@ -773,7 +773,8 @@ mod tests {
         // No recording or anchor is rewritten: the previous shape remains incompatible.
         // The open Filter menu now records its immediate, not-yet-committed desired value.
         // The diagnostic's document-end reversal direction is owned logical state too.
-        assert_eq!(state_fp(), 0x5982f65981519425);
+        // Query-reset intent and its observed query survive Library entry eviction.
+        assert_eq!(state_fp(), 0x1882f8f9ce7658a0);
     }
 
     #[test]

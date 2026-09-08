@@ -15,6 +15,23 @@ impl LibraryScreen {
         {
             return;
         }
+        let Some(target) = self.address(cx) else {
+            return;
+        };
+        if self.grid_reset_pending {
+            self.store(
+                target,
+                LibraryWork::SaveCursor {
+                    query: id.query,
+                    cursor: crate::browse::Cursor {
+                        at: crate::browse::CursorAt::SlotIndex(0),
+                        scroll: self.target_layout.grid_block_top(),
+                    },
+                },
+                fx,
+            );
+            return;
+        }
         let current = cx
             .focus
             .current
@@ -25,7 +42,7 @@ impl LibraryScreen {
                 .remembered(self.pair.groups_config().detail)
                 .and_then(|elem| self.pair.detail.index_of(elem))
         });
-        let (Some(index), Some(target)) = (index, self.address(cx)) else {
+        let Some(index) = index else {
             return;
         };
         let at = listing
@@ -40,10 +57,13 @@ impl LibraryScreen {
             });
         self.store(
             target,
-            LibraryWork::SaveCursor(crate::browse::Cursor {
-                at,
-                scroll: self.scroll.pos,
-            }),
+            LibraryWork::SaveCursor {
+                query: id.query,
+                cursor: crate::browse::Cursor {
+                    at,
+                    scroll: self.scroll.pos,
+                },
+            },
             fx,
         );
     }
@@ -63,7 +83,7 @@ impl LibraryScreen {
             return true;
         };
         if self.pair.detail.elems.is_empty() {
-            return self.readout != Readout::Loading;
+            return self.readout == Readout::Empty;
         }
         let (identity, slot) = match &cursor.at {
             crate::browse::CursorAt::ItemKey { sid, rk, slot } => {
@@ -84,7 +104,17 @@ impl LibraryScreen {
                 .elem_at(slot.min(self.pair.detail.elems.len().saturating_sub(1)))
         }) {
             fx.remember(group, elem);
-            self.scroll_target = cursor.scroll.clamp(0.0, self.target_layout.max_scroll());
+            let index = self
+                .pair
+                .detail
+                .index_of(elem)
+                .expect("a published bookmark target");
+            let scroll = if index == slot {
+                cursor.scroll
+            } else {
+                self.target_layout.row_reveal(index / COLS)
+            };
+            self.scroll_target = scroll.clamp(0.0, self.target_layout.max_scroll());
             self.scroll.jump(self.scroll_target);
             self.restore_scroll = Some(self.scroll_target);
             self.relayout(cx.focus.current);
