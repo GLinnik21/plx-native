@@ -41,6 +41,65 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
+    let _guard = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("library-rail-layer");
+    session.watching("u-library-rail-layer");
+    let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
+    let view = fixture.listing.view();
+    let id = view.id().unwrap();
+    let items = (0..view.total() as usize).map(|i| view.item(i).cloned()).collect();
+    fixture.listing = crate::browse::view::ListingSnapshot::fixture(id.sid, items,
+        (0..9).map(|i| (format!("{i}"), 14)).collect()).with_section(id.epoch, id.section);
+    let mut page = fixture.screen();
+    assert!(page.layout.row_y(0, page.scroll.pos) > SCR_H, "the fixture grid starts below the viewport");
+    let shelf = page.key(*page.shelves[0].elems.last().unwrap());
+    let mut engine = FocusEngine::new();
+    engine.set(OWNER, shelf, Some(page.shelves[0].group), By::Restore);
+    let mut groups = Vec::new();
+    page.groups(&fixture.cx(Some(shelf)), &mut groups);
+    assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master));
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(engine.current(OWNER), Some(shelf), "the shelf edge cannot enter an ineligible rail");
+
+    let grid = page.key(page.pair.detail.elems[0]);
+    engine.set(OWNER, grid, Some(page.pair.groups_config().detail), By::Restore);
+    let cx = fixture.cx(Some(grid));
+    page.pair.master.advance(&cx, Some(0), true, 0.05);
+    let rail = page.key(page.pair.master.elems[0]);
+    let placed = page.place(&rail.elem, &cx, At::Drawn).unwrap();
+    assert!(placed.clip.h > 0.0);
+    let mut draw = DrawFrame::new(&cx, crate::ui::Painter::root());
+    page.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    assert!(stops.iter().any(|stop| region_of_elem(stop.key.elem) == Some(KeyRegion::Shelf)
+        && stop.rect.intersect(stop.clip).contains(placed.rect.cx(), placed.rect.cy())), "the producer-order assertion needs actual overlap");
+    let mut hit = crate::ui::hit::HitMap::new();
+    hit.fill(stops); hit.swap();
+    assert_eq!(hit.top_at(placed.rect.cx(), placed.rect.cy()).map(|stop| stop.key), Some(rail),
+        "the eligible rail must paint and register after the document's wide shelf");
+}
+
+#[test]
+fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
+    let _guard = crate::testlock::serial();
+    for n in [9, 30] {
+        let mut fixture = Fixture::new();
+        let sid = crate::plex::ServerId::from_raw(0);
+        fixture.listing = crate::browse::view::ListingSnapshot::fixture(sid,
+            (0..36).map(|i| Some(crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
+            (0..n).map(|i| (format!("{i}"), 1)).collect());
+        let page = fixture.screen();
+        let mut groups = Vec::new();
+        page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elems[0]))), &mut groups);
+        let rail = groups.first().expect("the fixture has a real rail").extent;
+        assert_eq!(rail.y, 240.0, "the rail is not attached to the scrolling first grid row");
+        if n == 9 { assert_eq!(rail.h, 9.0 * layout::RAIL_PITCH); }
+        else { assert!(rail.h < n as f32 * layout::RAIL_PITCH, "long alphabets scroll at the same pitch"); }
+    }
+}
+
+#[test]
 fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason() {
     let _guard = crate::testlock::serial();
     for owner in ["", "friend"] {

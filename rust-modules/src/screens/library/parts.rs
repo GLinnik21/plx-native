@@ -1,6 +1,6 @@
 //! The concrete master/detail pair: A–Z rail (master) and six-column listing (detail).
 
-use std::ffi::CString;
+pub(super) use super::rail::RailPart;
 
 use crate::screens::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use crate::ui::card_row::{self, RowStyle};
@@ -11,14 +11,12 @@ use crate::ui::screen::{
     Activate, At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part,
     Placed, Seat, Step, Stop,
 };
-use crate::ui::theme;
 use crate::ui::widgets::Art;
 use crate::ui::Rect;
 
 use super::identity::KeyRegistry;
 use super::layout::{
-    Layout, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS, RAIL_PITCH,
-    RAIL_TRACK_W,
+    Layout, COLS, CONTENT_TOP, GRID_RIGHT,
 };
 
 pub(super) const GRID_GROUP: GroupId = GroupId(0x4c49_4201);
@@ -280,181 +278,6 @@ impl<H: LibraryLike> Part<H> for GridPart {
             card_row::draw_tile(p, Art::Poster(Some(item)), self.rect_at(index, false, 1.0), 1.0, &GRID_STYLE, item.resume_frac());
         }
         self.draw_focused(f, focus);
-        self.record_stops(f);
-    }
-}
-
-pub(super) struct RailPart {
-    entry: EntryId,
-    group: GroupId,
-    pub(super) elems: Vec<u32>,
-    labels: Vec<CString>,
-    starts: Vec<usize>,
-    rect: Rect,
-    scroll: f32,
-}
-
-impl RailPart {
-    pub(super) fn clear_projection(&mut self) {
-        self.elems.clear();
-        self.labels.clear();
-        self.starts.clear();
-        self.scroll = 0.0;
-    }
-
-    pub(super) const SHAPE: &'static str = "LibraryRail{group:u32,elems:[u32],labels:[str],starts:[u32],rect:{x:f32,y:f32,w:f32,h:f32},scroll:f32}";
-
-    pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
-        let Self { entry: _, group, elems, labels, starts, rect, scroll } = self;
-        c.u32(group.0).seq(elems.len());
-        for elem in elems { c.u32(*elem); }
-        c.seq(labels.len());
-        for label in labels { c.str(label.to_str().unwrap_or("")); }
-        c.seq(starts.len());
-        for index in starts { c.u32(*index as u32); }
-        c.f32(rect.x).f32(rect.y).f32(rect.w).f32(rect.h).f32(*scroll);
-    }
-
-    pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
-        Self { entry, group, elems: Vec::new(), labels: Vec::new(), starts: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), scroll: 0.0 }
-    }
-
-    pub(super) fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry, layout: Layout, document_scroll: f32) {
-        let view = H::listing(cx);
-        self.rect = layout.rail_rect(document_scroll);
-        let Some(id) = view.id() else {
-            self.elems.clear();
-            self.labels.clear();
-            self.starts.clear();
-            return;
-        };
-        let section = LibrarySectionIdentity { sid: id.sid, key: id.section };
-        self.elems.clear();
-        self.labels.clear();
-        self.starts.clear();
-        for (index, (label, _)) in view.letters().iter().take(MAX_LETTERS).enumerate() {
-            self.starts.push(view.letter_start(index));
-            self.elems.push(keys.register(
-                LibraryIdentity::Rail { section: section.clone(), label: label.clone() },
-                self.group,
-                index,
-            ));
-            self.labels.push(CString::new(label.as_str()).unwrap_or_default());
-        }
-        if !view.rail_available() || self.elems.len() < 2 {
-            self.elems.clear();
-            self.labels.clear();
-            self.starts.clear();
-        }
-        self.reveal_current(cx.focus.current);
-    }
-
-    fn reveal_current(&mut self, focus: Option<FocusKey<u32>>) {
-        let Some(index) = focus.and_then(|key| self.elems.iter().position(|&elem| elem == key.elem)) else { return };
-        let visible = (self.rect.h / RAIL_PITCH).floor().max(1.0) as usize;
-        if index < self.scroll as usize {
-            self.scroll = index as f32;
-        } else if index >= self.scroll as usize + visible {
-            self.scroll = (index + 1 - visible) as f32;
-        }
-        self.scroll = self.scroll.clamp(0.0, self.elems.len().saturating_sub(visible) as f32);
-    }
-
-    pub(super) fn letter_for_item(&self, index: usize) -> usize {
-        self.starts.iter().enumerate().rev().find(|(_, start)| **start <= index).map(|(i, _)| i).unwrap_or(0)
-    }
-
-    pub(super) fn start_for_elem(&self, elem: u32) -> Option<usize> {
-        self.elems.iter().position(|&key| key == elem).and_then(|index| self.starts.get(index).copied())
-    }
-
-    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, H>) {
-        for &elem in &self.elems {
-            let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
-            if placed.rect.y + placed.rect.h < self.rect.y || placed.rect.y > self.rect.y + self.rect.h { continue; }
-            f.stop(f.painter, Stop { key: FocusKey { entry: self.entry, elem },
-                rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,
-                hover: Hover::Focus, activate: Activate::Direct });
-        }
-    }
-}
-
-impl<H: LibraryLike> Focusable<H> for RailPart {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        if self.elems.is_empty() { return; }
-        out.push(GroupSpec {
-            id: self.group,
-            kind: GroupKind::Column,
-            seat: Seat::First,
-            reachable: AxisMask::HORIZONTAL,
-            edge: [EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Geometric, EdgeRule::Stop],
-            extent: self.rect,
-            len: self.elems.len(),
-            elem: ElemKind::Bare,
-        });
-    }
-
-    fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.elems.contains(key).then_some(self.group)
-    }
-
-    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
-        let Some(index) = self.elems.iter().position(|&elem| elem == key.elem) else { return Step::Edge };
-        let next = match dir {
-            Dir::Up => index.checked_sub(1),
-            Dir::Down => (index + 1 < self.elems.len()).then_some(index + 1),
-            Dir::Left | Dir::Right => None,
-        };
-        next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: key.entry, elem: self.elems[i] }))
-    }
-
-    fn place(&self, key: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        let index = self.elems.iter().position(|&elem| elem == *key)?;
-        let y = self.rect.y + (index as f32 - self.scroll) * RAIL_PITCH;
-        let rect = Rect::new(self.rect.x, y, RAIL_TRACK_W, RAIL_PITCH);
-        Some(Placed { rect, rest_rect: rect, clip: self.rect, index: Some(index as u32) })
-    }
-
-    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        if self.elems.contains(&want.elem) { want }
-        else { self.elems.first().copied().map(|elem| FocusKey { entry: want.entry, elem }).unwrap_or(want) }
-    }
-
-    fn seat(&self, _group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        let letter = self.letter_for_item(from.index.unwrap_or(0) as usize);
-        FocusKey { entry: self.entry, elem: self.elems.get(letter).copied().unwrap_or(0) }
-    }
-}
-
-impl<H: LibraryLike> Part<H> for RailPart {
-    fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
-
-    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, H>, _rect: Rect) {
-        if self.elems.is_empty() { return; }
-        let p = f.painter.alpha(f.page_alpha);
-        let _clip = f.clip(p, self.rect);
-        for (index, label) in self.labels.iter().enumerate() {
-            let elem = self.elems[index];
-            let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
-            if placed.rect.y + placed.rect.h < self.rect.y || placed.rect.y > self.rect.y + self.rect.h { continue; }
-            let focused = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == elem);
-            if focused {
-                p.rect(
-                    placed.rect.inset(3.0),
-                    17.0,
-                    theme::OVERLAY_FOCUS_PILL,
-                    theme::OVERLAY_FOCUS_PILL,
-                    0.0,
-                );
-            }
-            crate::ui::label::Label::new(
-                label.as_ptr(),
-                theme::size::CAPTION,
-                if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY },
-            )
-            .h(crate::ui::label::HAlign::Center)
-            .draw(p, placed.rect);
-        }
         self.record_stops(f);
     }
 }

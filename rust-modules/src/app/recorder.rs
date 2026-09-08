@@ -769,7 +769,9 @@ mod tests {
         // Phase 8: owned Library geometry, section memory, deferred actions, menus and shared
         // animation state now join Home's captured initial contents in the shape inventory.
         // This is a schema pin, not a fixture rebaseline: older shapes must still be refused.
-        assert_eq!(state_fp(), 0x9f77_4578_4bd2_1a5c);
+        // Rail viewport/presence springs and their target now join the owned Library shape.
+        // No recording or anchor is rewritten: the previous shape remains incompatible.
+        assert_eq!(state_fp(), 0x4e0e_6e1c_cc3b_14d5);
     }
 
     #[test]

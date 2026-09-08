@@ -2,6 +2,9 @@
 mod identity;
 mod layout;
 mod parts;
+mod rail;
+#[cfg(test)]
+mod rail_tests;
 mod transactions;
 mod draw;
 mod toolbar;
@@ -322,7 +325,7 @@ impl LibraryScreen {
         }
         self.pair.detail.refresh(cx, &mut self.keys);
         self.relayout(cx.focus.current);
-        self.pair.master.refresh(cx, &mut self.keys, self.layout, self.scroll.pos);
+        self.pair.master.refresh(cx, &mut self.keys);
     }
 
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
@@ -394,7 +397,7 @@ impl LibraryScreen {
             }
         }
         self.relayout(Some(key));
-        self.pair.master.refresh(cx, &mut self.keys, self.layout, self.scroll.pos);
+        self.pair.master.refresh(cx, &mut self.keys);
     }
 
     fn follow<H: LibraryLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
@@ -622,6 +625,9 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.sync(cx);
+                let current_grid = cx.focus.current.filter(|key| key.entry == self.entry)
+                    .and_then(|key| self.pair.detail.index_of(key.elem));
+                self.pair.master.advance(cx, current_grid, self.live && self.readout == Readout::Grid, tick.dt());
                 if let Some(kind) = self.wanted_kind {
                     let directory = H::directory(cx);
                     if let Some(section) = directory.preferred(kind).and_then(|i| directory.sections().get(i)) {
@@ -736,7 +742,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         if self.readout == Readout::Failed {
             if let Some(rect) = self.status_rect(cx) { out.push(row_group(STATUS_GROUP, 1, rect, ElemKind::Control)); }
         }
-        if !self.pair.detail.elems.is_empty() && !self.pair.master.elems.is_empty() {
+        if !self.pair.detail.elems.is_empty() && self.pair.master.eligible(cx) {
             self.pair.groups(cx, out);
         } else {
             self.pair.detail.groups(cx, out);

@@ -38,7 +38,15 @@ impl LibraryScreen {
         layers(|layer| match layer {
             Layer::Grid => draw_faded_part_at(&mut self.pair.detail, f, layout.detail, alpha),
             Layer::Document => self.draw_document(f),
-            Layer::Rail => draw_faded_part_at(&mut self.pair.master, f, layout.master, alpha),
+            Layer::Rail => {
+                // Decoration derives from the CURRENT engine key; no remembered cursor is copied.
+                let index = f.focus.current.filter(|key| key.entry == self.entry)
+                    .and_then(|key| self.pair.detail.index_of(key.elem));
+                let parent = f.page_alpha;
+                f.page_alpha = parent * alpha;
+                self.pair.master.draw_with_current(f, layout.master, index);
+                f.page_alpha = parent;
+            },
         });
     }
 

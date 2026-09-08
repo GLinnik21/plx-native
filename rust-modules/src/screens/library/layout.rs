@@ -18,6 +18,7 @@ pub(super) const GRID_PITCH: f32 = CARD_H
     + crate::ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
 pub(super) const RAIL_PITCH: f32 = 34.0;
+pub(super) const RAIL_CAP_PAD: f32 = 10.0;
 pub(super) const RAIL_BAND: f32 = RAIL_TRACK_W + theme::space::XS;
 pub(super) const GRID_RIGHT: f32 = SCR_W - MARGIN_X - RAIL_BAND;
 pub(super) const GRID_GAP: f32 =
@@ -152,10 +153,21 @@ impl Layout {
 
     pub(super) fn grid_x(col: usize) -> f32 { MARGIN_X + col as f32 * (CARD_W + GRID_GAP) }
 
-    pub(super) fn rail_rect(self, scroll: f32) -> crate::ui::Rect {
-        let top = self.row_y(0, scroll).max(CONTENT_TOP);
-        crate::ui::Rect::new(GRID_RIGHT + theme::space::XS, top, RAIL_TRACK_W, SCR_H - MARGIN_Y - top)
-    }
+}
+
+/// The original fixed rail band: it never follows the scrolling first grid row.
+pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
+    const TOP: f32 = 232.0 + 8.0;
+    let visible = ((SCR_H - MARGIN_Y - TOP - RAIL_CAP_PAD) / RAIL_PITCH).floor().max(1.0);
+    let height = visible.min(n as f32) * RAIL_PITCH;
+    (TOP, SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5, height, (n as f32 * RAIL_PITCH - height).max(0.0))
+}
+
+pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
+    let (_, _, height, max) = rail_geom(n);
+    let drive = drive.min(n.saturating_sub(1)) as f32;
+    crate::ui::card_row::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
+        (drive - 1.0) * RAIL_PITCH, max)
 }
 
 /// Preserve the selected favourite while reserving a visible overflow control.
