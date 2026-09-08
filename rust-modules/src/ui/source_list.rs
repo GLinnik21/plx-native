@@ -1,6 +1,6 @@
 //! **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on two surfaces.
 //!
-//! The Library toolbar's Source panel (`ui::library`, deliverable A) and the Favorite libraries
+//! The Library toolbar's Source panel (`screens::library::menu`, deliverable A) and the Favorite libraries
 //! editor — first run, and its Settings twin (`crate::screens::onboard`, deliverable F) — show
 //! the SAME list:
 //! your servers, each server's libraries, and which of them are favorites. The canvas says so in as
@@ -345,4 +345,6 @@ mod tests {
             "…and this is exactly the answer that made the fourth state worth its own arm"
         );
     }
+
+    include!("source_list_contract_tests.rs");
 }

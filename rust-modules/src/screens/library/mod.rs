@@ -19,6 +19,8 @@ mod window_tests;
 mod labels_tests;
 #[cfg(test)]
 mod deferred_tests;
+#[cfg(test)]
+mod navigation_tests;
 
 use std::borrow::Cow;
 use crate::browse::{SecFetch, SecKind};
@@ -753,6 +755,11 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                             Some(Block::Shelf(index)) => self.shelves[index].group,
                             _ => self.first_group(),
                         };
+                        if group == LIBRARY_GROUP {
+                            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx)) {
+                                fx.remember(LIBRARY_GROUP, *elem);
+                            }
+                        }
                         self.reseat(FocusTarget::ContainerGroup(group), fx);
                     }
                 }
@@ -825,7 +832,10 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             out.push(row_group(TOOLBAR_GROUP, 2, self.toolbar_chip_rect(SORT, cx, At::SpringTarget), ElemKind::Control));
         }
         if self.readout == Readout::Failed {
-            if let Some(rect) = self.status_rect(cx) { out.push(row_group(STATUS_GROUP, 1, rect, ElemKind::Control)); }
+            if let Some(rect) = self.status_rect(cx) {
+                out.push(GroupSpec { edge: [EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
+                    ..row_group(STATUS_GROUP, 1, rect, ElemKind::Control) });
+            }
         }
         if !self.pair.detail.elems.is_empty() && self.pair.master.eligible(cx) {
             self.pair.groups(cx, out);
