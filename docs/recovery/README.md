@@ -57,3 +57,9 @@ This backup is for recovery, not a completion or release claim.
 Source checkpoint: `81adc073455af411c03bf07d253f2ff9d03698b4` on `fleet/phase8-library-owned`.
 The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
 This backup is for recovery, not a completion or release claim.
+
+## Latest outage checkpoint
+
+Source checkpoint: `cd594513df6801651f3434dcec65c874a0313f3e` on `fleet/phase8-library-owned`.
+The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
+This backup is for recovery, not a completion or release claim.
