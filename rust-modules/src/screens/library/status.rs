@@ -1,8 +1,27 @@
 //! Retained-view prose for the existing Library status surface.
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use super::*;
+use crate::ui::widgets::{StatusKind, StatusOverlay};
 
 impl LibraryScreen {
+    pub(super) fn status_overlay<'a, H: LibraryLike>(&self, cx: &Cx<'_, H>, caption: &'a CStr, reason: Option<&'a CStr>) -> StatusOverlay<'a> {
+        let kind = match self.readout {
+            Readout::Failed => StatusKind::Failed, Readout::Loading => StatusKind::Working,
+            Readout::Empty | Readout::Grid => StatusKind::Empty,
+        };
+        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).phase(cx.tick.ms)
+            .focused(cx.focus.current == Some(self.key(RETRY)));
+        if let Some(reason) = reason { overlay = overlay.reason(reason); }
+        if self.readout == Readout::Failed { overlay = overlay.action(c"Try again"); }
+        overlay
+    }
+
+    pub(super) fn status_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Rect> {
+        if self.readout != Readout::Failed { return None; }
+        let (caption, reason) = self.status_text(cx);
+        self.status_overlay(cx, &caption, reason.as_deref()).action_frame_measured(cx.measure)
+    }
+
     pub(super) fn status_text<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> (CString, Option<CString>) {
         let directory = H::directory(cx);
         let listing = H::listing(cx);
@@ -14,7 +33,8 @@ impl LibraryScreen {
                 (format!("Can't reach {name}"), owner.map(|owner| format!("Shared by {owner} · your own server is fine.")))
             }
             Readout::Empty => {
-                let caption = if directory.sections().is_empty() { "No libraries on this server".into() }
+                let caption = if self.wanted_kind.is_some() { "Nothing here matches".into() }
+                    else if directory.sections().is_empty() { "No libraries on this server".into() }
                     else if listing.unwatched() || listing.genre().is_some() { "Nothing here matches".into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
                         format!("No {} in {}", section.kind.noun(), section.row.title)

@@ -11,6 +11,8 @@ pub(crate) mod menu;
 mod tests;
 #[cfg(test)]
 mod window_tests;
+#[cfg(test)]
+mod labels_tests;
 
 use std::borrow::Cow;
 use crate::browse::{SecFetch, SecKind};
@@ -244,8 +246,11 @@ impl LibraryScreen {
         self.readout = readout(table, directory.sections().len(), listing.fetch(), listing.total());
         self.libraries.clear();
         if let Some(current) = directory.current() {
-            self.kind = directory.sections()[current].kind;
-            if self.wanted_kind == Some(self.kind) { self.wanted_kind = None; }
+            let kind = directory.sections()[current].kind;
+            if self.wanted_kind.is_none() || self.wanted_kind == Some(kind) {
+                self.kind = kind;
+                self.wanted_kind = None;
+            }
         }
         if let Some(current) = self.view_section(cx) {
             for (index, section) in directory.favorite_sections_for(current) {
@@ -270,6 +275,18 @@ impl LibraryScreen {
                 && !(self.readout == Readout::Failed && directory.sources().len() > 1) {
                 self.libraries.clear();
             }
+        }
+        if let Some(kind) = self.wanted_kind.filter(|kind|
+            directory.current().map(|i| directory.sections()[i].kind) != Some(*kind)) {
+            self.shelves.clear();
+            self.shelf_publication = None;
+            self.pair.detail.clear_projection();
+            self.pair.master.clear_projection();
+            self.grid_fade = Xfade::new();
+            self.readout = if directory.preferred(kind).is_some() { Readout::Loading }
+                else { readout(directory.kind_fetch(kind), 0, directory.kind_fetch(kind), -1) };
+            self.relayout(cx.focus.current);
+            return;
         }
         let hubs = H::section_hubs(cx);
         let publication = hubs.id().zip(hubs.revision());
@@ -617,7 +634,11 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     }
                 }
                 // Compact menus leave their host's transaction clock live while owning input.
-                let ready = self.readout != Readout::Loading && self.wanted_kind.is_none();
+                let waiting_for_kind = self.wanted_kind.is_some_and(|kind| {
+                    let directory = H::directory(cx);
+                    directory.preferred(kind).is_some() || directory.kind_fetch(kind) == SecFetch::Loading
+                });
+                let ready = self.readout != Readout::Loading && !waiting_for_kind;
                 let page_commit = self.page_fade.tick(tick.dt(), ready);
                 let grid_commit = self.grid_fade.tick(tick.dt(), ready);
                 if page_commit || (grid_commit && self.pending.section().is_none()) { self.flush(fx); }
@@ -655,7 +676,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 }
                 // The dispatcher ticks the top page beneath a compact menu, but not buried pages.
                 // Cover pauses its control motion; it must not stop the query just committed above.
-                if let Some(target) = self.address(cx) {
+                if let Some(target) = self.address(cx).filter(|_| self.wanted_kind.is_none()) {
                     let (lo, hi) = self.layout.visible_rows(self.scroll.pos);
                     self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * COLS, hi: (hi + 1) * COLS }, fx);
                     self.store(target, LibraryWork::Letters, fx);
@@ -713,7 +734,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             out.push(row_group(TOOLBAR_GROUP, 2, self.toolbar_chip_rect(SORT, cx, At::SpringTarget), ElemKind::Control));
         }
         if self.readout == Readout::Failed {
-            out.push(row_group(STATUS_GROUP, 1, self.status_rect(), ElemKind::Control));
+            if let Some(rect) = self.status_rect(cx) { out.push(row_group(STATUS_GROUP, 1, rect, ElemKind::Control)); }
         }
         if !self.pair.detail.elems.is_empty() && !self.pair.master.elems.is_empty() {
             self.pair.groups(cx, out);
@@ -749,7 +770,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             if at == At::Drawn { rest_rect = Some(self.shelf_rect(row, col)); }
             self.shelf_rect_at(row, col, cx, at)
         } else if matches!(*elem, SORT | FILTER) && self.layout.grid_head { self.toolbar_chip_rect(*elem, cx, at) }
-        else if *elem == RETRY && self.readout == Readout::Failed { self.status_rect() }
+        else if *elem == RETRY && self.readout == Readout::Failed { self.status_rect(cx)? }
         else { return None };
         Some(Placed { rect, rest_rect: rest_rect.unwrap_or(rect), clip: Rect::new(0.0, crate::ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM), index: None })
     }
@@ -789,7 +810,6 @@ impl LibraryScreen {
             None => Vec::new(),
         }
     }
-    fn status_rect(&self) -> Rect { Rect::new(SCR_W * 0.5 - 110.0, 650.0, 220.0, 52.0) }
     fn shelf_rect(&self, index: usize, col: usize) -> Rect {
         let row = &self.shelves[index];
         let style = row_style(row);

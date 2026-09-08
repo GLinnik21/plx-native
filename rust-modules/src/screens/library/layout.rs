@@ -181,7 +181,7 @@ pub(super) fn library_window(widths: &[f32], selected: usize, available: f32, ga
 }
 
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
-    let art = if landscape { 236.0 } else { CARD_H };
+    let art = if landscape { crate::ui::card_row::RowStyle::EPISODE.h } else { CARD_H };
     crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY + art
         + crate::ui::card_row::under_band(expanded)
         + crate::ui::consts::UNDER_LABEL_AIR

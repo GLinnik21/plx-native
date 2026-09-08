@@ -3,14 +3,46 @@ use super::*;
 use crate::ui::card_row;
 use crate::ui::screen::{Activate, Hover, Stop};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, TabPill, StatusOverlay, StatusKind};
+use crate::ui::widgets::{Art, TabPill};
 use crate::ui::value_chip::ValueChip;
 use crate::ui::{Env, View, on_axis};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layer { Grid, Document, Rail }
+
+/// Paint and stop registration share one back-to-front order.
+fn layers(mut visit: impl FnMut(Layer)) {
+    for layer in [Layer::Grid, Layer::Document, Layer::Rail] { visit(layer); }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    #[test]
+    fn library_paint_and_stop_order_keeps_controls_above_grid_and_rail_above_document() {
+        use super::{layers, Layer};
+        let mut seen = Vec::new();
+        layers(|layer| seen.push(layer));
+        assert_eq!(seen, [Layer::Grid, Layer::Document, Layer::Rail]);
+        for layer in [Layer::Grid, Layer::Document, Layer::Rail] {
+            assert_eq!(seen.iter().filter(|&&found| found == layer).count(), 1);
+        }
+    }
+}
 
 impl LibraryScreen {
     pub(super) fn draw_page<H: LibraryLike>(&mut self, f: &mut DrawFrame<'_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
+        let layout = self.pair.layout();
+        let alpha = self.page_fade.alpha() * self.grid_fade.alpha();
+        layers(|layer| match layer {
+            Layer::Grid => draw_faded_part_at(&mut self.pair.detail, f, layout.detail, alpha),
+            Layer::Document => self.draw_document(f),
+            Layer::Rail => draw_faded_part_at(&mut self.pair.master, f, layout.master, alpha),
+        });
+    }
+
+    fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         let source_chip = self.source_chip(f.cx);
@@ -30,7 +62,6 @@ impl LibraryScreen {
                 TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
                     .mix(focused, selected).draw(&env, p);
             }
-            self.stop(*elem, f);
         }
         for (index, row) in self.shelves.iter().enumerate() {
             let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
@@ -39,14 +70,12 @@ impl LibraryScreen {
             card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
                 origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X);
             let focused = f.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
-            for (col, &elem) in row.elems.iter().enumerate() {
+            for col in 0..row.elems.len() {
                 if focused == Some(col) { continue; }
                 self.draw_shelf_tile(index, col, false, f);
-                self.stop(elem, f);
             }
             if let Some(col) = focused {
                 self.draw_shelf_tile(index, col, true, f);
-                self.stop(row.elems[col], f);
             }
         }
         if self.layout.grid_head {
@@ -55,7 +84,6 @@ impl LibraryScreen {
                 if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
                     ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), placed.rect)
                         .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
-                    self.stop(elem, f);
                 }
             }
             card_row::draw_heading(p, "All", "", MARGIN_X,
@@ -67,22 +95,37 @@ impl LibraryScreen {
                 .phase(f.cx.tick.ms).draw(&env, f.painter.alpha(f.page_alpha));
         } else if self.readout != Readout::Grid {
             let (text, reason) = self.status_text(f.cx);
-            let kind = match self.readout {
-                Readout::Failed => StatusKind::Failed,
-                Readout::Empty => StatusKind::Empty,
-                Readout::Loading => StatusKind::Working,
-                Readout::Grid => unreachable!(),
-            };
-            let mut status = StatusOverlay::new(self.status_frame(), &text, kind)
-                .phase(f.cx.tick.ms).focused(f.focus.current.is_some_and(|key| key.elem == RETRY));
-            if let Some(reason) = &reason { status = status.reason(reason); }
-            if self.readout == Readout::Failed { status = status.action(c"Try again"); }
+            let status = self.status_overlay(f.cx, &text, reason.as_deref());
             let alpha = if self.readout == Readout::Empty { self.page_fade.alpha() * self.grid_fade.alpha() } else { 1.0 };
-            status.draw(&env, f.painter.alpha(f.page_alpha * alpha));
-            if self.readout == Readout::Failed { self.stop(RETRY, f); }
+            status.draw_measured(&env, f.painter.alpha(f.page_alpha * alpha), f.cx.measure);
         }
-        // MasterDetail is the production render composition, sharing children with focus queries.
-        draw_faded_part(&mut self.pair, f, self.page_fade.alpha() * self.grid_fade.alpha());
+        self.record_document_stops(f);
+    }
+
+    fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
+        for (index, (elem, _)) in self.libraries.iter().enumerate() {
+            let rect = self.library_rect(index, f.cx);
+            if on_axis(rect.y, rect.h, SCR_H, 0.0) { self.stop(*elem, f); }
+        }
+        for (index, row) in self.shelves.iter().enumerate() {
+            let origin = self.layout.shelf_y(index, self.scroll.pos);
+            if !on_axis(origin - crate::ui::consts::TITLE_DY, self.layout.shelf_pitch(index), SCR_H, 0.0) { continue; }
+            let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
+            for &elem in row.elems.iter().filter(|elem| Some(**elem) != focused) { self.stop(elem, f); }
+            if let Some(elem) = focused.filter(|elem| row.elems.contains(elem)) { self.stop(elem, f); }
+        }
+        if self.layout.grid_head { for elem in [SORT, FILTER] { self.stop(elem, f); } }
+        if self.readout == Readout::Failed { self.stop(RETRY, f); }
+    }
+
+    /// The production stop producers without rasterization, for the no-SDL dispatcher fixture.
+    #[cfg(test)]
+    pub(crate) fn record_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
+        layers(|layer| match layer {
+            Layer::Grid => self.pair.detail.record_stops(f),
+            Layer::Document => self.record_document_stops(f),
+            Layer::Rail => self.pair.master.record_stops(f),
+        });
     }
 
     fn stop<H: LibraryLike>(&self, elem: u32, f: &mut DrawFrame<'_, H>) {
@@ -118,6 +161,15 @@ impl LibraryScreen {
 
     pub(crate) fn redraw_focused<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>, focus: Option<FocusKey<u32>>) {
         let Some(key) = focus.filter(|key| key.entry == self.entry) else { return };
+        let Some(placed) = <Self as Focusable<H>>::place(self, &key.elem, f.cx, At::Drawn) else { return };
+        let _clip = f.clip(f.painter, placed.clip);
+        if self.pair.detail.index_of(key.elem).is_some() {
+            let parent = f.page_alpha;
+            f.page_alpha *= self.page_fade.alpha() * self.grid_fade.alpha();
+            self.pair.detail.draw_focused(f, Some(key));
+            f.page_alpha = parent;
+            return;
+        }
         if let Some((row, col)) = self.shelves.iter().enumerate().find_map(|(row, shelf)|
             shelf.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col))) {
             self.draw_shelf_tile(row, col, true, f);
@@ -125,14 +177,14 @@ impl LibraryScreen {
     }
 }
 
-pub(super) fn draw_faded_part<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame<'_, H>, alpha: f32) {
+fn draw_faded_part_at<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame<'_, H>, rect: Rect, alpha: f32) {
     let parent = f.page_alpha;
     f.page_alpha = parent * alpha;
-    part.draw(f, Rect::FULL);
+    part.draw(f, rect);
     f.page_alpha = parent;
 }
 
-fn shelf_label(shelf: &crate::browse::section_hubs::Shelf, col: usize) -> card_row::TileLabel {
+pub(super) fn shelf_label(shelf: &crate::browse::section_hubs::Shelf, col: usize) -> card_row::TileLabel {
     let Some(item) = shelf.items.get(col) else { return card_row::TileLabel::title("") };
     if shelf.landscape {
         let name = if item.title.is_empty() || item.title == item.show_title {

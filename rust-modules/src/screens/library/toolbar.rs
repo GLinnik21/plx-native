@@ -18,7 +18,9 @@ impl LibraryScreen {
     pub(super) fn view_section<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<usize> {
         let directory = H::directory(cx);
         self.pending.section().filter(|target| Some(target.epoch) == directory.epoch())
-            .map(|target| target.index).or(directory.current())
+            .map(|target| target.index).or_else(|| match self.wanted_kind {
+                Some(kind) => directory.preferred(kind), None => directory.current(),
+            })
             .filter(|index| *index < directory.sections().len())
     }
 

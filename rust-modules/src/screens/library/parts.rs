@@ -40,6 +40,12 @@ pub(super) struct GridPart {
 }
 
 impl GridPart {
+    pub(super) fn clear_projection(&mut self) {
+        self.elems.clear();
+        self.identity = None;
+        self.snapshot = None;
+    }
+
     pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,elems:[u32],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32}";
 
     pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
@@ -147,6 +153,27 @@ impl GridPart {
         let (lo, hi) = self.layout.visible_rows(self.scroll);
         (lo.saturating_mul(COLS), hi.saturating_mul(COLS).min(self.elems.len()))
     }
+
+    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, H>) {
+        let (lo, hi) = self.visible_window();
+        for index in lo..hi {
+            let elem = self.elems[index];
+            let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
+            f.stop(f.painter, Stop { key: FocusKey { entry: self.entry, elem },
+                rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,
+                hover: Hover::Focus, activate: Activate::Press });
+        }
+    }
+
+    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &crate::ui::screen::DrawFrame<'_, H>, focus: Option<FocusKey<u32>>) {
+        let Some(index) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.index_of(key.elem)) else { return };
+        let Some(item) = H::listing(f.cx).item(index) else { return };
+        let p = f.painter.alpha(f.page_alpha);
+        let rect = self.rect_at(index, true, f.press.scale);
+        let label = card_row::TileLabel::title(&item.title);
+        card_row::draw_focused(p, Art::Poster(Some(item)), rect, RowStyle::HOME.focus_scale,
+            &GRID_STYLE, item.resume_frac(), &label);
+    }
 }
 
 fn item_identity(
@@ -252,27 +279,8 @@ impl<H: LibraryLike> Part<H> for GridPart {
             if selected { continue; }
             card_row::draw_tile(p, Art::Poster(Some(item)), self.rect_at(index, false, 1.0), 1.0, &GRID_STYLE, item.resume_frac());
         }
-        if let Some(key) = focus {
-            if let Some(index) = self.index_of(key.elem) {
-                if let Some(item) = view.item(index) {
-                    let rect = self.rect_at(index, true, f.press.scale);
-                    let label = card_row::TileLabel::title(&item.title);
-                    card_row::draw_focused(p, Art::Poster(Some(item)), rect, RowStyle::HOME.focus_scale, &GRID_STYLE, item.resume_frac(), &label);
-                }
-            }
-        }
-        for index in lo..hi {
-            let elem = self.elems[index];
-            let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
-            f.stop(f.painter, Stop {
-                key: FocusKey { entry: self.entry, elem },
-                rect: placed.rect,
-                rest_rect: placed.rest_rect,
-                clip: placed.clip,
-                hover: Hover::Focus,
-                activate: Activate::Press,
-            });
-        }
+        self.draw_focused(f, focus);
+        self.record_stops(f);
     }
 }
 
@@ -287,6 +295,13 @@ pub(super) struct RailPart {
 }
 
 impl RailPart {
+    pub(super) fn clear_projection(&mut self) {
+        self.elems.clear();
+        self.labels.clear();
+        self.starts.clear();
+        self.scroll = 0.0;
+    }
+
     pub(super) const SHAPE: &'static str = "LibraryRail{group:u32,elems:[u32],labels:[str],starts:[u32],rect:{x:f32,y:f32,w:f32,h:f32},scroll:f32}";
 
     pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
@@ -351,6 +366,16 @@ impl RailPart {
 
     pub(super) fn start_for_elem(&self, elem: u32) -> Option<usize> {
         self.elems.iter().position(|&key| key == elem).and_then(|index| self.starts.get(index).copied())
+    }
+
+    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, H>) {
+        for &elem in &self.elems {
+            let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
+            if placed.rect.y + placed.rect.h < self.rect.y || placed.rect.y > self.rect.y + self.rect.h { continue; }
+            f.stop(f.painter, Stop { key: FocusKey { entry: self.entry, elem },
+                rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,
+                hover: Hover::Focus, activate: Activate::Direct });
+        }
     }
 }
 
@@ -429,14 +454,7 @@ impl<H: LibraryLike> Part<H> for RailPart {
             )
             .h(crate::ui::label::HAlign::Center)
             .draw(p, placed.rect);
-            f.stop(f.painter, Stop {
-                key: FocusKey { entry: self.entry, elem },
-                rect: placed.rect,
-                rest_rect: placed.rest_rect,
-                clip: placed.clip,
-                hover: Hover::Focus,
-                activate: Activate::Direct,
-            });
         }
+        self.record_stops(f);
     }
 }

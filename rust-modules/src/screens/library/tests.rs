@@ -41,6 +41,131 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason() {
+    let _guard = crate::testlock::serial();
+    for owner in ["", "friend"] {
+        let mut fixture = Fixture::new();
+        fixture.listing = crate::stores::browse::listing_snapshot();
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
+            crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
+                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        let page = fixture.screen();
+        let cx = fixture.cx(Some(page.key(RETRY)));
+        let (caption, reason) = page.status_text(&cx);
+        assert_eq!(reason.is_some(), !owner.is_empty());
+        let mut overlay = crate::ui::widgets::StatusOverlay::new(page.status_frame(), &caption,
+            crate::ui::widgets::StatusKind::Failed).action(c"Try again");
+        if let Some(reason) = &reason { overlay = overlay.reason(reason); }
+        let expected = overlay.action_frame_measured(cx.measure).unwrap();
+        for at in [At::Drawn, At::SpringTarget] {
+            let actual = page.place(&RETRY, &cx, at).unwrap().rect;
+            assert_eq!([actual.x, actual.y, actual.w, actual.h], [expected.x, expected.y, expected.w, expected.h],
+                "reason={owner:?}, at={at:?}");
+        }
+    }
+}
+
+#[test]
+fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        crate::browse::view::SectionView { borrowed: false, sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+            kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
+                pinned: true, current: true, ..Default::default() } }]);
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
+    page.page_fade.mount();
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    for i in 0..40 {
+        page.step(&ScreenEvent::Tick(Tick { ms: i * 20, dt_us: 20_000 }), &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    }
+    assert_eq!(page.readout, Readout::Empty);
+    assert_eq!(page.page_fade.alpha(), 1.0, "a terminal absent type must not hold the page at black");
+    assert_eq!(page.kind, SecKind::Show, "the requested type is not silently replaced by Movies");
+    assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Nothing here matches");
+    assert!(!out.iter().any(|effect| matches!(&effect.fx, Fx::App(AppFx::Store(StoreId::Browse,
+        StoreCmd::Browse(BrowseCmd::Addressed { work: LibraryWork::Want { .. }, .. }))))),
+        "waiting for Shows cannot page through the retained Movies listing");
+    let mut groups = Vec::new();
+    page.groups(&fixture.cx(None), &mut groups);
+    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == TOOLBAR_GROUP));
+    assert!(page.focused_item(Some(page.key(page.keys.keys().first().map_or(0, |k| k.elem))), &fixture.cx(None)).is_none());
+}
+
+#[test]
+fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
+    use crate::ui::hit::PointerKind;
+    use crate::ui::input::{InputMachine, PressEvent};
+    use crate::ui::machine::{PressArm, PressFrom};
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    page.scroll.jump(400.0);
+    page.scroll_target = 400.0;
+    let first = page.key(page.pair.detail.elems[0]);
+    let chosen = page.key(page.pair.detail.elems[1]);
+    page.relayout(Some(first));
+    let cx = fixture.cx(Some(first));
+    let mut draw = DrawFrame::new(&cx, crate::ui::Painter::root());
+    page.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    let stop = *stops.iter().find(|stop| stop.key == chosen).unwrap();
+    let mut input = InputMachine::new();
+    input.engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    input.hit.fill(stops);
+    input.hit.swap();
+    assert!(stop.rect.y < 0.0, "the fixture contains a genuinely clipped card");
+    assert!(input.hit.resolve(Some(ENTRY), PointerKind::Click, stop.rect.cx(), stop.rect.y + 1.0, Some(first)).miss);
+    let y = stop.clip.y + 10.0;
+    assert!(stop.rect.contains(stop.rect.cx(), y));
+    let resolved = input.hit.resolve(Some(ENTRY), PointerKind::Click, stop.rect.cx(), y, Some(first));
+    assert_eq!(resolved.focus, Some(chosen));
+    assert_eq!(resolved.activate, Some((chosen, crate::ui::screen::Activate::Press)));
+    input.engine.set(OWNER, chosen, page.group_of(&chosen.elem, &cx), By::Pointer);
+    input.arm(PressArm { key: chosen, from: PressFrom::Pointer, holdable: true }, MachineId::Instance(InstanceId(19)), 0);
+    let held = input.tick(crate::ui::press::LONG_MS + 1, 0.016);
+    assert!(matches!(held.as_slice(), [PressEvent::Hold(_, _, key)] if *key == chosen));
+    let PressEvent::Hold(id, _, _) = held[0] else { unreachable!() };
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.step(&ScreenEvent::PressHold(id), &fixture.cx(input.engine.current(OWNER)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(out.iter().any(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::Library(LibraryReq::ItemMenu { sid, rk, from_deck: false }))
+            if *sid == crate::plex::ServerId::from_raw(0) && rk == "2")));
+    assert!(input.hit.resolve(Some(EntryId(99)), PointerKind::Click, stop.rect.cx(), y, Some(chosen)).miss,
+        "a menu owner cannot click through to a retained Library stop");
+}
+
+#[test]
+fn actual_sort_menu_traps_engine_navigation_in_its_own_entry() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let page = fixture.screen();
+    let entry = EntryId(99);
+    let owner = InputOwner::Entry(entry);
+    let arg = crate::screens::registry::LibraryMenuArg { host: InstanceId(19),
+        target: page.address(&fixture.cx(None)).unwrap(), kind: crate::screens::registry::LibraryMenuKind::Sort,
+        anchor: [0; 4] };
+    let mut menu = menu::LibraryMenu::new(entry, arg);
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    menu.step(&ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) }), &fixture.cx(None),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(20)), &mut present));
+    let mut engine = FocusEngine::new();
+    engine.enter(owner, &menu, FocusTarget::ContainerGroup(GroupId(0)), None, &fixture.cx(None));
+    let first = engine.current(owner).expect("actual menu has a sort row");
+    for dir in [Dir::Up, Dir::Left, Dir::Right, Dir::Down] {
+        engine.move_dir(owner, &menu, &[], dir, &fixture.cx(Some(first)));
+        assert_eq!(engine.current(owner).unwrap().entry, entry);
+    }
+    assert_eq!(engine.current(OWNER), None, "menu navigation never writes Library focus");
+}
+
+#[test]
 fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
     let _guard = crate::testlock::serial();
     let fixture = Fixture::new();
@@ -276,13 +401,33 @@ fn section_viewport_bookmarks_survive_switch_and_evicted_body() {
     }
 }
 impl Fixture {
+    fn shelves(titles: &[&str], count: usize) -> Self {
+        let mut fixture = Self::new();
+        crate::browse::seed_two_source_table_for_test();
+        fixture.directory.capture();
+        crate::stores::browse::apply(BrowseCmd::SetCur(0));
+        crate::browse::seed_items_for_test(120);
+        crate::browse::section_hubs::seed_shelves_for_test(0, titles, count);
+        fixture.directory.capture();
+        fixture.listing = crate::stores::browse::listing_snapshot();
+        fixture.hubs = crate::stores::browse::hubs_snapshot();
+        let listing = fixture.listing.view().id().unwrap();
+        let hubs = fixture.hubs.view().id().unwrap();
+        assert_eq!((listing.epoch, listing.sid, listing.section), (hubs.epoch, hubs.sid, hubs.section));
+        assert_eq!(fixture.hubs.view().shelves().len(), titles.len());
+        fixture
+    }
+
     fn new() -> Self {
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
         let sid = crate::plex::ServerId::from_raw(0);
         let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
             Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
             vec![("A".into(), 18), ("Z".into(), 18)]);
-        Self { listing, directory: Default::default(), hubs: crate::stores::browse::hubs_snapshot(), measure: FixtureMeasure }
+        let directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+            crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: 1, kind: SecKind::Movie,
+                row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
+        Self { listing, directory, hubs: crate::stores::browse::hubs_snapshot(), measure: FixtureMeasure }
     }
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
@@ -316,6 +461,63 @@ fn direction(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &
     if let Outcome::Moved { from, to, by } = outcome {
         deliver(page, engine, fixture, ScreenEvent::FocusMoved { from, to, by })
     } else { 0 }
+}
+
+#[test]
+fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
+    let _guard = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("library-shelf-return");
+    session.watching("u-library-shelf-return");
+    let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
+    let mut page = fixture.screen();
+    page.shelves[0].motion.restore_scroll(700.0, 12, &RowStyle::HOME);
+    let key = page.key(page.shelves[0].elems[3]);
+    let before = page.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap().rest_rect;
+    let mut engine = FocusEngine::new();
+    engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
+    let memory = page.page_memory();
+    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(Some(key)));
+    engine.enter(OWNER, &restored, FocusTarget::ContainerGroup(restored.shelves[0].group), Some(key), &fixture.cx(Some(key)));
+    assert_eq!(engine.current(OWNER), Some(key));
+    assert_eq!(restored.shelves[0].motion.scroll_x(), 700.0);
+    let after = restored.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap().rest_rect;
+    assert_eq!([before.x, before.y, before.w, before.h], [after.x, after.y, after.w, after.h]);
+    assert_eq!(restored.focused_item(engine.current(OWNER), &fixture.cx(Some(key))).unwrap().rk, "movie.inprogress.1-3");
+    crate::stores::browse::apply(BrowseCmd::Reset);
+}
+
+#[test]
+fn shelf_return_follows_the_film_then_its_last_published_slot() {
+    let _guard = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("library-shelf-removal");
+    session.watching("u-library-shelf-removal");
+    for evict in [false, true] {
+        for remove_focused in [false, true] {
+            let mut fixture = Fixture::shelves(&["movie.inprogress.1"], 6);
+            let mut page = fixture.screen();
+            let key = page.key(page.shelves[0].elems[3]);
+            let memory = page.page_memory();
+            let item = fixture.hubs.view().shelves()[0].items[if remove_focused { 3 } else { 0 }].clone();
+            assert!(crate::stores::browse::apply(BrowseCmd::LeftTheDeck { sid: item.sid, rk: item.rk }));
+            fixture.hubs = crate::stores::browse::hubs_snapshot();
+            if evict {
+                page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+                page.restore(&memory);
+            }
+            page.sync(&fixture.cx(Some(key)));
+            let mut engine = FocusEngine::new();
+            engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
+            engine.enter(OWNER, &page, FocusTarget::ContainerGroup(page.shelves[0].group), Some(key), &fixture.cx(Some(key)));
+            let focus = engine.current(OWNER).unwrap();
+            let item = page.focused_item(Some(focus), &fixture.cx(Some(focus))).unwrap();
+            assert_eq!(item.rk, if remove_focused { "movie.inprogress.1-4" } else { "movie.inprogress.1-3" });
+            assert_eq!(page.shelves[0].elems.iter().position(|elem| *elem == focus.elem), Some(if remove_focused { 3 } else { 2 }));
+            if !remove_focused { assert_eq!(focus, key); }
+        }
+    }
+    crate::stores::browse::apply(BrowseCmd::Reset);
 }
 
 #[test]
