@@ -1128,6 +1128,7 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	python3 tests/test_mock_pms_library.py
 	@# Host-only halves of the opt-in live diagnostics: /proc/interrupt parsing, rate normalization,
 	@# stack aggregation and folded output. Neither command resolves a TV or takes its lock.
 	tools/profile-graphics --selftest
