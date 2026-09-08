@@ -3549,8 +3549,18 @@ impl<'a> StatusOverlay<'a> {
     /// `theme::space` rungs. That ordering is deliberate: adding a reason or an action cannot move
     /// the read-outs that carry neither, so the player's and the person page's are untouched.
     fn bands(&self) -> StatusBands {
-        let cy = self.frame.cy();
         let cap_h = crate::text::text_height(STATUS_CAP_SZ, 0);
+        let reason_h = self.reason.map_or(0.0, |_| crate::text::text_height(STATUS_REASON_SZ, 0));
+        self.bands_from_heights(cap_h, reason_h)
+    }
+
+    fn bands_measured(&self, measure: &dyn crate::ui::machine::Measure) -> StatusBands {
+        self.bands_from_heights(measure.line_h(STATUS_CAP_SZ),
+            self.reason.map_or(0.0, |_| measure.line_h(STATUS_REASON_SZ)))
+    }
+
+    fn bands_from_heights(&self, cap_h: f32, reason_h: f32) -> StatusBands {
+        let cy = self.frame.cy();
         let cap_y = if self.kind == StatusKind::Working {
             cy + theme::space::XS
         } else {
@@ -3559,7 +3569,7 @@ impl<'a> StatusOverlay<'a> {
         let cap = Rect::new(self.frame.x, cap_y, self.frame.w, cap_h);
         let mut below = cap_y + cap_h;
         let reason = self.reason.map(|_| {
-            let h = crate::text::text_height(STATUS_REASON_SZ, 0);
+            let h = reason_h;
             let r = Rect::new(self.frame.x, below + theme::space::SM, self.frame.w, h);
             below = r.y + h;
             r
@@ -3576,16 +3586,35 @@ impl<'a> StatusOverlay<'a> {
     pub fn action_frame(&self) -> Option<Rect> {
         let label = self.action?;
         let w = Button::pill_w(label.as_ptr(), STATUS_CAP_SZ, false);
-        Some(Rect::new(
-            self.frame.cx() - w * 0.5,
-            self.bands().action_y,
-            w,
-            Self::CTRL_H,
-        ))
+        Some(self.action_rect(w, &self.bands()))
     }
-}
-impl View for StatusOverlay<'_> {
-    fn draw(&self, e: &Env, p: Painter) {
+
+    /// Owned-screen placement uses the same metrics capability as its draw, including replay.
+    pub(crate) fn action_frame_measured(&self, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+        let label = self.action?;
+        let w = Button::pill_w_measured(label, STATUS_CAP_SZ, false, false, measure);
+        Some(self.action_rect(w, &self.bands_measured(measure)))
+    }
+
+    fn action_rect(&self, width: f32, bands: &StatusBands) -> Rect {
+        Rect::new(
+            self.frame.cx() - width * 0.5,
+            bands.action_y,
+            width,
+            Self::CTRL_H,
+        )
+    }
+
+    /// Render through the very geometry used by `action_frame_measured`, without live font
+    /// measurements deciding the hit target behind the host's measurement capability.
+    pub(crate) fn draw_measured(&self, e: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
+        let bands = self.bands_measured(measure);
+        let action = self.action.map(|label| self.action_rect(
+            Button::pill_w_measured(label, STATUS_CAP_SZ, false, false, measure), &bands));
+        self.draw_geometry(e, p, bands, action);
+    }
+
+    fn draw_geometry(&self, e: &Env, p: Painter, b: StatusBands, action_frame: Option<Rect>) {
         // spinner above, caption below, the pair centred on the frame
         let cy = self.frame.cy();
         let (tint, working) = match self.kind {
@@ -3593,7 +3622,6 @@ impl View for StatusOverlay<'_> {
             StatusKind::Failed => (theme::DANGER, false),
             StatusKind::Empty => (theme::TEXT_TERTIARY, false),
         };
-        let b = self.bands();
         // Both branches centre the caption the same way — by Label's cap band (VAlign::Middle,
         // the default). Working straddles the frame centre with the spinner above it; Failed owns
         // the centre alone. Using the cap band for one and a line-box metric for the other put the
@@ -3618,7 +3646,7 @@ impl View for StatusOverlay<'_> {
                 .h(HAlign::Center)
                 .draw(p, band);
         }
-        if let (Some(label), Some(f)) = (self.action, self.action_frame()) {
+        if let (Some(label), Some(f)) = (self.action, action_frame) {
             // **No [`CTRL_FOCUS_SCALE`] pop, deliberately.** Every other control face in the app
             // takes one; this is the one surface where it would say nothing. A read-out's action is
             // the ONLY focusable thing on the region it owns — `library::sync_readout_focus` lands
@@ -3631,6 +3659,12 @@ impl View for StatusOverlay<'_> {
                 .focused(self.focused)
                 .draw(e, p);
         }
+    }
+}
+
+impl View for StatusOverlay<'_> {
+    fn draw(&self, e: &Env, p: Painter) {
+        self.draw_geometry(e, p, self.bands(), self.action_frame());
     }
 }
 
@@ -6755,6 +6789,15 @@ impl Button {
     /// An accessory occupies one more icon box and one more gap, which is what [`Button::draw`]
     /// lays out below.
     pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: bool) -> f32 {
+        Self::pill_w_from_advance(crate::text::text_width(label, sz, 1), sz, icon, trailing)
+    }
+
+    pub(crate) fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: bool,
+        measure: &dyn crate::ui::machine::Measure) -> f32 {
+        Self::pill_w_from_advance(measure.width(label, sz, true), sz, icon, trailing)
+    }
+
+    fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: bool) -> f32 {
         let (isz, gap) = if icon {
             (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
         } else {
@@ -6765,7 +6808,7 @@ impl Button {
         } else {
             (0.0, 0.0)
         };
-        isz + gap + crate::text::text_width(label, sz, 1) + tgap + tsz + BTN_PILL_AIR
+        isz + gap + advance + tgap + tsz + BTN_PILL_AIR
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -8996,6 +9039,60 @@ mod tests {
         let mut c = crate::ui::machine::Canon::new();
         ground.write_motion(&mut c);
         c.finish()
+    }
+
+    struct StatusMetrics;
+    impl crate::ui::machine::Measure for StatusMetrics {
+        fn width(&self, _: &core::ffi::CStr, size: i32, bold: bool) -> f32 {
+            assert_eq!(size, STATUS_CAP_SZ);
+            assert!(bold, "the action uses the Button's bold face");
+            96.0
+        }
+        fn cap_h(&self, _: i32) -> f32 { panic!("status layout uses line boxes") }
+        fn line_h(&self, size: i32) -> f32 {
+            if size == STATUS_CAP_SZ { 40.0 }
+            else { assert_eq!(size, STATUS_REASON_SZ); 28.0 }
+        }
+    }
+
+    #[test]
+    fn measured_status_action_uses_shared_button_width_height_and_reason_spacing() {
+        let frame = Rect::new(100.0, 200.0, 600.0, 500.0);
+        let plain = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).action(c"Try again");
+        let action = plain.action_frame_measured(&StatusMetrics).unwrap();
+        assert_eq!(action.w, 96.0 + BTN_PILL_AIR);
+        assert_eq!(action.h, StatusOverlay::CTRL_H);
+        assert_eq!(action.cx(), frame.cx());
+        assert_eq!(action.y, frame.cy() + 20.0 + theme::space::LG);
+        let explained = plain.reason(c"Shared source");
+        let shifted = explained.action_frame_measured(&StatusMetrics).unwrap();
+        assert_eq!(shifted.y - action.y, theme::space::SM + 28.0);
+        let bands = explained.bands_measured(&StatusMetrics);
+        let drawn = explained.action_rect(
+            Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, false, &StatusMetrics), &bands);
+        assert_eq!((drawn.x, drawn.y, drawn.w, drawn.h), (shifted.x, shifted.y, shifted.w, shifted.h));
+    }
+
+    #[test]
+    fn measured_status_without_action_does_not_consult_metrics() {
+        struct Unused;
+        impl crate::ui::machine::Measure for Unused {
+            fn width(&self, _: &core::ffi::CStr, _: i32, _: bool) -> f32 { panic!("no action") }
+            fn cap_h(&self, _: i32) -> f32 { panic!("no action") }
+            fn line_h(&self, _: i32) -> f32 { panic!("no action") }
+        }
+        assert!(StatusOverlay::new(Rect::FULL, c"Empty", StatusKind::Empty)
+            .action_frame_measured(&Unused).is_none());
+    }
+
+    #[test]
+    fn measured_button_preserves_both_accessory_slots() {
+        let plain = Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, false, &StatusMetrics);
+        let slot = STATUS_CAP_SZ as f32 * BTN_ICON_RATIO + BTN_ICON_GAP;
+        for (leading, trailing) in [(true, false), (false, true), (true, true)] {
+            let width = Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, leading, trailing, &StatusMetrics);
+            assert!((width - plain - slot * (u8::from(leading) + u8::from(trailing)) as f32).abs() < 0.001);
+        }
     }
 
     #[test]
