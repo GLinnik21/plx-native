@@ -261,6 +261,7 @@ pub struct FrameReport {
     pub carried: usize,
     pub queue_hwm: usize,
     pub mounted: Vec<InstanceId>,
+    /// Bodies whose Unmount step completed and may now be pruned, not merely queued.
     pub unmounted: Vec<InstanceId>,
     pub dropped_deliveries: u32,
     /// The logical-state hash, on an event frame.
@@ -1295,6 +1296,7 @@ where
                 // WillLeave and Unmount are queued after structural commit. Keep the engine's
                 // read snapshot available until the retiring body's final step has consumed it.
                 if matches!(ev, ScreenEvent::Unmount) {
+                    report.unmounted.push(id);
                     if let Some(entry) = self.nav.entry_of_instance(id)
                         .filter(|entry| self.nav.entry(*entry).is_some_and(|page| !page.evicted)) {
                         self.input.engine.forget(entry);
@@ -1568,8 +1570,8 @@ where
             match step {
                 Life::Mount(eid) => self.mount(rig, parts, eid, &mut post, report),
                 Life::Ev(eid, ev) => self.push_lifecycle(eid, ev, &mut post),
-                Life::Unmount(eid) => self.unmount(eid, false, &mut post, report),
-                Life::Evict(eid) => self.unmount(eid, true, &mut post, report),
+                Life::Unmount(eid) => self.unmount(eid, false, &mut post),
+                Life::Evict(eid) => self.unmount(eid, true, &mut post),
             }
         }
         // ahead of the carried queue: the mount that a key asked for happens THIS frame
@@ -1648,14 +1650,14 @@ where
         }
     }
 
-    fn unmount(&mut self, eid: EntryId, evicted: bool, post: &mut Vec<Stamped<H>>, report: &mut FrameReport) {
+    fn unmount(&mut self, eid: EntryId, evicted: bool, post: &mut Vec<Stamped<H>>) {
         let Some(inst) = self.nav.entry_mut(eid).and_then(|e| e.inst.take()) else {
             // No body remains to receive lifecycle events; a final retirement can forget now.
             if !evicted { self.input.engine.forget(eid); }
             return;
         };
-        // retire inflight: the live index no longer answers for it (§6.1 eviction rule)
-        report.unmounted.push(inst.id);
+        // Inflight is cleared below at structural commit; pruning waits for actual Unmount
+        // delivery, which may be carried beyond this frame's post-commit budget.
         // Eviction retains engine state; final retirement forgets after Unmount is delivered.
         if self.input.arm.map_or(false, |a| a.owner == MachineId::Instance(inst.id)) {
             self.input.cancel_press();
@@ -1811,8 +1813,11 @@ mod edge_back_tests {
             &mut self,
             ev: &Self::Ev,
             cx: &Cx<'_, FixtureHost>,
-            _fx: &mut Effects<'_, FixtureHost>,
+            fx: &mut Effects<'_, FixtureHost>,
         ) -> Handled {
+            if matches!(ev, ScreenEvent::Unmount) {
+                fx.push(Fx::App(FixtureFx::StoreAdd(self.entry.0)));
+            }
             if matches!(ev, ScreenEvent::WillLeave(_)) {
                 assert_eq!(cx.owner, InputOwner::Entry(self.entry));
                 self.state.read_memory = cx.focus.remembered(GroupId(901));
@@ -1896,6 +1901,7 @@ mod edge_back_tests {
         measure: FixtureMeasure,
         /// How many times the application was told BACK reached the root of the root stack.
         roots: u32,
+        unmounts: Vec<EntryId>,
     }
 
     impl EdgeBackRig {
@@ -1905,6 +1911,7 @@ mod edge_back_tests {
                 view: FixtureView::default(),
                 measure: FixtureMeasure,
                 roots: 0,
+                unmounts: Vec::new(),
             }
         }
     }
@@ -1937,10 +1944,11 @@ mod edge_back_tests {
         fn app_fx(
             &mut self,
             _from: MachineId,
-            _fx: FixtureFx,
+            fx: FixtureFx,
             _parts: &CxParts<u32>,
             _out: &mut Effects<'_, FixtureHost>,
         ) {
+            if let FixtureFx::StoreAdd(entry) = fx { self.unmounts.push(EntryId(entry)); }
         }
         fn log(&mut self, _line: &str) {}
         fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
@@ -1981,6 +1989,41 @@ mod edge_back_tests {
         d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
         assert!(probe(&d, home).contains("read_memory=Some(17)"), "WillLeave reads memory before retirement forgets it");
         assert!(d.input.engine.remembered_snapshot(home).is_empty(), "retired entries are forgotten after their last step");
+    }
+
+    #[test]
+    fn carried_unmounts_finish_before_production_pruning_forgets_retired_bodies() {
+        let _guard = crate::testlock::serial();
+        let (mut d, mut rig) = booted();
+        d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+        let mut entries = vec![d.nav.top_page().unwrap().id];
+        for i in 0..33 { entries.push(open(&mut d, &mut rig, 2, 16 * (i + 1))); }
+        let mut requests = Vec::new();
+        for &entry in &entries {
+            d.input.engine.remember_projected(entry, GroupId(901), entry.0);
+            let instance = d.nav.instance_of(entry).unwrap();
+            d.track_inflight(instance, RequestId(9));
+            requests.push(Addr { to: MachineId::Instance(instance), req: RequestId(9) });
+        }
+        d.request(MachineId::Nav, NavOp::Replace(FixtureArg::Page(1)));
+        let report = d.frame(&mut rig, tick(560), vec![], vec![], &mut NoTap);
+        assert!(report.carried > 0, "the fixture must exceed the post-commit lifecycle budget");
+        assert!(requests.iter().all(|addr| !d.nav.is_deliverable(addr)), "inflight retirement is immediate even for carried Unmount");
+        d.prune(&report.unmounted); // The application's frame tail, not a test-only delayed prune.
+        for i in 0..8 {
+            let report = d.frame(&mut rig, tick(576 + i * 16), vec![], vec![], &mut NoTap);
+            d.prune(&report.unmounted);
+            if d.queued() == 0 { break; }
+        }
+        let mut observed = rig.unmounts.clone();
+        observed.sort_by_key(|entry| entry.0);
+        entries.sort_by_key(|entry| entry.0);
+        assert_eq!(observed, entries, "each retired body must execute Unmount exactly once");
+        for entry in entries {
+            assert!(d.nav.entry(entry).is_none());
+            assert_eq!(d.input.engine.current(InputOwner::Entry(entry)), None);
+            assert!(d.input.engine.remembered_snapshot(entry).is_empty());
+        }
     }
 
     /// Present an `Opaque` surface (the Settings family's style) whose screen starts at `depth`.
