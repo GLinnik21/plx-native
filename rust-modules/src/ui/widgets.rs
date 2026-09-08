@@ -4565,6 +4565,18 @@ pub(crate) enum TabGround {
 }
 
 impl TabStrip {
+    pub(crate) const SHAPE: &'static str = "TabStrip{sel:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32},foc:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32}}";
+
+    /// Held capsule geometry and velocity determine the next frame even before a new target.
+    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { sel, foc } = self;
+        for capsule in [sel, foc] {
+            let Capsule { x, w, a, at } = capsule;
+            for spring in [x, w, a] { c.f32(spring.pos).f32(spring.vel); }
+            c.u32(*at as u32);
+        }
+    }
+
     pub(crate) const fn new() -> Self {
         TabStrip {
             sel: Capsule::new(),
@@ -9767,6 +9779,32 @@ mod tests {
     }
 
     // ---- the travelling capsules --------------------------------------------------------------
+    #[test]
+    fn tab_strip_canonical_motion_covers_both_capsules_and_each_spring() {
+        let hash = |strip: &TabStrip| {
+            let mut c = crate::ui::machine::Canon::new();
+            strip.write_motion(&mut c);
+            c.finish()
+        };
+        let initial = hash(&TabStrip::new());
+        for focused in [false, true] {
+            for field in 0..7 {
+                let mut strip = TabStrip::new();
+                let capsule = if focused { &mut strip.foc } else { &mut strip.sel };
+                match field {
+                    0 => capsule.x.pos = 1.0,
+                    1 => capsule.x.vel = 1.0,
+                    2 => capsule.w.pos = 1.0,
+                    3 => capsule.w.vel = 1.0,
+                    4 => capsule.a.pos = 1.0,
+                    5 => capsule.a.vel = 1.0,
+                    _ => capsule.at = 0,
+                }
+                assert_ne!(initial, hash(&strip), "capsule={focused} field={field}");
+            }
+        }
+    }
+
     // `Spring::step` is `gfx::spring`, pure and already driven frame-by-frame by `card_row.rs`'s
     // tests, so capsule MOTION is fully host-testable. What is not: anything through
     // `with_tab_metrics` (it measures with SDL2_ttf), which is why these drive the pure

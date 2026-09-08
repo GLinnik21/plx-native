@@ -943,7 +943,6 @@ pub(super) unsafe fn key_item_menu(
 /// client-side hold-repeat.
 pub(super) fn key_move_focus(_key: Key, sym: c_uint, route: Route, now: u32, held: &mut HeldKey) {
     match route {
-        Route::Library => crate::ui::library::move_focus(sym),
         Route::Search => crate::ui::search::move_focus(sym),
         _ => return, // owned pages receive directions through the dispatcher
     }
@@ -961,7 +960,6 @@ pub(super) fn key_move_focus(_key: Key, sym: c_uint, route: Route, now: u32, hel
 pub(super) fn top_focus(route: Route) -> crate::ui::widgets::TopFocus {
     use crate::ui::widgets::TopFocus;
     match route {
-        Route::Library => crate::ui::library::top_focus(),
         Route::Search => crate::ui::search::top_focus(),
         _ => TopFocus::Away,
     }
@@ -1004,14 +1002,6 @@ pub(super) fn chip_clicked(route: Route, ev: &[u8]) -> bool {
     if BarHost::of(route).is_none() {
         return false;
     }
-    // A screen's own modal owns the frame, and the Library's sort/filter panel is INTERNAL state
-    // rather than a route, so nothing above this can see it: without the test, a click on the
-    // avatar with that panel up would open the account popover over a menu still standing behind
-    // it. The key path needs no equivalent — `library::top_focus` already declines while a menu is
-    // open, so the chip is not the focused thing to press.
-    if matches!(route, Route::Library) && crate::ui::library::menu_open() {
-        return false;
-    }
     let (mx, my) = ptr_xy(ev);
     crate::ui::widgets::profile_chip_at(mx, my)
 }
@@ -1022,9 +1012,9 @@ pub(super) unsafe fn key_ok(
     route: &mut Route,
     hud: &mut HudState,
     _ptr: &mut Pointer,
-    trail: &mut Trail,
+    _trail: &mut Trail,
     nav: &mut Option<NavReq>,
-    play_from: &mut Node,
+    _play_from: &mut Node,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
 ) {
@@ -1102,47 +1092,9 @@ pub(super) unsafe fn key_ok(
         } else if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
             nav_open(*route, node, None, nav);
         }
-    } else if matches!(*route, Route::Library) {
-        // OK on a browse-grid card → the same tvOS press as home's grid;
-        // tabs / toolbar / menus commit immediately inside the screen.
-        if crate::ui::library::focus_is_card() {
-            press.begin(clock::now());
-            *ok_armed = true;
-        } else {
-            match crate::ui::library::on_ok() {
-                crate::ui::library::Action::GoHome => nav_to(
-                    *route,
-                    Nav::Home {
-                        focus_pill: crate::ui::library::focused_pill(),
-                    },
-                    nav,
-                ),
-                crate::ui::library::Action::GoSearch => nav_to(*route, Nav::Search, nav),
-                // A SHELF tile, which the grid's own `Card` arm cannot serve: it is not in the
-                // paged store, and a tile on the library's own Continue Watching row must RESUME
-                // rather than open a page. Same `activate_card` Home's deck goes through.
-                crate::ui::library::Action::ShelfCard { from_deck } => {
-                    if let Some(mm) = crate::ui::library::focused_item() {
-                        // the DECK plays; every other shelf navigates — see `home_activate`
-                        let want_play = from_deck;
-                        unsafe {
-                            activate_card(
-                                mt, mm, want_play, HUD_LINGER_MS, route, play_from, trail, &mut hud.nav,
-                                nav,
-                            )
-                        };
-                    }
-                }
-                crate::ui::library::Action::Card | crate::ui::library::Action::None => {}
-            }
-        }
     }
 }
 
-/// CH▲/CH▼ page the browse grid a screenful of rows per press.
-pub(super) fn key_library_page(dir: c_int) {
-    crate::ui::library::page(dir);
-}
 
 /// webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
 ///
@@ -1195,19 +1147,6 @@ pub(super) fn key_back(
         // Search is a peer of it, not a page stacked on it.
         if !crate::ui::search::back() {
             nav_to(*route, Nav::Home { focus_pill: None }, nav);
-        }
-    } else if matches!(*route, Route::Library) {
-        // read BEFORE `back()`: its first press moves focus ONTO the tab row, so
-        // asking afterwards would report the pill it just landed on rather than
-        // the one the user was standing on when they chose to leave.
-        //
-        // No `trail.back()` here: the destination is Home, and the commit frame
-        // of the page transition truncates the trail to its root — which is both
-        // stronger and cancel-safe (a BACK withdrawn inside the 70 ms window
-        // must not have moved the history).
-        let pill = crate::ui::library::focused_pill();
-        if !crate::ui::library::back() {
-            nav_to(*route, Nav::Home { focus_pill: pill }, nav);
         }
     }
 }

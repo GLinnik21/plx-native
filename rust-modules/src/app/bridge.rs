@@ -208,13 +208,9 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 
 #[derive(Clone, Copy)]
 pub(super) struct AppViews<'a> {
-    #[cfg_attr(not(test), allow(dead_code))] // Phase 8: Home mounter integration is the consumer.
     pub(super) hubs: crate::pms::HubsView<'a>,
-    #[allow(dead_code)] // Library adoption consumes this retained listing, not browse globals.
     pub(super) listing: crate::stores::browse::ListingView<'a>,
-    #[allow(dead_code)] // Phase-8 Library sources/menu consumer.
     pub(super) directory: crate::stores::browse::DirectoryView<'a>,
-    #[allow(dead_code)] // Phase-8 Library shelf consumer.
     pub(super) section_hubs: crate::stores::browse::HubsView<'a>,
 }
 
@@ -568,6 +564,13 @@ impl Bridge {
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+    }
+
+    pub(super) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
+        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
+            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return false };
+        matches!(page.probe_viewport(d.input.engine.current(InputOwner::Entry(entry.id))).0, "grid" | "shelf")
     }
 
     pub(super) fn enter_library(&mut self, kind: crate::browse::SecKind) {

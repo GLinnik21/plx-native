@@ -874,6 +874,7 @@ mod tests {
                 sid: Some(ServerId::from_raw(1)),
                 key: 7,
                 kind: SecKind::Movie,
+                borrowed: false,
                 row: SrcRow {
                     src: 0,
                     section: 0,
@@ -888,6 +889,7 @@ mod tests {
                 sid: Some(ServerId::from_raw(2)),
                 key: 7,
                 kind: SecKind::Movie,
+                borrowed: true,
                 row: SrcRow {
                     src: 1,
                     section: 1,
@@ -1035,6 +1037,7 @@ mod tests {
                 sid: Some(ServerId::from_raw(1)),
                 key: 8,
                 kind: SecKind::Movie,
+                borrowed: false,
                 row: SrcRow {
                     src: 0,
                     section: 1,

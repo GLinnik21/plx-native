@@ -997,6 +997,7 @@ pub(crate) fn cur() -> usize {
 /// Takes the section rather than reading `cur()`, because the chip must relabel on the PRESS frame:
 /// its name comes from the queued section (`view_section`) and a handle resolved from the committed
 /// one would pop in 70 ms later, changing the chip's measured width mid-fade.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn handle_of(i: usize) -> &'static str {
     sections()
         .get(i)
@@ -1317,6 +1318,7 @@ pub(crate) fn note_library_choice(i: usize) {
 /// library keeps the *Movies* pill lit, which is what "a pill is a type" means for the selection
 /// capsule. `None` when that type draws no pill, which a section being browsed while its type has
 /// just lost its last favourite can produce for exactly one frame before [`repoint_cur`] runs.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn tab_of_section(s: usize) -> Option<usize> {
     section_kind(s).and_then(tab_of_kind)
 }
@@ -1798,6 +1800,7 @@ pub(crate) fn source_groups() -> Vec<SrcGroup> {
 
 /// The TYPE the Source panel is scoped to: the kind of the library currently being browsed, which
 /// is also the kind of the selected TAB. `None` only before any section exists.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 fn cur_kind() -> Option<SecKind> {
     sections().get(cur()).map(|s| s.kind)
 }
@@ -1826,6 +1829,7 @@ fn cur_kind() -> Option<SecKind> {
 /// what is left here is one level and one tick. `pinned`/`last_pinned` stay whole-roster facts on
 /// the row regardless, because the never-empty refusal still counts every favourite rather than
 /// the visible ones.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn source_rows() -> Vec<SrcRow> {
     let Some(kind) = cur_kind() else {
         return Vec::new();
@@ -1851,6 +1855,7 @@ pub(crate) fn source_rows() -> Vec<SrcRow> {
 ///
 /// Allocation-free, unlike `source_rows`, because the chip's cache KEY is rebuilt every frame on
 /// this screen's hot path and cloning every row's title to count them is not what that key is for.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn kind_position(i: usize) -> Option<(usize, usize)> {
     let kind = section_kind(i)?;
     if !sections().get(i)?.pinned {
@@ -1877,6 +1882,7 @@ pub(crate) fn kind_position(i: usize) -> Option<(usize, usize)> {
 /// *TV Shows* tab and then never corrected itself: the row's cache is keyed on the viewed section,
 /// which does not move again at the commit, so the stale answer was cached for the life of the
 /// page. Same predicate, same order, same projection — only the scope's source differs.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn source_rows_for(i: usize) -> Vec<SrcRow> {
     let Some(kind) = section_kind(i) else {
         return Vec::new();
@@ -1957,12 +1963,14 @@ pub(crate) fn recheck_shares() {
 // ---- public surface: items ------------------------------------------------------------------
 
 /// totalSize of the current query, or -1 while the first page is still out.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn total() -> i64 {
     cur_state().map(|s| s.total).unwrap_or(-1)
 }
 /// Item at absolute index `i` — None = not yet fetched (draw a skeleton). The reference is
 /// valid until the next [`pump`]/re-query (main-thread only, same lifetime rule as
 /// `pms::movie`).
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
     cur_state().and_then(|s| s.items.get(i))
 }
@@ -2206,6 +2214,7 @@ pub(crate) fn retry_cur_source() {
 /// its reason). Either can be `""` and each means something different by it: an unknown machine has
 /// not named itself yet, while an empty HANDLE means the source is your OWN server and there is no
 /// owner to name — drawn as the absence of a line, never as an empty one.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn cur_source_labels() -> (&'static str, &'static str) {
     cur_source_idx()
         .and_then(|i| sources().get(i))
@@ -2233,13 +2242,16 @@ fn cur_source_idx() -> Option<usize> {
 pub(crate) fn sorts() -> &'static [SortEntry] {
     cur_state().map(|s| s.sorts.as_slice()).unwrap_or(&[])
 }
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn sort_idx() -> usize {
     cur_state().map(|s| s.sort_idx).unwrap_or(0)
 }
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn sort_desc() -> bool {
     cur_state().map(|s| s.sort_desc).unwrap_or(false)
 }
 /// Current sort's display title for the toolbar chip ("Title" until the menus land).
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn sort_label() -> &'static str {
     let st = match cur_state() {
         Some(s) => s,
@@ -2272,6 +2284,7 @@ pub(crate) fn set_sort_by_key(key: &str, desc: bool) -> bool {
 }
 
 /// The active sort's stable key and direction — what a queued action carries.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn sort_key_now() -> (String, bool) {
     let st = cur_state();
     let key = sorts()
@@ -2328,9 +2341,11 @@ pub(crate) fn set_sort(idx: usize) {
 
 // ---- public surface: filters ----------------------------------------------------------------
 
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn unwatched() -> bool {
     cur_state().map(|s| s.unwatched).unwrap_or(false)
 }
+#[cfg(test)] // Retired toggle shim: owned Library commands carry the desired boolean.
 pub(crate) fn toggle_unwatched() {
     let c = cur();
     if let Some(st) = state_mut(c) {
@@ -2341,10 +2356,12 @@ pub(crate) fn toggle_unwatched() {
 pub(crate) fn genres() -> &'static [GenreEntry] {
     cur_state().map(|s| s.genres.as_slice()).unwrap_or(&[])
 }
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn genre_sel() -> Option<&'static GenreEntry> {
     cur_state().and_then(|s| s.genre.as_deref())
 }
 /// Toolbar chip text: the active genre's name, else "All".
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn filter_label() -> &'static str {
     genre_sel().map(|g| g.title.as_str()).unwrap_or("All")
 }
@@ -2456,17 +2473,20 @@ pub(crate) fn kick_genres() {
 // ---- letter rail (firstCharacter index) -----------------------------------------------------
 
 /// Per-letter (label, count) of the current section, or empty until [`kick_letters`] lands.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn letters() -> &'static [(String, i64)] {
     cur_state().map(|s| s.letters.as_slice()).unwrap_or(&[])
 }
 /// Absolute item index of the first title under letter `i` — the prefix sum of the counts
 /// before it (jump = focus/scroll move, never a filter: Emby semantics).
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn letter_start(i: usize) -> usize {
     letters().iter().take(i).map(|(_, n)| *n as usize).sum()
 }
 /// The rail is only truthful on the unfiltered ascending title listing: the letter counts
 /// describe exactly that ordering. Menus not landed yet ⇒ the server default (titleSort asc)
 /// is in effect, so the rail may show.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn rail_available() -> bool {
     let Some(st) = cur_state() else { return false };
     let title_asc = match st.sorts.get(st.sort_idx) {
@@ -2497,9 +2517,11 @@ pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usi
         (section.key == key && section_sid(i) == Some(sid)).then_some(i))
 }
 
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn saved_view() -> (usize, f32) {
     cur_state().map(|s| (s.focus, s.scroll)).unwrap_or((0, 0.0))
 }
+#[cfg(test)]
 pub(crate) fn save_view(focus: usize, scroll: f32) {
     let c = cur();
     if let Some(st) = state_mut(c) {

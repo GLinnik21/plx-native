@@ -4,7 +4,8 @@ use super::*;
 use crate::ui::card_row;
 use crate::ui::screen::{Activate, Hover, Stop};
 use crate::ui::theme;
-use crate::ui::widgets::{Art, Button, TabPill, StatusOverlay, StatusKind};
+use crate::ui::widgets::{Art, TabPill, StatusOverlay, StatusKind};
+use crate::ui::value_chip::ValueChip;
 use crate::ui::{Env, View, on_axis};
 
 impl LibraryScreen {
@@ -14,15 +15,23 @@ impl LibraryScreen {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         let directory = H::directory(f.cx);
-        self.library_capsules.draw(p, CONTENT_TOP - self.scroll.pos, 52.0,
-            crate::ui::widgets::TabGround::Plated { pop: self.library_pop.scale_with(0, f.press.scale) });
+        let source_chip = self.source_chip(f.cx);
+        if source_chip.is_none() {
+            self.library_capsules.draw(p, CONTENT_TOP - self.scroll.pos, 52.0,
+                crate::ui::widgets::TabGround::Plated { pop: self.library_pop.scale_with(0, f.press.scale) });
+        }
         for (index, (elem, section)) in self.libraries.iter().enumerate() {
             let label = CString::new(directory.sections().get(*section).map(|s| s.row.title.as_str()).unwrap_or("More")).unwrap_or_default();
             let rect = self.library_rect(index, f.cx);
             if !on_axis(rect.y, rect.h, SCR_H, 0.0) { continue; }
-            let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
-            TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
-                .mix(focused, selected).draw(&env, p);
+            if let Some(chip) = &source_chip {
+                ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), rect)
+                    .focused(f.focus.current.is_some_and(|key| key.elem == *elem)).draw(&env, p);
+            } else {
+                let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
+                TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
+                    .mix(focused, selected).draw(&env, p);
+            }
             self.stop(*elem, f);
         }
         for (index, row) in self.shelves.iter().enumerate() {
@@ -43,15 +52,10 @@ impl LibraryScreen {
             }
         }
         if self.layout.grid_head {
-            let listing = H::listing(f.cx);
-            let queued = self.pending.grid().filter(|(target, _)| target.matches(listing))
-                .and_then(|(_, action)| match action { GridAction::Sort { key, .. } => listing.sorts().iter().find(|sort| &sort.key == key), _ => None });
-            let sort_label = queued.or_else(|| listing.sorts().get(listing.sort_index()))
-                .map(|sort| sort.title.as_str()).unwrap_or("Title");
-            let sort_label = CString::new(format!("Sort: {sort_label}")).unwrap_or_default();
-            for (elem, label) in [(SORT, sort_label.as_c_str()), (FILTER, c"Filter")] {
+            for elem in [SORT, FILTER] {
+                let chip = self.toolbar_chip(elem, f.cx);
                 if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
-                    Button::new(label.as_ptr(), theme::size::BODY, placed.rect)
+                    ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), placed.rect)
                         .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
                     self.stop(elem, f);
                 }

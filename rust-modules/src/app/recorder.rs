@@ -121,6 +121,8 @@ pub(super) fn state_fp() -> u64 {
         crate::screens::library::SHAPE[0],
         crate::screens::library::SHAPE[1],
         crate::screens::library::SHAPE[2],
+        crate::screens::library::SHAPE[3],
+        crate::screens::library::SHAPE[4],
         crate::screens::library::menu::SHAPE[0],
         crate::screens::library::menu::SHAPE[1],
         crate::pms::record::SHAPE,

@@ -168,11 +168,32 @@ pub(crate) struct LibraryKey {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LibraryMemory {
+    pub(crate) epoch: Option<u32>,
+    pub(crate) viewports: Vec<LibraryViewport>,
     pub(crate) keys: Vec<LibraryKey>,
     pub(crate) next_elem: u32,
     pub(crate) section: Option<LibrarySectionIdentity>,
     pub(crate) scroll: f32,
     pub(crate) shelf_scroll: Vec<(String, f32)>,
+}
+
+/// Section-owned document geometry, deliberately without any current or remembered item.
+#[derive(Clone, Debug)]
+pub(crate) struct LibraryViewport {
+    pub(crate) epoch: u32,
+    pub(crate) section: LibrarySectionIdentity,
+    pub(crate) scroll: f32,
+    pub(crate) shelves: Vec<(String, f32)>,
+}
+
+impl crate::ui::machine::LogicalState for LibraryViewport {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { epoch, section, scroll, shelves } = self;
+        c.u32(*epoch).u32(u32::from(section.sid.raw())).u64(section.key as u64).f32(*scroll);
+        c.seq(shelves.len());
+        for (id, x) in shelves { c.str(id).f32(*x); }
+    }
+    fn probe(&self, _: &mut String) {}
 }
 
 /// An item's or person's identity travels with the navigation entry, never in a screen global.
@@ -396,6 +417,9 @@ impl crate::ui::machine::LogicalState for PageMemory {
                 }
                 c.seq(memory.shelf_scroll.len());
                 for (hub, scroll) in &memory.shelf_scroll { c.str(hub).f32(*scroll); }
+                c.option(memory.epoch, |c, epoch| { c.u32(epoch); });
+                c.seq(memory.viewports.len());
+                for viewport in &memory.viewports { viewport.write(c); }
             }
         }
     }
@@ -439,7 +463,7 @@ fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {

@@ -41,6 +41,23 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn library_capsule_and_control_motion_enter_canonical_state() {
+    let hash = |page: &LibraryScreen| {
+        let mut c = Canon::new();
+        page.write(&mut c);
+        c.finish()
+    };
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
+    let initial = hash(&page);
+    page.library_capsules.update(0, 0, |_| Some((120.0, 180.0)),
+        crate::ui::widgets::SelMark::Travels, 0.016);
+    let capsule = hash(&page);
+    assert_ne!(initial, capsule, "held capsule geometry affects subsequent frames");
+    page.library_pop.step(Some(0), 0.016);
+    assert_ne!(capsule, hash(&page), "control focus and spring velocity affect subsequent frames");
+}
+
+#[test]
 fn pending_semantic_commits_change_the_library_state_hash() {
     fn hash(page: &LibraryScreen) -> u64 {
         let mut canon = Canon::new();
@@ -78,6 +95,121 @@ struct Fixture {
     directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
+}
+
+#[test]
+fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let original = fixture.listing.clone();
+    for (fetch, total, expected, grid, retry) in [
+        (SecFetch::Failed, 36, Readout::Grid, true, false),
+        (SecFetch::Ready, 0, Readout::Empty, false, false),
+        (SecFetch::Failed, -1, Readout::Failed, false, true),
+        (SecFetch::Loading, -1, Readout::Loading, false, false),
+    ] {
+        fixture.listing = original.clone().with_fetch(fetch, total);
+        let page = fixture.screen();
+        let cx = fixture.cx(None);
+        assert_eq!(page.readout, expected);
+        let mut groups = Vec::new();
+        page.groups(&cx, &mut groups);
+        assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail), grid);
+        assert_eq!(page.place(&SORT, &cx, At::SpringTarget).is_some(), grid);
+        assert_eq!(page.place(&FILTER, &cx, At::SpringTarget).is_some(), grid);
+        assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry);
+        if !grid {
+            assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().master), "stale letters are not a live rail");
+        }
+        if retry {
+            let mut engine = FocusEngine::new();
+            engine.enter(OWNER, &page, FocusTarget::ContainerGroup(STATUS_GROUP), None, &cx);
+            assert_eq!(engine.current(OWNER), Some(page.key(RETRY)));
+        }
+    }
+}
+
+#[test]
+fn foreign_section_replacement_upgrades_a_grid_fade_once() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.grid_fade.reload();
+    fixture.listing = fixture.listing.clone().with_section(2, 1);
+    page.sync(&fixture.cx(None));
+    assert!(page.page_fade.is_swapping(), "foreign replacement remounts the entire document");
+    assert_eq!(page.page_fade.alpha(), 0.0);
+    assert!(!page.grid_fade.is_swapping());
+    page.page_fade.tick(0.04, true);
+    let alpha = page.page_fade.alpha();
+    page.sync(&fixture.cx(None));
+    assert_eq!(page.page_fade.alpha(), alpha, "the same publication must not remount twice");
+}
+
+#[test]
+fn toolbar_stops_use_the_shared_value_chip_measurement() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let page = fixture.screen();
+    let cx = fixture.cx(None);
+    let sort = page.place(&SORT, &cx, At::Drawn).unwrap().rect;
+    let filter = page.place(&FILTER, &cx, At::Drawn).unwrap().rect;
+    assert_eq!(sort.w, crate::ui::value_chip::ValueChip::width(cx.measure, c"Sort", c" · Title", None));
+    assert_eq!(filter.w, crate::ui::value_chip::ValueChip::width(cx.measure, c"Filter", c" · All", None));
+    assert_eq!(filter.x, sort.x + sort.w + 16.0);
+}
+
+#[test]
+fn section_grid_memories_do_not_overwrite_one_another() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let first = fixture.listing.clone();
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let group_a = page.pair.groups_config().detail;
+    let card_a = page.key(page.pair.detail.elem_at(17).unwrap());
+    engine.set(OWNER, card_a, Some(group_a), By::Restore);
+    fixture.listing = first.clone().with_section(1, 2);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    let group_b = page.pair.groups_config().detail;
+    assert_ne!(group_a, group_b, "each section needs its own engine memory slot");
+    let card_b = page.key(page.pair.detail.elem_at(23).unwrap());
+    engine.set(OWNER, card_b, Some(group_b), By::Restore);
+    fixture.listing = first;
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    assert_eq!(page.pair.groups_config().detail, group_a);
+    assert!(engine.remembered_for(ENTRY).contains(&(group_a, card_a.elem)));
+    assert!(engine.remembered_for(ENTRY).contains(&(group_b, card_b.elem)));
+    engine.enter(OWNER, &page, FocusTarget::ContainerGroup(group_a), None, &fixture.cx(engine.current(OWNER)));
+    assert_eq!(engine.current(OWNER), Some(card_a), "Remembered seating restores the exact section card");
+    // Enter the rail through a toolbar: projection must consult only this section's grid memory.
+    engine.set(OWNER, page.key(FILTER), Some(TOOLBAR_GROUP), By::Dir);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(0));
+}
+
+#[test]
+fn section_viewport_bookmarks_survive_switch_and_evicted_body() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let first = fixture.listing.clone();
+    let mut page = fixture.screen();
+    let y = page.layout.row_reveal(3);
+    page.scroll.jump(y);
+    page.scroll_target = y;
+    fixture.listing = first.clone().with_section(1, 2);
+    page.sync(&fixture.cx(None));
+    assert_eq!(page.scroll.pos, 0.0, "a new section starts at its own head");
+    let PageMemory::Library(memory) = <LibraryScreen as Screen<HostFixture>>::memory(&page) else { panic!() };
+    let mut evicted = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    evicted.restore(&memory);
+    evicted.sync(&fixture.cx(None));
+    fixture.listing = first;
+    for page in [&mut page, &mut evicted] {
+        page.sync(&fixture.cx(None));
+        assert_eq!(page.scroll.pos, y, "viewport belongs to the section, including after body eviction");
+        assert_eq!(page.scroll_target, y);
+    }
 }
 impl Fixture {
     fn new() -> Self {
@@ -129,11 +261,11 @@ fn projected_entry_preserves_the_last_item_within_a_letter_then_live_move_jumps(
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
     let exact = page.key(page.pair.detail.elem_at(17).unwrap());
-    engine.set(OWNER, exact, Some(GRID_GROUP), By::Restore);
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
     assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Right), 0);
-    assert_eq!(engine.current_group(OWNER), Some(RAIL_GROUP));
+    assert_eq!(engine.current_group(OWNER), Some(page.pair.groups_config().master));
     assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(0));
-    assert_eq!(engine.remembered_for(ENTRY).iter().find(|(g, _)| *g == GRID_GROUP).unwrap().1, exact.elem);
+    assert_eq!(engine.remembered_for(ENTRY).iter().find(|(g, _)| *g == page.pair.groups_config().detail).unwrap().1, exact.elem);
     direction(&mut page, &mut engine, &fixture, Dir::Left);
     assert_eq!(engine.current(OWNER), Some(exact));
     direction(&mut page, &mut engine, &fixture, Dir::Right);
@@ -149,13 +281,13 @@ fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
     let exact = page.key(page.pair.detail.elem_at(23).unwrap());
-    engine.set(OWNER, exact, Some(GRID_GROUP), By::Restore);
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
     engine.set(OWNER, page.key(FILTER), Some(TOOLBAR_GROUP), By::Dir);
     assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Right), 0);
     assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(18));
     direction(&mut page, &mut engine, &fixture, Dir::Left);
     assert_eq!(engine.current(OWNER), Some(page.key(FILTER)));
-    assert_eq!(engine.remembered_for(ENTRY).iter().find(|(g, _)| *g == GRID_GROUP).unwrap().1, exact.elem);
+    assert_eq!(engine.remembered_for(ENTRY).iter().find(|(g, _)| *g == page.pair.groups_config().detail).unwrap().1, exact.elem);
 }
 
 #[test]
@@ -181,7 +313,7 @@ fn direct_rail_activation_jumps_even_when_the_letter_was_already_selected() {
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
     let exact = page.key(page.pair.detail.elem_at(17).unwrap());
-    engine.set(OWNER, exact, Some(GRID_GROUP), By::Restore);
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
     direction(&mut page, &mut engine, &fixture, Dir::Right);
     let letter = engine.current(OWNER).unwrap().elem;
     assert_eq!(deliver(&mut page, &mut engine, &fixture, ScreenEvent::Activate(letter)), 1);
@@ -195,7 +327,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
-        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
+        crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
             row: crate::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let mut output = Vec::new();
@@ -219,6 +351,28 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
         Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
             target, work: LibraryWork::Commit { select: true, query: Some(crate::stores::browse::QueryEdit::Sort { key, desc: true }), .. }
         }))) if *target == incoming && key == "titleSort")), "leaving flushes selection and semantic sort in one addressed store command");
+}
+
+#[test]
+fn singleton_borrowed_library_opens_sources_and_uses_value_chip_geometry() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        crate::browse::view::SectionView { borrowed: true, sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+            kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
+                pinned: true, current: true, ..Default::default() } }]);
+    let mut page = fixture.screen();
+    assert_eq!(page.libraries.len(), 1);
+    let elem = page.libraries[0].0;
+    let cx = fixture.cx(Some(page.key(elem)));
+    let rect = page.place(&elem, &cx, At::Drawn).unwrap().rest_rect;
+    assert_eq!(rect.w, crate::ui::value_chip::ValueChip::width(cx.measure, c"Library", c" · Cinema", None));
+    let mut output = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.activate(elem, false, &cx, &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(output.iter().any(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::Library(LibraryReq::Menu { kind: crate::screens::registry::LibraryMenuKind::Sources, anchor, .. }))
+            if *anchor == [rect.x.to_bits(), rect.y.to_bits(), rect.w.to_bits(), rect.h.to_bits()])));
 }
 
 #[test]
@@ -277,5 +431,7 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     page.grid_fade.reload();
     assert_eq!(request(&mut page), (false, false), "a fading grid leaves the shelves visible");
     page.page_fade.reload();
+    assert_eq!(request(&mut page), (false, false), "the outgoing page remains visible until the fade floor");
+    page.page_fade.mount();
     assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
 }

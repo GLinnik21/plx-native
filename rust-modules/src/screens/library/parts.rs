@@ -28,6 +28,7 @@ const GRID_STYLE: RowStyle = RowStyle::HOME.with_right_reserve(crate::ui::consts
 
 pub(super) struct GridPart {
     entry: EntryId,
+    group: GroupId,
     pub(super) elems: Vec<u32>,
     known: Vec<(u32, usize)>,
     identity: Option<(u32, crate::plex::ServerId, i64, u32)>,
@@ -39,9 +40,9 @@ pub(super) struct GridPart {
 }
 
 impl GridPart {
-    pub(super) fn new(entry: EntryId) -> Self {
+    pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
         Self {
-            entry,
+            entry, group,
             elems: Vec::new(),
             known: Vec::new(),
             identity: None,
@@ -83,13 +84,13 @@ impl GridPart {
             self.elems.reserve(total);
             for index in 0..total {
                 let identity = item_identity(view, &section, id.query, index);
-                self.elems.push(keys.register(identity, GRID_GROUP, index));
+                self.elems.push(keys.register(identity, self.group, index));
             }
             self.identity = Some(stamp);
         } else {
             for (index, elem) in self.elems.iter_mut().enumerate() {
                 let identity = item_identity(view, &section, id.query, index);
-                *elem = keys.register(identity, GRID_GROUP, index);
+                *elem = keys.register(identity, self.group, index);
             }
         }
         for (index, &elem) in self.elems.iter().enumerate() {
@@ -155,7 +156,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
     fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.elems.is_empty() { return; }
         out.push(GroupSpec {
-            id: GRID_GROUP,
+            id: self.group,
             kind: GroupKind::Grid { cols: COLS, holes: NO_HOLES },
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
@@ -167,7 +168,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
     }
 
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.index_of(*key).map(|_| GRID_GROUP)
+        self.index_of(*key).map(|_| self.group)
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
@@ -260,6 +261,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
 
 pub(super) struct RailPart {
     entry: EntryId,
+    group: GroupId,
     pub(super) elems: Vec<u32>,
     labels: Vec<CString>,
     starts: Vec<usize>,
@@ -268,8 +270,8 @@ pub(super) struct RailPart {
 }
 
 impl RailPart {
-    pub(super) fn new(entry: EntryId) -> Self {
-        Self { entry, elems: Vec::new(), labels: Vec::new(), starts: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), scroll: 0.0 }
+    pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
+        Self { entry, group, elems: Vec::new(), labels: Vec::new(), starts: Vec::new(), rect: Rect::new(0.0, 0.0, 0.0, 0.0), scroll: 0.0 }
     }
 
     pub(super) fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry, layout: Layout, document_scroll: f32) {
@@ -291,7 +293,7 @@ impl RailPart {
             start = start.saturating_add((*count).max(0) as usize);
             self.elems.push(keys.register(
                 LibraryIdentity::Rail { section: section.clone(), label: label.clone() },
-                RAIL_GROUP,
+                self.group,
                 index,
             ));
             self.labels.push(CString::new(label.as_str()).unwrap_or_default());
@@ -328,7 +330,7 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
     fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.elems.is_empty() { return; }
         out.push(GroupSpec {
-            id: RAIL_GROUP,
+            id: self.group,
             kind: GroupKind::Column,
             seat: Seat::First,
             reachable: AxisMask::HORIZONTAL,
@@ -340,7 +342,7 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
     }
 
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.elems.contains(key).then_some(RAIL_GROUP)
+        self.elems.contains(key).then_some(self.group)
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {

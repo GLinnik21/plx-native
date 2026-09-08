@@ -25,19 +25,29 @@ pub(crate) enum BrowseCmd {
     /// Execute deferred Library work against the source and table epoch captured by the screen.
     Addressed { target: SectionAddress, work: LibraryWork },
     /// Point the listing at section `i` (a pill or library-row press, committed at the fade floor).
+    #[cfg(test)]
     SetCur(usize),
     /// Remember a library the viewer CHOSE (never a boot settle or a re-point).
+    #[cfg(test)]
     NoteLibraryChoice(usize),
+    #[cfg(test)]
     KickLetters,
+    #[cfg(test)]
     KickGenres,
     /// The grid's wanted index window — drives which page fetches next.
+    #[cfg(test)]
     Want { lo: usize, hi: usize },
+    #[cfg(test)]
     SaveView { focus: usize, scroll: f32 },
     /// Answers `false` when the key names no sort entry.
+    #[cfg(test)]
     SetSortByKey { key: String, desc: bool },
+    #[cfg(test)]
     ToggleUnwatched,
     /// `None` is "All genres"; answers `false` when the id names no genre.
+    #[cfg(test)]
     SetGenreById(Option<String>),
+    #[cfg(test)]
     RetryCurSource,
     RecheckShares,
     /// The Home editor's draft commit: one record for the whole session.
@@ -46,7 +56,9 @@ pub(crate) enum BrowseCmd {
     /// The profile/account switch: wipe everything and supersede everything in flight.
     Reset,
     /// The library's own shelves (`browse::section_hubs`).
+    #[cfg(test)]
     HubsKick(usize),
+    #[cfg(test)]
     HubsCommitStaged { sec: usize, may_move: bool },
     HubsInvalidateAll,
     /// The optimistic half of a view-state write, on the grid and the shelves.
@@ -85,9 +97,17 @@ fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
     let Some(index) = crate::browse::resolve_section(target.epoch, target.sid, target.section) else { return false };
     match work {
         LibraryWork::Commit { select, choice, query } => {
+            let switched = crate::browse::cur() != index;
             if select { crate::browse::set_cur(index); }
             if crate::browse::cur() != index { return false; }
-            if choice { crate::browse::note_library_choice(index); }
+            if choice {
+                crate::browse::note_library_choice(index);
+                if switched {
+                    crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
+                        feature: crate::diag::schema::Feature::LibrarySwitch,
+                    });
+                }
+            }
             match query {
                 Some(QueryEdit::Sort { key, desc }) => crate::browse::set_sort_by_key(&key, desc),
                 Some(QueryEdit::Unwatched(on)) => crate::browse::set_unwatched(on),
@@ -122,36 +142,46 @@ pub(crate) fn apply(cmd: BrowseCmd) -> bool {
 pub(super) fn run(cmd: BrowseCmd) -> bool {
     let answer = match cmd {
         BrowseCmd::Addressed { target, work } => addressed(target, work),
+        #[cfg(test)]
         BrowseCmd::SetCur(i) => {
             crate::browse::set_cur(i);
             true
         }
+        #[cfg(test)]
         BrowseCmd::NoteLibraryChoice(i) => {
             crate::browse::note_library_choice(i);
             true
         }
+        #[cfg(test)]
         BrowseCmd::KickLetters => {
             crate::browse::kick_letters();
             true
         }
+        #[cfg(test)]
         BrowseCmd::KickGenres => {
             crate::browse::kick_genres();
             true
         }
+        #[cfg(test)]
         BrowseCmd::Want { lo, hi } => {
             crate::browse::want(lo, hi);
             true
         }
+        #[cfg(test)]
         BrowseCmd::SaveView { focus, scroll } => {
             crate::browse::save_view(focus, scroll);
             true
         }
+        #[cfg(test)]
         BrowseCmd::SetSortByKey { key, desc } => crate::browse::set_sort_by_key(&key, desc),
+        #[cfg(test)]
         BrowseCmd::ToggleUnwatched => {
             crate::browse::toggle_unwatched();
             true
         }
+        #[cfg(test)]
         BrowseCmd::SetGenreById(id) => crate::browse::set_genre_by_id(id.as_deref()),
+        #[cfg(test)]
         BrowseCmd::RetryCurSource => {
             crate::browse::retry_cur_source();
             true
@@ -172,10 +202,12 @@ pub(super) fn run(cmd: BrowseCmd) -> bool {
             crate::browse::reset();
             true
         }
+        #[cfg(test)]
         BrowseCmd::HubsKick(sec) => {
             crate::browse::section_hubs::kick(sec);
             true
         }
+        #[cfg(test)]
         BrowseCmd::HubsCommitStaged { sec, may_move } => crate::browse::section_hubs::commit_staged(sec, may_move),
         BrowseCmd::HubsInvalidateAll => {
             crate::browse::section_hubs::invalidate_all();

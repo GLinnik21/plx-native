@@ -57,6 +57,9 @@
 //! Perf discipline (32-bit A53 + Mali): the grid steps TWO scale springs total (focused +
 //! shrinking previous), culls rows with `on_axis`, and only visible cells call `resolve_tex`
 //! (the 64-slot poster LRU must never see off-screen requests).
+// Runtime ownership is screens/library. Retained temporarily as the legacy assertion corpus
+// while each characterization is ported to the owned screen and real focus engine.
+#![cfg(test)]
 #![allow(non_upper_case_globals)]
 use crate::pms::PmsMovie;
 use crate::ui::card_row::{self, RowStyle};
