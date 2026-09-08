@@ -3379,8 +3379,12 @@ mod tests {
     #[test]
     fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         let _serial = crate::testlock::serial();
+        // Other serialized tests may leave a request pending; serialization is not a reset.
+        // Reproduce that predecessor deterministically rather than depend on suite ordering.
+        begin_detail_request(crate::plex::ServerId::UNSET, "previous-test-request");
+        clear();
         // idle: nothing requested, nothing loading, nothing to pump
-        assert!(!detail_loading(), "a fresh process is not loading anything");
+        assert!(!detail_loading(), "the isolated fixture is not loading anything");
         assert!(!pump_detail(), "an empty mailbox pumps nothing");
 
         // a request is in flight until its landing is pumped
