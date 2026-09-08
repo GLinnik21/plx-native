@@ -138,6 +138,7 @@ fn node(arg: ContentArg) -> Option<Node> {
 
 pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: &Frame) {
     home_requests(app, mt);
+    library_requests(app, mt);
     for (source, request, ret) in app.bridge.take_content_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -252,6 +253,54 @@ fn home_requests(app: &mut App, mt: &crate::task::MainThread) {
 fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: crate::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
     (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
         .find(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk))))
+}
+
+fn library_requests(app: &mut App, mt: &crate::task::MainThread) {
+    use crate::screens::registry::{LibraryReq, LibraryMenuArg};
+    for (source, request, ret) in app.bridge.take_library_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || app.route != Route::Library { continue; }
+        match request {
+            LibraryReq::Menu { kind, anchor, target } => {
+                app.pages.nav.next_style = crate::ui::containers::modal::Style::Compact;
+                app.pages.request(source, NavOp::Present(bridge::AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
+            }
+            LibraryReq::Account => chip_activate(&mut app.route),
+            LibraryReq::BackToHome { kind } => {
+                nav_to(app.route, Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Section(kind)) }, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            LibraryReq::Tab(tab) => {
+                let nav = match tab {
+                    HomeTab::Home => Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Home) },
+                    HomeTab::Movies => Nav::Library(crate::browse::SecKind::Movie),
+                    HomeTab::Shows => Nav::Library(crate::browse::SecKind::Show),
+                    HomeTab::Search => Nav::Search,
+                };
+                nav_to(app.route, nav, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            LibraryReq::ItemMenu { sid, rk, from_deck } => {
+                let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
+                if item.sid != sid || item.rk != rk || !crate::ui::item_menu::has_actions(&item) { continue; }
+                crate::ui::item_menu::open(&item, from_deck, opener);
+                app.bridge.menu_opener = Some((entry, ret.focus));
+                app.route = Route::ItemMenu { over: MenuHost::Library };
+                app.input.press.cancel();
+                app.ok_armed = false;
+            }
+            LibraryReq::Detail { sid, ref rk } | LibraryReq::Play { sid, ref rk, .. } => {
+                let Some((mut item, _)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
+                if item.sid != sid || &item.rk != rk { continue; }
+                let play = matches!(request, LibraryReq::Play { .. });
+                if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
+                unsafe { activate_card(mt, &item, play, HUD_LINGER_MS, &mut app.route, &mut app.play_from,
+                    &app.trail, &mut app.hud.nav, &mut app.nav_pending); }
+                freeze_request(app, Some(entry), ret);
+            }
+        }
+    }
 }
 
 fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {

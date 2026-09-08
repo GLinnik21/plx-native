@@ -30,7 +30,7 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 
 use crate::screens::family::SettingsPage;
-use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, LoopReq, PageMemory};
+use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, LibraryReq, LoopReq, PageMemory};
 use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
@@ -73,6 +73,7 @@ pub(super) struct AppHost;
 /// `decision-alert`, `settings-*`) never press.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum AppArg {
+    LibraryMenu(crate::screens::registry::LibraryMenuArg),
     Legacy(Route),
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
@@ -87,6 +88,7 @@ pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,H
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
         match self {
+            Self::LibraryMenu(arg) => { c.u32(4); arg.write(c); }
             Self::Legacy(route) => {
                 c.u32(0);
                 match route {
@@ -120,6 +122,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
     }
     fn id(&self) -> ScreenId {
         ScreenId(match self {
+            AppArg::LibraryMenu(_) => 15,
             AppArg::Legacy(Route::Login) => 1,
             AppArg::Legacy(Route::Profiles) => 2,
             AppArg::Legacy(Route::Onboard) => 3,
@@ -242,6 +245,12 @@ impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
 }
 
+impl crate::screens::registry::LibraryLike for AppHost {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
+}
+
 // ---------------------------------------------------------------------------------------------
 // the legacy page
 // ---------------------------------------------------------------------------------------------
@@ -360,6 +369,7 @@ impl Mounter<AppHost> for AppMounter {
             _ => EntryId(0),
         };
         match arg {
+            AppArg::LibraryMenu(arg) => Box::new(crate::screens::library::menu::LibraryMenu::new(entry, arg.clone())),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
                 if let PageMemory::Detail(spot) = &ret.memory {
@@ -394,6 +404,13 @@ impl Mounter<AppHost> for AppMounter {
             AppArg::Legacy(Route::Home) => {
                 let mut page = crate::screens::home::HomeScreen::new(entry, id);
                 if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Library) => {
+                let kind = cx.views.directory.current().map(|i| cx.views.directory.sections()[i].kind)
+                    .unwrap_or(crate::browse::SecKind::Movie);
+                let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
+                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
             AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
@@ -453,6 +470,7 @@ pub(super) struct Bridge {
     directory: crate::stores::browse::DirectorySnapshot,
     section_hubs: crate::stores::browse::HubsSnapshot,
     chrome: super::chrome::ChromeSnapshot,
+    chrome_selection: u32,
     legacy_host_live: bool,
     home_commands: std::collections::VecDeque<HomeCmd>,
     consent: ConsentMachine,
@@ -460,6 +478,7 @@ pub(super) struct Bridge {
     reqs: Vec<LoopReq>,
     content_reqs: Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)>,
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
+    library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
     effect_return: ReturnState<u32, PageMemory>,
     pub(super) menu_opener: Option<(EntryId, Option<FocusKey<u32>>)>,
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
@@ -497,12 +516,14 @@ impl Bridge {
             directory,
             section_hubs: crate::stores::browse::hubs_snapshot(),
             chrome: super::chrome::ChromeSnapshot::default(),
+            chrome_selection: 0,
             legacy_host_live: true,
             home_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine,
             reqs: Vec::new(),
             content_reqs: Vec::new(),
             home_reqs: Vec::new(),
+            library_reqs: Vec::new(),
             effect_return: ReturnState::default(),
             menu_opener: None,
             held: Vec::new(),
@@ -520,6 +541,30 @@ impl Bridge {
 
     pub(super) fn take_home_reqs(&mut self) -> Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.home_reqs)
+    }
+
+    pub(super) fn take_library_reqs(&mut self) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
+        std::mem::take(&mut self.library_reqs)
+    }
+
+    pub(super) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+        -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(entry) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+            directory: self.directory.view(), section_hubs: self.section_hubs.view() }, self.measure);
+        let item = page.focused_item(focus, &cx)?.clone();
+        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
+        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+    }
+
+    pub(super) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
+        let Some(entry) = d.nav.top_page() else { return };
+        if entry.arg.route() != Some(Route::Library) { return; }
+        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
     }
 
     pub(super) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
@@ -575,10 +620,13 @@ impl Bridge {
 
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
         self.legacy_host_live = super::host_page_updates(route, false);
-        if matches!(super::page_of(route), Route::Home) {
+        if matches!(super::page_of(route), Route::Home | Route::Library) {
             d.nav.tabs.strip_fallback = Some(crate::screens::home::STRIP_HOME_ELEM);
             self.chrome.refresh(self.measure);
-            let selected = self.navigation_presentation().view_tab.unwrap_or(0) as i32;
+            self.chrome_selection = if super::page_of(route) == Route::Library {
+                self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
+            } else { 0 };
+            let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
             self.chrome.members(selected, Self::home_focus(d), &mut d.nav.tabs.strip);
         } else {
             d.nav.tabs.strip.clear();
@@ -602,7 +650,7 @@ impl Bridge {
     }
 
     pub(super) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
-        let selected = self.navigation_presentation().view_tab.unwrap_or(0) as i32;
+        let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
         crate::ui::widgets::tab_row_update_with(self.chrome.labels(), selected, self.chrome.focus(focus), dt);
         self.chrome.members(selected, focus, &mut d.nav.tabs.strip);
@@ -727,6 +775,8 @@ impl Bridge {
             page.redraw_focused::<AppHost>(&mut frame, focus);
         } else if let Some(page) = screen.downcast_ref::<crate::screens::home::HomeScreen>() {
             page.redraw_focused::<AppHost>(&mut frame, focus);
+        } else if let Some(page) = screen.downcast_ref::<crate::screens::library::LibraryScreen>() {
+            page.redraw_focused::<AppHost>(&mut frame, focus);
         }
     }
 
@@ -800,7 +850,7 @@ impl Drop for Bridge {
 impl Rig<AppHost> for Bridge {
     fn page_updates(&self) -> bool { self.legacy_host_live }
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>, nav: crate::ui::screen::NavPresentation) {
-        if !matches!(arg.route(), Some(Route::Home)) { return; }
+        if !matches!(arg.route(), Some(Route::Home | Route::Library)) { return; }
         let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
         let labels = self.chrome.labels();
         crate::ui::widgets::draw_tab_row_with(labels, p);
@@ -867,6 +917,9 @@ impl Rig<AppHost> for Bridge {
                 crate::stores::browse::discover_pump();
                 Handled::Yes
             }
+            AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
+                crate::stores::browse::BrowseStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+            }
             _ => Handled::No,
         }
     }
@@ -883,6 +936,7 @@ impl Rig<AppHost> for Bridge {
             AppFx::Loop(req) => self.reqs.push(req),
             AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
         }
     }
     fn log(&mut self, line: &str) {
@@ -1670,6 +1724,21 @@ mod tests {
     }
 
     #[test]
+    fn library_publishes_the_actual_container_strip() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let mut bridge = Bridge::for_test(|| 0);
+        bridge.capture_chrome(&mut dispatcher, Route::Library);
+        let base = crate::ui::dispatch::STRIP_BASE;
+        assert_eq!(dispatcher.nav.tabs.strip.iter().map(|member| member.elem).collect::<Vec<_>>(),
+            vec![base + 4, base, base + 1, base + 2, base + 3]);
+        assert_eq!(dispatcher.nav.tabs.strip_fallback, Some(base));
+        crate::browse::reset();
+    }
+
+    #[test]
     fn all_splits_in_one_frame_keep_the_same_library_listing() {
         use crate::ui::dispatch::Rig;
         let _guard = crate::testlock::serial();
@@ -1955,18 +2024,18 @@ mod tests {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         let _ = crate::stores::take_notices();
-        frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+        frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
         let before = crate::stores::gen(StoreId::Search);
         d.emit(
             MachineId::Nav,
             Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
         );
-        frame(&mut d, &mut rig, Route::Library, tick(1), vec![]);
+        frame(&mut d, &mut rig, Route::Search, tick(1), vec![]);
         assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "the store was stepped in the drain");
-        frame(&mut d, &mut rig, Route::Library, tick(2), vec![]);
+        frame(&mut d, &mut rig, Route::Search, tick(2), vec![]);
         assert!(notices(&d).ends_with("notices=1"), "{}", notices(&d));
         crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-        frame(&mut d, &mut rig, Route::Library, tick(3), vec![]);
+        frame(&mut d, &mut rig, Route::Search, tick(3), vec![]);
         assert!(notices(&d).ends_with("notices=2"), "{}", notices(&d));
         let g = crate::stores::gen(StoreId::Search);
         d.emit(
@@ -1976,7 +2045,7 @@ mod tests {
                 Delivery::Machine(AppMsg::Store(StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
             ),
         );
-        frame(&mut d, &mut rig, Route::Library, tick(4), vec![]);
+        frame(&mut d, &mut rig, Route::Search, tick(4), vec![]);
         assert_eq!(crate::stores::gen(StoreId::Search), g);
     }
 

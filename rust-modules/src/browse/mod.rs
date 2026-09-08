@@ -2281,6 +2281,16 @@ pub(crate) fn sort_key_now() -> (String, bool) {
     (key, st.map(|s| s.sort_desc).unwrap_or(false))
 }
 
+/// Apply an explicit unwatched-filter value. A deferred UI transaction carries intent, not a
+/// toggle which could invert a section that changed while the page was fading.
+pub(crate) fn set_unwatched(on: bool) -> bool {
+    let Some(st) = state_mut(cur()) else { return false };
+    if st.unwatched == on { return true; }
+    st.unwatched = on;
+    requery();
+    true
+}
+
 /// Apply a genre by its stable TAG ID rather than by its position, for [`set_sort_by_key`]'s
 /// reason. `None` is "All genres", which needs no lookup.
 pub(crate) fn set_genre_by_id(id: Option<&str>) -> bool {
@@ -2479,6 +2489,13 @@ pub(crate) fn kick_letters() {
 }
 
 // ---- remembered view ------------------------------------------------------------------------
+
+/// Resolve an addressed Library command without leaking a borrowed global section table.
+pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
+    if epoch != table_epoch() { return None; }
+    sections().iter().enumerate().find_map(|(i, section)|
+        (section.key == key && section_sid(i) == Some(sid)).then_some(i))
+}
 
 pub(crate) fn saved_view() -> (usize, f32) {
     cur_state().map(|s| (s.focus, s.scroll)).unwrap_or((0, 0.0))

@@ -22,6 +22,8 @@ pub(crate) fn listing_snapshot() -> ListingSnapshot {
 /// Every mutation of the browse store a screen may ask for.
 #[derive(Clone, Debug)]
 pub(crate) enum BrowseCmd {
+    /// Execute deferred Library work against the source and table epoch captured by the screen.
+    Addressed { target: SectionAddress, work: LibraryWork },
     /// Point the listing at section `i` (a pill or library-row press, committed at the fade floor).
     SetCur(usize),
     /// Remember a library the viewer CHOSE (never a boot settle or a re-point).
@@ -54,6 +56,63 @@ pub(crate) enum BrowseCmd {
 
 pub(crate) struct BrowseStore;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SectionAddress {
+    pub epoch: u32,
+    pub sid: ServerId,
+    pub section: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum QueryEdit {
+    Sort { key: String, desc: bool },
+    Unwatched(bool),
+    Genre(Option<String>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum LibraryWork {
+    /// Selection and query coexist and commit in this order, inside one store delivery.
+    Commit { select: bool, choice: bool, query: Option<QueryEdit> },
+    Want { lo: usize, hi: usize },
+    Letters,
+    Genres,
+    Hubs { may_publish: bool },
+    Retry,
+}
+
+fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
+    let Some(index) = crate::browse::resolve_section(target.epoch, target.sid, target.section) else { return false };
+    match work {
+        LibraryWork::Commit { select, choice, query } => {
+            if select { crate::browse::set_cur(index); }
+            if crate::browse::cur() != index { return false; }
+            if choice { crate::browse::note_library_choice(index); }
+            match query {
+                Some(QueryEdit::Sort { key, desc }) => crate::browse::set_sort_by_key(&key, desc),
+                Some(QueryEdit::Unwatched(on)) => crate::browse::set_unwatched(on),
+                Some(QueryEdit::Genre(id)) => crate::browse::set_genre_by_id(id.as_deref()),
+                None => true,
+            }
+        }
+        LibraryWork::Hubs { may_publish } => {
+            crate::browse::section_hubs::kick(index);
+            crate::browse::section_hubs::commit_staged(index, may_publish)
+        }
+        work => {
+            if crate::browse::cur() != index { return false; }
+            match work {
+                LibraryWork::Want { lo, hi } => crate::browse::want(lo, hi),
+                LibraryWork::Letters => crate::browse::kick_letters(),
+                LibraryWork::Genres => crate::browse::kick_genres(),
+                LibraryWork::Retry => crate::browse::retry_cur_source(),
+                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } => unreachable!(),
+            }
+            true
+        }
+    }
+}
+
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: BrowseCmd) -> bool {
     super::apply(super::StoreCmd::Browse(cmd))
@@ -62,6 +121,7 @@ pub(crate) fn apply(cmd: BrowseCmd) -> bool {
 /// The store's own step, reached only through [`super::apply`].
 pub(super) fn run(cmd: BrowseCmd) -> bool {
     let answer = match cmd {
+        BrowseCmd::Addressed { target, work } => addressed(target, work),
         BrowseCmd::SetCur(i) => {
             crate::browse::set_cur(i);
             true
