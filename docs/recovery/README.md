@@ -27,3 +27,9 @@ the outage. Daytime TV instructions: leave the backlight on, keep audio muted, a
 Source checkpoint: `6f0e1576bee978f66dd4170afa791f12524466bb` on `codex/ui-phase8`.
 The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
 This backup is for recovery, not a completion or release claim.
+
+## Latest outage checkpoint
+
+Source checkpoint: `ad0472c72ef47aa92b3febc7750f2f96dc05831a` on `codex/ui-phase8`.
+The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
+This backup is for recovery, not a completion or release claim.
