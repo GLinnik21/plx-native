@@ -112,7 +112,7 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>);
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
     fn covered_surfaces_ready(&self) -> bool { true }
@@ -361,7 +361,7 @@ pub trait Focusable<H: Host> {
 /// A component that can be focused AND drawn — what `&dyn Focusable` cannot (§7.1).
 pub trait Part<H: Host>: Focusable<H> {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, rect: Rect);
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect);
 }
 
 /// A screen assembled from parts. `part_mut` is the only `&mut` access and it is to a RENDER
@@ -555,7 +555,7 @@ pub fn composed_prepare<H: Host, T: Composed<H>>(s: &mut T, b: &mut Budget, cx: 
     }
 }
 
-pub fn composed_draw<H: Host, T: Composed<H>>(s: &mut T, f: &mut DrawFrame<'_, H>) {
+pub fn composed_draw<H: Host, T: Composed<H>>(s: &mut T, f: &mut DrawFrame<'_, '_, H>) {
     let cx: &Cx<'_, H> = f;
     let layout = s.layout(cx);
     for (id, rect) in layout {
@@ -607,8 +607,8 @@ impl Default for NavPresentation {
 /// What `draw` receives (§6.1): the read context, painter, navigation presentation and typed stop
 /// sink. `stop` folds the painter's cascade into screen space; `clip` is the RAII scissor scope.
 /// Navigation values are captured once by the application/dispatcher, not read live by screens.
-pub struct DrawFrame<'a, H: Host> {
-    pub cx: &'a Cx<'a, H>,
+pub struct DrawFrame<'a, 'views, H: Host> {
+    pub cx: &'a Cx<'views, H>,
     pub painter: Painter,
     pub page_alpha: f32,
     pub chrome_alpha: f32,
@@ -618,12 +618,12 @@ pub struct DrawFrame<'a, H: Host> {
     stops: Vec<Stop<H::Elem>>,
 }
 
-impl<'a, H: Host> DrawFrame<'a, H> {
-    pub fn new(cx: &'a Cx<'a, H>, painter: Painter) -> Self {
+impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
+    pub fn new(cx: &'a Cx<'views, H>, painter: Painter) -> Self {
         Self::with_navigation(cx, painter, NavPresentation::default())
     }
 
-    pub fn with_navigation(cx: &'a Cx<'a, H>, painter: Painter, nav: NavPresentation) -> Self {
+    pub fn with_navigation(cx: &'a Cx<'views, H>, painter: Painter, nav: NavPresentation) -> Self {
         Self {
             cx,
             painter,
@@ -720,8 +720,8 @@ fn apply_scissor(r: Option<Rect>) {
 #[cfg(test)]
 fn apply_scissor(_r: Option<Rect>) {}
 
-impl<'a, H: Host> Deref for DrawFrame<'a, H> {
-    type Target = Cx<'a, H>;
+impl<'a, 'views, H: Host> Deref for DrawFrame<'a, 'views, H> {
+    type Target = Cx<'views, H>;
     fn deref(&self) -> &Self::Target {
         self.cx
     }

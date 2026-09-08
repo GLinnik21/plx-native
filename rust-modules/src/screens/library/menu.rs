@@ -618,7 +618,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
         Glass::CACHED.prepare(&mut self.glass, false);
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         Glass::CACHED.panel(p, self.frame(), 0.0, PANEL_RADIUS);
         self.table.draw(p, self.frame());
@@ -740,7 +740,7 @@ mod tests {
             },
             tick: Tick::default(),
             measure: &measure,
-            focus: FocusRead { current: None },
+            focus: FocusRead { current: None , ..Default::default() },
             press: PressRead::default(),
             owner: InputOwner::Entry(EntryId(7)),
         })

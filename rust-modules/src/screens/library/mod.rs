@@ -859,7 +859,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>) { self.pair.prepare(b, cx); }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) { self.draw_page(f); }
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) { self.draw_page(f); }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn memory(&self) -> PageMemory {
         PageMemory::Library(self.page_memory())

@@ -508,7 +508,7 @@ impl Fixture {
     }
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
-            tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus },
+            tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus , ..Default::default() },
             press: PressRead::default(), owner: OWNER }
     }
     fn screen(&self) -> LibraryScreen {

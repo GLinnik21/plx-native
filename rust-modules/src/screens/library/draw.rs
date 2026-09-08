@@ -30,7 +30,7 @@ mod layer_tests {
 }
 
 impl LibraryScreen {
-    pub(super) fn draw_page<H: LibraryLike>(&mut self, f: &mut DrawFrame<'_, H>) {
+    pub(super) fn draw_page<H: LibraryLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         let layout = self.pair.layout();
@@ -50,7 +50,7 @@ impl LibraryScreen {
         });
     }
 
-    fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
+    fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         let source_chip = self.source_chip(f.cx);
@@ -110,7 +110,7 @@ impl LibraryScreen {
         self.record_document_stops(f);
     }
 
-    fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
+    fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         for (index, (elem, _)) in self.libraries.iter().enumerate() {
             let rect = self.library_rect(index, f.cx);
             if on_axis(rect.y, rect.h, SCR_H, 0.0) { self.stop(*elem, f); }
@@ -128,7 +128,7 @@ impl LibraryScreen {
 
     /// The production stop producers without rasterization, for the no-SDL dispatcher fixture.
     #[cfg(test)]
-    pub(crate) fn record_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>) {
+    pub(crate) fn record_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         layers(|layer| match layer {
             Layer::Grid => self.pair.detail.record_stops(f),
             Layer::Document => self.record_document_stops(f),
@@ -136,7 +136,7 @@ impl LibraryScreen {
         });
     }
 
-    fn stop<H: LibraryLike>(&self, elem: u32, f: &mut DrawFrame<'_, H>) {
+    fn stop<H: LibraryLike>(&self, elem: u32, f: &mut DrawFrame<'_, '_, H>) {
         let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { return };
         f.stop(f.painter, Stop {
             key: self.key(elem), rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,
@@ -144,7 +144,7 @@ impl LibraryScreen {
         });
     }
 
-    fn draw_shelf_tile<H: LibraryLike>(&self, row: usize, col: usize, focused: bool, f: &DrawFrame<'_, H>) {
+    fn draw_shelf_tile<H: LibraryLike>(&self, row: usize, col: usize, focused: bool, f: &DrawFrame<'_, '_, H>) {
         let Some(shelf) = H::section_hubs(f.cx).shelves().get(row) else { return };
         let Some(item) = shelf.items.get(col) else { return };
         let model = &self.shelves[row];
@@ -167,7 +167,7 @@ impl LibraryScreen {
         }
     }
 
-    pub(crate) fn redraw_focused<H: LibraryLike>(&self, f: &mut DrawFrame<'_, H>, focus: Option<FocusKey<u32>>) {
+    pub(crate) fn redraw_focused<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         let Some(key) = focus.filter(|key| key.entry == self.entry) else { return };
         let Some(placed) = <Self as Focusable<H>>::place(self, &key.elem, f.cx, At::Drawn) else { return };
         let _clip = f.clip(f.painter, placed.clip);
@@ -185,7 +185,7 @@ impl LibraryScreen {
     }
 }
 
-fn draw_faded_part_at<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame<'_, H>, rect: Rect, alpha: f32) {
+fn draw_faded_part_at<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame<'_, '_, H>, rect: Rect, alpha: f32) {
     let parent = f.page_alpha;
     f.page_alpha = parent * alpha;
     part.draw(f, rect);

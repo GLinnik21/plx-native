@@ -18,11 +18,16 @@
 //! promotion is exactly this); (7) scope: the input owner's groups only.
 
 use std::hash::Hash;
+use std::sync::Arc;
 
 use super::machine::{Canon, EntryId, FocusKey, GroupId, Host, InputOwner};
 use super::screen::{At, By, Dir, EdgeRule, ElemKind, Focusable, FocusTarget, GroupSpec, Link, Placed, Seat, Step};
 use super::Rect;
 use super::machine::Cx;
+
+#[cfg(test)]
+#[path = "focus_snapshot_tests.rs"]
+mod snapshot_tests;
 
 /// What a direction did (§7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +49,9 @@ pub enum Outcome<K> {
 pub struct FocusEngine<K> {
     scopes: Vec<(InputOwner, FocusKey<K>, Option<GroupId>)>,
     remembered: Vec<((EntryId, GroupId), K)>,
+    /// Derived read projections; canonical state remains the ordered memory above.
+    read_snapshots: Vec<(EntryId, Arc<[(GroupId, K)]>)>,
+    empty_snapshot: Arc<[(GroupId, K)]>,
     /// The engine's last-resort fallback (group policy → first) fired: logged once.
     fell_back: bool,
 }
@@ -59,6 +67,8 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
         Self {
             scopes: Vec::new(),
             remembered: Vec::new(),
+            read_snapshots: Vec::new(),
+            empty_snapshot: Arc::from([]),
             fell_back: false,
         }
     }
@@ -66,6 +76,17 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
     /// The current focus of a scope.
     pub fn current(&self, owner: InputOwner) -> Option<FocusKey<K>> {
         self.scopes.iter().find(|(o, _, _)| *o == owner).map(|(_, k, _)| *k)
+    }
+
+    /// Read-only context for exactly this input scope. System ownership exposes no page history.
+    pub fn read(&self, owner: InputOwner) -> super::machine::FocusRead<K> {
+        super::machine::FocusRead {
+            current: self.current(owner),
+            remembered: match owner {
+                InputOwner::Entry(entry) => self.remembered_snapshot(entry),
+                _ => self.empty_snapshot.clone(),
+            },
+        }
     }
 
     /// The group the current focus was seated in, when known (what a recording carries so a
@@ -77,9 +98,11 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
     fn remember(&mut self, key: FocusKey<K>, group: GroupId) {
         let id = (key.entry, group);
         match self.remembered.iter_mut().find(|(g, _)| *g == id) {
+            Some((_, k)) if *k == key.elem => return,
             Some((_, k)) => *k = key.elem,
             None => self.remembered.push((id, key.elem)),
         }
+        self.refresh_snapshot(key.entry);
     }
 
     /// Dispatcher-validated master/detail projection; never changes the current scope or key.
@@ -98,8 +121,24 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
         self.remembered.iter().filter_map(|((e, g), k)| (*e == entry).then_some((*g, *k))).collect()
     }
 
+    /// Immutable, entry-scoped read projection for screen context.
+    pub fn remembered_snapshot(&self, entry: EntryId) -> Arc<[(GroupId, K)]> {
+        self.read_snapshots.iter().find(|(e, _)| *e == entry)
+            .map_or_else(|| self.empty_snapshot.clone(), |(_, snapshot)| snapshot.clone())
+    }
+
+    fn refresh_snapshot(&mut self, entry: EntryId) {
+        let snapshot = self.remembered_for(entry).into();
+        if let Some((_, old)) = self.read_snapshots.iter_mut().find(|(e, _)| *e == entry) {
+            *old = snapshot;
+        } else {
+            self.read_snapshots.push((entry, snapshot));
+        }
+    }
+
     pub fn restore_remembered(&mut self, entry: EntryId, saved: &[(GroupId, K)]) {
         self.remembered.retain(|((e, _), _)| *e != entry);
+        self.read_snapshots.retain(|(e, _)| *e != entry);
         for &(group, elem) in saved {
             self.remember(FocusKey { entry, elem }, group);
         }
@@ -135,6 +174,7 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
         self.scopes
             .retain(|(o, k, _)| !(k.entry == entry || *o == InputOwner::Entry(entry)));
         self.remembered.retain(|((e, _), _)| *e != entry);
+        self.read_snapshots.retain(|(e, _)| *e != entry);
     }
 
     /// Seat focus on entering a screen (§3.4 `Enter`): a fresh enter lands by the target — an

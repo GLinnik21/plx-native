@@ -416,7 +416,7 @@ where
         self.detail.prepare(budget, cx);
     }
 
-    fn draw(&mut self, frame: &mut DrawFrame<'_, H>, _rect: Rect) {
+    fn draw(&mut self, frame: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         self.master.draw(frame, self.layout.master);
         self.detail.draw(frame, self.layout.detail);
     }
@@ -620,7 +620,7 @@ mod tests {
             self.prepared += 1;
         }
 
-        fn draw(&mut self, _frame: &mut DrawFrame<'_, FixtureHost>, rect: Rect) {
+        fn draw(&mut self, _frame: &mut DrawFrame<'_, '_, FixtureHost>, rect: Rect) {
             self.drawn.push(rect);
         }
     }

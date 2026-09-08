@@ -53,7 +53,7 @@ fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) ->
                 entry: EntryId(7),
                 elem,
             }),
-        },
+        ..Default::default() },
         owner: crate::ui::machine::InputOwner::Entry(EntryId(7)),
     }
 }

@@ -704,7 +704,7 @@ impl HomeScreen {
             press: cx.press,
             focus: crate::ui::machine::FocusRead {
                 current: visible_focus,
-            },
+            ..Default::default() },
             owner: cx.owner,
         };
         self.update_grid(view, &visible_cx, dt);
@@ -947,7 +947,7 @@ impl HomeScreen {
         }
     }
 
-    fn draw_page<H: HomeLike>(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw_page<H: HomeLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let view = H::hubs(f.cx);
         let visible_focus = self.visible_focus(f.focus.current);
@@ -1191,7 +1191,7 @@ impl HomeScreen {
         overlay.draw(env, p);
     }
 
-    pub(crate) fn record_stops<H: HomeLike>(&self, f: &mut DrawFrame<'_, H>, view: HubsView<'_>) {
+    pub(crate) fn record_stops<H: HomeLike>(&self, f: &mut DrawFrame<'_, '_, H>, view: HubsView<'_>) {
         let focus = f.focus.current;
         let status = status_read(view);
         let hero_len = if status.is_some() {
@@ -1303,7 +1303,7 @@ impl HomeScreen {
 
     pub(crate) fn redraw_focused<H: HomeLike>(
         &self,
-        f: &mut DrawFrame<'_, H>,
+        f: &mut DrawFrame<'_, '_, H>,
         focus: Option<FocusKey<u32>>,
     ) {
         let Some(key) = focus.filter(|k| k.entry == self.entry) else {
@@ -1847,7 +1847,7 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
         None
     }
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         self.draw_page(f);
     }
     fn render(&self) -> RenderStrategy {

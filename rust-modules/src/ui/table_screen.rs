@@ -109,7 +109,7 @@ where
 
 impl<H: Host> Part<H> for Header<'_> {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, _rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         self.paint(f.painter);
     }
 }
@@ -188,7 +188,7 @@ where
     H::Elem: IndexElem,
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
         let p = f.painter;
         self.frame = rect;
         self.paint(p);
@@ -342,7 +342,7 @@ where
     H::Elem: IndexElem,
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, _rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         let p = f.painter;
         let focused = f.focus.current.and_then(|k| k.elem.index()).and_then(|e| e.checked_sub(BAND_BASE));
         let rects = self.rects(f.measure);
@@ -485,7 +485,7 @@ where
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>) {
         composed_prepare(self, b, cx)
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, _rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         composed_draw(self, f)
     }
 }
@@ -592,7 +592,7 @@ where
     H::Elem: IndexElem,
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
         let p = f.painter;
         self.frame = rect;
         self.paint(p);
@@ -694,7 +694,7 @@ where
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>) {
         composed_prepare(self, b, cx)
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, _rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
         composed_draw(self, f)
     }
 }

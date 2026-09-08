@@ -319,7 +319,7 @@ impl DetailScreen {
 
     pub(crate) fn redraw_focused<H: ContentLike>(
         &self,
-        f: &mut DrawFrame<'_, H>,
+        f: &mut DrawFrame<'_, '_, H>,
         focus: Option<FocusKey<u32>>,
     ) {
         let Some(d) = self.detail() else { return };
@@ -1171,7 +1171,7 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
 
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter;
         let d = self.detail();
@@ -1598,7 +1598,7 @@ impl DetailScreen {
             );
     }
 
-    fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, H>) {
+    fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let mut elems = Vec::new();
         let set = self.hero_set();
         let (controls, n) = hero::hero_ctls(set);

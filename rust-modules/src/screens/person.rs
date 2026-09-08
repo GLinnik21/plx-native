@@ -1010,7 +1010,7 @@ impl PersonScreen {
     /// argument so this migration query cannot revive the old screen-local cursor.
     pub(crate) fn redraw_focused<H: ContentLike>(
         &self,
-        f: &mut DrawFrame<'_, H>,
+        f: &mut DrawFrame<'_, '_, H>,
         focus: Option<crate::ui::machine::FocusKey<u32>>,
     ) {
         let Some(key) = focus.filter(|k| k.entry == self.entry) else {
@@ -1672,7 +1672,7 @@ impl<H: ContentLike> Screen<H> for PersonScreen {
         None
     }
     fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let cur = f.focus.current.map(|k| k.elem);
         let env = Env::inert();
@@ -1774,7 +1774,7 @@ impl PersonScreen {
     /// need one, mirroring `screens::login::LoginScreen::draw_readout`'s single `f.stop(...)`.
     fn record_stops<H: ContentLike>(
         &self,
-        f: &mut DrawFrame<'_, H>,
+        f: &mut DrawFrame<'_, '_, H>,
         person: &Person,
         cur: Option<u32>,
     ) {
@@ -1883,7 +1883,7 @@ mod tests {
         Cx {
             focus: FocusRead {
                 current: Some(focus),
-            },
+            ..Default::default() },
             ..cx(m)
         }
     }
@@ -2142,7 +2142,7 @@ mod tests {
             press: PressRead::default(),
             focus: FocusRead {
                 current: Some(focus_of(&s, 0, 0)),
-            },
+            ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         };
         {
@@ -2813,7 +2813,7 @@ mod tests {
                 tick: Tick::default(),
                 measure: &measure,
                 press: PressRead::default(),
-                focus: FocusRead { current: focus },
+                focus: FocusRead { current: focus , ..Default::default() },
                 owner: InputOwner::Entry(screen.entry),
             };
             let mut fx = Effects::new(

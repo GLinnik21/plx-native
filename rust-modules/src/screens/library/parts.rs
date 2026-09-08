@@ -152,7 +152,7 @@ impl GridPart {
         (lo.saturating_mul(COLS), hi.saturating_mul(COLS).min(self.elems.len()))
     }
 
-    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, H>) {
+    pub(super) fn record_stops<H: LibraryLike>(&self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
         let (lo, hi) = self.visible_window();
         for index in lo..hi {
             let elem = self.elems[index];
@@ -163,7 +163,7 @@ impl GridPart {
         }
     }
 
-    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &crate::ui::screen::DrawFrame<'_, H>, focus: Option<FocusKey<u32>>) {
+    pub(super) fn draw_focused<H: LibraryLike>(&self, f: &crate::ui::screen::DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         let Some(index) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.index_of(key.elem)) else { return };
         let Some(item) = H::listing(f.cx).item(index) else { return };
         let p = f.painter.alpha(f.page_alpha);
@@ -267,7 +267,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
 impl<H: LibraryLike> Part<H> for GridPart {
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
-    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, H>, _rect: Rect) {
+    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>, _rect: Rect) {
         let view = H::listing(f.cx);
         let focus = f.focus.current.filter(|key| key.entry == self.entry);
         let (lo, hi) = self.visible_window();
