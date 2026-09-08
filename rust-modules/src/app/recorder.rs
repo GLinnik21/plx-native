@@ -771,7 +771,8 @@ mod tests {
         // This is a schema pin, not a fixture rebaseline: older shapes must still be refused.
         // Rail viewport/presence springs and their target now join the owned Library shape.
         // No recording or anchor is rewritten: the previous shape remains incompatible.
-        assert_eq!(state_fp(), 0x4e0e_6e1c_cc3b_14d5);
+        // The open Filter menu now records its immediate, not-yet-committed desired value.
+        assert_eq!(state_fp(), 0x4dc7_8286_b661_ad5b);
     }
 
     #[test]

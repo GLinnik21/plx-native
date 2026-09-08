@@ -2,6 +2,8 @@
 //! a frame can keep this publication across page arrivals, re-queries and account resets.
 //! Source rosters and section hubs are separate publications, not implied by this view.
 
+use std::ops::Range;
+
 use super::{Arc, GenreEntry, SecFetch, SecItems, ServerId, SortEntry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +47,23 @@ impl ListingSnapshot {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_total(mut self, total: usize) -> Self {
+        if let Some(data) = &mut self.data { data.total = total as i64; data.items.resize(total); }
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_page(mut self, start: usize, items: Vec<crate::pms::PmsMovie>) -> Self {
+        if let Some(data) = &mut self.data {
+            for (offset, item) in items.into_iter().enumerate() { data.items.set(start + offset, item); }
+        }
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn absent() -> Self { Self { data: None } }
+
     pub(crate) fn view(&self) -> ListingView<'_> {
         ListingView(self)
     }
@@ -75,6 +94,16 @@ impl<'a> ListingView<'a> {
             (None, None) => true,
             _ => false,
         }
+    }
+    /// Changed immutable page handles for the same listing identity and total. Comparing the
+    /// table is O(total / PAGE); visiting the returned ranges is O(changed page slots).
+    pub(crate) fn changed_page_ranges<'b>(self, other: ListingView<'b>)
+        -> Option<ChangedPageRanges<'a, 'b>> {
+        let (current, previous) = (self.0.data.as_ref()?, other.0.data.as_ref()?);
+        (current.id == previous.id && current.total == previous.total).then_some(ChangedPageRanges {
+            current: &current.items, previous: &previous.items, page: 0,
+            total: current.total.max(0) as usize,
+        })
     }
     pub(crate) fn id(self) -> Option<ListingId> {
         self.0.data.as_ref().map(|s| s.id)
@@ -128,6 +157,37 @@ impl<'a> ListingView<'a> {
             .take(index)
             .map(|(_, n)| (*n).max(0) as usize)
             .fold(0usize, usize::saturating_add)
+    }
+}
+
+pub(crate) struct ChangedPageRanges<'a, 'b> {
+    current: &'a SecItems,
+    previous: &'b SecItems,
+    page: usize,
+    total: usize,
+}
+
+impl Iterator for ChangedPageRanges<'_, '_> {
+    type Item = Range<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let pages = self.total.div_ceil(super::PAGE);
+        while self.page < pages {
+            let page = self.page;
+            self.page += 1;
+            let current = self.current.pages.get(page).and_then(Option::as_ref);
+            let previous = self.previous.pages.get(page).and_then(Option::as_ref);
+            let same = match (current, previous) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            };
+            if !same {
+                let start = page * super::PAGE;
+                return Some(start..(start + super::PAGE).min(self.total));
+            }
+        }
+        None
     }
 }
 
@@ -323,6 +383,20 @@ impl<'a> DirectoryView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listing_page_delta_names_only_the_replaced_immutable_page() {
+        let sid = ServerId::from_raw(0);
+        let movie = |i| crate::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() };
+        let first = ListingSnapshot::fixture(sid,
+            (0..super::super::PAGE).map(|i| Some(movie(i))).collect(), Vec::new())
+            .with_total(10_000);
+        let second = first.clone().with_page(super::super::PAGE,
+            (super::super::PAGE..super::super::PAGE * 2).map(movie).collect());
+        assert_eq!(second.view().changed_page_ranges(first.view()).unwrap().collect::<Vec<_>>(),
+            vec![super::super::PAGE..super::super::PAGE * 2]);
+        assert!(second.view().changed_page_ranges(second.view()).unwrap().next().is_none());
+    }
 
     #[test]
     fn directory_retains_identity_and_refreshes_prose_only_on_change() {

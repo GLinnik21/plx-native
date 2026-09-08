@@ -56,6 +56,8 @@ impl PendingTransactions {
         self.grid = Some((target, action));
     }
 
+    pub(super) fn cancel_grid(&mut self) { self.grid = None; }
+
     pub(super) fn take_section(&mut self, epoch: u32) -> Option<SectionTarget> {
         self.section.take().filter(|target| target.epoch == epoch)
     }

@@ -599,6 +599,12 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     QueryEdit::Unwatched(desired) => GridAction::Unwatched { desired: *desired },
                     QueryEdit::Genre(id) => GridAction::Genre { id: id.clone() },
                 };
+                if matches!(&action, GridAction::Unwatched { desired } if *desired == H::listing(cx).unwatched())
+                    && self.pending.section().is_none() && self.address(cx) == Some(target)
+                    && self.grid_fade.cancel() {
+                    self.pending.cancel_grid();
+                    return Handled::Yes;
+                }
                 self.pending.request_grid(GridTarget { epoch: target.epoch, sid: target.sid, section: target.section, query: self.query.unwrap_or(0) }, action);
                 self.grid_fade.reload();
             }
@@ -701,6 +707,11 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, false, cx, fx));
             }
             ScreenEvent::Input(input) => {
+                if matches!(input.kind, InputKind::Key { key: Key::Ok, edge: Edge::Down, .. })
+                    && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
+                    self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
+                    return Handled::Yes;
+                }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * layout::GRID_PITCH)
                         .clamp(0.0, self.target_layout.max_scroll());
@@ -715,6 +726,10 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 if let InputKind::Key { key: Key::Back, edge: Edge::Down, .. } = input.kind {
                     let cancelled = self.page_fade.cancel() | self.grid_fade.cancel();
                     if cancelled { self.pending.cancel(); return Handled::Yes; }
+                    if cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
+                        self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
+                        return Handled::Yes;
+                    }
                     if self.scroll_target > 0.5 {
                         self.scroll_target = 0.0;
                         self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx);

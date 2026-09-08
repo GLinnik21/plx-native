@@ -41,6 +41,76 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page() {
+    let _guard = crate::testlock::serial();
+    const TOTAL: usize = 10_000;
+    const PAGE: usize = 60;
+    let mut fixture = Fixture::new();
+    let sid = crate::plex::ServerId::from_raw(0);
+    let movies = |start: usize| (start..start + PAGE).map(|i| crate::pms::PmsMovie {
+        sid, rk: format!("large-{i}"), title: format!("Large {i}"), ..Default::default()
+    }).collect::<Vec<_>>();
+    fixture.listing = crate::browse::view::ListingSnapshot::fixture(
+        sid, movies(0).into_iter().map(Some).collect(), Vec::new()).with_total(TOTAL);
+
+    let mut page = fixture.screen();
+    let (initial_slots, initial_known) = page.pair.detail.publication_ops();
+    let initial_registry = page.keys.register_probes();
+    page.pair.detail.reset_publication_ops();
+    page.keys.reset_register_probes();
+
+    fixture.listing = fixture.listing.clone().with_page(PAGE, movies(PAGE));
+    page.sync(&fixture.cx(None));
+    let (next_slots, next_known) = page.pair.detail.publication_ops();
+    let next_registry = page.keys.register_probes();
+    eprintln!("publication-ops initial slots={initial_slots} known={initial_known} registry={initial_registry}; next slots={next_slots} known={next_known} registry={next_registry}");
+
+    assert!(initial_slots == TOTAL && initial_known <= TOTAL && initial_registry <= TOTAL + 128
+        && next_slots == PAGE && next_known <= PAGE && next_registry <= PAGE + 128,
+        "publication work must be linear initially and page-bounded later: initial slots={initial_slots} known={initial_known} registry={initial_registry}; next slots={next_slots} known={next_known} registry={next_registry}");
+}
+
+#[test]
+fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let original = fixture.listing.clone();
+    let mut page = fixture.screen();
+    let stable = page.pair.detail.elem_at(5).unwrap();
+    let removed = page.pair.detail.elem_at(30).unwrap();
+
+    let mut reordered = (0..36).map(|i| original.view().item(i).unwrap().clone()).collect::<Vec<_>>();
+    reordered.swap(5, 17);
+    fixture.listing = fixture.listing.clone().with_page(0, reordered);
+    page.sync(&fixture.cx(None));
+    assert_eq!(page.pair.detail.elem_at(17), Some(stable));
+    assert_eq!(page.pair.detail.index_of(stable), Some(17), "a same-query reorder follows the stable item key");
+
+    fixture.listing = fixture.listing.clone().with_total(10);
+    page.sync(&fixture.cx(None));
+    assert_eq!(page.pair.detail.index_of(stable), None);
+    assert_eq!(page.pair.detail.index_of(removed), None);
+    assert_eq!(page.pair.detail.fallback_for(stable), page.pair.detail.elem_at(9));
+    assert_eq!(page.pair.detail.fallback_for(removed), page.pair.detail.elem_at(9),
+        "a truncated item falls back through its last published slot");
+
+    let memory = page.page_memory();
+    fixture.listing = crate::browse::view::ListingSnapshot::absent();
+    page.sync(&fixture.cx(None));
+    assert!(page.pair.detail.elems.is_empty());
+    assert_eq!(page.pair.detail.index_of(stable), None);
+
+    fixture.listing = original.with_total(10);
+    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(None));
+    assert_eq!(restored.pair.detail.elem_at(5), Some(stable),
+        "restore rebuilds lookup indexes and reuses the stable item key");
+    assert_eq!(restored.pair.detail.index_of(stable), Some(5));
+    assert_eq!(restored.pair.detail.fallback_for(removed), restored.pair.detail.elem_at(9));
+}
+
+#[test]
 fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();

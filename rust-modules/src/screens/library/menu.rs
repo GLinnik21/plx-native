@@ -1,4 +1,7 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
+#[cfg(test)]
+#[path = "review_actions_tests.rs"]
+mod review_actions_tests;
 use crate::browse::{GenreEntry, SortEntry, SrcGroup, SrcRow};
 use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
@@ -22,7 +25,7 @@ use std::borrow::Cow;
 const PANEL_RADIUS: f32 = 20.0;
 
 pub(crate) const SHAPE: [&str; 2] = [
-    "LibraryMenu{arg:LibraryMenuArg,kind:u32,identities:[str],dependencies:[u8],rows:[{key:u32,table_index:i32}],table:TableViewMotion}",
+    "LibraryMenu{arg:LibraryMenuArg,kind:u32,desired_unwatched:Option<bool>,identities:[str],dependencies:[u8],rows:[{key:u32,table_index:i32}],table:TableViewMotion}",
     TableView::MOTION_SHAPE,
 ];
 
@@ -309,6 +312,7 @@ pub(crate) struct LibraryMenu {
     table: TableView,
     stamp: Vec<u8>,
     glass: GlassState,
+    desired_unwatched: Option<bool>,
 }
 
 impl LibraryMenu {
@@ -322,6 +326,7 @@ impl LibraryMenu {
             table: TableView::new(),
             stamp: Vec::new(),
             glass: GlassState::new(),
+            desired_unwatched: None,
         }
     }
     fn frame(&self) -> Rect {
@@ -345,6 +350,9 @@ impl LibraryMenu {
 
     fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let listing = H::listing(cx);
+        if self.desired_unwatched == Some(listing.unwatched()) {
+            self.desired_unwatched = None;
+        }
         let draft = self.draft(listing, H::directory(cx));
         self.apply_draft(draft);
     }
@@ -394,7 +402,7 @@ impl LibraryMenu {
                 return sort_draft(listing.sorts(), listing.sort_index(), listing.sort_desc());
             }
             LibraryMenuKind::Filter => {
-                return filter_draft(listing.unwatched(), listing.genre());
+                return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre());
             }
             LibraryMenuKind::Genre => {
                 return genre_draft(listing.genres(), listing.genre());
@@ -446,6 +454,10 @@ impl LibraryMenu {
                 self.refresh(cx);
             }
             Action::Edit(edit) => {
+                if let QueryEdit::Unwatched(desired) = &edit {
+                    self.desired_unwatched = Some(*desired);
+                    self.refresh(cx);
+                }
                 let close = !matches!(edit, QueryEdit::Unwatched(_));
                 fx.push(Fx::Deliver(
                     MachineId::Instance(self.arg.host),
@@ -649,6 +661,7 @@ impl LogicalState for LibraryMenu {
     fn write(&self, c: &mut Canon) {
         self.arg.write(c);
         c.u32(self.kind as u32);
+        c.option(self.desired_unwatched.as_ref(), |c, desired| { c.bool(*desired); });
         c.seq(self.identities.len());
         for identity in &self.identities {
             c.str(identity);
