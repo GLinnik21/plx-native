@@ -239,7 +239,7 @@ impl Part<FixtureHost> for FixtureRow {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {
         self.prepared += 1;
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>, rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>, rect: Rect) {
         self.drawn += 1;
         let p = f.painter;
         for i in 0..self.len as u32 {
@@ -435,7 +435,7 @@ impl Screen<FixtureHost> for FixtureScreen {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, FixtureHost>) {
         composed_prepare(self, b, cx);
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         composed_draw(self, f);
     }
     fn render(&self) -> RenderStrategy {
@@ -636,7 +636,7 @@ impl Screen<FixtureHost> for FixtureModal {
         Some(Cow::Borrowed("Settings"))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.last_draw_alpha = f.page_alpha;
         self.last_navigation = super::screen::NavPresentation {
             page_alpha: f.page_alpha, chrome_alpha: f.chrome_alpha,

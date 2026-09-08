@@ -207,7 +207,7 @@ impl Screen<InnerHost> for LegalIndex {
         Some(Cow::Borrowed(CRUMB_SETTINGS))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let mut v = self.view();
         Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
     }
@@ -372,7 +372,7 @@ impl Screen<InnerHost> for DocumentPage {
         Some(Cow::Borrowed(self.crumb))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let Self { reader, crumb, title, subtitle, body, entry, .. } = self;
         let mut v = DocumentScreen::new(
             Header::new(RouteLayout::screen(), Some(crumb), title, subtitle),
@@ -597,7 +597,7 @@ mod tests {
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }

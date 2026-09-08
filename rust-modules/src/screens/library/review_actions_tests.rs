@@ -112,7 +112,10 @@ impl Fixture {
             },
             tick: Tick::default(),
             measure: &self.measure,
-            focus: FocusRead { current: focus },
+            focus: FocusRead {
+                current: focus,
+                ..Default::default()
+            },
             press: PressRead::default(),
             owner: OWNER,
         }
@@ -121,6 +124,193 @@ impl Fixture {
         let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
         page.sync(&self.cx(None));
         page
+    }
+}
+
+#[test]
+fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = fixture.listing.clone().with_cursor(crate::browse::Cursor {
+        at: crate::browse::CursorAt::SlotIndex(17),
+        scroll: 900.0,
+    });
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let grid = page.key(page.pair.detail.elems[5]);
+    engine.set(
+        OWNER,
+        grid,
+        Some(page.pair.groups_config().detail),
+        By::Restore,
+    );
+    engine.set(OWNER, page.key(SORT), Some(TOOLBAR_GROUP), By::Restore);
+    let mut cx = fixture.cx(engine.current(OWNER));
+    cx.focus = engine.read(OWNER);
+    let mut output = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    assert!(page.seed_cursor(
+        &cx,
+        &mut Effects::new(
+            &mut output,
+            MachineId::Instance(InstanceId(19)),
+            &mut present
+        )
+    ));
+    assert!(
+        output.is_empty(),
+        "a stale store bookmark cannot overwrite engine group memory"
+    );
+    page.save_cursor(
+        &cx,
+        &mut Effects::new(
+            &mut output,
+            MachineId::Instance(InstanceId(19)),
+            &mut present,
+        ),
+    );
+    assert!(output.iter().any(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Browse(BrowseCmd::Addressed {
+            work: LibraryWork::SaveCursor(crate::browse::Cursor {
+                at: crate::browse::CursorAt::ItemKey { rk, slot: 5, .. }, ..
+            }), ..
+        }))) if rk == "6")));
+}
+
+#[test]
+fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let saved = crate::browse::Cursor {
+        at: crate::browse::CursorAt::ItemKey {
+            sid: crate::plex::ServerId::from_raw(0),
+            rk: "18".into(),
+            slot: 17,
+        },
+        scroll: 900.0,
+    };
+    let loaded = fixture.listing.clone().with_cursor(saved.clone());
+    fixture.listing = crate::browse::view::ListingSnapshot::fixture(
+        crate::plex::ServerId::from_raw(0),
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_cursor(saved)
+    .with_fetch(SecFetch::Loading, -1);
+    // Two favorite rows make the document's first block available before its grid arrives.
+    let mut sections = fixture.directory.view().sections().to_vec();
+    sections.push(crate::browse::view::SectionView {
+        borrowed: true,
+        sid: Some(crate::plex::ServerId::from_raw(1)),
+        key: 2,
+        kind: SecKind::Movie,
+        row: crate::browse::SrcRow {
+            section: 1,
+            title: "Shared".into(),
+            pinned: true,
+            ..Default::default()
+        },
+    });
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+    let mut page = fixture.screen();
+    let mut output = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.step(
+        &ScreenEvent::Tick(Tick::default()),
+        &fixture.cx(None),
+        &mut Effects::new(
+            &mut output,
+            MachineId::Instance(InstanceId(19)),
+            &mut present,
+        ),
+    );
+    assert!(
+        page.initial,
+        "a visible source row must not consume an unplaceable grid bookmark"
+    );
+    fixture.listing = loaded;
+    output.clear();
+    page.step(
+        &ScreenEvent::Tick(Tick::default()),
+        &fixture.cx(None),
+        &mut Effects::new(
+            &mut output,
+            MachineId::Instance(InstanceId(19)),
+            &mut present,
+        ),
+    );
+    assert!(!page.initial);
+    assert!(output.iter().any(|effect| matches!(effect.fx, Fx::Remember { elem, .. } if elem == page.pair.detail.elems[17])));
+}
+
+#[test]
+fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut sections = fixture.directory.view().sections().to_vec();
+    sections.push(crate::browse::view::SectionView {
+        borrowed: false,
+        sid: Some(crate::plex::ServerId::from_raw(0)),
+        key: 2,
+        kind: SecKind::Show,
+        row: crate::browse::SrcRow {
+            section: 1,
+            title: "Series".into(),
+            pinned: true,
+            ..Default::default()
+        },
+    });
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+    let mut page = fixture.screen();
+    let cx = fixture.cx(None);
+    let mut output = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.command(
+        LibraryCmd::SwitchStep(0),
+        &cx,
+        &mut Effects::new(
+            &mut output,
+            MachineId::Instance(InstanceId(19)),
+            &mut present,
+        ),
+    );
+    assert_eq!(page.wanted_kind, Some(SecKind::Show));
+    page.command(
+        LibraryCmd::SwitchStep(1),
+        &cx,
+        &mut Effects::new(
+            &mut output,
+            MachineId::Instance(InstanceId(19)),
+            &mut present,
+        ),
+    );
+    for (step, kind) in [(2, LibraryMenuKind::Sort), (7, LibraryMenuKind::Filter)] {
+        output.clear();
+        page.command(
+            LibraryCmd::SwitchStep(step),
+            &cx,
+            &mut Effects::new(
+                &mut output,
+                MachineId::Instance(InstanceId(19)),
+                &mut present,
+            ),
+        );
+        assert!(output.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Library(LibraryReq::Menu {kind: actual, ..})) if *actual == kind)));
+    }
+    for (step, index) in [(12, 18), (13, 0)] {
+        output.clear();
+        page.command(
+            LibraryCmd::SwitchStep(step),
+            &cx,
+            &mut Effects::new(
+                &mut output,
+                MachineId::Instance(InstanceId(19)),
+                &mut present,
+            ),
+        );
+        assert!(output.iter().any(
+            |e| matches!(&e.fx, Fx::Remember {elem,..} if *elem == page.pair.detail.elems[index])
+        ));
     }
 }
 

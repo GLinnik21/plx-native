@@ -1,7 +1,4 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
-#[cfg(test)]
-#[path = "review_actions_tests.rs"]
-mod review_actions_tests;
 use crate::browse::{GenreEntry, SortEntry, SrcGroup, SrcRow};
 use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
@@ -488,6 +485,21 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
+            ScreenEvent::App(AppMsg::Library(crate::screens::registry::LibraryCmd::SwitchStep(step))) => {
+                let key = match step % 14 {
+                    3 | 8 => Key::Down, 4 | 10 | 11 => Key::Back, 9 => Key::Ok,
+                    _ => return Handled::No,
+                };
+                // Exercise normal menu input using this frame's clock and this instance's
+                // engine owner. Never mutate the table selection as a script shortcut.
+                for edge in [Edge::Down, Edge::Up] {
+                    fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Input(
+                        crate::ui::machine::InputEvent { at: cx.tick, source: crate::ui::machine::Source::Script,
+                            kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false } },
+                    ))));
+                }
+                return Handled::Yes;
+            }
             ScreenEvent::Mount | ScreenEvent::StoreChanged(..) | ScreenEvent::Enter(_) => {
                 self.refresh(cx)
             }
@@ -630,7 +642,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
         Glass::CACHED.prepare(&mut self.glass, false);
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         Glass::CACHED.panel(p, self.frame(), 0.0, PANEL_RADIUS);
         self.table.draw(p, self.frame());
@@ -678,6 +690,10 @@ impl LogicalState for LibraryMenu {
         out.push_str("library_menu");
     }
 }
+
+#[cfg(test)]
+#[path = "review_actions_tests.rs"]
+mod review_actions_tests;
 
 #[cfg(test)]
 mod tests {
@@ -753,7 +769,7 @@ mod tests {
             },
             tick: Tick::default(),
             measure: &measure,
-            focus: FocusRead { current: None },
+            focus: FocusRead { current: None , ..Default::default() },
             press: PressRead::default(),
             owner: InputOwner::Entry(EntryId(7)),
         })

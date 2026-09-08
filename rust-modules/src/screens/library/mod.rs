@@ -1,5 +1,6 @@
 //! Library instance: document motion and transactions belong here; focus belongs to Input.
 mod identity;
+mod bookmark;
 mod layout;
 mod parts;
 mod rail;
@@ -58,7 +59,7 @@ const MORE: u32 = 4;
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
 
 pub(crate) const SHAPE: [&str; 8] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,epoch:Option<u32>,query:Option<u32>,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     crate::ui::widgets::PageGround::SHAPE,
     crate::ui::widgets::TabStrip::SHAPE,
@@ -133,6 +134,7 @@ pub(crate) struct LibraryScreen {
     readout: Readout,
     live: bool,
     initial: bool,
+    sweep_down: bool,
     // Paint-only state: neither capsule travel nor ambient colours choose focus or activation.
     library_capsules: crate::ui::widgets::TabStrip,
     library_pop: crate::ui::widgets::CtlPop<1>,
@@ -156,7 +158,7 @@ impl LibraryScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(),
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
-            readout: Readout::Loading, live: true, initial: true,
+            readout: Readout::Loading, live: true, initial: true, sweep_down: true,
             library_capsules: crate::ui::widgets::TabStrip::new(),
             library_pop: crate::ui::widgets::CtlPop::new(),
             ground: crate::ui::widgets::PageGround::new(), ground_seeded: false,
@@ -187,6 +189,7 @@ impl LibraryScreen {
         let id = H::listing(cx).id()?;
         Some(SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section })
     }
+
 
     /// User intent follows the incoming page while the committed listing is still fading out.
     fn requested_address<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<SectionAddress> {
@@ -240,7 +243,9 @@ impl LibraryScreen {
             self.section = identity.clone();
             self.epoch = epoch;
             let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && Some(&view.section) == identity.as_ref());
-            self.restore_scroll = saved.map(|view| view.scroll);
+            self.restore_scroll = saved.map(|view| view.scroll).or_else(||
+                cx.focus.remembered(self.pair.groups_config().detail).is_none()
+                    .then(|| listing.cursor().map(|cursor| cursor.scroll)).flatten());
             self.scroll.jump(self.restore_scroll.unwrap_or(0.0));
             self.scroll_target = self.scroll.pos;
         }
@@ -469,6 +474,7 @@ impl LibraryScreen {
             }
             let section = &directory.sections()[index];
             if let (Some(epoch), Some(sid)) = (directory.epoch(), section.sid) {
+                self.save_cursor(cx, fx);
                 self.pending.request_section(SectionTarget {
                     epoch, index,
                     identity: LibrarySectionIdentity { sid, key: section.key }, kind: section.kind,
@@ -538,12 +544,14 @@ impl LibraryScreen {
     fn command<H: LibraryLike>(&mut self, command: LibraryCmd, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match command {
             LibraryCmd::Enter(kind) => {
+                self.save_cursor(cx, fx);
                 self.flush(fx);
                 self.wanted_kind = Some(kind);
                 self.initial = true;
                 self.page_fade.mount();
                 self.sync(cx);
             }
+            #[cfg(test)]
             LibraryCmd::FocusGrid { row, col } => {
                 if col >= COLS { return Handled::No; }
                 let Some(index) = row.checked_mul(COLS).and_then(|i| i.checked_add(col)) else { return Handled::No };
@@ -551,7 +559,6 @@ impl LibraryScreen {
                 self.initial = false; // An explicit owned command supersedes the pending boot seat.
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
-            LibraryCmd::FocusToolbar => self.reseat(FocusTarget::ContainerGroup(TOOLBAR_GROUP), fx),
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),
             LibraryCmd::Page(direction) => {
                 let Some((row, col)) = self.grid_position(cx.focus.current) else { return Handled::No };
@@ -562,14 +569,46 @@ impl LibraryScreen {
                 }
             }
             LibraryCmd::Sweep => {
-                let (row, col) = self.grid_position(cx.focus.current).unwrap_or((0, 0));
-                return self.command(LibraryCmd::FocusGrid { row: (row + 1) % self.pair.detail.elems.len().div_ceil(COLS).max(1), col }, cx, fx);
+                let current = cx.focus.current.filter(|key| key.entry == self.entry);
+                let group = current.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
+                if self.sweep_down && self.grid_position(current).is_some_and(|(row, _)|
+                    row + 1 >= self.pair.detail.elems.len().div_ceil(COLS)) {
+                    self.sweep_down = false;
+                } else if !self.sweep_down && group == Some(self.first_group()) {
+                    self.sweep_down = true;
+                }
+                fx.push(Fx::Deliver(MachineId::Instance(self.instance), Delivery::Screen(
+                    ScreenEvent::Input(crate::ui::machine::InputEvent {
+                        at: cx.tick, source: crate::ui::machine::Source::Script,
+                        kind: InputKind::Key { key: if self.sweep_down { Key::Down } else { Key::Up },
+                            sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+                    }))));
             }
             LibraryCmd::SwitchStep(step) => {
-                if step.is_multiple_of(4) { self.command(LibraryCmd::FocusToolbar, cx, fx); }
-                if let Some(target) = GridTarget::from_view(H::listing(cx)) {
-                    self.pending.request_grid(target, GridAction::Unwatched { desired: step % 2 == 0 });
-                    self.grid_fade.reload();
+                match step % 14 {
+                    0 if H::directory(cx).sections().iter().any(|section| section.kind == SecKind::Show) =>
+                        return self.command(LibraryCmd::Enter(SecKind::Show), cx, fx),
+                    1 => return self.command(LibraryCmd::Enter(SecKind::Movie), cx, fx),
+                    2 => return self.activate(SORT, false, cx, fx),
+                    5 | 6 => {
+                        if let Some(target) = GridTarget::from_view(H::listing(cx)) {
+                            let current = self.pending.grid().and_then(|(pending, action)| {
+                                if pending != &target { return None; }
+                                match action { GridAction::Unwatched { desired } => Some(*desired), _ => None }
+                            }).unwrap_or(H::listing(cx).unwatched());
+                            let address = SectionAddress { epoch: target.epoch, sid: target.sid, section: target.section };
+                            return self.step(&ScreenEvent::App(AppMsg::LibraryEdit {
+                                target: address, edit: crate::stores::browse::QueryEdit::Unwatched(!current),
+                            }), cx, fx);
+                        }
+                    }
+                    7 => return self.activate(FILTER, false, cx, fx),
+                    12 | 13 => {
+                        let letter = if step % 14 == 12 { self.pair.master.elems.last() } else { self.pair.master.elems.first() };
+                        if let Some(elem) = letter { self.follow(*elem, fx); }
+                    }
+                    // Menu steps are delivered to their actual input-owning entry by the bridge.
+                    _ => {}
                 }
             }
         }
@@ -586,7 +625,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             ScreenEvent::Enter(_) => { self.live = true; self.sync(cx); }
             ScreenEvent::Cover => { self.live = false; }
             ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
-            ScreenEvent::WillLeave(_) => { self.flush(fx); }
+            ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
             ScreenEvent::App(AppMsg::LibraryEdit { target, edit }) => {
                 use crate::stores::browse::QueryEdit;
@@ -612,12 +651,14 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 let directory = H::directory(cx);
                 if directory.epoch() == Some(target.epoch) {
                     if let Some(index) = directory.sections().iter().position(|section| section.sid == Some(target.sid) && section.key == target.section) {
+                        self.save_cursor(cx, fx);
                         self.pending.request_section(SectionTarget { epoch: target.epoch, index, identity: LibrarySectionIdentity { sid: target.sid, key: target.section }, kind: directory.sections()[index].kind });
                         self.page_fade.reload();
                     }
                 }
             }
             ScreenEvent::FocusMoved { from, to, by } => {
+                if matches!(by, By::Dir | By::Pointer) { self.initial = false; }
                 let from_group = from.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
                 let to_group = <Self as Focusable<H>>::group_of(self, &to.elem, cx);
                 let outcome = self.pair.focus_moved(from_group, to_group, *to);
@@ -676,7 +717,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     }
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
                     self.relayout(focused);
-                    if self.initial && self.layout.first().is_some() {
+                    if self.initial && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
                         self.initial = false;
                         let group = match self.layout.seat_for_scroll(self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
                             Some(Block::Grid(_)) => self.pair.groups_config().detail,
@@ -874,13 +915,26 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>) { self.pair.prepare(b, cx); }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) { self.draw_page(f); }
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) { self.draw_page(f); }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn memory(&self) -> PageMemory {
         PageMemory::Library(self.page_memory())
     }
     fn links(&self, out: &mut Vec<Link>) {
         out.push(Link { from: STRIP, dir: Dir::Down, to: self.first_group() });
+        out.push(Link { from: self.first_group(), dir: Dir::Up, to: STRIP });
+        // A continuous document has adjacent blocks even while its offscreen geometry
+        // passes the floating strip. Geometric ranking must not skip an intervening block.
+        let mut document = Vec::new();
+        if !self.libraries.is_empty() { document.push(LIBRARY_GROUP); }
+        document.extend(self.shelves.iter().map(|row| row.group));
+        if self.layout.grid_head { document.push(TOOLBAR_GROUP); }
+        if self.readout == Readout::Failed { document.push(STATUS_GROUP); }
+        if !self.pair.detail.elems.is_empty() { document.push(self.pair.groups_config().detail); }
+        for pair in document.windows(2) {
+            out.push(Link { from: pair[0], dir: Dir::Down, to: pair[1] });
+            out.push(Link { from: pair[1], dir: Dir::Up, to: pair[0] });
+        }
         self.pair.links(out);
         out.push(Link { from: TOOLBAR_GROUP, dir: Dir::Right, to: self.pair.groups_config().master });
     }
@@ -894,7 +948,7 @@ impl LogicalState for LibraryScreen {
         c.option(self.wanted_kind, |c, kind| { c.u32(match kind { SecKind::Movie => 0, SecKind::Show => 1 }); });
         c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.scroll_target);
         c.option(self.restore_scroll, |c, value| { c.f32(value); });
-        c.bool(self.live).bool(self.initial);
+        c.bool(self.live).bool(self.initial).bool(self.sweep_down);
         c.option(self.epoch, |c, value| { c.u32(value); });
         c.option(self.query, |c, value| { c.u32(value); });
         c.option(self.shelf_publication, |c, (id, revision)| {

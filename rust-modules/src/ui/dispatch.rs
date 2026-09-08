@@ -231,7 +231,7 @@ pub struct Split<'a, H: Host> {
 }
 
 /// The pieces of a `Cx` that are the dispatcher's to know; the rig adds the views.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct CxParts<K> {
     pub tick: Tick,
     pub press: PressRead,
@@ -246,7 +246,7 @@ impl<K: Copy> CxParts<K> {
             tick: self.tick,
             measure,
             press: self.press,
-            focus: self.focus,
+            focus: self.focus.clone(),
             owner: self.owner,
         }
     }
@@ -261,6 +261,7 @@ pub struct FrameReport {
     pub carried: usize,
     pub queue_hwm: usize,
     pub mounted: Vec<InstanceId>,
+    /// Bodies whose Unmount step completed and may now be pruned, not merely queued.
     pub unmounted: Vec<InstanceId>,
     pub dropped_deliveries: u32,
     /// The logical-state hash, on an event frame.
@@ -571,7 +572,7 @@ where
                 scale: self.input.press.scale(),
                 is_long: self.input.press.was_long(),
             },
-            focus: FocusRead { current: self.focus() },
+            focus: self.input.engine.read(owner),
             owner,
         }
     }
@@ -926,7 +927,7 @@ where
                 if let Some(e) = nav.tabs.stack.top_mut() {
                     let mut page_cx = parts.cx::<H>(views, measure);
                     page_cx.owner = InputOwner::Entry(e.id);
-                    page_cx.focus.current = input.engine.current(page_cx.owner);
+                    page_cx.focus = input.engine.read(page_cx.owner);
                     if let Some(inst) = e.inst.as_mut() { inst.screen.prepare(budget, &page_cx); }
                 }
             }
@@ -934,7 +935,7 @@ where
                 if let Some(inst) = s.entry.inst.as_mut() {
                     let mut surface_cx = parts.cx::<H>(views, measure);
                     surface_cx.owner = InputOwner::Entry(s.entry.id);
-                    surface_cx.focus.current = input.engine.current(surface_cx.owner);
+                    surface_cx.focus = input.engine.read(surface_cx.owner);
                     inst.screen.prepare(budget, &surface_cx);
                 }
             }
@@ -985,7 +986,7 @@ where
                     let Split { views, measure, .. } = rig.split();
                     let mut page_cx = parts.cx::<H>(views, measure);
                     page_cx.owner = InputOwner::Entry(e.id);
-                    page_cx.focus.current = input.engine.current(page_cx.owner);
+                    page_cx.focus = input.engine.read(page_cx.owner);
                     let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
                     f.page_alpha *= nav.tabs.stack.transition.page_alpha();
                     inst.screen.draw(&mut f);
@@ -994,9 +995,10 @@ where
                     set.bytes += inst.screen.render_bytes();
                     if top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
                         && inst.screen.focus_source() == FocusSource::Engine {
-                        let mut chrome_parts = parts;
+                        let mut chrome_parts = parts.clone();
                         chrome_parts.owner = InputOwner::Entry(e.id);
-                        chrome_parts.focus.current = input.engine.current(chrome_parts.owner);
+                        chrome_parts.focus = input.engine.read(chrome_parts.owner);
+                        drop(page_cx);
                         rig.draw_chrome(&e.arg, &chrome_parts, navigation);
                     }
                 }
@@ -1028,7 +1030,7 @@ where
                 let Split { views, measure, .. } = rig.split();
                 let mut surface_cx = parts.cx::<H>(views, measure);
                 surface_cx.owner = InputOwner::Entry(s.entry.id);
-                surface_cx.focus.current = input.engine.current(surface_cx.owner);
+                surface_cx.focus = input.engine.read(surface_cx.owner);
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
                 inst.screen.draw(&mut f);
@@ -1250,10 +1252,10 @@ where
                         ..
                     })
                 );
-                let mut addressed = *parts;
+                let mut addressed = parts.clone();
                 if let Some(entry) = self.nav.entry_of_instance(id) {
                     addressed.owner = InputOwner::Entry(entry);
-                    addressed.focus.current = self.input.engine.current(addressed.owner);
+                    addressed.focus = self.input.engine.read(addressed.owner);
                 }
                 let Dispatcher { nav, present, .. } = self;
                 // a surface's springs report under their own scope (§4.4 MotionScope)
@@ -1277,6 +1279,7 @@ where
                 let mut fx = Effects::new(out, to, present);
                 let handled = inst.screen.step(&ev, &cx, &mut fx);
                 drop(fx);
+                drop(cx);
                 present.set_scope(super::present::Scope::Page);
                 // §7.3 step 1: the owner had first refusal; an unhandled BACK is the container's.
                 // This is the ONE place a BACK becomes `pending_back`, and it is reached by two
@@ -1290,6 +1293,15 @@ where
                 }
                 // the engine's half: after the owner's refusal, and after an Enter / a hold
                 self.after_step(rig, &addressed, id, &ev, handled, out);
+                // WillLeave and Unmount are queued after structural commit. Keep the engine's
+                // read snapshot available until the retiring body's final step has consumed it.
+                if matches!(ev, ScreenEvent::Unmount) {
+                    report.unmounted.push(id);
+                    if let Some(entry) = self.nav.entry_of_instance(id)
+                        .filter(|entry| self.nav.entry(*entry).is_some_and(|page| !page.evicted)) {
+                        self.input.engine.forget(entry);
+                    }
+                }
             }
             (MachineId::Instance(_), Delivery::Machine(_)) => {
                 report.dropped_deliveries += 1;
@@ -1558,8 +1570,8 @@ where
             match step {
                 Life::Mount(eid) => self.mount(rig, parts, eid, &mut post, report),
                 Life::Ev(eid, ev) => self.push_lifecycle(eid, ev, &mut post),
-                Life::Unmount(eid) => self.unmount(eid, false, &mut post, report),
-                Life::Evict(eid) => self.unmount(eid, true, &mut post, report),
+                Life::Unmount(eid) => self.unmount(eid, false, &mut post),
+                Life::Evict(eid) => self.unmount(eid, true, &mut post),
             }
         }
         // ahead of the carried queue: the mount that a key asked for happens THIS frame
@@ -1599,7 +1611,7 @@ where
         let id = self.nav.ids.instance();
         let mut out: Vec<Stamped<H>> = Vec::new();
         let screen = {
-            let Dispatcher { nav, present, .. } = self;
+            let Dispatcher { nav, present, input, .. } = self;
             let entry = nav.entry(eid).expect("checked above");
             let Split {
                 mounter,
@@ -1607,8 +1619,9 @@ where
                 measure,
             } = rig.split();
             // the body being mounted is the owner its `mount` reads (`cx.owner`)
-            let mut p = *parts;
+            let mut p = parts.clone();
             p.owner = InputOwner::Entry(eid);
+            p.focus = input.engine.read(p.owner);
             let cx = p.cx::<H>(views, measure);
             let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
             mounter.mount(id, &entry.arg, &entry.ret, &cx, &mut fx)
@@ -1637,14 +1650,15 @@ where
         }
     }
 
-    fn unmount(&mut self, eid: EntryId, evicted: bool, post: &mut Vec<Stamped<H>>, report: &mut FrameReport) {
-        if !evicted { self.input.engine.forget(eid); }
+    fn unmount(&mut self, eid: EntryId, evicted: bool, post: &mut Vec<Stamped<H>>) {
         let Some(inst) = self.nav.entry_mut(eid).and_then(|e| e.inst.take()) else {
+            // No body remains to receive lifecycle events; a final retirement can forget now.
+            if !evicted { self.input.engine.forget(eid); }
             return;
         };
-        // retire inflight: the live index no longer answers for it (§6.1 eviction rule)
-        report.unmounted.push(inst.id);
-        // Eviction retains engine state; retiring even a bodyless entry forgets it above.
+        // Inflight is cleared below at structural commit; pruning waits for actual Unmount
+        // delivery, which may be carried beyond this frame's post-commit budget.
+        // Eviction retains engine state; final retirement forgets after Unmount is delivered.
         if self.input.arm.map_or(false, |a| a.owner == MachineId::Instance(inst.id)) {
             self.input.cancel_press();
         }
@@ -1718,6 +1732,7 @@ mod edge_back_tests {
 
     #[derive(Default)]
     struct EdgeBackState {
+        read_memory: Option<u32>,
         /// The screen's own inner stack depth; 1 is its root, where BACK is declined.
         depth: usize,
         /// Every `Key::Back` at `Edge::Down` this screen was stepped with…
@@ -1730,12 +1745,14 @@ mod edge_back_tests {
     impl LogicalState for EdgeBackState {
         fn write(&self, w: &mut Canon) {
             w.u32(self.depth as u32).u32(self.backs).u32(self.at_edge_backs);
+            w.option(self.read_memory, |w, value| { w.u32(value); });
         }
         fn probe(&self, out: &mut String) {
             out.push_str(&format!(
                 "depth={} backs={} at_edge_backs={}",
                 self.depth, self.backs, self.at_edge_backs
             ));
+            out.push_str(&format!(" read_memory={:?}", self.read_memory));
         }
     }
 
@@ -1795,9 +1812,16 @@ mod edge_back_tests {
         fn step(
             &mut self,
             ev: &Self::Ev,
-            _cx: &Cx<'_, FixtureHost>,
-            _fx: &mut Effects<'_, FixtureHost>,
+            cx: &Cx<'_, FixtureHost>,
+            fx: &mut Effects<'_, FixtureHost>,
         ) -> Handled {
+            if matches!(ev, ScreenEvent::Unmount) {
+                fx.push(Fx::App(FixtureFx::StoreAdd(self.entry.0)));
+            }
+            if matches!(ev, ScreenEvent::WillLeave(_)) {
+                assert_eq!(cx.owner, InputOwner::Entry(self.entry));
+                self.state.read_memory = cx.focus.remembered(GroupId(901));
+            }
             match ev {
                 ScreenEvent::Input(InputEvent {
                     kind: InputKind::Key {
@@ -1835,7 +1859,7 @@ mod edge_back_tests {
             None
         }
         fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
-        fn draw(&mut self, _f: &mut DrawFrame<'_, FixtureHost>) {}
+        fn draw(&mut self, _f: &mut DrawFrame<'_, '_, FixtureHost>) {}
         fn render(&self) -> RenderStrategy {
             RenderStrategy::Page
         }
@@ -1877,6 +1901,7 @@ mod edge_back_tests {
         measure: FixtureMeasure,
         /// How many times the application was told BACK reached the root of the root stack.
         roots: u32,
+        unmounts: Vec<EntryId>,
     }
 
     impl EdgeBackRig {
@@ -1886,6 +1911,7 @@ mod edge_back_tests {
                 view: FixtureView::default(),
                 measure: FixtureMeasure,
                 roots: 0,
+                unmounts: Vec::new(),
             }
         }
     }
@@ -1918,10 +1944,11 @@ mod edge_back_tests {
         fn app_fx(
             &mut self,
             _from: MachineId,
-            _fx: FixtureFx,
+            fx: FixtureFx,
             _parts: &CxParts<u32>,
             _out: &mut Effects<'_, FixtureHost>,
         ) {
+            if let FixtureFx::StoreAdd(entry) = fx { self.unmounts.push(EntryId(entry)); }
         }
         fn log(&mut self, _line: &str) {}
         fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
@@ -1942,6 +1969,61 @@ mod edge_back_tests {
         d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
         d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
         (d, rig)
+    }
+
+    #[test]
+    fn receiving_entries_keep_their_own_focus_read_through_cover_and_retirement() {
+        let _guard = crate::testlock::serial();
+        let (mut d, mut rig) = booted();
+        d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+        let home = d.nav.top_page().unwrap().id;
+        d.input.engine.remember_projected(home, GroupId(901), 17);
+        let modal = open(&mut d, &mut rig, 2, 16);
+        d.input.engine.remember_projected(modal, GroupId(901), 29);
+        let id = d.nav.instance_of(home).unwrap();
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(id),
+            Delivery::Screen(ScreenEvent::WillLeave(super::super::machine::Leave::Deeper))));
+        d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+        assert!(probe(&d, home).contains("read_memory=Some(17)"), "covered page must not read modal memory");
+        d.request(MachineId::Nav, NavOp::Replace(FixtureArg::Page(1)));
+        d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+        assert!(probe(&d, home).contains("read_memory=Some(17)"), "WillLeave reads memory before retirement forgets it");
+        assert!(d.input.engine.remembered_snapshot(home).is_empty(), "retired entries are forgotten after their last step");
+    }
+
+    #[test]
+    fn carried_unmounts_finish_before_production_pruning_forgets_retired_bodies() {
+        let _guard = crate::testlock::serial();
+        let (mut d, mut rig) = booted();
+        d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+        let mut entries = vec![d.nav.top_page().unwrap().id];
+        for i in 0..33 { entries.push(open(&mut d, &mut rig, 2, 16 * (i + 1))); }
+        let mut requests = Vec::new();
+        for &entry in &entries {
+            d.input.engine.remember_projected(entry, GroupId(901), entry.0);
+            let instance = d.nav.instance_of(entry).unwrap();
+            d.track_inflight(instance, RequestId(9));
+            requests.push(Addr { to: MachineId::Instance(instance), req: RequestId(9) });
+        }
+        d.request(MachineId::Nav, NavOp::Replace(FixtureArg::Page(1)));
+        let report = d.frame(&mut rig, tick(560), vec![], vec![], &mut NoTap);
+        assert!(report.carried > 0, "the fixture must exceed the post-commit lifecycle budget");
+        assert!(requests.iter().all(|addr| !d.nav.is_deliverable(addr)), "inflight retirement is immediate even for carried Unmount");
+        d.prune(&report.unmounted); // The application's frame tail, not a test-only delayed prune.
+        for i in 0..8 {
+            let report = d.frame(&mut rig, tick(576 + i * 16), vec![], vec![], &mut NoTap);
+            d.prune(&report.unmounted);
+            if d.queued() == 0 { break; }
+        }
+        let mut observed = rig.unmounts.clone();
+        observed.sort_by_key(|entry| entry.0);
+        entries.sort_by_key(|entry| entry.0);
+        assert_eq!(observed, entries, "each retired body must execute Unmount exactly once");
+        for entry in entries {
+            assert!(d.nav.entry(entry).is_none());
+            assert_eq!(d.input.engine.current(InputOwner::Entry(entry)), None);
+            assert!(d.input.engine.remembered_snapshot(entry).is_empty());
+        }
     }
 
     /// Present an `Opaque` surface (the Settings family's style) whose screen starts at `depth`.

@@ -1,5 +1,7 @@
 //! Server-scoped key registry and tombstones for an owned Library instance.
 
+use std::collections::HashMap;
+
 use crate::screens::registry::{
     LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
 };
@@ -36,18 +38,30 @@ pub(super) fn region_of_elem(elem: u32) -> Option<KeyRegion> {
 pub(super) struct KeyRegistry {
     keys: Vec<LibraryKey>,
     next: [u32; 5],
+    identity_index: HashMap<LibraryIdentity, usize>,
+    elem_index: HashMap<u32, usize>,
+    #[cfg(test)]
+    register_probes: usize,
 }
 
 impl Default for KeyRegistry {
     fn default() -> Self {
-        Self { keys: Vec::new(), next: [0; 5] }
+        Self { keys: Vec::new(), next: [0; 5], identity_index: HashMap::new(),
+            elem_index: HashMap::new(), #[cfg(test)] register_probes: 0 }
     }
 }
 
 impl KeyRegistry {
     pub(super) fn restore(memory: &LibraryMemory) -> Self {
-        let mut out = Self { keys: memory.keys.clone(), next: [0; 5] };
-        for key in &out.keys {
+        let mut out = Self { keys: memory.keys.clone(), next: [0; 5],
+            identity_index: HashMap::with_capacity(memory.keys.len()),
+            elem_index: HashMap::with_capacity(memory.keys.len()),
+            #[cfg(test)] register_probes: 0 };
+        for (at, key) in out.keys.iter().enumerate() {
+            // Memory preserves canonical insertion order. The maps are rebuilt from it and never
+            // serialized; first wins to retain the old scan's answer for malformed duplicates.
+            out.identity_index.entry(key.identity.clone()).or_insert(at);
+            out.elem_index.entry(key.elem).or_insert(at);
             if let Some(region) = region_of_elem(key.elem) {
                 let slot = region_index(region);
                 out.next[slot] = out.next[slot].max((key.elem & !REGION_MASK) + 1);
@@ -79,7 +93,9 @@ impl KeyRegistry {
         group: GroupId,
         index: usize,
     ) -> u32 {
-        if let Some(key) = self.keys.iter_mut().find(|key| key.identity == identity) {
+        #[cfg(test)] { self.register_probes += 1; }
+        if let Some(&at) = self.identity_index.get(&identity) {
+            let key = &mut self.keys[at];
             key.last_group = group.0;
             key.last_index = index as u32;
             return key.elem;
@@ -89,6 +105,9 @@ impl KeyRegistry {
         let ordinal = self.next[slot];
         self.next[slot] = ordinal.checked_add(1).expect("Library element-key space exhausted");
         let elem = region_base(region) | ordinal;
+        let at = self.keys.len();
+        self.identity_index.insert(identity.clone(), at);
+        self.elem_index.insert(elem, at);
         self.keys.push(LibraryKey {
             identity,
             elem,
@@ -99,7 +118,7 @@ impl KeyRegistry {
     }
 
     pub(super) fn key(&self, elem: u32) -> Option<&LibraryKey> {
-        self.keys.iter().find(|key| key.elem == elem)
+        self.keys.get(*self.elem_index.get(&elem)?)
     }
 
     pub(super) fn region(&self, elem: u32) -> Option<KeyRegion> {
@@ -119,7 +138,19 @@ impl KeyRegistry {
         Some((GroupId(key.last_group), key.last_index as usize))
     }
 
+    pub(super) fn update_last_place(&mut self, elem: u32, group: GroupId, index: usize) {
+        let at = self.elem_index[&elem];
+        self.keys[at].last_group = group.0;
+        self.keys[at].last_index = index as u32;
+    }
+
     pub(super) fn keys(&self) -> &[LibraryKey] { &self.keys }
+
+    #[cfg(test)]
+    pub(super) fn register_probes(&self) -> usize { self.register_probes }
+
+    #[cfg(test)]
+    pub(super) fn reset_register_probes(&mut self) { self.register_probes = 0; }
 }
 
 fn identity_region(identity: &LibraryIdentity) -> KeyRegion {
@@ -196,6 +227,17 @@ mod tests {
         let restored = KeyRegistry::restore(&memory);
         assert_eq!(restored.region(elem), Some(KeyRegion::Grid));
         assert_eq!(restored.last_place(elem), Some((GroupId(9), 5)));
+    }
+
+    #[test]
+    fn restored_registry_reuses_the_stable_item_key() {
+        let mut keys = KeyRegistry::default();
+        let identity = grid(1, "42");
+        let elem = keys.register(identity.clone(), GroupId(9), 5);
+        let memory = keys.remember(Some(section(1)), 0.0, Vec::new());
+        let mut restored = KeyRegistry::restore(&memory);
+        assert_eq!(restored.register(identity, GroupId(11), 17), elem);
+        assert_eq!(restored.last_place(elem), Some((GroupId(11), 17)));
     }
 
     #[test]

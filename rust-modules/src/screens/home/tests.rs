@@ -58,7 +58,7 @@ fn cx<'a>(view: HubsView<'a>, focus: Option<FocusKey<u32>>) -> Cx<'a, TestHost> 
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
-        focus: FocusRead { current: focus },
+        focus: FocusRead { current: focus , ..Default::default() },
         owner: InputOwner::Entry(focus.map_or(EntryId(7), |k| k.entry)),
     }
 }

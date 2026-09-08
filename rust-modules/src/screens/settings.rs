@@ -711,7 +711,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
             }
         }
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
         crate::screens::family::set_palette(self.ground.palette());
@@ -751,7 +751,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
 impl RouteSurface {
     /// Draw the nested pages through the surface's entrance cascade. Kept separate from the
     /// ground paint so the real page selection and frame propagation can be tested without GL.
-    fn draw_pages<H: AppLike>(&mut self, f: &mut DrawFrame<'_, H>, entrance: Painter) {
+    fn draw_pages<H: AppLike>(&mut self, f: &mut DrawFrame<'_, '_, H>, entrance: Painter) {
         let navigation = f.navigation();
         let t = self.push.amount();
         let icx = inner_cx(f.cx);
@@ -988,7 +988,7 @@ impl Screen<InnerHost> for RootPage {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let mut v = self.view();
         crate::ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
     }
@@ -1042,7 +1042,7 @@ mod tests {
             tick: Tick::default(),
             measure: &MEASURE,
             press: PressRead::default(),
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }
@@ -1090,7 +1090,7 @@ mod tests {
         fn state(&self) -> &dyn LogicalState { &() }
         fn crumb(&self, _: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { None }
         fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, InnerHost>) {}
-        fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+        fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
             self.seen.borrow_mut().push((self.id, crate::ui::screen::NavPresentation {
                 page_alpha: f.page_alpha,
                 chrome_alpha: f.chrome_alpha,

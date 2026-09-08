@@ -85,6 +85,7 @@ pub(crate) enum QueryEdit {
 
 #[derive(Clone, Debug)]
 pub(crate) enum LibraryWork {
+    SaveCursor(crate::browse::Cursor),
     /// Selection and query coexist and commit in this order, inside one store delivery.
     Commit { select: bool, choice: bool, query: Option<QueryEdit> },
     Want { lo: usize, hi: usize },
@@ -97,6 +98,7 @@ pub(crate) enum LibraryWork {
 fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
     let Some(index) = crate::browse::resolve_section(target.epoch, target.sid, target.section) else { return false };
     match work {
+        LibraryWork::SaveCursor(cursor) => crate::browse::save_cursor(index, cursor),
         LibraryWork::Commit { select, choice, query } => {
             let switched = crate::browse::cur() != index;
             if select { crate::browse::set_cur(index); }
@@ -127,7 +129,7 @@ fn addressed(target: SectionAddress, work: LibraryWork) -> bool {
                 LibraryWork::Letters => crate::browse::kick_letters(),
                 LibraryWork::Genres => crate::browse::kick_genres(),
                 LibraryWork::Retry => crate::browse::retry_cur_source(),
-                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } => unreachable!(),
+                LibraryWork::Commit { .. } | LibraryWork::Hubs { .. } | LibraryWork::SaveCursor(_) => unreachable!(),
             }
             true
         }

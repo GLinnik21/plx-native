@@ -327,7 +327,7 @@ impl Screen<AppHost> for LegacyPage {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, AppHost>) {}
-    fn draw(&mut self, _f: &mut DrawFrame<'_, AppHost>) {}
+    fn draw(&mut self, _f: &mut DrawFrame<'_, '_, AppHost>) {}
     fn render(&self) -> RenderStrategy {
         match self.route {
             Route::Player { .. } => RenderStrategy::VideoPlane,
@@ -550,7 +550,7 @@ impl Bridge {
         -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(entry) };
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view() }, self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
@@ -559,6 +559,17 @@ impl Bridge {
     }
 
     pub(super) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
+        if let crate::screens::registry::LibraryCmd::SwitchStep(_) = command {
+            if let Some(InputOwner::Entry(owner)) = d.nav.input_owner() {
+                if let Some(entry) = d.nav.entry(owner).filter(|entry| matches!(entry.arg, AppArg::LibraryMenu(_))) {
+                    if let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) {
+                        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+                            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+                        return;
+                    }
+                }
+            }
+        }
         let Some(entry) = d.nav.top_page() else { return };
         if entry.arg.route() != Some(Route::Library) { return; }
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
@@ -589,7 +600,7 @@ impl Bridge {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
             let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-                focus: crate::ui::machine::FocusRead { current: Some(key) }, owner: InputOwner::Entry(entry) };
+                focus: crate::ui::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
             let cx = parts.cx::<AppHost>(AppViews {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
@@ -617,7 +628,7 @@ impl Bridge {
         let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?;
         let focus = Self::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(entry.id) };
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
         let cx = parts.cx::<AppHost>(AppViews {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
@@ -721,7 +732,7 @@ impl Bridge {
             .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return false };
         if <crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: Self::home_focus(d) }, owner: InputOwner::Entry(entry.id) };
+            focus: crate::ui::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
         let cx = parts.cx::<AppHost>(AppViews {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
@@ -737,7 +748,7 @@ impl Bridge {
         let screen = e.inst.as_ref()?.screen.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
             press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-            focus: crate::ui::machine::FocusRead { current: None },
+            focus: crate::ui::machine::FocusRead { current: None , ..Default::default() },
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
@@ -787,7 +798,7 @@ impl Bridge {
         let _live = crate::ui::popover::host::live();
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
             press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-            focus: crate::ui::machine::FocusRead { current: None },
+            focus: crate::ui::machine::FocusRead { current: None , ..Default::default() },
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = focus;
@@ -1127,7 +1138,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return String::new() };
         let focus = Bridge::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(page.id) };
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
@@ -1152,7 +1163,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             .and_then(|s| s.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return String::new() };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
-            focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(page.id) };
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
             directory: rig.directory.view(), section_hubs: rig.section_hubs.view() }, rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
@@ -1174,7 +1185,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let focus = d.focus();
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
         press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-        focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(owner) };
+        focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
     let cx = parts.cx::<AppHost>(AppViews {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
@@ -1527,6 +1538,8 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    include!("library_bookmark_tests.rs");
+    include!("library_diagnostic_tests.rs");
     #[test]
     fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};

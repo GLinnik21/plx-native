@@ -638,7 +638,7 @@ impl<H: AppLike> Screen<H> for OnboardScreen {
         Some(Cow::Borrowed(if self.settings { CRUMB_SETTINGS } else { CRUMB_PROFILES }))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter;
         if !self.settings {
             // a first-run route is not a sheet, but it belongs to the same visual family
@@ -762,7 +762,7 @@ mod tests {
             press: PressRead::default(),
             focus: FocusRead {
                 current: focus.map(|elem| FocusKey { entry: EntryId(0), elem }),
-            },
+            ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }
