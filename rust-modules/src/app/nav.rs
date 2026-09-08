@@ -184,7 +184,7 @@ pub(super) enum Route {
     ItemMenu {
         over: MenuHost,
     },
-    Library, // the browse grid (ui/library.rs); its sort/filter menus are internal state
+    Library, // owned screens/library page; sort/filter/source panels are LibraryMenu entries
     Detail,
     /// The person/actor page (screens/person.rs), reached by OK on a detail page's cast
     /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
