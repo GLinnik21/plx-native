@@ -156,8 +156,12 @@ Clear, Left and Right. Keyboard ownership edges take effect in delivery order, i
 edges in one frame; the page keeps its focus read while `Cx.owner` is `System(Keyboard)`.
 An ownership change cancels both an active page gesture and its queued hold/commit result.
 Pending inputs include their payload in the canonical state hash. The fixture recorder/replayer
-round-trips these events; connecting the native adapter and product recorder to the owned Search
-screen remains part of the migration, not a claim this vocabulary alone completes it.
+round-trips these events. Screen keyboard requests are distinct from OS observations: Input
+binds accepted requests to the requesting instance, rejects stale opens/closes, then invokes the
+main-thread adapter's existing `textinput::start/stop` operations. Cover and suspend release that
+binding. Both the binding and queued keyboard requests are included in the state hash.
+SDL/FIFO text ingress, adoption and the product recorder still need their live integration;
+start/stop wiring alone does not complete the native keyboard migration.
 
 The owned `screens/search` implementation now compiles and is mounted by integration fixtures
 through `AppMounter::search_owned`. It consumes `AppViews.search`, keeps an unacknowledged draft,

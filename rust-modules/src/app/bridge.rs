@@ -492,6 +492,8 @@ pub(super) struct Bridge {
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
     library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
     search_reqs: Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
+    #[cfg(test)]
+    keyboard_calls: Vec<bool>,
     effect_return: ReturnState<u32, PageMemory>,
     pub(super) menu_opener: Option<(EntryId, Option<FocusKey<u32>>)>,
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
@@ -540,6 +542,8 @@ impl Bridge {
             home_reqs: Vec::new(),
             library_reqs: Vec::new(),
             search_reqs: Vec::new(),
+            #[cfg(test)]
+            keyboard_calls: Vec::new(),
             effect_return: ReturnState::default(),
             menu_opener: None,
             held: Vec::new(),
@@ -992,7 +996,7 @@ impl Rig<AppHost> for Bridge {
     fn app_return(&mut self, _from: MachineId, ret: ReturnState<u32, PageMemory>) {
         self.effect_return = ret;
     }
-    fn app_fx(&mut self, from: MachineId, fx: AppFx, parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
+    fn app_fx(&mut self, from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
         match fx {
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
@@ -1004,16 +1008,21 @@ impl Rig<AppHost> for Bridge {
             AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Search(req) => {
                 if let crate::screens::registry::SearchReq::Keyboard { up } = &req {
-                    out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::Input(InputEvent {
-                        at: parts.tick, source: Source::Script, kind: InputKind::SystemKeyboard(*up),
-                    }))));
+                    out.push(Fx::Deliver(from, Delivery::Keyboard { up: *up }));
+                } else {
+                    self.search_reqs.push((from, req, self.effect_return.clone()));
                 }
-                self.search_reqs.push((from, req, self.effect_return.clone()));
             }
         }
     }
     fn log(&mut self, line: &str) {
         crate::log(line);
+    }
+    fn system_keyboard(&mut self, up: bool) {
+        #[cfg(test)]
+        self.keyboard_calls.push(up);
+        #[cfg(not(test))]
+        if up { crate::textinput::start(); } else { crate::textinput::stop(); }
     }
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
     fn ls2_pump(&mut self) {}

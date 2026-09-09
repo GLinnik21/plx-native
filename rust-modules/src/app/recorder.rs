@@ -778,7 +778,8 @@ mod tests {
         // Query-reset intent and its observed query survive Library entry eviction.
         // Pending normalized input now includes its full payload, including whole text commits.
         // The owned Search state and its entry restoration payload join the inventory.
-        assert_eq!(state_fp(), 0x6880cbcde989b71c);
+        // Input now binds accepted keyboard requests to their instance and hashes queued requests.
+        assert_eq!(state_fp(), 0x23d43c3e57ba2eee);
     }
 
     #[test]

@@ -7,6 +7,67 @@ fn owned_search_probe(d: &Dispatcher<AppHost>) -> String {
 }
 
 #[test]
+fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-keyboard-owner");
+    session.watching("synthetic-keyboard-owner");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    let old = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+    frame(&mut d, &mut rig, Route::Search, tick(1), script_key(Key::Ok, tick(1)));
+    assert_eq!(d.input.keyboard_owner, Some(old));
+    d.request(MachineId::Nav, NavOp::Push(AppArg::Legacy(Route::Search)));
+    frame(&mut d, &mut rig, Route::Search, tick(2), vec![]);
+    let current = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+    assert_ne!(current, old);
+    assert!(!d.input.keyboard, "the departing owner can release its keyboard after navigation commits");
+    assert_eq!(rig.keyboard_calls, [true, false]);
+    frame(&mut d, &mut rig, Route::Search, tick(3), script_key(Key::Ok, tick(3)));
+    assert!(d.input.keyboard);
+    assert_eq!(d.input.keyboard_owner, Some(current));
+    d.emit(MachineId::Instance(old), Fx::App(AppFx::Search(
+        crate::screens::registry::SearchReq::Keyboard { up: false })));
+    frame(&mut d, &mut rig, Route::Search, tick(4), vec![]);
+    assert!(d.input.keyboard, "a stale request is not an authoritative OS dismissal");
+    d.emit(MachineId::Instance(old), Fx::App(AppFx::Search(
+        crate::screens::registry::SearchReq::Keyboard { up: true })));
+    frame(&mut d, &mut rig, Route::Search, tick(5), vec![]);
+    assert_eq!(d.input.keyboard_owner, Some(current));
+    assert_eq!(rig.keyboard_calls, [true, false, true], "rejected requests must not reach the native adapter");
+    frame(&mut d, &mut rig, Route::Search, tick(6), script_key(Key::Back, tick(6)));
+    assert!(!d.input.keyboard, "the current instance can still dismiss its own keyboard");
+    assert_eq!(rig.keyboard_calls, [true, false, true, false]);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
+fn covering_owned_search_releases_its_native_keyboard() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-covered-keyboard");
+    session.watching("synthetic-covered-search");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    frame(&mut d, &mut rig, Route::Search, tick(1), script_key(Key::Ok, tick(1)));
+    assert_eq!(rig.keyboard_calls, [true]);
+    d.request(MachineId::Nav, NavOp::Present(AppArg::Settings(crate::screens::family::SettingsPage::Root)));
+    frame(&mut d, &mut rig, Route::Search, tick(2), vec![]);
+    assert!(!d.input.keyboard, "the system keyboard cannot trap input above a new application modal");
+    assert!(d.input.keyboard_owner.is_none());
+    assert_eq!(rig.keyboard_calls, [true, false]);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
 fn owned_search_unrelated_store_notice_cannot_ack_a_net_zero_edit_batch() {
     let _serial = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("owned-search-ack");

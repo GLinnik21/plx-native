@@ -1285,7 +1285,7 @@ fn the_present_bit_is_recorded_and_replayed() {
 fn the_fixture_bundles_state_shape_is_pinned() {
     // Re-pin only with a named reason: a shape change invalidates every fixture of this bundle.
     // The fixture bundle now versions the input machine and queued whole-input payloads too.
-    assert_eq!(fixture_state_fp(), 0xe9f3_82c2_f3da_9652);
+    assert_eq!(fixture_state_fp(), 0x23c4_4e83_a90a_8644);
 }
 
 pub(crate) fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {

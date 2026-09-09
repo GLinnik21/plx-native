@@ -59,9 +59,12 @@ pub struct InputMachine<K> {
     next_press: u32,
     /// The television's keyboard is up: `InputOwner::System(Keyboard)`.
     pub keyboard: bool,
+    /// Who may release the accepted keyboard request, even after that instance is covered.
+    /// This is an input binding, not a second focus cursor or adapter-owned decision.
+    pub keyboard_owner: Option<super::machine::InstanceId>,
 }
 
-pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},next_press:u32,keyboard:bool,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>}]";
+pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},keyboard:bool,keyboard_owner:Option<InstanceId(u32)>,next_press:u32,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>,keyboard_request:Option<{from:MachineId,to:MachineId,up:bool}>}]";
 
 impl<K: Copy + Eq + Hash> Default for InputMachine<K> {
     fn default() -> Self {
@@ -78,6 +81,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
             arm: None,
             next_press: 0,
             keyboard: false,
+            keyboard_owner: None,
         }
     }
 
@@ -142,10 +146,12 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     /// The press, engine and complete gesture identity are logical state. Only the double-
     /// buffered hit map is a render-side resource (rebuilt from recorded presented frames).
     pub fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
-        let Self { press, engine, keyboard, next_press, arm, hit: _ } = self;
+        let Self { press, engine, keyboard, keyboard_owner, next_press, arm, hit: _ } = self;
         press.write(c);
         engine.write_with(c, elem);
-        c.bool(*keyboard).u32(*next_press);
+        c.bool(*keyboard);
+        c.option(*keyboard_owner, |c, owner| { c.u32(owner.0); });
+        c.u32(*next_press);
         c.option(arm.as_ref(), |c, a| {
             let Arm { id, key, from, holdable, owner, held_delivered } = a;
             c.u32(id.0).u32(key.entry.0);

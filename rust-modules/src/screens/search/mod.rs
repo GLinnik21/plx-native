@@ -283,7 +283,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 self.fade.mount();
                 self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
             }
-            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount => self.keyboard(false, true, fx),
+            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, true, fx),
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
             ScreenEvent::PressCommit(_) => {
                 if let Some(key) = cx.focus.current { return self.activate(key.elem, false, cx, fx); }

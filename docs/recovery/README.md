@@ -261,3 +261,11 @@ The integrated branch also includes opt-in synthetic rail/pagination fixtures (s
 This backup is for recovery, not a completion or release claim.
 
 Owned Search now compiles and runs through integration fixtures, including its renderer and guarded return memory. The temporary mounter gate remains OFF in the live loop: native keyboard/navigation/menu adapters, complete legacy-contract migration and visual verification are still pending. Host, shipping-feature and ARM checks pass; this is not a completed UI migration.
+
+## Latest outage checkpoint
+
+Source checkpoint: `1b04686b1edbf611aabb69c9de38b3d094eb5ec2` on `codex/ui-phase8`.
+The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
+This backup is for recovery, not a completion or release claim.
+
+Owned Search now compiles and runs through integration fixtures, including its renderer and guarded return memory. The temporary mounter gate remains OFF in the live loop: native keyboard/navigation/menu adapters, complete legacy-contract migration and visual verification are still pending. Host, shipping-feature and ARM checks pass; this is not a completed UI migration.

@@ -197,6 +197,8 @@ pub trait Rig<H: Host> {
     fn app_fx(&mut self, from: MachineId, fx: H::Fx, parts: &CxParts<H::Elem>, out: &mut Effects<'_, H>);
     /// Snapshot at effect execution, before another input can move the requesting page.
     fn app_return(&mut self, _from: MachineId, _ret: ReturnState<H::Elem, H::Memory>) {}
+    /// Main-thread native operation, reached only after Input validates the requesting owner.
+    fn system_keyboard(&mut self, _up: bool) {}
     fn page_alpha(&self) -> f32 { 1.0 }
     fn navigation_presentation(&self) -> super::screen::NavPresentation {
         super::screen::NavPresentation { page_alpha: self.page_alpha(), ..Default::default() }
@@ -722,6 +724,7 @@ where
                 // not this pre-pass over the entire batch. No page means no queued delivery.
                 InputKind::SystemKeyboard(up) if self.owner_entry().is_none() => {
                     self.input.keyboard = up;
+                    self.input.keyboard_owner = None;
                     self.input.cancel_press();
                 }
                 InputKind::Key { key, edge, .. } => {
@@ -1067,7 +1070,7 @@ where
 
     /// The logical-state hash (spec §5.4): every live instance's `LogicalState`, the tree's
     /// shape and surface phases, the focus, the present gate's video-plane bit, queue depth
-    /// and queued press/input payloads, in a fixed order. Incremental hashing is the optimisation
+    /// and queued press/input/keyboard-request payloads, in a fixed order. Incremental hashing is the optimisation
     /// the spec names; this is the definition it must equal.
     pub fn state_hash(&self) -> u64 {
         let mut c = super::machine::Canon::new();
@@ -1091,6 +1094,12 @@ where
                 queued.from.write_canon(&mut c);
                 to.write_canon(&mut c);
                 input.write_with(&mut c, &|elem, c| { c.u32(elem.index().unwrap_or(u32::MAX)); });
+            } else { c.bool(false); }
+            if let Fx::Deliver(to, Delivery::Keyboard { up }) = &queued.fx {
+                c.bool(true);
+                queued.from.write_canon(&mut c);
+                to.write_canon(&mut c);
+                c.bool(*up);
             } else { c.bool(false); }
         }
         c.finish()
@@ -1209,6 +1218,20 @@ where
         report: &mut FrameReport,
     ) {
         match (to, delivery) {
+            (MachineId::Instance(instance), Delivery::Keyboard { up }) => {
+                let active = self.owner_entry().and_then(|entry| self.nav.instance_of(entry)) == Some(instance);
+                let accepted = if up { active } else {
+                    self.input.keyboard_owner == Some(instance) || (self.input.keyboard_owner.is_none() && active)
+                };
+                if !accepted { report.dropped_deliveries += 1; return; }
+                let owner = up.then_some(instance);
+                if self.input.keyboard != up || self.input.keyboard_owner != owner {
+                    self.input.keyboard = up;
+                    self.input.keyboard_owner = owner;
+                    self.cancel_keyboard_gestures(report);
+                }
+                rig.system_keyboard(up);
+            }
             (MachineId::Instance(instance), Delivery::Press { id, key, held }) => {
                 let valid_owner = !self.input.keyboard && self.owner_entry() == Some(key.entry)
                     && self.nav.instance_of(key.entry) == Some(instance)
@@ -1235,15 +1258,11 @@ where
                 if let ScreenEvent::Input(InputEvent {
                     kind: InputKind::SystemKeyboard(up), ..
                 }) = &ev {
-                    if self.input.keyboard != *up {
+                    let owner = up.then_some(id);
+                    if self.input.keyboard != *up || self.input.keyboard_owner != owner {
                         self.input.keyboard = *up;
-                        self.input.cancel_press();
-                        // Tick may already have queued a hold/commit behind this edge. An
-                        // open+close round trip restores the entry, not the revoked gesture.
-                        let before = self.queue.len();
-                        self.queue.retain(|s| !matches!(&s.fx,
-                            Fx::Deliver(_, Delivery::Press { .. })));
-                        report.dropped_deliveries += (before - self.queue.len()) as u32;
+                        self.input.keyboard_owner = owner;
+                        self.cancel_keyboard_gestures(report);
                     }
                 }
                 // A carried event can outlive its input owner. Reject it before the handler
@@ -1345,10 +1364,19 @@ where
                 let mut fx = Effects::new(out, other, present);
                 let _ = rig.deliver(other, &msg, parts, &mut fx);
             }
-            (_, Delivery::Screen(_) | Delivery::Press { .. }) => {
+            (_, Delivery::Screen(_) | Delivery::Press { .. } | Delivery::Keyboard { .. }) => {
                 report.dropped_deliveries += 1;
             }
         }
+    }
+
+    fn cancel_keyboard_gestures(&mut self, report: &mut FrameReport) {
+        self.input.cancel_press();
+        // Tick may have queued a result behind this ownership edge. Returning to the same
+        // page restores its input scope, not the revoked gesture.
+        let before = self.queue.len();
+        self.queue.retain(|s| !matches!(&s.fx, Fx::Deliver(_, Delivery::Press { .. })));
+        report.dropped_deliveries += (before - self.queue.len()) as u32;
     }
 
     /// The engine's half of a delivery (§7.3): a direction the owner declined goes to the

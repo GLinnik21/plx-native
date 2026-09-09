@@ -748,6 +748,24 @@ fn pending_input_hash_distinguishes_text_and_ownership_edges_not_arc_addresses()
     assert_ne!(hash(InputKind::SystemKeyboard(true)), hash(InputKind::SystemKeyboard(false)));
 }
 
+#[test]
+fn keyboard_request_payload_and_owner_binding_are_part_of_the_state_hash() {
+    use super::machine::{Delivery, Fx, InstanceId};
+    let queued = |up| {
+        let (mut d, _) = boot(FixtureArg::Page(801));
+        let target = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
+        d.emit(target, Fx::Deliver(target, Delivery::Keyboard { up }));
+        d.state_hash()
+    };
+    assert_ne!(queued(true), queued(false));
+    let (mut d, _) = boot(FixtureArg::Page(801));
+    d.input.keyboard = true;
+    d.input.keyboard_owner = Some(InstanceId(1));
+    let first = d.state_hash();
+    d.input.keyboard_owner = Some(InstanceId(2));
+    assert_ne!(first, d.state_hash(), "the binding changes which later close request is accepted");
+}
+
 /// §7.6: a `LegacyPage` declares `FocusSource::Legacy`/`HitSource::Legacy` — the engine, the
 /// map and `on_miss` are INERT for it; its own ladders stay the single writer.
 #[test]

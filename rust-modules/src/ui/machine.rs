@@ -337,10 +337,12 @@ pub enum Fx<H: Host> {
     App(H::Fx),
 }
 
-/// What a `Deliver` carries: a screen event, the app's own message, or an identity-bound press.
+/// What a `Deliver` carries: a screen event, app message, or identity-bound input operation.
 pub enum Delivery<H: Host> {
     Screen(ScreenEvent<H>),
     Machine(H::Msg),
+    /// A request by the addressed instance, not an unscoped observation from the OS.
+    Keyboard { up: bool },
     /// Preserve the arming identity even after its arm retires and delivery crosses a frame.
     Press { id: PressId, key: FocusKey<H::Elem>, held: bool },
 }
