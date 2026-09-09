@@ -26,6 +26,7 @@ impl RecentsSnapshot {
 struct Store {
     generation: u32,
     who: String,
+    account: Account,
     terms: Arc<Vec<String>>,
 }
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
@@ -35,8 +36,15 @@ fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
     let generation = crate::plex::session::current_gen();
     if guard.as_ref().map(|s| s.generation) != Some(generation) {
         let who = crate::plex::session::current_profile_key();
-        let terms = sanitize(crate::plex::session::peek().recents_for(&who).to_vec());
-        *guard = Some(Store { generation, who, terms: Arc::new(terms) });
+        // Copy before reading disk: a worker may drain this entry while peek waits for IO.
+        // Taking PENDING across peek would invert flush's IO -> PENDING lock order.
+        let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner())
+            .iter().find(|p| p.who == who).cloned();
+        let session = crate::plex::session::peek();
+        let account = Account::of(&session);
+        let terms = pending.filter(|p| p.account == account).map(|p| p.terms)
+            .unwrap_or_else(|| sanitize(session.recents_for(&who).to_vec()));
+        *guard = Some(Store { generation, who, account, terms: Arc::new(terms) });
     }
     f(guard.as_mut().expect("profile cache is populated"))
 }
@@ -49,18 +57,25 @@ pub(crate) fn snapshot() -> RecentsSnapshot {
 /// Update data and capture the persistence payload under the same profile-cache lock.
 /// Unchanged edits keep the same Arc and neither spawn a worker nor invalidate the frame.
 fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<String>>, submit: impl FnOnce()) -> bool {
+    let mut retry_drain = false;
     let changed = with_store(|s| {
         if s.generation != profile_generation { return false; }
         let Some(terms) = change(&s.terms) else { return false };
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|p| p.account == s.account);
+        let slot = pending.iter().position(|p| p.who == s.who);
+        if slot.is_none() && pending.len() == PENDING_CAP {
+            crate::log("search: recent-history queue full; edit refused");
+            retry_drain = true;
+            return false;
+        }
+        let payload = Pending { account: s.account.clone(), who: s.who.clone(), terms: terms.clone() };
+        if let Some(i) = slot { pending[i] = payload; } else { pending.push(payload); }
         s.terms = Arc::new(terms);
-        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Pending { who: s.who.clone(), terms: s.terms.as_ref().clone() });
         true
     });
-    if changed {
-        submit();
-        crate::ui::idle::invalidate();
-    }
+    if changed || retry_drain { submit(); }
+    if changed { crate::ui::idle::invalidate(); }
     changed
 }
 
@@ -146,14 +161,26 @@ fn promote(list: &mut Vec<String>, term: &str) {
 }
 
 
-// The latest pending list is captured on the main thread. The worker never reads STORE,
-// profile state, or glyph caches. This retains the existing write coalescing policy.
-static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
-struct Pending { who: String, terms: Vec<String> }
+// Resource ceiling, not a Plex profile limit. Coalesce per profile, never evict another
+// profile's accepted edit. If workers cannot drain 64 distinct profiles, refuse new entries.
+const PENDING_CAP: usize = 64;
+static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
+
+// Private persistence guard, never exposed in a view, log or replay payload. The installation
+// client_id alone cannot distinguish accounts; account_token survives Home profile switches.
+#[derive(Clone, PartialEq, Eq)]
+struct Account { client_id: String, token: String }
+impl Account {
+    fn of(s: &crate::plex::session::Session) -> Self {
+        Self { client_id: s.client_id.clone(), token: s.account_token.clone() }
+    }
+}
+#[derive(Clone)]
+struct Pending { account: Account, who: String, terms: Vec<String> }
 
 /// The session to WRITE `terms` for `who`, or `None` when there is nothing to write.
 ///
-/// Pure — `who` is a parameter rather than a global read for the reason [`Pending::who`] gives —
+/// Pure — `who` is captured with the edit, never read from the active profile on the worker —
 /// and split out from [`flush`] so both refusals are host-testable. The second is the single line
 /// standing between a search term and a wiped credentials file, and it is invisible to every other
 /// test in the suite.
@@ -185,8 +212,15 @@ fn merged(
 
 fn flush() {
     crate::plex::session::update(|s| {
-        let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        merged(s, &pending.who, &pending.terms)
+        let pending = std::mem::take(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()));
+        let account = Account::of(s);
+        let mut next = None;
+        for p in pending.into_iter().filter(|p| p.account == account) {
+            if let Some(updated) = merged(next.as_ref().unwrap_or(s), &p.who, &p.terms) {
+                next = Some(updated);
+            }
+        }
+        next
     });
 }
 
@@ -198,8 +232,88 @@ mod tests {
     impl Drop for ClearCaches {
         fn drop(&mut self) {
             *STORE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            PENDING.lock().unwrap_or_else(|e| e.into_inner()).clear();
         }
+    }
+
+    #[test]
+    fn queue_capacity_refuses_new_profiles_without_evicting_accepted_edits() {
+        let _guard = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("recents-pending-cap");
+        let _caches = ClearCaches;
+        session.watching("overflow");
+        let before = snapshot();
+        let account = Account::of(&crate::plex::session::peek());
+        *PENDING.lock().unwrap() = (0..PENDING_CAP).map(|i| Pending {
+            account: account.clone(), who: format!("queued-{i}"), terms: vec!["accepted".into()],
+        }).collect();
+        let mut retries = 0;
+        assert!(!remember_with(before.generation(), "overflow", || retries += 1));
+        assert_eq!(retries, 1, "a previously refused worker can be retried without inline IO");
+        assert!(before.same_publication(&snapshot()));
+        assert_eq!(PENDING.lock().unwrap().len(), PENDING_CAP);
+        // Existing profiles still coalesce even at capacity.
+        session.watching("queued-0");
+        assert!(remember_with(snapshot().generation(), "newest", || {}));
+        assert_eq!(PENDING.lock().unwrap().len(), PENDING_CAP);
+        flush();
+        let saved = crate::plex::session::peek();
+        assert_eq!(saved.recents_for("queued-0"), &["newest", "accepted"]);
+        for i in 1..PENDING_CAP {
+            assert_eq!(saved.recents_for(&format!("queued-{i}")), &["accepted"]);
+        }
+        assert!(saved.recents_for("overflow").is_empty());
+        session.watching("overflow");
+        assert!(remember_with(snapshot().generation(), "now admitted", || {}));
+        flush();
+        assert_eq!(crate::plex::session::peek().recents_for("overflow"), &["now admitted"]);
+    }
+
+    #[test]
+    fn pending_writes_preserve_each_profiles_latest_committed_history() {
+        let _guard = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("recents-pending-profiles");
+        let _caches = ClearCaches;
+        session.watching("pending-a");
+        assert!(remember_with(snapshot().generation(), "alpha", || {}));
+        session.watching("pending-b");
+        assert!(remember_with(snapshot().generation(), "beta", || {}));
+        session.watching("pending-a");
+        assert_eq!(snapshot().terms(), &["alpha"], "return before the worker drains preserves history");
+        assert!(remember_with(snapshot().generation(), "alpha latest", || {}));
+        flush();
+        let saved = crate::plex::session::peek();
+        assert_eq!(saved.recents_for("pending-a"), &["alpha latest", "alpha"], "B cannot replace A's queued write");
+        assert_eq!(saved.recents_for("pending-b"), &["beta"]);
+    }
+
+    #[test]
+    fn pending_writes_cannot_cross_an_account_replacement() {
+        let _guard = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("recents-pending-account");
+        let _caches = ClearCaches;
+        crate::plex::session::update(|s| {
+            let mut next = s.clone();
+            next.account_token = "synthetic-old-account".into();
+            Some(next)
+        });
+        session.watching("old-profile");
+        assert!(remember_with(snapshot().generation(), "old history", || {}));
+        let old = crate::plex::session::peek();
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: old.client_id,
+            account_token: "synthetic-new-account".into(),
+            ..Default::default()
+        });
+        // Even a matching profile key (notably the empty owner key) grants no authority.
+        session.watching("old-profile");
+        assert!(snapshot().terms().is_empty(), "pending old-account terms must not reappear in a view");
+        flush();
+        assert!(crate::plex::session::peek().recents_for("old-profile").is_empty(),
+            "a valid replacement session is not authority to persist the departing account's terms");
+        assert!(remember_with(snapshot().generation(), "new account history", || {}));
+        flush();
+        assert_eq!(crate::plex::session::peek().recents_for("old-profile"), &["new account history"]);
     }
 
     #[test]

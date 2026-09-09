@@ -134,6 +134,12 @@ soft-failing deserializer, so a corrupt entry costs that entry and never the ses
 The recents data owner is now `search/recents.rs`: profile-generation cache, immutable term
 publications, normalization, and worker persistence. `SearchCmd` carries remember/clear requests
 with the captured profile generation; the store refuses a command after that generation changes.
+Pending saves coalesce per profile, so switching profiles cannot replace another profile's
+accepted history. Returning before the worker drains reads that pending history. The worker
+checks the captured installation and account credentials against the session under its IO lock;
+an old account's pending history cannot be written into a replacement account. The queue admits
+64 distinct profiles at once (a resource ceiling, not a Plex limit); when full it refuses a new
+profile's edit without evicting accepted saves and retries the background drain.
 The renderer in `ui/search/recents.rs` keeps only geometry and a glyph cache keyed on that
 publication. `SearchSnapshot` includes recents beside query/results and is retained at the bridge's
 frame boundary. The Search screen itself is still legacy during this migration; its replacement
