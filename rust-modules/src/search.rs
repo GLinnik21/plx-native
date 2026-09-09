@@ -83,6 +83,7 @@ use std::sync::{Arc, Mutex};
 
 pub(crate) mod view;
 pub(crate) mod recents;
+pub(crate) mod scope;
 
 /// Below this many characters the server answers with nothing, so asking is pure latency.
 /// Measured, not guessed — see the module doc.

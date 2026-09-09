@@ -237,3 +237,11 @@ This backup is for recovery, not a completion or release claim.
 Source checkpoint: `727ca94e5a4255309f5ce8454623ba7870804dcc` on `codex/ui-phase8`.
 The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
 This backup is for recovery, not a completion or release claim.
+
+## Latest outage checkpoint
+
+Source checkpoint: `53c12e3935d054e9f9af2b654488f8f7f37a61d5` on `codex/ui-phase8`.
+The integrated branch also includes opt-in synthetic rail/pagination fixtures (seven focused tests passed).
+This backup is for recovery, not a completion or release claim.
+
+Owned Search implementation is staged under `screens/search/` but is NOT registered, compiled, or UI-verified yet; renderer, return-state, and native adapter integration remain. The integrated Search source-scope publication passed host, shipping-feature and ARM checks.
