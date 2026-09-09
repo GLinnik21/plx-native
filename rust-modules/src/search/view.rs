@@ -50,6 +50,8 @@ impl SearchSnapshot {
 pub(crate) struct SearchView<'a>(&'a SearchSnapshot);
 
 impl<'a> SearchView<'a> {
+    pub(crate) fn snapshot(self) -> SearchSnapshot { self.0.clone() }
+    pub(crate) fn same_publication(self, other: &SearchSnapshot) -> bool { self.0.same_publication(other) }
     pub(crate) fn query(self) -> &'a str { self.0.query.as_deref().unwrap_or("") }
     pub(crate) fn shelves(self) -> &'a [Shelf] {
         self.0.shelves.as_deref().map(Vec::as_slice).unwrap_or(&[])

@@ -212,6 +212,7 @@ pub(super) struct AppViews<'a> {
     pub(super) listing: crate::stores::browse::ListingView<'a>,
     pub(super) directory: crate::stores::browse::DirectoryView<'a>,
     pub(super) section_hubs: crate::stores::browse::HubsView<'a>,
+    pub(super) search: crate::search::view::SearchView<'a>,
 }
 
 #[derive(Default)]
@@ -239,6 +240,10 @@ impl Host for AppHost {
 
 impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
+}
+
+impl crate::screens::registry::SearchLike for AppHost {
+    fn search<'a>(cx: &Cx<'a, Self>) -> crate::search::view::SearchView<'a> { cx.views.search }
 }
 
 impl crate::screens::registry::LibraryLike for AppHost {
@@ -350,6 +355,9 @@ impl Screen<AppHost> for LegacyPage {
 struct AppMounter {
     seed: Option<super::Node>,
     library_kind: Option<crate::browse::SecKind>,
+    /// Temporary integration gate: host fixtures exercise Search before the legacy loop's
+    /// native keyboard/input calls are retired. Remove with the live Search cutover.
+    search_owned: bool,
 }
 
 impl Mounter<AppHost> for AppMounter {
@@ -408,6 +416,11 @@ impl Mounter<AppHost> for AppMounter {
                     .unwrap_or(crate::browse::SecKind::Movie);
                 let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Search) if self.search_owned => {
+                let mut page = crate::screens::search::SearchScreen::new(entry, id);
+                if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
             AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
@@ -478,6 +491,7 @@ pub(super) struct Bridge {
     content_reqs: Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)>,
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
     library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
+    search_reqs: Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
     effect_return: ReturnState<u32, PageMemory>,
     pub(super) menu_opener: Option<(EntryId, Option<FocusKey<u32>>)>,
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
@@ -525,6 +539,7 @@ impl Bridge {
             content_reqs: Vec::new(),
             home_reqs: Vec::new(),
             library_reqs: Vec::new(),
+            search_reqs: Vec::new(),
             effect_return: ReturnState::default(),
             menu_opener: None,
             held: Vec::new(),
@@ -554,7 +569,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view() }, self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view() }, self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -607,7 +622,7 @@ impl Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(),
             }, self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -635,7 +650,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
         }, self.measure);
         Some(f(home, &cx, focus))
     }
@@ -650,12 +665,13 @@ impl Bridge {
 
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
         self.legacy_host_live = super::host_page_updates(route, false);
-        if matches!(super::page_of(route), Route::Home | Route::Library) {
-            d.nav.tabs.strip_fallback = Some(crate::screens::home::STRIP_HOME_ELEM);
+        let search = self.mounter.search_owned && super::page_of(route) == Route::Search;
+        if matches!(super::page_of(route), Route::Home | Route::Library) || search {
+            d.nav.tabs.strip_fallback = Some(if search { crate::ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
             self.chrome.refresh(self.measure);
             self.chrome_selection = if super::page_of(route) == Route::Library {
                 self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
-            } else { 0 };
+            } else if search { self.chrome.search_selection() } else { 0 };
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
             self.chrome.members(selected, Self::home_focus(d), &mut d.nav.tabs.strip);
         } else {
@@ -746,7 +762,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
         }, self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -765,7 +781,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
         }, self.measure);
         let host = if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
@@ -815,7 +831,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
         }, self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -924,7 +940,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(),
             },
             measure: self.measure,
         }
@@ -951,7 +967,7 @@ impl Rig<AppHost> for Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
         }, self.measure);
         match msg {
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
@@ -976,7 +992,7 @@ impl Rig<AppHost> for Bridge {
     fn app_return(&mut self, _from: MachineId, ret: ReturnState<u32, PageMemory>) {
         self.effect_return = ret;
     }
-    fn app_fx(&mut self, from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
+    fn app_fx(&mut self, from: MachineId, fx: AppFx, parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
         match fx {
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
@@ -986,6 +1002,14 @@ impl Rig<AppHost> for Bridge {
             AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Search(req) => {
+                if let crate::screens::registry::SearchReq::Keyboard { up } = &req {
+                    out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::Input(InputEvent {
+                        at: parts.tick, source: Source::Script, kind: InputKind::SystemKeyboard(*up),
+                    }))));
+                }
+                self.search_reqs.push((from, req, self.effect_return.clone()));
+            }
         }
     }
     fn log(&mut self, line: &str) {
@@ -1159,7 +1183,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(),
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(),
         }, rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -1181,7 +1205,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view() }, rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -1206,7 +1230,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(),
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(),
     }, rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
@@ -1561,6 +1585,7 @@ mod tests {
     include!("library_navigation_tests.rs");
     include!("library_shelf_action_tests.rs");
     include!("search_publication_tests.rs");
+    include!("search_owned_tests.rs");
     #[test]
     fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};

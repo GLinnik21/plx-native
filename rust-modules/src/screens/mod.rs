@@ -17,6 +17,7 @@ pub(crate) mod person;
 pub(crate) mod filmography;
 pub(crate) mod home;
 pub(crate) mod library;
+pub(crate) mod search;
 pub(crate) mod family;
 pub(crate) mod legal;
 pub(crate) mod login;

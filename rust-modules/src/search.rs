@@ -413,6 +413,15 @@ pub(crate) fn query_gen() -> u32 {
     GEN.load(Ordering::SeqCst)
 }
 
+/// Publish a bounded catalog through the real retained-view boundary, without network work.
+#[cfg(test)]
+pub(crate) fn publish_shelves_for_test(shelves: Vec<Shelf>) {
+    unsafe {
+        *addr_of_mut!(SHELVES) = Some(Arc::new(shelves));
+        *addr_of_mut!(STATE) = State::Ready;
+    }
+}
+
 /// The shelves, already in [`KINDS`] order, with empty ones omitted — an empty type draws nothing
 /// at all, so the UI never has to test for it.
 pub(crate) fn shelves() -> &'static [Shelf] {

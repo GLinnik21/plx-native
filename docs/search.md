@@ -159,6 +159,14 @@ Pending inputs include their payload in the canonical state hash. The fixture re
 round-trips these events; connecting the native adapter and product recorder to the owned Search
 screen remains part of the migration, not a claim this vocabulary alone completes it.
 
+The owned `screens/search` implementation now compiles and is mounted by integration fixtures
+through `AppMounter::search_owned`. It consumes `AppViews.search`, keeps an unacknowledged draft,
+uses engine-owned focus groups and supplies query/profile-guarded entry restoration data.
+Its renderer reads retained query, result and source-scope publications. The temporary mounter
+gate is **off in the live loop** until native keyboard and navigation adapters are connected;
+host tests are not visual verification, and the legacy Search implementation remains the live
+route and the contract reference until that cutover is finished.
+
 ---
 
 ## 2. The data layer

@@ -34,6 +34,17 @@ pub(crate) enum AppFx {
     Home(HomeReq),
     /// Library-page semantic requests. The bridge owns navigation/player/item-menu execution.
     Library(LibraryReq),
+    Search(SearchReq),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SearchReq {
+    Keyboard { up: bool },
+    Detail { sid: crate::plex::ServerId, rk: String },
+    Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
+    ItemMenu { sid: crate::plex::ServerId, rk: String },
+    Tab(HomeTab),
+    Account,
 }
 
 /// Bounded actions emitted by the owned Home page. Item identity is always server-scoped.
@@ -342,6 +353,7 @@ pub(crate) enum PageMemory {
     Filmography(FilmographyMemory),
     Home(HomeMemory),
     Library(LibraryMemory),
+    Search(crate::screens::search::Memory),
 }
 
 impl crate::ui::machine::LogicalState for DetailIdentity {
@@ -425,6 +437,7 @@ impl crate::ui::machine::LogicalState for PageMemory {
                 c.seq(memory.viewports.len());
                 for viewport in &memory.viewports { viewport.write(c); }
             }
+            Self::Search(memory) => { c.u32(6); memory.write(c); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("page_memory"); }
@@ -485,6 +498,10 @@ impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
 pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a>;
+}
+
+pub(crate) trait SearchLike: AppLike<Memory = PageMemory> + Sized {
+    fn search<'a>(cx: &Cx<'a, Self>) -> crate::search::view::SearchView<'a>;
 }
 
 /// A host that publishes all three retained Library views captured at the frame split.

@@ -117,6 +117,8 @@ pub(super) fn state_fp() -> u64 {
         super::bridge::ARG_SHAPE,
         crate::ui::screen::RETURN_STATE_SHAPE,
         crate::screens::registry::PAGE_MEMORY_SHAPE,
+        crate::screens::search::Memory::SHAPE,
+        crate::screens::search::SHAPE,
         crate::screens::home::SHAPE,
         crate::screens::library::SHAPE[0],
         crate::screens::library::SHAPE[1],
@@ -775,7 +777,8 @@ mod tests {
         // The diagnostic's document-end reversal direction is owned logical state too.
         // Query-reset intent and its observed query survive Library entry eviction.
         // Pending normalized input now includes its full payload, including whole text commits.
-        assert_eq!(state_fp(), 0xbc7e22632b499c40);
+        // The owned Search state and its entry restoration payload join the inventory.
+        assert_eq!(state_fp(), 0x6880cbcde989b71c);
     }
 
     #[test]

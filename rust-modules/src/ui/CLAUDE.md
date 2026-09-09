@@ -175,6 +175,9 @@ profile-scoped worker persistence; `ui/search/recents.rs` retains geometry and g
 Its compatibility writes use generation-addressed `SearchCmd` requests. The bridge captures
 immutable query/result/recents publications; the upcoming owned Search screen must consume those
 views. This data move does not mean Search's legacy focus ladder or keyboard ownership is retired.
+`screens/search` now compiles and is exercised through the bridge's integration-test mounter
+gate, using retained views, an owned draft and engine groups. The gate remains off in the live
+loop pending native adapter integration and visual verification; legacy Search is not retired.
 
 | File | Owns |
 |---|---|

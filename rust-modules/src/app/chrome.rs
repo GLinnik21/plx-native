@@ -60,6 +60,10 @@ impl ChromeSnapshot {
         self.keys.iter().position(|key| *key == elem).unwrap_or(0) as u32
     }
 
+    pub(super) fn search_selection(&self) -> u32 {
+        self.keys.iter().position(|key| *key == STRIP_BASE + 3).unwrap_or(0) as u32
+    }
+
     pub(super) fn profile(&self) -> ProfileChipRead<'_> {
         ProfileChipRead { generation: self.profile_generation.unwrap_or(0), thumb: &self.thumb,
             label: &self.label, initial: &self.initial }

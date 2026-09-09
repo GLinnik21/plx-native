@@ -14,6 +14,8 @@ pub(crate) enum SearchCmd {
     /// The field's text; a change of the TRIMMED terms supersedes the answer and restarts the
     /// debounce, a change of whitespace only repaints.
     SetQuery(String),
+    /// An owned draft cannot submit into a replacement profile's Search store.
+    SetQueryScoped { profile_generation: u32, query: String },
     /// A submitted search, not each keystroke; history is scoped to the active profile.
     RememberRecent { profile_generation: u32, term: String },
     ClearRecents { profile_generation: u32 },
@@ -35,6 +37,11 @@ pub(super) fn run(cmd: SearchCmd) -> bool {
     let answer = match cmd {
         SearchCmd::SetQuery(q) => {
             crate::search::set_query(&q);
+            true
+        }
+        SearchCmd::SetQueryScoped { profile_generation, query } => {
+            if profile_generation != crate::plex::session::current_gen() { return false; }
+            crate::search::set_query(&query);
             true
         }
         SearchCmd::RememberRecent { profile_generation, term } => crate::search::recents::remember(profile_generation, &term),
