@@ -9,7 +9,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # A maintenance line (`release/vX.Y`, cut from a tag for a patch release) is a trunk of its own
+    # for `release.yml`'s `line` input, so it gets the same push gate `main` does — otherwise the
+    # first time a hotfix's changes are compiled in a clean checkout is the release run itself.
+    branches: [main, 'release/v*']
   pull_request:
   workflow_dispatch:
 
