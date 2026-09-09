@@ -774,7 +774,8 @@ mod tests {
         // The open Filter menu now records its immediate, not-yet-committed desired value.
         // The diagnostic's document-end reversal direction is owned logical state too.
         // Query-reset intent and its observed query survive Library entry eviction.
-        assert_eq!(state_fp(), 0x1882f8f9ce7658a0);
+        // Pending normalized input now includes its full payload, including whole text commits.
+        assert_eq!(state_fp(), 0xbc7e22632b499c40);
     }
 
     #[test]

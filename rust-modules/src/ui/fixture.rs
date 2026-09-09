@@ -276,7 +276,7 @@ impl FixtureState {
 
 /// The bundle's state fingerprint: every `LogicalState` shape it carries, in a fixed order.
 pub fn fixture_state_fp() -> u64 {
-    super::rec::state_fp(&[FixtureState::SHAPE, "FixtureInit{seed:u32}"])
+    super::rec::state_fp(&[FixtureState::SHAPE, "FixtureInit{seed:u32}", super::input::STATE_SHAPE])
 }
 
 impl LogicalState for FixtureState {
@@ -325,6 +325,14 @@ impl Machine<FixtureHost> for FixtureScreen {
         fx: &mut Effects<'_, FixtureHost>,
     ) -> Handled {
         self.state.events.push(ev.name());
+        // Page 801 observes the context of each delivered input, without consuming directions.
+        if self.arg == FixtureArg::Page(801) && matches!(ev, ScreenEvent::Input(_)) {
+            self.state.events.push(match cx.owner {
+                super::machine::InputOwner::System(_) => "system_owner",
+                super::machine::InputOwner::Entry(_) => "entry_owner",
+            });
+            if cx.focus.current.is_some() { self.state.events.push("has_focus"); }
+        }
         // Page 800 makes stale interactive delivery observable at BOTH exits: the logical
         // handler and an adapter/store write. The dispatcher must reject it before step.
         if self.arg == FixtureArg::Page(800) && matches!(ev,
@@ -1041,9 +1049,21 @@ impl Tap<FixtureHost> for RecTap {
         self.w.tick(f, t);
     }
     fn input(&mut self, f: u64, ev: &InputEvent<u32>) {
-        if let InputKind::Key { key, .. } = ev.kind {
-            self.w.input(f, json!({"kind": "key", "key": key_name(key), "ms": ev.at.ms}));
-        }
+        use super::machine::TextEdit;
+        let input = match &ev.kind {
+            InputKind::Key { key, .. } => json!({"kind": "key", "key": key_name(*key), "ms": ev.at.ms}),
+            InputKind::SystemKeyboard(up) => json!({"kind": "keyboard", "up": up, "ms": ev.at.ms}),
+            InputKind::Text(edit) => {
+                let (op, text) = match edit {
+                    TextEdit::Commit(text) => ("commit", text.as_ref()),
+                    TextEdit::Backspace => ("backspace", ""), TextEdit::Clear => ("clear", ""),
+                    TextEdit::Left => ("left", ""), TextEdit::Right => ("right", ""),
+                };
+                json!({"kind": "text", "op": op, "text": text, "ms": ev.at.ms})
+            }
+            _ => return,
+        };
+        self.w.input(f, input);
     }
     fn result(&mut self, f: u64, addr: &Addr, msg: &FixtureMsg) {
         let (to, payload) = match (addr.to, msg) {
@@ -1091,6 +1111,20 @@ pub struct FixtureCodec;
 
 impl Codec<FixtureHost> for FixtureCodec {
     fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> {
+        use super::machine::{Source, TextEdit};
+        let at = tick(v["ms"].as_u64()?.try_into().ok()?);
+        let kind = match v["kind"].as_str()? {
+            "keyboard" => Some(InputKind::SystemKeyboard(v["up"].as_bool()?)),
+            "text" => Some(InputKind::Text(match v["op"].as_str()? {
+                "commit" => TextEdit::Commit(v["text"].as_str()?.into()),
+                "backspace" => TextEdit::Backspace, "clear" => TextEdit::Clear,
+                "left" => TextEdit::Left, "right" => TextEdit::Right,
+                _ => return None,
+            })),
+            "key" => None,
+            _ => return None,
+        };
+        if let Some(kind) = kind { return Some(InputEvent { at, source: Source::Script, kind }); }
         let k = match v["key"].as_str()? {
             "up" => Key::Up,
             "down" => Key::Down,
@@ -1100,7 +1134,7 @@ impl Codec<FixtureHost> for FixtureCodec {
             "back" => Key::Back,
             _ => Key::Other,
         };
-        Some(key(k, tick(v["ms"].as_u64()? as u32)))
+        Some(key(k, at))
     }
     fn decode_result(&self, v: &Value) -> Option<(Addr, FixtureMsg)> {
         let to = v["to"].as_str()?;
@@ -1250,7 +1284,8 @@ fn the_present_bit_is_recorded_and_replayed() {
 #[test]
 fn the_fixture_bundles_state_shape_is_pinned() {
     // Re-pin only with a named reason: a shape change invalidates every fixture of this bundle.
-    assert_eq!(fixture_state_fp(), 0x7fa4_0b1a_c484_3abf);
+    // The fixture bundle now versions the input machine and queued whole-input payloads too.
+    assert_eq!(fixture_state_fp(), 0xe9f3_82c2_f3da_9652);
 }
 
 pub(crate) fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {

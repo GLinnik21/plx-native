@@ -1371,7 +1371,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
                     || (matches!(app.route, Route::Library) && super::bridge::Bridge::library_card_focused(&app.pages)))
             {
                 app.inputs.push(super::bridge::script_key(crate::ui::machine::Key::Ok,
-                    crate::ui::machine::Tick { ms: fr.now, dt_us: 0 })[0]);
+                    crate::ui::machine::Tick { ms: fr.now, dt_us: 0 })[0].clone());
                 // past MIN_DIP_MS (the dip must be seen), well short of LONG_MS
                 app.press_release_at = fr.now.wrapping_add(150).max(1);
             }
@@ -1380,7 +1380,7 @@ pub(super) unsafe fn dev_scripts(app: &mut App, mt: &crate::task::MainThread, fr
             app.press_release_at = 0;
             app.input.press.release(fr.now);
             app.inputs.push(super::bridge::script_key(crate::ui::machine::Key::Ok,
-                crate::ui::machine::Tick { ms: fr.now, dt_us: 0 })[1]);
+                crate::ui::machine::Tick { ms: fr.now, dt_us: 0 })[1].clone());
         }
         // dev: /tmp/plxnative-itemmenu opens the press-and-hold card menu on the focused grid
         // card once the snap has settled — the headless entry for the item-menu FPS scene and

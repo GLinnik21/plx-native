@@ -9,7 +9,7 @@
 //! the boundaries are proven to COMPOSE against the layer rule (§2.1: this module names no
 //! application type, no widget, no engine, no screen — `stores/` will reach `ui::` through this
 //! module alone) before any real code moves. Every type here is what the spec names; where the
-//! spike narrows one (a `Timer` with no owner registry, a `TextEdit` with three variants) the doc
+//! spike narrows one (such as a `Timer` with no owner registry) the doc
 //! on it says so.
 #![allow(dead_code)] // phase 2-i: the contract has no consumer until phase 2 (spec §13)
 
@@ -363,11 +363,42 @@ pub enum PressFrom {
 }
 
 /// Input (§3.2). The remote FIFO produces these directly; there is no SDL byte-array synthesis.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct InputEvent<K> {
     pub at: Tick,
     pub source: Source,
     pub kind: InputKind<K>,
+}
+
+impl<K> InputEvent<K> {
+    /// Canonical pending-input payload; text is content, never an Arc address.
+    pub(crate) fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
+        c.u32(self.at.ms).u32(self.at.dt_us);
+        c.u32(match self.source { Source::Sdl => 0, Source::RemoteFifo => 1, Source::Script => 2, Source::Replay => 3 });
+        match &self.kind {
+            InputKind::Key { key, sym, wcode, edge, at_edge } => {
+                c.u32(0).u32(match key { Key::Up => 0, Key::Down => 1, Key::Left => 2,
+                    Key::Right => 3, Key::Ok => 4, Key::Back => 5, Key::Other => 6 });
+                c.u32(*sym).u32(*wcode).u32(match edge { Edge::Down => 0, Edge::Repeat => 1, Edge::Up => 2 }).bool(*at_edge);
+            }
+            InputKind::Pointer { x, y, hit } | InputKind::Click { x, y, hit } | InputKind::Drag { x, y, hit } => {
+                c.u32(match &self.kind { InputKind::Pointer { .. } => 1, InputKind::Click { .. } => 2, _ => 3 });
+                c.f32(*x).f32(*y);
+                c.option(hit.as_ref(), |c, key| elem(key, c));
+            }
+            InputKind::Wheel { dy } => { c.u32(4).f32(*dy); }
+            InputKind::Text(edit) => {
+                c.u32(5);
+                match edit {
+                    TextEdit::Commit(text) => { c.u32(0).str(text); }
+                    TextEdit::Backspace => { c.u32(1); } TextEdit::Clear => { c.u32(2); }
+                    TextEdit::Left => { c.u32(3); } TextEdit::Right => { c.u32(4); }
+                }
+            }
+            InputKind::PointerHidden => { c.u32(6); }
+            InputKind::SystemKeyboard(up) => { c.u32(7).bool(*up); }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -400,7 +431,7 @@ pub enum Key {
     Other,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum InputKind<K> {
     Key {
         key: Key,
@@ -434,13 +465,15 @@ pub enum InputKind<K> {
     SystemKeyboard(bool),
 }
 
-/// What the television's keyboard sends (§7.3 step 7). The spike's three edits; the field's full
-/// grammar (`docs/search.md`) joins with the Search screen in phase 8.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// A whole keyboard commit preserves LG's prediction boundary (`docs/search.md`). Cloning an
+/// input retains immutable text rather than truncating it or splitting it into character events.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TextEdit {
-    Insert(char),
+    Commit(std::sync::Arc<str>),
     Backspace,
     Clear,
+    Left,
+    Right,
 }
 
 /// Who receives input this frame (§3.2): a page OR a modal surface (both are entries), or a

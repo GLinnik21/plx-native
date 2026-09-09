@@ -718,7 +718,12 @@ where
                 }
             }
             match ev.kind {
-                InputKind::SystemKeyboard(up) => self.input.keyboard = up,
+                // With a page, this transition belongs to its ordered input delivery below,
+                // not this pre-pass over the entire batch. No page means no queued delivery.
+                InputKind::SystemKeyboard(up) if self.owner_entry().is_none() => {
+                    self.input.keyboard = up;
+                    self.input.cancel_press();
+                }
                 InputKind::Key { key, edge, .. } => {
                     if matches!(key, Key::Up | Key::Down | Key::Left | Key::Right) && edge == Edge::Down {
                         self.input.hit.note_dpad();
@@ -1062,7 +1067,7 @@ where
 
     /// The logical-state hash (spec §5.4): every live instance's `LogicalState`, the tree's
     /// shape and surface phases, the focus, the present gate's video-plane bit, queue depth
-    /// and queued press identities, in a fixed order. Incremental hashing is the optimisation
+    /// and queued press/input payloads, in a fixed order. Incremental hashing is the optimisation
     /// the spec names; this is the definition it must equal.
     pub fn state_hash(&self) -> u64 {
         let mut c = super::machine::Canon::new();
@@ -1080,6 +1085,12 @@ where
                 queued.from.write_canon(&mut c);
                 to.write_canon(&mut c);
                 c.u32(id.0).u32(key.entry.0).u32(key.elem.index().unwrap_or(u32::MAX)).bool(*held);
+            } else { c.bool(false); }
+            if let Fx::Deliver(to, Delivery::Screen(ScreenEvent::Input(input))) = &queued.fx {
+                c.bool(true);
+                queued.from.write_canon(&mut c);
+                to.write_canon(&mut c);
+                input.write_with(&mut c, &|elem, c| { c.u32(elem.index().unwrap_or(u32::MAX)); });
             } else { c.bool(false); }
         }
         c.finish()
@@ -1117,7 +1128,7 @@ where
                 Fx::CancelTimer(id) => self.timers.retain(|t| t.0 != id),
                 Fx::Press(arm) => {
                     steps += 1;
-                    self.input.arm(arm, item.from, parts.tick.ms);
+                    if !self.input.keyboard { self.input.arm(arm, item.from, parts.tick.ms); }
                 }
                 Fx::Remember { group, elem } => {
                     steps += 1;
@@ -1199,7 +1210,7 @@ where
     ) {
         match (to, delivery) {
             (MachineId::Instance(instance), Delivery::Press { id, key, held }) => {
-                let valid_owner = self.owner_entry() == Some(key.entry)
+                let valid_owner = !self.input.keyboard && self.owner_entry() == Some(key.entry)
                     && self.nav.instance_of(key.entry) == Some(instance)
                     && self.focus() == Some(key);
                 let valid_key = valid_owner && {
@@ -1219,6 +1230,22 @@ where
                 self.execute_deliver(rig, parts, to, Delivery::Screen(event), out, report);
             }
             (MachineId::Instance(id), Delivery::Screen(ev)) => {
+                // An OS ownership edge takes effect at its position in the delivery stream.
+                // It is global even if its original recipient retired while the event waited.
+                if let ScreenEvent::Input(InputEvent {
+                    kind: InputKind::SystemKeyboard(up), ..
+                }) = &ev {
+                    if self.input.keyboard != *up {
+                        self.input.keyboard = *up;
+                        self.input.cancel_press();
+                        // Tick may already have queued a hold/commit behind this edge. An
+                        // open+close round trip restores the entry, not the revoked gesture.
+                        let before = self.queue.len();
+                        self.queue.retain(|s| !matches!(&s.fx,
+                            Fx::Deliver(_, Delivery::Press { .. })));
+                        report.dropped_deliveries += (before - self.queue.len()) as u32;
+                    }
+                }
                 // A carried event can outlive its input owner. Reject it before the handler
                 // can write stores or request playback; a later navigation-effect guard is
                 // too late. Addressed commands, notices and lifecycle restoration still reach
@@ -1258,8 +1285,11 @@ where
                 );
                 let mut addressed = parts.clone();
                 if let Some(entry) = self.nav.entry_of_instance(id) {
-                    addressed.owner = InputOwner::Entry(entry);
-                    addressed.focus = self.input.engine.read(addressed.owner);
+                    // Focus still belongs to the underlying entry while the keyboard owns
+                    // input. Covered lifecycle recipients retain their own entry context.
+                    let entry_owner = InputOwner::Entry(entry);
+                    addressed.owner = if self.owner_entry() == Some(entry) { self.owner() } else { entry_owner };
+                    addressed.focus = self.input.engine.read(entry_owner);
                 }
                 let Dispatcher { nav, present, .. } = self;
                 // a surface's springs report under their own scope (§4.4 MotionScope)
@@ -1291,7 +1321,7 @@ where
                 // `after_step` re-delivered as a synthetic one (see that arm). The detection is
                 // deliberately blind to `at_edge` and to the wcode, so the two roads cannot
                 // diverge.
-                let is_owner = matches!(parts.owner, InputOwner::Entry(e) if nav.instance_of(e) == Some(id));
+                let is_owner = matches!(addressed.owner, InputOwner::Entry(e) if nav.instance_of(e) == Some(id));
                 if back && handled == Handled::No && is_owner {
                     self.pending_back = true;
                 }
@@ -1405,7 +1435,7 @@ where
                         }),
                         Outcome::Edge(EdgeRule::Screen) => {
                             if let ScreenEvent::Input(iev) = ev {
-                                let mut again = *iev;
+                                let mut again = iev.clone();
                                 if let InputKind::Key { at_edge, .. } = &mut again.kind {
                                     *at_edge = true;
                                 }

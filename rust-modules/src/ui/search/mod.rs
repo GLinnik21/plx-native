@@ -397,7 +397,7 @@ fn publish_text(buffer: crate::ui::text_buffer::TextBuffer) {
 
 fn commit_text(text: &str) {
     let mut buffer = text_buffer();
-    buffer.commit(text);
+    buffer.edit(&crate::ui::machine::TextEdit::Commit(text.into()));
     publish_text(buffer);
 }
 
@@ -411,19 +411,19 @@ fn insert_text(text: &str) {
 fn backspace() {
     if caret() == 0 { return; }
     let mut buffer = text_buffer();
-    buffer.backspace();
+    buffer.edit(&crate::ui::machine::TextEdit::Backspace);
     publish_text(buffer);
 }
 
 fn clear_query() {
     let mut buffer = text_buffer();
-    buffer.clear();
+    buffer.edit(&crate::ui::machine::TextEdit::Clear);
     publish_text(buffer);
 }
 
 fn move_caret(sym: c_uint) {
     let mut buffer = text_buffer();
-    if sym == SDLK_LEFT { buffer.left(); } else { buffer.right(); }
+    buffer.edit(&if sym == SDLK_LEFT { crate::ui::machine::TextEdit::Left } else { crate::ui::machine::TextEdit::Right });
     set_caret(buffer.caret());
 }
 

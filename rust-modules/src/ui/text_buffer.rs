@@ -18,6 +18,18 @@ impl TextBuffer {
     pub(crate) fn caret(&self) -> usize { self.caret }
     pub(crate) fn into_text(self) -> String { self.text }
 
+    /// Apply a normalized keyboard event without consulting a store publication.
+    pub(crate) fn edit(&mut self, edit: &super::machine::TextEdit) {
+        use super::machine::TextEdit;
+        match edit {
+            TextEdit::Commit(text) => self.commit(text),
+            TextEdit::Backspace => self.backspace(),
+            TextEdit::Clear => self.clear(),
+            TextEdit::Left => self.left(),
+            TextEdit::Right => self.right(),
+        }
+    }
+
     /// A literal insertion, unlike the TV's prediction-bearing commit.
     pub(crate) fn insert(&mut self, text: &str) {
         self.text.insert_str(self.caret, text);

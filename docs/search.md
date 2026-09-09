@@ -151,6 +151,14 @@ Search reconstructs it around its synchronous store edits; the owned screen must
 across successive input events while the frame's store view is frozen. A prediction publishes
 the completed replacement once, without exposing an intermediate deleted word to the store.
 
+The normalized input vocabulary carries a whole immutable `TextEdit::Commit`, plus Backspace,
+Clear, Left and Right. Keyboard ownership edges take effect in delivery order, including several
+edges in one frame; the page keeps its focus read while `Cx.owner` is `System(Keyboard)`.
+An ownership change cancels both an active page gesture and its queued hold/commit result.
+Pending inputs include their payload in the canonical state hash. The fixture recorder/replayer
+round-trips these events; connecting the native adapter and product recorder to the owned Search
+screen remains part of the migration, not a claim this vocabulary alone completes it.
+
 ---
 
 ## 2. The data layer

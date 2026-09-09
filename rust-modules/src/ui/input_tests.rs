@@ -593,6 +593,161 @@ fn the_system_keyboard_is_an_input_owner() {
     assert_eq!(elem(&d), Some(2), "keyboard down: the engine answers again");
 }
 
+#[test]
+fn keyboard_ownership_changes_take_effect_in_input_delivery_order() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    d.set_focus(Some(FocusKey { entry: home, elem: 1 }));
+    d.frame(&mut rig, tick(16), vec![
+        ev(InputKind::SystemKeyboard(true), tick(16)),
+        key(Key::Right, tick(16)),
+        ev(InputKind::SystemKeyboard(false), tick(16)),
+    ], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(1), "the later dismissal cannot give the earlier direction to the page engine");
+    d.frame(&mut rig, tick(32), vec![key(Key::Right, tick(32))], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(2));
+    d.frame(&mut rig, tick(48), vec![
+        key(Key::Left, tick(48)),
+        ev(InputKind::SystemKeyboard(true), tick(48)),
+        key(Key::Left, tick(48)),
+    ], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(1), "opening the keyboard cannot swallow an earlier page direction");
+}
+
+#[test]
+fn keyboard_context_keeps_entry_focus_but_does_not_fall_through_back() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(801));
+    let report = d.frame(&mut rig, tick(16), vec![
+        ev(InputKind::SystemKeyboard(true), tick(16)),
+        key(Key::Back, tick(16)),
+        ev(InputKind::SystemKeyboard(false), tick(16)),
+    ], vec![], &mut NoTap);
+    assert!(!report.back_at_root, "a system-owned BACK must not escape through the page container");
+    let events = events_of(&d, 0);
+    assert!(events.contains(concat!(
+        "\"input\", \"system_owner\", \"has_focus\", ",
+        "\"input\", \"system_owner\", \"has_focus\", ",
+        "\"input\", \"entry_owner\", \"has_focus\"")), "{events}");
+    let report = d.frame(&mut rig, tick(32), vec![key(Key::Back, tick(32))], vec![], &mut NoTap);
+    assert!(report.back_at_root, "after dismissal BACK belongs to the page again");
+}
+
+#[test]
+fn keyboard_edges_cancel_page_gestures_and_never_arm_system_owned_ok() {
+    for already_armed in [false, true] {
+        let (mut d, mut rig) = boot(FixtureArg::Page(700));
+        if already_armed {
+            d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+            assert!(d.input.arm.is_some());
+        }
+        d.frame(&mut rig, tick(32), vec![
+            ev(InputKind::SystemKeyboard(true), tick(32)),
+            key(Key::Ok, tick(32)),
+            ev(InputKind::SystemKeyboard(false), tick(32)),
+        ], vec![], &mut NoTap);
+        assert!(d.input.arm.is_none());
+        d.frame(&mut rig, tick(48), vec![key_up(Key::Ok, tick(48))], vec![], &mut NoTap);
+        d.frame(&mut rig, tick(1200), vec![], vec![], &mut NoTap);
+        let events = events_of(&d, 0);
+        assert!(!events.contains("\"press_hold\"") && !events.contains("\"press_commit\""), "{events}");
+    }
+}
+
+#[test]
+fn a_keyboard_round_trip_revokes_press_results_already_queued_for_this_frame() {
+    for handoff in [false, true] {
+        let (mut d, mut rig) = boot(FixtureArg::Page(700));
+        d.draw(&mut rig, true);
+        let rect = d.input.hit.front()[0].rect;
+        d.frame(&mut rig, tick(16), vec![click(rect.cx(), rect.cy(), tick(16))], vec![], &mut NoTap);
+        assert!(d.input.arm.is_some());
+        // The hold is evaluated before the drain; its delivery waits behind these edges.
+        let inputs = if handoff { vec![
+            ev(InputKind::SystemKeyboard(true), tick(528)),
+            ev(InputKind::SystemKeyboard(false), tick(528)),
+        ] } else { vec![] };
+        d.frame(&mut rig, tick(528), inputs, vec![], &mut NoTap);
+        let events = events_of(&d, 0);
+        assert_eq!(events.matches("\"press_hold\"").count(), usize::from(!handoff),
+            "the same page is back, but the gesture was revoked: {events}");
+    }
+}
+
+#[test]
+fn whole_text_commits_and_keyboard_edges_round_trip_in_order() {
+    use super::fixture::{fixture_state_fp, FixtureCodec, FixtureInit, RecTap};
+    use super::machine::{LogicalState, TextEdit};
+    use super::rec::{Header, MemSink, Recording, Writer};
+    use super::replay::{Codec, run_resolve, run_targets};
+    use serde_json::json;
+    let long = "synthetic whole commit longer than an SDL text array 🙂";
+    let edits = [
+        TextEdit::Commit("с".into()), TextEdit::Commit("у".into()),
+        TextEdit::Commit("б".into()), TextEdit::Commit("суббота ".into()),
+        TextEdit::Left, TextEdit::Right, TextEdit::Backspace, TextEdit::Clear,
+        TextEdit::Commit(long.into()),
+    ];
+    let mut inputs = vec![ev(InputKind::SystemKeyboard(true), tick(16))];
+    inputs.extend(edits.iter().cloned().map(|edit| ev(InputKind::Text(edit), tick(16))));
+    inputs.push(ev(InputKind::SystemKeyboard(false), tick(16)));
+    let sink = MemSink::default();
+    let segments = sink.segments.clone();
+    let init = FixtureInit { seed: 1 };
+    let header = Header::new(fixture_state_fp(), &init);
+    let mut tap = RecTap { w: Writer::open(Box::new(sink), &header, 0).unwrap() };
+    let mut d = Dispatcher::<FixtureHost>::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Page(801)));
+    d.frame(&mut rig, tick(0), vec![], vec![], &mut tap);
+    d.frame(&mut rig, tick(16), inputs, vec![], &mut tap);
+    assert_eq!(events_of(&d, 0).matches("\"system_owner\"").count(), edits.len() + 1);
+    tap.w.finish();
+    let manifest = json!({"schema": super::rec::SCHEMA, "state_fp": fixture_state_fp(),
+        "init": {"probe": "seed=1", "hash": init.hash()}}).to_string();
+    let segments = segments.borrow();
+    let slices: Vec<&[u8]> = segments.iter().map(Vec::as_slice).collect();
+    let rec = Recording::parse(&manifest, &slices, fixture_state_fp()).unwrap();
+    let decoded: Vec<_> = rec.frames[1].inputs.iter()
+        .map(|v| FixtureCodec.decode_input(v).unwrap()).collect();
+    assert_eq!(decoded.len(), edits.len() + 2, "one record per whole input, never per character");
+    assert!(matches!(decoded.first().unwrap().kind, InputKind::SystemKeyboard(true)));
+    assert!(matches!(decoded.last().unwrap().kind, InputKind::SystemKeyboard(false)));
+    let mut buffer = super::text_buffer::TextBuffer::new(String::new(), 0);
+    for (input, expected) in decoded[1..decoded.len()-1].iter().zip(&edits) {
+        let InputKind::Text(edit) = &input.kind else { panic!("text event changed kind") };
+        assert_eq!(edit, expected, "commit bytes and edit boundaries survive recording");
+        buffer.edit(edit);
+    }
+    assert_eq!(buffer.text(), long);
+    assert_eq!(buffer.caret(), long.len());
+    for resolve in [false, true] {
+        let mut d = Dispatcher::<FixtureHost>::new();
+        let mut rig = FixtureRig::new();
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Page(801)));
+        let report = if resolve { run_resolve(&rec, &FixtureCodec, &mut d, &mut rig, &|| None) }
+            else { run_targets(&rec, &FixtureCodec, &mut d, &mut rig, &|| None) };
+        assert!(report.is_clean(), "{:?}", report.safe_lines());
+    }
+}
+
+#[test]
+fn pending_input_hash_distinguishes_text_and_ownership_edges_not_arc_addresses() {
+    use super::machine::{Delivery, Fx, TextEdit};
+    let hash = |kind| {
+        let (mut d, _) = boot(FixtureArg::Page(801));
+        let target = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+        d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(target),
+            Delivery::Screen(super::screen::ScreenEvent::Input(ev(kind, tick(16))))));
+        d.state_hash()
+    };
+    let text = |s: &str| InputKind::Text(TextEdit::Commit(s.into()));
+    assert_eq!(hash(text("alpha")), hash(text("alpha")));
+    assert_ne!(hash(text("alpha")), hash(text("beta")));
+    assert_ne!(hash(text("")), hash(InputKind::Text(TextEdit::Clear)));
+    assert_ne!(hash(InputKind::Text(TextEdit::Left)), hash(InputKind::Text(TextEdit::Right)));
+    assert_ne!(hash(InputKind::SystemKeyboard(true)), hash(InputKind::SystemKeyboard(false)));
+}
+
 /// §7.6: a `LegacyPage` declares `FocusSource::Legacy`/`HitSource::Legacy` — the engine, the
 /// map and `on_miss` are INERT for it; its own ladders stay the single writer.
 #[test]

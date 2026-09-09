@@ -61,7 +61,7 @@ pub struct InputMachine<K> {
     pub keyboard: bool,
 }
 
-pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},next_press:u32,keyboard:bool,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueuedPress:[Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>]";
+pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},next_press:u32,keyboard:bool,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>}]";
 
 impl<K: Copy + Eq + Hash> Default for InputMachine<K> {
     fn default() -> Self {

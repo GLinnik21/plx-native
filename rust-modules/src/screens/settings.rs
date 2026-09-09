@@ -526,7 +526,7 @@ impl<H: AppLike> Machine<H> for RouteSurface {
                 Handled::Yes
             }
             ScreenEvent::Input(iev) => {
-                let handled = self.step_top(ScreenEvent::Input(*iev), cx, fx);
+                let handled = self.step_top(ScreenEvent::Input(iev.clone()), cx, fx);
                 if handled == Handled::Yes {
                     return Handled::Yes;
                 }
