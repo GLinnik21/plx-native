@@ -534,12 +534,24 @@ pub(super) unsafe fn boot(
         .into_owned();
 
 
-    // UI infra + poster workers always come up — the login/profiles screens use them too.
+    // UI infra + poster workers always come up — the owned login/profiles screens use them too.
+    //
+    // **No `ui::login::init()` / `ui::profiles::init()` here any more (phase 6 retirement).**
+    // Both calls used to allocate the legacy `Scene` statics `ui::login`/`ui::profiles` drew
+    // from; `screens::login::LoginScreen`/`screens::profiles::ProfilesScreen` are owned
+    // `Screen`s constructed fresh by `AppMounter::mount` on each entry (`app/bridge.rs`) and
+    // read no module global at all, so nothing left in the boot path calls into either legacy
+    // module's `scene()` and the `.expect("…::init not called")` guard those calls carried is no
+    // longer reachable. BOTH legacy modules are deleted outright: `ui/login.rs`'s one surviving
+    // reader (`screens::login::LoginScreen::resync`'s `delete_leftovers` count) moved to `auth`,
+    // and `ui/profiles.rs`'s last reader was a single `const` — `screens::onboard.rs`'s
+    // `CRUMB_PROFILES`, the breadcrumb over the Favourites editor — which now reads
+    // `screens::profiles::TITLE`, the owned screen's own title. Worth remembering when the next
+    // family is retired: what kept 1,250 dead lines in the tree was not a hard dependency but one
+    // string constant nobody had moved, and it was invisible because the file still compiled.
     super::adapters::poster::init();
     crate::capture::init(); // dev live UI capture stream (no-op without /tmp/plxnative-capture)
     crate::ui::home::home_init();
-    crate::ui::login::init();
-    crate::ui::profiles::init();
 
     // Any dev trigger under /tmp marks the boot as automated (the harness token override,
     // autoplay/detail captures, playback-path knobs): those runs need a deterministic Home,

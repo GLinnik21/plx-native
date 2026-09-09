@@ -80,8 +80,45 @@ use crate::ui::player_hud::ControlSlot;
 /// string built by the same expression and a harness can join the two lines on it.
 #[derive(Clone, Copy)]
 pub(crate) enum Screen {
-    Login,
-    Profiles,
+    /// The QR sign-in (`screens::login::LoginScreen`), an OWNED screen since phase 6.
+    ///
+    /// **This screen is not cursor-free, and this variant said so for a while after it stopped
+    /// being true.** Most of `LoginScreen` really has "no focus state of its own — the screen is
+    /// a projection of the auth phase" (see `push_fields`'s comment on `phase`), but it grows
+    /// exactly ONE focusable element while the escape/retry/restart control is on screen
+    /// (`LoginScreen::has_control`, on the `ESCAPE_AFTER_MS`/`QR_ESCAPE_AFTER_MS` clocks) — and a
+    /// (route × key) harness built on `phase=` alone cannot see OK land on that control, only the
+    /// phase change a beat later once the press's effect resolves. Read off the focus engine's
+    /// raw cursor exactly as [`Screen::Profiles`]/[`Screen::Onboard`] are, rather than a new
+    /// accessor into `screens::login`: `LoginScreen::groups` publishes nothing at all while
+    /// `!has_control()`, so there is nothing for the engine to seat and `focus_record()` reads
+    /// back `None`; once the control exists it is the screen's ONLY focusable element
+    /// (`Seat::First`, one group, `len: 1`), so `Some` means exactly "the control is focused"
+    /// with no further grammar to decode — the same one-element shortcut `Screen::Login`'s
+    /// sibling used to take before phase 6 gave it several.
+    Login {
+        has_control: bool,
+    },
+    /// The who's-watching picker (`screens::profiles`), an OWNED screen since phase 6 — so, like
+    /// [`Screen::Onboard`] below, its field is handed IN rather than read out of a module global:
+    /// `app/run.rs` reads the engine's raw cursor off `Dispatcher::focus_record` on the frame it
+    /// samples, because the roster/footer/PIN-pad state this used to read straight off
+    /// `ui::profiles`'s statics now lives on the owned screen's own focus engine, which this
+    /// crate-level module has no way to decode into an "avatar" bool without importing
+    /// `screens::profiles`'s own element vocabulary (this module sits below `screens/`, and
+    /// naming it would invert the layer the restructure draws between them).
+    Profiles {
+        /// The engine's raw focus element (`FocusKey::elem`) for the picker, or `-1` with no
+        /// input owner focused yet. **Grammar change from the legacy line**: the field used to be
+        /// `avatar=<bool>` (`ui::profiles::focus_is_avatar()`), which could say "an avatar has
+        /// focus" but not WHICH one, and could not see the Sign-out footer or the PIN pad move at
+        /// all; `elem=<int>` is coarser in one direction (a reader still cannot decode which
+        /// element number means what without `screens::profiles`'s own layout) and finer in
+        /// another (every distinct focus stop — including the ones the old field was blind to —
+        /// now prints a distinct number, so a (route × key) diff at least sees SOMETHING moved).
+        /// `tests/focusfp.sh`'s committed fixtures encode the old grammar and need re-recording.
+        elem: i32,
+    },
     /// The first-run *Favorite libraries* route (`screens::onboard`), an OWNED screen since
     /// phase 5b — so unlike every other variant here its fields are handed IN rather than read
     /// out of a module global: the cursor lives in the focus engine, and `app/run.rs` reads it
@@ -246,17 +283,18 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
 /// that without five copies of the host arms.
 fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
     match screen {
-        Screen::Login => {
-            // `login.rs` holds no focus state of its own — the screen is a projection of the auth
-            // phase, and its `key` handler drives `auth`, not a cursor. So the phase IS the state.
-            let _ = write!(s, " phase={:?}", crate::auth::phase());
+        Screen::Login { has_control } => {
+            // The phase is still most of this screen's state — it is a projection of the auth
+            // phase, and its `key` handler mostly drives `auth`, not a cursor — but it is not
+            // ALL of it: see [`Screen::Login`]'s own doc for the one focusable control this used
+            // to leave unreported, invisible to a (route × key) harness reading `phase=` alone
+            // for the ~60/~12 seconds a stalled sign-in leaves it on screen with no phase change.
+            let _ = write!(s, " phase={:?} ctl={}", crate::auth::phase(), b(has_control));
         }
-        Screen::Profiles => {
-            // The picker's one read-only focus accessor. It leaves the avatar INDEX, the Sign-out
-            // footer and the whole PIN pad (its open flag and its own two-dimensional cursor)
-            // unreadable from outside `profiles.rs` — so a fingerprint cannot tell one avatar from
-            // another, and cannot see a keypad move at all.
-            let _ = write!(s, " avatar={}", b(crate::ui::profiles::focus_is_avatar()));
+        Screen::Profiles { elem } => {
+            // See the variant's own doc for the grammar change this replaced (`avatar=<bool>` →
+            // `elem=<int>`) and why: the picker's cursor is the engine's now, not a legacy static.
+            let _ = write!(s, " elem={elem}");
         }
         Screen::Onboard { list, row } => {
             // Two focus stops and a row cursor — the whole of what a press can move here. The list
@@ -578,24 +616,19 @@ mod tests {
         }
     }
 
-    /// The one screen precondition a host test does not get for free.
-    ///
-    /// `profiles::scene()` is an `expect("profiles::init not called")`, unlike every other screen
-    /// here, which lazily insert. `plex_run` calls `profiles::init()` unconditionally at boot,
-    /// before the loop this probe samples from, so the app cannot reach the fingerprint without it
-    /// — a test walking every screen has to mount the same precondition, through the screen's own
-    /// entry point rather than by reaching into its state. Held under `testlock::serial()` by every
-    /// caller, because it writes a process global.
-    fn mount_profiles() {
-        crate::ui::profiles::init();
-    }
-
     /// Every screen this app can end a frame on, so a grammar or determinism assertion covers the
     /// whole instrument rather than the one screen a test happened to pick.
     fn every_screen() -> Vec<(&'static str, Screen)> {
         vec![
-            ("login", Screen::Login),
-            ("profiles", Screen::Profiles),
+            // both "no control on screen" and "the control has focus", because the two print
+            // different values through one grammar — same reason `Screen::Profiles`'s two
+            // entries exist, and the exact gap `Screen::Login`'s own doc says this used to leave
+            ("login", Screen::Login { has_control: false }),
+            ("login", Screen::Login { has_control: true }),
+            // both a real cursor and "nothing focused yet", because the two print different
+            // values through one grammar — same reason `Screen::Onboard`'s two entries exist
+            ("profiles", Screen::Profiles { elem: 2 }),
+            ("profiles", Screen::Profiles { elem: -1 }),
             // both focus zones, because the two print different values through one grammar
             ("onboard", Screen::Onboard { list: true, row: 0 }),
             ("onboard", Screen::Onboard { list: false, row: -1 }),
@@ -639,7 +672,6 @@ mod tests {
     #[test]
     fn a_fingerprint_is_stable_while_nothing_moves() {
         let _g = crate::testlock::serial();
-        mount_profiles();
         for (rn, sc) in every_screen() {
             let a = fingerprint(rn, sc, hud(), ControlSlot::Discs);
             let b = fingerprint(rn, sc, hud(), ControlSlot::Discs);
@@ -653,7 +685,6 @@ mod tests {
     #[test]
     fn the_line_is_one_ordered_row_of_safe_key_value_pairs() {
         let _g = crate::testlock::serial();
-        mount_profiles();
         for (rn, sc) in every_screen() {
             let line = fingerprint(rn, sc, hud(), ControlSlot::Discs);
             assert!(
@@ -780,6 +811,25 @@ mod tests {
                 ControlSlot::Discs
             ),
             "the overlay tag is not observable"
+        );
+    }
+
+    /// **The stalled-sign-in control appearing must actually show up.** This is the exact gap
+    /// `Screen::Login`'s own doc names: `phase=` alone reports nothing for the ~12 s (a stalled
+    /// spinner) or ~60 s (an unscanned QR code) the escape/restart control sits on screen with the
+    /// phase unchanged, so a (route × key) harness reading `phase=` alone cannot see OK land on the
+    /// control at all — only the phase change a beat later, once the press has already been acted
+    /// on. This is the assertion that fails if a future edit prints a constant (`ctl=0` always, or
+    /// the field dropped) where `has_control` belongs — the same shape as
+    /// `moving_the_hud_cursor_changes_the_line` above, for this screen's own one cursor.
+    #[test]
+    fn the_login_screens_stalled_control_appearing_is_observable() {
+        let _g = crate::testlock::serial();
+        let without = fingerprint("login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
+        let with = fingerprint("login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
+        assert_ne!(
+            without, with,
+            "the login screen's escape/retry/restart control appearing is not observable"
         );
     }
 

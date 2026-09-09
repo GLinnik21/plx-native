@@ -34,7 +34,7 @@ const ACTION: &CStr = c"Start watching";
 const DONE: &CStr = c"Done";
 const RETRY: &CStr = c"Try again";
 const CRUMB_SETTINGS: &str = "Settings";
-const CRUMB_PROFILES: &str = crate::ui::profiles::TITLE;
+const CRUMB_PROFILES: &str = crate::screens::profiles::TITLE;
 
 /// Does first run ask this at all?
 pub(crate) fn asks() -> bool {

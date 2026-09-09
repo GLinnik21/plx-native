@@ -14,8 +14,8 @@
 pub(crate) mod consent;
 pub(crate) mod family;
 pub(crate) mod legal;
+pub(crate) mod login;
 pub(crate) mod onboard;
+pub(crate) mod profiles;
 pub(crate) mod registry;
 pub(crate) mod settings;
-#[cfg(test)]
-pub(crate) mod profiles;

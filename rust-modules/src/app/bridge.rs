@@ -265,6 +265,15 @@ impl Mounter<AppHost> for AppMounter {
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Legacy(Route::Onboard) => Box::new(crate::screens::onboard::OnboardScreen::first_run(entry)),
+            // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
+            // exactly the same way — the route word is still the loop's (`route_word`), and
+            // naming the route is the whole of (re)mounting either: a fresh instance is built
+            // every time `bridge::frame` follows a `Replace` onto one of them, which is what lets
+            // every remaining `app::input`/`app::run` call site drop its own `enter()`-equivalent
+            // reset (see `input::enter_profiles_from_onboard`'s doc for the same argument made
+            // about `screens::onboard` in 5b).
+            AppArg::Legacy(Route::Login) => Box::new(crate::screens::login::LoginScreen::new(entry)),
+            AppArg::Legacy(Route::Profiles) => Box::new(crate::screens::profiles::ProfilesScreen::new(entry)),
             AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
             AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(

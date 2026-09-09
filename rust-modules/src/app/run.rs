@@ -543,13 +543,9 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
                     continue;
                 }
-                if matches!(app.route, Route::Login | Route::Profiles) {
-                    // `Route::Onboard` is deliberately absent: first-run *Favorite libraries* is
-                    // an owned screen, so it was taken by the arm above and never reaches this
-                    // one. Login and Who's Watching are not migrated in this phase.
-                    key_onboarding(app.route, sym, wcode, &mut app.ok_armed, &mut app.input.press);
-                    continue;
-                }
+                // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
+                // `Route::Onboard`'s own removal in 5b): both are OWNED screens now, so a key on
+                // either was already taken by `tree_owns_key` above and never reaches this chain.
                 if let Route::Account { over } = app.route {
                     key_account(over, sym, wcode, &mut app.route, &mut app.pages);
                     continue;
@@ -843,9 +839,9 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     ));
                     continue;
                 }
-                if matches!(app.route, Route::Profiles) {
-                    crate::ui::profiles::pointer_focus(mx, my);
-                } else if matches!(app.route, Route::Account { .. }) {
+                // `Route::Profiles` is deliberately absent (phase 6): the picker is an owned
+                // screen, so its hover was already taken by `owns_input()` above.
+                if matches!(app.route, Route::Account { .. }) {
                     crate::ui::account_menu::pointer_focus(mx, my);
                 } else if matches!(app.route, Route::ItemMenu { .. }) {
                     crate::ui::item_menu::pointer_focus(mx, my);
@@ -1228,19 +1224,19 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                     let (cx, cy) = ptr_xy(&app.ev);
                     // a click on a row commits it; anywhere else dismisses the popover
                     match crate::ui::account_menu::click(cx, cy) {
+                        // No `enter()` on any of these three (phase 6): naming the route is the
+                        // whole of mounting the owned screen it lands on, exactly as
+                        // `key_account`'s twin below no longer calls it.
                         crate::ui::account_menu::Action::ChangeProfile => {
                             crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
-                            crate::ui::profiles::enter();
                             app.route = Route::Profiles;
                         }
                         crate::ui::account_menu::Action::SignIn => {
                             crate::auth::start_login();
-                            crate::ui::login::enter();
                             app.route = Route::Login;
                         }
                         crate::ui::account_menu::Action::SignOut => {
                             crate::auth::sign_out();
-                            crate::ui::login::enter();
                             app.route = Route::Login;
                         }
                         // the pointer twin of `key_account`'s Settings arm
@@ -1280,25 +1276,10 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
                         &mut app.hud.nav,
                         &mut app.nav_pending,
                     );
-                } else if matches!(app.route, Route::Profiles) {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    // an avatar (a card) or the Sign-out footer (a control face): park focus,
-                    // dip it, and let `activate_focused` spend the press on the spring-back —
-                    // the same two predicates the key arm asks, in the same order.
-                    if crate::ui::profiles::press_at(cx, cy) {
-                        if crate::ui::profiles::focus_is_avatar() {
-                            app.input.press.begin(app.last_input);
-                        } else {
-                            app.input.press.begin_ctl(app.last_input);
-                        }
-                        app.ok_armed = true;
-                    } else {
-                        crate::ui::profiles::click(cx, cy);
-                    }
-                } else if matches!(app.route, Route::Login) {
-                    // one actionable thing on the login screen (retry on error) — click = OK
-                    crate::ui::login::key(SDLK_RETURN, 0);
                 }
+                // `Route::Profiles` and `Route::Login` are deliberately absent here (phase 6):
+                // both are owned screens now, so a click on either was already taken by
+                // `owns_input()`'s click arm above and never reaches this chain.
             } else if et == SDL_MOUSEBUTTONUP {
                 app.last_input = clock::now();
                 {
@@ -2536,8 +2517,10 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                             nav_open(app.route, node, None, &mut app.nav_pending);
                         }
                     }
-                    // an avatar or the Sign-out footer — the screen resolves which
-                    Route::Profiles => crate::ui::profiles::activate_focused(),
+                    // `Route::Profiles` is deliberately absent (phase 6): the picker is an owned
+                    // screen now, so its own press machine arms and commits this activation —
+                    // nothing here ever arms `app.input.press` for it any more (see the removed
+                    // key/pointer arms above), so this deferred commit can never see that route.
                     // the transport's control row (discs or a stand-in)
                     Route::Player {
                         overlay: Overlay::None,
@@ -2669,6 +2652,28 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
             }
         }
 
+        // **Phase 6: the sign-in worker no longer writes `auth`'s controller from its own
+        // thread.** `login_thread` publishes what it observed as `LoginProgress`, and this is the
+        // one place on the main thread that turns each of them into the controller's next state
+        // (`auth::apply_progress`) — the same "drain a mailbox, then act on the result" shape
+        // `run()`'s own `super::adapters::poster::drain_decoded()` uses for landed images, just
+        // addressed (each `LoginProgress` names the flow epoch it came from) rather than global.
+        // Unconditional on `app.route`, unlike the phase→route follower two lines down: the
+        // worker can report progress while some OTHER screen is showing (a switch started from
+        // the Account popover, still on `Route::Account`, before the loop has moved to
+        // `Route::Profiles`), and a route gate here would leave that progress queued an extra
+        // frame — or, worse, forever, if the route never becomes Login/Profiles at all before
+        // something else empties `app.route` back to Home. Draining BEFORE the poll below is what
+        // makes THIS frame's `auth::phase()`/`take_ready()` see whatever the worker reported this
+        // frame rather than lagging it by one iteration.
+        for progress in crate::auth::take_progress() {
+            // `mt` is `land_results`'s own proof this really runs on the main thread — the same
+            // token every other main-thread-only call in this function already carries. Not a
+            // finding of this pass: `auth::apply_progress` grew this parameter as part of a
+            // concurrent lane's own work on `auth.rs`, and this is the one call site (in a file
+            // that lane does not own) its signature change left needing an update.
+            crate::auth::apply_progress(mt, progress);
+        }
         // login flow: install resolved creds on the MAIN thread, then follow the flow phase →
         // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
         if matches!(app.route, Route::Login | Route::Profiles) {
@@ -2711,15 +2716,17 @@ pub(super) unsafe fn land_results(app: &mut App, mt: &crate::task::MainThread, f
                         // moment is the one who signed the television in. It draws over the
                         // picker's route on its own opaque ground.
                         maybe_ask_consent(&mut app.pages);
-                        if app.route != Route::Profiles {
-                            crate::ui::profiles::enter();
-                        }
+                        // No `enter()`-on-change guard any more (phase 6): the picker is an
+                        // owned screen, so a route that is ALREADY `Profiles` mints nothing
+                        // (`bridge::frame`'s `Some(_) => {}` arm) and the existing instance's
+                        // state — the roster cursor, an open PIN pad — rides across this
+                        // assignment untouched, exactly as it did behind the old guard; a route
+                        // that is NOT yet `Profiles` gets a fresh `ProfilesScreen` the moment the
+                        // tree follows it, which is the whole of what `ui::profiles::enter()`
+                        // used to reset by hand.
                         app.route = Route::Profiles;
                     }
                     _ => {
-                        if app.route != Route::Login {
-                            crate::ui::login::enter();
-                        }
                         app.route = Route::Login;
                     }
                 }
@@ -2955,6 +2962,13 @@ fn loop_requests(app: &mut App) {
             crate::screens::registry::LoopReq::OnboardBack => {
                 app.route = enter_profiles_from_onboard();
             }
+            // Phase 6: BACK at the QR sign-in's or the who's-watching picker's own ROOT — the
+            // screen has already decided (its own PIN pad closed, or it has none) that nothing of
+            // this app is behind the press. `route` is still the loop's, so the log line's one
+            // word comes from here rather than being threaded through the request.
+            crate::screens::registry::LoopReq::AuthBackAtRoot => {
+                login_or_profiles_root_back(app.route);
+            }
         }
     }
 }
@@ -2964,27 +2978,59 @@ fn loop_requests(app: &mut App) {
 /// line.
 pub(super) unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame) {
 
-        if matches!(app.route, Route::Login) {
-            crate::ui::login::update(fr.dt);
-        } else if matches!(app.route, Route::Profiles) {
-            crate::ui::profiles::update(fr.dt);
-            if app.pick_user.is_some()
-                && crate::auth::phase() == crate::auth::Phase::Profiles
-                && !crate::auth::users().is_empty()
-            {
-                let idx = app.pick_user.take().unwrap();
+        // `Route::Login`/`Route::Profiles` no longer have a route-gated `update(dt)` call here
+        // (phase 6, mirroring `Route::Onboard`'s own removal in 5b): both are owned screens now,
+        // and whatever per-frame animation the legacy `ui::login`/`ui::profiles` scenes used to
+        // step belongs to their `Screen::step`/`prepare` on a `Tick` the dispatcher already
+        // delivers every frame through `bridge::frame` — not a second call from this function.
+        if matches!(app.route, Route::Profiles)
+            && app.pick_user.is_some()
+            && crate::auth::phase() == crate::auth::Phase::Profiles
+            && !crate::auth::users().is_empty()
+        {
+            let idx = app.pick_user.take().unwrap();
+            // **Ask the SAME question `screens::profiles::ProfilesScreen::select` asks before
+            // acting, because this call site cannot reach that method to ask it FOR us.** That
+            // owned screen holds its own focus and PIN-pad state on the engine, which `app/`
+            // must not reach into directly (only the dispatcher's `InputEvent`s may drive a
+            // screen's fields) — and there is today no PUBLIC door on `Dispatcher`/
+            // `ProfilesScreen` that lets an external caller deliver a targeted "commit roster
+            // tile N" event to a specific mounted instance (see this lane's report for the
+            // method that would need to live in one of those two files, neither of which this
+            // lane owns). Calling `auth::select_profile(idx)` unconditionally — what this arm did
+            // until this fix — is `ProfilesScreen::select`'s UNPROTECTED branch with no gate in
+            // front of it, so a protected index reached plex.tv's `/switch` with no PIN instead
+            // of opening the pad. plex.tv still refuses that call server-side (a 401, not a
+            // client-side bypass — `auth::switch_thread`'s `Refused` arm), so this was never a
+            // security hole; it was the documented headless capture door
+            // (`tests/manifest.json`'s "Tiles 1 and 2 must be UNPROTECTED — the harness cannot
+            // type a PIN it does not know") silently attempting, and failing, the one case it
+            // says it cannot cover. Refusing here instead — before any network call — turns that
+            // into an honest skip with a reason, rather than a `Phase::Switching` flicker that
+            // resolves to a refused-HTTP-401 log line nobody arming this trigger asked for.
+            let protected = crate::auth::users()
+                .get(idx)
+                .map(|u| u.protected)
+                .unwrap_or(false);
+            if protected {
+                log(&format!(
+                    "pickuser: roster index {idx} is PROTECTED — refusing rather than attempting \
+                     a PIN-less switch plex.tv would refuse anyway; this trigger has no door onto \
+                     the owned picker's own PIN pad yet (see this pass's report for what a real \
+                     fix needs)"
+                ));
+            } else {
                 log(&format!("pickuser: auto-selecting roster index {idx}"));
-                // through the screen's own select, so a protected tile opens the PIN pad
-                // (headless pad capture) exactly like OK on the remote
-                crate::ui::profiles::pick(idx);
+                crate::auth::select_profile(idx);
             }
+        }
         // **`page_of`, not the bare route, for every screen below.** A popover still DRAWS the
         // page it was opened over, but whether that page also UPDATES is the explicit
         // `host_page_updates` policy above.  ItemMenu keeps its anchored host live; Account
         // freezes its host so invisible hero/shelf work cannot steal frames from the menu.
         // Asking `page_of` here keeps the host identity in one place while the lifecycle policy
         // remains separately testable instead of being inferred from route shape.
-        } else if host_page_updates(app.route, super::bridge::host_frozen(&app.pages))
+        if host_page_updates(app.route, super::bridge::host_frozen(&app.pages))
             && matches!(page_of(app.route), Route::Home)
         {
             if app.dev.hero_osc && fr.now.wrapping_sub(app.hero_osc_last) > 700 {
@@ -3589,11 +3635,12 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                             // including the four that draw from INSIDE their page and so could
                             // never have used the old shape.
                             let _host = crate::ui::popover::host::page_pass();
-                            if matches!(page_route, Route::Login) {
-                                crate::ui::login::draw();
-                            } else if matches!(page_route, Route::Profiles) {
-                                crate::ui::profiles::draw();
-                            } else if matches!(page_route, Route::Detail) {
+                            // `Route::Login`/`Route::Profiles` are deliberately absent (phase 6,
+                            // mirroring `Route::Onboard`'s own absence here since 5b): both are
+                            // owned screens now, so `page_owned` reports `true` for either and
+                            // this whole closure is skipped in favour of the dispatcher's own
+                            // page pass — see the `page_owned`/`host_replaced` guards below.
+                            if matches!(page_route, Route::Detail) {
                                 crate::ui::detail::draw();
                             } else if matches!(page_route, Route::Person) {
                                 crate::ui::person::draw();
@@ -3715,12 +3762,13 @@ pub(super) unsafe fn draw(app: &mut App, _mt: &crate::task::MainThread, fr: &mut
                         //
                         // The consequence of drawing an owned PAGE here rather than in the page
                         // closure is that it lands over `stats`, `account_menu` and `item_menu`.
-                        // That is sound today and stated rather than assumed: the one owned page
-                        // is `Route::Onboard`, which wears no tab bar (so the profile chip that
-                        // opens the account menu is not on it), grows no card context menu, and
-                        // is reached before any of it. It stops being sound the moment a page
-                        // that CAN host a popover is migrated, which is phase 5c's problem and
-                        // is why the popovers move onto the tree with it.
+                        // That is sound today and stated rather than assumed: the three owned
+                        // pages are `Route::Onboard`, `Route::Login` and `Route::Profiles` (phase
+                        // 6 added the last two), none of which wears a tab bar (so the profile
+                        // chip that opens the account menu is on none of them), grows a card
+                        // context menu, or is reached before any of it. It stops being sound the
+                        // moment a page that CAN host a popover is migrated, which is phase 5c's
+                        // problem and is why the popovers move onto the tree with it.
                         app.pages.draw(&mut app.bridge, page_owned);
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
@@ -3803,8 +3851,24 @@ pub(super) unsafe fn report(app: &mut App, _mt: &crate::task::MainThread, fr: &m
         // string the heartbeat prints; the `Screen` beside it is what the probe DISPATCHES on,
         // and its match is exhaustive so a new route cannot fingerprint as nothing.
         let probe_screen = |app: &App| match app.route {
-                Route::Login => crate::focusprobe::Screen::Login,
-                Route::Profiles => crate::focusprobe::Screen::Profiles,
+                // The escape/retry/restart control is the screen's only focusable element, and
+                // it appears and disappears on the `ESCAPE_AFTER_MS`/`QR_ESCAPE_AFTER_MS` clocks
+                // with no phase change of its own — `focusprobe::Screen::Login`'s own doc says
+                // why `focus_record().is_some()` decodes it exactly, the same one-element read
+                // `Route::Profiles`/`Route::Onboard` already do below.
+                Route::Login => crate::focusprobe::Screen::Login {
+                    has_control: app.pages.focus_record().is_some(),
+                },
+                // Phase 6: the picker's cursor comes from the focus engine rather than from a
+                // module global, exactly as `Route::Onboard` does below — see `Screen::Profiles`'s
+                // own doc for the grammar this replaced and why a bare element number is as far as
+                // this crate-level module can decode it without naming `screens::profiles`.
+                Route::Profiles => crate::focusprobe::Screen::Profiles {
+                    elem: app
+                        .pages
+                        .focus_record()
+                        .map_or(-1, |(_, elem, _)| elem as i32),
+                },
                 // The one OWNED page, so its cursor comes from the focus engine rather than
                 // from a module global. A key at or above `registry::BAND` is the action band,
                 // not a row — and the row it retired to is deliberately NOT carried: the engine

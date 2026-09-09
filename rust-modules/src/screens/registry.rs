@@ -52,8 +52,8 @@ pub(crate) enum ConsentCmd {
 /// the dispatcher yet. Each names the phase that retires it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LoopReq {
-    /// BACK at a root the platform owns (Home, the picker, sign-in, the FIRST consent question):
-    /// hand the screen to the television. Retires with the Navigation root rule (phase 12).
+    /// BACK at a root the platform owns (Home, the FIRST consent question): hand the screen to
+    /// the television. Retires with the Navigation root rule (phase 12).
     BackAtRoot,
     /// Privacy & data → Delete all local data, confirmed: erase, sign out, land on sign-in.
     /// Retires when Session owns the sign-in (phase 6).
@@ -63,6 +63,22 @@ pub(crate) enum LoopReq {
     OnboardDone,
     /// The first-run Favourites screen's BACK: the profile picker. Same retirement.
     OnboardBack,
+    /// **Phase 6.** BACK at the ROOT of the QR sign-in or the who's-watching picker — nothing of
+    /// this app is behind either, exactly the case [`BackAtRoot`] names, but this one is NOT that
+    /// variant, because it is not merely "hand the screen to the television": `auth::cancel()`
+    /// gets to decide FIRST whether there is a stored session to fall back to (issues #16-#18's
+    /// rule, carried forward verbatim from the legacy `key_onboarding`/`onboarding_back` ladder
+    /// this replaces — see `app::input::login_or_profiles_root_back`, which the loop's request
+    /// drain calls). The SCREEN answers the other half of the old ladder's job — `onboarding_back`
+    /// used to take a `pin_pad_open` bool so the loop could tell a picker's own PIN keypad BACK
+    /// apart from a real root press; since phase 6 that state lives on the screen's own focus
+    /// engine, not a legacy static the loop can still read, so the screen now decides that part
+    /// itself (closing its own pad and answering `Handled::Yes` with NO request, exactly as
+    /// `screens::consent`'s Settings-mode BACK declines rather than asking the loop) and pushes
+    /// this request only when it has decided the press really is its root. No payload: the two
+    /// screens' root-press handling is identical bar one log word, which the loop derives from
+    /// its own `Route` at the point it drains this.
+    AuthBackAtRoot,
 }
 
 /// Any host that carries this bundle. The screens under `screens/` are written against it, so the
@@ -73,12 +89,27 @@ impl<H: Host<Elem = u32, Fx = AppFx, Msg = AppMsg>> AppLike for H {}
 /// The heartbeat words an owned screen can name (§15.3's word table) — the same alphabet
 /// `app::route_word`/`overlay_word` print, so the fps tier's `overlay=` selection cannot drift
 /// from the screen that owns the frame.
+///
+/// **`LOGIN`/`PROFILES` are phase 6's addition, and they are `route=` words, not `overlay=` ones**
+/// — the QR sign-in and the who's-watching picker are app-stack PAGES (`AppArg::Legacy(Route::…)`),
+/// never a surface on the `ModalStack`, exactly as first-run Favourites was in 5b. They MUST stay
+/// the literal strings `"login"`/`"profiles"`: `app::route_word` prints the same two words for the
+/// same two routes, and `bridge::frame`'s `debug_assert_eq!(word, route_word(route), …)` is what
+/// would catch the two drifting apart — `tests/run.py` selects fps samples by these words
+/// (`tests/manifest.json`'s `route` field), so a changed spelling silently disarms a scene rather
+/// than failing anything visible.
 pub(crate) mod word {
     pub(crate) const SETTINGS: &str = "settings";
     pub(crate) const PRIVACY: &str = "privacy";
     pub(crate) const LEGAL: &str = "legal";
     pub(crate) const CONSENT: &str = "consent";
     pub(crate) const ONBOARD: &str = "onboard";
+    /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::route_word`'s
+    /// `Route::Login` arm — see this module's doc for why that equality is load-bearing.
+    pub(crate) const LOGIN: &str = "login";
+    /// The who's-watching picker (`screens::profiles::ProfilesScreen`). Same spelling as
+    /// `app::route_word`'s `Route::Profiles` arm — see this module's doc.
+    pub(crate) const PROFILES: &str = "profiles";
 }
 
 /// An element key for a route-family screen: table rows are their index; the action band's

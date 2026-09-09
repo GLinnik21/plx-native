@@ -1082,11 +1082,21 @@ mod heartbeat_word_tests {
 mod root_back_tests {
     //! **BACK at a ROOT hands the screen back to the television, and the app keeps running.**
     //!
-    //! Two halves, and they are graded differently on purpose. [`back_at_root`] is driven for real
-    //! — it is the app's whole answer to "there is nowhere further back to go", and the regression
-    //! to catch is a future edit putting `running = false`, or a modal question, back where the
-    //! platform call now goes. [`onboarding_back`] is pure, because its caller (`key_onboarding`)
-    //! is `unsafe`, arms tvOS presses and reaches `auth`, none of which a host test wants to drive.
+    //! [`back_at_root`] is driven for real — it is the app's whole answer to "there is nowhere
+    //! further back to go", and the regression to catch is a future edit putting `running = false`,
+    //! or a modal question, back where the platform call now goes. [`after_cancel`] is pure,
+    //! because its callers reach `auth`/`webos`, neither of which a unit test wants to drive.
+    //!
+    //! **Phase 6 retired the other half this module doc used to describe** — `onboarding_back`,
+    //! `OnboardBack` and their five tests, which pinned issues #16-#18's rule as it was reached from
+    //! the legacy `key_onboarding` key ladder. The RULE did not change (`input::
+    //! login_or_profiles_root_back` still performs exactly the `after_cancel` dance those tests
+    //! exercised, immediately below); what moved is WHO decides "is this press the screen's own
+    //! modal or the app's root" — since phase 6 that is `screens::login`/`screens::profiles`'s own
+    //! job, reading their own focus-engine state (a PIN pad's open flag, on the owned
+    //! `ProfilesScreen`) that this module cannot see and must not reach into (`app/` never names a
+    //! sibling `screens/` module's internals). A host test of that half now belongs beside the
+    //! screens that make the decision, not here.
     //!
     //! What NO host test can say is that the television actually shows its launcher and that the
     //! process survives it. That is `webos::go_home`'s device half — `gohome: SAM accepted`, a
@@ -1133,95 +1143,6 @@ mod root_back_tests {
     #[test]
     fn a_cancel_that_backed_out_asks_the_platform_for_nothing() {
         assert_eq!(after_cancel(true), AfterCancel::BackedOut);
-    }
-
-    /// **Issue #18.** The QR sign-in is the first screen of a first-ever launch and has nothing
-    /// behind it, so every BACK there is the root press — there is no panel on that screen for one
-    /// to mean anything else.
-    #[test]
-    fn back_on_the_qr_sign_in_is_always_the_root_press() {
-        assert_eq!(
-            onboarding_back(Route::Login, false),
-            OnboardBack::Root
-        );
-        assert_eq!(
-            onboarding_back(Route::Login, true),
-            OnboardBack::Root,
-            "the picker's keypad is not this screen's, so it cannot claim this press"
-        );
-    }
-
-    /// **Issue #17.** BACK on the who's-watching picker is the root press — *unless* its own PIN
-    /// keypad is up, which is the one thing on that screen a BACK can close.
-    #[test]
-    fn back_on_the_picker_is_the_root_press_unless_the_pin_pad_is_up() {
-        assert_eq!(
-            onboarding_back(Route::Profiles, false),
-            OnboardBack::Root
-        );
-        assert_eq!(
-            onboarding_back(Route::Profiles, true),
-            OnboardBack::Screen,
-            "an open PIN keypad takes the press — closing it is not leaving the app"
-        );
-    }
-
-    /// **A profile switch in flight is a root press like any other** — since `auth::cancel` stopped
-    /// invalidating on refusal there is no worker for the press to strand: either `cancel` backs out
-    /// (retiring the switch through the epoch, the picker's own BACK as it always was) or it refuses
-    /// and the switch runs on behind the television's Home. The keypad still comes first. Observed
-    /// RED against the shipped rule, which answered `Ignore` for both routes.
-    #[test]
-    fn back_during_a_profile_switch_is_a_root_press() {
-        assert_eq!(onboarding_back(Route::Profiles, false), OnboardBack::Root);
-        assert_eq!(
-            onboarding_back(Route::Login, false),
-            OnboardBack::Root,
-            "the follower has one frame in which the route can still say Login"
-        );
-        assert_eq!(
-            onboarding_back(Route::Profiles, true),
-            OnboardBack::Screen,
-            "a protected profile submits its PIN while switching — that BACK closes the pad, which \
-             never reaches auth at all"
-        );
-    }
-
-    /// The first-run sources question is NOT a root. **The mechanism this comment used to name
-    /// (`Action::Back` → the picker) no longer exists**: since phase 5b `Route::Onboard` is an
-    /// owned screen, filtered out at `key_onboarding`'s call site before `onboarding_back` is ever
-    /// called with it in production — the screen answers its own BACK with `LoopReq::OnboardBack`,
-    /// which the loop turns into `enter_profiles_from_onboard`. What is still worth pinning here is
-    /// the RULE's conservative default should a caller ever reach this function with that route
-    /// again: `Screen`, not `Root` — a regression that flipped it would strand the user on the
-    /// television's Home halfway through the first-run sources question, the one onboarding route
-    /// where "nothing is behind this screen" is false.
-    #[test]
-    fn the_first_run_sources_question_still_steps_back_into_the_picker() {
-        assert_eq!(
-            onboarding_back(Route::Onboard, false),
-            OnboardBack::Screen
-        );
-    }
-
-    /// Every route that is not one of the three is `Screen`, which is the conservative answer: the
-    /// press behaves as it did before this rule existed rather than leaving the app from a page
-    /// that has a history behind it.
-    #[test]
-    fn a_route_this_rule_does_not_own_never_leaves_the_app() {
-        for (route, what) in [
-            (Route::Home, "Home"),
-            (Route::Detail, "Detail"),
-            (Route::Library, "Library"),
-            (Route::Search, "Search"),
-            (Route::Person, "Person"),
-        ] {
-            assert_eq!(
-                onboarding_back(route, false),
-                OnboardBack::Screen,
-                "{what}"
-            );
-        }
     }
 }
 

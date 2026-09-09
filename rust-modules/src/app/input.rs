@@ -9,6 +9,15 @@
 //! near `key_onboarding` and `enter_profiles_from_onboard` for what used to live here. What this
 //! file keeps of consent is only the boot-time GATE deciding *when* to open the screen
 //! (`maybe_ask_consent`), never an arm that reads its keys.
+//!
+//! **Phase 6 (2026-09-07) did the same to the QR sign-in and the who's-watching picker.** Both
+//! are owned screens now (`screens::login`/`screens::profiles`), so `key_onboarding` itself —
+//! along with the pure `onboarding_back`/`OnboardBack`/`profiles_pin_pad_open` rule it called —
+//! is gone; see the note where it stood. What survives is the one piece of its job that is still
+//! genuinely the loop's: `login_or_profiles_root_back`, performed from `LoopReq::AuthBackAtRoot`
+//! rather than read out of a raw key, and the boot-time phase→route follower in `app/run.rs`
+//! (unchanged in shape, only relieved of the `ui::login`/`ui::profiles::enter()` calls an owned
+//! screen's own construction now does the work of).
 
 use super::*;
 
@@ -680,83 +689,6 @@ mod unsupported_key_tests {
     }
 }
 
-/// What a BACK press MEANS on an onboarding screen.
-///
-/// Two answers, not a bool, because each is decided by something different: [`OnboardBack::Screen`]
-/// is *this screen still has something of its own open*, [`OnboardBack::Root`] is *nothing of this
-/// app is behind this screen at all*. There was a third, `Ignore`, for a profile switch in flight —
-/// retired 2026-09-04 with the reason for it: `auth::cancel` used to invalidate the switch worker
-/// before deciding whether it could back out, so a refused BACK stranded the picker's spinner. A
-/// refused BACK now changes nothing (`auth::cancel`'s doc), so the switch simply keeps running.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum OnboardBack {
-    /// Give the key to the screen — it has a panel of its own to close.
-    Screen,
-    /// The ROOT press: back out to a stored session if there is one, otherwise the television's
-    /// own Home.
-    Root,
-}
-
-/// The rule, **pure**, so "which press is the root press on each screen" is gradeable on the host —
-/// [`key_onboarding`] itself is `unsafe`, arms tvOS presses and reaches `auth`, none of which a
-/// unit test wants to drive.
-///
-/// * **Login** — the QR sign-in. It has no panel of its own; BACK is `auth::cancel` and nothing
-///   else, so every BACK here is the root press.
-/// * **Profiles** — the who's-watching picker. Its PIN keypad is a modal the screen owns, and BACK
-///   closes it; that is the one press here that is NOT the root press. Everything else is.
-/// * **Onboard** — the first-run "which sources feed Home" question. Since phase 5b this route is
-///   an OWNED screen, filtered out at `key_onboarding`'s own call site before this function is
-///   ever reached with it (see that function's doc) — so in production `onboarding_back` never
-///   actually sees `Route::Onboard`. The `_` arm below still answers `Screen` for it, the same
-///   conservative default any route this rule does not otherwise name gets. The PROPERTY this
-///   bullet used to argue for still holds — the picker sits behind the question, so this was never
-///   meant to be a root press — but the mechanism that carries it today is the screen's own
-///   `LoopReq::OnboardBack`, which the loop turns into the same `enter_profiles_from_onboard` this
-///   bullet used to call directly through `Action::Back`, an enum that no longer exists.
-///
-/// **A profile switch in flight (`Phase::Switching`) is a root press like any other on these two
-/// screens, and it is safe BECAUSE `auth::cancel` no longer invalidates on refusal.** Where the
-/// picker can back out (a boot picker over an unprotected stored profile) `cancel` retires the
-/// switch worker through the epoch and resumes the stored session — the same answer the picker's
-/// own BACK always gave. Where it refuses (a `Change profile` picker, a PIN boundary, no session
-/// to back out to) nothing is touched: the switch runs on, the app goes to the television's Home,
-/// and the profile it was switching to is what the user comes back to. The one press that still
-/// outranks the root rule is the PIN keypad's, which closes the pad and never reaches `auth` at all
-/// — a protected profile submits its PIN while the switch is already running, and that BACK is the
-/// screen's own.
-///
-/// Anything else reaching this function is a caller bug, and `Screen` is the conservative answer:
-/// worst case the press behaves as it did before this rule existed.
-pub(super) fn onboarding_back(route: Route, pin_pad_open: bool) -> OnboardBack {
-    match route {
-        // The keypad first: its BACK closes the pad and never reaches `auth` at all, so it is safe
-        // even mid-submit — and a protected profile's switch is exactly the case where the pad is
-        // up and the phase is already `Switching`.
-        Route::Profiles if pin_pad_open => OnboardBack::Screen,
-        Route::Login | Route::Profiles => OnboardBack::Root,
-        _ => OnboardBack::Screen,
-    }
-}
-
-/// Is the who's-watching picker's PIN keypad up?
-///
-/// **Derived, because `ui::profiles` does not publish the pad** — and exactly, not approximately.
-/// Both focus predicates are `!pad.open && …` (`focus_is_avatar` also wants a non-empty roster,
-/// `focus_is_ctl` wants the footer), so `!avatar && !ctl` is `pad || (empty && !footer)`; ANDing the
-/// non-empty roster back in leaves `pad` alone, and a pad can only be opened from a protected
-/// roster tile, so the roster is never empty while it is up.
-///
-/// The failure direction is deliberate: if this ever answered `true` wrongly, the press falls
-/// through to `profiles::key` and behaves exactly as it did before the root rule existed. A
-/// `profiles::pin_pad_open()` accessor is the shape this wants to be, and is the first thing to do
-/// when that module is next open.
-pub(super) fn profiles_pin_pad_open() -> bool {
-    !crate::ui::profiles::focus_is_avatar()
-        && !crate::ui::profiles::focus_is_ctl()
-        && !crate::auth::users().is_empty()
-}
-
 /// What the root press does once `auth::cancel` has answered.
 ///
 /// A plan rather than a bool so the production code visibly OWNS each call and the log line names
@@ -787,92 +719,58 @@ pub(super) fn after_cancel(backed_out: bool) -> AfterCancel {
     }
 }
 
-/// Onboarding screens (login / who's-watching) own every fresh key — nothing is behind them, so
-/// route the key to the active screen and skip all other handlers.
+// `key_onboarding`, `OnboardBack`, `onboarding_back` and `profiles_pin_pad_open` stood here.
+// **Phase 6 retired all four.** Login and Who's Watching are OWNED screens now
+// (`screens::login`/`screens::profiles`, mounted through `app::bridge`), so their keys are
+// `InputEvent`s the loop hands the dispatcher before this ladder is ever consulted — the same
+// coexistence rule phase 5b applied to the Settings family and to first-run Favourites, above.
+// The one piece of `key_onboarding`'s body that survives is its BACK-at-root arm
+// (`login_or_profiles_root_back`, immediately below): issues #16-#18's rule, unmoved, but reached
+// from a different door. Under the old ladder, `onboarding_back`'s SECOND job — telling a real
+// root press apart from the picker's own PIN-keypad BACK — needed `profiles_pin_pad_open`, which
+// read the pad's open flag off `ui::profiles`' legacy statics; that state now lives on
+// `screens::profiles::ProfilesScreen`'s own focus engine, which this module cannot see (and must
+// not: the layer rule is `app/` never names a sibling `screens/` module's internals). So the
+// screen decides that half itself — closing its own pad and answering `Handled::Yes` with no
+// request, exactly as `screens::consent`'s Settings-mode BACK declines rather than asking the loop
+// — and pushes `LoopReq::AuthBackAtRoot` only once it has concluded the press really is its root.
+// `after_cancel`/`AfterCancel` above are untouched: the SAME decision, just reached from a request
+// drain instead of a raw key.
+
+/// **Phase 6's `LoopReq::AuthBackAtRoot`, performed.** The screen has already decided this BACK is
+/// its ROOT press — nothing of this app is behind it — so this is the whole of what `key_onboarding`
+/// used to do in its `OnboardBack::Root` arm, unchanged: rate-limit the platform call
+/// (`webos::take_root_press`, taken HERE and not inside `webos::go_home`, because a `cancel` that
+/// CAN back out is destructive — it retires the switch worker and resumes the stored session — so
+/// limiting only the platform call would still let a burst of root presses back out once per
+/// press), ask `auth::cancel()` whether there is a stored session to fall back to, and either
+/// resume it (nothing left to ask the platform for — the claim is handed straight back so the
+/// REAL root BACK the user is about to press on the Home they just returned to is not swallowed)
+/// or hand the screen to the television's Home.
 ///
-/// **`Route::Onboard` no longer arrives here** (phase 5b): first-run *Favorite libraries* is an
-/// OWNED screen, so its keys are `InputEvent`s the loop hands to the dispatcher before this ladder
-/// arm is reached, and the screen answers its own commit and its own BACK (`LoopReq::OnboardDone`
-/// / `OnboardBack`). The route is still listed at the call site's guard because it is still a page
-/// of the app's stack; what changed is who reads its keys. Login and Who's Watching are worker-
-/// driven and were the two screens that never reported an action anyway, which is why this returns
-/// nothing now instead of an `Action` that was always `None`.
-pub(super) unsafe fn key_onboarding(
-    route: Route,
-    sym: c_uint,
-    wcode: c_uint,
-    ok_armed: &mut bool,
-    press: &mut crate::ui::press::Press,
-) {
-    // **BACK at one of these screens' own ROOT is the root press** — the same one Home's is, and
-    // for the same reason: nothing of this app is behind it. Issues #17 and #18 are both this
-    // branch missing. Both screens used to hand BACK to `auth::cancel`, whose whole job is to back
-    // out to a stored session; when there is no session to back out TO it reports `false` and the
-    // press was simply DROPPED — on the boot picker with a PIN-protected profile, on the roster
-    // straight after a sign-out, and on the QR sign-in of a first-ever launch, which is the first
-    // screen a new user ever sees. `auth::cancel` still decides whether there is somewhere to go
-    // INSIDE the app; only its `false` is now answered instead of ignored.
-    //
-    // Pre-empting the screen's own handler (rather than adding a fallback behind it) is exact, not
-    // a shortcut: at these two stops BACK reaches `auth::cancel` and nothing else. What it does
-    // reach first — the profile picker's PIN keypad — is why [`onboarding_back`] exists and why
-    // this is not a bare `is_back`.
-    if is_back(sym, wcode) {
-        match onboarding_back(route, profiles_pin_pad_open()) {
-            // the screen's own handler has it — fall through to the dispatch below
-            OnboardBack::Screen => {}
-            OnboardBack::Root => {
-                // **The latch is taken HERE, before `auth::cancel`, and not inside
-                // `webos::go_home`.** A `cancel` that CAN back out is destructive (it retires the
-                // worker and resumes the stored session), so rate-limiting only the platform call
-                // would still let a burst of taps back out once per press. One root press per
-                // cooldown means one `cancel`.
-                if crate::webos::take_root_press() {
-                    let backed_out = crate::auth::cancel();
-                    let phase = crate::auth::phase();
-                    let plan = after_cancel(backed_out);
-                    // ONE line saying what this press decided and on what evidence, for the person
-                    // reading the device log who is not the person who wrote this. The phase is
-                    // evidence, not an input: it says what the refused press left running. Every
-                    // field is an enum name: no identity, no content.
-                    crate::log(&format!(
-                        "back: root route={} phase={phase:?} backed_out={backed_out} action={plan:?}",
-                        if matches!(route, Route::Login) {
-                            "login"
-                        } else {
-                            "profiles"
-                        }
-                    ));
-                    match plan {
-                        // …and a press that turned out to have somewhere to go INSIDE the app was
-                        // never a root press, so it hands the claim straight back rather than
-                        // swallowing the real root BACK the user is about to press on the Home it
-                        // just returned to.
-                        AfterCancel::BackedOut => crate::webos::release_root_press(),
-                        AfterCancel::Home => crate::webos::go_home(),
-                    }
-                }
-                return;
+/// `route` is read only for the one word the log line prints; the decision itself does not depend
+/// on which of the two screens asked; that is `LoopReq::AuthBackAtRoot`'s whole point.
+pub(super) fn login_or_profiles_root_back(route: Route) {
+    if crate::webos::take_root_press() {
+        let backed_out = crate::auth::cancel();
+        let phase = crate::auth::phase();
+        let plan = after_cancel(backed_out);
+        // ONE line saying what this press decided and on what evidence, for the person reading
+        // the device log who is not the person who wrote this. The phase is evidence, not an
+        // input: it says what the refused press left running. Every field is an enum name: no
+        // identity, no content.
+        crate::log(&format!(
+            "back: root route={} phase={phase:?} backed_out={backed_out} action={plan:?}",
+            if matches!(route, Route::Login) {
+                "login"
+            } else {
+                "profiles"
             }
+        ));
+        match plan {
+            AfterCancel::BackedOut => crate::webos::release_root_press(),
+            AfterCancel::Home => crate::webos::go_home(),
         }
-    }
-    if matches!(route, Route::Profiles) {
-        // BOTH of this screen's press surfaces defer, for the one reason: each has a spring that
-        // folds `press::scale()` in and so has a dip to show. The roster avatar is a card
-        // (`card_row`'s), the Sign-out footer is a control face (`FOOTER_POP`) — which is why they
-        // arm through different doors and commit through one, `profiles::activate_focused`. The PIN
-        // keypad's keys have neither and act on the key-down.
-        if is_ok(sym) && crate::ui::profiles::focus_is_avatar() {
-            press.begin(clock::now());
-            *ok_armed = true;
-        } else if is_ok(sym) && crate::ui::profiles::focus_is_ctl() {
-            press.begin_ctl(clock::now());
-            *ok_armed = true;
-        } else {
-            crate::ui::profiles::key(sym, wcode);
-        }
-    } else {
-        crate::ui::login::key(sym, wcode);
     }
 }
 
@@ -886,9 +784,12 @@ pub(super) unsafe fn key_onboarding(
 /// BACK from Shared Sources returns to the identity step and records no source answer. Starting a
 /// ChangeProfile flow re-seeds the roster from the persisted session immediately, so this is a
 /// real usable picker rather than a static screen with no worker behind it.
+///
+/// **No `ui::profiles::enter()`** (phase 6, mirroring first-run Favourites' own removal in 5b):
+/// the picker is an OWNED screen now, and naming the route is the whole of mounting a fresh one —
+/// `AppMounter::mount` constructs a new `ProfilesScreen` the moment the tree follows this route.
 pub(super) fn enter_profiles_from_onboard() -> Route {
     crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
-    crate::ui::profiles::enter();
     Route::Profiles
 }
 
@@ -973,20 +874,19 @@ pub(super) fn key_account(
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if is_ok(sym) {
+        // No `enter()` on any of these three (phase 6): naming the route is the whole of
+        // mounting the owned screen it lands on — see `enter_profiles_from_onboard`'s doc.
         match crate::ui::account_menu::on_ok() {
             crate::ui::account_menu::Action::ChangeProfile => {
                 crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
-                crate::ui::profiles::enter();
                 *route = Route::Profiles;
             }
             crate::ui::account_menu::Action::SignIn => {
                 crate::auth::start_login();
-                crate::ui::login::enter();
                 *route = Route::Login;
             }
             crate::ui::account_menu::Action::SignOut => {
                 crate::auth::sign_out();
-                crate::ui::login::enter();
                 *route = Route::Login;
             }
             // PRESENTS the Settings surface over the same page, so the ROUTE does not move — and
@@ -1578,8 +1478,17 @@ pub(super) fn delete_all_local_data_and_sign_out(route: &mut Route, trail: &mut 
         // Tell the read-out what the sweep actually achieved BEFORE it is mounted: a survivor
         // can be the telemetry decision, which comes back on the next launch, so the screen
         // must not claim to have removed it.
-        crate::ui::login::note_delete_leftovers(leftovers.len());
-        crate::ui::login::enter();
+        //
+        // **The leftovers count lives on `auth` now, not on the legacy `ui::login::Scene`
+        // (phase-6 retirement).** The owned `screens::login::LoginScreen::resync` reads this
+        // sweep's count through `auth::delete_leftovers()`, and this is the one place that
+        // count is produced — a plain module-level cell rather than a screen's own state,
+        // because the value has to survive from HERE (before the fresh Login route is even
+        // mounted) to the first frame the new screen draws, and no screen instance exists yet
+        // to hold it. Writing it into the now-deleted `ui::login::Scene` instead would silently
+        // stop working the moment nothing calls `ui::login::init()` any more to allocate that
+        // static — which is exactly what retiring the legacy module does.
+        crate::auth::note_delete_leftovers(leftovers.len());
         trail.reset();
         *route = Route::Login;
     }

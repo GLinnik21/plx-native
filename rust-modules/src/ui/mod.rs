@@ -55,7 +55,12 @@ pub mod label;
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
 pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
-pub mod login; // sign-in screen (QR / short code) for the plex.tv account flow
+// `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
+// `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
+// ladders. Its one surviving reader was `screens::login::LoginScreen::resync`'s
+// `delete_leftovers` count, which moved to `auth::delete_leftovers()` in this same pass — see
+// `app/boot.rs`'s boot-order comment for the retirement note this module's own row in
+// `ui/CLAUDE.md` still needs updating to match.
 pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own exp/sin_cos + the soft-float table
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
@@ -69,7 +74,6 @@ pub mod popover; // shared modal open/appear choreography (track menu / info / c
 pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub mod profile;
-pub mod profiles; // "who's watching" Plex Home picker + PIN keypad
 pub(crate) mod route_screen;
 pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher

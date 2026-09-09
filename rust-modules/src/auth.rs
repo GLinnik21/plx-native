@@ -8,6 +8,13 @@
 //! + the boot gate in `app.rs` short-circuit straight to the LAN server when we already have creds.
 //! All network happens on spawned threads; the UI only reads snapshots through the accessors here.
 //! Tokens live in the working [`Session`] and are never logged.
+//!
+//! **The QR sign-in + discovery pipeline (`login_thread` and everything it calls) does not write
+//! its own results.** A worker packages what it observed as a [`LoginProgress`] and [`take_progress`]
+//! /[`apply_progress`] carry it to the one thread allowed to act on it — see the section doc above
+//! `LoginProgress` for the full account. The profile-switch and roster-refresh workers below it in
+//! this file are NOT yet converted and still write their controller state directly; that boundary is
+//! named there rather than implied here.
 #![allow(dead_code)]
 use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
@@ -222,6 +229,12 @@ static AUTH_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// reset wholesale by every flow start, and a generation that can go back to zero is a generation
 /// two different codes can share; the VALUE lives in `Ctl` so that it and the bytes it names are
 /// written, and read, under one lock ([`qr_snapshot`]).
+///
+/// **Allocated by [`apply_progress`], not by the worker that minted the code** — see
+/// [`LoginProgress::CodeReady`]. The worker only OBSERVES a new code; whether that observation ever
+/// becomes the one on screen is a fact only the main thread can settle (the flow may have been
+/// superseded in between), so allocating here, at the moment the number is actually spent, keeps
+/// the property this doc opens with: a generation is never handed to a code that never gets shown.
 static QR_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One in-flight endpoint re-probe per registry slot. Catalog retries prove that the CURRENT
@@ -236,6 +249,30 @@ impl Drop for EndpointRefreshFlight {
     fn drop(&mut self) {
         ENDPOINT_REFRESHING.fetch_and(!self.0, Ordering::AcqRel);
     }
+}
+
+/// **How many files the last "Delete all local data" sweep could not remove.** Moved here from
+/// the retired `ui::login::Scene` field of the same name (phase 6: the QR sign-in screen is an
+/// owned [`crate::screens::login::LoginScreen`] now, constructed fresh on every entry into
+/// `Route::Login`, so nothing holds a live screen instance to push this count onto before its
+/// first frame draws — see `app/input.rs`'s `delete_all_local_data_and_sign_out` for the full
+/// account of why a plain static is the answer). That function is the ONLY writer, exactly once
+/// per sweep; `LoginScreen::resync` is the only reader, on every `Tick` for as long as the phase
+/// it caches stays [`Phase::Deleted`] — which is why [`delete_leftovers`] must NOT consume the
+/// value the way [`take_progress`] consumes its queue: a second read has to see the same count as
+/// the first, or the read-out would silently forget a partial wipe one frame after reporting it.
+static DELETE_LEFTOVERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Record what the last local-data sweep left behind. See [`DELETE_LEFTOVERS`] for who calls this
+/// and why the count lives here instead of on a screen.
+pub(crate) fn note_delete_leftovers(n: usize) {
+    DELETE_LEFTOVERS.store(n, Ordering::Release);
+}
+
+/// Read back the count [`note_delete_leftovers`] last recorded — non-consuming, safe to call every
+/// frame. See [`DELETE_LEFTOVERS`].
+pub(crate) fn delete_leftovers() -> usize {
+    DELETE_LEFTOVERS.load(Ordering::Acquire)
 }
 
 /// Append a line to the shared on-device event log (never a token — only ids/counts/status).
@@ -386,15 +423,20 @@ pub(crate) fn set_pin_denied_for_test(v: bool) {
 /// Begin the QR login: reset state, load the persisted `client_id`, and kick off the pin thread.
 pub fn start_login() {
     crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
-    let (epoch, ()) = begin_flow(|c| {
+    // The client id rides along as the worker's own parameter rather than being read back off
+    // `Ctl` inside `login_thread` — see the section doc above [`LoginProgress`]: a phase-6 worker
+    // reads NOTHING from `Ctl` at all, not only writes nothing, so there is no `with_ctl` call left
+    // in it for a future edit to widen into a write by accident.
+    let (epoch, client_id) = begin_flow(|c| {
         *c = Ctl {
             phase: Phase::Creating,
             session: session::load(),
             signin_active: true,
             ..Ctl::default()
         };
+        c.session.client_id.clone()
     });
-    if !crate::task::spawn_small("login", move || login_thread(epoch)) {
+    if !crate::task::spawn_small("login", move || login_thread(epoch, client_id)) {
         // Phase::Creating is a spinner with a worker behind it. Without the worker it never ends,
         // and the login screen has no other way out — Error at least offers the retry.
         set_error("Couldn't start sign-in. Try again.");
@@ -426,8 +468,10 @@ pub fn restart_stalled_wait(expected: (Phase, u64)) -> bool {
 
 /// What a restart turns out to be — decided inside the gate, carried out after it.
 enum Restart {
-    /// Nothing has been authorized yet, so there is nothing to keep: a whole fresh pin.
-    Login,
+    /// Nothing has been authorized yet, so there is nothing to keep: a whole fresh pin. Carries the
+    /// client id `login_thread` needs as a plain parameter, for the same reason [`start_login`]
+    /// passes it the same way — see the section doc above [`LoginProgress`].
+    Login { client_id: String },
     /// Only server discovery failed. The account credential this flow already earned is reused;
     /// minting another QR would make the user authorize on their phone a second time for what is
     /// usually one unreachable server.
@@ -438,34 +482,39 @@ fn restart(expected: Option<(Phase, u64)>) -> bool {
     let Some((epoch, (plan, fresh_attempt))) = begin_flow_if(
         |c| restart_permitted(expected, (c.phase, c.qr_gen)),
         |c| {
-            let plan = match retry_kind(c.phase, c.authorized_in_flow) {
-                RetryKind::Discovery => Restart::Discovery {
-                    client_id: c.session.client_id.clone(),
-                    token: c.session.account_token.clone(),
-                },
-                RetryKind::Login => Restart::Login,
-            };
+            let kind = retry_kind(c.phase, c.authorized_in_flow);
             // An attempt that is still ACTIVE has already reported its `SignInStarted`, and the
             // schema's contract is one start bracketed by exactly one completed/failed/cancelled.
             // Restarting a LIVE wait — which is what both of this screen's timed escapes do — is that
             // same attempt carrying on, not a second one; only a restart from a settled state (an
             // error read-out, whose `set_error` already reported the failure) begins a new one.
             let fresh_attempt = restart_is_a_new_attempt(c.signin_active);
-            match plan {
-                Restart::Discovery { .. } => {
+            // Built AFTER each branch's own `Ctl` mutation (rather than before it, as a bare marker)
+            // so that `Restart::Login`'s `client_id` can read the FRESH `session::load()` this reset
+            // installs, not whatever `c.session` happened to hold a moment earlier.
+            let plan = match kind {
+                RetryKind::Discovery => {
+                    let plan = Restart::Discovery {
+                        client_id: c.session.client_id.clone(),
+                        token: c.session.account_token.clone(),
+                    };
                     c.error.clear();
                     c.phase = Phase::Discovering;
                     c.signin_active = true;
+                    plan
                 }
-                Restart::Login => {
+                RetryKind::Login => {
                     *c = Ctl {
                         phase: Phase::Creating,
                         session: session::load(),
                         signin_active: true,
                         ..Ctl::default()
                     };
+                    Restart::Login {
+                        client_id: c.session.client_id.clone(),
+                    }
                 }
-            }
+            };
             (plan, fresh_attempt)
         },
     ) else {
@@ -489,10 +538,10 @@ fn restart(expected: Option<(Phase, u64)>) -> bool {
                 "Couldn't restart server discovery. Try again.",
             )
         }
-        Restart::Login => {
+        Restart::Login { client_id } => {
             log("auth: starting a fresh sign-in");
             (
-                crate::task::spawn_small("login", move || login_thread(epoch)),
+                crate::task::spawn_small("login", move || login_thread(epoch, client_id)),
                 "Couldn't start sign-in. Try again.",
             )
         }
@@ -981,10 +1030,272 @@ fn deleted_ctl() -> Ctl {
     }
 }
 
+// ---- worker progress: the one door a spawned thread has into `Ctl` ----
+//
+// **Phase 6 (spec §13, §2.3): a machine owns a decision, and a decision read from another thread
+// is a published snapshot the owner writes and everybody else only reads.** Until now `login_thread`
+// held exactly the same authority over `Ctl` that `start_login`/`restart`/`cancel` hold — a raw
+// `with_ctl(|c| c.phase = …)` from a background thread, serialized against the main thread by
+// nothing but the epoch convention every *reader* of `Ctl` was trusted to honour. That is a
+// convention, not a boundary: nothing stopped a future edit to `login_thread` (or a worker copied
+// from it) from writing a field the epoch check doesn't cover, and nothing would have caught it
+// before a device session did.
+//
+// The fix is the oldest one there is for "two threads must not both hold a write": stop the second
+// one from writing at all. A worker now does exactly what `login_thread`'s own network calls always
+// did — discover a FACT (a code was minted, the user authorized, discovery found a server, the whole
+// attempt failed) — and hands that fact to the main thread as a [`LoginProgress`] instead of acting
+// on it. [`apply_progress`] is the only function outside the main-thread control calls above that
+// may write `Ctl`, and it must only ever be called from the MAIN THREAD, once per queued
+// observation, in the order [`take_progress`] drained them.
+//
+// **This section converts the QR sign-in + discovery pipeline: [`login_thread`], [`mint_pin`],
+// [`finish_sign_in`], [`discover_and_store`] and [`retry_discovery_thread`].** It does NOT (yet)
+// convert [`switch_thread`] (the profile-PIN worker) or the background roster/endpoint-refresh
+// workers spawned by [`start_switch`]/[`refresh_roster`]/[`request_endpoint_refresh`], which still
+// write `Ctl` from their own spawned threads exactly as they did before this phase. Those are a
+// comparable-sized second migration and are named here rather than left to be discovered by a
+// reader diffing this file against the spec.
+
+/// One thing the sign-in/discovery worker OBSERVED — never a decision about `Ctl`. Every variant
+/// carries the epoch the observation was made under, because that is the only fact the worker has
+/// that can tell [`apply_progress`] whether anybody is still behind the screen: `cancel`/`restart`/
+/// `sign_out`/`erase_local_state` all bump [`AUTH_EPOCH`] on the MAIN thread, synchronously, the
+/// instant they supersede a flow — strictly before any `Ctl` state a new flow would install — so a
+/// stale epoch by the time this is applied is an authoritative "nobody is waiting for this any
+/// more", not a heuristic.
+///
+/// Named for what was seen, not for what to do: `apply_progress` decides the "do", including
+/// whether to do anything at all.
+pub(crate) enum LoginProgress {
+    /// The code on screen just died (its own lifetime, or plex.tv answering [`PinPoll::Gone`]) and
+    /// [`mint_pin`] is about to replace it. Mirrors the write `mint_pin` used to make directly for
+    /// every generation after the first: clear the dead code and flag it replaced before the
+    /// successor lands, so no frame can draw digits that no longer authorize anything.
+    CodeReplacing { epoch: u64 },
+    /// A pin was created and its QR fetched — the code now ready to show. [`apply_progress`]
+    /// allocates the [`QR_GENERATION`] this code publishes under, at APPLY time rather than at
+    /// observation time, so a generation is only ever spent on a code that actually reaches the
+    /// screen — exactly the property the old synchronous write had, and the reason the allocation
+    /// does not travel on this variant.
+    CodeReady { epoch: u64, id: i64, code: String, qr_png: Vec<u8> },
+    /// The user authorized on their phone; discovery is starting.
+    Authorized { epoch: u64, token: String },
+    /// The whole attempt failed for the stated, already-user-facing reason — no server on the
+    /// account, discovery unreachable/refused, the pin ran out of automatic replacements, or pin
+    /// creation itself could not reach plex.tv. Mirrors what a worker used to write directly by
+    /// calling `set_error_if_live` on its own thread; [`apply_progress`] now makes that write
+    /// itself (through the same `with_live_epoch`/`set_error` pair `set_error_if_live` wraps),
+    /// logging a drop exactly like its four sibling arms when the epoch has moved on — see that
+    /// match arm's own comment for why this used to be the one variant that failed silently.
+    Failed { epoch: u64, message: String },
+    /// Discovery and the account's Home-user fetch both finished. Carries everything
+    /// [`apply_progress`] needs to update the session in one hold of `Ctl`'s lock: the winning
+    /// server, the reachable roster, and the Home users (empty for a single-user account, in which
+    /// case the flow goes straight to [`Phase::Ready`] instead of raising the picker).
+    SignedIn {
+        epoch: u64,
+        server: ServerRef,
+        sources: Vec<SourceRef>,
+        users: Vec<UserTile>,
+    },
+}
+
+/// FIFO of [`LoginProgress`] queued since the main thread last called [`take_progress`].
+///
+/// A `Vec` behind one plain `Mutex` rather than `std::sync::mpsc`, because there can genuinely be
+/// more than one live PRODUCER for a short window — a superseded worker's very last message can
+/// still be in flight when a new flow's worker starts sending — and `mpsc::Receiver` is not `Sync`,
+/// so sharing the one receiver a `pub(crate) fn take_progress` needs would require wrapping it in a
+/// mutex of its own anyway. A vector behind a lock IS that wrapper, with none of a channel's
+/// per-message allocation to justify once multiple senders are in play regardless.
+static PROGRESS: Mutex<Vec<LoginProgress>> = Mutex::new(Vec::new());
+
+/// Worker-side: queue an observation. Never touches `Ctl` — see the section doc above.
+fn push_progress(p: LoginProgress) {
+    PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push(p);
+}
+
+/// Worker-side shorthand for the single most common observation: mirrors the pre-phase-6
+/// `set_error_if_live(epoch, msg)` a worker used to call directly. That write now happens inside
+/// [`apply_progress`]'s [`LoginProgress::Failed`] arm instead — which calls `set_error` itself
+/// rather than `set_error_if_live`, so this doc no longer claims that helper has only one caller;
+/// `restart`'s own main-thread refusal path (a spawn that failed to start) still calls it too.
+fn push_failed(epoch: u64, msg: &str) {
+    push_progress(LoginProgress::Failed {
+        epoch,
+        message: msg.to_owned(),
+    });
+}
+
+/// **Main-thread only.** Drain every [`LoginProgress`] queued since the last call, in the order the
+/// workers pushed them. The frame loop is expected to call this once per frame and feed each result
+/// to [`apply_progress`] — a worker's own steps (a code minted, then replaced, then authorized) are
+/// pushed by ONE producer in the order they happened, so draining and applying in that same order is
+/// what keeps them landing in the order they happened, exactly as the old synchronous writes did.
+pub(crate) fn take_progress() -> Vec<LoginProgress> {
+    std::mem::take(&mut *PROGRESS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// **The only function outside the main-thread control calls above (`start_login`, `restart`,
+/// `cancel`, `sign_out`, `erase_local_state`) that writes `Ctl`.** Every arm re-checks the epoch
+/// under [`with_live_epoch`] before writing anything — the same gate the pre-phase-6 code held
+/// while writing directly — so an observation that arrives after its flow was superseded is
+/// dropped, logged, and changes nothing.
+///
+/// **"Must only ever be called from the MAIN THREAD" used to be prose here, and prose is not a
+/// gate.** `_mt: &crate::task::MainThread` makes it a compile-time fact instead: the token is
+/// unused for its VALUE (every arm below reads only its own fields and `Ctl`) and exists purely
+/// as the proof [`crate::task::MainThread`] is built for — a `!Send` marker that cannot be
+/// captured by a `task::spawn` closure, so a future edit that calls this from inside a login
+/// worker (the exact class of caller phase 6 exists to keep off `Ctl`) fails to COMPILE rather
+/// than racing on a device nobody happened to be watching. The sole call site, `app/run.rs`'s
+/// `land_results`, already holds one — it is passed in, never minted here, since minting is
+/// `unsafe` and reserved for `plex_run`'s own boot (see `MainThread::assume`'s own doc).
+pub(crate) fn apply_progress(_mt: &crate::task::MainThread, p: LoginProgress) {
+    match p {
+        LoginProgress::CodeReplacing { epoch } => {
+            let applied = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.phase = Phase::Creating;
+                    c.pin_id = 0;
+                    c.pin_code.clear();
+                    c.qr_png.clear();
+                    // The screen says so once a code has been swapped under the user: somebody who
+                    // has just been told "Account linked" by their phone must not be handed a
+                    // different code with no explanation.
+                    c.code_replaced = true;
+                });
+            });
+            if applied.is_none() {
+                log("auth: progress dropped (code replacing) — a newer flow owns the sign-in");
+            }
+        }
+        LoginProgress::CodeReady {
+            epoch,
+            id,
+            code,
+            qr_png,
+        } => {
+            let applied = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.pin_id = id;
+                    c.pin_code = code;
+                    c.qr_png = qr_png;
+                    // Allocated and stored inside the SAME write as the bytes it names, so no
+                    // reader can see one without the other — see [`qr_snapshot`].
+                    c.qr_gen = QR_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+                    c.phase = Phase::Waiting;
+                });
+            });
+            if applied.is_none() {
+                log("auth: progress dropped (code ready) — a newer flow owns the sign-in");
+            }
+        }
+        LoginProgress::Authorized { epoch, token } => {
+            let applied = with_live_epoch(epoch, || {
+                with_ctl(|c| {
+                    c.session.account_token = token;
+                    c.authorized_in_flow = true;
+                    c.phase = Phase::Discovering;
+                });
+            });
+            if applied.is_none() {
+                log("auth: a newer sign-in superseded this one while the pin poll was in flight — token dropped");
+            }
+        }
+        LoginProgress::Failed { epoch, message } => {
+            // Inlined rather than delegated to `set_error_if_live` (still used by `restart`'s own
+            // main-thread refusal path, where the epoch cannot have moved since it was captured
+            // one statement earlier) so this arm can tell whether the write landed and log a drop
+            // like its four siblings above and below. Before this it called `set_error_if_live`
+            // and threw the `Option` away — the one arm of five that failed SILENTLY, in a file
+            // whose whole reason to log this much is to stop a drop from reading as "never
+            // happened" to whoever is debugging a sign-in from the event log alone.
+            let applied = with_live_epoch(epoch, || set_error(&message));
+            if applied.is_none() {
+                log("auth: progress dropped (failed) — a newer flow owns the sign-in");
+            }
+        }
+        LoginProgress::SignedIn {
+            epoch,
+            server,
+            sources,
+            users,
+        } => {
+            let applied = with_live_epoch(epoch, || {
+                let home_users: Vec<session::HomeUserRef> =
+                    users.iter().map(UserTile::to_ref).collect();
+                with_ctl(|c| {
+                    c.session.server = server;
+                    c.session.sources = sources;
+                    c.session.home_users = home_users;
+                });
+                // Persist NOW — the account token + server + roster are durable the moment they
+                // exist. Waiting for take_ready() (a completed profile pick) meant abandoning the
+                // app at the picker lost the whole sign-in; next boot resumes at the picker instead.
+                //
+                // **This write is on the MAIN thread now; before phase 6 it ran on the worker,
+                // and that move is deliberate rather than an oversight carried over by accident.**
+                // The worker cannot do it instead without reopening exactly the hazard phase 6
+                // exists to close: `c.session` at this moment is not `server`/`sources`/
+                // `home_users` alone, it is the WHOLE session `session::load()` populated when
+                // this flow started — `home_pins`, `recent_searches`, `last_library`, `profiles`,
+                // all fields a worker was never handed and has no local copy of (only `cid` and,
+                // after `Authorized`, the bare account token — threaded across `login_thread`'s
+                // parameters, never read back out of `Ctl`).
+                // Saving from the worker would mean either handing it a `with_ctl` READ to
+                // reconstruct that snapshot — the exact class of access
+                // `login_worker_functions_never_touch_ctl_directly` exists to refuse, because a
+                // worker's read can race a newer flow's write to the same fields — or building a
+                // second, partial `Session` from what the worker DOES know and writing THAT to
+                // disk, which would silently drop every field above on every sign-in. Neither is
+                // better than one synchronous disk write on the one frame a sign-in actually
+                // completes: this is a spinner screen with nothing else animating fast enough for
+                // a stalled frame to read as a hitch, and it happens once per sign-in, not once
+                // per frame. If a device profile ever shows this write costing something real,
+                // the fix is to hand the snapshot to `task::spawn_small` from HERE, still after
+                // `with_ctl` has installed it — never to move the read back onto the worker.
+                let snap = with_ctl(|c| c.session.clone());
+                session::save(&snap);
+                if users.len() > 1 {
+                    log("auth: showing who's-watching");
+                    // Sign-in reached a usable state. BOTH settling arms report it — this one and
+                    // the single-user one below — because "did the QR flow work" is one question
+                    // and a Plex Home roster is not a different answer to it.
+                    finish_signin_completed();
+                    with_ctl(|c| {
+                        c.users = users;
+                        c.phase = Phase::Profiles;
+                        // The THIRD picker, and the one that does NOT go through `start_switch` —
+                        // so it says which it is here, rather than inheriting whatever
+                        // `start_login`'s reset left behind.
+                        c.from = Picker::SignedIn;
+                    });
+                } else {
+                    // no Plex Home (or a single user): use the owner's server token as-is.
+                    log("auth: single user — ready, entering Home");
+                    finish_signin_completed();
+                    with_ctl(|c| {
+                        c.phase = Phase::Ready;
+                        c.apply_pending = true;
+                    });
+                }
+            });
+            if applied.is_none() {
+                log("auth: sign-in result dropped — a newer flow owns the session");
+            }
+        }
+    }
+}
+
 // ---- worker threads ----
 
-fn login_thread(epoch: u64) {
-    let cid = with_ctl(|c| c.session.client_id.clone());
+/// `cid` arrives as a plain parameter, captured by the caller ([`start_login`]/[`restart`]) at the
+/// same moment they write the fresh `Ctl` this flow starts from — not read back out of `Ctl` here.
+/// See the section doc above [`LoginProgress`]: a phase-6 worker has no `with_ctl` call left in it
+/// at all, reads included, so there is nothing for a future edit to widen into a write by accident.
+fn login_thread(epoch: u64, cid: String) {
     let ac = AccountClient::new(&cid, None);
 
     // 1) create a pin, and KEEP creating one for as long as this screen is up and the last one
@@ -1012,42 +1323,34 @@ fn login_thread(epoch: u64) {
             }
             PollEnd::Expired => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
-                return set_error_if_live(epoch, "Sign-in timed out — try again.");
+                return push_failed(epoch, "Sign-in timed out — try again.");
             }
         }
     };
     log("auth: authorized — discovering server");
 
-    // 3) discover the LAN server. GUARDED, because [`cancel`] is a phase flip plus an epoch bump
-    // and the poll above is a network round trip: a BACK pressed while that request was in flight
-    // would otherwise be undone a second later, and — far worse — the `plex::install` below would
-    // swap the PMS client out from under the Home the user had already gone back to. A refused
-    // BACK does neither (see [`cancel`]), so reaching this arm means a real successor took over.
-    let landed = with_live_epoch(epoch, || {
-        with_ctl(|c| {
-            if c.phase != Phase::Waiting {
-                return Some(c.phase);
-            }
-            c.session.account_token = token.clone();
-            c.authorized_in_flow = true;
-            c.phase = Phase::Discovering;
-            None
-        })
-    });
-    match landed {
-        Some(None) => {}
-        // Both arms drop an account credential the user really did authorize, so each says which
-        // of the two it was: a device log that only ever showed one sentence could not separate
-        // "somebody else owns the sign-in now" from "this flow is still ours but has moved on".
-        Some(Some(phase)) => {
-            return log(&format!(
-                "auth: the sign-in left Waiting for {phase:?} while the pin poll was in flight — token dropped"
-            ))
-        }
-        None => {
-            return log("auth: a newer sign-in superseded this one while the pin poll was in flight — token dropped")
-        }
+    // 3) discover the LAN server. The write this used to make synchronously here — account_token,
+    // authorized_in_flow, phase — now happens in [`apply_progress`] on the main thread (see
+    // [`LoginProgress::Authorized`]); what this worker still decides for ITSELF is whether to keep
+    // spending network calls on a flow nobody is behind any more.
+    //
+    // A single epoch check is enough to decide that, and it is worth saying why the OLD guard here
+    // read a `Ctl` field too. `cancel`/`restart` bump [`AUTH_EPOCH`] strictly BEFORE writing any
+    // state a new flow would install (see [`begin_flow`]/[`cancel_under_gate`]), so a numeric
+    // mismatch between this epoch and the live one is already authoritative: there is no window
+    // where this worker's own captured epoch still matches while some OTHER flow has moved `Ctl`
+    // on. The two-armed match this replaced (`Some(Some(phase))` vs `None`) existed to defend
+    // against exactly that kind of torn read — reading the epoch and a `Ctl` field as two SEPARATE
+    // lock holds — which was a real hazard for the synchronous write this thread used to perform,
+    // and is not a hazard for a check that only ever reads the epoch, once, under one hold of the
+    // same gate `cancel`/`restart` write it under ([`with_live_epoch`]/[`flow_is_live`]).
+    if !flow_is_live(epoch) {
+        return log("auth: a newer sign-in superseded this one while the pin poll was in flight — token dropped");
     }
+    push_progress(LoginProgress::Authorized {
+        epoch,
+        token: token.clone(),
+    });
     let ac = AccountClient::new(&cid, Some(&token));
     // The failure copy is per outcome, and it used to be one line — "No local Plex server found on
     // this network." — for every one of them. That sentence was the discovery POLICY talking: a
@@ -1055,26 +1358,26 @@ fn login_thread(epoch: u64) {
     // It now describes what actually happened, and none of the three sends the user to the wrong
     // place: a token refusal is not a router problem, and an account with no server is not an
     // outage.
-    match discover_and_store(&ac, epoch) {
-        Discovery::Ok => {}
+    let (server, sources) = match discover_and_store(&ac, epoch) {
+        Discovery::Ok { server, sources } => (server, sources),
         Discovery::Cancelled => return,
         Discovery::NoServers => {
-            return set_error_if_live(epoch, "This Plex account has no server yet.")
+            return push_failed(epoch, "This Plex account has no server yet.")
         }
         Discovery::Refused => {
-            return set_error_if_live(
+            return push_failed(
                 epoch,
                 "Your Plex server refused the connection — check its network access settings.",
             )
         }
         Discovery::Silent => {
-            return set_error_if_live(
+            return push_failed(
                 epoch,
                 "Couldn't reach any Plex server — check the connection.",
             )
         }
-    }
-    finish_sign_in(&ac, epoch);
+    };
+    finish_sign_in(&ac, epoch, server, sources);
 }
 
 /// How many codes ONE visit to the sign-in screen may burn through before it gives up and offers
@@ -1108,18 +1411,14 @@ fn another_code_allowed(generation: u32) -> bool {
 /// creation failed and has already said so on the error read-out.
 fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCode> {
     if generation > 1 {
-        with_live_epoch(epoch, || {
-            with_ctl(|c| {
-                c.phase = Phase::Creating;
-                c.pin_id = 0;
-                c.pin_code.clear();
-                c.qr_png.clear();
-                // The screen says so once a code has been swapped under the user: somebody who
-                // has just been told "Account linked" by their phone must not be handed a
-                // different code with no explanation.
-                c.code_replaced = true;
-            });
-        })?;
+        // Liveness only, no write — see the section doc above [`login_thread`]. This is the same
+        // "stop wasting plex.tv calls on a dead flow" courtesy the old synchronous check made:
+        // without it, `ac.create_pin()` below would still burn a network round trip minting a code
+        // nobody is left to scan.
+        if !flow_is_live(epoch) {
+            return None;
+        }
+        push_progress(LoginProgress::CodeReplacing { epoch });
     }
     let pin = match ac.create_pin() {
         Some(p) if p.id != 0 && !p.code.is_empty() => p,
@@ -1127,7 +1426,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
             // Says what the internet is FOR here, because the one time this screen appears
             // with the link deliberately down is the first boot of a set that has never signed
             // in — and that person needs to know the app works offline once it has.
-            set_error_if_live(
+            push_failed(
                 epoch,
                 "Couldn't reach Plex — check the connection. Signing in needs the internet once.",
             );
@@ -1158,17 +1457,18 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
         .map(|r| r.body)
         .unwrap_or_default();
     log(&format!("auth: qr png {} bytes", qr_png.len()));
-    with_live_epoch(epoch, || {
-        with_ctl(|c| {
-            c.pin_id = pin.id;
-            c.pin_code = pin.code.clone();
-            c.qr_png = qr_png;
-            // Allocated and stored inside the SAME write as the bytes it names, so no reader can
-            // see one without the other — see [`qr_snapshot`].
-            c.qr_gen = QR_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
-            c.phase = Phase::Waiting;
-        });
-    })?;
+    // Same liveness-only check as above, and the same reason: no point publishing a code the flow
+    // this worker belongs to no longer exists to show. The QR_GENERATION allocation itself moved to
+    // [`apply_progress`] — see [`LoginProgress::CodeReady`] for why.
+    if !flow_is_live(epoch) {
+        return None;
+    }
+    push_progress(LoginProgress::CodeReady {
+        epoch,
+        id: pin.id,
+        code: pin.code.clone(),
+        qr_png,
+    });
     Some(MintedCode {
         id: pin.id,
         expires_in: pin.expires_in,
@@ -1185,14 +1485,17 @@ struct MintedCode {
 }
 
 /// Finish a successful discovery. Shared by the QR flow and the discovery-only Retry path.
-fn finish_sign_in(ac: &AccountClient, epoch: u64) {
-    let origin = with_ctl(|c| c.session.server.origin());
+///
+/// `server`/`sources` are discovery's OWN result, passed in rather than read back off `Ctl` —
+/// `discover_and_store` no longer writes `Ctl` at all (phase 6), so there is nothing there for this
+/// to read that this function does not already have more directly.
+fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Vec<SourceRef>) {
     // Discovery's coordinator already installed/re-pointed the final winner under the epoch gate.
     // Re-installing here would reopen a check→sign-out→old-token publication window.
     // `log_form`, not `base()`: byte-identical to the `{addr}:{port}` this line always printed
     // for a plaintext origin (so an archived log stays comparable), and the whole URL as soon as
     // the scheme is worth saying. See `Origin::log_form`.
-    log(&format!("auth: PMS client installed {}", origin.log_form()));
+    log(&format!("auth: PMS client installed {}", server.origin().log_form()));
 
     // 4) Plex Home roster → who's-watching, or straight in if there's a single user. The roster is
     // kept on the session so it persists with the creds — the boot picker and every later
@@ -1204,52 +1507,28 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64) {
         .map(UserTile::of)
         .collect();
     log(&format!("auth: home users n={}", users.len()));
-    let applied = with_live_epoch(epoch, || {
-        with_ctl(|c| c.session.home_users = users.iter().map(UserTile::to_ref).collect());
-        // Persist NOW — the account token + server + roster are durable the moment they exist.
-        // Waiting for take_ready() (a completed profile pick) meant abandoning the app at the
-        // picker lost the whole sign-in; next boot resumes at the picker instead.
-        let snap = with_ctl(|c| c.session.clone());
-        session::save(&snap);
-        if users.len() > 1 {
-            log("auth: showing who's-watching");
-            // Sign-in reached a usable state. BOTH settling arms report it — this one and the
-            // single-user one below — because "did the QR flow work" is one question and a Plex
-            // Home roster is not a different answer to it.
-            finish_signin_completed();
-            with_ctl(|c| {
-                c.users = users;
-                c.phase = Phase::Profiles;
-                // The THIRD picker, and the one that does NOT go through `start_switch` — so it says
-                // which it is here, rather than inheriting whatever `start_login`'s reset left behind.
-                c.from = Picker::SignedIn;
-            });
-        } else {
-            // no Plex Home (or a single user): use the owner's server token as-is.
-            log("auth: single user — ready, entering Home");
-            finish_signin_completed();
-            with_ctl(|c| {
-                c.phase = Phase::Ready;
-                c.apply_pending = true;
-            });
-        }
+    // One observation carrying everything [`apply_progress`] needs to update the session at once —
+    // see [`LoginProgress::SignedIn`] for why this used to be three separate `with_ctl` writes and
+    // is now one.
+    push_progress(LoginProgress::SignedIn {
+        epoch,
+        server,
+        sources,
+        users,
     });
-    if applied.is_none() {
-        log("auth: sign-in result dropped — a newer flow owns the session");
-    }
 }
 
 fn retry_discovery_thread(cid: String, token: String, epoch: u64) {
     let ac = AccountClient::new(&cid, Some(&token));
     match discover_and_store(&ac, epoch) {
-        Discovery::Ok => finish_sign_in(&ac, epoch),
+        Discovery::Ok { server, sources } => finish_sign_in(&ac, epoch, server, sources),
         Discovery::Cancelled => {}
-        Discovery::NoServers => set_error_if_live(epoch, "This Plex account has no server yet."),
-        Discovery::Refused => set_error_if_live(
+        Discovery::NoServers => push_failed(epoch, "This Plex account has no server yet."),
+        Discovery::Refused => push_failed(
             epoch,
             "Your Plex server refused the connection — check its network access settings.",
         ),
-        Discovery::Silent => set_error_if_live(
+        Discovery::Silent => push_failed(
             epoch,
             "Couldn't reach any Plex server — check the connection.",
         ),
@@ -1350,16 +1629,30 @@ impl PinWatch for LivePin<'_> {
     }
 }
 
-/// Is this worker still the one the sign-in screen belongs to?
+/// Is this worker still the one the sign-in screen belongs to? A courtesy check, not the
+/// correctness gate — every actual write is epoch-checked again, independently, by
+/// [`apply_progress`] on the main thread, so a `true` answer here that turns out to be wrong a
+/// moment later costs nothing worse than one wasted network request.
 ///
-/// Both halves under ONE hold of the activation gate. Read separately, an old worker could see
-/// its own epoch as current, be superseded by a flow that also reaches [`Phase::Waiting`], and
-/// then see that `Waiting` and poll its stale pin. It could never have PUBLISHED anything —
-/// every write goes through [`with_live_epoch`] — so the cost was one wasted request and a log
-/// line attributing it to the wrong flow, which is exactly the kind of misattribution this file's
-/// logging exists to prevent.
+/// **Before phase 6 this also read `Ctl`'s `phase` field, under the SAME hold of the activation
+/// gate as the epoch check.** That combination mattered for a synchronous writer: reading the two
+/// SEPARATELY could observe an old, still-matching epoch alongside a `Phase::Waiting` that in fact
+/// belonged to a *newer* flow which had already reached it, so the atomicity was what stopped a
+/// stale worker from concluding it was still live off a fact that was true, but true of someone
+/// else. That hazard cannot arise from the epoch alone, because [`begin_flow`]/[`cancel_under_gate`]
+/// always bump [`AUTH_EPOCH`] strictly BEFORE writing any `Ctl` state the new flow installs — so a
+/// numeric mismatch against the live epoch is, by itself, already authoritative staleness evidence,
+/// with or without a second fact read beside it.
+///
+/// The phase half of the check is gone now for a reason that is NOT "it was redundant": since a
+/// worker's write is a queued [`LoginProgress`] rather than a direct `Ctl` mutation, `Ctl`'s `phase`
+/// can legitimately still show a worker's OWN previous step (still `Creating`, say) for as long as
+/// [`apply_progress`] has not yet drained the queue — commonly one frame, but unbounded in a host
+/// test that never calls it. Keeping the phase read here would have turned that ordinary, harmless
+/// lag into a false "I've been superseded," which is a worse bug than the one this function guards
+/// against: a worker abandoning a sign-in that nobody actually cancelled.
 fn flow_is_live(epoch: u64) -> bool {
-    with_live_epoch(epoch, || with_ctl(|c| c.phase == Phase::Waiting)).unwrap_or(false)
+    with_live_epoch(epoch, || ()).is_some()
 }
 
 /// Poll `/pins/{id}` until the user authorizes, the code dies, or the flow is superseded.
@@ -1460,7 +1753,14 @@ enum Reach {
 /// server", "your servers are silent" and "a server answered and refused us" are three different
 /// things to tell a user, and only the middle one is about the network.
 enum Discovery {
-    Ok,
+    /// The winning primary and the reachable roster. Carried on the variant rather than left for
+    /// the caller to re-read out of `Ctl` — since phase 6, `discover_and_store` no longer writes
+    /// `Ctl` at all (see [`LoginProgress`]), so this is now the ONLY way `finish_sign_in` learns
+    /// what discovery found.
+    Ok {
+        server: ServerRef,
+        sources: Vec<SourceRef>,
+    },
     /// Superseded while network work was in flight. Silent: the newer flow owns the UI/session.
     Cancelled,
     /// `/api/v2/resources` named no server at all. NOT the case where it could not be fetched —
@@ -2400,17 +2700,19 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
             found[primary].name
         ));
         // Final winner only. The first winner was made usable by the coordinator; this is the one
-        // allowed re-point after settlement and the one that becomes current/persisted.
+        // allowed re-point after settlement and the one that becomes current/persisted. This is
+        // still gated on the SAME epoch check as before phase 6 — a cancelled flow must not
+        // register into the live server registry either, even though the `Ctl` write that used to
+        // sit right beside it has moved to [`apply_progress`] (see [`Discovery::Ok`]).
         install_roster(&found, Some(primary));
-        with_ctl(|c| {
-            c.session.server = server;
-            c.session.sources = found;
-        });
     });
     if applied.is_none() {
         return Discovery::Cancelled;
     }
-    Discovery::Ok
+    Discovery::Ok {
+        server,
+        sources: found,
+    }
 }
 
 /// **Re-learn the roster from plex.tv on a resumed session, in the background.**
@@ -3586,6 +3888,32 @@ mod tests {
     use super::*;
     use crate::plex::probe::Scheme;
     use std::cell::RefCell;
+
+    /// Pins [`DELETE_LEFTOVERS`]'s one load-bearing property: a NON-CONSUMING read. Nothing else
+    /// in this file or in `screens::login` touches this static, so — unlike most tests here —
+    /// this one needs no `testlock::serial()` to avoid another test's writes.
+    #[test]
+    fn delete_leftovers_is_recorded_and_reread_without_being_consumed() {
+        note_delete_leftovers(3);
+        assert_eq!(
+            delete_leftovers(),
+            3,
+            "the count just recorded must read back"
+        );
+        assert_eq!(
+            delete_leftovers(),
+            3,
+            "a second read — what `LoginScreen::resync` does on every `Tick` the phase stays \
+             `Deleted` — must see the SAME count, not a consumed 0. `take_progress`'s queue is the \
+             pattern to reach for when a read SHOULD consume; this one deliberately is not that."
+        );
+        note_delete_leftovers(0);
+        assert_eq!(
+            delete_leftovers(),
+            0,
+            "a clean sweep must overwrite a stale nonzero count from an earlier one"
+        );
+    }
 
     /// **The next account to sign in must be asked afresh.** The maintainer's scenario (2026-09-04):
     /// account A consents to both channels, signs out, account B signs in through the QR flow — and
@@ -6303,5 +6631,286 @@ mod tests {
         assert!(!c.signin_active);
         assert!(!c.apply_pending);
         assert!(c.pin_code.is_empty());
+    }
+
+    // ---- phase 6: LoginProgress / apply_progress ----
+    //
+    // `login_thread` used to be a writer of `Ctl` with the same authority as `start_login`/
+    // `cancel`/`restart`, from a thread none of those three synchronize with except by convention.
+    // These three tests pin the replacement: a stale observation is refused, a cancel cannot be
+    // overtaken by a success that was already in flight when it happened, and the worker functions
+    // themselves no longer contain the write at all.
+
+    /// **A [`LoginProgress`] observed under a retired epoch changes nothing.** This is the direct
+    /// analogue of [`invalidating_an_epoch_while_activation_waits_prevents_stale_publication`] for
+    /// the new door into `Ctl`: that test proved a raw `with_live_epoch` closure is refused once the
+    /// epoch moves on; this one proves [`apply_progress`] — the only thing that may still call such
+    /// a closure for the sign-in flow — refuses on the caller's behalf.
+    #[test]
+    fn apply_progress_drops_an_observation_from_a_retired_epoch() {
+        let _g = crate::testlock::serial();
+        // `apply_progress` now takes a `&MainThread` proof (see its own doc) — minting one here
+        // with `assume()` is exactly what every other main-thread-confined test in this crate
+        // does (e.g. `player::engine`'s tests), and is honest: a host unit test IS single-threaded
+        // for the duration of its own body.
+        let mt = unsafe { crate::task::MainThread::assume() };
+        with_ctl(|c| *c = Ctl::default());
+        let epoch = network_epoch();
+        // Nobody called `cancel`/`restart` on purpose here — the point is simply that SOME other
+        // flow superseded this one, which is all a bumped epoch ever means to a worker.
+        AUTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+
+        apply_progress(
+            &mt,
+            LoginProgress::Authorized {
+                epoch,
+                token: "a-token-nobody-should-see-installed".into(),
+            },
+        );
+
+        assert!(
+            with_ctl(|c| c.session.account_token.is_empty()),
+            "an observation from a retired epoch must not reach the session"
+        );
+        assert_eq!(
+            phase(),
+            Phase::Idle,
+            "nor may it move the phase a newer flow is entitled to own"
+        );
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// **A cancel that already resumed the stored session cannot be overtaken by a success the
+    /// superseded worker was still carrying.** This is the scenario [`cancel`]'s own doc calls out
+    /// as the whole point of the epoch discipline — an ordinary re-sign-in's BACK, which resumes
+    /// [`resume_stored`]'s success arm SYNCHRONOUSLY, on the main thread, strictly before the
+    /// worker's own in-flight discovery call can possibly report what it found. (The OTHER shape of
+    /// cancel — refused, nothing resumable behind the screen — deliberately changes NOTHING, not
+    /// even the epoch, per `cancel_under_gate`'s own doc on the 2026-09-03 fix; testing THIS shape
+    /// is what actually exercises the epoch bump this test is about.) If the worker's stale success
+    /// could still land, it would silently swap the just-resumed session's server out from under a
+    /// screen that has already moved to Home — a real credential mix-up, not a cosmetic one.
+    #[test]
+    fn a_cancel_mid_flight_cannot_be_overtaken_by_an_in_flight_success() {
+        let _g = crate::testlock::serial();
+        // See the sibling test above for why `assume()` here is the right call, not a shortcut.
+        let mt = unsafe { crate::task::MainThread::assume() };
+        with_ctl(|c| {
+            *c = Ctl {
+                phase: Phase::Discovering,
+                signin_active: true,
+                ..Ctl::default()
+            }
+        });
+        // The epoch the (simulated) discovery worker captured back when it was told to discover —
+        // before anybody cancelled it.
+        let epoch = network_epoch();
+
+        // The user presses BACK, over a resumable stored session (`u-kid` is unprotected in
+        // `signed_in_as`'s roster). This is `cancel_under_gate`'s own three-line body: settle the
+        // diagnostics bracket, bump the epoch, THEN resume — in that order, all before the worker's
+        // discovery call can possibly finish.
+        let resumed = {
+            let gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            finish_signin_cancelled();
+            AUTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+            let resumed = resume_stored(signed_in_as("u-kid"));
+            drop(gate);
+            resumed
+        };
+        assert!(
+            resumed,
+            "the scenario needs BACK to actually resume something, or it proves nothing"
+        );
+        assert_eq!(phase(), Phase::Ready);
+
+        // A moment later, the worker's OWN discovery call — which had genuinely succeeded, on the
+        // OLD epoch — reports a DIFFERENT server than the one just resumed.
+        apply_progress(
+            &mt,
+            LoginProgress::SignedIn {
+                epoch,
+                server: ServerRef {
+                    machine_id: "stale-discovery-result".into(),
+                    ..ServerRef::default()
+                },
+                sources: Vec::new(),
+                users: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            phase(),
+            Phase::Ready,
+            "a stale success must not move the phase the resumed session already reached"
+        );
+        assert_eq!(
+            with_ctl(|c| c.session.server.machine_id.clone()),
+            "aaaa1111", // `signed_in_as`'s own server — see that helper, unchanged by the stale write
+            "the resumed session's server must survive a stale success from a superseded worker"
+        );
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// Extract one `fn NAME(` … `}` body, verbatim, from this file's OWN source. A tiny lexer —
+    /// tracking only whether it is inside a `"…"` string literal or a `//` line comment — rather
+    /// than a bare brace count, because several of these functions log a `format!("…{x}…")` whose
+    /// placeholder braces are balanced on their own and would otherwise silently agree with a real
+    /// count by coincidence; skipping string contents removes the coincidence instead of relying on
+    /// it.
+    fn extract_fn_body<'a>(src: &'a str, name: &str) -> &'a str {
+        let needle = format!("fn {name}(");
+        let start = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no `{needle}` in auth.rs — did it get renamed?"));
+        let open = src[start..]
+            .find('{')
+            .map(|i| start + i)
+            .unwrap_or_else(|| panic!("`{needle}` has no body"));
+        let bytes = src.as_bytes();
+        let (mut depth, mut i, mut in_string, mut in_comment) = (0i32, open, false, false);
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if in_comment {
+                in_comment = c != '\n';
+                i += 1;
+                continue;
+            }
+            if in_string {
+                if c == '\\' {
+                    i += 2;
+                    continue;
+                }
+                in_string = c != '"';
+                i += 1;
+                continue;
+            }
+            match c {
+                '"' => in_string = true,
+                '/' if bytes.get(i + 1) == Some(&b'/') => in_comment = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=i];
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        panic!("unterminated body for `{needle}`");
+    }
+
+    /// Does `body`'s raw text call some function whose name starts with `prefix` — an
+    /// `identifier(` whose identifier begins with `prefix`, found by a plain byte scan (this crate
+    /// carries no regex dependency)?
+    ///
+    /// Used below to catch not one exact bypass spelling but the whole NAMING FAMILY it belongs
+    /// to: this file's `Ctl`-writing setters — `set_error`, `set_error_if_live`,
+    /// `set_pin_denied_for_test` — all share a `set_` prefix, so a FOURTH one sharing the
+    /// convention (a `set_phase`, say) is refused here by the family it belongs to, on the commit
+    /// that adds it, rather than only once someone remembers to type its exact name into a list.
+    fn calls_a_function_prefixed(body: &str, prefix: &str) -> bool {
+        let bytes = body.as_bytes();
+        let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut i = 0;
+        while let Some(rel) = body[i..].find(prefix) {
+            let at = i + rel;
+            // The match must START an identifier — the byte before it, if any, is not itself part
+            // of one — so this cannot fire on `unset_error(` or on some longer name that merely
+            // CONTAINS the prefix (`offset_ms(`, say, for a `set_` search).
+            let starts_ident = at == 0 || !is_ident(bytes[at - 1]);
+            if starts_ident {
+                let mut j = at + prefix.len();
+                while j < bytes.len() && is_ident(bytes[j]) {
+                    j += 1;
+                }
+                let mut k = j;
+                while k < bytes.len() && (bytes[k] as char).is_whitespace() {
+                    k += 1;
+                }
+                if bytes.get(k) == Some(&b'(') {
+                    return true;
+                }
+            }
+            i = at + prefix.len();
+        }
+        false
+    }
+
+    /// **The invariant phase 6 exists to establish, pinned by reading the source.** Nothing else
+    /// can see a regression here: a `with_ctl(|c| c.foo = …)` spliced back into `login_thread`
+    /// compiles cleanly, passes every OTHER test in this file (none of them spin up a real worker
+    /// thread against a real plex.tv — see the module doc), and only misbehaves on a device, under
+    /// contention nobody happened to be watching for. Modelled on `diag::scrub`'s
+    /// `no_log_call_site_interpolates_viewing_content`, which pins its own "the mechanism is that
+    /// nobody writes it" claim the same way.
+    ///
+    /// **What this test actually checks, restated after a reviewer found the gap in the stronger
+    /// sentence this comment used to make ("no `with_ctl` call at all", full stop).** That claim
+    /// was true of the two DIRECT spellings this test greped for and false of a WRAPPED one: the
+    /// reviewer added `set_error_if_live(epoch, "…")` to `login_thread` — the exact pre-phase-6
+    /// call [`LoginProgress::Failed`]'s doc says is retired — and it reached `with_ctl` two hops
+    /// down (`set_error_if_live` → `set_error` → `with_ctl`) while this test kept reporting green,
+    /// because a two-hop wrapper call is neither `with_ctl(` nor `CTL.lock(` in the CALLER's own
+    /// text. Three checks run per function now, not two: the original direct-spelling pair, PLUS
+    /// [`calls_a_function_prefixed`] against `set_`, the naming family every `Ctl`-writing setter
+    /// in this file already belongs to — which catches `set_error_if_live(` (and `set_error(` on
+    /// its own) by the family, not by a name typed into this test.
+    ///
+    /// **What is still NOT proven, and this says so rather than overclaiming again:** a wrapper
+    /// that reached `Ctl` under a name outside the `set_` convention would still slip past a
+    /// textual scan — closing that fully needs a real call-graph walk (or moving `Ctl` behind an
+    /// interface a worker's module cannot name at all), not a longer prefix list. This is a
+    /// materially stronger gate than the one it replaces, scoped to say exactly that.
+    ///
+    /// Scoped to the functions this phase actually converted — [`login_thread`], [`mint_pin`],
+    /// [`finish_sign_in`], [`discover_and_store`] and [`retry_discovery_thread`] — not to the whole
+    /// file: `switch_thread` and the roster/endpoint-refresh workers still write `Ctl` directly, and
+    /// pretending otherwise here would be a false claim rather than a narrower true one. See the
+    /// section doc above [`LoginProgress`] for why those are out of scope for this phase.
+    #[test]
+    fn login_worker_functions_never_touch_ctl_directly() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+        )
+        .expect("auth.rs must be readable from its own test");
+        for name in [
+            "login_thread",
+            "mint_pin",
+            "finish_sign_in",
+            "discover_and_store",
+            "retry_discovery_thread",
+        ] {
+            let body = extract_fn_body(&src, name);
+            assert!(
+                !body.contains("with_ctl("),
+                "`{name}` calls `with_ctl` — a phase-6 worker must observe and push a \
+                 `LoginProgress` instead of touching `Ctl` directly (read OR write):\n{body}"
+            );
+            assert!(
+                !body.contains("CTL.lock("),
+                "`{name}` locks `CTL` directly, bypassing `with_ctl` but not the rule it exists \
+                 to enforce"
+            );
+            for wrapper in ["set_error(", "set_error_if_live("] {
+                assert!(
+                    !body.contains(wrapper),
+                    "`{name}` calls `{wrapper}` — a `Ctl`-writing wrapper this test used to be \
+                     blind to, because it only greped for `with_ctl(`/`CTL.lock(` directly and \
+                     this reaches `with_ctl` two calls down. A worker must push a `LoginProgress` \
+                     and let `apply_progress` make the write on the main thread instead."
+                );
+            }
+            assert!(
+                !calls_a_function_prefixed(body, "set_"),
+                "`{name}` calls a `set_`-prefixed function — this file's naming convention for \
+                 every `Ctl`-writing setter it has (`set_error`, `set_error_if_live`, \
+                 `set_pin_denied_for_test`). A NEW setter sharing that prefix is refused here by \
+                 the family it belongs to; see the doc above this test for the mutation that made \
+                 the narrower direct-spelling check insufficient:\n{body}"
+            );
+        }
     }
 }
