@@ -82,6 +82,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) mod view;
+pub(crate) mod recents;
 
 /// Below this many characters the server answers with nothing, so asking is pure latency.
 /// Measured, not guessed — see the module doc.

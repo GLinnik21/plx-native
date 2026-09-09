@@ -131,6 +131,14 @@ stay editable in place, and Clear leaves the list to become a Button — a verb 
 column as the words you searched for. They persist in the session file beside the roster behind a
 soft-failing deserializer, so a corrupt entry costs that entry and never the session.
 
+The recents data owner is now `search/recents.rs`: profile-generation cache, immutable term
+publications, normalization, and worker persistence. `SearchCmd` carries remember/clear requests
+with the captured profile generation; the store refuses a command after that generation changes.
+The renderer in `ui/search/recents.rs` keeps only geometry and a glyph cache keyed on that
+publication. `SearchSnapshot` includes recents beside query/results and is retained at the bridge's
+frame boundary. The Search screen itself is still legacy during this migration; its replacement
+must consume these retained views instead of reading the session or stores during draw.
+
 ---
 
 ## 2. The data layer

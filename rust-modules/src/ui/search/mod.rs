@@ -157,7 +157,7 @@ pub(crate) const HEAD_BOTTOM: f32 = SCOPE_Y + field::SCOPE_H;
 ///
 /// The fifth is DROPPED, not scrolled — a list you cannot see the end of asks to be paged, and
 /// there is no paging in this product.
-pub(crate) const MAX_RECENTS: usize = 4;
+pub(crate) const MAX_RECENTS: usize = crate::search::recents::CAP;
 
 /// The RESULT BAND's content cross-fade — the Library's [`Xfade`] doing the same job one screen
 /// over. A query change replaces everything below the field, and a replacement that CUTS reads as

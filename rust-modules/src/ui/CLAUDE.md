@@ -170,6 +170,12 @@ eviction/remount. Person neither stores nor forwards input to that surface. Like
 `DetailScreen` now turns it into `ContentReq::Present(ContentArg::Detail { ... })` — there is no
 `detail::open_alt_copy` latch.
 
+**Search data ownership (phase 8 in progress).** `search/recents.rs` owns recent terms and
+profile-scoped worker persistence; `ui/search/recents.rs` retains geometry and glyph caching only.
+Its compatibility writes use generation-addressed `SearchCmd` requests. The bridge captures
+immutable query/result/recents publications; the upcoming owned Search screen must consume those
+views. This data move does not mean Search's legacy focus ladder or keyboard ownership is retired.
+
 | File | Owns |
 |---|---|
 | `value_chip.rs` | `ValueChip` — the existing menu-opening label/value capsule, factored from Library: regular label, bold value, optional owner note on the shared baseline, trailing chevron, and theme idle/focus treatment. Width comes from the host's `Measure`; the caller owns text, focus and menu actions. |

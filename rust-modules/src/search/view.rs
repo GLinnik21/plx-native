@@ -8,11 +8,12 @@ pub(crate) struct SearchSnapshot {
     shelves: Option<Arc<Vec<Shelf>>>,
     state: State,
     query_gen: u32,
+    recents: super::recents::RecentsSnapshot,
 }
 
 impl Default for SearchSnapshot {
     fn default() -> Self {
-        Self { query: None, shelves: None, state: State::Idle, query_gen: 0 }
+        Self { query: None, shelves: None, state: State::Idle, query_gen: 0, recents: Default::default() }
     }
 }
 
@@ -32,6 +33,7 @@ impl SearchSnapshot {
         }
         self.state == other.state && self.query_gen == other.query_gen
             && same(&self.query, &other.query) && same(&self.shelves, &other.shelves)
+            && self.recents.same_publication(&other.recents)
     }
 }
 
@@ -45,6 +47,7 @@ impl<'a> SearchView<'a> {
     }
     pub(crate) fn state(self) -> State { self.0.state }
     pub(crate) fn query_gen(self) -> u32 { self.0.query_gen }
+    pub(crate) fn recents(self) -> &'a super::recents::RecentsSnapshot { &self.0.recents }
 }
 
 /// Main-thread store boundary, called once for a dispatcher frame. Borrowed access thereafter
@@ -56,6 +59,7 @@ pub(crate) fn snapshot() -> SearchSnapshot {
             shelves: (&*addr_of!(super::SHELVES)).clone(),
             state: super::state(),
             query_gen: super::query_gen(),
+            recents: super::recents::snapshot(),
         }
     }
 }

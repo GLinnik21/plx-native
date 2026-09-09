@@ -212,7 +212,7 @@ pub struct Session {
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub home_pins: Vec<HomePins>,
     /// The search terms actually searched, most recent first — what the Search screen's
-    /// empty-query state offers back (`crate::ui::search::recents` owns the cap, the
+    /// empty-query state offers back (`crate::search::recents` owns the cap, the
     /// de-duplication and the ordering; this is only where they rest).
     ///
     /// **Keyed by PROFILE, and that is the whole point of the shape.** They lived here as a bare
@@ -1144,7 +1144,7 @@ pub fn current_profile_key() -> String {
 /// other writer there is: the server-roster worker (`auth::refresh_roster`), the
 /// who's-watching roster worker (`auth::start_switch`), the profile-switch and sign-in saves on
 /// the main thread (`auth::take_ready`, `auth`'s login thread), and the search-recents flush
-/// worker (`ui::search::recents`).
+/// worker (`search::recents`).
 ///
 /// They were all unsynchronized — `recents` kept a `WRITING` mutex, which serialized recents
 /// against recents and against nothing else, and no `auth` writer took anything at all. Two
@@ -1172,7 +1172,7 @@ pub fn current_profile_key() -> String {
 /// doing an `fs::read` per frame (the legacy Library's failed-source labels; the owned screen now
 /// uses retained views). **Do not add a per-frame
 /// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
-/// `ui::search::recents` caches by [`current_gen`].
+/// `search::recents` caches by [`current_gen`].
 static IO: Mutex<()> = Mutex::new(());
 
 fn io() -> std::sync::MutexGuard<'static, ()> {
