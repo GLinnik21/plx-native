@@ -201,7 +201,8 @@ RUST_NIGHTLY ?= nightly
 SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
 
 TOOLPREFIX   = $(WEBOS_SDK)/bin/arm-webos-linux-gnueabi-
-CC           = $(TOOLPREFIX)gcc
+CC           = $(CURDIR)/ci/arm-cc.py
+export WEBOS_SDK
 AR           = $(TOOLPREFIX)ar
 SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # NDK gcc default target is cortex-a9 / armv7-a / soft-float — portable across
@@ -570,7 +571,7 @@ RUST_TARGET = arm-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modules.a
 
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
-SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c))
+SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative
@@ -626,7 +627,7 @@ SENTRY_UNWIND_LIB     = $(SENTRY_NATIVE_PREFIX)/lib/libunwind.a
 SENTRY_REMOTE_UNWIND_LIB = $(SENTRY_NATIVE_PREFIX)/lib/libunwind_remote.a
 SENTRY_HANDLER        = $(SENTRY_NATIVE_PREFIX)/bin/sentry-crash
 SENTRY_NATIVE_STAMP   = $(SENTRY_NATIVE_PREFIX)/.built
-SENTRY_NATIVE_INPUTS  = ci/build-sentry-native.sh vendor/sentry-native/webos-arm32.patch
+SENTRY_NATIVE_INPUTS  = ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py ci/build-sentry-native.sh vendor/sentry-native/webos-arm32.patch
 
 # `sentry_context.c` is the only application TU that includes the SDK header. Its Rust caller sees
 # plain C strings rather than sentry_value_t's opaque by-value union, whose AAPCS ABI must stay on
@@ -640,13 +641,14 @@ $(SENTRY_NATIVE_STAMP): $(SENTRY_NATIVE_INPUTS)
 
 sentry-native: $(SENTRY_NATIVE_STAMP)
 
-$(FFMPEG_INC)/libavformat/avformat.h:
+$(FFMPEG_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py
 	RELEASE=$(RELEASE) ./ci/build-ffmpeg.sh
 
 # The real files carry a full version (libavutil-plx.so.58.29.100); ship them under the SONAME.
 $(FFMPEG_STAGED): pkg/%: $(FFMPEG_INC)/libavformat/avformat.h
 	@mkdir -p pkg
-	cp $$(ls $(FFMPEG_PREFIX)/lib/$*.* | head -1) $@
+	cp -L $(FFMPEG_PREFIX)/lib/$* $@
+	python3 ci/stage-link-evidence.py $(FFMPEG_PREFIX)/lib/$* $@
 
 # The FFmpeg ABI gate. ff.rs reads FFmpeg structs at hardcoded offsets; ci/ffabi-assert.c
 # re-derives every one with offsetof against THE HEADERS THE SHIPPED LIBRARIES WERE BUILT FROM, so
@@ -665,7 +667,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
-$(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
+$(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
@@ -692,7 +694,7 @@ $(RUST_LIB): $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust
 # this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
 SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
 SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
-pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) Makefile
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(SMP_INTERPOSER_LDFLAG) \
 	  $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
@@ -802,7 +804,7 @@ ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,pkg/d
 LAB_FILES = $(if $(LAB),pkg/lab.json,)
 APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
-            THIRD-PARTY-NOTICES.md \
+            THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
             $(FFMPEG_STAGED)
 
@@ -831,7 +833,7 @@ DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(L
 # matches LICENSE against known texts by SIMILARITY, and the appended thirty lines pushed the file
 # under the threshold — so the repository advertised "Other" rather than MIT, misrepresenting the
 # terms in the one place most people look. Splitting the file must not un-ship the reservation.
-LICENSE_FILES = LICENSE TRADEMARKS.md $(wildcard licenses/*.txt)
+LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt)
 
 # The derived descriptor for a flavoured install, written by the SAME transform that packages it
 # (ci/flavor.py, through ci/mkipk.py) so `make deploy`'s scp'd appinfo and the .ipk's staged one
@@ -1169,6 +1171,11 @@ check: lint
 	@# comparison `verify-deploy` runs against the television, with no ssh and no device.
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
+	python3 ci/test_link_evidence.py
+	python3 ci/test_packaged_elf.py
+	python3 ci/test_source_bundle.py
+	python3 ci/test_restore_runtime.py
+	python3 ci/test-compat.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -1258,6 +1265,7 @@ sentry-symbols: symbols
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
 ipk: pkg/plxnative $(APPINFO) release-guard
+	python3 ci/check-link-evidence.py pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -1269,6 +1277,11 @@ ipk: pkg/plxnative $(APPINFO) release-guard
 	@# stripping in place would break the identity check and lose function names from every
 	@# release crash report. Deploy ships the unstripped one by design; only the ipk is stripped.
 	$(TOOLPREFIX)strip --strip-unneeded $(STAGE)/plxnative
+	rm -rf pkg/link-evidence/$(FLAVOR)
+	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED); do \
+	  python3 ci/stage-link-evidence.py "$$source" "$(STAGE)/$$(basename "$$source")" --stripped \
+	    --evidence-base "pkg/link-evidence/$(FLAVOR)/$$(basename "$$source")" || exit $$?; \
+	done
 	@# Only THIS flavour's artifact — packaging one must never delete the other's.
 	rm -f pkg/$(APPID)_*_arm.ipk
 	FLAVOR=$(FLAVOR) python3 ci/mkipk.py
@@ -1284,6 +1297,7 @@ ipk: pkg/plxnative $(APPINFO) release-guard
 	@# written because something shipped broken, and until this line the machine that built the
 	@# package was the one machine that never ran them — the first sight of a failure was a push.
 	python3 ci/check-package.py
+	python3 ci/check-packaged-elf.py $(IPK) pkg/link-evidence/$(FLAVOR)
 
 # THE STABLE INSTALL IS ALWAYS A RELEASE BUILD, and that is a gate rather than a habit.
 #

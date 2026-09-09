@@ -12,7 +12,7 @@ edition = "2021"
 # they are so `cargo metadata` and any SBOM tool agree with the repo's own LICENSE, which is the
 # provenance a webosbrew reviewer reads. The manifest asserting nothing while the root said MIT
 # was a contradiction with no upside.
-license = "MIT"
+license = "GPL-3.0-or-later"
 description = "Application core for PlxNative — an unofficial native Plex client for LG webOS."
 repository = "https://github.com/GLinnik21/plx-native"
 

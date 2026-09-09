@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Gleb Linnik
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Own Rust mirror of src/starfish.h, written from the public ABI contract.
 //! player::ffi — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
 //! ABI). The library thread calls back into our sf_on_event / acb_on_event (defined in mod.rs).
 //! Signatures mirror `src/starfish.h` exactly; `long` is 32-bit on the arm target -> c_long.

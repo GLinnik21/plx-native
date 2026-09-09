@@ -2,12 +2,12 @@
 
 This file accompanies the **PlxNative** application package (`com.beb.plxnative`), an unofficial
 native Plex client for LG webOS 4.x televisions. PlxNative itself is Copyright (c) 2026 Gleb
-Linnik and is distributed under the MIT License (see `LICENSE`; the brand reservation and the
+Linnik and is distributed under GPL-3.0-or-later (see `LICENSE`; the brand reservation and the
 non-affiliation statements are in `TRADEMARKS.md`, alongside it in both the repository and this
 package).
 
-The file is organised by **relationship**, because relationship — not licence — is what
-determines the obligation:
+The file is organised by **relationship**. Both the applicable license and the actual
+relationship affect obligations; dynamic linking is not a blanket exemption:
 
 1. **Redistributed in this package** — third-party code or assets that are physically inside the
    files you received (compiled into the `plxnative` binary, embedded in it, or shipped beside
@@ -65,7 +65,8 @@ built from a different release will be declined rather than misread.
 
 ### 1.2 Libraries provided by your television
 
-PlxNative also links dynamically against the following **LGPL-2.1-or-later** libraries, which are
+PlxNative also links dynamically against the following libraries (glibc/GLib are
+**LGPL-2.1-or-later**; libcurl is **curl** licensed), which are
 part of your television's own system software and are **not** distributed by us:
 
 | Library | Version on this webOS 4.5 build | SONAME(s) the app requests |
@@ -74,10 +75,11 @@ part of your television's own system software and are **not** distributed by us:
 | GNU C Library (glibc) | 2.24 | `libc.so.6`, `libm.so.6`, `libpthread.so.0`, `librt.so.1`, `libdl.so.2`, `ld-linux.so.3` |
 | libcurl | 7.x | `libcurl.so.4` or `libcurl.so.5` (whichever the firmware provides) |
 
-For these, PlxNative uses the ordinary shared-library mechanism (LGPL-2.1 §6(b)): no code from
+libcurl uses the curl license, not LGPL; its distinct grant is listed in section 3.
+For these libraries, PlxNative uses the ordinary shared-library mechanism (LGPL-2.1 §6(b)): no code from
 them is copied into the executable, and the dynamic loader resolves them at run time against the
 television's own `/usr/lib`. To use your own build, install an interface-compatible library under
-the same SONAME. The MIT terms under which PlxNative is distributed permit modification of the
+the same SONAME. The GPL-3.0-or-later terms under which PlxNative is distributed permit modification of the
 application for your own use and reverse engineering for debugging such modifications.
 
 One further disclosure: small fragments of glibc's own startup and compatibility code **are**
@@ -255,20 +257,21 @@ IJG code is copyright (C) 1991-2014, Thomas G. Lane, Guido Vollbeding.
 code to the shipped binary. `foldhash` appears in the Rust source tree but is **not** compiled
 here (the standard library takes `hashbrown` with default features disabled, which does not
 enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_macro`,
-`panic_abort` and `std_detect` are compiled by `-Z build-std` but leave no code in this binary.
+`panic_abort` are build-std source components; final object inclusion is recorded in the linker evidence. `std_detect` supplies CPU capability detection in the Rust runtime and is covered by the Rust notices above.
 
 ### 2.5 Compiler runtime fragments statically linked into `plxnative`
 
 - **GCC runtime startup objects** (`crtbegin.o`, `crtend.o`) from the webOS NDK's GCC 12.2.0.
   Licence: GPL-3.0-or-later **WITH GCC-exception-3.1**. The GCC Runtime Library Exception
-  permits distributing the result of compilation under our own terms, and the compilation used
-  only Eligible Compilation Processes; no additional licence text is required or supplied.
-- **`libglibc_polyfills.a`** from the webosbrew native-toolchain NDK (supplies `getauxval` and
-  its initialiser). **Licence not determined** — see section 3.
+  permits distributing eligible compilation output under the application terms; the exception
+  text is supplied as `licenses/GCC-exception-3.1.txt`. Like the glibc startup objects, these are
+  part of the NDK's compiler and C runtime (webosbrew native-toolchain) and are System Libraries
+  under GPL section 1.
+- **PlxNative auxv compatibility seam** (`src/compat/getauxval.c`), GPL-3.0-or-later. It supplies a bounded immutable process snapshot for the Rust runtime. Project-local linker guards exclude the old NDK `libglibc_polyfills.a` from every newly built ELF.
 
 ### 2.6 Native crash capture
 
-**Sentry Native 0.13.9** — Copyright (c) 2019 Sentry and individual contributors. Licence:
+**Sentry Native 0.16.6** — Copyright (c) 2019 Sentry and individual contributors. Licence:
 **MIT** (`licenses/MIT.txt`). Its client library is statically linked into `plxnative`; the
 out-of-process `sentry-crash` handler is shipped beside it. The handler is built with its HTTP
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on
@@ -285,9 +288,8 @@ handler and is used to initialise the ARM unwind machinery outside signal contex
 ## 3. Dynamically linked, not redistributed
 
 The libraries below are part of your television's software. This package contains no copy of
-them; PlxNative loads them at run time. Where a licence would require reproducing a notice in
-copies, no copy is being distributed, so nothing is owed — the credits are given because they
-are due in substance.
+them; PlxNative loads them at run time. Their upstream terms and the applicable GPL linking basis must be assessed separately; absence
+of a bundled copy alone does not establish that no obligation applies.
 
 | Library | Version on this build | Licence | Note |
 |---|---|---|---|
@@ -299,7 +301,7 @@ are due in substance.
 | libcurl | 7.53.1 (LG SONAME `libcurl.so.5`) | curl (MIT/X derivate) | Copyright (c) 1996 - 2017, Daniel Stenberg, <daniel@haxx.se>, and many contributors |
 | libwayland-client | 0.3.0 | MIT | Copyright © 2008-2012 Kristian Høgsberg; © 2010-2012 Intel Corporation; © 2011 Benjamin Franzke; © 2012 Collabora, Ltd. The licence of *this LG build specifically* was not read off the device |
 | luna-service2 | 3.21.2 | Apache-2.0 | Licence taken from the webOS OSE upstream project; not read off this LG build |
-| libgcc_s | the television's own | GPL-3.0-or-later WITH GCC-exception-3.1 | Version not determined; its exported symbol versions stop at `GCC_4.7.0`. No obligation arises — the Runtime Library Exception covers it |
+| libgcc_s | the television's own | GPL-3.0-or-later WITH GCC-exception-3.1 | Version not determined; its exported symbol versions stop at `GCC_4.7.0`. Exact source and applicable Runtime Library Exception require audit |
 | FreeType | libtool 6.16.0, i.e. release 2.9.0 (inferred from the so-version, not read from the binary) | FTL OR GPL-2.0-or-later | **Not** linked by PlxNative — reached only inside the television's own SDL2_ttf. Credit given voluntarily: *Portions of this software are copyright © The FreeType Project (www.freetype.org). All rights reserved.* |
 
 ---
@@ -312,10 +314,11 @@ decline to guess one:
 - `libGLESv2.so.2` — the television's OpenGL ES 2.0 implementation (an LG shim over the ARM Mali
   driver). Proprietary; no published licence located.
 - `libAcbAPI.so.1`, `libplayerAPIs.so.1` (StarfishMediaAPIs), `libpf-1.0.so.1` — LG proprietary
-  media components of webOS. No published licence located. PlxNative calls their published ABI;
-  nothing of LG's is copied into or distributed with this package.
-- `libglibc_polyfills.a` from the webosbrew native-toolchain NDK, statically linked (see 2.5).
-  No licence statement was found in the NDK tree or in the archive itself.
+  media components of webOS. No published licence located. PlxNative uses locally declared
+  interoperability interfaces; the owner has closed the review of their provenance and GPL/platform
+  basis, treating them as GPL-3.0 section 1 System Libraries never redistributed with the
+  application.
+**Historical NDK archive:** pre-migration builds included `libglibc_polyfills.a`, whose licence was not established. It is excluded from new linker inputs. This does not grant permission for previously distributed copies.
 
 **Non-affiliation.** PlxNative is an independent, unofficial application. It is not affiliated
 with, endorsed by, or sponsored by LG Electronics, Plex GmbH, Fandango Media (Rotten Tomatoes),
@@ -338,7 +341,8 @@ disclosure that over-states what a package contains is its own problem.*
 
 ## 5. The `licenses/` directory
 
-This package must contain exactly the following licence texts, verbatim:
+This package must contain the following licence texts, verbatim, plus the project and
+runtime notices listed below:
 
 | File | Required by |
 |---|---|
@@ -355,9 +359,9 @@ add a second copy for the second font: the two upstream licence bodies are byte-
 what differs between them (the copyright statement and the Reserved Font Name) is reproduced in
 §2.3 and carried inside each font's own name table.
 
-No BSD-3-Clause text is required because Apache-2.0 is elected for `moxcms` and `pxfm`. No
-GPL-3.0 text is required: the only GPL-3-covered components are GCC runtime pieces carried by
-the Runtime Library Exception and the television's own `libgcc_s`.
+No BSD-3-Clause text is required because Apache-2.0 is elected for `moxcms` and `pxfm`. The full GPLv3 text is supplied at the package root as `LICENSE`; `LICENSING.md` states
+the GPL-3.0-or-later election. Also retain `licenses/GCC-exception-3.1.txt` and
+`licenses/PlxNative-historical-MIT.txt`.
 
 ---
 
@@ -367,3 +371,19 @@ Two third-party components exist in the PlxNative source repository but are **no
 package, and therefore carry no obligation discharged here: **libjpeg-turbo**
 (`libturbojpeg.so.0`, copied to developer televisions by the development deploy step only) and
 **jsmpeg** (a host-side development tool). Neither is present in the installed application.
+
+## Source-only attribution
+
+The historical polyfill entry describes the pre-migration build and does not license it. Every
+ELF that ships in the package is checked for its exact linker inputs by `ci/check-link-evidence.py`
+and `ci/check-packaged-elf.py`, which is what proves the old archive is absent from new builds.
+
+**Frank Muller** contributed the server connection port fix in commit
+`11b867a34b54dda5a9c6b99127b9dffdf90a23fd` (`plex/origin.rs`, `plex/probe.rs`) under the
+then-current MIT grant. That original grant and Gleb Linnik notice are preserved in
+`licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
+
+Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
+header blocks, Khronos GLES2 MIT/Apache-2.0 headers, and the MIT-licensed jsmpeg tool
+(Copyright (c) 2017 Dominic Szablewski). Preserve their original embedded notices. Exact per-file
+license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.

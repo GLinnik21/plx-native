@@ -532,7 +532,7 @@ def generate(args) -> str:
                         else f"**{', '.join(banned)} present**"))
     lic = sorted(n.rsplit("/", 1)[-1] for n in files if "/licenses/" in n)
     rows.append(row("licence texts in the payload", ", ".join(f"`{n}`" for n in lic) or "**none**"))
-    for doc in ("THIRD-PARTY-NOTICES.md", "LICENSE", "TRADEMARKS.md"):
+    for doc in ("THIRD-PARTY-NOTICES.md", "LICENSE", "LICENSING.md", "TRADEMARKS.md"):
         rows.append(row(f"`{doc}` in the payload",
                         "yes" if any(n.endswith("/" + doc) for n in files) else "**no**"))
     out += [table(rows, ("field", "value")), ""]

@@ -386,7 +386,7 @@ jobs:
         # context around a frame. Checked before enabling it: 1961 files are referenced and NONE of
         # them is gitignored — in particular `src/config.local.h`, which holds a live Plex token, is
         # not referenced at all, and that token appears zero times in both the .debug and the
-        # stripped binary. The repository is public and MIT, so the sources are already published.
+        # stripped binary. The source is GPL-3.0-or-later; publication also requires the corresponding-source gate.
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG || 'gleb-linnik' }}
@@ -494,6 +494,24 @@ jobs:
           echo "LGPL source: $(basename "$tarball") + build-ffmpeg.sh" >> "$GITHUB_STEP_SUMMARY"
           echo "| LGPL corresponding source attached ($(basename "$tarball") + build-ffmpeg.sh) | pass |" >> pkg/gates.md
 
+      - name: Versioned source asset and isolated reconstruction
+        env:
+          GPL_SCAN_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
+          GPL_SCAN_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
+          GPL_SCAN_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          private_values="$RUNNER_TEMP/gpl-private-values.json"
+          python3 -c 'import json,os,sys; p=sys.argv[1]; open(p,"w").write(json.dumps([v for k,v in os.environ.items() if k.startswith("GPL_SCAN_") and v])); os.chmod(p,0o600)' "$private_values"
+          ipk=$(ls pkg/com.beb.plxnative_*_arm.ipk)
+          source="pkg/plxnative-source-$(python3 -c 'import json; print(json.load(open("pkg/appinfo.json"))["version"])').tar.gz"
+          python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \
+            --output "$source" --rust-toolchain nightly-2026-07-02 --binary "$ipk" --private-values "$private_values"
+          snapshot=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_snapshot_sha256"])' "$source.release.json")
+          python3 ci/verify-source-rebuild.py "$source" --expect-snapshot "$snapshot" \
+            --rust-toolchain nightly-2026-07-02 --work "$RUNNER_TEMP/gpl-source-rebuild" --private-values "$private_values"
+          cp "$RUNNER_TEMP/gpl-source-rebuild/result.json" pkg/source-rebuild.json
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-assets
@@ -506,6 +524,8 @@ jobs:
             pkg/ipk-verify.md
             pkg/gates.md
             pkg/build-config.txt
+            pkg/plxnative-source-*.tar.gz*
+            pkg/source-rebuild.json
 
   publish:
     name: publish release
@@ -656,6 +676,8 @@ jobs:
             dist/ipk.sha256
             dist/ffmpeg-*.tar.xz
             dist/build-ffmpeg.sh
+            dist/plxnative-source-*.tar.gz*
+            dist/source-rebuild.json
       # Re-derive every published claim FROM the published artifacts. Everything assertable
       # before publishing is in ci/check-package.py; this is the half that needs a live release —
       # the hash agreeing in four places, `shasum -c` working where a user actually stands, the

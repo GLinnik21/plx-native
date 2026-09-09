@@ -270,7 +270,7 @@ class ReplayFixtures(unittest.TestCase):
 
     def test_the_alphabet_refuses_a_title_shaped_string(self):
         lits, pats = self._alphabet()
-        for v in ("Film Club Night", "The Godfather", "192.168.0.114", "nas-home"):
+        for v in ("Film Club Night", "The Godfather", "10.203.0.10", "nas-home"):
             self.assertFalse(v in lits or any(p.match(v) for p in pats), v)
         for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(4))", "plxnative-rec"):
             self.assertTrue(v in lits or any(p.match(v) for p in pats), v)

@@ -1,15 +1,11 @@
 # Trademarks, brand assets, and non-affiliation
 
-The [MIT grant](LICENSE) covers this project's own source code. This file covers the things a
+The [GPL-3.0-or-later grant](LICENSE) covers this project's own source code. This file covers the things a
 licence grant does not: the marks that identify the project, and whose software this interoperates
 with.
 
-It lives here rather than appended to `LICENSE` for a mundane reason worth recording — GitHub
-detects a project's licence with [`licensee`](https://github.com/licensee/licensee), which matches
-`LICENSE` against known licence texts by similarity. Thirty lines of appended reservation pushed
-the file under the threshold, so the repository advertised itself as "Other" instead of MIT. That
-misrepresents the terms in the one place most people look. `LICENSE` is now verbatim MIT and
-nothing else.
+`LICENSE` contains the unmodified GPLv3 text. The choice of version 3 or any later version
+is stated in `LICENSING.md`; this trademark guidance remains separate.
 
 ## Trademarks and brand assets
 
@@ -18,7 +14,7 @@ The name **PlxNative** and the PLX logo and splash artwork — `assets/logo-mast
 from them — identify this project. They are **not** licensed for use as the identity of a derived
 or redistributed work.
 
-You may fork and redistribute this software under the MIT terms; please do so under your own name
+You may fork and redistribute this software under the GPL-3.0-or-later terms; please do so under your own name
 and mark, so that users can tell the two apart. This is the usual reservation made by projects that
 ship an identity along with their code, and it restricts nothing else.
 

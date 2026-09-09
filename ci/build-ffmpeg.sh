@@ -166,7 +166,7 @@ if [ -n "$HOST" ]; then
   set -- --prefix=/plx
 else
   set -- --prefix=/plx \
-    --enable-cross-compile --cross-prefix="$CROSS" --host-cc=cc \
+    --enable-cross-compile --cross-prefix="$CROSS" --host-cc=cc --cc=./plx-arm-cc.py \
     --arch=arm --cpu=cortex-a9 --target-os=linux --sysroot="$SYSROOT"
 fi
 set -- "$@" \
@@ -245,7 +245,7 @@ if [ -n "$CACHE_ROOT" ]; then
   # later, clean checkout then reuses. One shell's codegen or SDK override, silently inherited by
   # every lane on the machine, in libraries that ship. They are in the key, which means such a
   # build gets its OWN tree rather than contaminating the shared one.
-  INHERITED="${CFLAGS-}|${CPPFLAGS-}|${LDFLAGS-}|${CXXFLAGS-}|${PKG_CONFIG_PATH-}"
+  INHERITED="$(shasum -a 256 "$ROOT/ci/arm-cc.py" "$ROOT/ci/check-link-evidence.py" | cut -d' ' -f1)|${CFLAGS-}|${CPPFLAGS-}|${LDFLAGS-}|${CXXFLAGS-}|${PKG_CONFIG_PATH-}"
   KEY=$(printf '%s|%s|%s|%s|%s|%s|%s|%s' "$VERSION" "$SHA256" "$ARCHTAG" "$CROSS" "$SYSROOT" "$TOOLCHAIN" "$INHERITED" "$FLAGS_ALL" \
         | shasum -a 256 | cut -c1-16)
   WORK="$CACHE_ROOT/ffmpeg/$ARCHTAG-$VERSION-$KEY"
@@ -415,6 +415,11 @@ if [ ! -d "$SRC" ]; then
 fi
 
 cd "$SRC"
+if [ -z "$HOST" ]; then
+  # Relative configure spelling avoids embedding the checkout path in avutil_configuration.
+  cp "$ROOT/ci/arm-cc.py" ./plx-arm-cc.py
+  cp "$ROOT/ci/check-link-evidence.py" ./check-link-evidence.py
+fi
 # Reconfigure only when the flags change; FFmpeg's configure is slow and this script is a
 # prerequisite of every build.
 FLAGS_FILE="$SRC/.plx-flags"
@@ -434,12 +439,14 @@ make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" > "$WORK/build.log" 
 make install DESTDIR="$WORK/destdir" > "$WORK/install.log" 2>&1
 mkdir -p "$PREFIX"
 cp -R "$WORK/destdir/plx/." "$PREFIX/"
-
-# Strip: these ship, and the debug info is ~4x the code. Only the shipped build — the host copy
-# never leaves this machine, and `strip` on a Mach-O dylib is a different flag set for no gain.
+# Strip each real ELF, then prove the exact strip transformation against its link receipt.
 if [ -z "$HOST" ]; then
-  for f in "$PREFIX"/lib/lib*-plx.so.*; do
-    [ -f "$f" ] && [ ! -L "$f" ] && "${CROSS}strip" --strip-unneeded "$f"
+  for elf in "$SRC"/libavutil/libavutil-plx.so.* "$SRC"/libavcodec/libavcodec-plx.so.* "$SRC"/libavformat/libavformat-plx.so.* "$SRC"/libswscale/libswscale-plx.so.*; do
+    case "$elf" in *.link.*) continue ;; esac
+    [ -f "$elf" ] && [ ! -L "$elf" ] || continue
+    target="$PREFIX/lib/$(basename "$elf")"
+    "${CROSS}strip" --strip-unneeded "$target"
+    python3 "$ROOT/ci/stage-link-evidence.py" "$elf" "$target" --stripped
   done
 fi
 
@@ -460,6 +467,7 @@ echo "ffmpeg: installed to $PREFIX"
 # the header exists and the recipe never re-runs. That reads as a flake and is not one; CI builds
 # clean, so it fails there every time.
 for f in "$PREFIX"/lib/lib*-plx.so.* "$PREFIX"/lib/lib*-plx.*.dylib; do
+  case "$f" in *.link.*) continue ;; esac
   if [ -f "$f" ] && [ ! -L "$f" ]; then
     printf '  %-28s %6s KB\n' "$(basename "$f")" "$(( $(wc -c < "$f") / 1024 ))"
   fi

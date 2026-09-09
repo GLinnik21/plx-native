@@ -632,7 +632,8 @@ BUILD = build_configuration(_stamp.read_text() if _stamp.exists() else "")
 # documented one that stopped shipping still fails. Whether a RELEASE build really dropped them is
 # the separate, narrower check below.
 DEV_ONLY_SONAMES = {"libswscale-plx.so.10"}   # the dev capture stream's scaler; RELEASE=1 drops it
-shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")}
+shipped = {p.name for p in (ROOT / "pkg").glob("*.so.*")
+           if p.is_file() and p.read_bytes()[:4] == b"\x7fELF"}
 if shipped:
     named = set(re.findall(r"`(lib[a-z]+-plx\.so\.\d+)`", (ROOT / "THIRD-PARTY-NOTICES.md").read_text()))
     distributed = shipped - DEV_ONLY_SONAMES
@@ -813,7 +814,7 @@ check("Homepage" in control, "control declares a Homepage")
 # dishonest way to silence a warning. See mkipk.py's header for why we do not use ares-package.
 for field in ("webOS-Package-Format-Version", "webOS-Packager-Version"):
     check(field in control, f"control declares {field}")
-check(control.get("License") == "MIT", f'control License == MIT (saw {control.get("License")!r})')
+check(control.get("License") == "GPL-3.0-or-later", f'control License == GPL-3.0-or-later (saw {control.get("License")!r})')
 check("@users.noreply.github.com" in control["Maintainer"] or "@gmail.com" not in control["Maintainer"],
       f'control Maintainer is not a personal mailbox ({control["Maintainer"]})')
 
@@ -890,15 +891,14 @@ print("== compliance artifacts ==")
 # received only the .ipk. release.yml's legal-gate refuses to publish without the first two.
 for f in ("LICENSE", "TRADEMARKS.md", "THIRD-PARTY-NOTICES.md"):
     check((ROOT / f).exists(), f"{f} present")
-# LICENSE must stay VERBATIM MIT. GitHub's `licensee` matches it against known licence texts by
-# similarity, and this file previously carried the trademark reservation appended below the grant —
-# which pushed it under the threshold, so the repository reported its licence as "Other". That
-# misrepresents the terms in the one place most people look. The reservation lives in TRADEMARKS.md
-# now; this assertion is what stops it drifting back.
-_lic = (ROOT / "LICENSE").read_text()
-check(_lic.rstrip().endswith("SOFTWARE."),
-      "LICENSE is verbatim MIT (no appended text — it would read as 'Other' on GitHub)")
-check("TRADEMARK" not in _lic.upper(), "LICENSE carries no trademark reservation (see TRADEMARKS.md)")
+# Pin the complete, unmodified GPL text; application metadata elects or-later.
+import hashlib
+_lic = (ROOT / "LICENSE").read_bytes()
+check(hashlib.sha256(_lic).hexdigest() == "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0",
+      "LICENSE is the complete verified GPLv3 text")
+check('license = "GPL-3.0-or-later"' in (ROOT / "rust-modules/Cargo.toml").read_text(),
+      "Cargo elects GPL-3.0-or-later")
+check((ROOT / "LICENSING.md").exists(), "LICENSING.md present")
 NEEDED_LICENCES = {
     "LGPL-2.1.txt": "FFmpeg, GLib, glibc — dynamically linked, §6 notice duty",
     "MIT.txt": "Feather/Heroicons and the MIT-elected Rust crates",
@@ -943,7 +943,7 @@ expected = {
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
-    "THIRD-PARTY-NOTICES.md", "LICENSE", "TRADEMARKS.md", *NEEDED_LICENCES,
+    "THIRD-PARTY-NOTICES.md", "LICENSE", "LICENSING.md", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
 data_tar = ROOT / "ipkroot/data.tar.gz"
 if data_tar.exists():

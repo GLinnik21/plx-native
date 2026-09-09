@@ -169,7 +169,7 @@ def write_plist(contents: Path, ver: str):
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright":
-            "© 2026 Gleb Linnik. MIT. Not affiliated with Plex GmbH or LG Electronics.",
+            "© 2026 Gleb Linnik. GPL-3.0-or-later. Not affiliated with Plex GmbH or LG Electronics.",
         # macOS 15+ asks before letting an app reach the LAN, and a Plex client that cannot is
         # useless. The string is what the person sees in that prompt, so it says why.
         "NSLocalNetworkUsageDescription":
@@ -279,6 +279,8 @@ def main():
     for f in ("appfont.ttf", "appfont-bold.ttf", "OFL.txt"):
         shutil.copy2(REPO / "pkg" / f, res / f)
     shutil.copy2(REPO / "LICENSE", res / "LICENSE.txt")
+    shutil.copy2(REPO / "LICENSING.md", res / "LICENSING.md")
+    shutil.copytree(REPO / "licenses", res / "licenses")
     shutil.copy2(REPO / "THIRD-PARTY-NOTICES.md", res / "THIRD-PARTY-NOTICES.md")
 
     write_icon(res)

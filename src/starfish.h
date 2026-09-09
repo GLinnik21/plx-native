@@ -1,3 +1,7 @@
+/* Copyright (c) 2026 Gleb Linnik
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Own interoperability adapter declarations, written from the public ABI contract.
+ * LG runtime binaries are not distributed with this file. */
 /* starfish.h — the low-level C subsystem: LG StarfishMediaAPIs (C++) + ACB
  * video-plane binding, behind flat C verbs. Hides the 11 mangled __asm__ symbols,
  * the sret std::string in Feed, the never-reused 64KB in-place objects, and the 3-arg ACB

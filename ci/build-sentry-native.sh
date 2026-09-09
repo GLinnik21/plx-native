@@ -27,7 +27,22 @@ URL="https://github.com/getsentry/sentry-native/archive/refs/tags/$VERSION.tar.g
 SHA256=a194ac434da1534723556c5628256752208b0b6989fee7bf5ed6c5b3c84773ab
 
 WEBOS_SDK=${WEBOS_SDK:-"$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot"}
-CC="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-gcc"
+CC="$ROOT/ci/arm-cc.py"
+export WEBOS_SDK
+# sentry-native's top-level project() declares LANGUAGES C CXX, so CMake probes a C++ compiler
+# even though nothing here compiles a .cpp: SENTRY_BACKEND=native is pure C, CXX is only enabled
+# for compiler-ID/ABI detection. Left unset, CMake tries to *derive* a companion CXX compiler from
+# CMAKE_C_COMPILER's name/directory (its "gcc"->"g++"/"c++" toolchain-prefix heuristic), which
+# works when CMAKE_C_COMPILER is the real `arm-webos-linux-gnueabi-gcc` binary but fails silently
+# against this project's own `arm-cc.py` wrapper (no such heuristic matches a Python script), so
+# CMake falls back to the HOST `/usr/bin/c++`. That single wrong guess is enough to break the
+# build: CMake's global CMAKE_SIZEOF_VOID_P is last-writer-wins across enabled languages, CXX is
+# probed after C, and vendored libunwind's CMakeLists picks its arch (arm vs aarch64) off that one
+# global — so a host CXX compiler silently flips the whole cross-build to aarch64 and it fails deep
+# inside libunwind's AArch64 dwarf-config.h. Pointing CMAKE_CXX_COMPILER at the real cross g++
+# directly (not through the wrapper — nothing here ever links C++ objects, so there is no archive
+# exclusion or link evidence for it to produce) removes the guess entirely.
+CXX="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-c++"
 AR="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-ar"
 RANLIB="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-ranlib"
 STRIP="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip"
@@ -37,6 +52,7 @@ CMAKE=${CMAKE:-cmake}
 fail() { echo "build-sentry-native: $*" >&2; exit 1; }
 command -v "$CMAKE" >/dev/null 2>&1 || fail "cmake is required (brew install cmake)"
 test -x "$CC" || fail "webOS NDK not found at $WEBOS_SDK (run make setup-env)"
+test -x "$CXX" || fail "webOS NDK C++ compiler not found at $CXX (run make setup-env)"
 test -f "$PATCH" || fail "missing $PATCH"
 
 if [[ ! -f "$ARCHIVE" ]]; then
@@ -66,6 +82,7 @@ patch -d "$SOURCE" -p1 < "$PATCH"
     -DCMAKE_SYSTEM_NAME=Linux \
     -DCMAKE_SYSTEM_PROCESSOR=arm \
     -DCMAKE_C_COMPILER="$CC" \
+    -DCMAKE_CXX_COMPILER="$CXX" \
     -DCMAKE_ASM_COMPILER="$CC" \
     -DCMAKE_AR="$AR" \
     -DCMAKE_RANLIB="$RANLIB" \
@@ -96,6 +113,7 @@ cp "$BUILD/vendor/libunwind/libunwind_remote.a" "$PREFIX/lib/libunwind_remote.a"
 cp "$BUILD/sentry-crash" "$PREFIX/bin/sentry-crash"
 "$STRIP" --strip-unneeded "$PREFIX/bin/sentry-crash"
 chmod 755 "$PREFIX/bin/sentry-crash"
+python3 "$ROOT/ci/stage-link-evidence.py" "$BUILD/sentry-crash" "$PREFIX/bin/sentry-crash" --stripped
 
 test -s "$PREFIX/lib/libsentry.a"
 test -s "$PREFIX/lib/libunwind.a"
