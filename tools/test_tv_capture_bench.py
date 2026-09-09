@@ -135,7 +135,13 @@ class BenchmarkExit(unittest.TestCase):
         types += src[src.index("struct osd_overlay {"):src.index("static unsigned char clamp_byte")]
         headers = "\n".join("#include <" + h + ">" for h in (
             "stdint.h", "stdio.h", "stdlib.h", "string.h", "signal.h", "inttypes.h", "errno.h", "fcntl.h", "dlfcn.h"))
-        code = headers + "\n" + types + "\n" + MOCKS + "\n"
+        # This harness never #includes the source file -- it assembles a fresh
+        # translation unit from extracted fragments, so the source's own
+        # `#ifndef _GNU_SOURCE` preamble (tv-capture-bench.c) never reaches this
+        # compile. A feature-test macro must precede the FIRST libc header
+        # (glibc's bits/fcntl-linux.h gates O_CLOEXEC on it), so it has to be
+        # defined here, ahead of `headers`, not in the source file.
+        code = "#define _GNU_SOURCE\n" + headers + "\n" + types + "\n" + MOCKS + "\n"
         for name in ("cmp_u64", "percentile_ms", "pixel_format_name", "fill_nv12", "print_plane_sample",
                      "packet_has_annex_b_start_code", "bench_venc", "bench_stream"):
             code += function(src, name)
