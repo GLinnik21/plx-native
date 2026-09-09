@@ -145,6 +145,12 @@ publication. `SearchSnapshot` includes recents beside query/results and is retai
 frame boundary. The Search screen itself is still legacy during this migration; its replacement
 must consume these retained views instead of reading the session or stores during draw.
 
+Text editing itself now uses `ui/text_buffer.rs`: an owned UTF-8 buffer and caret, with literal
+insertion, character-wise movement/deletion, and the TV's whole-commit prediction rule. Legacy
+Search reconstructs it around its synchronous store edits; the owned screen must retain a draft
+across successive input events while the frame's store view is frozen. A prediction publishes
+the completed replacement once, without exposing an intermediate deleted word to the store.
+
 ---
 
 ## 2. The data layer

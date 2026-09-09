@@ -383,129 +383,48 @@ fn set_caret(c: usize) {
     crate::ui::idle::invalidate();
 }
 
-/// The byte offset one character before/after `at`. `str::floor_char_boundary` is unstable, so this
-/// is the hand-rolled pair — and it must be characters and never bytes, since a Cyrillic query
-/// (device-confirmed: `q='су'` typed on the panel) is two bytes per letter and a byte step would
-/// cut a codepoint in half.
-fn prev_boundary(q: &str, at: usize) -> usize {
-    let mut i = at.min(q.len());
-    loop {
-        if i == 0 {
-            return 0;
-        }
-        i -= 1;
-        if q.is_char_boundary(i) {
-            return i;
-        }
-    }
+// Compatibility bridge while this page is legacy. The owned screen keeps TextBuffer as a
+// field across input events; this synchronous store path can reconstruct it for each edit.
+fn text_buffer() -> crate::ui::text_buffer::TextBuffer {
+    crate::ui::text_buffer::TextBuffer::new(crate::search::query().to_owned(), caret())
 }
-fn next_boundary(q: &str, at: usize) -> usize {
-    let mut i = (at + 1).min(q.len());
-    while i < q.len() && !q.is_char_boundary(i) {
-        i += 1;
+fn publish_text(buffer: crate::ui::text_buffer::TextBuffer) {
+    set_caret(buffer.caret());
+    if buffer.text() != crate::search::query() {
+        crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(buffer.into_text()));
     }
-    i
 }
 
-/// One commit from the panel, INSERTED or REPLACING — the difference being the panel's word
-/// prediction, which it does not tell us about.
-///
-/// **Tapping a prediction is a replace, and the delete half never arrives.** Typing `sum` and
-/// tapping the offered `summer` produced `sumsummer` (reported 2026-08-15). The event log settles
-/// what the panel actually sends, which is the whole reason this is a rule and not a guess — three
-/// single-character commits for the keys, then one commit of `"summer "`, and **nothing else**: no
-/// `SDL_TEXTEDITING`, no backspace keys, no `delete_surrounding_text` reaching SDL at all. The
-/// television simply assumes the field replaced the word it was predicting on.
-///
-/// So the signal is the commit's own LENGTH, which that log makes unambiguous: every key press
-/// arrives as exactly one character (Cyrillic included — `с`, `у`, `б` came one per event), and
-/// only the prediction bar ever commits more. [`replaces_word_at`] is that rule with its two
-/// guards, and its doc carries what each one is protecting.
 fn commit_text(text: &str) {
-    let q = crate::search::query();
-    if let Some(from) = replaces_word_at(q, caret(), text) {
-        let mut s = q.to_string();
-        s.replace_range(from..caret(), "");
-        set_caret(from);
-        crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(s));
-    }
-    insert_text(text);
+    let mut buffer = text_buffer();
+    buffer.commit(text);
+    publish_text(buffer);
 }
 
-/// Where the word this commit REPLACES begins, or `None` to insert it plainly. Pure, because it is
-/// the whole of the rule above and the cases that must NOT fire are the ones worth grading.
-///
-/// Two guards, each protecting a case that would otherwise eat the user's text:
-///
-/// 1. **More than one character.** A single-character commit is a key press, always — so typing
-///    `a` twice stays `aa` rather than replacing itself, and the space bar is a space.
-/// 2. **The caret is at the END.** A prediction is offered on the word you are finishing; a
-///    multi-character commit landing mid-string is something else entirely (the `txt:` dev token
-///    is one), and replacing there would delete text on either side of an insertion point the user
-///    deliberately moved.
-///
-/// The word is the trailing run of non-whitespace before the caret, so a query that already ends in
-/// a space has nothing to replace and the commit simply appends — which is exactly right for a
-/// prediction offered on the NEXT word.
-///
-/// Deliberately **not** also requiring the commit to start with that word. A completion does
-/// (`sum` → `summer`), but the same bar offers CORRECTIONS, and those do not; the two guards above
-/// are what make the rule safe, and adding a prefix test would only leave corrections broken.
-fn replaces_word_at(q: &str, caret: usize, text: &str) -> Option<usize> {
-    if text.chars().count() < 2 || caret != q.len() {
-        return None;
-    }
-    let head = q.get(..caret)?;
-    // Past the separator, not onto it — and by its own BYTE length, since a multi-byte space (the
-    // one `remote.rs` lost the app to) would otherwise leave the index mid-codepoint.
-    let start = match head.rfind(char::is_whitespace) {
-        Some(i) => i + head[i..].chars().next().map_or(1, char::len_utf8),
-        None => 0,
-    };
-    (start < caret).then_some(start)
-}
-
-/// Insert committed text AT the caret, not at the end. The panel's `◀`/`▶` can put the insertion
-/// point anywhere, so appending would type the new letter at the far end of a word the user had
-/// just stepped into the middle of.
+#[cfg(test)]
 fn insert_text(text: &str) {
-    let c = caret();
-    let mut q = crate::search::query().to_string();
-    q.insert_str(c, text);
-    set_caret(c + text.len());
-    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q)); // invalidates
+    let mut buffer = text_buffer();
+    buffer.insert(text);
+    publish_text(buffer);
 }
 
-/// Delete the character BEFORE the caret.
 fn backspace() {
-    let c = caret();
-    if c == 0 {
-        return;
-    }
-    let mut q = crate::search::query().to_string();
-    let prev = prev_boundary(&q, c);
-    q.replace_range(prev..c, "");
-    set_caret(prev);
-    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(q)); // invalidates
+    if caret() == 0 { return; }
+    let mut buffer = text_buffer();
+    buffer.backspace();
+    publish_text(buffer);
 }
 
-/// The panel's **Clear all**: the whole query goes, caret to the front. Not "delete to the caret" —
-/// the button is one word and it says all of it.
 fn clear_query() {
-    set_caret(0);
-    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery(String::new()));
+    let mut buffer = text_buffer();
+    buffer.clear();
+    publish_text(buffer);
 }
 
-/// The panel's `◀`/`▶`. One character, clamped at both ends rather than wrapping: a caret that
-/// jumped from the start of a term to its end on one press is a lost keystroke waiting to happen.
 fn move_caret(sym: c_uint) {
-    let q = crate::search::query();
-    let c = caret();
-    set_caret(if sym == SDLK_LEFT {
-        prev_boundary(q, c)
-    } else {
-        next_boundary(q, c)
-    });
+    let mut buffer = text_buffer();
+    if sym == SDLK_LEFT { buffer.left(); } else { buffer.right(); }
+    set_caret(buffer.caret());
 }
 
 /// Advance the blink and report to the frame gate on the FLIP alone — the whole reason a blinking
@@ -2295,54 +2214,20 @@ mod tests {
         crate::search::reset();
     }
 
-    /// **Tapping a word prediction is a REPLACE and the panel never says so.** Typing `sum` and
-    /// tapping the offered `summer` gave `sumsummer` — device-reported, and the event log shows why
-    /// there is no exact fix available: three single-character commits for the keys, then one
-    /// commit of `"summer "`, and no `SDL_TEXTEDITING`, no backspace keys, nothing else at all.
-    ///
-    /// So this is a rule, and a rule's tests are the cases it must NOT fire on.
-    #[test]
-    fn a_multi_character_commit_at_the_end_replaces_the_word_being_typed() {
-        // the reported case, exactly as the log has it — trailing space included
-        assert_eq!(replaces_word_at("sum", 3, "summer "), Some(0));
-        // …and mid-sentence, where only the LAST word goes
-        assert_eq!(replaces_word_at("the sum", 7, "summer "), Some(4));
 
-        // ---- the cases it must not fire on ----
-        // A single character is a KEY PRESS, always. Without this guard, typing a letter twice
-        // replaces it with itself and `aa` is impossible to type.
-        assert_eq!(replaces_word_at("a", 1, "a"), None);
-        assert_eq!(replaces_word_at("sum", 3, "m"), None);
-        assert_eq!(
-            replaces_word_at("sum", 3, " "),
-            None,
-            "the space bar is a space"
-        );
-        // A caret the user MOVED is not a word being predicted on: a multi-character insertion
-        // there must land where they put it (this is the `txt:` dev token's path, and the ◀/▶ one).
-        assert_eq!(replaces_word_at("summer", 4, "XY"), None);
-        // Nothing to replace: the query ends in a space, so the prediction is for the NEXT word.
-        assert_eq!(replaces_word_at("the ", 4, "office "), None);
-        assert_eq!(replaces_word_at("", 0, "summer "), None);
-
-        // Multi-byte: the word boundary is found by BYTE index and must land on a char boundary,
-        // or the `replace_range` that follows panics inside the SDL event loop.
-        assert_eq!(replaces_word_at("суб", "суб".len(), "суббота "), Some(0));
-        let two = "я суб";
-        assert_eq!(
-            replaces_word_at(two, two.len(), "суббота "),
-            Some("я ".len())
-        );
-    }
-
-    /// …and the same rule through the live store, since `commit_text` is what actually edits.
+    /// The shared buffer's prediction rule through the live store and compatibility bridge.
     #[test]
     fn the_prediction_replaces_rather_than_doubling_the_partial_word() {
         let _s = crate::testlock::serial();
         let _g = ZLOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         typed("sum");
+        let before = crate::search::view::snapshot();
         commit_text("summer ");
+        let after = crate::search::view::snapshot();
+        assert_eq!(after.view().query_gen(), before.view().query_gen().wrapping_add(1),
+            "one commit replaces the query once, without publishing the deleted prefix");
+        assert_eq!(before.view().query(), "sum", "the old publication remains immutable");
         assert_eq!(
             crate::search::query(),
             "summer ",

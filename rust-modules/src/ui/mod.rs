@@ -89,6 +89,7 @@ pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-re
 pub(crate) mod testapp; // RESTRUCTURE (spec §15.1): a screen under test with no SDL — dispatcher + fixture rig + virtual clock
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
+pub(crate) mod text_buffer;
 pub mod theme;
 pub mod track_menu;
 pub mod tracks_panel; // the detail page's "Track information" file inspector (Alert Views §1B)
