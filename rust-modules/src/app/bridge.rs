@@ -466,6 +466,7 @@ pub(super) struct Bridge {
     listing: crate::stores::browse::ListingSnapshot,
     directory: crate::stores::browse::DirectorySnapshot,
     section_hubs: crate::stores::browse::HubsSnapshot,
+    search: crate::stores::search::SearchSnapshot,
     chrome: super::chrome::ChromeSnapshot,
     chrome_selection: u32,
     legacy_host_live: bool,
@@ -513,6 +514,7 @@ impl Bridge {
             listing: crate::stores::browse::listing_snapshot(),
             directory,
             section_hubs: crate::stores::browse::hubs_snapshot(),
+            search: crate::stores::search::snapshot(),
             chrome: super::chrome::ChromeSnapshot::default(),
             chrome_selection: 0,
             legacy_host_live: true,
@@ -662,7 +664,13 @@ impl Bridge {
         }
     }
 
-    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) {
+    /// Return Search's publication change so the frame can coalesce it with queued notices.
+    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> bool {
+        let search = crate::stores::search::snapshot();
+        let search_changed = !self.search.same_publication(&search);
+        if search_changed {
+            self.search = search;
+        }
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         self.directory.capture();
@@ -687,6 +695,7 @@ impl Bridge {
             // landings which the legacy pump's catalog-generation notice cannot see.
             d.store_changed(StoreId::Hubs.ord(), after.0);
         }
+        search_changed
     }
 
     pub(super) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
@@ -1062,13 +1071,20 @@ pub(super) fn frame_with_results(
     take: impl FnOnce() -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
-    rig.capture_views(d);
+    let search_changed = rig.capture_views(d);
     sync_page(d, route, trail);
     rig.capture_chrome(d, route);
     rig.deliver_home_commands(d, route);
     rig.deliver_library_commands(d, route);
+    let mut search_notified = false;
     for (id, gen) in crate::stores::take_notices() {
+        search_notified |= id == StoreId::Search;
         d.store_changed(id.ord(), gen);
+    }
+    // A publication can change through a legacy producer without a store notice. Announce
+    // that captured change, but do not double-deliver an ordinary queued Search notice.
+    if search_changed && !search_notified {
+        d.store_changed(StoreId::Search.ord(), crate::stores::gen(StoreId::Search));
     }
     let surface = d.surface_up();
     // a surface's springs and inputs are the PANEL's damage, not the page's (`popover::own_motion`)
@@ -1544,6 +1560,7 @@ mod tests {
     include!("library_deferred_tests.rs");
     include!("library_navigation_tests.rs");
     include!("library_shelf_action_tests.rs");
+    include!("search_publication_tests.rs");
     #[test]
     fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};

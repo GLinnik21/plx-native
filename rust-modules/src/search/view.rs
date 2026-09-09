@@ -18,6 +18,21 @@ impl Default for SearchSnapshot {
 
 impl SearchSnapshot {
     pub(crate) fn view(&self) -> SearchView<'_> { SearchView(self) }
+
+    /// Publication identity is a process-local change detector, never a serialized pointer.
+    /// Raw text can change without changing the trimmed-query epoch; result edits can also
+    /// change a publication inside one query, so the epoch alone is insufficient.
+    pub(crate) fn same_publication(&self, other: &Self) -> bool {
+        fn same<T: ?Sized>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+        }
+        self.state == other.state && self.query_gen == other.query_gen
+            && same(&self.query, &other.query) && same(&self.shelves, &other.shelves)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -88,10 +103,12 @@ mod tests {
         let _reset = Reset;
         let old = publish_fixture();
         let another = snapshot();
+        assert!(old.same_publication(&another));
         assert!(Arc::ptr_eq(old.query.as_ref().unwrap(), another.query.as_ref().unwrap()));
         assert!(Arc::ptr_eq(old.shelves.as_ref().unwrap(), another.shelves.as_ref().unwrap()));
         crate::search::set_query("wallace  ");
         let spaced = snapshot();
+        assert!(!old.same_publication(&spaced), "raw field edits are a publication change");
         assert_eq!(old.view().query(), "wallace");
         assert_eq!(spaced.view().query(), "wallace  ");
         assert_eq!(old.view().query_gen(), spaced.view().query_gen());
@@ -138,6 +155,7 @@ mod tests {
         assert!(Arc::ptr_eq(old.shelves.as_ref().unwrap(), snapshot().shelves.as_ref().unwrap()));
         assert!(crate::search::set_watched_local(crate::plex::ServerId::UNSET, "retained-search", true));
         let changed = snapshot();
+        assert!(!old.same_publication(&changed), "optimistic edits do not change the query epoch");
         assert!(!watched(&old));
         assert!(watched(&changed));
         assert!(!Arc::ptr_eq(old.shelves.as_ref().unwrap(), changed.shelves.as_ref().unwrap()));

@@ -4,6 +4,11 @@ use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
 
 use super::{note, StoreEv, StoreId};
 
+pub(crate) use crate::search::view::SearchSnapshot;
+
+/// Capture the store publication at the dispatcher frame boundary, not during paint.
+pub(crate) fn snapshot() -> SearchSnapshot { crate::search::view::snapshot() }
+
 #[derive(Clone, Debug)]
 pub(crate) enum SearchCmd {
     /// The field's text; a change of the TRIMMED terms supersedes the answer and restarts the
