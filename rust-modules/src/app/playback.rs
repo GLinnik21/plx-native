@@ -587,6 +587,11 @@ pub(crate) fn exit_player(
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
     crate::player::report::clear_error_trace();
+    // Same reasoning for the jail pre-flight refusal, which also has no Engine: without this,
+    // `player::state()` kept reporting `Error` on every OTHER screen too — Home, the Library,
+    // any detail page — for the rest of the process, after the viewer had already walked away
+    // from the one refused attempt.
+    crate::player::clear_jail_refusal_for_route_exit();
     // **The return is a `PopTo` of the ORIGIN ENTRY** (§5.1) — the page that was on top when the
     // push was asked for, captured at the player's own mount and read back off the instance. It
     // replaces `App.play_from: Node` plus `enter_node` plus `Trail::ensure`, which between them
