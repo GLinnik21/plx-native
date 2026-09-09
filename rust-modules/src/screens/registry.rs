@@ -39,6 +39,7 @@ pub(crate) enum AppFx {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SearchReq {
+    Back,
     Detail { sid: crate::plex::ServerId, rk: String },
     Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
     ItemMenu { sid: crate::plex::ServerId, rk: String },

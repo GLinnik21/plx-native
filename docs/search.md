@@ -173,7 +173,11 @@ uses engine-owned focus groups and supplies query/profile-guarded entry restorat
 Only Search-store notices acknowledge a pending draft; an unrelated store notice cannot treat
 matching frozen text as confirmation of an edit that has not reached the next frame publication.
 Its renderer reads retained query, result and source-scope publications. The temporary mounter
-gate is **off in the live loop** until native keyboard and navigation adapters are connected;
+gate is **off in the live loop** pending retirement of legacy ingress/lifecycle callers and
+full contract reconciliation. Keyboard hooks and navigation/menu request execution are connected
+behind that gate. Action resolution checks the retained selection's server and local identity;
+BACK returns to Home without selecting its pill, unlike activating the Home pill itself.
+The menu opener uses the owned page's captured focus and drawn geometry;
 host tests are not visual verification, and the legacy Search implementation remains the live
 route and the contract reference until that cutover is finished.
 

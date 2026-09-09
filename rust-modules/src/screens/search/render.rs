@@ -188,7 +188,7 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
         .h(HAlign::Center).v(VAlign::CapTop).draw(p, Rect::new(rect.x, top + hh + theme::space::MD, rect.w, 0.0));
 }
 
-fn tile<H: SearchLike>(screen: &SearchScreen, row: usize, col: usize, focused: bool, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
+pub(super) fn tile<H: SearchLike>(screen: &SearchScreen, row: usize, col: usize, focused: bool, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
     let view = H::search(f.cx);
     let Some(shelf) = view.shelves().get(row) else { return };
     let Some(item) = shelf.items.get(col) else { return };
@@ -222,6 +222,7 @@ fn tile<H: SearchLike>(screen: &SearchScreen, row: usize, col: usize, focused: b
 }
 
 fn stop<H: SearchLike>(screen: &SearchScreen, elem: u32, kind: ElemKind, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
+    if crate::gfx::blur_source_pass() { return; }
     use crate::ui::screen::{Activate, Hover, Stop};
     let Some(placed) = <SearchScreen as Focusable<H>>::place(screen, &elem, f.cx, At::Drawn) else { return };
     f.stop(p, Stop { key: screen.key(elem), rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,

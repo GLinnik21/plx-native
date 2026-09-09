@@ -265,6 +265,21 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
         crate::screens::registry::SearchReq::Detail { sid, rk } if *sid == b && rk == "same-local-key")));
     assert!(!rig.search_reqs.iter().any(|(_, req, _)| matches!(req,
         crate::screens::registry::SearchReq::Detail { sid, .. } if *sid == a)));
+    let requests = rig.take_search_reqs();
+    assert!(!requests.is_empty());
+    assert!(rig.take_search_reqs().is_empty(), "requests execute only once");
+    let (_, _, ret) = requests.iter().find(|(_, req, _)| matches!(req,
+        crate::screens::registry::SearchReq::Detail { .. })).unwrap();
+    let entry = d.nav.top_page().unwrap().id;
+    let (selected, opener) = rig.search_selection(&d, entry, ret.focus).unwrap();
+    assert!(matches!(selected, crate::search::Item::Media(item) if item.sid == b));
+    assert!(opener.rect.is_some(), "the menu anchor belongs to the captured selection");
+    let mut foreign = ret.focus.unwrap();
+    foreign.entry = EntryId(entry.0 + 100);
+    assert!(rig.search_selection(&d, entry, Some(foreign)).is_none());
+    frame(&mut d, &mut rig, Route::Search, tick(35), script_key(Key::Back, tick(35)));
+    assert!(rig.take_search_reqs().iter().any(|(_, req, _)| matches!(req,
+        crate::screens::registry::SearchReq::Back)), "BACK differs from selecting the Home pill");
     crate::stores::search::apply(crate::stores::search::SearchCmd::Reset); crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset); crate::plex::reset_servers_for_test();
 }
 

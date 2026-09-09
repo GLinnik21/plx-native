@@ -139,6 +139,7 @@ fn node(arg: ContentArg) -> Option<Node> {
 pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: &Frame) {
     home_requests(app, mt);
     library_requests(app, mt);
+    search_requests(app);
     for (source, request, ret) in app.bridge.take_content_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -253,6 +254,106 @@ fn home_requests(app: &mut App, mt: &crate::task::MainThread) {
 fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: crate::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
     (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
         .find(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk))))
+}
+
+/// Resolve identity against the retained selected item, never against the current server.
+fn search_target(item: &crate::search::Item, request: &crate::screens::registry::SearchReq) -> Option<Node> {
+    use crate::screens::registry::SearchReq;
+    match (item, request) {
+        (crate::search::Item::Media(item), SearchReq::Detail { sid, rk })
+            if item.sid == *sid && item.rk == *rk && !rk.is_empty() => Some(to_detail(*sid, rk)),
+        (crate::search::Item::Tag(item), SearchReq::Person { sid, key, guid, .. }) => {
+            let current = if item.id.is_empty() || item.id == "0" { &item.tag_key } else { &item.id };
+            (item.sid == *sid && current == key && !key.is_empty() && item.tag_key == *guid)
+                .then(|| Node::Person { sid: *sid, key: current.clone(), guid: item.tag_key.clone(),
+                    name: item.name.clone(), thumb: item.thumb.clone() })
+        }
+        _ => None,
+    }
+}
+
+fn search_requests(app: &mut App) {
+    use crate::screens::registry::SearchReq;
+    for (source, request, ret) in app.bridge.take_search_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if app.route != Route::Search || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
+        match &request {
+            SearchReq::Back => {
+                nav_to(app.route, Nav::Home { focus_pill: None }, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            SearchReq::Tab(tab) => {
+                if !app.bridge.search_tab_available(*tab) { continue; }
+                let target = match tab {
+                    HomeTab::Home => Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Home) },
+                    HomeTab::Movies => Nav::Library(crate::browse::SecKind::Movie),
+                    HomeTab::Shows => Nav::Library(crate::browse::SecKind::Show),
+                    HomeTab::Search => continue,
+                };
+                nav_to(app.route, target, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            SearchReq::Account => {
+                // The owned screen releases its keyboard before emitting this request. Do not
+                // call chip_activate's legacy Search editing-state teardown a second time.
+                crate::ui::account_menu::open();
+                app.route = Route::Account { over: BarHost::Search };
+            }
+            SearchReq::Detail { .. } | SearchReq::Person { .. } => {
+                let Some((item, _)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
+                let Some(target) = search_target(&item, &request) else { continue };
+                nav_open(app.route, target, None, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            SearchReq::ItemMenu { sid, rk } => {
+                let Some((crate::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
+                if item.sid != *sid || item.rk != *rk || !crate::ui::item_menu::has_actions(&item) { continue; }
+                crate::ui::item_menu::open(&item, false, opener);
+                app.bridge.menu_opener = Some((entry, ret.focus));
+                app.route = Route::ItemMenu { over: MenuHost::Search };
+                app.input.press.cancel();
+                app.ok_armed = false;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_action_tests {
+    use super::*;
+    use crate::screens::registry::SearchReq;
+    use crate::search::{Item, TagHit};
+
+    #[test]
+    fn owned_search_targets_validate_retained_identity_and_use_retained_labels() {
+        let _serial = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let a = crate::plex::register_for_test("action-a", "127.0.0.1", 1, "synthetic", "fixture");
+        let b = crate::plex::register_for_test("action-b", "127.0.0.1", 2, "synthetic", "fixture");
+        let media = Item::Media(crate::pms::PmsMovie { sid: a, rk: "same".into(), ..Default::default() });
+        assert!(matches!(search_target(&media, &SearchReq::Detail { sid: a, rk: "same".into() }),
+            Some(Node::Detail { sid, rk, .. }) if sid == a && rk == "same"));
+        assert!(search_target(&media, &SearchReq::Detail { sid: b, rk: "same".into() }).is_none());
+        assert!(search_target(&media, &SearchReq::Detail { sid: a, rk: "old".into() }).is_none());
+        let person = |sid, key: &str, guid: &str| SearchReq::Person {
+            sid, key: key.into(), guid: guid.into(), name: "stale name".into(), thumb: "stale thumb".into(),
+        };
+        for id in ["42", "0", ""] {
+            let tag = Item::Tag(TagHit { sid: a, id: id.into(), tag_key: "person-guid".into(),
+                name: "Current name".into(), thumb: "current-thumb".into(), ..Default::default() });
+            let key = if id == "42" { "42" } else { "person-guid" };
+            assert!(matches!(search_target(&tag, &person(a, key, "person-guid")),
+                Some(Node::Person { sid, name, thumb, .. })
+                    if sid == a && name == "Current name" && thumb == "current-thumb"));
+            assert!(search_target(&tag, &person(b, key, "person-guid")).is_none());
+            assert!(search_target(&tag, &person(a, "old", "person-guid")).is_none());
+            assert!(search_target(&tag, &person(a, key, "old-guid")).is_none());
+            assert!(search_target(&tag, &SearchReq::Detail { sid: a, rk: key.into() }).is_none());
+        }
+        assert!(search_target(&Item::Tag(TagHit::default()), &person(Default::default(), "", "")).is_none());
+        crate::plex::reset_servers_for_test();
+    }
 }
 
 fn library_requests(app: &mut App, mt: &crate::task::MainThread) {

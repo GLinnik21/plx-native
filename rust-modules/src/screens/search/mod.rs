@@ -12,6 +12,7 @@ use crate::screens::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq
 use crate::stores::{StoreCmd, StoreId};
 use crate::stores::search::SearchCmd;
 use crate::ui::card_row::CardRow;
+use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
     Handled, InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, TextEdit};
@@ -326,7 +327,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                         return Handled::Yes;
                     }
                     if *key == Key::Back {
-                        fx.push(Fx::App(AppFx::Search(SearchReq::Tab(HomeTab::Home))));
+                        fx.push(Fx::App(AppFx::Search(SearchReq::Back)));
                         return Handled::Yes;
                     }
                     return Handled::No;
@@ -350,6 +351,27 @@ impl SearchScreen {
         let mut kinds = [Kind::Movie; 5];
         for (i, row) in self.rows.iter().enumerate() { kinds[i] = row.kind; }
         (kinds, self.rows.len())
+    }
+
+    pub(crate) fn selected_item<'a, H: SearchLike>(&self, focus: Option<FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a Item> {
+        let key = focus.filter(|key| key.entry == self.entry)?;
+        let view = H::search(cx);
+        if self.draft.pending() || self.query_gen != view.query_gen() || self.draft.profile() != view.recents().generation() { return None; }
+        let (row, col) = self.rows.iter().enumerate().find_map(|(row, model)|
+            model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))?;
+        view.shelves().get(row)?.items.get(col)
+    }
+
+    pub(crate) fn redraw_focused<H: SearchLike>(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
+        if self.selected_item(focus, f.cx).is_none() { return; }
+        let Some(key) = focus else { return };
+        let Some((row, col)) = self.rows.iter().enumerate().find_map(|(row, model)|
+            model.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col))) else { return };
+        let painter = f.painter.alpha(f.page_alpha * self.fade.alpha());
+        // The lifted opener is painted after the strip, unlike the ordinary page flow.
+        let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+        let _clip = f.clip(painter, Rect::new(0.0, floor, SCR_W, SCR_H - floor));
+        render::tile(self, row, col, true, f, painter);
     }
     fn first_content(&self) -> Option<GroupId> {
         if !self.recents.is_empty() { Some(RECENTS_GROUP) } else { self.rows.first().map(|row| row.group) }

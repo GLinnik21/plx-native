@@ -30,7 +30,7 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 
 use crate::screens::family::SettingsPage;
-use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, LibraryReq, LoopReq, PageMemory};
+use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, LibraryReq, LoopReq, PageMemory};
 use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
@@ -571,6 +571,30 @@ impl Bridge {
         std::mem::take(&mut self.library_reqs)
     }
 
+    pub(super) fn take_search_reqs(&mut self) -> Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
+        std::mem::take(&mut self.search_reqs)
+    }
+
+    pub(super) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+        -> Option<(crate::search::Item, crate::ui::popover::Opener)> {
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view() }, self.measure);
+        let item = page.selected_item(focus, &cx)?.clone();
+        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
+        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+    }
+
+    pub(super) fn search_tab_available(&self, tab: HomeTab) -> bool {
+        match tab {
+            HomeTab::Movies => self.directory.view().preferred(crate::browse::SecKind::Movie).is_some(),
+            HomeTab::Shows => self.directory.view().preferred(crate::browse::SecKind::Show).is_some(),
+            _ => true,
+        }
+    }
+
     pub(super) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
@@ -849,6 +873,8 @@ impl Bridge {
         } else if let Some(page) = screen.downcast_ref::<crate::screens::home::HomeScreen>() {
             page.redraw_focused::<AppHost>(&mut frame, focus);
         } else if let Some(page) = screen.downcast_ref::<crate::screens::library::LibraryScreen>() {
+            page.redraw_focused::<AppHost>(&mut frame, focus);
+        } else if let Some(page) = screen.downcast_ref::<crate::screens::search::SearchScreen>() {
             page.redraw_focused::<AppHost>(&mut frame, focus);
         }
     }
