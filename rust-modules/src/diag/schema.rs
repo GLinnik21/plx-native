@@ -237,6 +237,24 @@ pub(crate) struct UsageContext {
     pub hardware_revision: String,
     pub server_connection: String,
     pub ip_version: String,
+    /// issue #74: the k5lp/k3lp `/dev/rtkmem` sandbox pre-flight — `ok` / `missing` / `n/a` — the
+    /// SAME closed enum [`crate::webos::rtkmem_context`] reports, never a free-text probe result.
+    /// Present on every event so a chassis's crash-at-start rate is queryable by sandbox rather
+    /// than only discoverable from a single reported issue.
+    #[serde(default = "rtkmem_default")]
+    pub rtkmem: String,
+    /// issue #74: which of the two webOS install prefixes this process runs from — `devmode` /
+    /// `homebrew` / `unknown` — from [`crate::paths::install_kind`]. Never the path itself.
+    #[serde(default = "install_default")]
+    pub install: String,
+}
+
+fn rtkmem_default() -> String {
+    "n/a".into()
+}
+
+fn install_default() -> String {
+    "unknown".into()
 }
 
 impl Default for UsageContext {
@@ -251,6 +269,8 @@ impl Default for UsageContext {
             hardware_revision: "unknown".into(),
             server_connection: "unknown".into(),
             ip_version: "unknown".into(),
+            rtkmem: rtkmem_default(),
+            install: install_default(),
         }
     }
 }
@@ -295,6 +315,8 @@ impl UsageContext {
             hardware_revision: dimension(&hw.hw_revision),
             server_connection: server_connection.into(),
             ip_version: ip_version.into(),
+            rtkmem: crate::webos::rtkmem_context().into(),
+            install: crate::paths::install_kind().into(),
         }
     }
 
@@ -310,6 +332,8 @@ impl UsageContext {
             hardware_revision: "<hardware revision class>".into(),
             server_connection: "<local / remote / relay / unknown>".into(),
             ip_version: "<v4 / v6 / unknown>".into(),
+            rtkmem: "<ok / missing / n/a>".into(),
+            install: "<devmode / homebrew / unknown>".into(),
         }
     }
 }
@@ -567,7 +591,7 @@ pub(crate) const EVENT_SPECS: &[EventSpec] = &[
         fields: &[
             F { key: "playback_id", domain: PLAYBACK_ID },
             F { key: "mode", domain: MODE },
-            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `unspecified`" },
+            F { key: "kind", domain: "`decision_refused` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified`" },
         ],
     },
     EventSpec {
@@ -635,6 +659,14 @@ pub(crate) const CONTEXT_SPECS: &[F] = &[
     F {
         key: "ip_version",
         domain: "`v4` / `v6` / `unknown`",
+    },
+    F {
+        key: "rtkmem",
+        domain: "`ok` / `missing` / `n/a` — the k5lp/k3lp `/dev/rtkmem` jail pre-flight",
+    },
+    F {
+        key: "install",
+        domain: "`devmode` / `homebrew` / `unknown` — never the install path",
     },
 ];
 
@@ -927,5 +959,52 @@ mod tests {
             doc.contains(&context),
             "PRIVACY.md does not contain the generated usage context table:\n\n{context}"
         );
+    }
+
+    /// **`playback.failed`'s declared `kind` domain must name every `FailureKind` code.**
+    ///
+    /// This is the check that was missing when `FailureKind::JailMissingRtkmem` shipped: nothing
+    /// tied the *documented* domain (this file's `EVENT_SPECS`, and through it `PRIVACY.md`, whose
+    /// own test only compares the two against EACH OTHER) to the *actual* enum a `playback.failed`
+    /// event's `kind` field is built from — `player::FailureKind::code`. So a new variant reached
+    /// production PostHog rows with a value neither document ever named, which is exactly the
+    /// shape of drift the value would be filtered out by in any dashboard, insight or taxonomy
+    /// definition built from the documented list rather than from the enum itself. Add a
+    /// `FailureKind` variant, forget this list, and this test is what catches it — not a
+    /// dashboard going quiet on a code nobody recognises.
+    #[test]
+    fn every_failure_kind_code_is_named_in_the_playback_failed_domain() {
+        use crate::player::FailureKind as F;
+        let spec = EVENT_SPECS
+            .iter()
+            .find(|s| s.name == "playback.failed")
+            .expect("playback.failed is declared");
+        let domain = spec
+            .fields
+            .iter()
+            .find(|f| f.key == "kind")
+            .expect("playback.failed declares a kind field")
+            .domain;
+        // Every current variant, including the retained historical `original_rollback` code — see
+        // `FailureKind`'s own doc for why that one still exists with no live producer.
+        for kind in [
+            F::DecisionRefused,
+            F::NoVideoTranscodeTarget,
+            F::NoVideoTrack,
+            F::MediaSource,
+            F::PlaybackInterrupted,
+            F::TvPipeline,
+            F::OriginalRollback,
+            F::JailMissingRtkmem,
+            F::LoadTimeout,
+            F::Unspecified,
+        ] {
+            assert!(
+                domain.contains(kind.code()),
+                "playback.failed's declared kind domain omits {:?} ({}): {domain}",
+                kind,
+                kind.code()
+            );
+        }
     }
 }

@@ -13,7 +13,8 @@
 void
 plx_sentry_set_webos_context(const char *name, const char *release,
     const char *codename, const char *api, const char *model,
-    const char *soc, const char *hardware_revision)
+    const char *soc, const char *hardware_revision, const char *rtkmem,
+    const char *install)
 {
     sentry_value_t context = sentry_value_new_object();
     sentry_value_set_by_key(
@@ -50,6 +51,20 @@ plx_sentry_set_webos_context(const char *name, const char *release,
     if (hardware_revision && hardware_revision[0]) {
         sentry_value_set_by_key(hardware, "revision",
             sentry_value_new_string(hardware_revision));
+    }
+    /*
+     * issue #74: two more closed-enum sandbox facts, from the same source
+     * as PostHog's usage envelope (never a free-text probe result, never
+     * the install path) — so a chassis's crash-at-start rate is queryable
+     * by sandbox on both the Sentry and PostHog sides.
+     */
+    if (rtkmem && rtkmem[0]) {
+        sentry_value_set_by_key(
+            hardware, "rtkmem", sentry_value_new_string(rtkmem));
+    }
+    if (install && install[0]) {
+        sentry_value_set_by_key(
+            hardware, "install", sentry_value_new_string(install));
     }
     sentry_set_context("hardware", hardware);
 }

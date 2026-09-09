@@ -174,6 +174,18 @@ pub(crate) fn user_agent() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Read the same `RELEASE_LINE` marker `build.rs::release_line` reads, so this test's
+    /// expectation tracks that function's behavior instead of assuming trunk unconditionally.
+    /// `None` on trunk (no marker); `Some((major, minor))` on a maintenance branch.
+    fn release_line() -> Option<(u32, u32)> {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest_dir.parent()?;
+        let content = std::fs::read_to_string(repo.join("RELEASE_LINE")).ok()?;
+        let line = content.trim();
+        let (major, minor) = line.split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    }
+
     /// The point of the module: an unofficial client must not present as a first-party one.
     /// `Plex for <platform>` is Plex's documented pattern for its OWN apps.
     #[test]
@@ -209,6 +221,12 @@ mod tests {
     /// features land and a patch release is cut from an existing minor's own line rather than from
     /// here — and that string is produced by `rust-modules/build.rs`, the only place the rule is
     /// written.
+    ///
+    /// **On a maintenance line** — a tracked `RELEASE_LINE` marker at the repo root — the next
+    /// thing cut from it is a PATCH on the same `major.minor`, never a minor bump the line will
+    /// never make (`build.rs::emit_version`'s maintenance-line arm). This checkout carries such a
+    /// marker while `release/v0.6` exists, so this test reads it the same way `build.rs` does
+    /// rather than assuming trunk's rule unconditionally.
     #[test]
     fn version_is_the_package_or_the_next_minor_dev() {
         let pkg = env!("CARGO_PKG_VERSION");
@@ -229,11 +247,22 @@ mod tests {
                     .map(|p| p.parse().expect("the package version is three integers"))
                     .collect();
                 assert_eq!(n.len(), 3, "the package version is three integers");
+                let expected = match release_line() {
+                    Some((line_major, line_minor)) => {
+                        assert_eq!(
+                            (line_major, line_minor),
+                            (n[0], n[1]),
+                            "the RELEASE_LINE marker names this checkout's own major.minor"
+                        );
+                        format!("{}.{}.{}", n[0], n[1], n[2] + 1)
+                    }
+                    None => format!("{}.{}.0", n[0], n[1] + 1),
+                };
                 assert_eq!(
                     base,
-                    format!("{}.{}.0", n[0], n[1] + 1),
-                    "a developer build names the next MINOR with the patch reset — trunk is where \
-                     features land, and a patch release is cut from a minor's own line, not here"
+                    expected,
+                    "a developer build on trunk names the next MINOR with the patch reset; on a \
+                     RELEASE_LINE maintenance branch it names the next PATCH on that line instead"
                 );
             }
         }

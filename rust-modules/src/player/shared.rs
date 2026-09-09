@@ -250,6 +250,26 @@ struct HlsAutomaticOwner {
 /// still has a check/use race against [`Shared::reset_session`]: a callback could validate the
 /// old generation, get descheduled, and then write into the freshly reset next session. Holding
 /// this lock for the complete callback makes retirement a drain barrier as well as a token check.
+/// issue #74 D.1: whether the epoch's Starfish `Load` call has returned yet. Mirrors, on the Rust
+/// side, the `g_load_returned` flag `starfish.c`'s `sf_ready_object()` now requires alongside
+/// `SMP_READY()` — every session begins `InFlight`, and `threads::load_thread` flips it to
+/// `Returned` right after the real, synchronous `sf_load` call comes back, before
+/// `publish_route_start_result` runs. `pump.rs`'s `loadCompleted` arm requires
+/// `Shared::native_load_returned` before it may even poll `sf_is_load_completed` — that poll is
+/// itself a concurrent Starfish call and used to be exactly what raced `Load`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadCall {
+    InFlight,
+    /// `at` is when the flip happened (`mark_native_load_returned`'s own `Instant::now()`) — the
+    /// zero point for the OTHER half of issue #74 D.1's budget: `pump.rs` bounds "Load never
+    /// returns" from `load_issued_at`, and separately bounds "Load returned but loadCompleted
+    /// never arrives" from this timestamp, on a fresh `NATIVE_LOAD_BUDGET` window rather than
+    /// whatever was left of the first one.
+    Returned {
+        at: Instant,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeSessionPhase {
     Idle,
@@ -259,6 +279,12 @@ enum NativeSessionPhase {
         /// in-place seek closes this while old decoded frames are flushed, then the first real
         /// post-seek keyframe reopens it.
         presentation_gate: NativePresentationGate,
+        /// See [`LoadCall`]. Epoch-scoped exactly like `presentation_gate`: a late `load_thread`
+        /// from a SUPERSEDED session can never flip this for a newer one, because
+        /// `mark_native_load_returned`/`native_load_returned` both require `epoch == active`.
+        load_call: LoadCall,
+        /// When this epoch's `Load` was issued — for the "native: Load returned after Nms" log.
+        load_issued_at: Instant,
     },
     /// Firmware's synchronous UNLOADCOMPLETED callback was observed. This is independent lifecycle
     /// evidence, not a producer barrier: native callback admission is closed and drained in the C
@@ -540,6 +566,25 @@ pub(crate) struct Shared {
     /// shape of a webOS-5-specific failure (a key the newer pipeline will not accept), which makes
     /// this exactly the case that must be visible.
     pub load_failed: AtomicBool,
+    /// issue #74 D.1.4: set alongside `load_failed` ONLY by the two `NATIVE_LOAD_BUDGET` expiry
+    /// arms in `pump.rs` — never by a synchronous Load refusal (`sf_load` returning 0) or a
+    /// `type=18` pipeline refusal, both of which set `load_failed` alone. This is what lets
+    /// `error_shape` tell a k5lp-style hang apart from an ordinary firmware refusal on the wire,
+    /// as `FailureKind::LoadTimeout` rather than the generic `FailureKind::TvPipeline`.
+    pub load_timed_out: AtomicBool,
+    /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
+    /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
+    /// ([`NativeSessionState::next`] skips 0 on wraparound), so comparing against this is enough
+    /// to log the deferral exactly once per session without needing an `Engine` field: the pump's
+    /// `loadCompleted` arm can be entered many times while `Load` is in flight, and only the
+    /// first should log.
+    pub native_load_deferred_logged_epoch: AtomicU32,
+    /// issue #74 D.1: the elapsed milliseconds `mark_native_load_returned` measured at the moment
+    /// it flipped `load_call` to `Returned` — captured there (by `threads::load_thread`) rather
+    /// than re-derived on a later pump tick, since a later tick would over-count by however long
+    /// the pump took to run again. `pump.rs` reads this once, for the "native: Load returned
+    /// after Nms" log, exactly when it observes the deferral epoch marker above matching its own.
+    pub native_load_elapsed_ms: AtomicU64,
     /// Sparse, typed playback transitions retained only for an opted-in handled-error report.
     /// Unlike the engine fields around it this spans reloads and seeks; `report::requested` owns
     /// the attempt boundary and clears it for a genuinely new Play.
@@ -861,6 +906,9 @@ impl Shared {
             demux_io_failed: AtomicBool::new(false),
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
+            load_timed_out: AtomicBool::new(false),
+            native_load_deferred_logged_epoch: AtomicU32::new(0),
+            native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
@@ -905,8 +953,152 @@ impl Shared {
         state.phase = NativeSessionPhase::Active {
             epoch,
             presentation_gate: NativePresentationGate::Armed,
+            load_call: LoadCall::InFlight,
+            load_issued_at: Instant::now(),
         };
         Some(epoch)
+    }
+
+    /// Mark `epoch`'s Starfish `Load` call as returned (issue #74 D.1) — called by
+    /// `threads::load_thread` immediately after the real, blocking `sf_load` call comes back,
+    /// BEFORE `route::publish_route_start_result` runs (that mechanism stays separate: a route
+    /// ticket can be rejected as stale independent of whether Load has returned, and this gate
+    /// must never depend on the reducer's verdict). Returns the elapsed time since the session's
+    /// Load was issued, for the "native: Load returned after Nms" log — `None` when `epoch` no
+    /// longer owns the `Active` phase (a superseded/already-retired session; nothing to mark).
+    pub(crate) fn mark_native_load_returned(&self, epoch: u32) -> Option<Duration> {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call,
+                load_issued_at,
+                ..
+            } if epoch != 0 && *active == epoch => {
+                *load_call = LoadCall::Returned {
+                    at: Instant::now(),
+                };
+                Some(load_issued_at.elapsed())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `epoch`'s Starfish `Load` call has returned yet. Required by `pump.rs`'s
+    /// `loadCompleted` arm before it may even poll `sf_is_load_completed` (issue #74: that poll is
+    /// itself a concurrent Starfish call, and on v0.6.0 it was the FIRST thing that arm did while
+    /// `Load` was still executing on the load thread). Epoch-scoped exactly like
+    /// `mark_native_load_returned`: a late thread from a SUPERSEDED session can never open this
+    /// gate for a newer one, because only `epoch == active` can ever read `Returned` here.
+    pub(crate) fn native_load_returned(&self, epoch: u32) -> bool {
+        let state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        matches!(
+            state.phase,
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call: LoadCall::Returned { .. },
+                ..
+            } if epoch != 0 && active == epoch
+        )
+    }
+
+    /// How long ago `epoch`'s Starfish `Load` call returned — `None` when `epoch` no longer owns
+    /// the `Active` phase, OR when its Load has not returned yet (still `LoadCall::InFlight`,
+    /// which the OTHER budget window — [`native_load_elapsed`] — covers).
+    ///
+    /// This is the second half of issue #74 D.1's budget (`load-returned-log-is-conditional-on-
+    /// loadcompleted-and-unbounded-after`): `native_load_elapsed` is measured from
+    /// `load_issued_at` and never resets, so by the time Load actually returns it may already
+    /// read close to `NATIVE_LOAD_BUDGET` — reusing it to bound the WAIT FOR `loadCompleted`
+    /// would leave that second wait almost no budget of its own on a Load that took a while to
+    /// return. This gives that wait a fresh full window, timed from the moment Load returned.
+    pub(crate) fn native_load_returned_elapsed(&self, epoch: u32) -> Option<Duration> {
+        let state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call: LoadCall::Returned { at },
+                ..
+            } if epoch != 0 && active == epoch => Some(at.elapsed()),
+            _ => None,
+        }
+    }
+
+    /// How long `epoch`'s Load has been in flight (or took, once returned), for `pump.rs`'s
+    /// D.1.4 timeout — `None` once `epoch` no longer owns the `Active` phase (retired/superseded;
+    /// there is nothing left to time out).
+    pub(crate) fn native_load_elapsed(&self, epoch: u32) -> Option<Duration> {
+        let state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_issued_at,
+                ..
+            } if epoch != 0 && active == epoch => Some(load_issued_at.elapsed()),
+            _ => None,
+        }
+    }
+
+    /// Test-only injection point for `pump.rs`'s D.1.4 budget arm (`load-budget-expiry-path-
+    /// itself-has-no-test`, a fix-wave finding): rewinds `epoch`'s recorded `load_issued_at` by
+    /// `by`, so `native_load_elapsed` reads at least `by` older without a real 20s wait. Returns
+    /// `false` when `epoch` no longer owns the `Active` phase (nothing to backdate) — callers
+    /// must treat that as a precondition failure, not a silent no-op, per this project's
+    /// silent-instrument rule (AGENTS.md).
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn test_backdate_native_load_issued(&self, epoch: u32, by: Duration) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_issued_at,
+                ..
+            } if epoch != 0 && *active == epoch => {
+                *load_issued_at = load_issued_at.checked_sub(by).unwrap_or(*load_issued_at);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Test-only injection point for `pump.rs`'s D.1.4 budget arm, second half
+    /// (`load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`): rewinds
+    /// `epoch`'s recorded `LoadCall::Returned` timestamp by `by`, so `native_load_returned_elapsed`
+    /// reads at least `by` older without a real wait. Requires `epoch` to already have returned
+    /// (`LoadCall::Returned`) — `false` otherwise, including when it is still `InFlight` or the
+    /// phase is no longer `Active`, per this project's silent-instrument rule (AGENTS.md).
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn test_backdate_native_load_returned(&self, epoch: u32, by: Duration) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &mut state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call: LoadCall::Returned { at },
+                ..
+            } if epoch != 0 && *active == epoch => {
+                *at = at.checked_sub(by).unwrap_or(*at);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Retire one exact native session and wait for every callback which already entered it.
@@ -957,6 +1149,7 @@ impl Shared {
             NativeSessionPhase::Active {
                 epoch: active,
                 presentation_gate,
+                ..
             } if epoch != 0 && *active == epoch => {
                 *presentation_gate = NativePresentationGate::Disarmed;
                 true
@@ -976,6 +1169,7 @@ impl Shared {
             NativeSessionPhase::Active {
                 epoch: active,
                 presentation_gate,
+                ..
             } if epoch != 0 && *active == epoch => {
                 *presentation_gate = NativePresentationGate::Armed;
                 true
@@ -996,6 +1190,7 @@ impl Shared {
             NativeSessionPhase::Active {
                 epoch: active,
                 presentation_gate,
+                ..
             } if epoch != 0 && *active == epoch => {
                 *presentation_gate = NativePresentationGate::PendingArm { latched: None };
                 true
@@ -1017,6 +1212,7 @@ impl Shared {
         let NativeSessionPhase::Active {
             epoch: active,
             presentation_gate,
+            ..
         } = &mut state.phase
         else {
             return false;
@@ -1045,6 +1241,7 @@ impl Shared {
             NativeSessionPhase::Active {
                 epoch: active,
                 presentation_gate,
+                ..
             } if epoch != 0
                 && *active == epoch
                 && matches!(presentation_gate, NativePresentationGate::PendingArm { .. }) =>
@@ -1071,6 +1268,7 @@ impl Shared {
         let NativeSessionPhase::Active {
             epoch: active,
             presentation_gate,
+            ..
         } = &mut state.phase
         else {
             return None;
@@ -1210,6 +1408,15 @@ impl Shared {
         // the centred read-out for the rest of the app's life.
         self.seen_frame.store(false, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
+        // issue #74 D.1: both are only ever cleared by the loadCompleted arm that consumes them
+        // (pump.rs), so a session torn down after logging the deferral but before that arm runs
+        // would otherwise leave them set — a later session's "native: Load returned after Nms"
+        // could then report a PREVIOUS session's duration, or skip its own deferral log because
+        // the epoch marker still matched. Clear both here, unconditionally, like every other
+        // per-session diagnostic above.
+        self.native_load_deferred_logged_epoch
+            .store(0, Ordering::Relaxed);
+        self.native_load_elapsed_ms.store(0, Ordering::Relaxed);
         *self.media_id.lock().unwrap() = None;
         *self.source_info.lock().unwrap() = None;
         self.pts_shift.store(0, Ordering::Relaxed);
@@ -1226,6 +1433,7 @@ impl Shared {
         self.demux_io_failed.store(false, Ordering::Relaxed);
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
+        self.load_timed_out.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state

@@ -132,6 +132,23 @@ pub(crate) fn flavour() -> Option<&'static str> {
     app_id().strip_prefix(STABLE_APP_ID)?.strip_prefix('.')
 }
 
+/// The closed-enum sandbox fact for every telemetry event — `devmode` / `homebrew` / `unknown` —
+/// derived from [`app_dir`]'s prefix rather than from a second read of `/proc/self/exe`. **Never
+/// the path itself**: the two real prefixes are `/media/developer/…` and `/media/cryptofs/…`, and
+/// a raw path is exactly the kind of value this app's telemetry never sends (see this module's own
+/// doc, and `diag::schema`'s "no field a caller can put a runtime string into"). `unknown` also
+/// covers the host build, where the binary sits under `target-sim/`.
+pub(crate) fn install_kind() -> &'static str {
+    let dir = app_dir();
+    if dir.starts_with("/media/developer") {
+        "devmode"
+    } else if dir.starts_with("/media/cryptofs") {
+        "homebrew"
+    } else {
+        "unknown"
+    }
+}
+
 /// The directory the running executable sits in — i.e. where the ipk's payload was installed.
 ///
 /// `std::env::current_exe` IS the `/proc/self/exe` read on Linux, so this is the same syscall the

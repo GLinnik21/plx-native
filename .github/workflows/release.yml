@@ -45,6 +45,16 @@ on:
       rebuild_tag:
         description: 'Re-publish an EXISTING tag (skips the version bump entirely)'
         required: false
+      line:
+        # Empty means main (the trunk cut this workflow has always done). A value must name an
+        # EXISTING maintenance branch of the shape `release/vX.Y` — validated below, in the same
+        # place the other dispatch inputs are checked — and `prepare` checks that branch out,
+        # bumps and tags IT instead of main, so a patch selected here does the thing its name
+        # promises rather than publishing trunk under a maintenance-sounding number.
+        description: 'Maintenance line to cut from, e.g. release/v0.6 (empty = main)'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -63,46 +73,78 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
+      # THE ref this run bumped, tagged and pushed to — main, or a maintenance line named by
+      # `inputs.line`. Later jobs (the final audit-push in `publish`) read this rather than
+      # re-deriving it, so every job that needs "where did this release live" asks the one place
+      # that actually knew at push time.
+      line: ${{ steps.bump.outputs.line }}
     steps:
+      - name: Validate dispatch inputs
+        env:
+          LINE: ${{ inputs.line }}
+        run: |
+          set -euo pipefail
+          line="$LINE"
+          if [ -n "$line" ] && ! [[ "$line" =~ ^release/v[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::line '$line' is not a maintenance branch — expected release/vX.Y (e.g. release/v0.6) or empty for main."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: main
+          ref: ${{ inputs.line || 'main' }}
           # a shallow clone cannot push
           fetch-depth: 0
       - name: Bump the version and tag it
         id: bump
+        env:
+          LINE: ${{ inputs.line || 'main' }}
         run: |
           set -euo pipefail
+          line="$LINE"
           spec='${{ inputs.version || inputs.bump }}'
           python3 ci/bump-version.py "$spec"
           new=$(python3 ci/bump-version.py --current)
           tag="v$new"
 
-          # A RELEASE CUT FROM TRUNK ENDS IN `.0`, and this job only ever cuts from trunk — the
-          # checkout above is pinned to `ref: main` and the push below writes `main`. Development
-          # here is trunk-based: main cuts minors and majors, and a PATCH belongs to an existing
-          # minor's own maintenance line, which this workflow has no way to check out, bump, tag or
-          # push. So a patch selected here does not do the thing its name promises; it publishes
-          # trunk under a number that says "a fix on top of what you already have".
+          # A RELEASE CUT FROM TRUNK ENDS IN `.0`; a release cut from a MAINTENANCE LINE
+          # (`release/vX.Y`, via the `line` dispatch input) is a PATCH of that same X.Y and
+          # nothing else — the checkout above already followed `inputs.line`, so `new` was
+          # computed against whichever branch's own appinfo.json this run checked out, and the
+          # push below writes that same ref. Graded on the RESULTING VERSION rather than on the
+          # `bump` input, because the input is not the only route: an explicit `version: 0.5.1`
+          # reaches exactly the same code. One rule covers both, and it is the rule the policy
+          # actually states.
           #
-          # Graded on the RESULTING VERSION rather than on the `bump` input, because the input is
-          # not the only route: an explicit `version: 0.5.1` reaches exactly the same code. One
-          # rule covers both, and it is the rule the policy actually states.
-          #
-          # `rust-modules/build.rs` derives the reported developer version from the same policy
-          # (`0.5.0` published -> `0.6.0-dev`), so letting a patch through here would also make
-          # every working tree's self-report wrong until the next minor.
-          case "$new" in
-            *.0) ;;
-            *)
-              echo "::error::refusing to cut $new from main — trunk releases end in .0."
-              echo "::error::development here is trunk-based: main cuts minor and major releases."
-              echo "::error::a patch belongs to an existing minor's own line, and this workflow"
-              echo "::error::only ever checks out, tags and pushes main. Cutting one needs"
-              echo "::error::maintenance-line support added here first."
-              exit 1
-              ;;
-          esac
+          # `rust-modules/build.rs` derives the reported developer version from the same policy —
+          # trunk names the next MINOR (`0.5.0` published -> `0.6.0-dev`); a checkout carrying a
+          # tracked `RELEASE_LINE` marker names the next PATCH instead — so letting a maintenance
+          # line's version disagree with its own branch here would also make that working tree's
+          # self-report wrong.
+          if [ "$line" = main ]; then
+            case "$new" in
+              *.0) ;;
+              *)
+                echo "::error::refusing to cut $new from main — trunk releases end in .0."
+                echo "::error::development here is trunk-based: main cuts minor and major releases."
+                echo "::error::a patch belongs to an existing minor's own line — pass the 'line'"
+                echo "::error::dispatch input (e.g. release/v0.6) to cut one from its own branch."
+                exit 1
+                ;;
+            esac
+          else
+            # `line` is release/vX.Y (validated above). The resulting version must be that same
+            # X.Y, with a patch component of at least 1 — a maintenance line publishing `.0` would
+            # collide with the trunk release that already owns that number.
+            branch_xy="${line#release/v}"
+            case "$new" in
+              "$branch_xy".[1-9]|"$branch_xy".[1-9][0-9]*) ;;
+              *)
+                echo "::error::refusing to cut $new from $line — a maintenance line publishes"
+                echo "::error::X.Y.N with N>=1 and major.minor matching its own branch ($branch_xy)."
+                exit 1
+                ;;
+            esac
+          fi
 
           # THE question that decides whether this version may ship, asked where the answer lives.
           # An explicit `version:` equal to what appinfo.json already says is legitimate — it is
@@ -121,16 +163,17 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add pkg/appinfo.json ipkroot/ctl/control rust-modules/Cargo.toml rust-modules/Cargo.lock
           # No commit when the version did not move (the first release, or a re-run after one
-          # failed downstream): the tag then simply points at main as it stands.
+          # failed downstream): the tag then simply points at the line as it stands.
           if git diff --cached --quiet; then
-            echo "version already $new — tagging main as it stands"
+            echo "version already $new — tagging $line as it stands"
           else
             git commit -m "release: $new"
           fi
           git tag -a "$tag" -m "$new"
-          git push origin main "$tag"
+          git push origin "$line" "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "released **$tag**" >> "$GITHUB_STEP_SUMMARY"
+          echo "line=$line" >> "$GITHUB_OUTPUT"
+          echo "released **$tag** from \`$line\`" >> "$GITHUB_STEP_SUMMARY"
 
   guard:
     name: tag / version agreement
@@ -144,13 +187,35 @@ jobs:
       # fallback chain, because `needs` exposes only DIRECT dependencies and none of them can see
       # `prepare`. Three ways in: a fresh bump, an explicit rebuild, or a hand-pushed tag.
       tag: ${{ steps.ref.outputs.tag }}
+      # THE resolved line (main, or release/vX.Y) this release was cut from — for the same three
+      # ways in. `prepare` already knew it (it followed `inputs.line`) and published it; for the
+      # other two shapes (a hand-pushed tag, or `rebuild_tag`) there is no dispatch input to read,
+      # so it is DERIVED from the version itself: `.0` only ever comes from main, anything else
+      # names the maintenance line that version's major.minor belongs to.
+      line: ${{ steps.ref.outputs.line }}
     steps:
       - name: Resolve the tag
         id: ref
         run: |
+          set -euo pipefail
           tag='${{ needs.prepare.outputs.tag || inputs.rebuild_tag || github.ref_name }}'
           [ -n "$tag" ] || { echo "::error::no tag resolved"; exit 1; }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          line='${{ needs.prepare.outputs.line }}'
+          if [ -z "$line" ]; then
+            version="${tag#v}"
+            case "$version" in
+              *.0) line=main ;;
+              *)
+                major="${version%%.*}"
+                rest="${version#*.}"
+                minor="${rest%%.*}"
+                line="release/v$major.$minor"
+                ;;
+            esac
+          fi
+          echo "line=$line" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ steps.ref.outputs.tag }}
@@ -526,7 +591,8 @@ jobs:
         with:
           ref: ${{ needs.guard.outputs.tag }}
           # A shallow clone cannot push, and this job now pushes: the completed release audit goes
-          # to `main` in its last step. Same reason `prepare` fetches everything.
+          # to whichever line this release was cut from (main, or a release/vX.Y maintenance
+          # branch) in its last step. Same reason `prepare` fetches everything.
           fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -650,21 +716,26 @@ jobs:
             | tee /tmp/published.txt
           sed -i 's/\x1b\[[0-9;]*m//g' /tmp/published.txt
 
-      # The completed audit goes to `main`, not to the tag: it describes an artifact that did not
-      # exist when the tag was written, and the last section describes a release that did not exist
-      # ten seconds ago. `[skip ci]` because this is a documentation commit and ci.yml runs a full
-      # cross-build on every push to main.
-      - name: Commit the completed audit to main
+      # The completed audit goes to the LINE the release was cut from — main for an ordinary
+      # trunk release, or the same `release/vX.Y` branch `prepare` bumped and tagged for a
+      # maintenance-line patch (`needs.guard.outputs.line`, threaded through from `prepare` when
+      # it ran, or derived from the version for the tag-push/rebuild_tag shapes where there was no
+      # dispatch input to read) — never always `main`, since the audit describes an artifact that
+      # did not exist when the tag was written, and the last section describes a release that did
+      # not exist ten seconds ago. `[skip ci]` because this is a documentation commit and ci.yml
+      # runs a full cross-build on every push.
+      - name: Commit the completed audit to its line
         if: always() && steps.publish.conclusion == 'success'
         run: |
           set -euo pipefail
           tag='${{ needs.guard.outputs.tag }}'
+          line='${{ needs.guard.outputs.line }}'
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git fetch origin main
-          git checkout -B main origin/main
+          git fetch origin "$line"
+          git checkout -B "$line" "origin/$line"
           if [ ! -f "docs/release-audits/$tag.md" ]; then
-            echo "::notice::no docs/release-audits/$tag.md on main — pre-standard release, nothing to complete"
+            echo "::notice::no docs/release-audits/$tag.md on $line — pre-standard release, nothing to complete"
             exit 0
           fi
           python3 ci/gen-release-audit.py \
@@ -683,7 +754,7 @@ jobs:
             echo "audit already complete and unchanged"
           else
             git commit -m "release: audit for $tag [skip ci]"
-            git push origin main
+            git push origin "$line"
           fi
 
       - name: Propagation note

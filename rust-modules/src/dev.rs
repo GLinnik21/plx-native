@@ -184,6 +184,30 @@ pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
 
+/// **Hold the Load-returned flag** — `plxnative-holdload[=ms]`.
+///
+/// `Some(ms)` when armed (default 30000 for a bare/empty trigger, per its own `parse` fallback),
+/// else `None`. `player::threads::load_thread` sleeps this many milliseconds right after the real
+/// `sf_load` call returns and BEFORE `Shared::mark_native_load_returned` publishes that fact — so
+/// issue #74 D.1's budget (the pump's `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the
+/// failure read-out) becomes observable on a real television on demand, rather than only on a
+/// k5lp set that happens to hang there for real. Deliberately NOT `DIAG`: it changes playback
+/// behaviour (a real Load attempt now waits), so arming it must suppress the who's-watching
+/// picker like every other automation trigger.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn holdload_delay_ms() -> Option<u64> {
+    let raw = read("holdload")?;
+    Some(if raw.is_empty() {
+        30_000
+    } else {
+        raw.parse().unwrap_or(30_000)
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn holdload_delay_ms() -> Option<u64> {
+    None
+}
+
 /// Parse `/tmp/plxnative-server=<slot>`, the optional server half of a direct-screen trigger.
 ///
 /// A Plex `ratingKey` is only unique together with its server.  The original `plxnative-play`

@@ -57,6 +57,8 @@ use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
 #[cfg(test)]
 use std::sync::atomic::{AtomicI32, AtomicU64};
+#[cfg(test)]
+use std::sync::{Condvar, Mutex};
 
 /// `sf_feed`'s rejection code. `starfish.h` documents the three replies as `'O'` (ok), `'B'`
 /// (BufferFull) and `'e'` (error); the pump treats `'B'` as backpressure and retries forever, so
@@ -92,6 +94,73 @@ pub(super) static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+
+/// issue #74 D.1 test seam — real (v0.6.0) `sf_load` publishes `SMP_READY(1)` and then calls the
+/// blocking, synchronous Load, so there is a real window during which every OTHER seam verb is
+/// dispatchable but must not be dispatched. The unmodified host `sf_load` above has no such
+/// window (it emits `loadCompleted` and returns `1` in the same call), so these controls carve
+/// one open for the regression test: `LOAD_IN_FLIGHT` is true from the moment `sf_load` emits
+/// `loadCompleted` until it actually returns, `HOLD_LOAD` is what makes it block there on demand,
+/// and `IN_FLIGHT_CALLS`/`IN_FLIGHT_VERB` are what let a test PROVE nothing reached the seam
+/// during that window (this project's silent-instrument rule — see `note_dispatch`).
+#[cfg(test)]
+pub(super) static LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// How many seam verbs were dispatched while [`LOAD_IN_FLIGHT`] was true. Zero across a whole
+/// held Load is the primary assertion `nothing_reaches_the_seam_while_load_is_still_in_flight`
+/// makes.
+#[cfg(test)]
+pub(super) static IN_FLIGHT_CALLS: AtomicU32 = AtomicU32::new(0);
+/// The FIRST verb name recorded while [`LOAD_IN_FLIGHT`] was true — for the failure message, so a
+/// red run says exactly what reached the seam rather than only that something did.
+#[cfg(test)]
+pub(super) static IN_FLIGHT_VERB: Mutex<Option<&'static str>> = Mutex::new(None);
+/// Bumped at the top of every host verb the real seam routes through `sf_ready_object()`. Records
+/// only while `LOAD_IN_FLIGHT` is true — a call before the window opens or after it closes is
+/// exactly what the fix is supposed to allow.
+#[cfg(test)]
+fn note_dispatch(verb: &'static str) {
+    if LOAD_IN_FLIGHT.load(Relaxed) {
+        IN_FLIGHT_CALLS.fetch_add(1, Relaxed);
+        let mut slot = IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(verb);
+        }
+    }
+}
+/// Makes the host `sf_load` block (after emitting `loadCompleted`, so `LOAD_IN_FLIGHT` is already
+/// true) until [`release_load_for_test`] is called — the only way to get a REAL two-thread window
+/// open on the host, rather than a single-threaded simulation of one.
+#[cfg(test)]
+pub(super) static HOLD_LOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+/// Arm the hold BEFORE spawning `threads::load_thread`, so its `sf_load` call blocks once it
+/// reaches the wait above. A test that never calls this gets the unmodified, non-blocking
+/// `sf_load` — this is opt-in per test, not a global change in behaviour.
+#[cfg(test)]
+pub(super) fn hold_load_for_test() {
+    let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
+    *held = true;
+}
+#[cfg(test)]
+pub(super) fn release_load_for_test() {
+    let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
+    *held = false;
+    HOLD_LOAD.1.notify_all();
+}
+#[cfg(test)]
+pub(super) fn in_flight_calls_for_test() -> u32 {
+    IN_FLIGHT_CALLS.load(Relaxed)
+}
+#[cfg(test)]
+pub(super) fn in_flight_verb_for_test() -> Option<&'static str> {
+    *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner())
+}
+/// Force [`LOAD_IN_FLIGHT`] directly, for a test that simulates the window without a real
+/// second thread (`the_gate_is_epoch_scoped`) — see that test for why it still needs this even
+/// though it never calls `sf_load`.
+#[cfg(test)]
+pub(super) fn set_load_in_flight_for_test(on: bool) {
+    LOAD_IN_FLIGHT.store(on, Relaxed);
+}
 
 /// Is the clock sink armed? Read once, at the first seam call, and latched.
 ///
@@ -156,6 +225,17 @@ static FED_MAX_NS: AtomicI64 = AtomicI64::new(i64::MIN);
 pub(super) fn force_callback_intercepts_for_test(value: u32) {
     CALLBACK_INTERCEPTS.store(value, Relaxed);
 }
+/// Force `OBJECT_READY` directly, without a real `sf_load` call. `sf_load`'s host stub
+/// unconditionally emits the `loadCompleted` callback before it can ever return (see its own
+/// doc), so it cannot represent "Load constructed the pipeline but `loadCompleted` never
+/// arrives" — the exact state
+/// `native_load_returned_loadcompleted_never_arrives_fires_load_failed` needs. This flips only
+/// the half `sf_ready()` reads, leaving `LOADED` (and so `sf_is_load_completed()`) at its
+/// default `false`.
+#[cfg(test)]
+pub(super) fn force_object_ready_for_test(on: bool) {
+    OBJECT_READY.store(on, Relaxed);
+}
 
 /// A fresh host test process without paying for a process per case. Production has deliberately no
 /// equivalent: once a real object is quarantined, clearing this latch would reintroduce reuse.
@@ -168,6 +248,11 @@ pub(super) fn reset_native_lifecycle_for_test() {
     LIFECYCLE_BLOCKED.store(false, Relaxed);
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
+    LOAD_IN_FLIGHT.store(false, Relaxed);
+    IN_FLIGHT_CALLS.store(0, Relaxed);
+    *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    HOLD_LOAD.1.notify_all();
     Clock::rewind();
 }
 
@@ -294,6 +379,22 @@ pub(super) unsafe fn sf_load(_payload: *const c_char, epoch: u32) -> c_int {
     // benign: the harness greps `smp_cb type=18` for a playback error and this is not one.
     CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
     super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+    // issue #74 D.1 test seam: on the real (v0.6.0) seam this is the exact window between
+    // `SMP_SET_READY(1)` and the real, blocking Load call returning — `loadCompleted` has
+    // already fired (LG's pipeline can signal it from inside `Load()`) but the call has not come
+    // back yet. The unmodified host stub has no such window at all; `HOLD_LOAD` opens one only
+    // when a test has armed it (`hold_load_for_test`), so every other host test's `sf_load` is
+    // unaffected.
+    #[cfg(test)]
+    {
+        LOAD_IN_FLIGHT.store(true, Relaxed);
+        let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
+        while *held {
+            held = HOLD_LOAD.1.wait(held).unwrap_or_else(|e| e.into_inner());
+        }
+        drop(held);
+        LOAD_IN_FLIGHT.store(false, Relaxed);
+    }
     1
 }
 
@@ -335,11 +436,14 @@ pub(super) unsafe fn sf_ready() -> c_int {
     c_int::from(enabled() && OBJECT_READY.load(Relaxed))
 }
 pub(super) unsafe fn sf_is_load_completed() -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_is_load_completed");
     c_int::from(enabled() && LOADED.load(Relaxed))
 }
 pub(super) unsafe fn sf_play() -> c_int {
     #[cfg(test)]
     {
+        note_dispatch("sf_play");
         PLAY_CALLS.fetch_add(1, Relaxed);
         let forced = FORCE_PLAY_RESULT.load(Relaxed);
         if forced != i32::MIN {
@@ -355,6 +459,7 @@ pub(super) unsafe fn sf_play() -> c_int {
 pub(super) unsafe fn sf_pause() -> c_int {
     #[cfg(test)]
     {
+        note_dispatch("sf_pause");
         let forced = FORCE_PAUSE_RESULT.load(Relaxed);
         if forced != i32::MIN {
             return forced;
@@ -367,6 +472,8 @@ pub(super) unsafe fn sf_pause() -> c_int {
     1
 }
 pub(super) unsafe fn sf_flush() -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_flush");
     if !enabled() {
         return 0;
     }
@@ -374,15 +481,23 @@ pub(super) unsafe fn sf_flush() -> c_int {
     1
 }
 pub(super) unsafe fn sf_push_eos() -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_push_eos");
     c_int::from(enabled())
 }
 pub(super) unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_set_time_to_decode");
     c_int::from(enabled())
 }
 pub(super) unsafe fn sf_set_content_info(_position_ns: i64) -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_set_content_info");
     c_int::from(enabled())
 }
 pub(super) unsafe fn sf_send_segment() -> c_int {
+    #[cfg(test)]
+    note_dispatch("sf_send_segment");
     c_int::from(enabled())
 }
 
@@ -397,6 +512,8 @@ pub(super) unsafe fn sf_send_segment() -> c_int {
 /// feed-ahead throttle, and those are exactly what this exists to exercise. Returning `'B'` here
 /// would add a second, fictional one.
 pub(super) unsafe fn sf_feed(_p: *const u8, _size: c_uint, pts: i64, es_data: c_int) -> c_char {
+    #[cfg(test)]
+    note_dispatch("sf_feed");
     if !enabled() {
         return FEED_ERROR;
     }
@@ -406,6 +523,8 @@ pub(super) unsafe fn sf_feed(_p: *const u8, _size: c_uint, pts: i64, es_data: c_
     FEED_OK
 }
 pub(super) unsafe fn sf_unload() {
+    #[cfg(test)]
+    note_dispatch("sf_unload");
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && OBJECT_READY.load(Relaxed) {
         // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
@@ -493,19 +612,40 @@ pub(super) unsafe fn vp_place(
 pub(super) unsafe fn vp_destroy_window() {}
 
 pub(super) unsafe fn acb_create(_app_id: *const c_char, _player_type: c_int) -> c_long {
+    #[cfg(test)]
+    note_dispatch("acb_create");
     0 // 0 = failed, per starfish.h. Unreached under VP_EXPORTED, and not faked for the same reason.
 }
-pub(super) unsafe fn acb_bind(_media_id: *const c_char) {}
+pub(super) unsafe fn acb_bind(_media_id: *const c_char) {
+    #[cfg(test)]
+    note_dispatch("acb_bind");
+}
 pub(super) unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
+    #[cfg(test)]
+    note_dispatch("acb_send_video_data");
     -1 // -1 = rejected, per starfish.h
 }
 pub(super) unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
+    #[cfg(test)]
+    note_dispatch("acb_send_atmos");
     0 // 0 = no ACB / no symbol, which is exactly the host's situation
 }
-pub(super) unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
-pub(super) unsafe fn acb_unload() {}
-pub(super) unsafe fn acb_pause() {}
-pub(super) unsafe fn acb_resume() {}
+pub(super) unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
+    #[cfg(test)]
+    note_dispatch("acb_start");
+}
+pub(super) unsafe fn acb_unload() {
+    #[cfg(test)]
+    note_dispatch("acb_unload");
+}
+pub(super) unsafe fn acb_pause() {
+    #[cfg(test)]
+    note_dispatch("acb_pause");
+}
+pub(super) unsafe fn acb_resume() {
+    #[cfg(test)]
+    note_dispatch("acb_resume");
+}
 
 #[cfg(test)]
 mod tests {
@@ -601,6 +741,35 @@ mod tests {
             FED_MAX_NS.load(Relaxed),
             i64::MIN,
             "audio must not move the ceiling"
+        );
+    }
+
+    /// `sf_unload` is one of the nine verbs the real seam routes through `sf_ready_object()`
+    /// (`grep -n 'sf_ready_object()' src/starfish.c`), so the in-flight instrument must see it
+    /// too — otherwise an Unload reaching the seam mid-Load (the one verb that would destroy the
+    /// object the Load call is still inside) would score zero dispatches and
+    /// `nothing_reaches_the_seam_while_load_is_still_in_flight` would pass having proven nothing
+    /// about that verb.
+    #[test]
+    fn sf_unload_is_visible_to_the_in_flight_instrument() {
+        let _g = lock();
+        fresh();
+        IN_FLIGHT_CALLS.store(0, Relaxed);
+        *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        LOAD_IN_FLIGHT.store(true, Relaxed);
+        unsafe {
+            sf_unload();
+        }
+        LOAD_IN_FLIGHT.store(false, Relaxed);
+        assert_eq!(
+            IN_FLIGHT_CALLS.load(Relaxed),
+            1,
+            "sf_unload must bump IN_FLIGHT_CALLS like every other seam verb sf_ready_object() \
+             gates, or the primary in-flight test's zero-dispatch assertion cannot see this verb"
+        );
+        assert_eq!(
+            *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()),
+            Some("sf_unload")
         );
     }
 }

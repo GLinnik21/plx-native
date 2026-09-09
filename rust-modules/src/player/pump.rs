@@ -9,6 +9,17 @@ use super::{ffi, ACB_OK, SHARED, TX};
 use crate::task::MainThread;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::time::Duration;
+
+/// issue #74 D.1.4: the longest the `loadCompleted` arm will wait for `sf_load` to actually
+/// return before giving up and publishing `load_failed`. Kodi's own precedent
+/// (`MediaPipelineWebOS.cpp:795-801`) is a 1s `wait_for` then `PLAYER_ABORT`; this budget is
+/// deliberately far larger because a real `Load` on the dev set measures in the HUNDREDS OF
+/// MILLISECONDS for a cold pipeline (investigation.md §A.0's own citation), and the point of this
+/// timeout is to catch a genuine hang — the k5lp `DirectVoInit` block investigation.md §B
+/// describes — not to interrupt an ordinary slow one. It exists so a Load that never returns
+/// becomes a failure read-out instead of a permanent Connecting spinner.
+pub(crate) const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
 
 /// Publish the one value the HUD renders from. Pure derivation off signals the workers already
 /// maintain — no new cross-thread plumbing, and it runs on every path out of `pump` (including
@@ -1051,9 +1062,74 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
     }
 
     // ---------- load -> Play (decode fed frames as soon as loaded) ----------
-    if eng.stage == Stage::Loading
+    // issue #74 D.1: the gate below requires `SHARED.native_load_returned(eng.native_epoch)`
+    // BEFORE this arm may even poll `sf_is_load_completed` — that poll is itself a concurrent
+    // Starfish call, and on v0.6.0 it was the FIRST thing this arm did while `sf_load` was still
+    // executing (synchronously) on the load thread. See `src/starfish.c`'s `g_load_returned` for
+    // the matching seam-side half; `threads::load_thread` flips the Rust side right after the
+    // real, blocking `sf_load` call returns.
+    if eng.stage == Stage::Loading && !SHARED.native_load_returned(eng.native_epoch) {
+        // Log the deferral exactly once per session (a fast Load may never hit this arm at all,
+        // in which case nothing here fires and the ordinary loadCompleted path below runs
+        // immediately once the gate is already open).
+        if SHARED
+            .native_load_deferred_logged_epoch
+            .swap(eng.native_epoch, Relaxed)
+            != eng.native_epoch
+        {
+            super::log("native: loadCompleted while Load in flight — deferring");
+        }
+        // D.1.4: bound the wait. A Load that never returns (the k5lp DirectVoInit hang,
+        // investigation.md §B) must not leave the player in Connecting forever — past the
+        // budget, publish the same signal an outright Load refusal sets, so the EXISTING
+        // failure/rollback arm above (this function, near the top) raises the failure read-out
+        // on the next tick instead of a permanent spinner.
+        match SHARED.native_load_elapsed(eng.native_epoch) {
+            Some(elapsed) if elapsed >= NATIVE_LOAD_BUDGET => {
+                super::log(&format!(
+                    "native: Load did not return within {}s — publishing load_failed",
+                    NATIVE_LOAD_BUDGET.as_secs()
+                ));
+                SHARED.load_failed.store(true, Release);
+                SHARED.load_timed_out.store(true, Release);
+                super::report::note_load_gate_for(
+                    crate::route::playback_trace_generation(),
+                    super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
+                );
+            }
+            Some(_) => {}
+            // `native_load_elapsed` shares its precondition with `native_load_returned` — both
+            // require the epoch to still own `NativeSessionPhase::Active`. A synchronous
+            // UnloadCompleted callback (firmware type=23) for this epoch flips the phase to
+            // `Unloaded` *without* this arm ever having seen `Returned`, which would otherwise
+            // make the budget above unreachable at exactly the moment the gate can never open
+            // again — the permanent Connecting spinner D.1.4 exists to rule out. Treat losing
+            // `Active` while still deferred as a fired timeout rather than silently disabling it.
+            None => {
+                super::log(
+                    "native: Load epoch left Active while loadCompleted was still deferred — \
+                     publishing load_failed",
+                );
+                SHARED.load_failed.store(true, Release);
+                SHARED.load_timed_out.store(true, Release);
+                // The epoch left Active before this arm ever saw an elapsed reading, so the exact
+                // in-flight time is unknown — bucket it as the budget's own ceiling, which is the
+                // honest floor for "still deferred when Active was lost".
+                super::report::note_load_gate_for(
+                    crate::route::playback_trace_generation(),
+                    super::report::LoadElapsedClass::Over20s,
+                );
+            }
+        }
+    } else if eng.stage == Stage::Loading
         && (SHARED.load_completed.load(Relaxed) || unsafe { ffi::sf_is_load_completed(mt) } != 0)
     {
+        // "native: Load returned after Nms" is logged unconditionally at the gate transition
+        // itself (`threads::load_thread`, right where `mark_native_load_returned` flips it), not
+        // here — see `load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`. It
+        // used to live in this arm, which meant it only ever appeared paired with the deferral
+        // line above, and never at all on the path this fix is most likely to be read on: Load
+        // eventually returns but `loadCompleted` goes quiet, so this arm never runs.
         SHARED.load_completed.store(true, Relaxed);
         // when it completed, so the panel can say how long we have been waiting for a frame since
         SHARED.dg_load_at.store(now, Relaxed);
@@ -1113,6 +1189,47 @@ pub(crate) fn pump(mt: &MainThread, now: u32) {
             } else {
                 eng.prime_play = true;
                 super::log("SMP Play fenced; priming before retry");
+            }
+        }
+    } else if eng.stage == Stage::Loading {
+        // Load HAS returned here (the first arm's `!native_load_returned` failed) and
+        // `loadCompleted` has NOT arrived (the previous arm's condition also failed) — the other
+        // half of issue #74 D.1's budget, and the one `load-returned-log-is-conditional-on-
+        // loadcompleted-and-unbounded-after` found unbounded: on v0.6.0 and unchanged until now,
+        // a Load that returns ok=1 and then never signals `loadCompleted` left the player parked
+        // in Connecting forever, with no counterpart to the D.1.4 timeout above. Budget it from
+        // the moment Load RETURNED, not from when it was ISSUED — `native_load_elapsed` (used
+        // above) never resets, so a Load that used most of its own budget getting here would
+        // otherwise leave this second wait almost none of its own.
+        match SHARED.native_load_returned_elapsed(eng.native_epoch) {
+            Some(elapsed) if elapsed >= NATIVE_LOAD_BUDGET => {
+                super::log(&format!(
+                    "native: loadCompleted did not arrive within {}s after Load returned — \
+                     publishing load_failed",
+                    NATIVE_LOAD_BUDGET.as_secs()
+                ));
+                SHARED.load_failed.store(true, Release);
+                SHARED.load_timed_out.store(true, Release);
+                super::report::note_load_gate_for(
+                    crate::route::playback_trace_generation(),
+                    super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
+                );
+            }
+            Some(_) => {}
+            // Same rationale as the `None` arm above: losing `Active` (a synchronous
+            // UnloadCompleted for this epoch) while still waiting on `loadCompleted` must fire
+            // the timeout rather than silently going quiet forever.
+            None => {
+                super::log(
+                    "native: Load epoch left Active while still waiting on loadCompleted after \
+                     Load returned — publishing load_failed",
+                );
+                SHARED.load_failed.store(true, Release);
+                SHARED.load_timed_out.store(true, Release);
+                super::report::note_load_gate_for(
+                    crate::route::playback_trace_generation(),
+                    super::report::LoadElapsedClass::Over20s,
+                );
             }
         }
     }

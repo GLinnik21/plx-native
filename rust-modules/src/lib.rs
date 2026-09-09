@@ -45,6 +45,14 @@ mod player; // buffer-feed video engine (was playback.c) — step 5
 mod plex; // typed Plex API layer (rust-modules/src/plex/) — one method per PMS operation (the live READ layer; playback ops still in route.rs)
 mod pms;
 mod posters;
+// Pure RELEASE_LINE-parsing helpers, `include!`d verbatim by build.rs so `cargo test --lib`
+// actually runs their unit tests (see the module for why). Nothing in the app itself calls
+// them at runtime — the version rule they implement is applied once, at compile time, by
+// build.rs — so they exist in THIS crate only for the test build; `#[cfg(test)]` here, not on
+// the functions themselves, because build.rs's own separate compilation is never built with
+// `--test` and needs them unconditionally.
+#[cfg(test)]
+mod release_line;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
 mod route; // play_movie route selection (direct-play vs transcode) — step 3
 mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves

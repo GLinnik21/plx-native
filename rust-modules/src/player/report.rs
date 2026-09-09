@@ -360,6 +360,41 @@ impl TraceOutcome {
     }
 }
 
+/// **How long a native Load spent in flight, as a bucket — never the millisecond count.**
+///
+/// Recorded once per attempt, either when [`super::threads::load_thread`]'s Load-returned gate
+/// opens (the ordinary case) or when issue #74 D.1.4's [`super::pump::NATIVE_LOAD_BUDGET`] fires
+/// first (the k5lp hang this bucket exists to make visible on a dashboard rather than only in a
+/// device log). A duration is exactly the kind of measurement `PlaybackErrorContext`'s other
+/// fields refuse to carry verbatim — see the module's bucket rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoadElapsedClass {
+    Under1s,
+    S1To5,
+    S5To20,
+    Over20s,
+}
+
+impl LoadElapsedClass {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Under1s => "under_1s",
+            Self::S1To5 => "1_to_5s",
+            Self::S5To20 => "5_to_20s",
+            Self::Over20s => "over_20s",
+        }
+    }
+
+    pub(crate) fn from_ms(ms: i64) -> Self {
+        match ms.max(0) {
+            0..=999 => Self::Under1s,
+            1_000..=4_999 => Self::S1To5,
+            5_000..=19_999 => Self::S5To20,
+            _ => Self::Over20s,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TraceEvent {
     Requested {
@@ -387,6 +422,11 @@ pub(crate) enum TraceEvent {
     OriginalProbe {
         phase: OriginalProbePhase,
         outcome: TraceOutcome,
+    },
+    /// The native Load-returned gate opened, or issue #74 D.1.4's budget fired first — see
+    /// [`LoadElapsedClass`].
+    LoadGateOpened {
+        elapsed: LoadElapsedClass,
     },
     Failed {
         kind: super::FailureKind,
@@ -719,6 +759,13 @@ pub(crate) fn note_original_probe_for(
     outcome: TraceOutcome,
 ) {
     push_trace_for(generation, TraceEvent::OriginalProbe { phase, outcome });
+}
+
+/// Record the native Load-returned gate opening, or issue #74 D.1.4's budget firing first — see
+/// [`LoadElapsedClass`]. Callable off the main thread (the load thread reports the ordinary gate
+/// transition), like every other `_for` breadcrumb here.
+pub(crate) fn note_load_gate_for(generation: u32, elapsed: LoadElapsedClass) {
+    push_trace_for(generation, TraceEvent::LoadGateOpened { elapsed });
 }
 
 fn error_context() -> PlaybackErrorContext {

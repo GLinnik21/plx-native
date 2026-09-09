@@ -87,11 +87,14 @@ fn main() {
 /// The invariant that actually matters is weaker and is preserved either way — the reported version
 /// must never be a number a release has already used.
 ///
-/// If a maintenance line is ever cut (a `0.5.x` branch for a patch release), the rule here needs an
-/// input it does not have today, because on that branch the next version IS a patch. Nothing in the
-/// repo cuts one yet; the fix at that point is an env override beside `PLX_RELEASE`, not a git
-/// branch lookup — a build script that reads git state is wrong in a tarball, in CI and in a
-/// worktree.
+/// **A maintenance line signals itself with a tracked marker file, `RELEASE_LINE`** (repo root,
+/// sibling of this crate — `../RELEASE_LINE` from `CARGO_MANIFEST_DIR`), rather than a git branch
+/// lookup: a build script that reads git state is wrong in a tarball, in CI's detached-HEAD
+/// checkout, and in a worktree whose branch name says nothing about the line it was cut for. The
+/// file is absent on trunk, so trunk's behavior above is unchanged when it is missing. Present, it
+/// names the line's `X.Y` (e.g. `0.6`), and a dev build on that line reports the next PATCH rather
+/// than the next minor — `0.6.1-dev` after `0.6.0` — because on a maintenance line trunk's
+/// "next minor" question does not apply at all.
 ///
 /// **The suffix reaches the reported string ONLY.** It never enters `pkg/appinfo.json` or the
 /// control file: `1.0.0-rc1` is not installable on a webOS television, which is also why
@@ -109,16 +112,22 @@ fn emit_version() {
     // the shape rule conditional on the build that is least likely to be looked at: cargo accepts
     // `0.5.0-rc.1` in a manifest, LG accepts it in no package at all, and a release build is
     // exactly where that must not compile quietly.
-    // The patch component is validated and then DISCARDED — see below.
-    let (major, minor, _patch) = triplet(&pkg);
+    // On trunk the patch component is validated and then discarded (see the trunk arm below); on
+    // a maintenance line it is exactly what the next dev version is built from.
+    let (major, minor, patch) = triplet(&pkg);
     // Set-but-empty is not "release": the Makefile exports the variable unconditionally and
     // leaves it blank for a dev build, the same shape `telemetry::sender` reads its credentials
     // with.
     let release = std::env::var("PLX_RELEASE").is_ok_and(|v| !v.is_empty());
     let version = if release {
         pkg
+    } else if let Some((line_major, line_minor)) = release_line() {
+        // A maintenance line: the next thing cut from it is a PATCH, on the same major.minor —
+        // `0.6.1-dev` after `0.6.0`, never a minor bump this line will never make.
+        let next = dev_patch(patch, pkg.as_str());
+        format!("{line_major}.{line_minor}.{next}-dev")
     } else {
-        // Discarded rather than incremented: the next thing cut from trunk is a minor, and
+        // Trunk: discarded rather than incremented. The next thing cut from trunk is a minor, and
         // `0.5.3` + a minor is `0.6.0`, not `0.6.3`.
         //
         // `u64` and `checked_add` so the three implementations of this arithmetic agree on every
@@ -132,6 +141,30 @@ fn emit_version() {
         format!("{major}.{next}.0-dev")
     };
     println!("cargo:rustc-env=PLX_VERSION={version}");
+}
+
+// `dev_patch` and `parse_release_line` used to be defined right here, each with its own
+// `#[cfg(test)]` module beside it. Cargo never compiles a build script as a test target, so
+// those tests silently never ran under `cargo test --lib` (either feature pass of `make check`)
+// or the PR gate. They now live in `src/release_line.rs`, where `cargo test --lib` genuinely
+// compiles and runs them, and this `include!` pulls in that exact source so `emit_version` still
+// has both functions, from a single definition rather than a drifting second copy.
+include!("src/release_line.rs");
+
+/// The maintenance line this checkout is cut for, as `(major, minor)`, or `None` on trunk.
+///
+/// Reads the tracked `RELEASE_LINE` marker at the repo root (`../RELEASE_LINE` from
+/// `CARGO_MANIFEST_DIR`) — present ONLY on a maintenance branch, absent everywhere else. Absence
+/// (no file, unreadable, or malformed content) is not an error: it means "trunk", which is the
+/// overwhelmingly common case and must stay byte-identical to before this existed.
+fn release_line() -> Option<(u64, u64)> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?;
+    let path = repo.join("RELEASE_LINE");
+    // Watch it whether or not it exists right now — cargo re-runs this on either transition, a
+    // maintenance branch checked out or abandoned.
+    println!("cargo:rerun-if-changed={}", path.display());
+    let content = std::fs::read_to_string(&path).ok()?;
+    parse_release_line(&content)
 }
 
 /// The manifest version as three integers, or a build failure.

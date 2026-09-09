@@ -406,13 +406,26 @@ static volatile int g_smp_ready = 0;
 #define SMP_READY()      __atomic_load_n(&g_smp_ready, __ATOMIC_ACQUIRE)
 #define SMP_SET_READY(v) __atomic_store_n(&g_smp_ready, (v), __ATOMIC_RELEASE)
 
+/* issue #74: SMP_READY() only ever meant "an object exists" — it goes true at :475, BEFORE the
+   real, synchronous g_load_with_context() call below returns, and every verb dispatches through
+   sf_ready_object() alone. On a chassis where that call blocks for a long time (k5lp video-output
+   init), the main thread was free to Feed/Play/etc. into an object whose LoadCommon ctor path was
+   still running on the load thread — a null-arg SIGSEGV on one path, a Play-vs-LoadCommon mutex
+   deadlock ending in an OMX_VideoComp abort on the other. g_load_returned closes that window
+   without changing what SMP_READY()/sf_ready() answer: cleared the instant the real Load call is
+   about to be made (paired with the sites below that set SMP_READY(0)), set back once it returns.
+   No locks — the same __atomic RELEASE/ACQUIRE pairing SMP_READY() already uses. */
+static volatile int g_load_returned = 0;
+#define LOAD_RETURNED()      __atomic_load_n(&g_load_returned, __ATOMIC_ACQUIRE)
+#define SET_LOAD_RETURNED(v) __atomic_store_n(&g_load_returned, (v), __ATOMIC_RELEASE)
+
 static SfSlot *sf_current_slot(void) {
     return __atomic_load_n(&g_current, __ATOMIC_ACQUIRE);
 }
 
 static void *sf_ready_object(void) {
     SfSlot *slot = sf_current_slot();
-    return SMP_READY() && slot ? slot->object : NULL;
+    return SMP_READY() && LOAD_RETURNED() && slot ? slot->object : NULL;
 }
 static long g_acb = 0, g_taskId = 0;
 
@@ -472,20 +485,34 @@ int sf_load(const char *payload, unsigned int epoch) {
     __atomic_store_n(&g_current, slot, __ATOMIC_RELEASE);
 
     SMP_ctor(slot->object, NULL);   /* uid=NULL: registers on the pre-authorized uMS namespace */
+    /* Close the dispatch window BEFORE opening it: clear g_load_returned first, then set ready.
+       Today the two writes cannot race anything — every SMP_SET_READY(0) site (below, and the
+       other three in this file) already clears g_load_returned too, so it is provably 0 here
+       already — but this ordering makes that a LOCAL invariant instead of one that depends on
+       every future SMP_SET_READY(1) call site remembering to clear first. */
+    SET_LOAD_RETURNED(0);    /* the real Load call below hasn't happened yet: not dispatchable */
     SMP_SET_READY(1);        /* RELEASE: the ctor's writes must be visible before the flag */
     SMP_notifyForeground(slot->object);
     if (pthread_mutex_lock(&slot->gate) != 0) {
         __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
         SMP_SET_READY(0); /* constructed object stays quarantined; never D1/reuse */
+        SET_LOAD_RETURNED(0);
         return 0;
     }
     slot->evidence_armed = 1;
     if (pthread_mutex_unlock(&slot->gate) != 0) {
         __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
         SMP_SET_READY(0); /* constructed object stays quarantined; never D1/reuse */
+        SET_LOAD_RETURNED(0);
         return 0;
     }
-    return g_load_with_context(slot->object, payload, sf_cb, (void *)(uintptr_t)epoch);
+    /* THE actual Load: synchronous on this thread (the load thread — see threads.rs), and on some
+       chassis it blocks for a long time inside video-output init (issue #74). g_load_returned
+       stays 0 — "in flight" — for the whole of this call; every other verb refuses to dispatch
+       until it flips back to 1, which happens before the result is propagated below. */
+    int ok = g_load_with_context(slot->object, payload, sf_cb, (void *)(uintptr_t)epoch);
+    SET_LOAD_RETURNED(1);
+    return ok;
 }
 int  sf_ready(void)               { return SMP_READY(); }
 int sf_is_load_completed(void) {
@@ -559,6 +586,7 @@ void sf_quarantine(void) {
     if (slot) (void)sf_callback_gate_retire();
     __atomic_store_n(&g_lifecycle_blocked, 1, __ATOMIC_RELEASE);
     SMP_SET_READY(0);
+    SET_LOAD_RETURNED(0);
     if (elogf) {
         fprintf(elogf,
                 "native lifecycle: QUARANTINED epoch=%u object=%p; D1/reuse and future Load disabled\n",
@@ -588,6 +616,7 @@ int sf_destroy(void) {
     SMP_dtor(slot->object);
     __atomic_store_n(&slot->destroyed, 1, __ATOMIC_RELEASE);
     SMP_SET_READY(0);
+    SET_LOAD_RETURNED(0);
     __atomic_store_n(&g_current, NULL, __ATOMIC_RELEASE);
     return 1;
 }
@@ -668,7 +697,16 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
  * Every one is a no-op when this device has no ACB, so the caller does not have to branch: on
  * webOS 5 the whole setSinkType / setMediaId / setMediaVideoData / setState sequence has no
  * replacement — it is simply deleted, which is what both reference implementations do (ss4s stubs
- * all of them to `return true`, Kodi guards each with `if (acb)`). */
+ * all of them to `return true`, Kodi guards each with `if (acb)`).
+ *
+ * issue #74 D.1: these dispatch on `g_acb` alone and never call `sf_ready_object()`, so the
+ * in-flight-Load gate below does NOT cover them directly — unlike the nine `sf_*` verbs above.
+ * They are today bounded only indirectly, by `pump.rs`'s stage machine (every ACB call site
+ * requires `eng.stage >= Stage::Playing`, which the pump reaches only after this file's
+ * loadCompleted arm has already observed `LOAD_RETURNED()`). Extending the gate itself into ACB
+ * would need the same device verification any Starfish/ACB bind-order change needs (see
+ * player/CLAUDE.md); this comment exists so "the gate covers every Starfish/ACB verb" is not
+ * read as true of this block until that is done. */
 long acb_create(const char *appId, int playerType) {
     if (vp_mode() != VP_ACB) return 0;
     g_acb = acb.create();

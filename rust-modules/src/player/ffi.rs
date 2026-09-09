@@ -75,8 +75,11 @@ mod sys {
 /// **The one verb of this seam that is NOT main-thread, and the missing token is how you can
 /// tell.** `Load` blocks for the pipeline construction and the library owns its own GMainContext
 /// behind it, so it runs on the media worker (`threads::load_thread`) by design — putting it on
-/// the main thread would stall the frame loop for the whole load. Everything the main thread does
-/// next is gated on `sf_ready()` / `loadCompleted`, which is what keeps that safe.
+/// the main thread would stall the frame loop for the whole load. What keeps that safe is NOT
+/// `sf_ready()` — that reads true the moment the object is constructed, before the real Load call
+/// returns (issue #74) — but the C seam's own `g_load_returned` gate inside `sf_ready_object()`,
+/// which refuses every other verb until this call has returned; the pump's `NATIVE_LOAD_BUDGET`
+/// is the only Rust-side view of that in-flight state.
 #[inline]
 pub(crate) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
     sys::sf_load(payload, epoch)
@@ -117,12 +120,55 @@ pub(crate) fn reset_native_lifecycle_for_test() {
     sys::reset_native_lifecycle_for_test();
 }
 
+/// Force `OBJECT_READY` (the half `sf_ready()` reads) without a real `sf_load` call, for a test
+/// that needs the pipeline to read as constructed while `loadCompleted` never arrives — see
+/// `ffi_host.rs::force_object_ready_for_test`.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn force_object_ready_for_test(on: bool) {
+    sys::force_object_ready_for_test(on);
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn force_pause_result_for_test(result: Option<c_int>) {
     sys::FORCE_PAUSE_RESULT.store(
         result.unwrap_or(i32::MIN),
         std::sync::atomic::Ordering::Relaxed,
     );
+}
+
+/// issue #74 D.1 test seam: arm the hold BEFORE spawning `threads::load_thread`, so its `sf_load`
+/// call blocks in the real in-flight window instead of returning immediately. See
+/// `ffi_host.rs::HOLD_LOAD`.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn hold_load_for_test() {
+    sys::hold_load_for_test();
+}
+/// Release a `sf_load` call parked by [`hold_load_for_test`].
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn release_load_for_test() {
+    sys::release_load_for_test();
+}
+/// Whether the host `sf_load` is currently inside its in-flight window (loadCompleted emitted,
+/// not yet returned).
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn load_in_flight_for_test() -> bool {
+    sys::LOAD_IN_FLIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// How many seam verbs were dispatched while [`load_in_flight_for_test`] was true.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn in_flight_calls_for_test() -> u32 {
+    sys::in_flight_calls_for_test()
+}
+/// The first verb name recorded while the load was in flight, if any.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn in_flight_verb_for_test() -> Option<&'static str> {
+    sys::in_flight_verb_for_test()
+}
+/// Force the in-flight window directly, without a real `sf_load` call — for
+/// `the_gate_is_epoch_scoped`'s narrow simulation.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn set_load_in_flight_for_test(on: bool) {
+    sys::set_load_in_flight_for_test(on);
 }
 
 #[inline]

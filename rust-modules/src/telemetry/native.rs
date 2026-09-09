@@ -274,7 +274,12 @@ const USER_FIELDS: &[&str] = &["id"];
 const SDK_FIELDS: &[&str] = &["name", "version"];
 const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
 const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
-const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision"];
+/// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`crate::webos::rtkmem_context`]) and `install`
+/// (`devmode`/`homebrew`/`unknown`, from [`crate::paths::install_kind`]) ride on every native
+/// crash report beside the existing hardware compatibility class — the same two closed-enum
+/// sandbox facts PostHog's usage envelope carries as super-properties (`telemetry::posthog`'s
+/// `envelope_props`), so a chassis's crash-at-start rate is queryable by sandbox on either side.
+const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision", "rtkmem", "install"];
 const EXCEPTION_CONTAINER_FIELDS: &[&str] = &["values"];
 const EXCEPTION_FIELDS: &[&str] = &["type", "value", "mechanism", "stacktrace"];
 const MECHANISM_FIELDS: &[&str] = &["type", "handled", "meta"];
@@ -518,7 +523,8 @@ pub(crate) fn preview_event() -> Vec<u8> {
             "webos": {"type": "webos", "name": "webOS TV", "release": "<webOS release>",
                 "codename": "<webOS release codename>", "api": "<webOS API version>"},
             "hardware": {"type": "hardware", "model": "<device model class>",
-                "soc": "<SoC/platform class>", "revision": "<hardware revision class>"}
+                "soc": "<SoC/platform class>", "revision": "<hardware revision class>",
+                "rtkmem": "<ok / missing / n/a>", "install": "<devmode / homebrew / unknown>"}
         },
         "exception": {"values": [{
             "type": "SIGSEGV",
@@ -716,6 +722,8 @@ mod sdk {
             model: *const c_char,
             soc: *const c_char,
             hardware_revision: *const c_char,
+            rtkmem: *const c_char,
+            install: *const c_char,
         );
         fn plx_sentry_set_user_id(id: *const c_char);
     }
@@ -779,6 +787,10 @@ mod sdk {
         let model = cstring(hardware.model.as_bytes());
         let soc = cstring(hardware.board.as_bytes());
         let hardware_revision = cstring(hardware.hw_revision.as_bytes());
+        // issue #74: the same two closed-enum sandbox facts the PostHog envelope carries, so a
+        // native crash report can be graded by chassis AND sandbox without a second dashboard.
+        let rtkmem = cstring(crate::webos::rtkmem_context().as_bytes());
+        let install = cstring(crate::paths::install_kind().as_bytes());
         let ptr = |value: &Option<CString>| {
             value
                 .as_ref()
@@ -812,6 +824,8 @@ mod sdk {
                     ptr(&model),
                     ptr(&soc),
                     ptr(&hardware_revision),
+                    ptr(&rtkmem),
+                    ptr(&install),
                 );
                 ACTIVE.store(true, Ordering::Release);
                 // After ACTIVE, because `set_user` refuses to touch a backend that is not running;
@@ -1006,7 +1020,8 @@ mod tests {
                         "codename": "goldilocks2-grampians", "api": "4.1.0",
                         "model": "must-not-pass", "future": "must-not-pass"},
                     "hardware": {"type": "hardware", "model": "m16p3s", "soc": "M19_DVB",
-                        "revision": "BOARD_PT_1ST", "serial": "must-not-pass"}
+                        "revision": "BOARD_PT_1ST", "rtkmem": "missing", "install": "devmode",
+                        "serial": "must-not-pass"}
                 },
                 "exception": {"values": [{
                     "mechanism": {"meta": {"signal": {"number": 11, "name": "SIGSEGV"}}},
@@ -1065,6 +1080,9 @@ mod tests {
         assert_eq!(v["contexts"]["webos"]["release"], "4.10.2");
         assert!(v["contexts"]["webos"].get("model").is_none());
         assert_eq!(v["contexts"]["hardware"]["soc"], "M19_DVB");
+        // issue #74: the two sandbox facts survive, same allowlisted treatment as `soc`/`revision`.
+        assert_eq!(v["contexts"]["hardware"]["rtkmem"], "missing");
+        assert_eq!(v["contexts"]["hardware"]["install"], "devmode");
         assert!(v["contexts"]["hardware"].get("serial").is_none());
     }
 

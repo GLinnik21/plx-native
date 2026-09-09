@@ -75,6 +75,10 @@ fn breadcrumb(step: TraceStep) -> Value {
                 },
             )
         }
+        TraceEvent::LoadGateOpened { elapsed } => {
+            put(&mut data, "load_elapsed", elapsed.code());
+            ("load gate opened", "info")
+        }
         TraceEvent::Failed { kind } => {
             put(&mut data, "kind", kind.code());
             ("playback failed", "error")

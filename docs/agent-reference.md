@@ -200,8 +200,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `-dev`** for every other one — `0.6.0` published, `0.7.0-dev` in the tree. The minor rather than the
   patch because development is TRUNK-BASED here: features land on main, so the next release cut from
   it is a minor (or a major, which no build script can predict); a patch is cut from an existing
-  minor's own line, where trunk's number is not the question. It also makes the semver ordering
-  mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
+  minor's own line, where trunk's number is not the question — this remains exactly true for a
+  checkout of `main` itself, with no marker file. **A checkout of a maintenance line has that
+  input now**, and `build.rs` names the next PATCH there instead: a tracked `RELEASE_LINE` marker
+  at the repo root (`X.Y`, e.g. `0.6`) says "this checkout IS that line, not trunk", so `0.6.0` in
+  `Cargo.toml` plus a present `RELEASE_LINE` reports `0.6.1-dev` rather than `0.7.0-dev`. The file's
+  absence is unconditionally the trunk behaviour above — nothing about a `main` checkout changes.
+  It also makes the semver ordering mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
   surface reports (X-Plex-Version, the Sentry release, PostHog's `app_version`, the lab snapshot, the
   photographed diagnostics panel); before it, a release commit left the whole tree claiming to BE the
   release it had just cut, and nothing downstream could separate a working tree from the shipped
@@ -1307,18 +1312,25 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `/tmp/plxnative-autoplay` (auto-press OK for headless capture), `/tmp/plxnative-autoseek` (empty =
   one seek to 140s; else a seek script: optional `gap=<ms>` + comma steps, absolute `120` or
   tap-relative `+10`/`-10` — rapid-burst seek testing), `/tmp/plxnative-ptype` (ACB playerType
-  bisect knob), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
+  bisect knob), `/tmp/plxnative-holdload[=ms]` (sleep `ms` — default 30000 for a bare/empty
+  trigger — on `threads::load_thread` right after the real `sf_load` call returns and BEFORE the
+  Load-returned flag publishes, making issue #74 D.1's budget observable on demand: the pump's
+  `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out; NOT `DIAG`, since it
+  changes playback behaviour), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
   server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first),
-  `/tmp/plxnative-failtest[=verdict|audio|novideo|stream|connection|tv|none]` (force one
+  `/tmp/plxnative-failtest[=verdict|audio|novideo|stream|connection|tv|jail|none]` (force one
   variant of the full-screen **failure read-out** — the one screen that cannot be reached on
   purpose, since it needs a server that refuses, and the one most meant to be LOOKED at: it is
   shaped to survive a phone photograph in an issue thread. Live-read, so arming it mid-playback
   swaps the frame at once; `stream`, `connection`, and `tv` exercise the runtime media-source,
-  interrupted-transfer, and native-pipeline reasons; pair `audio` with
-  `/tmp/plxnative-nopass` for the PLEX PASS capsule line. It feeds the real
-  `player::error_shape`, and forces the STATE only at
+  interrupted-transfer, and native-pipeline reasons; `jail` forces the missing-`/dev/rtkmem`
+  read-out regardless of the real device probe, since most dev machines are not an affected SoC;
+  pair `audio` with
+  `/tmp/plxnative-nopass` for the PLEX PASS capsule line. Every arm but `jail` feeds the real
+  `player::error_shape` (`jail` is the one `ErrorShape` `error_shape` never produces, so it calls
+  the sibling `jail_error_shape` directly instead), and forces the STATE only at
   `player_hud::busy` — never at `player::state()`, which the pump acts on),
   `/tmp/plxnative-testpat=<spec>` — **replace the page's picture with a SYNTHETIC ground**
   (`flat:<L*>`, `ramp`, `edge`, `checker:<px>`, `lines:<px>`, `hbars:<px>`, `hue[:L*]`, `rainbow[:L*]`,
