@@ -74,8 +74,8 @@ pub(crate) enum Node {
         thumb: String,
     },
     /// The Search screen. **No payload, for [`Node::Library`]'s exact reason**: the query, the
-    /// shelves, the zone and both cursors all live in `crate::search` and `ui::search`'s own
-    /// statics, and nothing between opening a result and coming back disturbs them — so re-entry is
+    /// shelves, the zone and both cursors all live in `crate::search` and the owned
+    /// `screens::search::SearchScreen`'s own state, and nothing between opening a result and coming back disturbs them — so re-entry is
     /// a route flip that restores the page whole, focus included, without asking a single server
     /// again.
     ///

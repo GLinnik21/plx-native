@@ -41,6 +41,26 @@ pub(crate) enum StoreId {
     ViewState,
 }
 
+/// Route-scoped background work, distinct from a user command. Polling an idle store must not
+/// advance its generation. The dispatcher supplies the frame's time when it delivers the work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StoreWork {
+    Hubs,
+    BrowseDiscovery,
+    /// Full Library landing pass: pages, menus, discovery and per-section hubs.
+    Browse,
+    /// Search debounce, worker spawning and result landings. The originating delta survives
+    /// the dispatcher's bounded drain carrying this work into a later frame.
+    Search { dt_us: u32 },
+}
+
+impl StoreWork {
+    pub(crate) fn store(self) -> StoreId {
+        match self { Self::Hubs => StoreId::Hubs, Self::BrowseDiscovery | Self::Browse => StoreId::Browse,
+            Self::Search { .. } => StoreId::Search }
+    }
+}
+
 impl StoreId {
     pub(crate) const ALL: [StoreId; 6] = [
         StoreId::Browse,

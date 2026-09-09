@@ -85,7 +85,7 @@ use crate::ui::{theme, Painter, Rect, Spring};
 
 /// The left column is the same editorial measure as the Home hero.  Reusing that named measure is
 /// what makes first-run routes and Settings feel like one family instead of two similar layouts.
-const NARRATIVE_W: f32 = crate::ui::home::HERO_COL_W;
+const NARRATIVE_W: f32 = crate::ui::landing_hero::COL_W;
 /// Two visually separate columns need a region gap, not a row gap.  Expressed entirely on the
 /// spacing ladder so a retune of that ladder moves every route together.
 const COLUMN_GAP: f32 = theme::space::XL * 2.0 + theme::space::LG + theme::space::SM;
@@ -175,6 +175,15 @@ impl RouteGround {
         self.latched = false;
     }
 
+    /// A pre-content page receives a numeric atmosphere from its application owner at mount.
+    /// Neither construction nor drawing this UI value reads a catalog or session file.
+    pub(crate) fn for_home(seed: Option<[[f32; 3]; 4]>) -> Self {
+        let mut ground = Self::new();
+        if let Some(blur) = seed { ground.latch(blur, mean_key(blur)); }
+        else { ground.latch_target(theme::ROUTE_GROUND_FALLBACK); }
+        ground
+    }
+
     fn latch(&mut self, corners: [[f32; 3]; 4], key: [f32; 3]) {
         if self.latched {
             return;
@@ -205,32 +214,10 @@ impl RouteGround {
         self.wash.draw(p, Rect::FULL);
     }
 
-    /// Seed a pre-Home route from the same hero metadata Home will use when it appears. Shared
-    /// Sources has no rendered host to sample yet, so this is the semantic equivalent of freezing
-    /// Home after an infinitely broad blur.
-    ///
-    /// **Three tiers, in order, and each one only reachable when the one before it has nothing.**
-    /// (1) Home's OWN hero, when this boot has already fetched one — the ordinary case for Settings
-    /// and Legal, opened well after Home exists. (2) Failing that, the LAST hero envelope this
-    /// television ever showed (`plex::session::last_hero`) — the case that motivated this: since
-    /// the device consent question moved ahead of the profile picker, its usual host is the picker
-    /// with no hub fetched yet, so tier 1 is empty on almost every ordinary boot, not only a fresh
-    /// device's first one. (3) Only a genuinely fresh television — signed in for the first time,
-    /// never having rendered a hero at all — falls all the way to the design system's authored
-    /// atmosphere (`theme::ROUTE_GROUND_FALLBACK`). Recording the seed for tier 2 is this
-    /// function's other job whenever tier 1 succeeds — see `plex::session::record_last_hero`.
+    /// Draw the pre-Home atmosphere captured at construction. Ordinary Settings samples its
+    /// rendered host through draw_host instead. No application reads or writes happen in draw.
     pub(crate) fn draw_home(&mut self, p: Painter) {
-        if !self.latched {
-            if let Some(hero) = crate::ui::home::hero_item().filter(|m| m.has_blur) {
-                self.latch(hero.blur, mean_key(hero.blur));
-                crate::plex::session::record_last_hero(hero.blur);
-            } else if let Some(blur) = crate::plex::session::last_hero() {
-                self.latch(blur, mean_key(blur));
-            } else {
-                self.latch_target(theme::ROUTE_GROUND_FALLBACK);
-            }
-        }
-        self.wash.draw(p, Rect::FULL);
+        self.draw_default(p);
     }
 
     /// Draw a pre-content route on the product's authored fallback atmosphere.
@@ -884,6 +871,16 @@ impl RouteLayout {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pre_home_ground_is_latched_from_its_explicit_seed_before_drawing() {
+        let rgb = [super::theme::SURFACE_APP[0], super::theme::SURFACE_APP[1], super::theme::SURFACE_APP[2]];
+        let seed = [rgb; 4];
+        let ground = super::RouteGround::for_home(Some(seed));
+        assert!(ground.latched);
+        assert_eq!(ground.key, super::mean_key(seed));
+        assert!(super::RouteGround::for_home(None).latched);
+    }
+
     use super::*;
     use crate::ui::consts::inside_safe;
 

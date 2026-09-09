@@ -184,14 +184,14 @@ pub(super) enum Route {
     ItemMenu {
         over: MenuHost,
     },
-    Library, // the browse grid (ui/library.rs); its sort/filter menus are internal state
+    Library, // owned screens/library page; sort/filter/source panels are LibraryMenu entries
     Detail,
     /// The person/actor page (screens/person.rs), reached by OK on a detail page's cast
     /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
     /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
     /// exists: a `Route` names one screen, and person→detail→person is three.
     Person,
-    /// The Search screen (`ui/search/`). A PEER of Home and the Library, not a stacking
+    /// The Search screen (`screens::search::mod.rs`'s `SearchScreen`). A PEER of Home and the Library, not a stacking
     /// page: it is reached from the strip's last pill and BACK from it returns to Home, so
     /// it needs no trail node of its own — what it OPENS stacks, but it does not.
     Search,
@@ -320,16 +320,24 @@ pub(super) fn leave_of(r: Route) -> Option<fn()> {
         // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
         // why `Node::Library` carries no payload), Login/Profiles/Onboard are boot gates the app
         // leaves once, and a player session is torn down by its own exit path.
+        //
+        // Search USED to have one — its keyboard had to come down with the page, and the legacy
+        // screen had no real Unmount lifecycle of its own to carry that. It is an OWNED screen
+        // now (phase 7 Search cutover): `SearchScreen::step` already answers
+        // `ScreenEvent::Unmount` by dropping its own keyboard, and that event is delivered by the
+        // ordinary tree-retirement path every owned page's teardown already rides — the same one
+        // Detail's `metadata::clear` and Person's `person::leave` used to need this callback for,
+        // until they too became owned. Proven with a REAL route change through `bridge::frame`
+        // (`app/search_owned_tests.rs`'s `leaving_owned_search_through_a_real_route_change_
+        // releases_its_keyboard`), not an assumption: `d.input.keyboard` (and the real
+        // `crate::textinput::stop()` behind it) goes false with no `leave_of` arm at all.
         Route::Home
         | Route::Library
         | Route::Login
         | Route::Profiles
         | Route::Onboard
+        | Route::Search
         | Route::Player { .. } => None,
-        // Search DOES have one, and it is not a store: the television's keyboard must come
-        // down with the page. Dismissing it at the press instead would drop the panel a
-        // frame early, while the screen it belongs to is still on screen behind it.
-        Route::Search => Some(crate::ui::search::leave as fn()),
         // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
         // so neither of these ever arrives here. Listed rather than swept into a `_` so the
         // exhaustiveness above is real.
@@ -346,22 +354,26 @@ pub(super) fn leave_of(r: Route) -> Option<fn()> {
 /// empty the page the user is about to press BACK to — the exact bug `leave_of`'s doc defends
 /// against, and `nav`'s retarget rule is built around.
 ///
-/// [`Route::Search`] is the case that made this a predicate rather than a `None`, and it is the
-/// one route where the two questions this file otherwise collapses genuinely come apart. It HAS a
-/// node now and a result opened from it does stay on the trail — but its teardown is
-/// `search::leave`, which dismisses the TELEVISION'S KEYBOARD and drops nothing else, so running it
-/// on the way deeper costs nothing and leaving it un-run risks a system panel floating over the
-/// page you navigated to. The other three keep their teardown off a forward navigation because
-/// theirs EMPTY the page a BACK is about to return to; this one has nothing to empty.
-///
-/// So `false` here does not mean "no node" any more. It means "leaving this screen always dismisses
-/// its keyboard", and the trail push lives in the commit arm, which is where it always did.
+/// [`Route::Search`] is the case that made this a predicate rather than a `None`, and it USED TO
+/// be the one route where the two questions this file otherwise collapses genuinely came apart:
+/// it HAS a node and a result opened from it does stay on the trail, but the legacy screen's
+/// keyboard-dismissal teardown (`leave_of`'s old `search::leave` arm) still had to ride every
+/// forward navigation, since the legacy screen had no real Unmount lifecycle of its own to run it
+/// from. Now that Search is an OWNED screen (phase 7), `leave_of(Route::Search)` is `None` exactly
+/// like Home/Library/Detail/Person — `SearchScreen::step` drops its own keyboard on the ordinary
+/// `Unmount` every owned page's teardown already rides — so `forward_leave(Route::Search)` is
+/// `None` REGARDLESS of this predicate's answer for it. It stays `false` below only to keep
+/// `Node::Search`'s absence from `every_trail_node_names_a_page_that_stays_on_the_trail`
+/// (`app/mod.rs`) honest — Search is still deliberately not in that "BACK can put this back"
+/// list — not because a teardown still depends on it.
 pub(super) fn stays_on_trail(r: Route) -> bool {
     match page_of(r) {
         // exactly the `Node` variants (`node_route`'s domain): a forward navigation leaves these
         // standing behind the destination, which is what makes the common pop a route flip
         Route::Home | Route::Library | Route::Detail | Route::Person => true,
-        // stays on the trail, but its teardown rides every exit — see the doc above
+        // Has a `Node` (`Node::Search`) but is deliberately not counted as one BACK can put back —
+        // see the doc above. `leave_of(Route::Search)` is `None`, so this answer no longer changes
+        // `forward_leave`'s result for it either way.
         Route::Search => false,
         // Boot gates the app leaves once, and a player session torn down by its own exit path.
         // None of the four has a `leave_of` at all, so this answer is about being honest rather
@@ -730,18 +742,6 @@ pub(super) fn set_origin(play_from: &mut Node, from: Origin) {
     }
 }
 
-/// Open the focused Library card's detail page — the ONE library-card activation
-/// (OK-press commit AND pointer click). Library cards are movies/shows, so activation is
-/// always the detail page (playback then starts from there).
-pub(super) fn open_library_card(cur: Route, nav: &mut Option<NavReq>) {
-    let Some(mm) = crate::ui::library::focused_item() else {
-        return;
-    };
-    if mm.rk.is_empty() {
-        return;
-    }
-    nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
-}
 
 /// Enter `rk`'s detail page with a HARD CUT — no transition. The one caller left is the
 /// `/tmp/plxnative-detail` boot trigger, and the reason is the same one the Library boot
@@ -800,62 +800,15 @@ pub(super) fn enter_node(n: &Node, route: &mut Route) {
     // The navigation container mounts or uncovers the entry at this commit.
     *route = node_route(n);
 }
-/// Open the item context menu on the focused HOME GRID card — the press-and-hold half of the
-/// Continue Watching interaction (a SHORT press still plays/opens immediately; see
-/// `home_activate`). Reports whether it opened, so the caller only flips the route when a
-/// menu is actually up: the hero view has no card, and a shelf can be empty.
-pub(super) fn open_item_menu(route: &mut Route) -> bool {
-    let Some(m) = crate::ui::home::movie_at(crate::ui::home::row(), crate::ui::home::col()) else {
-        return false;
-    };
-    if !crate::ui::item_menu::has_actions(m) {
-        return false;
-    }
-    // the Remove-from-deck row only exists on a Continue Watching card — nothing else has a
-    // deck to be removed from (see `item_menu::build`)
-    let from_deck = crate::pms::hub_is_continue(crate::ui::home::row() as usize);
-    let opener = Opener {
-        rect: crate::ui::home::focused_card_rect(),
-        redraw: crate::ui::home::redraw_focused_card,
-    };
-    crate::ui::item_menu::open(m, from_deck, opener);
-    *route = Route::ItemMenu {
-        over: MenuHost::Home,
-    };
-    true
-}
 
-/// The same popover on a card surface that is NOT Home: the Library grid, a Search result shelf,
-/// the person page's filmography and the detail page's RELATED shelf — all of which already arm the
-/// identical press.
-///
-/// One function for the four because they differ in exactly two values — the focused row and the
-/// [`Opener`] that draws it — and in nothing else. There is no `from_deck` on any of them: the
-/// Continue Watching deck is a HOME hub, and offering to remove a Library tile from it would be a
-/// row that appeared to work and changed nothing (`item_menu::build`'s own rule).
-///
-/// The Related shelf joining this list rather than `open_episode_menu` is the whole shape of that
-/// fix: it sits on the detail page, but its tiles are OTHER items, so it is a card row like the
-/// other three and not a leaf of the loaded season (see [`MenuHost::Related`]).
-pub(super) fn open_tile_menu(
-    route: &mut Route,
-    host: MenuHost,
-    item: Option<&crate::pms::PmsMovie>,
-    opener: Opener,
-    from_deck: bool,
-) -> bool {
-    let Some(m) = item else { return false };
-    if !crate::ui::item_menu::has_actions(m) {
-        return false;
-    }
-    // **`from_deck` is what puts *Remove from Continue Watching* in the panel**, and it was
-    // hard-wired `false` here — correct while none of these four surfaces HAD a deck, and wrong
-    // from the moment the Library grew the library's own Continue Watching shelf. The shelf
-    // arrived, `library::focused_from_deck` was written to answer for it, and nothing called it:
-    // the one row a section deck exists to offer was unreachable on the very hold that was added
-    // to reach it. It is a parameter now, so a caller with a deck has to say so and a caller
-    // without one says `false` in its own words.
-    crate::ui::item_menu::open(m, from_deck, opener);
-    *route = Route::ItemMenu { over: host };
-    true
-}
+// `open_tile_menu` — the shared press-and-hold item-menu opener for the four card surfaces that
+// are NOT Home (the Library grid, a Search result shelf, the person page's filmography, the
+// detail page's RELATED shelf) — was retired here in the phase 7 Search cutover, its last caller.
+// The other three had already migrated to their own owned-screen Fx request (`LibraryReq`,
+// `PersonReq`, the detail page's own opener) before Search's `SearchReq::ItemMenu` (drained by
+// `content::search_requests`) did the same; this function's body was byte-for-byte what those
+// requests now do inline at their own call sites (`crate::ui::item_menu::open` +
+// `*route = Route::ItemMenu { over: host }`), so nothing was left to share once the fourth caller
+// was gone. `open_item_menu`, the same shape for the HOME GRID card, went with it in the phase 8
+// Home cutover — `ui::home` (and its `movie_at`/`focused_card_rect`/`redraw_focused_card`) is
+// deleted, and the owned Home screen opens the panel inline at its own press site the same way.

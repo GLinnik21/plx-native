@@ -53,7 +53,7 @@ fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) ->
                 entry: EntryId(7),
                 elem,
             }),
-        },
+        ..Default::default() },
         owner: crate::ui::machine::InputOwner::Entry(EntryId(7)),
     }
 }
@@ -771,7 +771,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         hit.fill(stops);
                         hit.swap();
                         for (key, rect) in &drawn {
-                            let resolved = hit.resolve(PointerKind::Click, rect.cx(), rect.cy(), None);
+                            let resolved = hit.resolve(Some(key.entry), PointerKind::Click, rect.cx(), rect.cy(), None);
                             assert_eq!(resolved.hit, Some(*key));
                             assert_eq!(resolved.activate.map(|(key, _)| key), Some(*key));
                         }
@@ -780,7 +780,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                             let right = pair[1].1;
                             assert!(left.x + left.w < right.x, "controls must not overlap");
                             let gutter = (left.x + left.w + right.x) * 0.5;
-                            assert!(hit.resolve(PointerKind::Click, gutter, left.cy(), None).miss,
+                            assert!(hit.resolve(Some(pair[0].0.entry), PointerKind::Click, gutter, left.cy(), None).miss,
                                 "the painted gutter must not activate either control");
                         }
                         cases += 1;

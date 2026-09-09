@@ -147,7 +147,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # raw socket/libc FFI for the stream module (correct constants + struct layouts)
 libc = "0.2"
 # JSON parsing for the pms module (replaces the C's hand-rolled string scrape)
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
+# std exposes the writer API used to bound manifest encoding before any filesystem write.
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 # derive(Deserialize) for the typed plex API response models (src/plex/models.rs)
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 

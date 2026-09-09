@@ -45,7 +45,7 @@ fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) ->
         press: PressRead::default(),
         focus: crate::ui::machine::FocusRead {
             current: elem.map(|elem| FocusKey { entry: EntryId(8), elem }),
-        },
+        ..Default::default() },
         owner: crate::ui::machine::InputOwner::Entry(EntryId(8)),
     }
 }
@@ -195,12 +195,12 @@ fn assert_strip_hit_geometry(screen: &DetailScreen, elems: &[u32], measure: &cra
             if shown.w < placed.rect.w || shown.h < placed.rect.h {
                 clipped += 1;
             }
-            let resolved = hit.resolve(PointerKind::Click, shown.cx(), shown.cy(), None);
+            let resolved = hit.resolve(Some(key.entry), PointerKind::Click, shown.cx(), shown.cy(), None);
             assert_eq!(resolved.hit, Some(*key), "visible intersection must hit its tile");
             assert_eq!(resolved.activate.map(|(hit, _)| hit), Some(*key));
         } else {
             offscreen += 1;
-            let resolved = hit.resolve(PointerKind::Click, placed.rect.cx(), placed.rect.cy(), None);
+            let resolved = hit.resolve(Some(key.entry), PointerKind::Click, placed.rect.cx(), placed.rect.cy(), None);
             assert_eq!(resolved.hit, None, "a fully offscreen tile must miss");
             assert!(resolved.miss);
         }
@@ -217,6 +217,7 @@ fn assert_strip_hit_geometry(screen: &DetailScreen, elems: &[u32], measure: &cra
             let point = (left.x + left.w + gap * 0.5, left.cy());
             if Rect::FULL.contains(point.0, point.1) {
                 let resolved = hit.resolve(
+                    Some(pair[0].0.entry),
                     PointerKind::Click,
                     point.0,
                     point.1,

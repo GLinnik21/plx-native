@@ -18,6 +18,25 @@ pub(crate) enum HubsCmd {
 
 pub(crate) struct HubsStore;
 
+pub(crate) use crate::pms::Landing as HubsResult;
+
+/// The adapter boundary: drain owned results without applying any store state.
+pub(crate) fn take_results() -> Vec<HubsResult> {
+    crate::pms::take_landings()
+}
+
+pub(crate) fn land(result: &HubsResult) {
+    let before = crate::pms::catalog_gen();
+    crate::pms::apply_landing(result);
+    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+}
+
+fn tick(dt: f32) {
+    let before = crate::pms::catalog_gen();
+    crate::pms::tick(dt);
+    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
+}
+
 /// The shim: step the store NOW through the one vocabulary and answer as the mutator did.
 pub(crate) fn apply(cmd: HubsCmd) -> bool {
     super::apply(super::StoreCmd::Hubs(cmd))
@@ -44,14 +63,6 @@ pub(super) fn run(cmd: HubsCmd) -> bool {
     answer
 }
 
-/// Home's once-a-frame pass: land, back off, refetch. `pms::pump` reports no change of its own,
-/// so the notice is raised on its catalog generation moving instead.
-pub(crate) fn pump(dt: f32) {
-    let before = crate::pms::catalog_gen();
-    crate::pms::pump(dt);
-    super::note(StoreId::Hubs, crate::pms::catalog_gen() != before);
-}
-
 impl<H: Host> Machine<H> for HubsStore {
     type Ev = StoreEv<HubsCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
@@ -59,7 +70,7 @@ impl<H: Host> Machine<H> for HubsStore {
             StoreEv::Cmd(c) => {
                 run(c.clone());
             }
-            StoreEv::Pump { dt } => pump(*dt),
+            StoreEv::Pump { dt } => tick(*dt),
         }
         Handled::Yes
     }

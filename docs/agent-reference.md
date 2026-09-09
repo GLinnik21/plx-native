@@ -455,7 +455,8 @@ which the linking section explains is load-bearing rather than tidy.
   token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
-  and the remaining legacy screens (`home.rs`/`player_hud.rs`/…); owned content screens live under `screens/`. **`rust-modules/src/ui/CLAUDE.md` is the
+  and the remaining legacy screens (`player_hud.rs`/…); owned content screens live under `screens/`
+  (Home and Library among them since phase 8 — `ui/home.rs` and `ui/library.rs` are deleted). **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -961,7 +962,16 @@ you its own numbers are wrong.
 > access to at most one and send every other lane to `make sim`. Telling two prompts "you own the
 > television exclusively" is *not* a mutex — each is true when written and false the moment the
 > second one starts, which is the 2026-08-21 collision that was caught by luck rather than by
-> anything failing loudly. The skill carries the rest: the shared stash stack that hands one lane
+> anything failing loudly. **A subagent proves which lane it is by prefixing
+> `PLX_TV_LOCK_LANE=<its worktree path>` on every device command it runs**, not by exporting the
+> variable once — the harness reports the SESSION's own checkout as that command's `cwd`
+> regardless of which worktree the agent is actually in, so `tools/tv-lock.sh` (which already
+> reads `PLX_TV_LOCK_LANE`) and the `PreToolUse` guard's `lane_from_command()` (which resolves the
+> prefix, then the hook's own environment, then `cwd`, in that order) have to agree on the same
+> per-command spelling for several subagents to multiplex the one set through the lock, one
+> `tools/tv-lock.sh with --ttl N --wait S -- <one test>` lease per test run.
+>
+> The skill carries the rest: the shared stash stack that hands one lane
 > another lane's work, what a second build tree costs on disk, cutting a worktree from the right
 > base, the gitignored files a lane has to be seeded with, the worker-prompt block, and the
 > collision recovery — stop **one** job, re-run it from scratch, and treat anything measured during
@@ -981,8 +991,8 @@ batch that documented it. Three numbers have now rotted here, so do not add a fo
 count worth having is the one you take yourself, with
 `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
-— several were written when the module was a third its present size (`route.rs` and `ui/home.rs`
-are both well past the numbers they carry). Read those bullets as **what each module covers**,
+— several were written when the module was a third its present size (`route.rs` is well past the
+number it carries, and the `ui/home.rs` bullet outlived the file itself). Read those bullets as **what each module covers**,
 which is stable and is why they are here, and never as a census. **Run it with the same toolchain
 the Makefile does.** A bare
 `cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
@@ -1013,9 +1023,12 @@ you get without waking a television. What it covers today, by module:
     accept COUNT from a counting listener, not a return value).
   - `route.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English over
     the file's default, the flagged default, part-id parsing, mkv-only direct play.
-  - `ui/home.rs` (5) + `ui/card_row.rs` (4) — **focus/geometry/spring math**: focus packing round
-    trips, row stepping staying inside the shelf array, the pointer hit column matching the drawn
-    card at every snap phase, and the shelf heading's clearance behaviour frame by frame.
+  - `screens/home/tests.rs` + `ui/card_row.rs` — **focus/geometry/spring math**: every strip
+    element decoding to exactly one destination, row stepping staying inside the shelf array, the
+    pointer hit column matching the drawn card at every snap phase, and the shelf heading's
+    clearance behaviour frame by frame. (This bullet read `ui/home.rs` (5) until that file was
+    retired; the contracts moved to the owned screen with the screen — the ledger is
+    `docs/measurements/home-legacy-contract-ledger.md`.)
   - `metadata.rs` (2) + `browse.rs` (2) — **async landing/mailbox invariants**: a detail or season
     response only installs while it is still the one being awaited (a failed `/children` must not
     land as an empty season), and `reset` clearing the single-flight flags and retry backoff.
@@ -1035,8 +1048,9 @@ you get without waking a television. What it covers today, by module:
   **(3) The app's async seams are process-wide**, so some tests are serialized rather than parallel:
   `metadata.rs`'s two take `lib.rs`'s crate-wide `testlock::serial()` (the detail and season
   mailboxes contend across modules — a per-module mutex cannot see that, because the season
-  generation also moves under `pump_detail`), and `ui/home.rs`'s five take that module's own `FOCUS`
-  mutex for `static mut fr`/`fc`. Those locks are load-bearing, not incidental — hold one for the
+  generation also moves under `pump_detail`), and every owned-screen test that seeds a store takes
+  the same crate-wide lock — an owned screen keeps no focus of its own, so there is no module mutex
+  left to take, but `pms`'s catalog statics are still shared. Those locks are load-bearing, not incidental — hold one for the
   whole test in anything new that touches a crate global, and reach for `testlock` (not a fresh
   local mutex) whenever the global is shared across modules.
 
@@ -1469,7 +1483,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
   whole DOCUMENT — the chip at the head, each published shelf, the grid's control row, then the
   poster grid — reversing at the document's own ENDS rather than on a clock, which is the one
-  oscillator here that does. `ui::library::osc_step`, since 2026-09-05: at the shared 350 ms
+  oscillator here that does. The owned Library handles `LibraryCmd::Sweep`; the rule dates to
+  2026-09-05: at the shared 350 ms
   cadence a clock reversing every 3 s gives about eight presses a leg, and a twelve-shelf library
   spends more than four of those seconds just reaching the grid — so `fps:library-scroll`, whose
   whole purpose is to sweep the seam between the last shelf and the poster wall, graded a sweep

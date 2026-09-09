@@ -154,6 +154,26 @@ fn an_owned_surface_finishes_opening_independently_of_legacy_page_alpha() {
     assert_eq!(page.last_draw_alpha, 1.0, "legacy page fading cannot cap the surface's own slide/opacity");
 }
 
+#[test]
+fn one_navigation_snapshot_reaches_draw_frames_without_mutating_logical_state() {
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    rig.page_alpha = 0.21;
+    rig.chrome_alpha = 0.37;
+    rig.view_tab = Some(2);
+    rig.blur_amount = 0.63;
+    let before = d.state_hash();
+    let reads = rig.navigation_reads.get();
+    d.draw(&mut rig, true);
+    let modal = d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureModal>().unwrap();
+    assert_eq!(modal.last_navigation.chrome_alpha, 0.37);
+    assert_eq!(modal.last_navigation.view_tab, Some(2));
+    assert_eq!(modal.last_navigation.blur_amount, 0.63);
+    assert_eq!(rig.navigation_reads.get(), reads + 1, "one snapshot, not live reads per screen");
+    assert_eq!(d.state_hash(), before, "presentation is render state, not a logical mutation");
+}
+
 /// Present a Sheet (the account menu's shape): the page beneath is FROZEN and CACHED and
 /// receives no Tick; dismiss it: the phase is Closing on the SAME frame, the host is live again,
 /// and the surface keeps stepping until `prune` clears it — then, and only then, it unmounts.

@@ -1067,8 +1067,10 @@ impl Detail {
     ///
     /// dev: **`/tmp/plxnative-shared` WINS WHEN ARMED** — the precedence every trigger in this app
     /// has (`crate::dev`'s module doc: `plxnative-token` beats the signed-in session), and the
-    /// phrase to grep for, because the same stand-in is read by `ui::home`'s hero run and
-    /// `ui::search::results`' owner annotation and the three must agree. A trigger exists to FORCE
+    /// phrase to grep for, because the same stand-in is read by the owned Home's hero run and
+    /// the two must agree. (The owned `screens::search::render`'s owner annotation reads the real
+    /// registry unconditionally and does not consult this trigger — a gap the cutover left open,
+    /// not a third agreement point.) A trigger exists to FORCE
     /// a state, so an armed one outranks the real answer, and an armed EMPTY file forces the
     /// absence of a handle rather than doing nothing. It stamps one handle onto every item this
     /// session loads, which is what a fully-borrowed library looks like. Read ONCE (see
@@ -3379,8 +3381,12 @@ mod tests {
     #[test]
     fn a_detail_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         let _serial = crate::testlock::serial();
+        // Other serialized tests may leave a request pending; serialization is not a reset.
+        // Reproduce that predecessor deterministically rather than depend on suite ordering.
+        begin_detail_request(crate::plex::ServerId::UNSET, "previous-test-request");
+        clear();
         // idle: nothing requested, nothing loading, nothing to pump
-        assert!(!detail_loading(), "a fresh process is not loading anything");
+        assert!(!detail_loading(), "the isolated fixture is not loading anything");
         assert!(!pump_detail(), "an empty mailbox pumps nothing");
 
         // a request is in flight until its landing is pumped

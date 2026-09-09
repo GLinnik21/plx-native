@@ -4,11 +4,21 @@ use crate::ui::machine::{Cx, Effects, Handled, Host, Machine};
 
 use super::{note, StoreEv, StoreId};
 
+pub(crate) use crate::search::view::SearchSnapshot;
+
+/// Capture the store publication at the dispatcher frame boundary, not during paint.
+pub(crate) fn snapshot() -> SearchSnapshot { crate::search::view::snapshot() }
+
 #[derive(Clone, Debug)]
 pub(crate) enum SearchCmd {
     /// The field's text; a change of the TRIMMED terms supersedes the answer and restarts the
     /// debounce, a change of whitespace only repaints.
     SetQuery(String),
+    /// An owned draft cannot submit into a replacement profile's Search store.
+    SetQueryScoped { profile_generation: u32, query: String },
+    /// A submitted search, not each keystroke; history is scoped to the active profile.
+    RememberRecent { profile_generation: u32, term: String },
+    ClearRecents { profile_generation: u32 },
     /// Sign-out / profile switch: drop the query and every shelf.
     Reset,
     /// The optimistic half of a view-state write, on the result shelves.
@@ -29,6 +39,13 @@ pub(super) fn run(cmd: SearchCmd) -> bool {
             crate::search::set_query(&q);
             true
         }
+        SearchCmd::SetQueryScoped { profile_generation, query } => {
+            if profile_generation != crate::plex::session::current_gen() { return false; }
+            crate::search::set_query(&query);
+            true
+        }
+        SearchCmd::RememberRecent { profile_generation, term } => crate::search::recents::remember(profile_generation, &term),
+        SearchCmd::ClearRecents { profile_generation } => crate::search::recents::clear(profile_generation),
         SearchCmd::Reset => {
             crate::search::reset();
             true

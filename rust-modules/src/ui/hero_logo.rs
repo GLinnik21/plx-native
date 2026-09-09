@@ -174,7 +174,7 @@ mod tests {
     use LogoRung::{Compact, Hero};
 
     // `fit`/`place`/`band_h` are pure f32 arithmetic over their arguments — no GL, no SDL_ttf, no
-    // crate globals — so unlike `ui/home.rs`'s tests these are ordinary parallel ones, needing
+    // crate globals — so unlike the catalog-backed Home tests these are ordinary parallel ones, needing
     // neither `testlock::serial()` nor a module mutex. Everything downstream (`HeroLogo::draw` →
     // `ui::tex::logo_src` + `text::elide`) is deliberately NOT tested here: it reaches GL and the
     // font, and `text_cap_band`'s host fallback would measure the fallback rather than the device

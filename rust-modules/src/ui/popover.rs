@@ -71,8 +71,13 @@ pub(crate) fn any_open() -> bool {
 /// cache and un-glass it. The bridge (`app/bridge.rs`) drives them from the surface phases it
 /// observes after every dispatcher frame: `Opening|Open` → held, `Closing` → held and closing,
 /// gone → released. Exactly [`Popover::open`]/`dismiss`/`release_host`'s arithmetic, exposed
-/// for a caller that keeps its phase elsewhere; `cached` is the surface's host policy
-/// (`Style::Sheet`/`Opaque { snapshot: true }`), a Compact surface holds no snapshot.
+/// for a caller that keeps its phase elsewhere.
+///
+/// `cached` is **`modal::style_caches_host`** — the container's own policy table, asked rather
+/// than restated. This line used to name the styles instead ("`Style::Sheet`/`Opaque { snapshot:
+/// true }`, a Compact surface holds no snapshot"), and the bridge's `matches!` agreed with it and
+/// disagreed with `surface_policy`, whose `(Style::Compact, _) => (U::Live, R::Cached)` had been
+/// there all along. What that cost is in `style_caches_host`'s doc.
 pub(crate) fn surface_held(cached: bool) {
     unsafe {
         *std::ptr::addr_of_mut!(OPEN_COUNT) += 1;
@@ -112,6 +117,15 @@ pub(crate) fn surface_released(cached: bool, was_closing: bool) {
         }
     }
     host::invalidate();
+}
+
+/// [`HOST_USERS`], for a test that has to grade the counter from another module — `app/bridge.rs`,
+/// whose `sync_host` is the only other caller that takes and releases one. Read as a DELTA against
+/// a base taken at the top of the test: the counter is process-wide and `testlock::serial()` bounds
+/// interleaving, not what a previous test in the same process left behind.
+#[cfg(test)]
+pub(crate) fn host_users_for_test() -> u32 {
+    unsafe { *std::ptr::addr_of!(HOST_USERS) }
 }
 
 /// How many OPEN popovers have asked for a cached host — see [`Popover::caching_host`].

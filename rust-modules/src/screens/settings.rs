@@ -67,6 +67,22 @@ const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
 const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
+/// The `Family::Settings` scrim's ink alpha: the surface's own appear (`local_alpha`, the
+/// `RouteSurface`'s `page_alpha` after its container's overwrite) composed with the ROUTE-level
+/// nav dip beneath it (`nav_page_alpha`, `DrawFrame::nav_page_alpha` — spec §14 phase 8), so the
+/// scrim never reads as present-but-undimmed while a Home↔Library route change is still fading
+/// underneath a Settings surface that is itself already fully open.
+fn settings_scrim_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
+    SCRIM_A * local_alpha * nav_page_alpha
+}
+
+/// The `Family::Settings` entrance cascade's alpha: same composition as
+/// [`settings_scrim_alpha`], undivided by `SCRIM_A` — what the ground and the pages themselves
+/// draw through.
+fn settings_entrance_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
+    local_alpha * nav_page_alpha
+}
+
 /// The push spring, with the page it is carrying OUT on a pop.
 struct Push {
     pos: f32,
@@ -129,7 +145,7 @@ impl RouteSurface {
             inner: NavStack::new(Box::new(Immediate)),
             ids: Minter::default(),
             push: Push::new(),
-            ground: RouteGround::new(),
+            ground: if kind == Family::FirstRunConsent { super::family::pre_home_ground() } else { RouteGround::new() },
             ground_ready: false,
             remembered: Vec::new(),
         };
@@ -263,6 +279,13 @@ impl RouteSurface {
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),
+                Fx::Remember { group, elem } => {
+                    // Forwarding re-stamps the emission as this surface. Preserve inner
+                    // ownership before doing so: covered/leaving pages still receive ticks.
+                    if self.top().is_some_and(|top| s.from == MachineId::Instance(top.id)) {
+                        fx.remember(group, elem);
+                    }
+                }
                 Fx::Timer { id, after_ms } => fx.push(Fx::Timer { id, after_ms }),
                 Fx::CancelTimer(id) => fx.push(Fx::CancelTimer(id)),
                 Fx::Mount(_) | Fx::Unmount(_) | Fx::Deliver(..) => {
@@ -519,7 +542,7 @@ impl<H: AppLike> Machine<H> for RouteSurface {
                 Handled::Yes
             }
             ScreenEvent::Input(iev) => {
-                let handled = self.step_top(ScreenEvent::Input(*iev), cx, fx);
+                let handled = self.step_top(ScreenEvent::Input(iev.clone()), cx, fx);
                 if handled == Handled::Yes {
                     return Handled::Yes;
                 }
@@ -704,7 +727,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
             }
         }
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let a = f.page_alpha;
         let root = Painter::root();
         crate::screens::family::set_palette(self.ground.palette());
@@ -712,7 +735,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
             Family::Settings => {
                 // the scrim over the live host while the modal fades in; invisible under the
                 // opaque ground at rest and what fades out over the host on dismissal
-                let dim = theme::scrim_black(SCRIM_A * a * crate::ui::nav::page_alpha());
+                let dim = theme::scrim_black(settings_scrim_alpha(a, f.nav_page_alpha));
                 root.rect(Rect::FULL, 0.0, dim, dim, 0.0);
                 crate::ui::profile::phase("st.ground", || self.ground.draw_host(root.alpha(a)));
             }
@@ -722,9 +745,30 @@ impl<H: AppLike> Screen<H> for RouteSurface {
         }
         self.ground_ready = a >= 0.995;
         let entrance = match self.kind {
-            Family::Settings => root.alpha(a * crate::ui::nav::page_alpha()),
+            Family::Settings => root.alpha(settings_entrance_alpha(a, f.nav_page_alpha)),
             Family::FirstRunConsent => root.alpha(a).translate(Rect::FULL.w * (1.0 - a), 0.0),
         };
+        self.draw_pages(f, entrance);
+    }
+    fn render(&self) -> RenderStrategy {
+        RenderStrategy::Page
+    }
+    fn focus_source(&self) -> FocusSource {
+        FocusSource::Engine
+    }
+    fn hit_source(&self) -> HitSource {
+        HitSource::Engine
+    }
+    fn ground_ready(&self) -> bool {
+        self.ground_ready
+    }
+}
+
+impl RouteSurface {
+    /// Draw the nested pages through the surface's entrance cascade. Kept separate from the
+    /// ground paint so the real page selection and frame propagation can be tested without GL.
+    fn draw_pages<H: AppLike>(&mut self, f: &mut DrawFrame<'_, '_, H>, entrance: Painter) {
+        let navigation = f.navigation();
         let t = self.push.amount();
         let icx = inner_cx(f.cx);
         let mut stops = Vec::new();
@@ -743,16 +787,14 @@ impl<H: AppLike> Screen<H> for RouteSurface {
         // followed the draw, so the only rows a click could reach were the wrong page's.
         if self.at_rest() {
             if let Some(inst) = self.top_mut() {
-                let mut inner = DrawFrame::new(&icx, entrance);
-                inner.page_alpha = a;
+                let mut inner = DrawFrame::with_navigation(&icx, entrance, navigation);
                 inst.screen.draw(&mut inner);
                 stops.extend(inner.into_stops());
             }
         } else {
             if t < 0.999 {
                 if let Some(inst) = if popping { self.top_mut() } else { self.below() } {
-                    let mut inner = DrawFrame::new(&icx, parent_p);
-                    inner.page_alpha = a;
+                    let mut inner = DrawFrame::with_navigation(&icx, parent_p, navigation);
                     inst.screen.draw(&mut inner);
                     stops.extend(inner.into_stops());
                 }
@@ -760,8 +802,7 @@ impl<H: AppLike> Screen<H> for RouteSurface {
             if t > 0.01 {
                 let child = if popping { self.push.leaving.as_mut() } else { self.top_mut() };
                 if let Some(inst) = child {
-                    let mut inner = DrawFrame::new(&icx, child_p);
-                    inner.page_alpha = a;
+                    let mut inner = DrawFrame::with_navigation(&icx, child_p, navigation);
                     inst.screen.draw(&mut inner);
                     // a leaving page takes no input: its stops are not registered
                     if !popping {
@@ -774,18 +815,6 @@ impl<H: AppLike> Screen<H> for RouteSurface {
         for s in stops {
             f.stop(Painter::root(), s);
         }
-    }
-    fn render(&self) -> RenderStrategy {
-        RenderStrategy::Page
-    }
-    fn focus_source(&self) -> FocusSource {
-        FocusSource::Engine
-    }
-    fn hit_source(&self) -> HitSource {
-        HitSource::Engine
-    }
-    fn ground_ready(&self) -> bool {
-        self.ground_ready
     }
 }
 
@@ -830,8 +859,22 @@ impl LogicalState for RootState {
     }
 }
 
+/// Does this television have an account? — asked by [`RootPage::rebuild`], so twice per Settings
+/// open (construction, then `ScreenEvent::Enter`) and once more on every return from a child page.
+///
+/// **Through [`peek`](crate::plex::session::peek), never [`load`](crate::plex::session::load).**
+/// The two differ in exactly one respect and it is the one that matters on a press path: `load`
+/// mints a `client_id` when there is none and re-persists a plaintext session, so a READ turns
+/// into `write_atomic` — a temp file, `sync_all`, a rename and a second `sync_all` on the
+/// directory. That is the boot path's bargain, and `session.rs` says so in as many words ("it is
+/// not one on a path a keypress can reach", "do not add a per-frame reader of this file"). This
+/// call site was on the wrong side of it: on a television whose key manager is unusable — which
+/// is this one — every open of the Settings modal paid two flash writes with four fsyncs on the
+/// frame that mounts it, worth 150-180 ms of `navcommit` in the sessions where the flash was slow
+/// (`fps:modal-ramp`, device-measured 2026-09-09;
+/// `opening_settings_never_writes_the_session_file` is the account).
 fn signed_in() -> bool {
-    crate::plex::session::load()
+    crate::plex::session::peek()
         .account(crate::plex::session::current().as_ref())
         .signed_in
 }
@@ -975,7 +1018,7 @@ impl Screen<InnerHost> for RootPage {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let mut v = self.view();
         crate::ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
     }
@@ -1018,6 +1061,34 @@ mod tests {
     use crate::ui::screen::By;
     use crate::ui::present::Present;
 
+    /// Spec §14 phase 8: `Family::Settings`'s scrim/entrance composition reads
+    /// `DrawFrame::nav_page_alpha` rather than the `ui::nav` statics — these two pin the
+    /// arithmetic itself (the wiring at the two call sites is a straight field read, checked by
+    /// the compiler and by every existing draw test in this module staying green). A route dip
+    /// in flight (a non-1.0 `nav_page_alpha`) must dim the scrim and the entrance exactly as
+    /// much as the surface's own appear does — before this field existed, both call sites read
+    /// the live global instead of whatever a host test's `DrawFrame` carried, so a test built on
+    /// the OLD shape could not have told a wired composition from an ignored parameter; a
+    /// process-wide static is either at rest (1.0, indistinguishable from the identity) or being
+    /// driven by a second test racing this one (`testlock::serial()`'s whole reason for existing
+    /// — see `docs/../test-suite-global-pollution.md`), never a controlled non-1.0 value a test
+    /// can set.
+    #[test]
+    fn settings_scrim_and_entrance_alpha_compose_local_and_nav_page_alpha() {
+        assert_eq!(settings_scrim_alpha(1.0, 1.0), SCRIM_A);
+        assert_eq!(settings_entrance_alpha(1.0, 1.0), 1.0);
+        // the surface is fully open (local 1.0) but the route beneath it is mid-dip (0.5): both
+        // the scrim and the entrance must read the dip, not just the surface's own appear.
+        assert_eq!(settings_scrim_alpha(1.0, 0.5), SCRIM_A * 0.5);
+        assert_eq!(settings_entrance_alpha(1.0, 0.5), 0.5);
+        // the surface is itself still appearing (local 0.5) over a route at rest (1.0).
+        assert_eq!(settings_scrim_alpha(0.5, 1.0), SCRIM_A * 0.5);
+        assert_eq!(settings_entrance_alpha(0.5, 1.0), 0.5);
+        // both in flight at once multiply, never clamp or pick a max.
+        assert_eq!(settings_scrim_alpha(0.5, 0.4), SCRIM_A * 0.2);
+        assert_eq!(settings_entrance_alpha(0.5, 0.4), 0.2);
+    }
+
     // A `static`, not a `const`: `Cx::measure` needs a genuine `&'static dyn Measure`, and a
     // `static` gives one outright rather than leaning on constant-promotion rules at the borrow
     // site inside `cx` below.
@@ -1029,7 +1100,7 @@ mod tests {
             tick: Tick::default(),
             measure: &MEASURE,
             press: PressRead::default(),
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }
@@ -1049,8 +1120,98 @@ mod tests {
         <RouteSurface as Screen<InnerHost>>::name(s)
     }
 
-    /// **Every test here needs a scratch session, because `RootPage::rebuild` asks whether this
-    /// television is signed in and the row set DEPENDS ON THE ANSWER** — signed in, a `Libraries`
+    struct DrawProbe {
+        id: u32,
+        seen: std::rc::Rc<std::cell::RefCell<Vec<(u32, crate::ui::screen::NavPresentation)>>>,
+    }
+
+    impl Machine<InnerHost> for DrawProbe {
+        type Ev = ScreenEvent<InnerHost>;
+        fn step(&mut self, _: &Self::Ev, _: &Cx<'_, InnerHost>, _: &mut Effects<'_, InnerHost>) -> Handled {
+            Handled::No
+        }
+    }
+
+    impl Focusable<InnerHost> for DrawProbe {
+        fn groups(&self, _: &Cx<'_, InnerHost>, _: &mut Vec<GroupSpec>) {}
+        fn group_of(&self, _: &u32, _: &Cx<'_, InnerHost>) -> Option<GroupId> { None }
+        fn neighbour(&self, _: FocusKey<u32>, _: Dir, _: &Cx<'_, InnerHost>) -> Step<u32> { Step::Edge }
+        fn place(&self, _: &u32, _: &Cx<'_, InnerHost>, _: At) -> Option<Placed> { None }
+        fn reconcile(&self, want: FocusKey<u32>, _: &Cx<'_, InnerHost>) -> FocusKey<u32> { want }
+        fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, InnerHost>) -> FocusKey<u32> {
+            panic!("draw-only probe cannot be seated")
+        }
+    }
+
+    impl Screen<InnerHost> for DrawProbe {
+        fn name(&self) -> &'static str { "draw-probe" }
+        fn state(&self) -> &dyn LogicalState { &() }
+        fn crumb(&self, _: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { None }
+        fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, InnerHost>) {}
+        fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+            self.seen.borrow_mut().push((self.id, crate::ui::screen::NavPresentation {
+                page_alpha: f.page_alpha,
+                chrome_alpha: f.chrome_alpha,
+                view_tab: f.view_tab,
+                blur_amount: f.blur_amount,
+            }));
+        }
+        fn render(&self) -> RenderStrategy { RenderStrategy::Page }
+    }
+
+    #[test]
+    fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
+        use crate::ui::containers::stack::Entry;
+        use crate::ui::screen::NavPresentation;
+        use std::{cell::RefCell, rc::Rc};
+
+        let navigation = NavPresentation {
+            page_alpha: 0.21, chrome_alpha: 0.37, view_tab: Some(2), blur_amount: 0.63,
+        };
+        let cases: &[(&str, f32, f32, bool, &[u32])] = &[
+            ("rest after pop", 0.0, 0.0, false, &[2]),
+            ("rest after push", 1.0, 1.0, false, &[2]),
+            ("mid-push", 0.5, 1.0, false, &[1, 2]),
+            ("mid-pop", 0.5, 0.0, true, &[2, 3]),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for &(label, pos, target, popping, order) in cases {
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let instance = |id| Instance {
+                id: InstanceId(id),
+                screen: Box::new(DrawProbe { id, seen: Rc::clone(&seen) }) as Box<dyn Screen<InnerHost>>,
+                inflight: Vec::new(),
+            };
+            // Install inert bodies directly: no real page construction, auth/session reads or
+            // lifecycle side effects. Both resting cases retain a page underneath the top.
+            let mut inner = NavStack::new(Box::new(Immediate));
+            for id in [1, 2] {
+                inner.entries.push(Entry {
+                    id: EntryId(id), arg: SettingsPage::Root, ret: ReturnState::default(),
+                    inst: Some(instance(id)), evicted: false,
+                });
+            }
+            let mut surface = RouteSurface {
+                entry: EntryId(0), id: InstanceId(0), kind: Family::Settings,
+                inner, ids: Minter::default(),
+                push: Push { pos, vel: 0.0, target, leaving: popping.then(|| instance(3)) },
+                ground: RouteGround::new(), ground_ready: false, remembered: Vec::new(),
+            };
+            let outer = cx(None);
+            let c = inner_cx(&outer);
+            let mut f = DrawFrame::with_navigation(&c, Painter::root(), navigation);
+            let before = LogicalState::hash(&surface);
+            surface.draw_pages(&mut f, Painter::root());
+            assert_eq!(LogicalState::hash(&surface), before, "{label}: draw changed logical state");
+            actual.push((label, seen.borrow().clone()));
+            expected.push((label, order.iter().map(|&id| (id, navigation)).collect::<Vec<_>>()));
+        }
+        assert_eq!(actual, expected, "every nested draw path must inherit the outer snapshot");
+    }
+
+    /// **Tests mounting a real root page need a scratch session, because `RootPage::rebuild` asks
+    /// whether this television is signed in and the row set DEPENDS ON THE ANSWER** — signed in, a `Libraries`
     /// section with *Favorite libraries* is prepended, so row 1 stops being *Legal notices* and
     /// becomes *Privacy & data*. Without the redirect that question is answered by whatever
     /// `auth.json` happens to be on the machine running `make check`, so the two tests below that
@@ -1061,6 +1222,47 @@ mod tests {
     /// (the redirected path is a crate global); every test below takes it first.
     fn scratch_session(tag: &str) -> crate::plex::session::TempSession {
         crate::plex::session::TempSession::new(tag)
+    }
+
+    /// **OPENING SETTINGS MUST NOT WRITE THE SESSION FILE.** Device-measured, 2026-09-09:
+    /// `fps:modal-ramp` (open and dismiss the Settings modal every 1500 ms) read a `worstframe`
+    /// of 188-210 ms against a 75 ms ceiling, with `FRAMEDROP` putting 150-181 ms of it in
+    /// `navcommit=` — the dispatcher's POST-COMMIT DRAIN, which is where this surface's mount and
+    /// its root page's `ScreenEvent::Enter` run.
+    ///
+    /// [`RootPage::rebuild`] asks [`signed_in`] whether this television has an account, once at
+    /// construction and again on `Enter`, so TWICE per open. That question used to go through
+    /// [`crate::plex::session::load`] — the read-modify-WRITE door, whose own doc says a read that
+    /// can turn into a save "is not [an acceptable trade] on a path a keypress can reach", and
+    /// "do not add a per-frame reader of this file". On this television the key manager is
+    /// unusable ("session protection: no usable key manager; using the 0600 file fallback"), so
+    /// every `load` takes the plaintext branch and re-persists: `write_atomic`, i.e. a temp file,
+    /// `sync_all`, a rename and a second `sync_all` on the directory. Two flash writes with four
+    /// fsyncs, synchronously, on the frame that opens the modal. Instrumented on the set the same
+    /// day: 23 `load`s in one 18 s run, `saves=1 plaintext=1` on every one, 6-15 ms each in that
+    /// session and ~75 ms each in the sessions that failed — which is also why the symptom is
+    /// BIMODAL, and why it bisected to a range containing no functional change at all.
+    ///
+    /// The assertion is the file's INODE, not its mtime: `write_atomic` renames a fresh temp file
+    /// into place, so a write always moves it, whatever a filesystem's timestamp resolution.
+    /// Watched red against `session::load()` — the inode changed on the mount.
+    #[test]
+    fn opening_settings_never_writes_the_session_file() {
+        use std::os::unix::fs::MetadataExt;
+        let _g = crate::testlock::serial();
+        let sess = scratch_session("surface-no-session-write");
+        let file = sess.path();
+        let before = std::fs::metadata(&file).expect("the scratch session exists");
+        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        step(&mut s, ScreenEvent::Mount, None);
+        let after = std::fs::metadata(&file).expect("the scratch session still exists");
+        assert_eq!(
+            before.ino(),
+            after.ino(),
+            "opening Settings rewrote the session file: a flash write with two fsyncs on the \
+             frame the modal mounts (fps:modal-ramp, 150 ms of navcommit)"
+        );
+        assert_eq!(before.len(), after.len(), "and nothing about its contents moved either");
     }
 
     /// Mounting the surface at its `Root` page runs the inner stack's own lifecycle (§3.4) and
@@ -1327,6 +1529,32 @@ mod tests {
             &mut sink,
         );
         out
+    }
+
+    #[test]
+    fn only_current_inner_instance_can_project_remembered_selection() {
+        let _g = crate::testlock::serial();
+        let _sess = scratch_session("inner-remember-owner");
+        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        step(&mut s, ScreenEvent::Mount, None);
+        let covered = s.inner.top().unwrap().inst.as_ref().unwrap().id;
+        forwarded(&mut s, Fx::Nav(NavOp::Push(SettingsPage::Legal)));
+        let active = s.inner.top().unwrap().inst.as_ref().unwrap().id;
+        assert_ne!(covered, active);
+        for (source, accepted) in [(covered, false), (active, true)] {
+            let mut out = Vec::new();
+            let mut present = Present::new();
+            let mut sink = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+            s.forward(
+                vec![Stamped {
+                    from: MachineId::Instance(source),
+                    fx: Fx::Remember { group: GroupId(0), elem: 0 },
+                }],
+                &cx(None),
+                &mut sink,
+            );
+            assert_eq!(out.iter().any(|s| matches!(s.fx, Fx::Remember { .. })), accepted);
+        }
     }
 
     /// **A Pop that would empty the inner stack is the surface's dismissal, not a surface left up

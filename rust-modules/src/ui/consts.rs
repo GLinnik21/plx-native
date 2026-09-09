@@ -406,7 +406,7 @@ pub fn page_dir(sym: c_uint, wcode: c_uint) -> Option<c_int> {
 ///    click — the exact pair of side effects this function exists to withhold.
 /// 3. [`page_dir`] — the Library pager, a SEPARATE predicate (see its doc).
 /// 4. [`SDLK_BACKSPACE`] / [`SDLK_CLEAR`] — the television keyboard's own edit keys, read inside
-///    the Search screen (`ui::search::key`), which the classifier never sees.
+///    the owned Search screen (`screens::search`'s key match), which the classifier never sees.
 /// 5. An ASCII digit **in `sym`** — the who's-watching PIN keypad types straight from the remote's
 ///    number buttons (`ui::profiles`' own `digit_of`, which owns that behaviour).
 ///
@@ -528,7 +528,6 @@ mod tests {
 
         // ---- the shared chrome, and the screens composed on it ------------------------------
         probe("widgets", &crate::ui::widgets::overscan_rects);
-        probe("library", &crate::ui::library::overscan_rects);
         probe("detail", &crate::ui::detail_layout::overscan_rects);
         probe("player_hud", &crate::ui::player_hud::overscan_rects);
 
@@ -544,7 +543,7 @@ mod tests {
         // first shelf heading is the highest ink the page draws under the bar.
         r.push((
             "home hero text column",
-            Rect::new(MARGIN_X, 380.0, crate::ui::home::HERO_COL_W, 400.0),
+            Rect::new(MARGIN_X, 380.0, crate::ui::landing_hero::COL_W, 400.0),
         ));
         r.push((
             "home first shelf heading (grid view)",
@@ -555,7 +554,7 @@ mod tests {
             Rect::new(MARGIN_X, GRID_TOP_Y + CARD_DY, CARD_W, CARD_H),
         ));
         // …and the focused card's block at the BOTTOM of its reveal: card + the 96px label band,
-        // which is what `home::update`'s and `library`'s reveal rules keep clear of the edge.
+        // which is what the owned Home's and `library`'s reveal rules keep clear of the edge.
         r.push((
             "home focused card block, revealed",
             Rect::new(
@@ -567,10 +566,10 @@ mod tests {
         ));
 
         // Search: the bare query line, and the scope line below it.
-        r.push(("search field", crate::ui::search::FIELD));
+        r.push(("search field", crate::screens::search::layout::FIELD));
         r.push((
             "search first shelf heading",
-            Rect::new(MARGIN_X, crate::ui::search::CONTENT_TOP, 400.0, 40.0),
+            Rect::new(MARGIN_X, crate::screens::search::layout::CONTENT_TOP, 400.0, 40.0),
         ));
 
         // Person: the portrait at the margin, and the air the reveal keeps under a shelf.
@@ -583,7 +582,7 @@ mod tests {
         // Onboarding + login: both centre or hang off the same margin.
         r.push((
             "onboard copy column",
-            Rect::new(MARGIN_X, 150.0, crate::ui::home::HERO_COL_W, 500.0),
+            Rect::new(MARGIN_X, 150.0, crate::ui::landing_hero::COL_W, 500.0),
         ));
 
         for (name, rect) in r {

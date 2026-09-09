@@ -5119,7 +5119,7 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     results = []
     for s in scenes:
         try:
-            ok, detail = run_fps_scene(s, cfg, token)
+            ok, detail = run_fps_scene(s, cfg, token, extra_triggers=tuple(cfg.get("extra_triggers") or ()))
         except Exception as e:  # keep the batch going
             ok, detail = False, f"ERROR: {e}"
             print(f"    [FAIL] ERROR: {e}")
@@ -5350,6 +5350,11 @@ def main():
                          "play-only decision + Load-payload cases). Default: every case. "
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
+    ap.add_argument("--extra-trigger", action="append", default=[], metavar="NAME[=CONTENT]",
+                    help="arm one more plxnative-* trigger for every fps scene of this run (e.g. "
+                         "plxnative-cpuprof, plxnative-framedrop=20). A profiler trigger disqualifies "
+                         "the run's fps= as a pacing number, exactly as --graphics-profile does; use "
+                         "it to attribute a frame, never to grade one.")
     ap.add_argument("--save-logs", metavar="DIR", default=None,
                     help="write each case's full event log to DIR/<case>.log. The app truncates "
                          "its log every launch and each case overwrites the previous one, so a "
@@ -5444,6 +5449,7 @@ def main():
         "pms": manifest.get("pms", {}),
         "no_early": args.no_early,
         "save_logs": args.save_logs,
+        "extra_triggers": [tuple(t.split("=", 1)) if "=" in t else (t, None) for t in args.extra_trigger],
     }
     cases = manifest["cases"]
     if args.suite:

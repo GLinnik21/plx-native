@@ -1106,6 +1106,10 @@ check: lint
 	@# The restructure's structure gates (spec §15.2): greps with counted allowlists under
 	@# ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
 	ci/check-deps.sh
+	@# The statics gate (spec §0 done-criterion 1): static mut under ui/ and screens/ is zero except
+	@# the named render caches in ci/allow/statics.txt and the legacy modules still awaiting their
+	@# phase in ci/allow/statics-migration.txt — a counted list that only shrinks.
+	ci/check-statics.sh
 	@# The crash tracer's PURE half (src/crashfmt.h), compiled and RUN with the host compiler.
 	@# The tracer runs in signal context on ARM and can only be graded on a television — but the
 	@# part of it that has ever been wrong is the parsing, and a `bin:` line naming the wrong
@@ -1130,6 +1134,7 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	python3 tests/test_mock_pms_library.py
 	@# Host-only halves of the opt-in live diagnostics: /proc/interrupt parsing, rate normalization,
 	@# stack aggregation and folded output. Neither command resolves a TV or takes its lock.
 	tools/profile-graphics --selftest
@@ -1138,6 +1143,7 @@ check: lint
 	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
 	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
 	tools/tv-session.sh selftest
+	python3 ci/test_tv_session.py
 	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
 	@# target until 2026-08-26, which meant the guard that decides whether a private value may
 	@# leave this machine was covered by a test nobody ran on a normal check -- the same shape as

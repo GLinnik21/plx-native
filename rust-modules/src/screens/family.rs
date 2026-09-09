@@ -9,12 +9,27 @@
 //! them, and each names the destination through this vocabulary rather than through the module
 //! that implements it.
 
-use crate::ui::machine::{Canon, Chrome, Cx, FocusRead, Host, LogicalState, ScreenId};
+use crate::ui::machine::{Canon, Chrome, Cx, Host, LogicalState, ScreenId};
 use crate::ui::screen::ScreenArg;
 use crate::ui::table::TableView;
 use crate::ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg};
+
+/// Only first-run pages use this seed: no Home instance is behind them yet, so its first hero
+/// is the future Home's initial selection. Settings over a live Home samples the rendered host.
+/// Capture once at mount, including persistence, rather than doing file I/O from a UI draw.
+pub(crate) fn pre_home_ground() -> crate::ui::route_screen::RouteGround {
+    let snapshot = crate::pms::hubs_snapshot();
+    let seed = snapshot.view().hero(0).filter(|hero| hero.item.has_blur).map(|hero| hero.item.blur);
+    let seed = if let Some(blur) = seed {
+        crate::plex::session::record_last_hero(blur);
+        Some(blur)
+    } else {
+        crate::plex::session::last_hero()
+    };
+    crate::ui::route_screen::RouteGround::for_home(seed)
+}
 
 /// A page of the surface's own stack (§6.2: root → Privacy | Legal | Favourites → Document).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -139,7 +154,7 @@ pub(crate) fn inner_cx<'o, 'a: 'o, H: Host<Elem = u32>>(cx: &Cx<'a, H>) -> Cx<'o
         tick: cx.tick,
         measure: cx.measure,
         press: cx.press,
-        focus: FocusRead { current: cx.focus.current },
+        focus: cx.focus.clone(),
         owner: cx.owner,
     }
 }

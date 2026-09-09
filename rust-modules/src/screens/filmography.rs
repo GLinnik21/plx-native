@@ -571,7 +571,7 @@ impl FilmographyScreen {
         }
     }
 
-    fn draw_content<H: ContentLike>(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw_content<H: ContentLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f
             .painter
             .translate((1.0 - f.page_alpha) * SCR_W, 0.0)
@@ -951,7 +951,7 @@ impl<H: ContentLike> Screen<H> for FilmographyScreen {
 
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         self.draw_content(f);
     }
 
@@ -1075,7 +1075,7 @@ mod tests {
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(focus.map_or(EntryId(0), |k| k.entry)),
         }
     }
@@ -1243,13 +1243,13 @@ mod tests {
             if ms == 656 { input.release(ms); }
             for event in input.tick(ms, 0.016) {
                 match event {
-                    PressEvent::Hold(id, _) => {
+                    PressEvent::Hold(id, _, _) => {
                         holds += 1;
                         let (handled, out, _) = step_screen(&mut s, &ScreenEvent::PressHold(id), Some(key));
                         assert_eq!(handled, Handled::No);
                         assert!(!has_content(&out, |_| true));
                     }
-                    PressEvent::Commit(_, _) => commits += 1,
+                    PressEvent::Commit(_, _, _) => commits += 1,
                 }
             }
         }

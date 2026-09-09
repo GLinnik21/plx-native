@@ -120,6 +120,7 @@ mod playback;
 mod nav;
 mod input;
 mod bridge;
+mod chrome;
 mod content;
 mod run;
 use self::boot::*;
@@ -193,7 +194,6 @@ use crate::log;
 /// The BACK trail's vocabulary — `Trail` is a run-loop local, `Node` its pages, `Spot` the place a
 /// detail page is restored to. See `ui/trail.rs`.
 use crate::metadata::Spot;
-use crate::ui::popover::Opener;
 use crate::ui::trail::{Node, Trail};
 /// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
 /// destination `match`es on this, so a pill the app has not been taught about is a compile error
@@ -502,27 +502,34 @@ mod route_tests {
         assert!(leave_of(Route::Person).is_none());
     }
 
-    /// Search is the other half, and the reason the rule is trail membership rather than direction:
-    /// it has no `Node`, the commit frame resets the trail on arrival, so nothing is ever behind it
-    /// and every way off it — three of the four are FORWARD navigations (a section pill, the Home
-    /// pill, opening a result) — is leaving it for good.
+    /// Search JOINED the rule above in phase 7 (the Search cutover) rather than staying its own
+    /// exception, though it does not join the LOOP: it still answers `stays_on_trail == false` —
+    /// unlike the four above, nothing STACKS on Search, and `Node::Search` (the commit frame does
+    /// push one) is not a page BACK can put back the way a Detail/Person stack is.
     ///
-    /// The regression this replaces: `leave_of`'s Search arm was consulted only by `nav_back`,
-    /// which this screen never reaches, so the television's keyboard was dismissed by polling the
-    /// route on every frame of the app's life instead.
+    /// What changed is `leave_of`. It used to carry a bespoke teardown (the retired legacy
+    /// screen's own `leave()` function, dismissing the television's keyboard) that had to ride
+    /// EVERY way off the screen, forward or back, because the legacy screen had no `Unmount` lifecycle
+    /// of its own to run it from. The owned `SearchScreen` does: `ScreenEvent::Unmount` already
+    /// drops its own keyboard, delivered by the same generic tree-retirement path Detail/Person's
+    /// teardown moved onto above — proven with a REAL route change through `bridge::frame`, not a
+    /// hand-fired `ScreenEvent`
+    /// (`app/search_owned_tests.rs::leaving_owned_search_through_a_real_route_change_releases_its_keyboard`).
+    /// So `leave_of(Route::Search)` is `None` too, and there is no bespoke Search teardown left
+    /// for either direction to carry.
     #[test]
-    fn every_way_off_search_carries_its_teardown() {
+    fn search_has_no_node_the_trail_can_put_back_and_no_bespoke_teardown_either() {
         assert!(
             !stays_on_trail(Route::Search),
             "nothing stacks ON Search — its results stack on Home"
         );
         assert!(
-            forward_leave(Route::Search).is_some(),
-            "a pill press or an opened result takes the keyboard with it"
+            forward_leave(Route::Search).is_none(),
+            "an owned screen's Unmount lifecycle needs no help from a forward navigation"
         );
         assert!(
-            leave_of(Route::Search).is_some(),
-            "…and a BACK runs `leave_of` outright"
+            leave_of(Route::Search).is_none(),
+            "…and neither does a BACK: `leave_of` has nothing bespoke left to run"
         );
     }
 

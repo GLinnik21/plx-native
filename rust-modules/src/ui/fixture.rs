@@ -239,7 +239,7 @@ impl Part<FixtureHost> for FixtureRow {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {
         self.prepared += 1;
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>, rect: Rect) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>, rect: Rect) {
         self.drawn += 1;
         let p = f.painter;
         for i in 0..self.len as u32 {
@@ -276,7 +276,7 @@ impl FixtureState {
 
 /// The bundle's state fingerprint: every `LogicalState` shape it carries, in a fixed order.
 pub fn fixture_state_fp() -> u64 {
-    super::rec::state_fp(&[FixtureState::SHAPE, "FixtureInit{seed:u32}"])
+    super::rec::state_fp(&[FixtureState::SHAPE, "FixtureInit{seed:u32}", super::input::STATE_SHAPE])
 }
 
 impl LogicalState for FixtureState {
@@ -325,6 +325,14 @@ impl Machine<FixtureHost> for FixtureScreen {
         fx: &mut Effects<'_, FixtureHost>,
     ) -> Handled {
         self.state.events.push(ev.name());
+        // Page 801 observes the context of each delivered input, without consuming directions.
+        if self.arg == FixtureArg::Page(801) && matches!(ev, ScreenEvent::Input(_)) {
+            self.state.events.push(match cx.owner {
+                super::machine::InputOwner::System(_) => "system_owner",
+                super::machine::InputOwner::Entry(_) => "entry_owner",
+            });
+            if cx.focus.current.is_some() { self.state.events.push("has_focus"); }
+        }
         // Page 800 makes stale interactive delivery observable at BOTH exits: the logical
         // handler and an adapter/store write. The dispatcher must reject it before step.
         if self.arg == FixtureArg::Page(800) && matches!(ev,
@@ -435,7 +443,7 @@ impl Screen<FixtureHost> for FixtureScreen {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, FixtureHost>) {
         composed_prepare(self, b, cx);
     }
-    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         composed_draw(self, f);
     }
     fn render(&self) -> RenderStrategy {
@@ -460,6 +468,7 @@ pub struct FixtureModal {
     /// A foreground spring of the surface's own (the appear pop), reported as motion on Tick.
     pub pop: f32,
     pub last_draw_alpha: f32,
+    pub last_navigation: super::screen::NavPresentation,
 }
 
 impl FixtureModal {
@@ -473,6 +482,7 @@ impl FixtureModal {
             entry,
             pop: 0.0,
             last_draw_alpha: 0.0,
+            last_navigation: Default::default(),
         }
     }
 
@@ -634,8 +644,12 @@ impl Screen<FixtureHost> for FixtureModal {
         Some(Cow::Borrowed("Settings"))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.last_draw_alpha = f.page_alpha;
+        self.last_navigation = super::screen::NavPresentation {
+            page_alpha: f.page_alpha, chrome_alpha: f.chrome_alpha,
+            view_tab: f.view_tab, blur_amount: f.blur_amount,
+        };
         let p = f.painter;
         let r = Rect::new(600.0, 200.0, 720.0, 600.0);
         f.stop(p, Stop {
@@ -733,6 +747,10 @@ impl Mounter<FixtureHost> for FixtureMounter {
 
 pub struct FixtureRig {
     pub page_alpha: f32,
+    pub chrome_alpha: f32,
+    pub view_tab: Option<u32>,
+    pub blur_amount: f32,
+    pub navigation_reads: std::cell::Cell<usize>,
     mounter: FixtureMounter,
     pub store: FixtureStore,
     measure: FixtureMeasure,
@@ -750,6 +768,10 @@ impl FixtureRig {
     pub fn new() -> Self {
         Self {
             page_alpha: 1.0,
+            chrome_alpha: 1.0,
+            view_tab: None,
+            blur_amount: 0.0,
+            navigation_reads: std::cell::Cell::new(0),
             mounter: FixtureMounter { mounted: 0 },
             store: FixtureStore::default(),
             measure: FixtureMeasure,
@@ -767,6 +789,13 @@ impl FixtureRig {
 
 impl Rig<FixtureHost> for FixtureRig {
     fn page_alpha(&self) -> f32 { self.page_alpha }
+    fn navigation_presentation(&self) -> super::screen::NavPresentation {
+        self.navigation_reads.set(self.navigation_reads.get() + 1);
+        super::screen::NavPresentation {
+            page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
+            view_tab: self.view_tab, blur_amount: self.blur_amount,
+        }
+    }
     fn split(&mut self) -> Split<'_, FixtureHost> {
         Split {
             mounter: &mut self.mounter,
@@ -1020,9 +1049,21 @@ impl Tap<FixtureHost> for RecTap {
         self.w.tick(f, t);
     }
     fn input(&mut self, f: u64, ev: &InputEvent<u32>) {
-        if let InputKind::Key { key, .. } = ev.kind {
-            self.w.input(f, json!({"kind": "key", "key": key_name(key), "ms": ev.at.ms}));
-        }
+        use super::machine::TextEdit;
+        let input = match &ev.kind {
+            InputKind::Key { key, .. } => json!({"kind": "key", "key": key_name(*key), "ms": ev.at.ms}),
+            InputKind::SystemKeyboard(up) => json!({"kind": "keyboard", "up": up, "ms": ev.at.ms}),
+            InputKind::Text(edit) => {
+                let (op, text) = match edit {
+                    TextEdit::Commit(text) => ("commit", text.as_ref()),
+                    TextEdit::Backspace => ("backspace", ""), TextEdit::Clear => ("clear", ""),
+                    TextEdit::Left => ("left", ""), TextEdit::Right => ("right", ""),
+                };
+                json!({"kind": "text", "op": op, "text": text, "ms": ev.at.ms})
+            }
+            _ => return,
+        };
+        self.w.input(f, input);
     }
     fn result(&mut self, f: u64, addr: &Addr, msg: &FixtureMsg) {
         let (to, payload) = match (addr.to, msg) {
@@ -1045,6 +1086,7 @@ impl Tap<FixtureHost> for RecTap {
             Fx::Timer { .. } => "timer",
             Fx::CancelTimer(_) => "cancel_timer",
             Fx::Press(_) => "press",
+            Fx::Remember { .. } => "remember",
             Fx::Log(_) => "log",
             Fx::App(_) => "app",
         };
@@ -1069,6 +1111,20 @@ pub struct FixtureCodec;
 
 impl Codec<FixtureHost> for FixtureCodec {
     fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> {
+        use super::machine::{Source, TextEdit};
+        let at = tick(v["ms"].as_u64()?.try_into().ok()?);
+        let kind = match v["kind"].as_str()? {
+            "keyboard" => Some(InputKind::SystemKeyboard(v["up"].as_bool()?)),
+            "text" => Some(InputKind::Text(match v["op"].as_str()? {
+                "commit" => TextEdit::Commit(v["text"].as_str()?.into()),
+                "backspace" => TextEdit::Backspace, "clear" => TextEdit::Clear,
+                "left" => TextEdit::Left, "right" => TextEdit::Right,
+                _ => return None,
+            })),
+            "key" => None,
+            _ => return None,
+        };
+        if let Some(kind) = kind { return Some(InputEvent { at, source: Source::Script, kind }); }
         let k = match v["key"].as_str()? {
             "up" => Key::Up,
             "down" => Key::Down,
@@ -1078,7 +1134,7 @@ impl Codec<FixtureHost> for FixtureCodec {
             "back" => Key::Back,
             _ => Key::Other,
         };
-        Some(key(k, tick(v["ms"].as_u64()? as u32)))
+        Some(key(k, at))
     }
     fn decode_result(&self, v: &Value) -> Option<(Addr, FixtureMsg)> {
         let to = v["to"].as_str()?;
@@ -1228,7 +1284,8 @@ fn the_present_bit_is_recorded_and_replayed() {
 #[test]
 fn the_fixture_bundles_state_shape_is_pinned() {
     // Re-pin only with a named reason: a shape change invalidates every fixture of this bundle.
-    assert_eq!(fixture_state_fp(), 0x7fa4_0b1a_c484_3abf);
+    // The fixture bundle now versions the input machine and queued whole-input payloads too.
+    assert_eq!(fixture_state_fp(), 0x23c4_4e83_a90a_8644);
 }
 
 pub(crate) fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, super::machine::InstanceId) {

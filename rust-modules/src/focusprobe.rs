@@ -34,7 +34,7 @@
 //! through [`push_rk`], which copies ASCII alphanumerics and nothing else.
 //!
 //! **Diffable.** Fixed field order, one line, no timestamps, no addresses, and no float is ever
-//! printed — the two spring positions that decide a branch (`home::snap_pos`, and the target beside
+//! printed — the two spring positions that decide a branch (Home's grid-dive snap, and the target beside
 //! it) are reduced to the booleans the code itself compares them as. A field's PRESENCE is a
 //! function of [`Screen`] alone, so two lines for the same screen always carry the same keys.
 //!
@@ -311,7 +311,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
             // dispatcher to get one screen's cursor.
             let _ = write!(s, " list={} row={row}", b(list));
         }
-        Screen::Home => push_home(s),
+        Screen::Home => s.push_str(content),
         Screen::Account { over } => {
             // The HOST is named, for [`Screen::ItemMenu`]'s reason one screen over: the profile chip
             // is shared CHROME, so this popover stands on any of the three bar-wearing pages and
@@ -344,90 +344,16 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
             );
             push_sid(s, crate::ui::item_menu::item_sid());
         }
-        Screen::Library => {
-            // the DRAWN index, resolved here rather than stored — the focus cursor is a `Pill`
-            // identity now, and a probe that printed a raw discriminant would report a number that
-            // is not the position anything on screen is at
-            let pill = crate::ui::library::focused_pill()
-                .and_then(crate::ui::widgets::pill_of)
-                .map(|p| p as i64)
-                .unwrap_or(-1);
-            let _ = write!(
-                s,
-                " pill={} card={} menu={}",
-                pill,
-                b(crate::ui::library::focus_is_card()),
-                b(crate::ui::library::menu_open())
-            );
-            push_item(s, crate::ui::library::focused_item());
-        }
+        Screen::Library => s.push_str(content),
         Screen::Detail | Screen::Person => s.push_str(content),
-        Screen::Search => {
-            // The whole state machine, from the snapshot the screen's own regions already draw off
-            // (`search::view`) — so the fingerprint and the picture are built from one read. `zone`
-            // is what the ladder's arms branch on, `editing` gates the field's caret AND freezes the
-            // shelves, and `row`/`col`/`recent` are three cursors the ladder moves independently.
-            // `shift` is a float and deliberately absent: it is derived from the focused row, so it
-            // carries nothing the row does not, and a spring position would make this line jitter.
-            let v = crate::ui::search::view();
-            let _ = write!(
-                s,
-                " zone={:?} editing={} row={} col={} recent={} pill={} card={} below={:?} clear={}",
-                v.zone,
-                b(v.editing),
-                v.row,
-                v.col,
-                v.recent,
-                // the pill under the ring, from the SHARED bar's one answer. Still `pill=<int>` and
-                // still -1 off the strip: `zone=` on this same line already tells the chip apart
-                // from focus being off the bar, and `tests/keytable.json` is a recorded device
-                // golden — renaming a field there costs a TV run to regenerate, for no new fact.
-                match crate::ui::search::top_focus() {
-                    crate::ui::widgets::TopFocus::Pill(i) => i as i64,
-                    _ => -1,
-                },
-                b(crate::ui::search::focus_is_card()),
-                crate::ui::search::below(),
-                crate::ui::search::clear_index()
-            );
-        }
+        // Owned like Library/Detail/Person: the content string is built generically by the
+        // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
+        // `LogicalState::probe` output), not read off a legacy global here.
+        Screen::Search => s.push_str(content),
         Screen::Player { overlay } => push_player(s, overlay, hud, ctrl),
     }
 }
 
-/// Home's hero band and grid, which are one screen with two focus models.
-///
-/// Both cursors are printed whichever view is showing, because both are RETAINED: a DOWN out of the
-/// hero leaves `hf` where it was and a UP back into it leaves `row`/`col` where they were, and the
-/// ladder's next press acts on whichever the snap selects.
-fn push_home(s: &mut String) {
-    // Two booleans, not the floats. `snapt` is the snap spring's TARGET, which a press flips on the
-    // press frame; `snapp` is its live POSITION crossing the same 0.5 the code compares it against.
-    // They disagree for the length of the snap animation, and `app.rs`'s OK arm reads the POSITION
-    // on purpose ("a quick DOWN→OK must still act on the hero shown") while its D-pad arm reads the
-    // target — so a harness needs both to explain a dispatch, and neither may be a raw float,
-    // which would jitter a fingerprint on every frame of the animation.
-    let target_is_grid = crate::ui::home::snap_target() > 0.5;
-    // Bound once and reused below: `home::col()` calls `home::row()` internally and both clamp
-    // against a live hub-length lookup, so asking twice pays for that walk twice.
-    let (row, col) = (crate::ui::home::row(), crate::ui::home::col());
-    let _ = write!(
-        s,
-        " snapt={} snapp={} hf={} row={row} col={col}",
-        b(target_is_grid),
-        b(crate::ui::home::focus_is_card()),
-        crate::ui::home::hero_focus()
-    );
-    // …and the item a press would act on, which is the hero's or the grid cell's by the TARGET.
-    // NB the hero rotates on an 8 s timer of its own, so on the hero view this field can change
-    // with no key involved. That is not noise — what Play would launch really did change.
-    let item = if target_is_grid {
-        crate::ui::home::movie_at(row, col)
-    } else {
-        crate::ui::home::hero_item()
-    };
-    push_item(s, item);
-}
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
 fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
@@ -488,7 +414,7 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
 ///
 /// A rating key is a server-local integer dense from 1, so it names an item only together with the
 /// server — and the slot number is a registry index (0, 1, …), not anything about the machine.
-fn push_item(s: &mut String, m: Option<&crate::pms::PmsMovie>) {
+pub(crate) fn push_item(s: &mut String, m: Option<&crate::pms::PmsMovie>) {
     match m {
         Some(m) => {
             s.push_str(" sid=");

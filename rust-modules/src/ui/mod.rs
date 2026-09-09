@@ -24,6 +24,7 @@ pub mod account_menu; // Home top-left profile popover (change profile / sign ou
 pub mod alt_sources; // "Also available": the same item on a second pinned source, as a picker
 pub mod anim;
 pub mod card_row;
+pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
@@ -41,7 +42,7 @@ pub(crate) mod frame; // RESTRUCTURE spike (spec §8.1): `Budget`, admission con
 pub mod glassload; // dev-only backdrop-glass LOAD DIAL + the blurred-route-transition prototype
 pub(crate) mod hit; // RESTRUCTURE (spec §7.6): the double-buffered hit map and the pointer gates
 pub mod hero_logo; // the ONE clearLogo sizing rule + its fallback-to-title band (both heroes, the compact title)
-pub mod home;
+pub mod landing_hero; // shared landing hero geometry and scrim curve, also read by route/legibility checks
 pub mod icons;
 pub mod idle; // whole-FRAME present gating: a screen with nothing moving on it stops repainting
 pub mod info_panel;
@@ -54,7 +55,8 @@ pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — s
 pub mod label;
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
-pub mod library; // the Library browse screen (poster wall + server-driven sort/filter)
+pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/return/follow policy
+// Library is owned by screens::library; its legacy state/focus model is retired.
 // `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
 // `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
 // ladders. Its one surviving reader was `screens::login::LoginScreen::resync`'s
@@ -76,7 +78,6 @@ pub(crate) mod route_screen;
 pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
-pub mod search; // the Search screen: field + recents + typed result shelves (the last pill in the top strip)
 pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
@@ -86,6 +87,7 @@ pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-re
 pub(crate) mod testapp; // RESTRUCTURE (spec §15.1): a screen under test with no SDL — dispatcher + fixture rig + virtual clock
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
+pub(crate) mod text_buffer;
 pub mod theme;
 pub mod track_menu;
 pub mod tracks_panel; // the detail page's "Track information" file inspector (Alert Views §1B)

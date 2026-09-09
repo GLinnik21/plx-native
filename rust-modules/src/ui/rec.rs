@@ -37,12 +37,17 @@ pub const SCHEMA: u32 = 1;
 pub const SEGMENT_BYTES: usize = 2 * 1024 * 1024;
 /// The hard cap on one recording (spec §5.3, settled on the tmpfs measurement).
 pub const CAP_BYTES: usize = 64 * 1024 * 1024;
+// Enough for the final cap record with full-width frame/byte counters. The manifest and normal
+// segments share the remaining budget; stopping must not itself exceed the hard cap.
+const CAP_NOTE_RESERVE: usize = 128;
+const DATA_CAP_BYTES: usize = CAP_BYTES - CAP_NOTE_RESERVE;
 
 /// What a recording is refused for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecError {
     /// `Writer::open` was asked to start anywhere but frame 0.
     MidSession { at_frame: u64 },
+    InitialTooLarge { limit: usize },
     Io(String),
     /// The loader met another schema: `(theirs, ours)`.
     Schema { theirs: u32, ours: u32 },
@@ -62,9 +67,43 @@ pub struct Header {
     /// The application's initial conditions, as its `LogicalState::probe` text and hash.
     pub init_probe: String,
     pub init_hash: u64,
+    /// Application-defined initial contents. The library transports them without interpreting
+    /// application state; the host's state-shape fingerprint versions this payload.
+    pub init_data: Value,
     pub clock_start_ms: u32,
     /// `true` when blob capture was opted into (`plxnative-rec=blobs`).
     pub blobs: bool,
+}
+
+#[derive(serde::Serialize)]
+struct HeaderWire<'a> {
+    schema: u32,
+    state_fp: u64,
+    build: &'a str,
+    features: &'a [String],
+    triggers: &'a [String],
+    init: InitWire<'a>,
+    clock: ClockWire,
+    blobs: bool,
+}
+#[derive(serde::Serialize)]
+struct InitWire<'a> { probe: &'a str, hash: u64, data: &'a Value }
+#[derive(serde::Serialize)]
+struct ClockWire { start: u32 }
+
+/// Serialize without first cloning the complete initial Value into another JSON tree, and stop
+/// allocating output at the data budget. No manifest/segment is opened until encoding succeeds.
+struct ManifestBuffer { bytes: Vec<u8>, exceeded: bool }
+impl Write for ManifestBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > DATA_CAP_BYTES.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(std::io::Error::other("initial contents exceed recording cap"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 impl Header {
@@ -79,22 +118,22 @@ impl Header {
             triggers: Vec::new(),
             init_probe: probe,
             init_hash: init.hash(),
+            init_data: Value::Null,
             clock_start_ms: 0,
             blobs: false,
         }
     }
 
+    fn wire(&self) -> HeaderWire<'_> {
+        let Self { schema, state_fp, build, features, triggers, init_probe, init_hash, init_data,
+            clock_start_ms, blobs } = self;
+        HeaderWire { schema: *schema, state_fp: *state_fp, build, features, triggers,
+            init: InitWire { probe: init_probe, hash: *init_hash, data: init_data },
+            clock: ClockWire { start: *clock_start_ms }, blobs: *blobs }
+    }
+
     fn to_json(&self) -> Value {
-        json!({
-            "schema": self.schema,
-            "state_fp": self.state_fp,
-            "build": self.build,
-            "features": self.features,
-            "triggers": self.triggers,
-            "init": { "probe": self.init_probe, "hash": self.init_hash },
-            "clock": { "start": self.clock_start_ms },
-            "blobs": self.blobs,
-        })
+        serde_json::to_value(self.wire()).expect("header wire contains only JSON values")
     }
 
     fn from_json(v: &Value) -> Result<Self, RecError> {
@@ -107,6 +146,7 @@ impl Header {
             triggers: strings(&v["triggers"]),
             init_probe: v["init"]["probe"].as_str().unwrap_or("").to_string(),
             init_hash: v["init"]["hash"].as_u64().unwrap_or(0),
+            init_data: v["init"].get("data").cloned().unwrap_or(Value::Null),
             clock_start_ms: v["clock"]["start"].as_u64().unwrap_or(0) as u32,
             blobs: v["blobs"].as_bool().unwrap_or(false),
         })
@@ -232,7 +272,12 @@ impl Writer {
         if at_frame != 0 {
             return Err(RecError::MidSession { at_frame });
         }
-        let text = serde_json::to_string_pretty(&header.to_json()).unwrap_or_default();
+        let mut encoded = ManifestBuffer { bytes: Vec::with_capacity(4096), exceeded: false };
+        if let Err(e) = serde_json::to_writer_pretty(&mut encoded, &header.wire()) {
+            return Err(if encoded.exceeded { RecError::InitialTooLarge { limit: DATA_CAP_BYTES } }
+                else { RecError::Io(e.to_string()) });
+        }
+        let text = String::from_utf8(encoded.bytes).map_err(|e| RecError::Io(e.to_string()))?;
         sink.manifest(&text).map_err(|e| RecError::Io(e.to_string()))?;
         let seg = sink.segment(0).map_err(|e| RecError::Io(e.to_string()))?;
         Ok(Self {
@@ -240,7 +285,7 @@ impl Writer {
             seg: Some(seg),
             seg_index: 0,
             seg_bytes: 0,
-            total_bytes: 0,
+            total_bytes: text.len(),
             buf: Vec::with_capacity(4096),
             stopped: false,
             frames: 0,
@@ -318,18 +363,21 @@ impl Writer {
         if self.stopped || self.buf.is_empty() {
             return Ok(());
         }
-        if self.total_bytes + self.buf.len() > CAP_BYTES {
+        if self.buf.len() > DATA_CAP_BYTES.saturating_sub(self.total_bytes) {
             self.stopped = true;
             let note = format!(
                 "{{\"f\":{},\"t\":\"stopped\",\"why\":\"cap\",\"bytes\":{}}}\n",
                 self.frames - 1,
                 self.total_bytes
             );
+            debug_assert!(note.len() <= CAP_NOTE_RESERVE);
+            self.buf = Vec::new();
             if let Some(seg) = self.seg.as_mut() {
-                let _ = seg.write_all(note.as_bytes());
-                let _ = seg.flush();
+                seg.write_all(note.as_bytes()).map_err(|e| RecError::Io(e.to_string()))?;
+                self.seg_bytes += note.len();
+                self.total_bytes += note.len();
+                seg.flush().map_err(|e| RecError::Io(e.to_string()))?;
             }
-            self.buf.clear();
             return Ok(());
         }
         if self.seg_bytes + self.buf.len() > SEGMENT_BYTES {
@@ -568,6 +616,54 @@ mod tests {
     }
 
     #[test]
+    fn initial_manifest_counts_against_the_recording_cap() {
+        let mut header = Header::new(1, &Init);
+        header.init_data = json!({"state": "x".repeat(4096)});
+        let bytes = serde_json::to_string_pretty(&header.to_json()).unwrap().len();
+        let writer = Writer::open(Box::new(MemSink::default()), &header, 0).unwrap();
+        assert_eq!(writer.total_bytes, bytes, "manifest bytes are part of the recording, not free storage");
+    }
+
+    #[test]
+    fn oversized_initial_contents_are_refused_before_any_sink_write() {
+        struct Untouched;
+        impl Sink for Untouched {
+            fn manifest(&mut self, _: &str) -> std::io::Result<()> { panic!("oversized manifest reached the sink") }
+            fn segment(&mut self, _: u32) -> std::io::Result<Box<dyn Write>> { panic!("oversized recording opened a segment") }
+        }
+        let mut header = Header::new(1, &Init);
+        for (text, count) in [("x", CAP_BYTES), ("\u{1}", CAP_BYTES / 5)] {
+            header.init_data = Value::String(text.repeat(count));
+            // The second source string is small enough, but JSON escaping exceeds the budget.
+            assert_eq!(Writer::open(Box::new(Untouched), &header, 0).err(),
+                Some(RecError::InitialTooLarge { limit: DATA_CAP_BYTES }));
+        }
+    }
+
+    #[test]
+    fn the_cap_note_fits_inside_the_same_budget_as_manifest_and_segments() {
+        let sink = MemSink::default();
+        let segments = sink.segments.clone();
+        let mut writer = Writer::open(Box::new(sink), &Header::new(1, &Init), 0).unwrap();
+        // Simulate already-written segments rather than allocating a 64 MiB fixture. Header
+        // accounting is tested independently above; this tests the actual flush boundary.
+        writer.total_bytes = DATA_CAP_BYTES - 3;
+        let before = writer.total_bytes;
+        writer.input(0, json!({"key": "ok"}));
+        writer.flush_frame().unwrap();
+        assert!(writer.stopped());
+        let bytes = segments.borrow()[0].clone();
+        let note: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(note["t"], "stopped");
+        assert_eq!(note["bytes"], before);
+        assert_eq!(writer.total_bytes, before + bytes.len());
+        assert!(writer.total_bytes <= CAP_BYTES);
+        writer.input(1, json!({"key": "ignored"}));
+        writer.flush_frame().unwrap();
+        assert_eq!(segments.borrow()[0], bytes, "no second marker or data after the cap");
+    }
+
+    #[test]
     fn a_recording_cannot_be_armed_mid_session() {
         let h = Header::new(1, &Init);
         let err = Writer::open(Box::new(MemSink::default()), &h, 12).err();
@@ -595,7 +691,8 @@ mod tests {
     fn the_writer_round_trips_a_frame_and_rotates_segments() {
         let sink = MemSink::default();
         let segs = sink.segments.clone();
-        let h = Header::new(3, &Init);
+        let mut h = Header::new(3, &Init);
+        h.init_data = json!({"fixture": [1, 2, 3]});
         let mut w = Writer::open(Box::new(sink), &h, 0).unwrap();
         w.tick(0, Tick { ms: 0, dt_us: 16 });
         w.present(0, true, Some("Input"));
@@ -613,6 +710,7 @@ mod tests {
         let s = segs.borrow();
         let refs: Vec<&[u8]> = s.iter().map(|v| v.as_slice()).collect();
         let r = Recording::parse(&manifest, &refs, 3).unwrap();
+        assert_eq!(r.header.init_data, h.init_data);
         assert_eq!(r.frames[0].tick, Some(Tick { ms: 0, dt_us: 16 }));
         assert_eq!(r.frames[0].present, Some(true));
         assert_eq!(r.frames[0].present_why.as_deref(), Some("Input"));

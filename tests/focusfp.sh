@@ -199,8 +199,10 @@ echo "=== focusfp: $PMS (seed $SEED), out=$OUT ==="
 want 1 && { ran=$((ran+1)); run_flow 1 boot-home-chip-grid "" "up left down down down" 'hubs: landed' || fails=$((fails+1)); }
 # 2 grid -> Detail -> BACK
 want 2 && { ran=$((ran+1)); run_flow 2 grid-detail-back "grid" "down ok sleep:2 back" 'hubs: landed' || fails=$((fails+1)); }
-# 3 Home -> Library -> section -> scroll -> Detail -> BACK
-want 3 && { ran=$((ran+1)); run_flow 3 home-library-detail-back "" "up right ok sleep:2 down down down ok sleep:2 back back" 'hubs: landed' || fails=$((fails+1)); }
+# 3 Home -> Library -> real grid card -> Detail -> BACK to the same Library card. The shot tokens
+# retain the Library grid before Detail and after the return; they do not alter navigation. The
+# second pre-detail shot is intentional: the first can catch the simulator's route transition.
+want 3 && { ran=$((ran+1)); run_flow 3 home-library-detail-back "" "up right right ok sleep:3 down down down sleep:1 shot sleep:2 shot sleep:1 ok sleep:3 back sleep:3 shot" 'hubs: landed' || fails=$((fails+1)); }
 # 4 Search with a seeded query -> shelf -> Detail -> BACK   (typing is the television's keyboard;
 #   the seed is the only way a headless run reaches a result shelf — docs/search.md)
 want 4 && { ran=$((ran+1)); run_flow 4 search-shelf-detail-back "search=s0" "sleep:2 down down ok sleep:2 back" 'route=search' || fails=$((fails+1)); }

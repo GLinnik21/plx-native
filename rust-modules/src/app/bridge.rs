@@ -15,8 +15,9 @@
 //!   as they always did and the dispatcher receives no input.
 //! - **Draw.** The loop draws the tree at the positional point its own frame reserves for the
 //!   Settings family (after the page and the compact popovers, under the dev glass), on ITS
-//!   present gate: [`Dispatcher::draw`]. An owned PAGE (first-run Favourites) is drawn in the
-//!   page closure instead. The dispatcher's own gate wanting a present becomes `idle::invalidate`.
+//!   present gate: [`Dispatcher::draw`]. Owned pages are drawn in the page closure instead.
+//!   Navigation presentation is captured into `DrawFrame` once per pass; surfaces keep their own
+//!   appear alpha. The dispatcher's own gate wanting a present becomes `idle::invalidate`.
 //! - **The host under a surface.** The dispatcher's host fold is the loop's freeze/skip decision
 //!   (`host_frozen`/`host_replaced`), and the surface's phases drive `popover`'s host-user
 //!   counters ([`sync_host`]) so the FrameCache snapshot and the tab glass behave exactly as they
@@ -29,11 +30,13 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 
 use crate::screens::family::SettingsPage;
-use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, LoopReq, PageMemory};
+use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, LibraryReq, LoopReq, PageMemory};
 use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
-use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
+use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
+#[cfg(test)]
+use crate::ui::dispatch::NoTap;
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Chrome, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host,
@@ -70,6 +73,7 @@ pub(super) struct AppHost;
 /// `decision-alert`, `settings-*`) never press.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum AppArg {
+    LibraryMenu(crate::screens::registry::LibraryMenuArg),
     Legacy(Route),
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
@@ -79,11 +83,12 @@ pub(super) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8)}";
+pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
         match self {
+            Self::LibraryMenu(arg) => { c.u32(4); arg.write(c); }
             Self::Legacy(route) => {
                 c.u32(0);
                 match route {
@@ -117,6 +122,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
     }
     fn id(&self) -> ScreenId {
         ScreenId(match self {
+            AppArg::LibraryMenu(_) => 15,
             AppArg::Legacy(Route::Login) => 1,
             AppArg::Legacy(Route::Profiles) => 2,
             AppArg::Legacy(Route::Onboard) => 3,
@@ -201,7 +207,13 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct AppViews;
+pub(super) struct AppViews<'a> {
+    pub(super) hubs: crate::pms::HubsView<'a>,
+    pub(super) listing: crate::stores::browse::ListingView<'a>,
+    pub(super) directory: crate::stores::browse::DirectoryView<'a>,
+    pub(super) section_hubs: crate::stores::browse::HubsView<'a>,
+    pub(super) search: crate::search::view::SearchView<'a>,
+}
 
 #[derive(Default)]
 pub(super) struct BridgeInit;
@@ -218,18 +230,26 @@ impl Host for AppHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = AppViews;
+    type Views<'a> = AppViews<'a>;
     type Init = BridgeInit;
-    // **Stubbed at `()` for now — restructure spec §6.1 tier 2, `ui/machine.rs`'s `Host::Memory`
-    // doc.** No screen mounted on `AppHost` overrides `Screen::memory` yet, so nothing is lost by
-    // the stub. The first screen that needs to remember something (Detail's `Spot` — see
-    // `stores/metadata.rs`'s module doc for the worked case and the exact contract) fixes this to
-    // an app-wide enum declared in `screens/registry.rs` beside `AppFx`/`AppMsg` (a `screens/`
-    // module, per the layer rule — it cannot live here) and widens `AppLike`'s bound to
-    // `Memory = `that enum, which is a `screens/registry.rs` edit a worker may only apply locally,
-    // verify, and revert, reporting it as a `shared_file_delta` for the integrator (see this
-    // repo's swarm-gate task notes for phase 7).
+    // Entry-owned content memory preserves Detail's Spot and the stable element registries
+    // of Detail, Person and Filmography across eviction. The opaque payload belongs to the
+    // screen bundle; current focus and group cursors remain the input engine's state.
     type Memory = PageMemory;
+}
+
+impl HomeLike for AppHost {
+    fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
+}
+
+impl crate::screens::registry::SearchLike for AppHost {
+    fn search<'a>(cx: &Cx<'a, Self>) -> crate::search::view::SearchView<'a> { cx.views.search }
+}
+
+impl crate::screens::registry::LibraryLike for AppHost {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -312,7 +332,7 @@ impl Screen<AppHost> for LegacyPage {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, AppHost>) {}
-    fn draw(&mut self, _f: &mut DrawFrame<'_, AppHost>) {}
+    fn draw(&mut self, _f: &mut DrawFrame<'_, '_, AppHost>) {}
     fn render(&self) -> RenderStrategy {
         match self.route {
             Route::Player { .. } => RenderStrategy::VideoPlane,
@@ -334,6 +354,7 @@ impl Screen<AppHost> for LegacyPage {
 #[derive(Default)]
 struct AppMounter {
     seed: Option<super::Node>,
+    library_kind: Option<crate::browse::SecKind>,
 }
 
 impl Mounter<AppHost> for AppMounter {
@@ -350,6 +371,7 @@ impl Mounter<AppHost> for AppMounter {
             _ => EntryId(0),
         };
         match arg {
+            AppArg::LibraryMenu(arg) => Box::new(crate::screens::library::menu::LibraryMenu::new(entry, arg.clone())),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
                 if let PageMemory::Detail(spot) = &ret.memory {
@@ -381,6 +403,23 @@ impl Mounter<AppHost> for AppMounter {
             // about `screens::onboard` in 5b).
             AppArg::Legacy(Route::Login) => Box::new(crate::screens::login::LoginScreen::new(entry)),
             AppArg::Legacy(Route::Profiles) => Box::new(crate::screens::profiles::ProfilesScreen::new(entry)),
+            AppArg::Legacy(Route::Home) => {
+                let mut page = crate::screens::home::HomeScreen::new(entry, id);
+                if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Library) => {
+                let kind = self.library_kind.or_else(|| cx.views.directory.current().map(|i| cx.views.directory.sections()[i].kind))
+                    .unwrap_or(crate::browse::SecKind::Movie);
+                let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
+                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Search) => {
+                let mut page = crate::screens::search::SearchScreen::new(entry, id);
+                if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
             AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
             AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
@@ -433,10 +472,27 @@ pub(super) struct Bridge {
     /// on its own assertion. `Split::measure` is `&dyn Measure` already, so erasing it here costs
     /// the app nothing and buys [`Bridge::for_test`].
     measure: &'static dyn Measure,
+    hubs: crate::pms::HubsSnapshot,
+    listing: crate::stores::browse::ListingSnapshot,
+    directory: crate::stores::browse::DirectorySnapshot,
+    section_hubs: crate::stores::browse::HubsSnapshot,
+    search: crate::stores::search::SearchSnapshot,
+    chrome: super::chrome::ChromeSnapshot,
+    chrome_selection: u32,
+    legacy_host_live: bool,
+    home_commands: std::collections::VecDeque<HomeCmd>,
+    library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
     consent: ConsentMachine,
     /// Requests the owned screens made of the loop this frame (§14), drained by [`frame`]'s caller.
     reqs: Vec<LoopReq>,
     content_reqs: Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)>,
+    home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
+    library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
+    search_reqs: Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
+    #[cfg(test)]
+    keyboard_calls: Vec<bool>,
+    #[cfg(test)]
+    keyboard_adoptions: usize,
     effect_return: ReturnState<u32, PageMemory>,
     pub(super) menu_opener: Option<(EntryId, Option<FocusKey<u32>>)>,
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
@@ -464,12 +520,31 @@ impl Bridge {
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64) -> Self {
+        let mut directory = crate::stores::browse::DirectorySnapshot::default();
+        directory.capture();
         Self {
             mounter: AppMounter::default(),
             measure,
+            hubs: crate::pms::hubs_snapshot(),
+            listing: crate::stores::browse::listing_snapshot(),
+            directory,
+            section_hubs: crate::stores::browse::hubs_snapshot(),
+            search: crate::stores::search::snapshot(),
+            chrome: super::chrome::ChromeSnapshot::default(),
+            chrome_selection: 0,
+            legacy_host_live: true,
+            home_commands: std::collections::VecDeque::new(),
+            library_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine,
             reqs: Vec::new(),
             content_reqs: Vec::new(),
+            home_reqs: Vec::new(),
+            library_reqs: Vec::new(),
+            search_reqs: Vec::new(),
+            #[cfg(test)]
+            keyboard_calls: Vec::new(),
+            #[cfg(test)]
+            keyboard_adoptions: 0,
             effect_return: ReturnState::default(),
             menu_opener: None,
             held: Vec::new(),
@@ -485,8 +560,241 @@ impl Bridge {
         std::mem::take(&mut self.content_reqs)
     }
 
+    pub(super) fn take_home_reqs(&mut self) -> Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)> {
+        std::mem::take(&mut self.home_reqs)
+    }
+
+    pub(super) fn take_library_reqs(&mut self) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
+        std::mem::take(&mut self.library_reqs)
+    }
+
+    pub(super) fn take_search_reqs(&mut self) -> Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
+        std::mem::take(&mut self.search_reqs)
+    }
+
+    pub(super) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+        -> Option<(crate::search::Item, crate::ui::popover::Opener)> {
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view() }, self.measure);
+        let item = page.selected_item(focus, &cx)?.clone();
+        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
+        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+    }
+
+    pub(super) fn search_tab_available(&self, tab: HomeTab) -> bool {
+        match tab {
+            HomeTab::Movies => self.directory.view().preferred(crate::browse::SecKind::Movie).is_some(),
+            HomeTab::Shows => self.directory.view().preferred(crate::browse::SecKind::Show).is_some(),
+            _ => true,
+        }
+    }
+
+    pub(super) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+        -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
+        let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view() }, self.measure);
+        let item = page.focused_item(focus, &cx)?.clone();
+        let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
+        Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
+    }
+
+    pub(super) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
+        if let crate::screens::registry::LibraryCmd::SwitchStep(_) = command {
+            if let Some(InputOwner::Entry(owner)) = d.nav.input_owner() {
+                if let Some(entry) = d.nav.entry(owner).filter(|entry| matches!(entry.arg, AppArg::LibraryMenu(_))) {
+                    if let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) {
+                        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+                            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+                        return;
+                    }
+                }
+            }
+        }
+        let Some(entry) = d.nav.top_page() else { return };
+        if entry.arg.route() != Some(Route::Library) { return; }
+        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+            Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+    }
+
+    pub(super) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
+        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
+            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return false };
+        matches!(page.probe_viewport(d.input.engine.current(InputOwner::Entry(entry.id))).0, "grid" | "shelf")
+    }
+
+    pub(super) fn enter_library(&mut self, kind: crate::browse::SecKind) {
+        self.mounter.library_kind = Some(kind);
+        self.library_commands.clear();
+        self.library_commands.push_back(crate::screens::registry::LibraryCmd::Enter(kind));
+    }
+
+    fn deliver_library_commands(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
+        if route != Route::Library || d.nav.top_page().is_none_or(|page| page.arg.route() != Some(Route::Library) || page.inst.is_none()) { return; }
+        while let Some(command) = self.library_commands.pop_front() { Self::library_command(d, command); }
+    }
+
+    pub(super) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
+        focus: Option<FocusKey<u32>>) -> crate::ui::popover::Opener {
+        let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
+            let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
+            let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+                focus: crate::ui::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
+            let cx = parts.cx::<AppHost>(AppViews {
+                hubs: self.hubs.view(),
+                listing: self.listing.view(),
+                directory: self.directory.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(),
+            }, self.measure);
+            screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
+                .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
+        });
+        crate::ui::popover::Opener { rect, ..crate::ui::popover::Opener::NONE }
+    }
+
     pub(super) fn seed_node(&mut self, node: &super::Node) {
         self.mounter.seed = Some(node.clone());
+    }
+
+    fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {
+        let entry = d.nav.top_page()?.id;
+        d.input.engine.current(InputOwner::Entry(entry))
+    }
+
+    fn with_home<R>(&self, d: &Dispatcher<AppHost>, f: impl for<'a> FnOnce(&crate::screens::home::HomeScreen,
+        &'a Cx<'a, AppHost>, Option<FocusKey<u32>>) -> R) -> Option<R> {
+        let entry = d.nav.top_page()?;
+        let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?;
+        let focus = Self::home_focus(d);
+        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+        let cx = parts.cx::<AppHost>(AppViews {
+            hubs: self.hubs.view(),
+            listing: self.listing.view(),
+            directory: self.directory.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
+        }, self.measure);
+        Some(f(home, &cx, focus))
+    }
+
+    pub(super) fn home_grid_focused(&self, d: &Dispatcher<AppHost>) -> bool {
+        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
+    }
+
+    pub(super) fn home_snap_target(&self, d: &Dispatcher<AppHost>) -> f32 {
+        self.with_home(d, |home, _, _| home.snap_target()).unwrap_or(0.0)
+    }
+
+    fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
+        self.legacy_host_live = super::host_page_updates(route, false);
+        let search = super::page_of(route) == Route::Search;
+        if matches!(super::page_of(route), Route::Home | Route::Library) || search {
+            d.nav.tabs.strip_fallback = Some(if search { crate::ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
+            self.chrome.refresh(self.measure);
+            self.chrome_selection = if super::page_of(route) == Route::Library {
+                self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
+            } else if search { self.chrome.search_selection() } else { 0 };
+            let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
+            self.chrome.members(selected, Self::home_focus(d), &mut d.nav.tabs.strip);
+        } else {
+            d.nav.tabs.strip.clear();
+            d.nav.tabs.strip_fallback = None;
+        }
+    }
+
+    /// Return Search's publication change so the frame can coalesce it with queued notices.
+    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> bool {
+        let search = crate::stores::search::snapshot();
+        let search_changed = !self.search.same_publication(&search);
+        if search_changed {
+            self.search = search;
+        }
+        let directory_before = self.directory.clone();
+        let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
+        self.directory.capture();
+        // Directory capture resolves profile pins and may repoint the active section. Both
+        // content snapshots must name the resulting section, not opposite sides of that repoint.
+        self.section_hubs = crate::stores::browse::hubs_snapshot();
+        let listing = crate::stores::browse::listing_snapshot();
+        let listing_changed = !self.listing.view().same_items(listing.view())
+            || self.listing.view().fetch() != listing.view().fetch();
+        self.listing = listing;
+        if listing_changed || !self.directory.same_publication(&directory_before)
+            || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision()) {
+            // Bring Library's key projection up to the captured frame before any input uses it.
+            d.store_changed(StoreId::Browse.ord(), crate::stores::gen(StoreId::Browse));
+        }
+        let before = (self.hubs.view().generation, self.hubs.view().state);
+        self.hubs = crate::pms::hubs_snapshot();
+        let after = (self.hubs.view().generation, self.hubs.view().state);
+        if before != after {
+            // This is queued before input deliveries. Key projections catch up to the newly
+            // captured publication before any action or draw can read it, including status-only
+            // landings which the legacy pump's catalog-generation notice cannot see.
+            d.store_changed(StoreId::Hubs.ord(), after.0);
+        }
+        search_changed
+    }
+
+    pub(super) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
+        let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
+        let focus = Self::home_focus(d);
+        crate::ui::widgets::tab_row_update_with(self.chrome.labels(), selected, self.chrome.focus(focus), dt);
+        self.chrome.members(selected, focus, &mut d.nav.tabs.strip);
+    }
+
+    pub(super) fn prepare_home_chrome(&self) {
+        crate::ui::widgets::tab_glass_prepare_with(self.chrome.labels());
+    }
+
+    pub(super) fn home_command(&mut self, command: HomeCmd) -> bool {
+        if self.home_commands.contains(&command) { return true; }
+        if self.home_commands.len() >= 8 { return false; }
+        self.home_commands.push_back(command);
+        true
+    }
+
+    fn deliver_home_commands(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
+        if !matches!(route, Route::Home) { return; }
+        let Some(entry) = d.nav.top_page() else { return };
+        if !matches!(entry.arg.route(), Some(Route::Home))
+            || d.nav.input_owner() != Some(InputOwner::Entry(entry.id)) { return; }
+        let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
+        let snapshot = crate::pms::hubs_snapshot();
+        let ready = snapshot.view().hub_count() > 0;
+        // Retain data-dependent boot intentions until the first catalog arrives. A command
+        // is addressed only after the Home body exists; no UI state is mutated by this queue.
+        while let Some(command) = self.home_commands.front().copied() {
+            if !ready && matches!(command, HomeCmd::FocusGrid { .. } | HomeCmd::SelectHero(_) | HomeCmd::Flip(_) | HomeCmd::ItemMenu) {
+                break;
+            }
+            self.home_commands.pop_front();
+            d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance), Delivery::Screen(ScreenEvent::App(AppMsg::Home(command)))));
+        }
+    }
+
+    pub(super) fn request_home_menu(&mut self, d: &Dispatcher<AppHost>) -> bool {
+        let Some(entry) = d.nav.top_page() else { return false };
+        let Some(home) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return false };
+        if <crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
+        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
+        let cx = parts.cx::<AppHost>(AppViews {
+            hubs: self.hubs.view(),
+            listing: self.listing.view(),
+            directory: self.directory.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
+        }, self.measure);
+        if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
+        self.home_command(HomeCmd::ItemMenu)
     }
 
     pub(super) fn open_content_menu(&mut self, d: &Dispatcher<AppHost>, entry: EntryId, ret: &ReturnState<u32, PageMemory>) -> Option<super::MenuHost> {
@@ -494,11 +802,16 @@ impl Bridge {
         let screen = e.inst.as_ref()?.screen.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
             press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-            focus: crate::ui::machine::FocusRead { current: None },
+            focus: crate::ui::machine::FocusRead { current: None , ..Default::default() },
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
-        let cx = parts.cx::<AppHost>(AppViews, self.measure);
+        let cx = parts.cx::<AppHost>(AppViews {
+            hubs: self.hubs.view(),
+            listing: self.listing.view(),
+            directory: self.directory.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
+        }, self.measure);
         let host = if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let opener = crate::ui::popover::Opener {
@@ -534,18 +847,31 @@ impl Bridge {
         let Some((entry, focus)) = self.menu_opener else { return };
         if d.nav.top_page().map(|e| e.id) != Some(entry) { return; }
         let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).and_then(|i| i.screen.as_any()) else { return };
+        // The page pass may be submitting a cached host quad. Opener lifts are live paint
+        // above that quad, like Popover::scrim_lifting's legacy callback scope.
+        let _live = crate::ui::popover::host::live();
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
             press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-            focus: crate::ui::machine::FocusRead { current: None },
+            focus: crate::ui::machine::FocusRead { current: None , ..Default::default() },
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = focus;
-        let cx = parts.cx::<AppHost>(AppViews, self.measure);
-        let mut frame = DrawFrame::new(&cx, crate::ui::Painter::root());
-        frame.page_alpha = crate::ui::nav::page_alpha();
+        let cx = parts.cx::<AppHost>(AppViews {
+            hubs: self.hubs.view(),
+            listing: self.listing.view(),
+            directory: self.directory.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
+        }, self.measure);
+        let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             page.redraw_focused::<AppHost>(&mut frame, focus);
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
+            page.redraw_focused::<AppHost>(&mut frame, focus);
+        } else if let Some(page) = screen.downcast_ref::<crate::screens::home::HomeScreen>() {
+            page.redraw_focused::<AppHost>(&mut frame, focus);
+        } else if let Some(page) = screen.downcast_ref::<crate::screens::library::LibraryScreen>() {
+            page.redraw_focused::<AppHost>(&mut frame, focus);
+        } else if let Some(page) = screen.downcast_ref::<crate::screens::search::SearchScreen>() {
             page.redraw_focused::<AppHost>(&mut frame, focus);
         }
     }
@@ -559,7 +885,10 @@ impl Bridge {
             .iter()
             .filter(|s| s.phase != Phase::Hidden)
             .map(|s| {
-                let cached = matches!(s.style, Style::Sheet | Style::Opaque { snapshot: true } | Style::Alert);
+                // DERIVED from the container's own policy table, never a second `matches!` over
+                // `Style` — see `modal::style_caches_host`, which carries what the hand-written
+                // list here cost `fps:library-switch` when `Style::Compact` was left off it.
+                let cached = crate::ui::containers::modal::style_caches_host(s.style);
                 (s.entry.id, cached, s.phase == Phase::Closing)
             })
             .collect();
@@ -617,33 +946,104 @@ impl Drop for Bridge {
     }
 }
 
+impl Bridge {
+    /// Does [`Rig::draw_chrome`] paint the shared top bar for this argument? Pulled out of that
+    /// method as its own named predicate — rather than inlined as a `matches!` — for two reasons:
+    /// it is DERIVED from [`route_wears_tab_bar`] instead of listing Home/Library/Search a second
+    /// time (that predicate is `nav::route_wears_tab_bar`'s whole reason for existing — the ONE
+    /// test behind the continuous-chrome rule — and a literal `Route::Home | Route::Library` guard
+    /// here once drifted from it silently when Search became a third bar-wearing route:
+    /// `capture_chrome`/`ChromeSnapshot` kept publishing Search's strip and the dispatcher kept
+    /// routing its chrome pass to `draw_chrome`, but the guard returned before ever painting the
+    /// pills or the chip it published); and it gives a host test something to call directly —
+    /// `draw_chrome`'s own body calls into real text measurement with no font loaded on a host
+    /// test, so a test cannot drive it end to end and must instead pin the exact decision it makes.
+    /// `arg.route()` is already `page_of`-resolved (see [`AppArg::route`]), so a popover argument
+    /// answers for the page it sits over, exactly as `route_wears_tab_bar` itself does for
+    /// `Route::Account`/`Route::ItemMenu`.
+    fn draws_chrome_for(arg: &AppArg) -> bool {
+        arg.route().is_some_and(route_wears_tab_bar)
+    }
+}
+
 impl Rig<AppHost> for Bridge {
+    fn page_updates(&self) -> bool { self.legacy_host_live }
+    fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>, nav: crate::ui::screen::NavPresentation) {
+        if !Self::draws_chrome_for(arg) { return; }
+        let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
+        let labels = self.chrome.labels();
+        crate::ui::widgets::draw_tab_row_with(labels, p);
+        crate::ui::widgets::profile_chip_with(p, self.chrome.profile(), crate::ui::widgets::bar_glass_wanted_with(labels));
+    }
     fn page_alpha(&self) -> f32 { crate::ui::nav::page_alpha() }
+    fn navigation_presentation(&self) -> crate::ui::screen::NavPresentation {
+        crate::ui::screen::NavPresentation {
+            page_alpha: crate::ui::nav::page_alpha(),
+            chrome_alpha: crate::ui::nav::chrome_alpha(),
+            view_tab: u32::try_from(crate::ui::nav::view_tab(-1)).ok(),
+            blur_amount: crate::ui::nav::blur_amount(),
+        }
+    }
     fn surface_scope(&mut self) -> Option<crate::ui::popover::host::Live> {
         Some(crate::ui::popover::host::live())
     }
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews,
+            views: AppViews {
+                hubs: self.hubs.view(),
+                listing: self.listing.view(),
+                directory: self.directory.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(),
+            },
             measure: self.measure,
         }
     }
     fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
-        let AppMsg::Store(cmd) = msg else { return Handled::No };
+        let store = match msg {
+            AppMsg::Store(cmd) => cmd.store(),
+            AppMsg::StoreWork(work) => work.store(),
+            AppMsg::HubsResult(_) => StoreId::Hubs,
+            _ => return Handled::No,
+        };
         let MachineId::Store(ord) = to else {
             return Handled::No;
         };
-        if StoreId::from_ord(ord) != Some(cmd.store()) {
+        if StoreId::from_ord(ord) != Some(store) {
             crate::log(&format!(
-                "stores: a {} command was addressed to store ordinal {} — dropped",
-                cmd.store().name(),
+                "stores: a {} event was addressed to store ordinal {} — dropped",
+                store.name(),
                 ord.0
             ));
             return Handled::No;
         }
-        let cx = parts.cx::<AppHost>(AppViews, self.measure);
-        step_store(cmd, &cx, fx)
+        let cx = parts.cx::<AppHost>(AppViews {
+            hubs: self.hubs.view(),
+            listing: self.listing.view(),
+            directory: self.directory.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(),
+        }, self.measure);
+        match msg {
+            AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
+            AppMsg::HubsResult(result) => {
+                crate::stores::hubs::land(result);
+                Handled::Yes
+            }
+            AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
+                crate::stores::hubs::HubsStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+            }
+            AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
+                crate::stores::browse::discover_pump();
+                Handled::Yes
+            }
+            AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
+                crate::stores::browse::BrowseStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+            }
+            AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
+                crate::stores::search::SearchStore.step(&crate::stores::StoreEv::Pump { dt: *dt_us as f32 / 1_000_000.0 }, &cx, fx)
+            }
+            _ => Handled::No,
+        }
     }
     fn timer(&mut self, _owner: MachineId, _id: TimerId, _parts: &CxParts<u32>, _fx: &mut Effects<'_, AppHost>) {}
     fn app_return(&mut self, _from: MachineId, ret: ReturnState<u32, PageMemory>) {
@@ -652,13 +1052,30 @@ impl Rig<AppHost> for Bridge {
     fn app_fx(&mut self, from: MachineId, fx: AppFx, _parts: &CxParts<u32>, out: &mut Effects<'_, AppHost>) {
         match fx {
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
+            AppFx::StoreWork(work) => out.push(Fx::Deliver(
+                MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
             AppFx::Consent(ConsentCmd::Record { errors, usage }) => self.consent.record(errors, usage),
             AppFx::Loop(req) => self.reqs.push(req),
             AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
         }
     }
     fn log(&mut self, line: &str) {
         crate::log(line);
+    }
+    fn system_keyboard(&mut self, up: bool) {
+        #[cfg(test)]
+        self.keyboard_calls.push(up);
+        #[cfg(not(test))]
+        if up { crate::textinput::start(); } else { crate::textinput::stop(); }
+    }
+    fn adopt_system_keyboard(&mut self) {
+        #[cfg(test)]
+        { self.keyboard_adoptions += 1; }
+        #[cfg(not(test))]
+        crate::textinput::adopt();
     }
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
     fn ls2_pump(&mut self) {}
@@ -692,17 +1109,68 @@ fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost
 /// as a `Root` on the first frame or a `Replace` CUT when it moved, the stores' notices, then
 /// the ten steps WITHOUT the draw (the loop draws at its own slot, on its own gate). Returns the
 /// top page's heartbeat word.
+#[cfg(test)]
 pub(super) fn frame(
+    d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: Route, trail: &super::Trail,
+    tick: Tick, inputs: Vec<InputEvent<u32>>,
+) -> (&'static str, FrameReport) {
+    frame_with_tap(d, rig, route, trail, tick, inputs, &mut NoTap)
+}
+
+pub(super) fn frame_with_tap(
     d: &mut Dispatcher<AppHost>,
     rig: &mut Bridge,
     route: Route,
     trail: &super::Trail,
     tick: Tick,
     inputs: Vec<InputEvent<u32>>,
+    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    frame_with_results(d, rig, route, trail, tick, inputs, take_live_results, tap)
+}
+
+pub(super) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
+
+fn take_live_results() -> AppResults {
+    let mut results = crate::stores::hubs::take_results();
+    results.sort_by_key(|result| result.request_id());
+    results.into_iter().map(|result| (
+        crate::ui::machine::Addr {
+            to: MachineId::Store(StoreId::Hubs.ord()),
+            req: crate::ui::machine::RequestId(result.request_id()),
+        },
+        AppMsg::HubsResult(result),
+    )).collect()
+}
+
+/// One dispatcher path for live or supplied adapter results. The supplier runs at ingest, after
+/// frame-view capture, and this function never additionally polls a live mailbox. Supplying
+/// results alone is not offline replay: boot restoration and request suppression are separate.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn frame_with_results(
+    d: &mut Dispatcher<AppHost>,
+    rig: &mut Bridge,
+    route: Route,
+    trail: &super::Trail,
+    tick: Tick,
+    inputs: Vec<InputEvent<u32>>,
+    take: impl FnOnce() -> AppResults,
+    tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
+) -> (&'static str, FrameReport) {
+    let search_changed = rig.capture_views(d);
     sync_page(d, route, trail);
+    rig.capture_chrome(d, route);
+    rig.deliver_home_commands(d, route);
+    rig.deliver_library_commands(d, route);
+    let mut search_notified = false;
     for (id, gen) in crate::stores::take_notices() {
+        search_notified |= id == StoreId::Search;
         d.store_changed(id.ord(), gen);
+    }
+    // A publication can change through a legacy producer without a store notice. Announce
+    // that captured change, but do not double-deliver an ordinary queued Search notice.
+    if search_changed && !search_notified {
+        d.store_changed(StoreId::Search.ord(), crate::stores::gen(StoreId::Search));
     }
     let surface = d.surface_up();
     // a surface's springs and inputs are the PANEL's damage, not the page's (`popover::own_motion`)
@@ -710,7 +1178,8 @@ pub(super) fn frame(
     if surface && !inputs.is_empty() {
         crate::ui::popover::note_own_damage();
     }
-    let report = d.frame_with(rig, tick, inputs, vec![], &mut NoTap, false);
+    let results = take();
+    let report = d.frame_with(rig, tick, inputs, results, tap, false);
     d.prune(&report.unmounted);
     rig.sync_host(d);
     if report.presented {
@@ -766,14 +1235,82 @@ pub(super) fn page_node(d: &Dispatcher<AppHost>) -> Option<super::Node> {
 pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     use std::fmt::Write;
     let Some(page) = d.nav.top_page() else { return String::new() };
+    if matches!(page.arg, AppArg::Legacy(Route::Home)) {
+        let Some(home) = page.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return String::new() };
+        let focus = Bridge::home_focus(d);
+        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
+        let cx = parts.cx::<AppHost>(AppViews {
+            hubs: rig.hubs.view(),
+            listing: rig.listing.view(),
+            directory: rig.directory.view(),
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(),
+        }, rig.measure);
+        let position = home.grid_position::<AppHost>(focus, &cx);
+        let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
+        let hf = match rig.chrome.focus(focus) {
+            crate::ui::widgets::TopFocus::Chip => -1,
+            crate::ui::widgets::TopFocus::Pill(i) => -(i as i64 + 2),
+            crate::ui::widgets::TopFocus::Away => focus.filter(|key| key.elem < 2).map_or(-1, |key| key.elem as i64),
+        };
+        let grid = home.snap_target() >= 0.5;
+        let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
+            (!<crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
+        crate::focusprobe::push_item(&mut out, if grid { home.focused_item::<AppHost>(focus, &cx) } else { home.hero_item::<AppHost>(&cx) });
+        return out;
+    }
+    if matches!(page.arg, AppArg::Legacy(Route::Library)) {
+        let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return String::new() };
+        let focus = d.input.engine.current(InputOwner::Entry(page.id));
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
+        let menu = d.top_surface_name() == Some("library_menu");
+        let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
+            crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
+        }};
+        let item = library.focused_item(focus, &cx);
+        let (region, row, col, x, y) = library.probe_viewport(focus);
+        let mut out = format!(" pill={pill} card={} menu={} region={region} row={row} col={col} viewport_x={x:.3} viewport_y={y:.3} sid=", u8::from(item.is_some() && !menu), u8::from(menu));
+        if let Some(item) = item {
+            let _ = write!(out, "{} rk=", item.sid.raw());
+            crate::focusprobe::push_rk(&mut out, &item.rk);
+        } else { out.push_str("- rk=-"); }
+        return out;
+    }
+    if matches!(page.arg, AppArg::Legacy(Route::Search)) {
+        let Some(search) = page.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::search::SearchScreen>()) else { return String::new() };
+        let focus = d.input.engine.current(InputOwner::Entry(page.id));
+        // The shared bar decides Chip/Strip first — those elems live outside this screen's own
+        // group space (`SearchScreen::probe`'s doc), so asking the screen about them would just
+        // be asking it about a `FocusKey` it has no group for and getting the same default back.
+        let top = rig.chrome.focus(focus);
+        let (zone, row, col, recent, card) = match top {
+            crate::ui::widgets::TopFocus::Chip => ("Chip", -1i64, -1i64, -1i64, false),
+            crate::ui::widgets::TopFocus::Pill(_) => ("Strip", -1i64, -1i64, -1i64, false),
+            crate::ui::widgets::TopFocus::Away => search.probe(focus),
+        };
+        let pill = match top { crate::ui::widgets::TopFocus::Pill(i) => i as i64, _ => -1 };
+        return format!(" zone={zone} editing={} row={row} col={col} recent={recent} pill={pill} card={} below={} clear={}",
+            u8::from(search.is_editing()), u8::from(card), search.probe_below(), search.recents_shown());
+    }
     if !matches!(page.arg, AppArg::Content(_)) { return String::new(); }
     let Some(InputOwner::Entry(owner)) = d.nav.input_owner() else { return String::new() };
     let Some(instance) = d.nav.entry(owner).and_then(|e| e.inst.as_ref()) else { return String::new() };
     let focus = d.focus();
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
         press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
-        focus: crate::ui::machine::FocusRead { current: focus }, owner: InputOwner::Entry(owner) };
-    let cx = parts.cx::<AppHost>(AppViews, rig.measure);
+        focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
+    let cx = parts.cx::<AppHost>(AppViews {
+        hubs: rig.hubs.view(),
+        listing: rig.listing.view(),
+        directory: rig.directory.view(),
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(),
+    }, rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
     let group = focus.and_then(|f| instance.screen.group_of(&f.elem, &cx));
@@ -953,7 +1490,8 @@ pub(super) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
 /// Is the tree's top PAGE an owned screen rather than a `LegacyPage` — i.e. does the DISPATCHER
 /// draw it? The predicate is the screen's own `FocusSource`, not a list of routes, so a page
 /// migrated in a later phase joins this answer by being written, not by being enumerated here.
-/// Today the one page it is true for is first-run Favourites (`Route::Onboard`).
+/// Since phase 8 it is true for every content page (Home, Library, Search) as well as first-run
+/// Favourites, Login and Profiles; the legacy closure paints only Detail, Person and the player.
 ///
 /// **`route` is not redundant, and leaving it out drew a stale page for a frame.** A `LoopReq`
 /// that flips the route (`OnboardDone` → Home) is drained AFTER the dispatcher's frame, so
@@ -966,6 +1504,12 @@ pub(super) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
 pub(super) fn page_owned(d: &Dispatcher<AppHost>, route: Route) -> bool {
     d.nav.top_page().and_then(|e| e.arg.route()) == Some(super::page_of(route))
         && d.top_screen().map_or(false, |s| s.focus_source() == FocusSource::Engine)
+}
+
+pub(super) fn search_owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
+    route == Route::Search && !d.surface_up()
+        && d.top_screen().and_then(|screen| screen.as_any())
+            .is_some_and(|screen| screen.is::<crate::screens::search::SearchScreen>())
 }
 
 pub(super) fn owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
@@ -986,6 +1530,36 @@ pub(super) fn host_frozen(d: &Dispatcher<AppHost>) -> bool {
 /// The host page is REPLACED: the loop skips drawing it.
 pub(super) fn host_replaced(d: &Dispatcher<AppHost>) -> bool {
     d.host_policy().1 == HostRender::Replaced
+}
+
+/// What the loop's PAGE half draws this frame, from the host fold and who owns the top page.
+///
+/// §8.3: a Replaced host "receives nothing" — and that includes its cached quad. Through phase 7
+/// the loop's guard was `!host_replaced || page_owned`, which was right while the only owned
+/// pages (first-run Favourites, Login, Profiles) could not host an opaque surface: `page_owned`
+/// there meant "the dispatcher draws the page, not the closure", and `host_replaced` never held
+/// on those routes. Phase 8 made Home an owned page AND the host of Settings, so both were true
+/// at once and the page closure ran under the opaque ground on every frame — where
+/// `popover::host::page_pass` served the frozen page snapshot as one full-screen `Class::Image`
+/// quad, a second full-screen pass beneath the `RouteGround`'s own ambient wash. The draw-mask
+/// census priced that quad at the whole regression: `settings-root` 40 fps unmasked, 60 with
+/// either class masked (TV session 4, 2026-09-09). A Replaced host is drawn by nobody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PagePlan {
+    /// The closure draws the page and, through `Dispatcher::draw(.., true)`, the surfaces.
+    Owned,
+    /// The closure draws the legacy fallback; the loop draws the surfaces after it.
+    LegacyThenSurfaces,
+    /// The host is replaced: no page pass, no cached quad — the surfaces alone.
+    SurfacesOnly,
+}
+
+pub(super) fn page_plan(host_replaced: bool, page_owned: bool) -> PagePlan {
+    match (host_replaced, page_owned) {
+        (true, _) => PagePlan::SurfacesOnly,
+        (false, true) => PagePlan::Owned,
+        (false, false) => PagePlan::LegacyThenSurfaces,
+    }
 }
 
 /// The heartbeat's ` overlay=<word>` from the topmost surface, if one is up.
@@ -1120,6 +1694,537 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    include!("library_bookmark_tests.rs");
+    include!("library_diagnostic_tests.rs");
+    include!("library_query_tests.rs");
+    include!("library_deferred_tests.rs");
+    include!("library_navigation_tests.rs");
+    include!("library_host_freeze_tests.rs");
+    include!("library_shelf_action_tests.rs");
+    include!("search_publication_tests.rs");
+    include!("search_owned_tests.rs");
+    #[test]
+    fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
+        use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};
+        let _guard = crate::testlock::serial();
+        let mut rig = Bridge::for_test(|| 0);
+        let sid = crate::plex::ServerId::UNSET;
+        let groups = vec![HomeHubIdentity::ContinueWatching,
+            HomeHubIdentity::Identifier { sid, id: "recent".into() },
+            HomeHubIdentity::Key { sid, key: "/library/collections/7/children".into() },
+            HomeHubIdentity::Ephemeral { generation: 9, ordinal: 0 }];
+        let memory = HomeMemory {
+            groups: groups.iter().enumerate().map(|(i, identity)| HomeGroupKey { identity: identity.clone(), group: i as u32 }).collect(),
+            items: vec![
+                HomeItemKey { elem: 10, identity: HomeItemIdentity::Item { hub: groups[0].clone(), sid, rk: "1".into() }, last_row: 0, last_col: 0 },
+                HomeItemKey { elem: 11, identity: HomeItemIdentity::Slot { hub: groups[3].clone(), generation: 9, ordinal: 0 }, last_row: 0, last_col: 0 },
+            ], next_elem: 12, next_group: 4, carousel: Some((sid, "1".into())), strip_chosen: false,
+            ..Default::default()
+        };
+        let ret = ReturnState { memory: PageMemory::Home(memory), ..Default::default() };
+        let source = MachineId::Instance(InstanceId(20));
+        rig.app_return(source, ret.clone());
+        let requests = vec![HomeReq::Play { sid, rk: "1".into(), resume_ns: 1_000_000 },
+            HomeReq::Detail { sid, rk: "1".into() }, HomeReq::ItemMenu { sid, rk: "1".into() }, HomeReq::Account,
+            HomeReq::Tab(HomeTab::Home), HomeReq::Tab(HomeTab::Movies), HomeReq::Tab(HomeTab::Shows), HomeReq::Tab(HomeTab::Search)];
+        let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        let mut fx = Effects::new(&mut out, source, &mut present);
+        for request in &requests { rig.app_fx(source, AppFx::Home(request.clone()), &parts, &mut fx); }
+        let queued = rig.take_home_reqs();
+        assert_eq!(queued.len(), requests.len());
+        for ((from, request, saved), expected) in queued.iter().zip(requests) {
+            assert_eq!(*from, source);
+            assert_eq!(*request, expected);
+            assert_eq!(saved.memory.hash(), ret.memory.hash());
+        }
+        assert!(rig.take_home_reqs().is_empty());
+        let split = rig.split();
+        let cx = parts.cx::<AppHost>(split.views, split.measure);
+        assert_eq!(<AppHost as HomeLike>::hubs(&cx).generation, split.views.hubs.generation);
+        assert_eq!(crate::screens::registry::word::HOME, "home");
+    }
+
+    #[test]
+    fn removed_home_items_recover_near_their_old_slot_after_live_or_evicted_return() {
+        let _guard = crate::testlock::serial();
+        for evict in [false, true] {
+            for (row, col, removed_hub, reordered, expected_row, expected_col, expected_rk) in [
+                (1, 2, false, false, 1, 2, "4"),
+                (1, 3, false, false, 1, 2, "3"),
+                (2, 2, true, false, 1, 2, "3"),
+                (1, 2, false, true, 1, 2, "1"),
+            ] {
+                crate::browse::reset();
+                crate::pms::seed_grid_for_test(3, 4);
+                let mut d = Dispatcher::<AppHost>::new();
+                let mut rig = Bridge::for_test(|| 0);
+                frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+                if reordered { crate::pms::reverse_test_shelves(); }
+                frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+                let entry = d.nav.top_page().unwrap().id;
+                let instance = d.nav.instance_of(entry).unwrap();
+                d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+                    Delivery::Screen(ScreenEvent::App(AppMsg::Home(HomeCmd::FocusGrid { row, col })))));
+                for i in 2..40 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+                let removed_rk = rig.with_home(&d, |home, cx, focus|
+                    home.focused_item::<AppHost>(focus, cx).unwrap().rk.clone()).unwrap();
+                d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+                let count = if evict { crate::ui::containers::stack::CAP + 1 } else { 1 };
+                for i in 0..count {
+                    d.request(MachineId::Nav, NavOp::Push(AppArg::Legacy(Route::Library)));
+                    let report = d.frame_with(&mut rig, tick(40 + i as u32), vec![], vec![], &mut NoTap, false);
+                    d.prune(&report.unmounted);
+                }
+                assert_eq!(d.nav.entry(entry).unwrap().inst.is_none(), evict);
+                if removed_hub { crate::pms::seed_grid_for_test(2, 4); }
+                else { crate::pms::remove_test_item(&removed_rk); }
+                rig.capture_views(&mut d);
+                d.request(MachineId::Nav, NavOp::PopTo(entry));
+                let report = d.frame_with(&mut rig, tick(80), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+                rig.with_home(&d, |home, cx, focus| {
+                    assert_eq!(home.grid_position::<AppHost>(focus, cx), Some((expected_row, expected_col)),
+                        "evict={evict}, old=({row},{col}), removed_hub={removed_hub}");
+                    assert_eq!(home.focused_item::<AppHost>(focus, cx).unwrap().rk, expected_rk);
+                }).unwrap();
+            }
+        }
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn mounted_home_navigation_stays_inside_a_full_or_oversized_catalog() {
+        let _guard = crate::testlock::serial();
+        for offered in [crate::pms::MAX_SHELVES, crate::pms::MAX_SHELVES + 5] {
+            crate::browse::reset();
+            crate::pms::seed_grid_for_test(offered, 3);
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+            frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+            let mut i = 2;
+            for row in 0..crate::pms::MAX_SHELVES {
+                frame(&mut d, &mut rig, Route::Home, tick(i), script_key(Key::Down, tick(i)));
+                i += 1;
+                assert_eq!(rig.with_home(&d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)),
+                    Some(Some((row, 0))), "offered={offered}, row={row}");
+            }
+            let last = d.focus();
+            for _ in 0..3 {
+                frame(&mut d, &mut rig, Route::Home, tick(i), script_key(Key::Down, tick(i)));
+                i += 1;
+                assert_eq!(d.focus(), last, "DOWN cannot escape the capped final shelf");
+            }
+            let instance = d.nav.instance_of(last.unwrap().entry).unwrap();
+            for (row, col) in [(usize::MAX, 0), (0, usize::MAX)] {
+                d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+                    Delivery::Screen(ScreenEvent::App(AppMsg::Home(HomeCmd::FocusGrid { row, col })))));
+                frame(&mut d, &mut rig, Route::Home, tick(i), vec![]);
+                i += 1;
+                assert_eq!(d.focus(), last, "an invalid addressed request must not displace focus");
+            }
+        }
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn hero_edge_keys_page_without_seating_a_pager_or_leaving_the_control() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+        let selected = |rig: &Bridge, d: &Dispatcher<AppHost>| rig.with_home(d,
+            |home, cx, _| home.hero_item::<AppHost>(cx).unwrap().rk.clone()).unwrap();
+        let mut i = 2;
+        for (direction, control) in [(Key::Left, 0), (Key::Right, 1), (Key::Right, 1)] {
+            if control == 1 && d.focus().unwrap().elem == 0 {
+                frame(&mut d, &mut rig, Route::Home, tick(i), script_key(Key::Right, tick(i)));
+                i += 1;
+            }
+            let before = selected(&rig, &d);
+            frame(&mut d, &mut rig, Route::Home, tick(i), script_key(direction, tick(i)));
+            i += 1;
+            assert_eq!(d.focus().unwrap().elem, control);
+            assert_ne!(selected(&rig, &d), before, "the delivered edge must page, not just report an edge");
+            rig.with_home(&d, |home, cx, _| {
+                let mut draw = DrawFrame::new(cx, crate::ui::Painter::root());
+                home.record_stops(&mut draw, cx.views.hubs);
+                let mut keys: Vec<_> = draw.into_stops().into_iter().map(|s| s.key.elem).collect();
+                keys.sort();
+                assert_eq!(keys, vec![0, 1], "pager chevron/dots are not hit stops");
+            }).unwrap();
+            for _ in 0..30 {
+                frame(&mut d, &mut rig, Route::Home, tick(i), vec![]);
+                i += 1;
+            }
+        }
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn a_removed_home_type_tab_recovers_to_home_not_the_profile_chip() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+        let entry = d.nav.top_page().unwrap().id;
+        let movies = crate::screens::home::STRIP_MOVIES_ELEM;
+        d.nav.tabs.strip.push(crate::ui::containers::tabs::StripMember::new(movies,
+            crate::ui::Rect::new(800.0, 50.0, 160.0, 60.0)));
+        d.set_focus_in(Some(FocusKey { entry, elem: movies }), Some(crate::ui::containers::tabs::STRIP));
+        // Republish the current empty-library strip: the previous Movies destination is gone.
+        frame(&mut d, &mut rig, Route::Home, tick(2), vec![]);
+        assert!(!d.nav.tabs.strip.iter().any(|member| member.elem == movies));
+        assert_eq!(d.focus(), Some(FocusKey { entry, elem: crate::screens::home::STRIP_HOME_ELEM }));
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn home_return_restores_the_offscreen_item_and_viewport_after_retention_or_eviction() {
+        let _guard = crate::testlock::serial();
+        for (evict, reorder) in [(true, false), (false, false), (true, true), (false, true)] {
+            crate::browse::reset();
+            crate::pms::seed_grid_for_test(6, 24);
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+            d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+            let home = d.nav.top_page().unwrap().id;
+            let instance = d.nav.instance_of(home).unwrap();
+            d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+                Delivery::Screen(ScreenEvent::App(AppMsg::Home(HomeCmd::FocusGrid { row: 4, col: 18 })))));
+            for i in 1..80 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+            for i in 80..84 { frame(&mut d, &mut rig, Route::Home, tick(i), script_key(Key::Left, tick(i))); }
+            for i in 84..160 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+            let focus = d.focus().unwrap();
+            let before = rig.with_home(&d, |s, cx, f| {
+                assert_eq!(s.grid_position::<AppHost>(f, cx), Some((4, 14)));
+                s.focused_rect::<AppHost>(f, cx, At::Drawn).unwrap()
+            }).unwrap();
+            let count = if evict { crate::ui::containers::stack::CAP + 1 } else { 1 };
+            for i in 0..count {
+                d.request(MachineId::Nav, NavOp::Push(AppArg::Legacy(Route::Library)));
+                let report = d.frame_with(&mut rig, tick(160 + i as u32), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+            }
+            assert_eq!(d.nav.entry(home).unwrap().inst.is_none(), evict);
+            if reorder {
+                crate::pms::reverse_test_hubs();
+                rig.capture_views(&mut d);
+            }
+            d.request(MachineId::Nav, NavOp::PopTo(home));
+            for i in 200..280 {
+                let report = d.frame_with(&mut rig, tick(i), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+                if i == 200 {
+                    rig.with_home(&d, |s, cx, _| {
+                        let mut draw = DrawFrame::new(cx, crate::ui::Painter::root());
+                        s.record_stops(&mut draw, cx.views.hubs);
+                        let stops = draw.into_stops();
+                        let stop = stops.iter().find(|stop| stop.key == focus)
+                            .expect("the restored card must be interactive on the first returned frame");
+                        assert!(stop.rect.x < stop.clip.x + stop.clip.w && stop.rect.x + stop.rect.w > stop.clip.x
+                            && stop.rect.y < stop.clip.y + stop.clip.h && stop.rect.y + stop.rect.h > stop.clip.y,
+                            "the restored stop must actually be onscreen: x={} y={}", stop.rect.x, stop.rect.y);
+                    }).unwrap();
+                }
+            }
+            assert_eq!(d.focus(), Some(focus));
+            let after = rig.with_home(&d, |s, cx, f| {
+                assert_eq!(s.snap_target(), 1.0, "restored grid must not remain behind the hero");
+                s.focused_rect::<AppHost>(f, cx, At::Drawn).unwrap()
+            }).unwrap();
+            assert!((before.x - after.x).abs() < 1.0, "horizontal viewport changed: {} -> {}", before.x, after.x);
+            if !reorder {
+                assert!((before.y - after.y).abs() < 1.0, "vertical viewport changed: {} -> {}", before.y, after.y);
+            }
+        }
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn library_detail_return_restores_engine_card_and_viewport_after_stack_eviction() {
+        let _guard = crate::testlock::serial();
+        struct RegistryCleanup;
+        impl Drop for RegistryCleanup {
+            fn drop(&mut self) { crate::browse::reset(); crate::plex::reset_servers_for_test(); }
+        }
+        let _cleanup = RegistryCleanup;
+        let session = crate::plex::session::TempSession::new("owned-library-return");
+        session.watching("u-owned-library-return");
+        for evict in [false, true] {
+            crate::browse::reset();
+            crate::plex::reset_servers_for_test();
+            let sid = crate::plex::register_for_test("library-return-own", "127.0.0.1", 9, "synthetic", "fixture");
+            let shared = crate::plex::register_for_test("library-return-shared", "127.0.0.1", 10, "synthetic", "fixture");
+            crate::plex::set_current(sid);
+            crate::browse::seed_registered_table_for_test([sid, shared]);
+            let mut directory = crate::stores::browse::DirectorySnapshot::default();
+            directory.capture();
+            crate::browse::set_cur(0);
+            crate::browse::seed_items_for_test(120);
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+            d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+            Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
+            for i in 1..80 { frame(&mut d, &mut rig, Route::Library, tick(i), vec![]); }
+            let entry = d.nav.top_page().unwrap().id;
+            let focus = d.focus().unwrap();
+            let (item, opener) = rig.library_selection(&d, entry, Some(focus)).unwrap_or_else(|| panic!(
+                "fixture must reach grid: focus={focus:?}, listing={:?}, total={}, current={:?}",
+                rig.listing.view().id(), rig.listing.view().total(), rig.directory.view().current()));
+            let before = opener.rect.unwrap();
+            let count = if evict { crate::ui::containers::stack::CAP + 1 } else { 1 };
+            for i in 0..count {
+                d.request(MachineId::Nav, NavOp::Push(AppArg::Content(ContentArg::Detail {
+                    sid: item.sid, rk: if i == 0 { item.rk.clone() } else { format!("return-{i}") },
+                })));
+                let report = d.frame_with(&mut rig, tick(80 + i as u32), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+            }
+            assert_eq!(d.nav.entry(entry).unwrap().inst.is_none(), evict);
+            d.request(MachineId::Nav, NavOp::PopTo(entry));
+            for i in 100..180 {
+                let report = d.frame_with(&mut rig, tick(i), vec![], vec![], &mut NoTap, false);
+                d.prune(&report.unmounted);
+                assert_eq!(d.focus(), Some(focus), "every post-return frame keeps the engine card; evicted={evict}");
+                let (returned, opener) = rig.library_selection(&d, entry, d.focus()).unwrap();
+                assert_eq!((returned.sid, returned.rk.as_str()), (item.sid, item.rk.as_str()));
+                let after = opener.rect.unwrap();
+                assert!((before.x - after.x).abs() < 0.01 && (before.y - after.y).abs() < 0.01,
+                    "return geometry changed: {before:?} -> {after:?}, evicted={evict}, frame={i}");
+            }
+        }
+        crate::browse::reset();
+    }
+
+    #[test]
+    fn library_publishes_the_actual_container_strip() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let mut bridge = Bridge::for_test(|| 0);
+        bridge.capture_chrome(&mut dispatcher, Route::Library);
+        let base = crate::ui::dispatch::STRIP_BASE;
+        assert_eq!(dispatcher.nav.tabs.strip.iter().map(|member| member.elem).collect::<Vec<_>>(),
+            vec![base + 4, base, base + 1, base + 2, base + 3]);
+        assert_eq!(dispatcher.nav.tabs.strip_fallback, Some(base));
+        crate::browse::reset();
+    }
+
+    #[test]
+    fn all_splits_in_one_frame_keep_the_same_library_listing() {
+        use crate::ui::dispatch::Rig;
+        let _guard = crate::testlock::serial();
+        crate::browse::seed_two_source_table_for_test();
+        crate::browse::seed_items_for_test(3);
+        crate::browse::section_hubs::seed_shelves_for_test(crate::browse::cur(), &["shelves"], 3);
+        let mut rig = super::Bridge::for_test(|| 0);
+        let id = rig.split().views.listing.id();
+        {
+            let split = rig.split();
+            assert_eq!(split.views.listing.total(), 3);
+            assert_eq!(split.views.directory.sections().len(), 4);
+            assert_eq!(split.views.section_hubs.shelves()[0].items.len(), 3);
+            crate::browse::reset();
+            assert!(split.views.listing.item(2).is_some());
+            assert_eq!(split.views.section_hubs.shelves()[0].items.len(), 3);
+            assert_eq!(split.views.directory.sections().len(), 4);
+        }
+        assert_eq!(rig.split().views.listing.id(), id);
+        assert_eq!(rig.split().views.listing.total(), 3);
+        assert_eq!(rig.split().views.section_hubs.shelves()[0].items.len(), 3);
+        assert_eq!(rig.split().views.directory.sections().len(), 4);
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        rig.capture_views(&mut dispatcher);
+        assert!(rig.split().views.listing.id().is_none());
+        assert_eq!(rig.split().views.listing.total(), -1);
+        assert!(rig.split().views.section_hubs.id().is_none());
+        assert!(rig.split().views.directory.sections().is_empty());
+    }
+
+    #[test]
+    fn all_splits_in_one_frame_keep_the_same_home_publication() {
+        use crate::ui::dispatch::Rig;
+        let _guard = crate::testlock::serial();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        let mut rig = super::Bridge::for_test(|| 0);
+        {
+            let split = rig.split();
+            assert_eq!(split.views.hubs.hub(0).unwrap().items.len(), 3);
+            crate::pms::reset();
+            assert_eq!(split.views.hubs.hub(0).unwrap().items.len(), 3);
+        }
+        assert_eq!(rig.split().views.hubs.hub_count(), 1,
+            "a post-step draw must not pair new data with the old element projection");
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        rig.capture_views(&mut dispatcher);
+        assert_eq!(rig.split().views.hubs.hub_count(), 0, "the next frame adopts the publication");
+    }
+
+    #[test]
+    fn removing_the_pressed_home_item_cancels_instead_of_activating_its_replacement() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        frame(&mut d, &mut rig, Route::Home, tick(1), script_key(Key::Down, tick(1)));
+        for i in 2..40 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+        let pressed = d.focus().unwrap();
+        let mut down = script_key(Key::Ok, tick(40));
+        down.truncate(1);
+        frame(&mut d, &mut rig, Route::Home, tick(40), down);
+        assert_eq!(d.input.arm.unwrap().key, pressed);
+        crate::pms::remove_test_item("1");
+        frame(&mut d, &mut rig, Route::Home, tick(41), vec![]);
+        assert_ne!(d.focus(), Some(pressed));
+        frame(&mut d, &mut rig, Route::Home, tick(42), vec![release_input(tick(42))]);
+        for i in 43..80 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+        assert!(rig.take_home_reqs().is_empty(), "a removed arm must not become a press on the replacement cursor");
+        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset);
+    }
+
+    #[test]
+    fn a_midframe_reorder_keeps_painted_keys_matched_and_a_click_activates_the_seen_item() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(3, crate::pms::HubState::Ready);
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        frame(&mut d, &mut rig, Route::Home, tick(1), script_key(Key::Down, tick(1)));
+        for i in 2..40 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+        let focus = d.focus().unwrap();
+        let (stops, rect) = rig.with_home(&d, |home, cx, _| {
+            assert_eq!(home.focused_item::<AppHost>(Some(focus), cx).unwrap().rk, "1");
+            let mut draw = DrawFrame::new(cx, crate::ui::Painter::root());
+            home.record_stops::<AppHost>(&mut draw, cx.views.hubs);
+            (draw.into_stops(), home.focused_rect::<AppHost>(Some(focus), cx, At::Drawn).unwrap())
+        }).unwrap();
+        d.input.hit.fill(stops);
+        d.input.hit.swap();
+
+        crate::pms::reverse_test_shelves();
+        assert_eq!(crate::pms::hub_item(0, 0).unwrap().rk, "3");
+        let _ = rig.split(); // the subsequent draw still belongs to this frame's publication
+        assert_eq!(rig.with_home(&d, |home, cx, _| home.focused_item::<AppHost>(Some(focus), cx).unwrap().rk.clone()), Some("1".into()));
+
+        frame(&mut d, &mut rig, Route::Home, tick(40), vec![click_input(rect.cx(), rect.cy(), tick(40))]);
+        frame(&mut d, &mut rig, Route::Home, tick(41), vec![release_input(tick(41))]);
+        for i in 42..60 { frame(&mut d, &mut rig, Route::Home, tick(i), vec![]); }
+        let requests = rig.take_home_reqs();
+        assert!(requests.iter().any(|(_, request, _)| matches!(request, HomeReq::Play { rk, .. } if rk == "1")),
+            "the old presented map named item 1, not the replacement now at its old position");
+        assert!(!requests.iter().any(|(_, request, _)| matches!(request, HomeReq::Play { rk, .. } if rk == "3")));
+        crate::pms::reset();
+    }
+
+    #[test]
+    fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
+        use crate::ui::dispatch::Tap;
+        use crate::ui::machine::Addr;
+        #[derive(Default)]
+        struct Results(Vec<Addr>);
+        impl Tap<AppHost> for Results {
+            fn result(&mut self, _f: u64, addr: &Addr, msg: &AppMsg) {
+                let AppMsg::HubsResult(result) = msg else { panic!("wrong result type") };
+                assert_eq!(addr.req.0, result.request_id());
+                self.0.push(*addr);
+            }
+        }
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        let trail = super::super::Trail::new();
+        let mut tap = Results::default();
+        let req = crate::pms::queue_test_landing(Some(5));
+        super::frame_with_tap(&mut d, &mut rig, Route::Home, &trail, tick(0), vec![], &mut tap);
+        assert_eq!(crate::pms::hub_len(0), 5);
+        assert_eq!(tap.0, vec![Addr {
+            to: MachineId::Store(StoreId::Hubs.ord()), req: crate::ui::machine::RequestId(req),
+        }]);
+        super::frame_with_tap(&mut d, &mut rig, Route::Home, &trail, tick(1), vec![], &mut tap);
+        assert_eq!(tap.0.len(), 1, "the store tick must not re-deliver the result");
+
+        crate::pms::queue_test_landing(Some(9));
+        let result = crate::stores::hubs::take_results().pop().unwrap();
+        let parts = CxParts { tick: tick(2), press: Default::default(), focus: Default::default(),
+            owner: crate::ui::machine::InputOwner::Entry(EntryId(0)) };
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Nav, &mut present);
+        assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
+            &AppMsg::HubsResult(result), &parts, &mut fx), Handled::No);
+        assert_eq!(crate::pms::hub_len(0), 5, "a misaddressed result must not apply");
+        crate::pms::reset();
+    }
+
+    #[test]
+    fn supplied_home_results_use_the_dispatcher_without_consuming_live_arrivals() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
+        crate::pms::queue_test_landing(Some(5));
+        let captured = take_live_results().pop().unwrap();
+        let AppMsg::HubsResult(result) = captured.1 else { unreachable!() };
+        let payload = crate::pms::record::encode(&result);
+        let decoded = crate::pms::record::decode(payload, |_| None).unwrap();
+        crate::pms::queue_test_landing(Some(9));
+
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        let trail = super::super::Trail::new();
+        super::frame_with_results(&mut d, &mut rig, Route::Home, &trail, tick(0), vec![],
+            || vec![(captured.0, AppMsg::HubsResult(decoded))], &mut NoTap);
+        assert_eq!(crate::pms::hub_len(0), 5, "the decoded result reaches the actual store");
+        super::frame_with_results(&mut d, &mut rig, Route::Home, &trail, tick(1), vec![],
+            Vec::new, &mut NoTap);
+        assert_eq!(crate::pms::hub_len(0), 5, "an empty supplied frame cannot fall back to live data");
+        super::frame_with_tap(&mut d, &mut rig, Route::Home, &trail, tick(2), vec![], &mut NoTap);
+        assert_eq!(crate::pms::hub_len(0), 9, "the live arrival was preserved for a live ingest");
+        crate::pms::reset();
+    }
+
+    #[test]
+    fn store_work_is_addressed_and_idle_polling_does_not_invent_a_change() {
+        use crate::stores::StoreWork;
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::pms::seed_for_test(0, crate::pms::HubState::Ready);
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        let before = crate::stores::gen(StoreId::Hubs);
+        d.emit(MachineId::Nav, Fx::App(AppFx::StoreWork(StoreWork::Hubs)));
+        frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+        assert_eq!(crate::stores::gen(StoreId::Hubs), before);
+
+        let parts = CxParts { tick: tick(2), press: Default::default(), focus: Default::default(),
+            owner: crate::ui::machine::InputOwner::Entry(EntryId(0)) };
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Nav, &mut present);
+        for work in [StoreWork::Hubs, StoreWork::BrowseDiscovery] {
+            assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
+                &AppMsg::StoreWork(work), &parts, &mut fx), Handled::No);
+        }
+        crate::pms::reset();
+    }
+
     use super::*;
     use crate::ui::screen::ScreenArg;
 
@@ -1203,18 +2308,23 @@ mod tests {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         let _ = crate::stores::take_notices();
-        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        // Any still-legacy route exercises the generic `LegacyPage` notice counter (it counts
+        // every `StoreChanged`, whichever store); Search left that population with the live
+        // cutover (it is `SearchScreen` now, an owned page with its own `probe` shape), so this
+        // uses `Player` instead — the store commands under test stay `StoreId::Search`'s.
+        let route = Route::Player { overlay: super::super::nav::Overlay::None };
+        frame(&mut d, &mut rig, route, tick(0), vec![]);
         let before = crate::stores::gen(StoreId::Search);
         d.emit(
             MachineId::Nav,
             Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
         );
-        frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+        frame(&mut d, &mut rig, route, tick(1), vec![]);
         assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "the store was stepped in the drain");
-        frame(&mut d, &mut rig, Route::Home, tick(2), vec![]);
+        frame(&mut d, &mut rig, route, tick(2), vec![]);
         assert!(notices(&d).ends_with("notices=1"), "{}", notices(&d));
         crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-        frame(&mut d, &mut rig, Route::Home, tick(3), vec![]);
+        frame(&mut d, &mut rig, route, tick(3), vec![]);
         assert!(notices(&d).ends_with("notices=2"), "{}", notices(&d));
         let g = crate::stores::gen(StoreId::Search);
         d.emit(
@@ -1224,7 +2334,7 @@ mod tests {
                 Delivery::Machine(AppMsg::Store(StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
             ),
         );
-        frame(&mut d, &mut rig, Route::Home, tick(4), vec![]);
+        frame(&mut d, &mut rig, route, tick(4), vec![]);
         assert_eq!(crate::stores::gen(StoreId::Search), g);
     }
 
@@ -1274,11 +2384,13 @@ mod tests {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
-        assert!(!d.owns_input(), "a legacy page keeps the ladders");
+        assert!(d.owns_input(), "Home is an owned page too");
+        let home_owner = d.nav.input_owner();
         open_settings(&mut d);
         frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
         assert!(d.owns_input());
         assert_eq!(overlay_word(&d), Some(" overlay=settings"));
+        assert_ne!(d.nav.input_owner(), home_owner, "Settings takes input from its Home host");
         assert!(host_frozen(&d));
         // DOWN, DOWN to Legal notices (Favourites is absent signed out: Privacy, Legal, About)
         let mut t = 2;
@@ -1337,6 +2449,27 @@ mod tests {
         );
     }
 
+    /// TV session 4 (2026-09-09): `settings-root` fell from 60 to 40 fps the day Home became an
+    /// owned page. The fold said Replaced, but the loop's guard read `!host_replaced ||
+    /// page_owned`, so the page closure still ran under the opaque ground and served the frozen
+    /// full-screen snapshot quad every frame on top of the ground's own wash. A Replaced host
+    /// receives nothing (§8.3), whoever owns the page — this pins the plan the loop draws by.
+    #[test]
+    fn a_replaced_host_draws_surfaces_only_whoever_owns_the_page() {
+        assert_eq!(
+            page_plan(true, true),
+            PagePlan::SurfacesOnly,
+            "the owned Home under an opaque Settings ground: no page pass, no cached quad"
+        );
+        assert_eq!(
+            page_plan(true, false),
+            PagePlan::SurfacesOnly,
+            "a legacy page under one, exactly as before phase 8"
+        );
+        assert_eq!(page_plan(false, true), PagePlan::Owned, "the closure draws an owned page and its surfaces");
+        assert_eq!(page_plan(false, false), PagePlan::LegacyThenSurfaces);
+    }
+
     /// The other half of the coexistence contract: an OWNED PAGE (first-run Favourites) is the
     /// dispatcher's to draw, and [`page_owned`] says so only while the tree AGREES with the
     /// committed route. The second assertion is the stale-frame guard its doc describes — a
@@ -1348,7 +2481,7 @@ mod tests {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
-        assert!(!page_owned(&d, Route::Home), "a legacy page is the loop's to draw");
+        assert!(page_owned(&d, Route::Home), "Home now draws through its owned instance");
         assert_eq!(frame(&mut d, &mut rig, Route::Onboard, tick(1), vec![]).0, "onboard");
         assert!(d.owns_input(), "an owned page takes the ladders' input too, not only a surface");
         assert!(page_owned(&d, Route::Onboard));
@@ -1405,5 +2538,67 @@ mod tests {
             "…but hide() also SNAPS the motion to its target, so it is settled with no frame having run"
         );
         assert_eq!(top.motion.appear, 0.0, "settled at the closed end, not merely heading there");
+    }
+
+    /// **Regression pin for `run::update`'s chrome chain's third (Search) arm** — the one that
+    /// steps `update_home_chrome` while standing on Search because `SearchScreen::tick` only
+    /// steps its OWN rows and never touches the shared strip's capsule/scroll springs that live
+    /// in `ui::widgets` behind `tab_row_update_with`. Without that arm the strip's published rects
+    /// (`d.nav.tabs.strip`, read by pointer hit-testing and focus) freeze at whatever the
+    /// previously-drawn page left them at.
+    ///
+    /// Reproduced here without a font, `App`, SDL or GL: `Bridge::for_test` supplies a
+    /// `Measure`-only chrome, and the shared strip's scroll spring (`ui::widgets::TAB_SCROLL`) is
+    /// a single process-wide static — so it is driven away from rest with a synthetic, wide
+    /// vocabulary (independent of Search's own short "Home"/"Movies"/"TV Shows"/search-icon
+    /// labels, which never grow wide enough on their own to need scrolling) to stand in for
+    /// "wherever the previous page left it", then `capture_chrome(Route::Search)` publishes the
+    /// strip once against that stale scroll — exactly the one-shot capture `run::update`'s NAV
+    /// COMMIT already does every frame regardless of this arm. What only the missing arm can
+    /// fix is calling `update_home_chrome` afterwards: this test asserts the published rect
+    /// travels back to its (correct, un-stale) target once that call is made every frame, as the
+    /// Search arm does.
+    #[test]
+    fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+
+        // A synthetic, artificially wide vocabulary — nothing to do with Search's real labels —
+        // whose reveal target for its last entry sits well past the real strip's viewport, so
+        // jumping straight to it (`tab_row_reveal_with`, a JUMP, not a step) leaves the shared
+        // `TAB_SCROLL` spring far from where Search's own (short) labels want it.
+        let wide: Vec<String> = (0..8).map(|i| format!("Wide Destination Label Number {i}")).collect();
+        crate::ui::widgets::tab_row_reveal_with(
+            crate::ui::widgets::TabLabels { generation: 1, labels: &wide },
+            wide.len() - 1,
+        );
+
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        rig.capture_chrome(&mut d, Route::Search);
+
+        let base = crate::ui::dispatch::STRIP_BASE;
+        let search_member = |d: &Dispatcher<AppHost>| {
+            d.nav.tabs.strip.iter().find(|m| m.elem == base + 3).copied().expect("Search pill published")
+        };
+        let before = search_member(&d);
+        let stale_gap = (before.drawn.x - before.target.x).abs();
+        assert!(stale_gap > 10.0,
+            "the synthetic wide vocabulary must actually leave the scroll away from Search's own target; gap={stale_gap}");
+
+        // The fix under test: the Search arm of `run::update`'s chrome chain calls exactly this,
+        // every frame, while standing on Search.
+        for _ in 0..60 {
+            rig.update_home_chrome(&mut d, 1.0 / 60.0);
+        }
+
+        let after = search_member(&d);
+        let settled_gap = (after.drawn.x - after.target.x).abs();
+        assert!(settled_gap < 1.0,
+            "the strip's published rect must travel to its target once Search steps it each frame \
+             (stale={stale_gap}, settled after 1s={settled_gap}) — losing the Search chrome arm \
+             again silently reproduces the frozen capsule / stale pointer targets this pins");
+        crate::browse::reset();
     }
 }

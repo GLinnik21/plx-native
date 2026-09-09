@@ -112,12 +112,12 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>);
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
     fn covered_surfaces_ready(&self) -> bool { true }
-    /// May the container's strip be reached from this page right now (§6.2)? Home answers
-    /// `false` while snapped to the grid.
+    /// May directional navigation or hover seat the container's strip (§6.2)? Home answers
+    /// `false` while snapped to the grid; visible strip controls still accept direct clicks.
     fn strip_reachable(&self) -> bool {
         true
     }
@@ -253,6 +253,11 @@ pub enum Seat {
     RememberedNear { rows: u8 },
     First,
     Projected,
+    /// Project through `seat` from another group's engine-owned remembered element, even if
+    /// focus most recently came from a toolbar. Its current reconciled placement (including
+    /// index) is supplied as `from`; an unavailable source falls back to the incoming placement.
+    /// This reads the engine's memory without publishing a second cursor in a screen or view.
+    ProjectedFrom(GroupId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -356,7 +361,7 @@ pub trait Focusable<H: Host> {
 /// A component that can be focused AND drawn — what `&dyn Focusable` cannot (§7.1).
 pub trait Part<H: Host>: Focusable<H> {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>, rect: Rect);
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect);
 }
 
 /// A screen assembled from parts. `part_mut` is the only `&mut` access and it is to a RENDER
@@ -550,7 +555,7 @@ pub fn composed_prepare<H: Host, T: Composed<H>>(s: &mut T, b: &mut Budget, cx: 
     }
 }
 
-pub fn composed_draw<H: Host, T: Composed<H>>(s: &mut T, f: &mut DrawFrame<'_, H>) {
+pub fn composed_draw<H: Host, T: Composed<H>>(s: &mut T, f: &mut DrawFrame<'_, '_, H>) {
     let cx: &Cx<'_, H> = f;
     let layout = s.layout(cx);
     for (id, rect) in layout {
@@ -583,28 +588,80 @@ pub enum Activate {
     Direct,
 }
 
-/// What `draw` receives (§6.1): `Deref<Target = Cx>` plus the painter root, the page alpha and
-/// the stop sink. Phase 3a: `stop` folds the painter's cascade (translate, pop, clip) into the
-/// registered rect, and `clip` is the RAII scissor scope. The sink is TYPED and lives here rather
-/// than type-erased on the painter (the spec's `sink: Option<&HitSink>`): a `Part` draws through
-/// this frame, so there is still exactly one writer and the painter stays `Copy` and
-/// lifetime-free. The nav alphas arrive with the containers (3b).
-pub struct DrawFrame<'a, H: Host> {
-    pub cx: &'a Cx<'a, H>,
+/// One draw-pass snapshot of navigation presentation. Screens do not read a live nav singleton.
+/// `view_tab` overrides the mounted page's selected tab only while a destination is queued.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NavPresentation {
+    pub page_alpha: f32,
+    pub chrome_alpha: f32,
+    pub view_tab: Option<u32>,
+    pub blur_amount: f32,
+}
+
+impl Default for NavPresentation {
+    fn default() -> Self {
+        Self { page_alpha: 1.0, chrome_alpha: 1.0, view_tab: None, blur_amount: 0.0 }
+    }
+}
+
+/// What `draw` receives (§6.1): the read context, painter, navigation presentation and typed stop
+/// sink. `stop` folds the painter's cascade into screen space; `clip` is the RAII scissor scope.
+/// Navigation values are captured once by the application/dispatcher, not read live by screens.
+pub struct DrawFrame<'a, 'views, H: Host> {
+    pub cx: &'a Cx<'views, H>,
     pub painter: Painter,
     pub page_alpha: f32,
+    pub chrome_alpha: f32,
+    pub view_tab: Option<u32>,
+    pub blur_amount: f32,
+    /// The ROUTE-level nav dip's page alpha this frame was built with (spec §14 phase 8) — what
+    /// `ui::nav::page_alpha()` answered at the one per-frame read the application made, carried
+    /// alongside `page_alpha` rather than folded only into it. A container (a `RouteSurface`'s
+    /// own appear motion, a `NavStack`'s push/pop transition) is free to overwrite `page_alpha`
+    /// with its own LOCAL alpha for the page/surface it draws — surfaces do, at
+    /// `dispatch.rs`'s `f.page_alpha = s.motion.appear` — and a screen that also needs the outer
+    /// route fade (Settings' scrim wants both: its own appear AND the page fading beneath it;
+    /// Detail's hero-button ambient sample must not run while a route change is still in flight)
+    /// reads this field instead, so it survives that overwrite. Never mutated after
+    /// construction — the one write is `with_navigation`.
+    pub nav_page_alpha: f32,
     pub press: PressRead,
     stops: Vec<Stop<H::Elem>>,
 }
 
-impl<'a, H: Host> DrawFrame<'a, H> {
-    pub fn new(cx: &'a Cx<'a, H>, painter: Painter) -> Self {
+impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
+    pub fn new(cx: &'a Cx<'views, H>, painter: Painter) -> Self {
+        Self::with_navigation(cx, painter, NavPresentation::default())
+    }
+
+    pub fn with_navigation(cx: &'a Cx<'views, H>, painter: Painter, nav: NavPresentation) -> Self {
         Self {
             cx,
             painter,
-            page_alpha: 1.0,
+            page_alpha: nav.page_alpha,
+            chrome_alpha: nav.chrome_alpha,
+            view_tab: nav.view_tab,
+            blur_amount: nav.blur_amount,
+            nav_page_alpha: nav.page_alpha,
             press: cx.press,
             stops: Vec::new(),
+        }
+    }
+
+    /// Carry this frame's presentation into a nested frame, including any container alpha.
+    ///
+    /// Deliberately carries the (possibly container-overwritten) `page_alpha`, not
+    /// `nav_page_alpha` — a nested frame (a page pushed inside a surface's own stack, say) is a
+    /// new LOCAL cascade and should not re-inherit the outer route fade as its own `page_alpha`
+    /// a second time; a screen that needs the route fade at any depth reads `nav_page_alpha`
+    /// directly, which every nested `DrawFrame` still carries unchanged since nothing but
+    /// `with_navigation` ever writes it.
+    pub fn navigation(&self) -> NavPresentation {
+        NavPresentation {
+            page_alpha: self.page_alpha,
+            chrome_alpha: self.chrome_alpha,
+            view_tab: self.view_tab,
+            blur_amount: self.blur_amount,
         }
     }
 
@@ -682,8 +739,8 @@ fn apply_scissor(r: Option<Rect>) {
 #[cfg(test)]
 fn apply_scissor(_r: Option<Rect>) {}
 
-impl<'a, H: Host> Deref for DrawFrame<'a, H> {
-    type Target = Cx<'a, H>;
+impl<'a, 'views, H: Host> Deref for DrawFrame<'a, 'views, H> {
+    type Target = Cx<'views, H>;
     fn deref(&self) -> &Self::Target {
         self.cx
     }
@@ -775,6 +832,46 @@ mod draw_frame_tests {
             assert_eq!((back.x, back.y), (0.0, 100.0));
         }
         assert!(ClipScope::current().is_none());
+    }
+
+    /// Spec §14 phase 8: `nav_page_alpha` is the ROUTE-level nav dip's page alpha this frame was
+    /// built with, and it must survive a container overwriting `page_alpha` with its own local
+    /// motion — exactly what `dispatch.rs`'s surface branch does (`f.page_alpha = s.motion.appear`)
+    /// so a surface's OWN appear animation, not the outer route fade, drives layout/hit-testing
+    /// through `page_alpha`. Before this field existed, a screen that also needed the outer fade
+    /// (Settings' scrim, Detail's ambient-sample gate) had nowhere to read it but the `ui::nav`
+    /// statics directly — this is the value that replaces that live read.
+    #[test]
+    fn nav_page_alpha_survives_a_containers_local_page_alpha_overwrite() {
+        let m = crate::ui::fixture::FixtureMeasure;
+        let store = crate::ui::fixture::FixtureView::default();
+        let cx = cx(&m, &store);
+        let navigation = NavPresentation {
+            page_alpha: 0.42,
+            chrome_alpha: 1.0,
+            view_tab: None,
+            blur_amount: 0.0,
+        };
+        let mut f = DrawFrame::with_navigation(&cx, Painter::root(), navigation);
+        assert_eq!(f.nav_page_alpha, 0.42);
+        assert_eq!(f.page_alpha, 0.42, "at construction the two start equal");
+        // a surface's own appear motion overwrites `page_alpha` in place, as dispatch.rs does.
+        f.page_alpha = 0.9;
+        assert_eq!(f.page_alpha, 0.9);
+        assert_eq!(f.nav_page_alpha, 0.42, "the outer route fade must survive the overwrite");
+    }
+
+    /// `DrawFrame::new` (no explicit navigation) is `NavPresentation::default()`, whose
+    /// `page_alpha` is 1.0 — the same rest value `ui::nav::page_alpha()` answers when no route
+    /// transition is in flight, so a screen built through the plain constructor sees the same
+    /// "at rest" value from `nav_page_alpha` that it used to read live.
+    #[test]
+    fn nav_page_alpha_defaults_to_the_route_fades_rest_value() {
+        let m = crate::ui::fixture::FixtureMeasure;
+        let store = crate::ui::fixture::FixtureView::default();
+        let cx = cx(&m, &store);
+        let f = DrawFrame::new(&cx, Painter::root());
+        assert_eq!(f.nav_page_alpha, 1.0);
     }
 }
 

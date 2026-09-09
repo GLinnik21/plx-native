@@ -14,19 +14,198 @@
 //! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
-use crate::stores::{StoreCmd, StoreId};
-use crate::ui::machine::Host;
+use crate::stores::{StoreCmd, StoreId, StoreWork};
+use crate::ui::machine::{Cx, Host};
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
+    /// Poll only the store work this visible route owns, after its read-only step returns.
+    StoreWork(StoreWork),
     /// The consent MACHINE's command (§2.2): it owns the two decisions and publishes them.
     Consent(ConsentCmd),
     /// A request of the legacy loop (§14) — see [`LoopReq`].
     Loop(LoopReq),
     /// Content-page requests, executed by the navigation bridge during coexistence (phase 7).
     Content(ContentReq),
+    /// Home-page semantic requests. The bridge owns navigation/player/menu execution.
+    Home(HomeReq),
+    /// Library-page semantic requests. The bridge owns navigation/player/item-menu execution.
+    Library(LibraryReq),
+    Search(SearchReq),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SearchReq {
+    Back,
+    Detail { sid: crate::plex::ServerId, rk: String },
+    Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
+    ItemMenu { sid: crate::plex::ServerId, rk: String },
+    Tab(HomeTab),
+    Account,
+}
+
+/// Bounded actions emitted by the owned Home page. Item identity is always server-scoped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HomeReq {
+    Play { sid: crate::plex::ServerId, rk: String, resume_ns: i64 },
+    Detail { sid: crate::plex::ServerId, rk: String },
+    ItemMenu { sid: crate::plex::ServerId, rk: String },
+    /// BACK from the shelves: fold to the hero and seat the engine in its remembered hero group.
+    FoldToHero,
+    Account,
+    Tab(HomeTab),
+}
+
+/// Stable top-strip destinations; availability changes presentation, never identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum HomeTab {
+    Home,
+    Movies,
+    Shows,
+    Search,
+}
+
+/// Addressed bootstrap/diagnostic intentions. They use the same owned step and focus engine as
+/// remote input; application scripts never write a Home cursor or carousel global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HomeCmd {
+    FocusGrid { row: usize, col: usize },
+    Hero,
+    FocusStrip(HomeTab),
+    Flip(i32),
+    SelectHero(i32),
+    ItemMenu,
+}
+
+/// Bounded actions emitted by an owned Library instance. Every media action carries its server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryReq {
+    /// Evaluated after dispatch by the application, where the input owner can report a live arm.
+    PublishShelves { target: crate::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
+    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: crate::stores::browse::SectionAddress },
+    Play { sid: crate::plex::ServerId, rk: String, resume_ns: i64 },
+    Detail { sid: crate::plex::ServerId, rk: String },
+    ItemMenu { sid: crate::plex::ServerId, rk: String, from_deck: bool },
+    Account,
+    Tab(HomeTab),
+    BackToHome { kind: crate::browse::SecKind },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LibraryMenuArg {
+    pub host: crate::ui::machine::InstanceId,
+    pub target: crate::stores::browse::SectionAddress,
+    pub kind: LibraryMenuKind,
+    /// Bit-preserving rest rectangle; valid in canonical arguments without float equality.
+    pub anchor: [u32; 4],
+}
+
+impl crate::ui::machine::LogicalState for LibraryMenuArg {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        c.u32(self.host.0).u32(self.target.epoch).u32(u32::from(self.target.sid.raw()))
+            .u64(self.target.section as u64).u32(match self.kind {
+                LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
+                LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3,
+            });
+        for value in self.anchor { c.u32(value); }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("library_menu_arg"); }
+}
+
+/// Addressed simulator/harness intentions. They are resolved by the mounted instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryCmd {
+    Enter(crate::browse::SecKind),
+    #[cfg(test)]
+    FocusGrid { row: usize, col: usize },
+    Page(i32),
+    Sweep,
+    SwitchStep(u32),
+    ItemMenu,
+}
+
+/// Stable section identity. PMS section keys are server-local, never globally unique.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct LibrarySectionIdentity {
+    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) key: i64,
+}
+
+/// Stable identities for Library controls and repeated media. Removed identities remain in the
+/// instance registry as tombstones so `KeyRegion` never guesses ownership from live membership.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum LibraryIdentity {
+    Library(LibrarySectionIdentity),
+    Shelf {
+        section: LibrarySectionIdentity,
+        hub: String,
+        sid: crate::plex::ServerId,
+        rk: String,
+    },
+    ShelfSlot {
+        section: LibrarySectionIdentity,
+        hub: String,
+        publication: u32,
+        slot: u32,
+    },
+    Grid {
+        section: LibrarySectionIdentity,
+        sid: crate::plex::ServerId,
+        rk: String,
+    },
+    GridSlot {
+        section: LibrarySectionIdentity,
+        query: u32,
+        slot: u32,
+    },
+    Rail { section: LibrarySectionIdentity, label: String },
+    Control { section: LibrarySectionIdentity, kind: String, key: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LibraryKey {
+    pub(crate) identity: LibraryIdentity,
+    pub(crate) elem: u32,
+    /// Last published slot is recovery metadata, never an active cursor.
+    pub(crate) last_group: u32,
+    pub(crate) last_index: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LibraryMemory {
+    pub(crate) epoch: Option<u32>,
+    pub(crate) query: Option<u32>,
+    pub(crate) grid_reset_pending: bool,
+    pub(crate) viewports: Vec<LibraryViewport>,
+    pub(crate) keys: Vec<LibraryKey>,
+    pub(crate) next_elem: u32,
+    pub(crate) section: Option<LibrarySectionIdentity>,
+    pub(crate) scroll: f32,
+    pub(crate) shelf_scroll: Vec<(String, f32)>,
+}
+
+/// Section-owned document geometry, deliberately without any current or remembered item.
+#[derive(Clone, Debug)]
+pub(crate) struct LibraryViewport {
+    pub(crate) epoch: u32,
+    pub(crate) section: LibrarySectionIdentity,
+    pub(crate) scroll: f32,
+    pub(crate) shelves: Vec<(String, f32)>,
+}
+
+impl crate::ui::machine::LogicalState for LibraryViewport {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { epoch, section, scroll, shelves } = self;
+        c.u32(*epoch).u32(u32::from(section.sid.raw())).u64(section.key as u64).f32(*scroll);
+        c.seq(shelves.len());
+        for (id, x) in shelves { c.str(id).f32(*x); }
+    }
+    fn probe(&self, _: &mut String) {}
 }
 
 /// An item's or person's identity travels with the navigation entry, never in a screen global.
@@ -117,6 +296,53 @@ pub(crate) struct FilmographyMemory {
     pub(crate) preview: Option<(String, String)>,
 }
 
+/// Owned provider identity used by Home's stable group and element registries.
+///
+/// A provider which publishes no identity receives an explicitly ephemeral identity scoped to
+/// that publication generation. Neither its title nor its position is claimed as stable.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum HomeHubIdentity {
+    ContinueWatching,
+    Identifier { sid: crate::plex::ServerId, id: String },
+    Key { sid: crate::plex::ServerId, key: String },
+    Ephemeral { generation: u32, ordinal: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HomeGroupKey {
+    pub(crate) identity: HomeHubIdentity,
+    pub(crate) group: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HomeItemIdentity {
+    Item { hub: HomeHubIdentity, sid: crate::plex::ServerId, rk: String },
+    Slot { hub: HomeHubIdentity, generation: u32, ordinal: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HomeItemKey {
+    pub(crate) identity: HomeItemIdentity,
+    pub(crate) elem: u32,
+    /// Last published slot for this item, used only if its identity disappears. This is
+    /// per-item recovery metadata, not the engine's active or remembered focus.
+    pub(crate) last_row: u32,
+    pub(crate) last_col: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct HomeMemory {
+    pub(crate) groups: Vec<HomeGroupKey>,
+    pub(crate) items: Vec<HomeItemKey>,
+    pub(crate) next_group: u32,
+    pub(crate) next_elem: u32,
+    pub(crate) carousel: Option<(crate::plex::ServerId, String)>,
+    pub(crate) strip_chosen: bool,
+    pub(crate) scroll_y: f32,
+    /// Stable group keys, not row ordinals: provider reorder must not transfer a viewport.
+    pub(crate) row_scroll: Vec<(u32, f32)>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) enum PageMemory {
     #[default]
@@ -124,6 +350,9 @@ pub(crate) enum PageMemory {
     Detail(DetailMemory),
     Person(PersonMemory),
     Filmography(FilmographyMemory),
+    Home(HomeMemory),
+    Library(LibraryMemory),
+    Search(crate::screens::search::Memory),
 }
 
 impl crate::ui::machine::LogicalState for DetailIdentity {
@@ -161,12 +390,96 @@ impl crate::ui::machine::LogicalState for PageMemory {
                 }
                 c.option(memory.preview.as_ref(), |c, (department, id)| { c.str(department).str(id); });
             }
+            Self::Home(memory) => {
+                c.u32(4).u32(memory.next_group).u32(memory.next_elem).seq(memory.groups.len());
+                for key in &memory.groups {
+                    write_home_hub(&key.identity, c);
+                    c.u32(key.group);
+                }
+                c.seq(memory.items.len());
+                for key in &memory.items {
+                    match &key.identity {
+                        HomeItemIdentity::Item { hub, sid, rk } => {
+                            c.u32(0);
+                            write_home_hub(hub, c);
+                            c.u32(u32::from(sid.raw())).str(rk);
+                        }
+                        HomeItemIdentity::Slot { hub, generation, ordinal } => {
+                            c.u32(1);
+                            write_home_hub(hub, c);
+                            c.u32(*generation).u32(*ordinal);
+                        }
+                    }
+                    c.u32(key.elem).u32(key.last_row).u32(key.last_col);
+                }
+                c.option(memory.carousel.as_ref(), |c, (sid, rk)| {
+                    c.u32(u32::from(sid.raw())).str(rk);
+                });
+                c.bool(memory.strip_chosen).f32(memory.scroll_y).seq(memory.row_scroll.len());
+                for &(group, scroll) in &memory.row_scroll { c.u32(group).f32(scroll); }
+            }
+            Self::Library(memory) => {
+                c.u32(5).u32(memory.next_elem).f32(memory.scroll);
+                c.option(memory.section.as_ref(), |c, section| {
+                    c.u32(u32::from(section.sid.raw())).u64(section.key as u64);
+                });
+                c.seq(memory.keys.len());
+                for key in &memory.keys {
+                    write_library_identity(&key.identity, c);
+                    c.u32(key.elem).u32(key.last_group).u32(key.last_index);
+                }
+                c.seq(memory.shelf_scroll.len());
+                for (hub, scroll) in &memory.shelf_scroll { c.str(hub).f32(*scroll); }
+                c.option(memory.epoch, |c, epoch| { c.u32(epoch); });
+                c.option(memory.query, |c, query| { c.u32(query); });
+                c.bool(memory.grid_reset_pending);
+                c.seq(memory.viewports.len());
+                for viewport in &memory.viewports { viewport.write(c); }
+            }
+            Self::Search(memory) => { c.u32(6); memory.write(c); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("page_memory"); }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>}}";
+fn write_library_section(section: &LibrarySectionIdentity, c: &mut crate::ui::machine::Canon) {
+    c.u32(u32::from(section.sid.raw())).u64(section.key as u64);
+}
+
+fn write_library_identity(identity: &LibraryIdentity, c: &mut crate::ui::machine::Canon) {
+    match identity {
+        LibraryIdentity::Library(section) => { c.u32(0); write_library_section(section, c); }
+        LibraryIdentity::Shelf { section, hub, sid, rk } => {
+            c.u32(1); write_library_section(section, c); c.str(hub).u32(u32::from(sid.raw())).str(rk);
+        }
+        LibraryIdentity::ShelfSlot { section, hub, publication, slot } => {
+            c.u32(2); write_library_section(section, c); c.str(hub).u32(*publication).u32(*slot);
+        }
+        LibraryIdentity::Grid { section, sid, rk } => {
+            c.u32(3); write_library_section(section, c); c.u32(u32::from(sid.raw())).str(rk);
+        }
+        LibraryIdentity::GridSlot { section, query, slot } => {
+            c.u32(4); write_library_section(section, c); c.u32(*query).u32(*slot);
+        }
+        LibraryIdentity::Rail { section, label } => {
+            c.u32(5); write_library_section(section, c); c.str(label);
+        }
+        LibraryIdentity::Control { section, kind, key } => {
+            c.u32(6); write_library_section(section, c); c.str(kind).str(key);
+        }
+    }
+}
+
+fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
+    match hub {
+        HomeHubIdentity::ContinueWatching => { c.u32(0); }
+        HomeHubIdentity::Identifier { sid, id } => { c.u32(1).u32(u32::from(sid.raw())).str(id); }
+        HomeHubIdentity::Key { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
+        HomeHubIdentity::Ephemeral { generation, ordinal } => { c.u32(3).u32(*generation).u32(*ordinal); }
+    }
+}
+
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {
@@ -180,9 +493,32 @@ pub(crate) enum ContentReq {
 pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
 impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 
+/// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
+/// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
+pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
+    fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a>;
+}
+
+pub(crate) trait SearchLike: AppLike<Memory = PageMemory> + Sized {
+    fn search<'a>(cx: &Cx<'a, Self>) -> crate::search::view::SearchView<'a>;
+}
+
+/// A host that publishes all three retained Library views captured at the frame split.
+pub(crate) trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a>;
+    fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a>;
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a>;
+}
+
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
     Store(StoreCmd),
+    StoreWork(StoreWork),
+    HubsResult(crate::stores::hubs::HubsResult),
+    Home(HomeCmd),
+    Library(LibraryCmd),
+    LibraryEdit { target: crate::stores::browse::SectionAddress, edit: crate::stores::browse::QueryEdit },
+    LibrarySelect(crate::stores::browse::SectionAddress),
     DetailRestore { spot: crate::metadata::Spot, episode: Option<String> },
 }
 
@@ -243,6 +579,7 @@ impl<H: Host<Elem = u32, Fx = AppFx, Msg = AppMsg>> AppLike for H {}
 /// (`tests/manifest.json`'s `route` field), so a changed spelling silently disarms a scene rather
 /// than failing anything visible.
 pub(crate) mod word {
+    pub(crate) const HOME: &str = "home";
     pub(crate) const PERSON: &str = "person";
     pub(crate) const SETTINGS: &str = "settings";
     pub(crate) const PRIVACY: &str = "privacy";

@@ -319,7 +319,7 @@ covers the user's own servers and any shared with the account; Plex Discover / W
 results are deliberately out of scope, by decision rather than by omission.
 
 *The scope line in the figure is redacted: it names a real server. The substitute is the app's own
-string for a server that reports no name (`ui/search/field.rs::scope_text`), so the figure shows a
+string for a server that reports no name (`screens/search/render.rs::scope_text`), so the figure shows a
 state the app really produces.*
 
 ### 5.6 Card context menu

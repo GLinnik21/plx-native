@@ -12383,6 +12383,12 @@ mod tests {
             while std::time::Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
+                        // Darwin inherits the listener's nonblocking flag on accepted sockets.
+                        // The accept deadline is not permission for read_line to race the writer.
+                        socket.set_nonblocking(false).expect("blocking request reader");
+                        let timeout = Some(std::time::Duration::from_secs(20));
+                        socket.set_read_timeout(timeout).expect("request timeout");
+                        socket.set_write_timeout(timeout).expect("response timeout");
                         let mut first = String::new();
                         BufReader::new(socket.try_clone().expect("clone socket"))
                             .read_line(&mut first)

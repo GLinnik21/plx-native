@@ -23,14 +23,14 @@ exactly these (file: callers):
 |---|---|---|
 | browse | `set_cur`, `note_library_choice`, `kick_letters`, `kick_genres`, `want`, `save_view`, `set_sort_by_key`, `toggle_unwatched`, `set_genre_by_id`, `retry_cur_source`, `recheck_shares`, `pump` | `ui/library.rs` |
 | browse | `apply_pins`, `retry_discovery` | none — closed by phase 5b, same day; see note below (`apply_pins` still direct from `ui/library.rs`'s own tests) |
-| browse | `reset`, `discover_pump` | `app/boot.rs`, `ui/home.rs`, `screens/onboard.rs`, `ui/search/mod.rs`, `ui/search/field.rs` |
+| browse | `reset`, `discover_pump` | `app/boot.rs`, `screens/onboard.rs` (both direct); `discover_pump` also reached from `screens/home/mod.rs` and `screens/search/mod.rs` via `Fx::App(AppFx::StoreWork(BrowseDiscovery))`, resolved by `app/bridge.rs`'s own dispatch (`ui/home.rs` and `ui/search/` are both deleted) |
 | browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` | `ui/library.rs`, `viewstate.rs` |
 | viewstate | `request` | `app/input.rs`, `screens/detail/mod.rs` |
 | person | `open`, `close`, `pump` | `screens/person.rs` |
 | metadata | `request_detail`, `load_detail_now`, `clear`, `load_season`, `set_now_playing`, `set_watched_local`, `pump_season` | `screens/detail/mod.rs`, `app/{input,playback,run}.rs` |
 | metadata | `install_playing`, `mark_skipped`, `pump_detail`, `pump_alt_sources` | `route.rs`, `app/{playback,run}.rs` |
-| search | `set_query`, `reset`, `pump` | `ui/search/mod.rs`, `ui/search/recents.rs` |
-| pms | `request_refetch_hubs`, `request_retry`, `reset`, `pump` | `ui/home.rs`, `app/{boot,run}.rs` |
+| search | `set_query`, `reset`, `pump` | none direct — reached only through `StoreCmd::Search` from the owned `screens/search/mod.rs` (`ui/search/mod.rs` and `ui/search/recents.rs` are both deleted) |
+| pms | `request_refetch_hubs`, `request_retry`, `reset`, `pump` | `app/{boot,run}.rs` (`ui/home.rs` is deleted; the owned Home emits `StoreCmd::Hubs(..)` and never a mutator — see the Phase 8 note below) |
 
 **This table is the census phase 4 sized itself against, and two of its rows were already stale by
 the end of the same day.** Phase 5b (2026-09-07, the Settings-family restructure) retired
@@ -52,7 +52,12 @@ census columns without reading this note; the table's own count is dead the mome
 this paragraph is the amendment for the one phase that happened to land on the same day.
 
 Phase 7 (2026-09-08) mounted Detail and Person from `screens/` and retired their old `ui/` files;
-the table now names the live callers. Filmography reads
+the table now names the live callers. Phase 8 (2026-09-09) did the same to Home and took two of the
+table's cells with it: `ui/home.rs` is deleted, so it is no caller of anything, and `pms::pump` —
+the "legacy callers' combined pass" it was the last caller of — is deleted with it, along with
+`stores::hubs::pump`. The pms row is `request_refetch_hubs`, `request_retry`, `reset`, called from
+`app/{boot,run}.rs`; the owned Home emits `StoreCmd::Hubs(..)` and never a mutator, and the store's
+own `tick` is what a frame drives now. Filmography reads
 the Person store and reacts to its notices but does not mutate it.
 
 Every one of those calls is followed, in the SAME frame and often in the same statement, by a

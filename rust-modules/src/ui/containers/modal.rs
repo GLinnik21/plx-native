@@ -137,6 +137,33 @@ pub fn surface_policy(style: Style, phase: Phase, ground_ready: bool) -> (HostUp
     }
 }
 
+/// **Does this STYLE hold a snapshot of its host?** — the one answer `popover`'s process-wide
+/// `HOST_USERS` counter is driven from (`app/bridge.rs`'s `sync_host`).
+///
+/// DERIVED from [`surface_policy`] rather than restating it as a second `matches!` over `Style`,
+/// and that is the whole point of the function existing. The counter is what arms
+/// `popover::host::page_pass`'s freeze, so a style the table calls `HostRender::Cached` and this
+/// answer calls `false` produces a surface whose host is redrawn in full on every frame it is up
+/// — with nothing failing, because the two statements live three modules apart and nothing
+/// compares them.
+///
+/// **That is exactly what happened to `Style::Compact` (restructure phase 8).** The bridge listed
+/// `Sheet | Opaque { snapshot: true } | Alert` by hand and left Compact out — the one production
+/// Compact surface being the Library's Sort/Filter menu, whose legacy `Popover` had been
+/// `caching_host()` since 2026-09-03, and whose `Style::Compact` doc names `item_menu` (also
+/// `caching_host()`) as its exemplar. Measured on the television, `fps:library-switch`: sustained
+/// 58 ms frames with the whole library page — ambient wash, shelves, poster grid and all their
+/// text — re-rendered under an open menu, `loop=` 43-45 against a floor of 45.
+///
+/// The phase is deliberately NOT a parameter. `HOST_USERS` is an ownership count held from the
+/// surface's first live frame to its release; a per-frame answer would flap as
+/// `Opaque { snapshot: true }` crosses into `Replaced` and the bridge would owe a release it
+/// never took. `Phase::Opening` with no ground drawn is the phase at which every style states
+/// its host policy in full.
+pub fn style_caches_host(style: Style) -> bool {
+    surface_policy(style, Phase::Opening, false).1 != HostRender::Live
+}
+
 /// What a miss beside a surface does, by style — consulted only while `Open`.
 pub fn on_miss(style: Style) -> OnMiss {
     match style {

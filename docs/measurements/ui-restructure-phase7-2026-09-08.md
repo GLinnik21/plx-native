@@ -147,6 +147,49 @@ asked whether to leave it asleep or allow a wake that might briefly light the pa
 new instruction, the night-mode constraint remains unchanged. Rendering with the backlight off
 is accepted; this is a reachability/permission issue, not a requirement to light the panel.
 
+## Native capture — 2026-09-09
+
+The pending state above is superseded: the set was reachable this session, and the four screens
+were captured (plus one follow-up, below) under the `tv-lock` skill's protocol — one lease per
+capture group, deployed dev build, TV audio muted for the session, panel/backlight state left
+untouched. Real household library items stood in for the simulator's synthetic PMS content;
+no ratingKey, server address or other identifying value is recorded here, and no image was
+committed — all five PNGs were inspected locally and left under `/tmp`.
+
+- **Movie detail** (a real movie's `detail=<rk>` page, service capture at 1920x1080): backdrop
+  artwork, title, the Movie/genre/content-rating/resolution/CC badge row, a three-source rating
+  row, synopsis, the date/duration/Direct-Play playback-facts row, the Play-plus-secondary action
+  row, and the right-side "Directed by / Starring" people column all render exactly as the
+  baseline described, with the Cast & Crew shelf beginning to enter at the bottom edge of the
+  viewport.
+- **A single TV episode's own detail page** (`detail=<episode rk>`) turned out to render with the
+  same section shape as a movie — title, season/episode badge, rating row, synopsis, air-date/
+  duration/Direct-Play facts, actions, people column — and no episode strip, because a leaf
+  episode is not a show container (`Detail::sections` only emits the season-tab and episode-strip
+  blocks when `d.is_show`). The **show's own detail page** (`detail=<show rk>`, the show's
+  ratingKey resolved off-device from the episode's `grandparentRatingKey`) is the one that opens
+  on a show hero (logo art, a "Season 1" tab chip) and, two DOWN presses later, on the described
+  "separate still and text rows": a thumbnail-plus-duration/progress-badge strip above a distinct
+  title/synopsis/air-date/content-rating text block per episode, with the season's episode count
+  and the Cast & Crew shelf visible beneath. This distinction was not obvious from the baseline
+  wording alone and is worth carrying forward — "the show's episode strip" names the SHOW's
+  detail page, not any one episode's.
+- **Person**: the header (photo, role/born-died line, biography with a "MORE" affordance), the
+  Filmography entry pill with its credit count, and the Movies/Shows shelves with per-card watched
+  checkmarks all render as described.
+- **Filmography**: the two-column layout — back-link, "Filmography" title and credit count on the
+  left; a department strip (three tabs, e.g. Actor/Appearances/Other with counts) and a scrollable
+  credit table (title, role, year) on the right — renders as described, with no partial or frozen
+  backdrop from the host page it was opened over.
+
+No defect was found on any of the five captures: no clipping, no overlap, no missing chips, and no
+visible LG text-rasterization artifact — all text stayed crisp at 1080p on the physical panel. Two
+non-content elements appear in every capture and are session artifacts rather than app defects: the
+`devtools`-feature on-screen FPS counter (a bordered box, top-right — blank on a screen that had not
+yet presented a fresh frame after boot, showing a real reading once the show-detail scroll caused
+one) and the television's own persistent muted-speaker OSD icon, present because this session muted
+system audio as the protocol requires.
+
 Work remains on the bridge branch. Main was not changed or pushed; its independent Profiles and
 capture changes must be preserved when integrating phases 6/7. Phases 8–12 have not been started
 by this resumed run. Temporary worker checkouts were removed after clean-status checks; their

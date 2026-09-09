@@ -142,6 +142,16 @@ impl TempSession {
         TempSession { dir }
     }
 
+    /// **The scratch file itself** — for a test that grades whether something WROTE it.
+    ///
+    /// [`load`] re-persists a plaintext session on every call, so "did this code path write the
+    /// session file" is a real, gradeable question about a screen, and the only honest way to ask
+    /// it is against the bytes on disk. `write_atomic` renames a fresh temp file into place, so an
+    /// unchanged inode is the discriminator that cannot depend on a filesystem's mtime resolution.
+    pub(crate) fn path(&self) -> std::path::PathBuf {
+        self.dir.join("auth.json")
+    }
+
     /// Become `uuid` — the same call the profile switch makes, and what every read and write of a
     /// per-profile decision keys on ([`current_profile_key`]).
     pub(crate) fn watching(&self, uuid: &str) {
@@ -212,7 +222,7 @@ pub struct Session {
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub home_pins: Vec<HomePins>,
     /// The search terms actually searched, most recent first — what the Search screen's
-    /// empty-query state offers back (`crate::ui::search::recents` owns the cap, the
+    /// empty-query state offers back (`crate::search::recents` owns the cap, the
     /// de-duplication and the ordering; this is only where they rest).
     ///
     /// **Keyed by PROFILE, and that is the whole point of the shape.** They lived here as a bare
@@ -1144,7 +1154,7 @@ pub fn current_profile_key() -> String {
 /// other writer there is: the server-roster worker (`auth::refresh_roster`), the
 /// who's-watching roster worker (`auth::start_switch`), the profile-switch and sign-in saves on
 /// the main thread (`auth::take_ready`, `auth`'s login thread), and the search-recents flush
-/// worker (`ui::search::recents`).
+/// worker (`search::recents`).
 ///
 /// They were all unsynchronized — `recents` kept a `WRITING` mutex, which serialized recents
 /// against recents and against nothing else, and no `auth` writer took anything at all. Two
@@ -1169,9 +1179,10 @@ pub fn current_profile_key() -> String {
 /// It is held across the whole write, [`write_atomic`]'s `sync_all` included, so a reader that
 /// takes it can be parked for as long as the flash takes. That is affordable because of who the
 /// readers are — a keypress (`ui::account_menu::open`), a boot, and one read-out that was already
-/// doing an `fs::read` per frame (`ui::library`'s failed-source labels). **Do not add a per-frame
+/// doing an `fs::read` per frame (the legacy Library's failed-source labels; the owned screen now
+/// uses retained views). **Do not add a per-frame
 /// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
-/// `ui::search::recents` caches by [`current_gen`].
+/// `search::recents` caches by [`current_gen`].
 static IO: Mutex<()> = Mutex::new(());
 
 fn io() -> std::sync::MutexGuard<'static, ()> {

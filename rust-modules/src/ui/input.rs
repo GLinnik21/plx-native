@@ -46,9 +46,9 @@ pub struct Arm<K> {
 
 /// What the press machine asks the dispatcher to deliver after a step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PressEvent {
-    Hold(PressId, MachineId),
-    Commit(PressId, MachineId),
+pub enum PressEvent<K> {
+    Hold(PressId, MachineId, FocusKey<K>),
+    Commit(PressId, MachineId, FocusKey<K>),
 }
 
 pub struct InputMachine<K> {
@@ -59,7 +59,12 @@ pub struct InputMachine<K> {
     next_press: u32,
     /// The television's keyboard is up: `InputOwner::System(Keyboard)`.
     pub keyboard: bool,
+    /// Who may release the accepted keyboard request, even after that instance is covered.
+    /// This is an input binding, not a second focus cursor or adapter-owned decision.
+    pub keyboard_owner: Option<super::machine::InstanceId>,
 }
+
+pub const STATE_SHAPE: &str = "InputMachine{press:Press,engine:FocusEngine{scopes:[(InputOwner{Entry(u32),System},FocusKey{entry:u32,elem:ElemIndex},Option<GroupId>)],remembered:[(EntryId,GroupId,ElemIndex)]},keyboard:bool,keyboard_owner:Option<InstanceId(u32)>,next_press:u32,arm:Option<Arm{id:u32,key:{entry:u32,elem:ElemIndex},from:PressFrom{Key,Pointer},holdable:bool,owner:MachineId{Session,Consent,Input,Present,Nav,Player,Store(u32),Instance(u32),Cache},held_delivered:bool}>};DispatcherQueue:[{press:Option<{from:MachineId,to:MachineId,id:u32,key:{entry:u32,elem:ElemIndex},held:bool}>,input:Option<{from:MachineId,to:MachineId,event:{tick:{ms:u32,dt_us:u32},source:{Sdl,RemoteFifo,Script,Replay},kind:{Key{key:{Up,Down,Left,Right,Ok,Back,Other},sym:u32,wcode:u32,edge:{Down,Repeat,Up},at_edge:bool},Pointer{x:f32,y:f32,hit:Option<ElemIndex>},Click{x:f32,y:f32,hit:Option<ElemIndex>},Drag{x:f32,y:f32,hit:Option<ElemIndex>},Wheel{dy:f32},Text{Commit(str),Backspace,Clear,Left,Right},PointerHidden,SystemKeyboard(bool)}}}>,keyboard_request:Option<{from:MachineId,to:MachineId,up:bool}>}]";
 
 impl<K: Copy + Eq + Hash> Default for InputMachine<K> {
     fn default() -> Self {
@@ -76,6 +81,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
             arm: None,
             next_press: 0,
             keyboard: false,
+            keyboard_owner: None,
         }
     }
 
@@ -117,7 +123,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     }
 
     /// One frame: the press spring and the hold/commit decisions.
-    pub fn tick(&mut self, now: u32, dt: f32) -> Vec<PressEvent> {
+    pub fn tick(&mut self, now: u32, dt: f32) -> Vec<PressEvent<K>> {
         let mut out = Vec::new();
         self.press.tick(now, dt);
         let Some(arm) = self.arm.as_mut() else {
@@ -125,10 +131,10 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
         };
         if arm.holdable && !arm.held_delivered && self.press.is_long(now) {
             arm.held_delivered = true;
-            out.push(PressEvent::Hold(arm.id, arm.owner));
+            out.push(PressEvent::Hold(arm.id, arm.owner, arm.key));
         }
         if self.press.take_commit(now) {
-            out.push(PressEvent::Commit(arm.id, arm.owner));
+            out.push(PressEvent::Commit(arm.id, arm.owner, arm.key));
             self.arm = None;
         } else if !self.press.is_active() {
             // sprung back with nothing to deliver (a cancelled or latched hold)
@@ -137,14 +143,22 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
         out
     }
 
-    /// The Input machine's logical state (§2.2): the press and the engine; the hit map is a
-    /// render-side resource and the arm is transient.
+    /// The press, engine and complete gesture identity are logical state. Only the double-
+    /// buffered hit map is a render-side resource (rebuilt from recorded presented frames).
     pub fn write_with(&self, c: &mut Canon, elem: &dyn Fn(&K, &mut Canon)) {
-        self.press.write(c);
-        self.engine.write_with(c, elem);
-        c.bool(self.keyboard);
-        c.option(self.arm.as_ref(), |c, a| {
-            c.u32(a.id.0).bool(a.holdable);
+        let Self { press, engine, keyboard, keyboard_owner, next_press, arm, hit: _ } = self;
+        press.write(c);
+        engine.write_with(c, elem);
+        c.bool(*keyboard);
+        c.option(*keyboard_owner, |c, owner| { c.u32(owner.0); });
+        c.u32(*next_press);
+        c.option(arm.as_ref(), |c, a| {
+            let Arm { id, key, from, holdable, owner, held_delivered } = a;
+            c.u32(id.0).u32(key.entry.0);
+            elem(&key.elem, c);
+            c.u32(match from { PressFrom::Key => 0, PressFrom::Pointer => 1 }).bool(*holdable);
+            owner.write_canon(c);
+            c.bool(*held_delivered);
         });
     }
 }

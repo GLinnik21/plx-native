@@ -12,7 +12,19 @@ def fields(lines):
 def check(flow, lines):
     lines = list(lines)
     records = fields(lines)
-    if flow == 2:
+    if flow == 1:
+        home = [r for r in records if r.get("route") == "home"]
+        wanted = [lambda r: r.get("snapt") == "0" and r.get("hf") == "-1",
+                  lambda r: r.get("snapt") == "0" and r.get("hf") == "0",
+                  lambda r: r.get("snapt") == "1" and r.get("row") == "0",
+                  lambda r: r.get("snapt") == "1" and r.get("row") == "1"]
+        stage = 0
+        for record in home:
+            if stage < len(wanted) and wanted[stage](record):
+                stage += 1
+        if stage != len(wanted) or not home or not wanted[-1](home[-1]):
+            return "Home must walk chip → hero → first shelf → second shelf; DOWN must not return to the hero"
+    elif flow == 2:
         detail = next((i for i, r in enumerate(records) if r.get("route") == "detail"), None)
         if detail is None:
             return "the grid card never opened Detail"
@@ -25,6 +37,65 @@ def check(flow, lines):
             return "the Home fingerprints omit the card identity or position"
         if any(before[-1].get(k) != after[-1].get(k) for k in ("sid", "rk", "row", "col")):
             return "BACK returned to a different Home card"
+    elif flow == 3:
+        # Keep the route walk as a sequence of focus-owned segments. A heartbeat that merely says
+        # "library" is not enough: the Library must have emitted its own focus fingerprint before
+        # the card opened Detail and after BACK restored the grid.
+        segments = []
+        for record in records:
+            route = record.get("route")
+            if not segments or segments[-1][0] != route:
+                segments.append((route, []))
+            segments[-1][1].append(record)
+        wanted = ["home", "library", "detail", "library"]
+        start = next((i for i in range(len(segments) - len(wanted) + 1)
+                      if [route for route, _ in segments[i:i + len(wanted)]] == wanted), None)
+        if start is None:
+            return "the Home → Library → Detail → BACK → Library sequence never ran"
+
+        before = segments[start + 1][1][-1]
+        after = segments[start + 3][1][0]
+        for record in (before, after):
+            if tuple(record.get(key) for key in ("pill", "card", "menu")) != ("-1", "1", "0"):
+                return "Library must focus a card with no menu before Detail and after BACK"
+        for key in ("sid", "rk"):
+            if before.get(key) in (None, "-") or after.get(key) in (None, "-"):
+                return "the Library fingerprints omit the selected card identity"
+            if before.get(key) != after.get(key):
+                return "BACK returned to a different Library card"
+            if segments[start + 2][1][0].get(key) != before.get(key):
+                return "Library opened Detail for a different card or omitted its identity"
+
+        # The current probe supplies pill/card/menu; future probe revisions may add row/col or an
+        # explicit viewport. Compare every non-route field supplied by either side, refusing a
+        # field that disappears on return instead of silently grading only the identity pair.
+        focus_fields = (set(before) | set(after)) - {"route", "press"}
+        for key in sorted(focus_fields):
+            if before.get(key) in (None, "-") or after.get(key) in (None, "-"):
+                return "the Library fingerprints omit focus or viewport field: " + key
+            if before.get(key) != after.get(key):
+                return "BACK changed the Library focus or viewport field: " + key
+
+        # BACK emits no navigation input after it restores the grid; later focus shots are the
+        # evidence that the restored card stayed selected. Validate the entire restored segment,
+        # not just its first record. `press` is probe metadata and may legitimately vary between
+        # shots, but every other field must remain the pre-Detail fingerprint.
+        fingerprint = {key: value for key, value in before.items()
+                       if key not in ("route", "press")}
+        for record in segments[start + 3][1]:
+            candidate = {key: value for key, value in record.items()
+                         if key not in ("route", "press")}
+            if candidate != fingerprint:
+                for key in sorted(set(fingerprint) | set(candidate)):
+                    if candidate.get(key) in (None, "-"):
+                        return "the Library fingerprints omit focus or viewport field: " + key
+                    if fingerprint.get(key) != candidate.get(key):
+                        return "BACK changed the Library focus or viewport field: " + key
+
+        # Flow 3 sends no further navigation after BACK. A later route change therefore cannot be
+        # explained by the flow and must not be hidden by an earlier valid Library restoration.
+        if any(route != "library" for route, _ in segments[start + 3:]):
+            return "the flow left Library after BACK"
     elif flow == 5:
         routes = []
         visits = []

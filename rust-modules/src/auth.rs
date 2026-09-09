@@ -709,7 +709,7 @@ fn may_resume(from: Picker, stored_is_protected: bool) -> bool {
 /// Detaching is two things happening together, and neither is sufficient alone. [`may_resume`]
 /// stops BACK reinstating the credentials, and [`session::set_current(None)`](session::set_current)
 /// stops the process still ANSWERING with the profile that was active — the Home chip, the account
-/// menu's rows and `ui::search::recents`' per-profile store all read it, and a picker that has
+/// menu's rows and `search::recents`' per-profile store all read it, and a picker that has
 /// announced a profile boundary must not be standing over a process that still knows who was
 /// watching. The generation bump is what makes the second half take effect; see `session::current`.
 ///

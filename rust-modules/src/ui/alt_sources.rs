@@ -148,7 +148,7 @@ const BTN_GAP: f32 = theme::space::MD;
 /// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha — the LIBRARY toolbar chip menu's (`ui::library`), deliberately, because this
+/// Scrim peak alpha — the Library toolbar chip menu's design, deliberately, because this
 /// is the same object one page over: a chip-shaped control on a live page opening a list over it.
 /// The page recedes; it is not blanked, and the hero behind stays readable.
 const SCRIM_A: f32 = 0.45;
@@ -796,9 +796,11 @@ pub(crate) fn pump() {
 ///
 /// `None` (and no stand-in) when the trigger is not armed or the item has not landed yet.
 ///
-/// NB this is **not** one of the three "WINS WHEN ARMED" precedence sites (`metadata::fetch_detail`,
-/// `ui::home`'s `dev_source`, `ui::search::results`' `dev_source`), which pick between the trigger
-/// and a real answer. There is no real answer here to outrank: an unarmed trigger means no panel
+/// NB this is **not** one of the two "WINS WHEN ARMED" precedence sites (`metadata::fetch_detail`,
+/// `screens::home`'s `dev_source`), which pick between the trigger and a real answer. (The owned
+/// Search screen's render module has no `dev_source`-shaped trigger read at all today — the
+/// legacy Search results module's one was retired by the cutover and not carried over.) There is
+/// no real answer here to outrank: an unarmed trigger means no panel
 /// content at all, and an armed-but-EMPTY file means the same, because a copy list has to be
 /// attributed to somebody.
 #[cfg(not(test))]

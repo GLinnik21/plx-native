@@ -4,6 +4,18 @@
 
 use super::*;
 
+/// Preserve one IME commit and its place among key events. Desktop text does not imply an
+/// on-screen panel; the owning field decides whether it is editing when delivery reaches it.
+pub(super) fn text_inputs(text: &str, panel: bool, at: crate::ui::machine::Tick,
+    source: crate::ui::machine::Source) -> Vec<crate::ui::machine::InputEvent<u32>> {
+    use crate::ui::machine::{InputEvent, InputKind, TextEdit};
+    if text.is_empty() { return Vec::new(); }
+    let mut events = Vec::with_capacity(if panel { 2 } else { 1 });
+    if panel { events.push(InputEvent { at, source, kind: InputKind::SystemKeyboard(true) }); }
+    events.push(InputEvent { at, source, kind: InputKind::Text(TextEdit::Commit(text.into())) });
+    events
+}
+
 #[inline]
 pub(super) fn rd_u32(ev: &[u8], off: usize) -> u32 {
     u32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
@@ -499,4 +511,3 @@ pub(super) fn dispatch_remote_token(tok: &str) -> bool {
         false
     }
 }
-

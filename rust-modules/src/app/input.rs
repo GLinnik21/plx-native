@@ -21,23 +21,6 @@
 
 use super::*;
 
-// ui focus state lives in ui::home; reach it through its accessors
-#[inline]
-pub(super) fn g_fr() -> c_int {
-    crate::ui::home::row()
-}
-#[inline]
-pub(super) fn g_snap() -> f32 {
-    crate::ui::home::snap_target()
-}
-#[inline]
-pub(super) fn set_fr(v: c_int) {
-    crate::ui::home::set_row(v)
-}
-#[inline]
-pub(super) fn set_snap(v: f32) {
-    crate::ui::home::set_snap_target(v)
-}
 
 /// The Magic Remote POINTER, as one value: which input mode the remote is in, what the
 /// cursor is doing, and the two gestures that outlive a single event (a scrub drag and the
@@ -71,76 +54,12 @@ impl Pointer {
     };
 }
 
-/// The ONE home activation (OK key AND pointer click): `hf` is the hero action-row focus
-/// (0 pill / 1 info, or a tab pill's packed negative) in hero view, `i32::MIN` for a
-/// grid card. **The chip (-1) never arrives here** — it is the shared bar's control and both input
-/// paths answer it above, in `chip_activate`.
-/// Pill / Continue-Watching tiles / episodes launch playback immediately (a show or season
-/// opens its page under the hood and fires its Play, which resolves the right episode +
-/// resume); the info circle and ordinary grid cards open the detail page.
-pub(super) unsafe fn home_activate(
-    mt: &crate::task::MainThread,
-    hf: c_int,
-    hud_ms: u32,
-    route: &mut Route,
-    play_from: &mut Node,
-    trail: &mut Trail,
-    hud_nav: &mut HudNav,
-    nav: &mut Option<NavReq>,
-) {
-    // every Home-originated activation clears the return trail HERE (it was hand-reset at
-    // each call site before — a set-a-flag-in-N-places smell). Home is the trail's ROOT, so
-    // acting on it means everything that was behind the user is spent: a page reached from a
-    // person page or from the Library is as stale as any other once they are back on Home.
-    trail.reset();
-    // A Home with no shelves is the loading/empty/error read-out, whose only control is
-    // Retry — it takes the press unless it was the top band (chip / tab pills), which
-    // stay usable precisely because they are the escapes from an empty Home.
-    // NB the trail is truncated ABOVE this early return: a Retry press is still the user
-    // acting on Home, so a stale trail must not survive it.
-    if crate::ui::home::status_activate(hf) {
-        return;
-    }
-    let hero_view = hf != c_int::MIN;
-    // a tab pill in the top band. (The grid-card sentinel is rejected by hero_pill_index
-    // itself — see its doc comment.)
-    if let Some(pill) = crate::ui::home::hero_pill_index(hf) {
-        match crate::ui::widgets::pill_at(pill) {
-            Pill::Search => nav_to(*route, Nav::Search, nav),
-            // that section's grid, through the page cross-fade: `library::enter` and the
-            // route flip both land at the fade floor, while the selection capsule starts
-            // travelling on THIS frame (`nav::view_tab`).
-            Pill::Section(kind) => nav_to(*route, Nav::Library(kind), nav),
-            // Home is the screen we are on, so OK on its pill is a deliberate no-op —
-            // EXCEPT that it withdraws a section switch that is still fading out: the user
-            // changed their mind inside the 70 ms window, and the capsule springs back on
-            // its own.
-            Pill::Home => {
-                nav_cancel(*route, nav);
-            }
-        }
-        return;
-    }
-    let m = if hero_view {
-        crate::ui::home::hero_item()
-    } else {
-        crate::ui::home::movie_at(crate::ui::home::row(), crate::ui::home::col())
-    };
-    let Some(mm) = m else { return };
-    let rk = mm.rk.clone();
-    if rk.is_empty() {
-        return;
-    }
-    // **The DECK plays; every other shelf navigates.** `|| mm.kind == 3` used to be here, which
-    // made an episode play immediately from ANY shelf — so "Recently Released Episodes" started
-    // something the user was browsing. The rule the whole app now states is one sentence: a visual
-    // play indicator means the press plays, a progress bar means viewing progress, and a card with
-    // no play indicator navigates. Continue Watching is the surface that promises playback (it
-    // draws the amber ▶) and it is the surface that delivers it.
-    let want_play = hf == 0
-        || (!hero_view && crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize));
-    activate_card(mt, mm, want_play, hud_ms, route, play_from, trail, hud_nav, nav);
-}
+// `home_activate` (the OK/pointer activation ladder for the legacy Home grid) was retired with
+// the legacy `ui::home` module when phase 8 made Home an owned `Screen` — its job (trail reset,
+// status/pill/card dispatch through `activate_card`) now lives in the owned screen's own input
+// handling (`screens::home`, wired through `app::content`/`app::bridge`). Comments elsewhere in
+// this file and in `run.rs`/`nav.rs`/`boot.rs`/`playback.rs`/`metadata.rs` that still name it are
+// historical references to the extraction that produced `activate_card`, not live call sites.
 
 /// **What a card ACTIVATION does, once its screen has decided whether the press means PLAY.**
 ///
@@ -489,7 +408,7 @@ pub(super) unsafe fn on_key_up(
 ///
 /// **The Settings family used to be the one exception here and no longer is** (phase 5b). Those
 /// three screens were `Popover`s layered over a `Route`, so their fresh-press arms never called
-/// `HeldKey::arm` the way `key_move_focus` does for an actual route, and a held key's hardware
+/// `HeldKey::arm` the way an owned page's own directional press does, and a held key's hardware
 /// repeat had to be forwarded from here straight to their `on_updown`/`on_left_right` in the
 /// ladder's own priority order. They are owned screens on the dispatcher now: a repeat reaching
 /// them is an `InputEvent` carrying `Edge::Repeat`, handed over in the loop before this function is
@@ -984,8 +903,17 @@ pub(super) fn delete_all_local_data() -> Vec<String> {
             failures.push(e);
         }
     }
-    crate::ui::search::recents::clear();
     crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
+    // thin `recents::clear()` wrapper this used to call): recent Search terms
+    // live INSIDE the session file (`crate::search::recents`'s doc — "profile-scoped … the
+    // session's atomic worker door"), and `erase_local_state` below deletes that file
+    // SYNCHRONOUSLY. An explicit clear here would spawn its own async save
+    // (`recents::clear`'s `task::spawn_small("recents-save", …)`) racing the synchronous
+    // deletion two lines down — the worse of the two orders resurrects a stub session file
+    // AFTER "delete everything" already removed it. Letting the file deletion alone answer
+    // for recents removes that race rather than leaving it to chance ordering.
+    //
     // The telemetry decision, both identifiers, the spool and the native backend go with the
     // account: `erase_local_state` → `forget_account` → `telemetry::forget`, the same door
     // Sign out uses. The sweep above already unlinked the files; `forget` finds them gone.
@@ -1026,56 +954,12 @@ pub(super) unsafe fn key_item_menu(
     }
 }
 
-/// D-pad on a NON-player screen: hand the direction to whichever screen owns focus, then arm the
-/// client-side hold-repeat.
-pub(super) fn key_move_focus(key: Key, sym: c_uint, route: Route, now: u32, held: &mut HeldKey) {
-    if matches!(route, Route::Detail | Route::Person) {
-        return;
-    } else if matches!(route, Route::Library) {
-        crate::ui::library::move_focus(sym);
-    } else if matches!(route, Route::Search) {
-        crate::ui::search::move_focus(sym);
-    } else if g_snap() < 0.5 {
-        if matches!(key, Key::Down) {
-            if crate::ui::home::hero_focus() < 0 {
-                crate::ui::home::set_hero_focus(0); // chip → back to the action row
-            } else {
-                set_snap(1.0);
-                set_fr(0);
-            }
-        } else if matches!(key, Key::Left { alt: false } | Key::Right { alt: false }) {
-            crate::ui::home::home_hero_key(sym); // walk the action row; RIGHT at its end pages
-        } else if matches!(key, Key::Up) {
-            // hero view: UP focuses the profile chip (OK then opens the menu —
-            // the chip is selectable, it no longer springs the menu unbidden)
-            crate::ui::home::set_hero_focus(-1);
-        }
-    } else if matches!(key, Key::Up) && g_fr() == 0 {
-        set_snap(0.0);
-    } else {
-        crate::ui::home::home_move_focus(sym);
-    }
-    held.arm(sym, now);
-}
-
-/// **Where the SHARED top bar's focus is, for the route that is up.** The bar is one control across
-/// Home, the Library and Search, so the question is asked once here rather than three times — and
-/// every other route has no bar at all, which is what `TopFocus::Away` says.
-///
-/// It exists because of the CHIP. A pill's press leads somewhere that depends on the screen you are
-/// standing on (Home's own pill is a no-op, the Library's is a tab switch), so each screen still
-/// performs its own; the chip's press is the account menu wherever you are, so it is answered once,
-/// in [`chip_activate`], off this one answer.
-pub(super) fn top_focus(route: Route) -> crate::ui::widgets::TopFocus {
-    use crate::ui::widgets::TopFocus;
-    match route {
-        Route::Home => crate::ui::home::top_focus(),
-        Route::Library => crate::ui::library::top_focus(),
-        Route::Search => crate::ui::search::top_focus(),
-        _ => TopFocus::Away,
-    }
-}
-
+// `key_move_focus` and `top_focus` (the D-pad-direction and shared-top-bar-focus dispatch for
+// Home/Library/Search) are retired: since the phase 8 Search cutover, every non-player route
+// reaching this file is an OWNED page whose directions and top-bar focus are taken by the
+// dispatcher/container tree before this ladder is ever consulted (see the retirement notes at
+// `run.rs`'s nav-direction arm and its former `top_focus` call site). Both were already
+// unconditional no-ops for those routes by the time main's copy above was written.
 /// The profile chip's activation, shared by the OK key and the pointer click — the top bar is one
 /// control on three screens and this is the one thing it does.
 ///
@@ -1093,14 +977,17 @@ pub(super) fn chip_activate(route: &mut Route) {
     let Some(over) = BarHost::of(*route) else {
         return;
     };
-    // On Search, the television's own keyboard may still be up — it is a SYSTEM panel, so a modal
-    // of ours neither covers nor suppresses it, and the page under a popover keeps updating, so its
-    // characters would go on landing in the field behind the menu. Only the pointer can reach the
-    // chip from inside the field (the D-pad leaves it through `leave_field`, which commits), so
-    // this is that path's half of the same rule.
-    if matches!(over, BarHost::Search) {
-        crate::ui::search::end_editing();
-    }
+    // Search USED to need an explicit keyboard-dismissal nudge here (`BarHost::Search =>` the
+    // retired legacy screen's own `end_editing()`) for the one path that could still reach this
+    // function with the television's own keyboard up — a pointer click on the chip from inside
+    // the field.
+    // That path is retired (phase 7 Search cutover): `owns_input()` in `app/run.rs` now takes
+    // every Search click before it ever reaches `chip_clicked`/`chip_activate`, and the owned
+    // path that replaces it (`content.rs`'s `SearchReq::Account`) does not call this function at
+    // all — the owned screen releases its own keyboard before emitting the request, and calling
+    // `end_editing` here a second time on an instance that already dismissed it would be the
+    // stale-request problem `an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard`
+    // guards against.
     crate::ui::account_menu::open();
     *route = Route::Account { over };
 }
@@ -1113,14 +1000,6 @@ pub(super) fn chip_clicked(route: Route, ev: &[u8]) -> bool {
     if BarHost::of(route).is_none() {
         return false;
     }
-    // A screen's own modal owns the frame, and the Library's sort/filter panel is INTERNAL state
-    // rather than a route, so nothing above this can see it: without the test, a click on the
-    // avatar with that panel up would open the account popover over a menu still standing behind
-    // it. The key path needs no equivalent — `library::top_focus` already declines while a menu is
-    // open, so the chip is not the focused thing to press.
-    if matches!(route, Route::Library) && crate::ui::library::menu_open() {
-        return false;
-    }
     let (mx, my) = ptr_xy(ev);
     crate::ui::widgets::profile_chip_at(mx, my)
 }
@@ -1130,20 +1009,16 @@ pub(super) unsafe fn key_ok(
     now: u32,
     route: &mut Route,
     hud: &mut HudState,
-    ptr: &mut Pointer,
-    trail: &mut Trail,
-    nav: &mut Option<NavReq>,
-    play_from: &mut Node,
+    _ptr: &mut Pointer,
+    _trail: &mut Trail,
+    _play_from: &mut Node,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
 ) {
-    // The shared top bar's PROFILE CHIP, ahead of the per-route ladder below: it is one control on
-    // three screens and its destination never depends on which of them you are standing on, which
-    // is exactly why each screen used to draw it and only Home could press it.
-    if matches!(top_focus(*route), crate::ui::widgets::TopFocus::Chip) {
-        chip_activate(route);
-        return;
-    }
+    // The shared top bar's PROFILE CHIP used to be answered here, ahead of the per-route ladder
+    // below, off `top_focus` — retired with that function (Home/Library/Search are all owned
+    // screens now, so an OK on the chip is taken by `tree_owns_key` in `app/run.rs`'s ingest,
+    // well above this chain, and never reaches here).
     if matches!(*route, Route::Player { .. }) {
         // the pre-press sample, like the other two player arms — `begin_fresh_press` has already
         // cleared `dismissed`, so re-asking calls a hand-hidden transport visible and this arm
@@ -1183,119 +1058,14 @@ pub(super) unsafe fn key_ok(
             }
         }
         extend_hud(now, HUD_LINGER_MS);
-    } else if matches!(*route, Route::Search) {
-        // A result tile takes the tvOS press (dip now, commit on the spring-back
-        // — `ok_armed` runs `on_ok` then); the field and the recents rows commit
-        // immediately inside the screen.
-        // the pill under the ring, off the same one answer `tab_row_update` animates the bar from
-        // (the CHIP half of it was already spent above, in `key_ok`'s own opening arm)
-        if let crate::ui::widgets::TopFocus::Pill(spill) = top_focus(*route) {
-            match crate::ui::widgets::pill_at(spill) {
-                // the screen we are already on — a deliberate no-op, as Home's
-                // own pill is on Home
-                Pill::Search => {}
-                Pill::Section(kind) => nav_to(*route, Nav::Library(kind), nav),
-                // focus lands on the Home pill, which is the pill Home selects
-                // anyway — the strip must not appear to move under the swap
-                Pill::Home => nav_to(
-                    *route,
-                    Nav::Home {
-                        focus_pill: Some(crate::ui::widgets::Pill::Home),
-                    },
-                    nav,
-                ),
-            }
-        } else if crate::ui::search::focus_is_card() {
-            press.begin(clock::now());
-            *ok_armed = true;
-        } else if let crate::ui::search::Action::Open(node) = crate::ui::search::on_ok() {
-            nav_open(*route, node, None, nav);
-        }
-    } else if matches!(*route, Route::Library) {
-        // OK on a browse-grid card → the same tvOS press as home's grid;
-        // tabs / toolbar / menus commit immediately inside the screen.
-        if crate::ui::library::focus_is_card() {
-            press.begin(clock::now());
-            *ok_armed = true;
-        } else {
-            match crate::ui::library::on_ok() {
-                crate::ui::library::Action::GoHome => nav_to(
-                    *route,
-                    Nav::Home {
-                        focus_pill: crate::ui::library::focused_pill(),
-                    },
-                    nav,
-                ),
-                crate::ui::library::Action::GoSearch => nav_to(*route, Nav::Search, nav),
-                // A SHELF tile, which the grid's own `Card` arm cannot serve: it is not in the
-                // paged store, and a tile on the library's own Continue Watching row must RESUME
-                // rather than open a page. Same `activate_card` Home's deck goes through.
-                crate::ui::library::Action::ShelfCard { from_deck } => {
-                    if let Some(mm) = crate::ui::library::focused_item() {
-                        // the DECK plays; every other shelf navigates — see `home_activate`
-                        let want_play = from_deck;
-                        unsafe {
-                            activate_card(
-                                mt, mm, want_play, HUD_LINGER_MS, route, play_from, trail, &mut hud.nav,
-                                nav,
-                            )
-                        };
-                    }
-                }
-                crate::ui::library::Action::Card | crate::ui::library::Action::None => {}
-            }
-        }
-    } else if matches!(*route, Route::Detail | Route::Person) {
-        // Owned screen input has already been dispatched.
-    } else {
-        // home: dispatch through the ONE activation (shared with pointer
-        // clicks). Gate hero-vs-grid on the spring POSITION (what's on
-        // screen), not the snap target: a DOWN press flips the target to grid
-        // instantly while the hero stays visible ~130ms, so a quick DOWN→OK
-        // must still act on the hero shown, not the grid's card 0.
-        if crate::ui::home::snap_pos() < 0.5 {
-            // hero: its ACTION ROW (the Play/Continue pill, the info disc) takes
-            // the tvOS press like a card, with the hold gesture left off — the
-            // commit below re-reads `hero_focus` and hands it to this same
-            // activation. The rest of the hero band activates immediately: the
-            // top band's pills are controls in a TRACK and the status read-out's
-            // Retry belongs to no `CtlPop`, so neither has a dip to show
-            // (`home::focus_is_ctl`).
-            if crate::ui::home::focus_is_ctl() {
-                press.begin_ctl(now);
-                *ok_armed = true;
-            } else {
-                let hf = crate::ui::home::hero_focus();
-                home_activate(
-                    mt,
-                    hf,
-                    HUD_LINGER_MS,
-                    route,
-                    play_from,
-                    trail,
-                    &mut hud.nav,
-                    nav,
-                );
-            }
-        } else {
-            // grid card: tvOS press — dip the focused card now, activate on the
-            // spring-back (committed from the per-frame loop). Nav cancels, so the
-            // focused cell can't move while the press is armed.
-            press.begin(clock::now());
-            *ok_armed = true;
-        }
-        if !ptr.dpad_mode {
-            hide_cursor();
-            ptr.dpad_mode = true;
-            ptr.cur_hidden = true;
-        }
     }
+    // `Route::Search` is deliberately absent here (phase 7 Search cutover, mirroring
+    // `Route::Library`'s own removal): Search is unconditionally an owned screen, so its OK key —
+    // the field, the recents rows and a result tile's tvOS press alike — was already taken by
+    // `tree_owns_key` in `app/run.rs`'s ingest, well above this chain, and this function is never
+    // reached for it.
 }
 
-/// CH▲/CH▼ page the browse grid a screenful of rows per press.
-pub(super) fn key_library_page(dir: c_int) {
-    crate::ui::library::page(dir);
-}
 
 /// webOS BACK: this Magic Remote sends wcode 482 (0x1E2); 461 kept for others.
 ///
@@ -1342,47 +1112,12 @@ pub(super) fn key_back(
         // and stopped being true when the bio alert landed. A page-owned modal
         // BACK cannot close is a screen the user is stuck on.
         // Content screens own BACK, including their page-local panels.
-    } else if matches!(*route, Route::Search) {
-        // `back()` answers true while it still had something to close (the
-        // raised keyboard); false means leave, and the destination is Home —
-        // Search is a peer of it, not a page stacked on it.
-        if !crate::ui::search::back() {
-            nav_to(*route, Nav::Home { focus_pill: None }, nav);
-        }
-    } else if matches!(*route, Route::Library) {
-        // read BEFORE `back()`: its first press moves focus ONTO the tab row, so
-        // asking afterwards would report the pill it just landed on rather than
-        // the one the user was standing on when they chose to leave.
-        //
-        // No `trail.back()` here: the destination is Home, and the commit frame
-        // of the page transition truncates the trail to its root — which is both
-        // stronger and cancel-safe (a BACK withdrawn inside the 70 ms window
-        // must not have moved the history).
-        let pill = crate::ui::library::focused_pill();
-        if !crate::ui::library::back() {
-            nav_to(*route, Nav::Home { focus_pill: pill }, nav);
-        }
-    } else if g_snap() > 0.5 {
-        set_snap(0.0);
-    } else {
-        // Home is the ROOT and BACK there LEAVES THE APP'S OWN NAVIGATION —
-        // deliberately NOT trail-driven. The background-suspend arm drops to
-        // Home without touching the trail, so route and trail can legitimately
-        // disagree; keeping this branch blind to the trail is what stops that
-        // divergence teleporting the user into a page they did not navigate to,
-        // and what keeps the true root leaving whatever the trail happens to
-        // hold.
-        //
-        // What the LAST STEP is has changed twice. It quit outright until
-        // 2026-08-21, then raised an "Exit PlxNative?" alert, and since
-        // 2026-09-03 it hands the screen back to the television
-        // (`webos::go_home`) with the process still alive — which is what the
-        // platform itself does at an app's entry page on this firmware. The
-        // divergence argument above is untouched: this is still the one branch
-        // that reaches the root press, and it still does not consult the trail.
-        //
-        back_at_root();
     }
+    // `Route::Search` is deliberately absent here too (phase 7 Search cutover): BACK on Search —
+    // both closing the raised keyboard first and, once there is nothing left to close, leaving to
+    // Home — is fully handled inside the owned screen (`SearchReq::Back`, drained by
+    // `content::search_requests`) and, upstream of that, `tree_owns_key` in `app/run.rs`'s ingest
+    // already took the key before it could reach this function at all.
 }
 
 /// **BACK at a ROOT — the press that leaves the app's own navigation**, lifted out of [`key_back`]'s

@@ -205,7 +205,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   update resumes the next boot as the wrong profile, and a torn `O_TRUNC` write is an unparseable
   file, which is a QR code on the next boot rather than a stale roster. The lock is held across the
   write's `sync_all`, so **nothing per-frame may read this file**; snapshot it (as
-  `ui::search::recents` does, keyed on `session::current_gen`).
+  `search::recents` does, keyed on `session::current_gen`).
 - **Track selection is server-side, via `PUT /library/parts/{id}`** (set the chosen audio/subtitle
   stream + subtitle burn), **not** query params on the stream URL. The server re-selects for the next
   decision; the client re-requests the part. See `[[audio-subtitle-track-switching]]`.

@@ -124,8 +124,9 @@ ships, because `-Z build-std` is what ships.
    on Darwin the same call makes `connect_timeout` report *success* on a socket that never
    connected. A socket assertion passing here is evidence about macOS.
 3. **Some tests are serialized on crate globals**, not parallel. `metadata.rs`'s take `lib.rs`'s
-   crate-wide `testlock::serial()`; `ui/home.rs`'s take that module's `FOCUS` mutex for its
-   `static mut fr`/`fc`. `ui/xfade.rs` is the cautionary case, and its own module doc says why:
+   crate-wide `testlock::serial()`, and so does every owned-screen test that seeds a store —
+   an owned screen keeps no focus of its own (the `FocusEngine` does), but `pms`'s catalog statics
+   are shared across modules. `ui/xfade.rs` is the cautionary case, and its own module doc says why:
    pure value semantics **with one exception that costs them their parallelism** — `tick` reports
    to `ui::idle`'s process-global dirty flag, which `ui::idle`'s own "a settled screen does not
    repaint" assertions read. Without the lock they fail *other modules'* tests intermittently,

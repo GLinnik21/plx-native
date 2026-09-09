@@ -22,6 +22,27 @@
 #              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
 #              a `#[cfg(test)] mod` seeds a store however it likes. The player side (route.rs,
 #              player/) joins in phase 9.
+#
+# Phase 8 rule (§14, §6.2):
+#   nav      — a screen under rust-modules/src/screens/ never calls `crate::ui::nav::` (any
+#              function) live; it reads `DrawFrame::{page_alpha,chrome_alpha,view_tab,
+#              blur_amount,nav_page_alpha}`, populated once per frame by `app/bridge.rs`'s
+#              `Rig::navigation_presentation`. `ui/`'s CONTAINERS (popover.rs, glassload.rs,
+#              widgets.rs's chrome helpers, the loop's own app/nav.rs and app/run.rs) still call
+#              `ui::nav` directly — that is phase 7/12's boundary, not this one's; this gate
+#              scans only `screens/`, where the count is zero.
+#   sessionwrite — a screen (screens/, ui/) never calls `plex::session::load(`. `load` is the
+#              BOOT/auth door: it mints a `client_id` when there is none and re-persists a
+#              plaintext session, so a read turns into `write_atomic` — a temp file, `sync_all`,
+#              a rename and a second `sync_all` on the directory. The read-only door is `peek`.
+#              `session.rs` has said "it is not [an acceptable trade] on a path a keypress can
+#              reach" and "do not add a per-frame reader of this file" since the two doors were
+#              split, and a screen still had it: `screens/settings.rs::signed_in` asked the write
+#              door twice per Settings open, which on a television with no usable key manager is
+#              two flash writes and four fsyncs on the frame the modal mounts — 150-180 ms of
+#              `navcommit` when the flash was slow (`fps:modal-ramp`, device-measured 2026-09-09).
+#              Nothing failed: both doors return a `Session` and the difference is invisible at the
+#              call site, which is exactly what a grep gate is for. Count is zero.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SRC=rust-modules/src
@@ -108,6 +129,9 @@ while IFS= read -r f; do
     { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
 done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" -name '*.rs' | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
+
+gate nav 'crate::ui::nav::' "$SRC/screens"
+gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui"
 
 # every allowlist's declared count equals its entries
 for f in ci/allow/*.txt; do

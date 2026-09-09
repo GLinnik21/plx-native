@@ -214,7 +214,7 @@ impl Screen<InnerHost> for LegalIndex {
         Some(Cow::Borrowed(CRUMB_SETTINGS))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let mut v = self.view();
         Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
     }
@@ -379,7 +379,7 @@ impl Screen<InnerHost> for DocumentPage {
         Some(Cow::Borrowed(self.crumb))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, InnerHost>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let Self { reader, crumb, title, subtitle, body, entry, .. } = self;
         let mut v = DocumentScreen::new(
             Header::new(RouteLayout::screen(), Some(crumb), title, subtitle),
@@ -612,7 +612,7 @@ mod tests {
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }
@@ -897,17 +897,17 @@ mod tests {
         let (x0, y0) = mid(r0);
         let (x4, y4) = mid(r4);
         assert_eq!(
-            map.resolve(PointerKind::Move, x0, y0, None).focus.map(|k| k.elem),
+            map.resolve(Some(entry), PointerKind::Move, x0, y0, None).focus.map(|k| k.elem),
             Some(0),
             "hovering row 0's own band parks row 0"
         );
         assert_eq!(
-            map.resolve(PointerKind::Move, x4, y4, None).focus.map(|k| k.elem),
+            map.resolve(Some(entry), PointerKind::Move, x4, y4, None).focus.map(|k| k.elem),
             Some(4),
             "…and hovering a DIFFERENT row's band parks a DIFFERENT row, not the last one hovered"
         );
         assert!(
-            map.resolve(PointerKind::Move, x0, frame.y - 400.0, None).focus.is_none(),
+            map.resolve(Some(entry), PointerKind::Move, x0, frame.y - 400.0, None).focus.is_none(),
             "above the list is dead space — hovering there parks nothing"
         );
 
@@ -915,7 +915,7 @@ mod tests {
         // exactly that event to the real screen, the half neither `table_screen.rs` nor `ui/hit.rs`
         // can answer on their own, since it is a question about what LEGAL does with an activation,
         // not about the widget or the map that hand it one.
-        let click = map.resolve(PointerKind::Click, x4, y4, None);
+        let click = map.resolve(Some(entry), PointerKind::Click, x4, y4, None);
         let (key, act) = click.activate.expect("a click on a row's own band always activates it");
         assert_eq!(act, Activate::Direct, "a row's door opens at once, with no press dip to arm");
         assert_eq!(key.elem, 4, "the click landed in row 4's band and must activate row 4");
@@ -975,10 +975,10 @@ mod tests {
 
         let (mx, my) = (frame.x + frame.w * 0.5, frame.y + frame.h * 0.5);
         assert!(
-            map.resolve(PointerKind::Move, mx, my, None).focus.is_none(),
+            map.resolve(Some(EntryId(13)), PointerKind::Move, mx, my, None).focus.is_none(),
             "hovering a document parks nothing — Hover::Ignore is the whole of rule 11's second half"
         );
-        let click = map.resolve(PointerKind::Click, mx, my, None);
+        let click = map.resolve(Some(EntryId(13)), PointerKind::Click, mx, my, None);
         assert!(click.focus.is_none(), "a click on a document must not park focus on it either");
         let (key, act) = click.activate.expect("the stop still resolves a hit — this is not a miss");
         assert_eq!(act, Activate::Direct, "the mirrored stop's own policy, unchanged by the miss/hit path above");

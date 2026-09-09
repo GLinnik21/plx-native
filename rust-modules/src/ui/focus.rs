@@ -18,11 +18,16 @@
 //! promotion is exactly this); (7) scope: the input owner's groups only.
 
 use std::hash::Hash;
+use std::sync::Arc;
 
 use super::machine::{Canon, EntryId, FocusKey, GroupId, Host, InputOwner};
 use super::screen::{At, By, Dir, EdgeRule, ElemKind, Focusable, FocusTarget, GroupSpec, Link, Placed, Seat, Step};
 use super::Rect;
 use super::machine::Cx;
+
+#[cfg(test)]
+#[path = "focus_snapshot_tests.rs"]
+mod snapshot_tests;
 
 /// What a direction did (§7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +49,9 @@ pub enum Outcome<K> {
 pub struct FocusEngine<K> {
     scopes: Vec<(InputOwner, FocusKey<K>, Option<GroupId>)>,
     remembered: Vec<((EntryId, GroupId), K)>,
+    /// Derived read projections; canonical state remains the ordered memory above.
+    read_snapshots: Vec<(EntryId, Arc<[(GroupId, K)]>)>,
+    empty_snapshot: Arc<[(GroupId, K)]>,
     /// The engine's last-resort fallback (group policy → first) fired: logged once.
     fell_back: bool,
 }
@@ -59,6 +67,8 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
         Self {
             scopes: Vec::new(),
             remembered: Vec::new(),
+            read_snapshots: Vec::new(),
+            empty_snapshot: Arc::from([]),
             fell_back: false,
         }
     }
@@ -66,6 +76,17 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
     /// The current focus of a scope.
     pub fn current(&self, owner: InputOwner) -> Option<FocusKey<K>> {
         self.scopes.iter().find(|(o, _, _)| *o == owner).map(|(_, k, _)| *k)
+    }
+
+    /// Read-only context for exactly this input scope. System ownership exposes no page history.
+    pub fn read(&self, owner: InputOwner) -> super::machine::FocusRead<K> {
+        super::machine::FocusRead {
+            current: self.current(owner),
+            remembered: match owner {
+                InputOwner::Entry(entry) => self.remembered_snapshot(entry),
+                _ => self.empty_snapshot.clone(),
+            },
+        }
     }
 
     /// The group the current focus was seated in, when known (what a recording carries so a
@@ -77,9 +98,16 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
     fn remember(&mut self, key: FocusKey<K>, group: GroupId) {
         let id = (key.entry, group);
         match self.remembered.iter_mut().find(|(g, _)| *g == id) {
+            Some((_, k)) if *k == key.elem => return,
             Some((_, k)) => *k = key.elem,
             None => self.remembered.push((id, key.elem)),
         }
+        self.refresh_snapshot(key.entry);
+    }
+
+    /// Dispatcher-validated master/detail projection; never changes the current scope or key.
+    pub(crate) fn remember_projected(&mut self, entry: EntryId, group: GroupId, elem: K) {
+        self.remember(FocusKey { entry, elem }, group);
     }
 
     fn remembered_in(&self, entry: EntryId, group: GroupId) -> Option<K> {
@@ -93,8 +121,24 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
         self.remembered.iter().filter_map(|((e, g), k)| (*e == entry).then_some((*g, *k))).collect()
     }
 
+    /// Immutable, entry-scoped read projection for screen context.
+    pub fn remembered_snapshot(&self, entry: EntryId) -> Arc<[(GroupId, K)]> {
+        self.read_snapshots.iter().find(|(e, _)| *e == entry)
+            .map_or_else(|| self.empty_snapshot.clone(), |(_, snapshot)| snapshot.clone())
+    }
+
+    fn refresh_snapshot(&mut self, entry: EntryId) {
+        let snapshot = self.remembered_for(entry).into();
+        if let Some((_, old)) = self.read_snapshots.iter_mut().find(|(e, _)| *e == entry) {
+            *old = snapshot;
+        } else {
+            self.read_snapshots.push((entry, snapshot));
+        }
+    }
+
     pub fn restore_remembered(&mut self, entry: EntryId, saved: &[(GroupId, K)]) {
         self.remembered.retain(|((e, _), _)| *e != entry);
+        self.read_snapshots.retain(|(e, _)| *e != entry);
         for &(group, elem) in saved {
             self.remember(FocusKey { entry, elem }, group);
         }
@@ -130,6 +174,7 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
         self.scopes
             .retain(|(o, k, _)| !(k.entry == entry || *o == InputOwner::Entry(entry)));
         self.remembered.retain(|((e, _), _)| *e != entry);
+        self.read_snapshots.retain(|(e, _)| *e != entry);
     }
 
     /// Seat focus on entering a screen (§3.4 `Enter`): a fresh enter lands by the target — an
@@ -160,19 +205,38 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
                     return Outcome::Nothing;
                 }
                 let from = head_of(spec.extent);
-                (self.seat_in(f, spec, from, cx), By::Restore)
+                (self.seat_in(f, &groups, spec, from, cx), By::Restore)
             }
         };
         let group = f.group_of(&key.elem, cx);
-        self.set(owner, key, group, by)
+        let outcome = self.set(owner, key, group, by);
+        // Enter is also a reveal request. An evicted body is new even when this scope's
+        // retained cursor already names the restored key; it still needs the notification.
+        if matches!(outcome, Outcome::Nothing) {
+            Outcome::Moved { from: Some(key), to: key, by }
+        } else {
+            outcome
+        }
     }
 
     /// Land in `spec` by its `Seat` policy from a source placement.
-    fn seat_in<H: Host<Elem = K>>(&self, f: &dyn Focusable<H>, spec: &GroupSpec, from: Placed, cx: &Cx<'_, H>) -> FocusKey<K> {
+    fn seat_in<H: Host<Elem = K>>(&self, f: &dyn Focusable<H>, groups: &[GroupSpec], spec: &GroupSpec, from: Placed, cx: &Cx<'_, H>) -> FocusKey<K> {
         let entry_of = |k: FocusKey<K>| k.entry;
         let projected = f.seat(spec.id, from, cx);
         match spec.seat {
             Seat::Nearest | Seat::Projected => projected,
+            Seat::ProjectedFrom(source_group) => {
+                let entry = projected.entry;
+                let source = groups.iter().find(|g| g.id == source_group && g.len > 0)
+                    .and_then(|_| self.remembered_in(entry, source_group))
+                    .map(|elem| f.reconcile(FocusKey { entry, elem }, cx))
+                    .filter(|key| key.entry == entry && f.group_of(&key.elem, cx) == Some(source_group))
+                    .and_then(|key| f.place(&key.elem, cx, At::SpringTarget));
+                // `from` is a pure projection input, not a new current/remembered cursor. A
+                // surviving identity is placed at its NEW index after reorder. Reconciliation
+                // can recover a deleted key only within the same entry and source group.
+                source.map_or(projected, |source| f.seat(spec.id, source, cx))
+            }
             Seat::First => f.seat(spec.id, head_of(spec.extent), cx),
             Seat::Remembered => match self.remembered_in(entry_of(projected), spec.id) {
                 Some(k) => FocusKey {
@@ -226,7 +290,7 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
                 return Outcome::Nothing;
             };
             self.fell_back = true;
-            let key = self.seat_in(f, spec, head_of(spec.extent), cx);
+            let key = self.seat_in(f, &groups, spec, head_of(spec.extent), cx);
             return self.set(owner, key, Some(spec.id), By::Dir);
         };
         let Some(cur_group) = f.group_of(&cur.elem, cx) else {
@@ -245,7 +309,7 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
                     clip: Rect::FULL,
                     index: None,
                 });
-                let key = self.seat_in(f, spec, from, cx);
+                let key = self.seat_in(f, &groups, spec, from, cx);
                 return self.set(owner, key, Some(spec.id), By::Dir);
             }
         }
@@ -264,7 +328,7 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
                 let Some(dest) = geometric(&groups, cur_group, from.rect, dir) else {
                     return Outcome::Nothing;
                 };
-                let key = self.seat_in(f, dest, from, cx);
+                let key = self.seat_in(f, &groups, dest, from, cx);
                 self.set(owner, key, Some(dest.id), By::Dir)
             }
         }
@@ -287,11 +351,16 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
     /// The element kind of the current focus's group (§7.4): what OK arms.
     pub fn kind_of<H: Host<Elem = K>>(&self, owner: InputOwner, f: &dyn Focusable<H>, cx: &Cx<'_, H>) -> Option<(FocusKey<K>, ElemKind)> {
         let cur = self.current(owner)?;
-        let g = f.group_of(&cur.elem, cx)?;
+        self.kind_of_key(cur, f, cx).map(|kind| (cur, kind))
+    }
+
+    /// Pointer presses name the hit key, which need not be the current cursor (Hover::Ignore).
+    pub fn kind_of_key<H: Host<Elem = K>>(&self, key: FocusKey<K>, f: &dyn Focusable<H>, cx: &Cx<'_, H>) -> Option<ElemKind> {
+        let g = f.group_of(&key.elem, cx)?;
         let mut groups = Vec::new();
         f.groups(cx, &mut groups);
         let spec = groups.iter().find(|s| s.id == g)?;
-        Some((cur, spec.elem))
+        Some(spec.elem)
     }
 
     /// Take the once-logged fallback flag.

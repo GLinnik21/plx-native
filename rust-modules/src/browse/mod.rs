@@ -39,7 +39,7 @@ use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
 use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Page size for section listings. Two grid screens' worth (10 rows × 6) — big enough that a
 /// full-screen scroll rarely waits, small enough that a page parse stays invisible on-frame.
@@ -254,7 +254,7 @@ pub(crate) struct GenreEntry {
 ///
 /// `Failed` describes the last FETCH, not the store: a mid-scroll page failure on a populated
 /// section is Failed with items still on screen, which is why the screen's read-out projects this
-/// state and the store TOGETHER (`ui::library`'s `readout_of`, where that whole decision lives as
+/// state and the store TOGETHER (`screens::library`'s `readout`, where that whole decision lives as
 /// one pure function) rather than reading the state alone — the same rule `pms::HubState` and
 /// `StatusKind::Empty` state, that an empty answer is an answer and only a fault is a fault.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -274,6 +274,21 @@ pub(crate) enum SecFetch {
 }
 
 pub(crate) mod section_hubs;
+pub(crate) mod view;
+
+/// A tier-three application bookmark, frozen only at navigation boundaries. It is not
+/// current focus; a live Library entry keeps its authoritative memory in FocusEngine.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Cursor {
+    pub at: CursorAt,
+    pub scroll: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CursorAt {
+    ItemKey { sid: ServerId, rk: String, slot: usize },
+    SlotIndex(usize),
+}
 
 /// Per-section browse state: the current query, the server-driven menus, the sparse item
 /// store, the library's own published shelves, and the remembered view (focus/scroll survive
@@ -283,14 +298,14 @@ struct SecState {
     sort_idx: usize,
     sort_desc: bool,
     unwatched: bool,
-    genre: Option<GenreEntry>,
+    genre: Option<Arc<GenreEntry>>,
     // menus (kept across re-queries)
-    sorts: Vec<SortEntry>,
-    genres: Vec<GenreEntry>,
+    sorts: Arc<Vec<SortEntry>>,
+    genres: Arc<Vec<GenreEntry>>,
     genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't re-spawn
     /// per-letter (label, count) in titleSort order, from `/firstCharacter` — the letter rail.
     /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
-    letters: Vec<(String, i64)>,
+    letters: Arc<Vec<(String, i64)>>,
     letters_done: bool,
     /// **The library's OWN shelves** — `Library Recommended`, as its server's owner arranged it.
     /// A field here rather than a store of its own because this struct is already the per-section
@@ -301,9 +316,7 @@ struct SecState {
     fetch: SecFetch, // what the last page fetch for this section did
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
-    // remembered view
-    focus: usize,
-    scroll: f32,
+    cursor: Option<Arc<Cursor>>,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -313,9 +326,11 @@ struct SecState {
 /// per item in the library — the previous shape allocated every slot of a 20 000-title section
 /// in the drain, on the first page's landing. `get`/`set` index by absolute item index exactly
 /// as the flat vector did; `page_missing` is the fetch scan, over pages.
-#[derive(Default)]
+/// Cloning retains the page table in O(1). Writes copy only the table of page handles and
+/// changed pages, never the whole loaded catalog. This is the Library read-view backing.
+#[derive(Clone, Default)]
 struct SecItems {
-    pages: Vec<Option<Box<[Option<PmsMovie>]>>>,
+    pages: Arc<Vec<Option<Arc<Vec<Option<PmsMovie>>>>>>,
     len: usize,
 }
 
@@ -325,13 +340,25 @@ impl SecItems {
         self.len
     }
     fn clear(&mut self) {
-        self.pages.clear();
+        self.pages = Arc::default();
         self.len = 0;
     }
     /// Size to the listing: pages are kept where they still fit, dropped past the new end.
     fn resize(&mut self, total: usize) {
+        if total == self.len {
+            return;
+        }
         self.len = total;
-        self.pages.resize_with(total.div_ceil(PAGE), || None);
+        let pages = Arc::make_mut(&mut self.pages);
+        pages.resize_with(total.div_ceil(PAGE), || None);
+        // Forget a truncated tail, even when the listing later grows in the same page.
+        if !total.is_multiple_of(PAGE) {
+            if let Some(Some(page)) = pages.last_mut() {
+                if page.len() > total % PAGE {
+                    Arc::make_mut(page).truncate(total % PAGE);
+                }
+            }
+        }
     }
     fn get(&self, i: usize) -> Option<&PmsMovie> {
         if i >= self.len {
@@ -345,11 +372,13 @@ impl SecItems {
         if i >= self.len {
             return;
         }
-        let Some(slot) = self.pages.get_mut(i / PAGE) else { return };
+        let Some(slot) = Arc::make_mut(&mut self.pages).get_mut(i / PAGE) else { return };
+        let n = PAGE.min(self.len - (i / PAGE) * PAGE);
         let page = slot.get_or_insert_with(|| {
-            let n = PAGE.min(self.len - (i / PAGE) * PAGE);
-            (0..n).map(|_| None).collect::<Vec<_>>().into_boxed_slice()
+            Arc::new((0..n).map(|_| None).collect())
         });
+        let page = Arc::make_mut(page);
+        page.resize_with(n, || None);
         if let Some(cell) = page.get_mut(i % PAGE) {
             *cell = Some(m);
         }
@@ -359,11 +388,26 @@ impl SecItems {
         match self.pages.get(p) {
             None => false,
             Some(None) => true,
-            Some(Some(page)) => page.iter().any(|o| o.is_none()),
+            Some(Some(page)) => {
+                page.len() < PAGE.min(self.len - p * PAGE) || page.iter().any(|o| o.is_none())
+            }
         }
     }
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut PmsMovie> {
-        self.pages.iter_mut().flatten().flat_map(|page| page.iter_mut()).flatten()
+    /// A read scan first: an optimistic edit must not clone unrelated retained pages.
+    fn set_watched(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+        let matches = |m: &PmsMovie| crate::plex::same_item((m.sid, &m.rk), (sid, rk));
+        let mut hit = false;
+        for p in 0..self.pages.len() {
+            if !self.pages[p].as_ref().is_some_and(|page| page.iter().flatten().any(matches)) {
+                continue;
+            }
+            let page = Arc::make_mut(&mut self.pages)[p].as_mut().unwrap();
+            for m in Arc::make_mut(page).iter_mut().flatten().filter(|m| matches(m)) {
+                crate::pms::set_watched(m, on);
+                hit = true;
+            }
+        }
+        hit
     }
     #[cfg(test)]
     fn from_vec(v: Vec<Option<PmsMovie>>) -> Self {
@@ -385,17 +429,16 @@ impl Default for SecState {
             sort_desc: false,
             unwatched: false,
             genre: None,
-            sorts: Vec::new(),
-            genres: Vec::new(),
+            sorts: Arc::default(),
+            genres: Arc::default(),
             genres_done: false,
-            letters: Vec::new(),
+            letters: Arc::default(),
             letters_done: false,
             hubs: Default::default(),
             fetch: SecFetch::Loading,
             total: -1,
             items: SecItems::default(),
-            focus: 0,
-            scroll: 0.0,
+            cursor: None,
         }
     }
 }
@@ -533,8 +576,7 @@ fn requery() {
         st.fetch = SecFetch::Loading;
         st.total = -1;
         st.items.clear();
-        st.focus = 0;
-        st.scroll = 0.0;
+        st.cursor = None; // A bookmark from the replaced query cannot seed a new entry.
     }
 }
 
@@ -603,7 +645,7 @@ pub(crate) fn table_epoch() -> u32 {
 static SRC_FACTS_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// **The generation of everything the Sources list DRAWS** — the table's shape plus the facts its
-/// rows state. The number both surfaces that draw that list watch (`ui::library`'s panel and
+/// rows state. The number both surfaces that draw that list watch (`screens::library::menu` and
 /// `screens::onboard`'s route), because a surface keyed on the SHAPE alone goes on saying "Films"
 /// long
 /// after the count arrived and heads an unnamed group with no header at all — which is precisely
@@ -680,8 +722,10 @@ fn sync_roster() {
                     // The machine NAME is a FILL: a roster that later renames a server we already
                     // have a name for is deliberately not followed, because a machine name changing
                     // under an open panel is churn, not news.
-                    if s.name.is_empty() {
+                    if s.name.is_empty() && !f.name.is_empty() {
                         s.name = f.name.clone();
+                        SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst);
+                        crate::ui::idle::invalidate();
                     }
                     // The CREDIT and the relationship are FOLLOWS, and this cache used to refuse
                     // both — the whole block sat behind `name.is_empty() || handle.is_empty()`, so
@@ -963,6 +1007,7 @@ pub(crate) fn cur() -> usize {
 /// Takes the section rather than reading `cur()`, because the chip must relabel on the PRESS frame:
 /// its name comes from the queued section (`view_section`) and a handle resolved from the committed
 /// one would pop in 70 ms later, changing the chip's measured width mid-fade.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn handle_of(i: usize) -> &'static str {
     sections()
         .get(i)
@@ -1035,6 +1080,9 @@ fn apply_source_outcome(
         return true;
     }
     s.set_probe_outcome(outcome);
+    // Both page and discovery results update this projection immediately. A later roster sync
+    // sees the already-matching state, so it cannot supply this publication notification.
+    SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst);
     // A server that has come back is worth re-asking properly (its library list may have moved on);
     // one that has gone means the Sources list must dim its group NOW rather than at the next press.
     if outcome == crate::plex::probe::Outcome::Reachable {
@@ -1234,7 +1282,7 @@ fn load_remembered(sess: &crate::plex::session::Session, user: &str) {
 
 /// **Remember the library the viewer is now browsing, for its type.**
 ///
-/// Called from the COMMIT of a user-driven page change (`ui::library`'s `apply_section`), never
+/// Called by `stores::browse` when it applies an addressed Library choice commit, never
 /// from [`set_cur`] itself. The distinction is the whole correctness of the record: `set_cur` also
 /// runs from [`repoint_cur`], which MOVES the cursor when the library under it stops being a
 /// favourite, and from the boot path before discovery has settled. Recording either would write
@@ -1280,6 +1328,7 @@ pub(crate) fn note_library_choice(i: usize) {
 /// library keeps the *Movies* pill lit, which is what "a pill is a type" means for the selection
 /// capsule. `None` when that type draws no pill, which a section being browsed while its type has
 /// just lost its last favourite can produce for exactly one frame before [`repoint_cur`] runs.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn tab_of_section(s: usize) -> Option<usize> {
     section_kind(s).and_then(tab_of_kind)
 }
@@ -1761,6 +1810,7 @@ pub(crate) fn source_groups() -> Vec<SrcGroup> {
 
 /// The TYPE the Source panel is scoped to: the kind of the library currently being browsed, which
 /// is also the kind of the selected TAB. `None` only before any section exists.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 fn cur_kind() -> Option<SecKind> {
     sections().get(cur()).map(|s| s.kind)
 }
@@ -1789,6 +1839,7 @@ fn cur_kind() -> Option<SecKind> {
 /// what is left here is one level and one tick. `pinned`/`last_pinned` stay whole-roster facts on
 /// the row regardless, because the never-empty refusal still counts every favourite rather than
 /// the visible ones.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn source_rows() -> Vec<SrcRow> {
     let Some(kind) = cur_kind() else {
         return Vec::new();
@@ -1800,7 +1851,7 @@ pub(crate) fn source_rows() -> Vec<SrcRow> {
 /// the library chip's `1 of 2`.
 ///
 /// It answers the question the chip could not: the chip's PRESENCE already means "there is
-/// somewhere else to go" ([`crate::ui::library`]'s `lib_chip_on`), but that is knowledge the user
+/// somewhere else to go" (the legacy Library chip's presence rule), but that is knowledge the user
 /// has no way to have. Issue #68 is what it costs — two TV libraries behind one *TV Shows* pill,
 /// the second one read as missing rather than as one press away.
 ///
@@ -1814,6 +1865,7 @@ pub(crate) fn source_rows() -> Vec<SrcRow> {
 ///
 /// Allocation-free, unlike `source_rows`, because the chip's cache KEY is rebuilt every frame on
 /// this screen's hot path and cloning every row's title to count them is not what that key is for.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn kind_position(i: usize) -> Option<(usize, usize)> {
     let kind = section_kind(i)?;
     if !sections().get(i)?.pinned {
@@ -1840,6 +1892,7 @@ pub(crate) fn kind_position(i: usize) -> Option<(usize, usize)> {
 /// *TV Shows* tab and then never corrected itself: the row's cache is keyed on the viewed section,
 /// which does not move again at the commit, so the stale answer was cached for the life of the
 /// page. Same predicate, same order, same projection — only the scope's source differs.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn source_rows_for(i: usize) -> Vec<SrcRow> {
     let Some(kind) = section_kind(i) else {
         return Vec::new();
@@ -1920,14 +1973,9 @@ pub(crate) fn recheck_shares() {
 // ---- public surface: items ------------------------------------------------------------------
 
 /// totalSize of the current query, or -1 while the first page is still out.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn total() -> i64 {
     cur_state().map(|s| s.total).unwrap_or(-1)
-}
-/// Item at absolute index `i` — None = not yet fetched (draw a skeleton). The reference is
-/// valid until the next [`pump`]/re-query (main-thread only, same lifetime rule as
-/// `pms::movie`).
-pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
-    cur_state().and_then(|s| s.items.get(i))
 }
 /// Flip `(sid, rk)`'s watched state in every section's item store — the optimistic half of a
 /// view-state write, for the browse grid.
@@ -1950,11 +1998,8 @@ pub(crate) fn item(i: usize) -> Option<&'static PmsMovie> {
 pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) -> bool {
     let states = unsafe { &mut *addr_of_mut!(STATES) };
     let mut hit = false;
-    for m in states.iter_mut().flat_map(|s| s.items.iter_mut()) {
-        if crate::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-            crate::pms::set_watched(m, on);
-            hit = true;
-        }
+    for state in states.iter_mut() {
+        hit |= state.items.set_watched(sid, rk, on);
     }
     hit
 }
@@ -1976,8 +2021,8 @@ pub(crate) fn fetch_state() -> SecFetch {
 /// disagreed for the one that doesn't. A failed first page leaves `total` at -1 forever, so this
 /// used to spin forever with it.
 ///
-/// **Only the suite calls it now** — the screen asks `ui::library::readout()`, which folds this
-/// state together with the section TABLE's. Kept, and marked, because the three tests that assert
+/// **Only the suite calls it now** — `screens::library::readout` folds retained listing state
+/// together with the section TABLE's. Kept, and marked, because the tests that assert
 /// it are asserting exactly the distinction above; `rustc`'s dead-code warning does not count test
 /// callers, so this reads as removable and is not.
 #[allow(dead_code)]
@@ -1986,7 +2031,7 @@ pub(crate) fn loading_initial() -> bool {
 }
 
 /// The same three states for the SOURCE behind what the screen is showing — the layer above a
-/// page, and the other half of the Library's read-out ([`crate::ui::library`]'s `readout_of`).
+/// page, and the other half of `screens::library`'s pure `readout` projection.
 ///
 /// It is a PROJECTION of [`BrowseSource`]'s flags, not a fourth field: `reachable` and
 /// `sections_done` already carry the whole answer, per source, which is strictly more than the one
@@ -2010,7 +2055,7 @@ pub(crate) fn cur_source_state() -> SecFetch {
     }
 }
 /// Seed the roster with `n` sources in a chosen reachability, for a host test on the SCREEN side —
-/// `ui::library`'s read-out is a projection of these flags, and its tests cannot reach this
+/// the Library read-out is a projection of these flags, and its tests cannot reach this
 /// module's private ones. The real transition needs a server that refuses to answer, which no host
 /// tier has. Compiled out of every shipped build.
 #[cfg(test)]
@@ -2059,7 +2104,7 @@ pub(crate) fn seed_sources_for_test(n: usize, reachable: bool) {
 }
 
 /// One reachable, named source with one library per entry of `pinned`, at exactly the pin state
-/// given — a host test on the PIN side's shortcut. [`seed_sources_for_test`] gives `ui::library`'s
+/// given — a host test on the PIN side's shortcut. [`seed_sources_for_test`] gives screen
 /// tests a roster with no libraries at all, which is right for grading a source's reachability word
 /// and wrong for anything that toggles or commits a pin: `plex::pins::record` needs a real
 /// `(machine_id, key)` pair to write anything down, and an empty-`machine_id` source (what
@@ -2165,18 +2210,14 @@ pub(crate) fn retry_cur_source() {
     }
 }
 
-/// The MACHINE name and the OWNER's handle of the source behind what the screen is showing.
-///
-/// These are the only two identifying strings the Library's failure read-out is allowed to say
-/// (`ui::library`'s `dead_strs` — no address, no path, no machineIdentifier: `ui::stats`' rule, for
-/// its reason). Either can be `""` and each means something different by it: an unknown machine has
-/// not named itself yet, while an empty HANDLE means the source is your OWN server and there is no
-/// owner to name — drawn as the absence of a line, never as an empty one.
-pub(crate) fn cur_source_labels() -> (&'static str, &'static str) {
-    cur_source_idx()
-        .and_then(|i| sources().get(i))
-        .map(|s| (s.name.as_str(), s.handle.as_str()))
-        .unwrap_or(("", ""))
+/// Discovery may fail before there is a section to address. Retry exactly this source
+/// publication; a retired profile/table or removed server cannot affect its replacement.
+pub(crate) fn retry_source(epoch: u32, sid: ServerId) -> bool {
+    if table_epoch() != epoch { return false; }
+    let Some(index) = sources().iter().position(|source| source.sid == sid) else { return false };
+    if cur_source_idx() == Some(index) { unsafe { RETRY_CD = 0 }; }
+    source_mut(index).unwrap().retry_cd = 0;
+    true
 }
 
 /// The source behind what the screen is showing: the section at [`cur`], else the current server —
@@ -2199,23 +2240,6 @@ fn cur_source_idx() -> Option<usize> {
 pub(crate) fn sorts() -> &'static [SortEntry] {
     cur_state().map(|s| s.sorts.as_slice()).unwrap_or(&[])
 }
-pub(crate) fn sort_idx() -> usize {
-    cur_state().map(|s| s.sort_idx).unwrap_or(0)
-}
-pub(crate) fn sort_desc() -> bool {
-    cur_state().map(|s| s.sort_desc).unwrap_or(false)
-}
-/// Current sort's display title for the toolbar chip ("Title" until the menus land).
-pub(crate) fn sort_label() -> &'static str {
-    let st = match cur_state() {
-        Some(s) => s,
-        None => return "",
-    };
-    st.sorts
-        .get(st.sort_idx)
-        .map(|s| s.title.as_str())
-        .unwrap_or("Title")
-}
 /// Apply a sort by its stable SERVER KEY rather than by its position in the current section's
 /// menu, and say whether it landed.
 ///
@@ -2237,14 +2261,14 @@ pub(crate) fn set_sort_by_key(key: &str, desc: bool) -> bool {
     true
 }
 
-/// The active sort's stable key and direction — what a queued action carries.
-pub(crate) fn sort_key_now() -> (String, bool) {
-    let st = cur_state();
-    let key = sorts()
-        .get(sort_idx())
-        .map(|s| s.key.clone())
-        .unwrap_or_default();
-    (key, st.map(|s| s.sort_desc).unwrap_or(false))
+/// Apply an explicit unwatched-filter value. A deferred UI transaction carries intent, not a
+/// toggle which could invert a section that changed while the page was fading.
+pub(crate) fn set_unwatched(on: bool) -> bool {
+    let Some(st) = state_mut(cur()) else { return false };
+    if st.unwatched == on { return true; }
+    st.unwatched = on;
+    requery();
+    true
 }
 
 /// Apply a genre by its stable TAG ID rather than by its position, for [`set_sort_by_key`]'s
@@ -2284,31 +2308,14 @@ pub(crate) fn set_sort(idx: usize) {
 
 // ---- public surface: filters ----------------------------------------------------------------
 
-pub(crate) fn unwatched() -> bool {
-    cur_state().map(|s| s.unwatched).unwrap_or(false)
-}
-pub(crate) fn toggle_unwatched() {
-    let c = cur();
-    if let Some(st) = state_mut(c) {
-        st.unwatched = !st.unwatched;
-    }
-    requery();
-}
 pub(crate) fn genres() -> &'static [GenreEntry] {
     cur_state().map(|s| s.genres.as_slice()).unwrap_or(&[])
-}
-pub(crate) fn genre_sel() -> Option<&'static GenreEntry> {
-    cur_state().and_then(|s| s.genre.as_ref())
-}
-/// Toolbar chip text: the active genre's name, else "All".
-pub(crate) fn filter_label() -> &'static str {
-    genre_sel().map(|g| g.title.as_str()).unwrap_or("All")
 }
 /// Apply a genre pick (None = All). Re-queries.
 pub(crate) fn set_genre(idx: Option<usize>) {
     let c = cur();
     let Some(st) = state_mut(c) else { return };
-    st.genre = idx.and_then(|i| st.genres.get(i).cloned());
+    st.genre = idx.and_then(|i| st.genres.get(i).cloned()).map(Arc::new);
     requery();
 }
 /// The ONE query-independent directory-fetch idiom (genres, letters): `done`-gated single
@@ -2411,18 +2418,10 @@ pub(crate) fn kick_genres() {
 
 // ---- letter rail (firstCharacter index) -----------------------------------------------------
 
-/// Per-letter (label, count) of the current section, or empty until [`kick_letters`] lands.
-pub(crate) fn letters() -> &'static [(String, i64)] {
-    cur_state().map(|s| s.letters.as_slice()).unwrap_or(&[])
-}
-/// Absolute item index of the first title under letter `i` — the prefix sum of the counts
-/// before it (jump = focus/scroll move, never a filter: Emby semantics).
-pub(crate) fn letter_start(i: usize) -> usize {
-    letters().iter().take(i).map(|(_, n)| *n as usize).sum()
-}
 /// The rail is only truthful on the unfiltered ascending title listing: the letter counts
 /// describe exactly that ordering. Menus not landed yet ⇒ the server default (titleSort asc)
 /// is in effect, so the rail may show.
+#[cfg(test)] // Legacy read facade; production Library reads retained views.
 pub(crate) fn rail_available() -> bool {
     let Some(st) = cur_state() else { return false };
     let title_asc = match st.sorts.get(st.sort_idx) {
@@ -2446,15 +2445,18 @@ pub(crate) fn kick_letters() {
 
 // ---- remembered view ------------------------------------------------------------------------
 
-pub(crate) fn saved_view() -> (usize, f32) {
-    cur_state().map(|s| (s.focus, s.scroll)).unwrap_or((0, 0.0))
+/// Resolve an addressed Library command without leaking a borrowed global section table.
+pub(crate) fn resolve_section(epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
+    if epoch != table_epoch() { return None; }
+    sections().iter().enumerate().find_map(|(i, section)|
+        (section.key == key && section_sid(i) == Some(sid)).then_some(i))
 }
-pub(crate) fn save_view(focus: usize, scroll: f32) {
-    let c = cur();
-    if let Some(st) = state_mut(c) {
-        st.focus = focus;
-        st.scroll = scroll;
-    }
+
+pub(crate) fn save_cursor(index: usize, cursor: Cursor) -> bool {
+    let Some(state) = state_mut(index) else { return false };
+    if state.cursor.as_deref() == Some(&cursor) { return false; }
+    state.cursor = Some(Arc::new(cursor));
+    true
 }
 
 // ---- source discovery, off the main thread ---------------------------------------------------
@@ -2639,7 +2641,6 @@ fn land_discovery() {
         SrcWhat::Sections(list) => list.is_some(),
         SrcWhat::Counts(counts) => !counts.is_empty(),
     };
-    let prior_state = sources().get(si).map(|s| s.state);
     let fact_name = (!name.is_empty()).then_some(name.as_str());
     let committed = crate::plex::commit_reachability_if_current(
         client.id(),
@@ -2660,9 +2661,6 @@ fn land_discovery() {
                                                               // a re-point cannot file this old lifecycle's name under a replacement client.
                                                               // Ownership is carried through unchanged by the registry: this answer learned a
                                                               // machine name, not a sharing grant.
-            }
-            if prior_state != sources().get(si).map(|s| s.state) {
-                SRC_FACTS_GEN.fetch_add(1, Ordering::SeqCst); // the group dims, or comes back
             }
             match what {
                 SrcWhat::Sections(list) => {
@@ -2760,13 +2758,13 @@ pub(crate) fn pump() -> bool {
     land_directory(&GENRE_FETCHING, &GENRE_RESULT, |st, list| {
         st.genres_done = true;
         if st.genres.is_empty() {
-            st.genres = list;
+            st.genres = Arc::new(list);
         }
     });
     land_directory(&LETTERS_FETCHING, &LETTER_RESULT, |st, list| {
         st.letters_done = true;
         if st.letters.is_empty() {
-            st.letters = list;
+            st.letters = Arc::new(list);
         }
     });
     // page landing
@@ -2811,7 +2809,7 @@ pub(crate) fn pump() -> bool {
                             st.fetch = SecFetch::Ready;
                             if let Some(sorts) = r.sorts {
                                 if st.sorts.is_empty() {
-                                    st.sorts = sorts;
+                                    st.sorts = Arc::new(sorts);
                                 }
                             }
                             if st.total != r.total {
@@ -2969,9 +2967,9 @@ fn maybe_spawn() {
 }
 
 // ---------------------------------------------------------------------------------------
-/// A two-source table for tests OUTSIDE this module (`ui::home`'s focus walk): your Movies and
-/// TV Shows, a friend's films and shows that fold onto them, and a friend's music that does not
-/// — five libraries projecting to three pills. Writes crate globals, so the caller holds
+/// A two-source table for tests OUTSIDE this module (the top strip's destination walk): your Movies and
+/// TV Shows, and a friend's films and shows that fold onto them — four libraries projecting to
+/// two library-type pills (Home/Search are supplied by chrome). Writes crate globals, so the caller holds
 /// [`crate::testlock::serial`] and `reset()`s afterwards.
 #[cfg(test)]
 pub(crate) fn seed_two_source_table_for_test() {
@@ -2997,6 +2995,25 @@ pub(crate) fn seed_two_source_table_for_test() {
             (2, "Film Club".into(), SecKind::Show),
         ],
     );
+}
+
+/// The same fixture attached to real synthetic registry slots, for dispatcher tests that run
+/// the production store pump. The legacy fixture's UNSET sources intentionally have no client
+/// and are removed by roster reconciliation; they are only suitable for pure screen tests.
+#[cfg(test)]
+pub(crate) fn seed_registered_table_for_test(sids: [ServerId; 2]) {
+    seed_two_source_table_for_test();
+    for (index, sid) in sids.into_iter().enumerate() {
+        let client = crate::plex::client_for(sid).expect("registered fixture source");
+        let source = source_mut(index).unwrap();
+        source.sid = sid;
+        source.client_addr = client as *const _ as usize;
+        source.token_gen = client.token_gen();
+        crate::plex::describe_server(sid, &source.name, &source.handle, source.owned);
+    }
+    for state in unsafe { &mut *addr_of_mut!(STATES) }.iter_mut() {
+        state.letters_done = true;
+    }
 }
 
 /// One more library landing on source `src`, for tests OUTSIDE this module — the discovery
@@ -3037,15 +3054,132 @@ pub(crate) fn seed_items_for_test(n: usize) {
 }
 
 #[cfg(test)]
+pub(crate) fn seed_letter_counts_for_test(letters: &[(&str, i64)]) {
+    if let Some(state) = state_mut(cur()) {
+        state.letters = Arc::new(letters.iter().map(|(label, count)| ((*label).into(), *count)).collect());
+        state.letters_done = true;
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn seed_query_choices_for_test(sorts: Vec<SortEntry>, genres: Vec<GenreEntry>) {
+    if let Some(state) = state_mut(cur()) {
+        state.sorts = Arc::new(sorts);
+        state.genres = Arc::new(genres);
+        state.genres_done = true;
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn append_section_for_test(src: usize, key: i64, title: &str, kind: SecKind) {
     append_sections(src, vec![(key, title.into(), kind)]);
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_pages_copy_only_changed_page_and_keep_sparse_holes() {
+        let mut items = super::SecItems::default();
+        items.resize(20_000);
+        let sid = super::ServerId::UNSET;
+        let other = super::ServerId::from_raw(1);
+        items.set(0, super::PmsMovie { sid, rk: "7".into(), ..Default::default() });
+        items.set(super::PAGE, super::PmsMovie { sid: other, rk: "7".into(), ..Default::default() });
+        let old = items.clone();
+        assert!(super::Arc::ptr_eq(&old.pages, &items.pages));
+        assert_eq!(items.pages.iter().flatten().count(), 2);
+        assert!(!items.set_watched(sid, "missing", false));
+        assert!(super::Arc::ptr_eq(&old.pages, &items.pages));
+        assert!(items.set_watched(sid, "7", false));
+        assert!(!super::Arc::ptr_eq(&old.pages, &items.pages));
+        assert!(!super::Arc::ptr_eq(old.pages[0].as_ref().unwrap(), items.pages[0].as_ref().unwrap()));
+        assert!(super::Arc::ptr_eq(old.pages[1].as_ref().unwrap(), items.pages[1].as_ref().unwrap()));
+        assert!(!old.get(0).unwrap().unwatched);
+        assert!(items.get(0).unwrap().unwatched);
+        assert!(!items.get(super::PAGE).unwrap().unwatched);
+        items.set(super::PAGE * 2, super::PmsMovie::default());
+        assert!(old.get(super::PAGE * 2).is_none());
+        assert!(old.page_missing(2));
+        items.clear();
+        assert_eq!(old.len(), 20_000);
+        assert!(old.get(0).is_some());
+    }
+
+    #[test]
+    fn sparse_page_resize_matches_flat_storage_across_boundaries() {
+        let mut items = super::SecItems::default();
+        let mut flat: Vec<Option<String>> = Vec::new();
+        for size in [1, 2, 59, 60, 61, 122, 61, 60, 59, 60, 61, 0, 1, 121] {
+            let old = items.clone();
+            let old_flat = flat.clone();
+            items.resize(size);
+            flat.resize(size, None);
+            for i in 0..=size {
+                assert_eq!(items.get(i).map(|m| &m.rk), flat.get(i).and_then(Option::as_ref));
+            }
+            for i in 0..size {
+                if i % 3 == 0 {
+                    let rk = format!("{size}-{i}");
+                    items.set(i, super::PmsMovie { rk: rk.clone(), ..Default::default() });
+                    flat[i] = Some(rk);
+                }
+            }
+            for (p, chunk) in flat.chunks(super::PAGE).enumerate() {
+                assert_eq!(items.page_missing(p), chunk.iter().any(Option::is_none));
+            }
+            assert!(!items.page_missing(size.div_ceil(super::PAGE)));
+            for (i, expected) in old_flat.iter().enumerate() {
+                assert_eq!(old.get(i).map(|m| &m.rk), expected.as_ref());
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_page_growth_accepts_new_items() {
+        let mut items = super::SecItems::default();
+        items.resize(1);
+        items.set(0, super::PmsMovie::default());
+        items.resize(2);
+        assert!(items.page_missing(0));
+        items.set(1, super::PmsMovie { rk: "2".into(), ..Default::default() });
+        assert_eq!(items.get(1).map(|m| m.rk.as_str()), Some("2"));
+        assert!(!items.page_missing(0));
+    }
+
+    #[test]
+    fn sparse_page_shrink_does_not_resurrect_removed_items() {
+        let mut items = super::SecItems::from_vec(vec![
+            Some(super::PmsMovie::default()), Some(super::PmsMovie::default()),
+        ]);
+        items.resize(1);
+        items.resize(2);
+        assert!(items.get(1).is_none());
+        assert!(items.page_missing(0));
+    }
+
     use super::*;
 
     struct RegisteredCleanup;
+
+    #[test]
+    fn addressed_discovery_retry_rejects_retired_tables_and_other_sources() {
+        let _guard = crate::testlock::serial();
+        reset();
+        seed_sources_for_test(2, false);
+        source_mut(0).unwrap().retry_cd = 9;
+        source_mut(1).unwrap().retry_cd = 13;
+        let sid = sources()[1].sid;
+        let epoch = table_epoch();
+        assert!(retry_source(epoch, sid));
+        assert_eq!(sources()[0].retry_cd, 9);
+        assert_eq!(sources()[1].retry_cd, 0);
+        source_mut(1).unwrap().retry_cd = 17;
+        assert!(!retry_source(epoch.wrapping_add(1), sid));
+        assert!(!retry_source(epoch, ServerId::from_raw(99)));
+        assert_eq!(sources()[1].retry_cd, 17);
+        reset();
+    }
+
     impl Drop for RegisteredCleanup {
         fn drop(&mut self) {
             reset();
@@ -3093,11 +3227,11 @@ mod tests {
     {
         let (cleanup, sid, client) = registered_page_source();
         let state = state_mut(0).unwrap();
-        state.genres = vec![GenreEntry {
+        state.genres = Arc::new(vec![GenreEntry {
             id: "new".into(),
             title: "New Genre".into(),
-        }];
-        state.letters = vec![("N".into(), 7)];
+        }]);
+        state.letters = Arc::new(vec![("N".into(), 7)]);
         state.genres_done = false;
         state.letters_done = false;
         (cleanup, sid, client)
@@ -3153,11 +3287,11 @@ mod tests {
         LETTERS_FETCHING.store(true, Ordering::SeqCst);
         land_directory(&GENRE_FETCHING, &GENRE_RESULT, |st, list| {
             st.genres_done = true;
-            st.genres = list;
+            st.genres = Arc::new(list);
         });
         land_directory(&LETTERS_FETCHING, &LETTER_RESULT, |st, list| {
             st.letters_done = true;
-            st.letters = list;
+            st.letters = Arc::new(list);
         });
     }
 
@@ -3166,7 +3300,7 @@ mod tests {
         assert_eq!(state.genres.len(), 1);
         assert_eq!(state.genres[0].id, "new");
         assert_eq!(state.genres[0].title, "New Genre");
-        assert_eq!(state.letters, vec![("N".into(), 7)]);
+        assert_eq!(*state.letters, vec![("N".into(), 7)]);
         assert!(!state.genres_done);
         assert!(!state.letters_done);
     }
@@ -3193,6 +3327,30 @@ mod tests {
 
         reset();
         crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn filling_a_source_name_refreshes_the_retained_directory() {
+        let _g = crate::testlock::serial();
+        let _cleanup = RegisteredCleanup;
+        crate::plex::reset_servers_for_test();
+        reset();
+        let sid = crate::plex::register_for_test("browse-name-fill", "127.0.0.1", 1, "t", "cid");
+        crate::plex::describe_server(sid, "", "", true);
+        sync_roster();
+        let mut directory = view::DirectorySnapshot::default();
+        directory.capture();
+        let old = directory.clone();
+        let generation = source_list_gen();
+        crate::plex::describe_server_name(sid, "Learned");
+        sync_roster();
+        assert_ne!(source_list_gen(), generation);
+        directory.capture();
+        assert_eq!(directory.view().sources()[0].1.name, "Learned");
+        assert_eq!(old.view().sources()[0].1.name, "");
+        let generation = source_list_gen();
+        sync_roster();
+        assert_eq!(source_list_gen(), generation, "a steady name does not republish");
     }
 
     /// **A corrected credit reaches the Library panel.** `plex::servers::owner_credit` is the one
@@ -3331,6 +3489,45 @@ mod tests {
         );
         assert_eq!(sources()[0].name, "original");
         assert!(sections().is_empty());
+    }
+
+    #[test]
+    fn page_failure_and_recovery_republish_directory_reachability() {
+        let _g = crate::testlock::serial();
+        let (_cleanup, sid, client) = registered_resident_page_source();
+        crate::plex::publish_probe_result(sid, crate::plex::probe::Outcome::Reachable);
+        // A fully discovered, current lifecycle: neither directory discovery nor the next-page
+        // scheduler has work. Only the injected page results below can change the source.
+        let source = source_mut(0).unwrap();
+        source.client_addr = client as *const _ as usize;
+        source.token_gen = client.token_gen();
+        let mut directory = view::DirectorySnapshot::default();
+        directory.capture();
+        let original = directory.clone();
+        for (total, expected, fetch) in [
+            (-1, SourceState::Unreachable, SecFetch::Failed),
+            (-1, SourceState::Unreachable, SecFetch::Failed),
+            (1, SourceState::Reachable, SecFetch::Ready),
+        ] {
+            let changed = sources()[0].state != expected;
+            let generation = source_list_gen();
+            *PAGE_RESULT.lock().unwrap() = Some(PageResult {
+                client, token_gen: client.token_gen(), gen: query_gen(), sec: 0, start: 0,
+                items: if total < 0 { vec![] } else { vec![PmsMovie { sid, ..Default::default() }] },
+                total, sorts: None,
+            });
+            FETCHING.store(true, Ordering::SeqCst);
+            pump();
+            assert_eq!(sources()[0].state, expected);
+            assert_eq!(source_list_gen(), generation.wrapping_add(u32::from(changed)));
+            // A later roster sync cannot be relied on to supply a missing notification: its
+            // registry and local states already match after the page's atomic commit.
+            sync_roster();
+            directory.capture();
+            assert_eq!(directory.view().sources()[0].1.state, expected);
+            assert_eq!(directory.view().source_fetch(), fetch);
+            assert_eq!(original.view().sources()[0].1.state, SourceState::Reachable);
+        }
     }
 
     #[test]
@@ -3498,7 +3695,7 @@ mod tests {
         queue_directories_from(client, client.token_gen());
         let state = states().first().unwrap();
         assert_eq!(state.genres[0].id, "stale");
-        assert_eq!(state.letters, vec![("S".into(), 99)]);
+        assert_eq!(*state.letters, vec![("S".into(), 99)]);
         assert!(state.genres_done);
         assert!(state.letters_done);
     }
@@ -4309,7 +4506,7 @@ mod tests {
     }
 
     /// **The scope both the head's row and the panel it opens now share.** Two surfaces read this:
-    /// `ui::library`'s library row, and `build_source_menu` behind the row's `+N`. Neither may use
+    /// the owned Library row and its Sources menu behind `+N`. Neither may use
     /// [`source_rows`], which is scoped through `cur_kind()` and therefore lags a tab press by the
     /// length of the page fade — the row drew the MOVIE libraries under a *TV Shows* tab and kept
     /// them (its cache key is the viewed section, which does not move again at the commit), and the

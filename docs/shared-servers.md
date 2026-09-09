@@ -29,8 +29,8 @@ now used throughout — and the only ones to use in new work — are:
 | any public address | `203.0.113.9` / `198.51.100.7` (TEST-NET-3 / TEST-NET-2) |
 | a machine identifier | `aaaabbbb…` runs, never a real 40-hex id |
 
-Several are deliberately the **same character length** as what they replaced, because `ui/home.rs`
-asserts text widths against them. The live values live only in the gitignored
+Several are deliberately the **same character length** as what they replaced, because the owned
+Home's tests (`screens/home/tests.rs`) assert text widths against them. The live values live only in the gitignored
 `tests/manifest.local.json` and `src/config.local.h`, which is the whole reason those files are
 gitignored.
 

@@ -179,6 +179,16 @@ pub(crate) struct CardRow {
     pub base_y: f32,
 }
 impl CardRow {
+    /// Motion read by placement/reveal is behavioral state for an owned, replayable screen.
+    /// Destructure exhaustively so adding a field requires revisiting the census.
+    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { scale, overflow, focus, scroll_x, lift, band, base_y } = self;
+        c.seq(scale.len());
+        for spring in scale { c.f32(spring.pos).f32(spring.vel); }
+        for spring in [overflow, scroll_x, lift, band] { c.f32(spring.pos).f32(spring.vel); }
+        c.u32(*focus as u32).f32(*base_y);
+    }
+
     pub(crate) const fn new() -> Self {
         CardRow {
             scale: [Spring::at(1.0); MAX_ROW_ITEMS],
@@ -258,6 +268,13 @@ impl CardRow {
     pub(crate) fn scroll_x(&self) -> f32 {
         self.scroll_x.pos
     }
+    /// Restore a saved viewport without animating from the constructor's origin. Clamp against
+    /// current content because the row may have shrunk while its screen was covered or evicted.
+    pub(crate) fn restore_scroll(&mut self, scroll: f32, n: usize, sty: &RowStyle) {
+        let viewport = SCR_W - 2.0 * sty.margin_x;
+        let max = (n as f32 * (sty.w + sty.gap) - sty.gap - viewport).max(0.0);
+        self.scroll_x.jump(scroll.clamp(0.0, max));
+    }
     /// Which cell holds focus (`-1` none), as `update` last recorded it.
     #[inline]
     pub(crate) fn focus(&self) -> i32 {
@@ -309,7 +326,7 @@ impl CardRow {
 /// that would clip the viewport, and the tile nearest the source's centre is on screen whenever the
 /// source was. Scrolling is then a consequence of the geometry rather than a thing to suppress.
 ///
-/// Lifted out of `ui::home`'s private `Grid::vert`, which has done this since the home grid was
+/// Lifted out of the home grid's private `Grid::vert`, which has done this since that grid was
 /// written and was the only screen that did. Every shelf-based screen shares it now.
 pub(crate) fn column_near_x(
     x: f32,
@@ -397,7 +414,7 @@ pub(crate) fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, 
 /// [`heading_clearance`] is this number tapered by a proximity ramp, so it is the CEILING of that
 /// function and never a value it merely happens to reach. It is named and public because a screen
 /// has to RESERVE room for it: the home grid's vertical reveal bounds the scroll so a raised
-/// heading cannot SETTLE inside the shared top band ([`crate::ui::home`]'s `row_reveal_band` — a
+/// heading cannot SETTLE inside the shared top band ([`crate::screens::home`]'s `row_reveal_band` — a
 /// row travelling to that destination still crosses the band, under chrome drawn after it, exactly
 /// as its cards do), and it can only do that arithmetic if the lift is a fact it can ask for rather
 /// than one that lives inside a draw. Written out by hand at the call site it would be the same three terms in two
@@ -645,6 +662,18 @@ impl TileLabel {
 
 /// The focused cell body — the caller draws this LAST for its z-order: the art tile, the big glow
 /// ring, an optional resume bar, then its [`TileLabel`]. (The home grid's focused-last cell.)
+///
+/// **`s` IS THE SCALE `rect` WAS BUILT FROM — pop AND press, not the pop alone.** It is not a
+/// second, decorative knob: this function divides by it twice, and both readings are wrong the
+/// moment the two disagree. `f = (s - 1) / ring_denom` is the drop-shadow and perimeter sheen, so
+/// a press that reaches the rect but not `s` leaves the tile wearing a full focus shadow while it
+/// shrinks — the click reads as a jitter instead of the tile pressing INTO the page. And `ty`
+/// anchors the label block to the UNSCALED card bottom as `rect.h / s`, which is the resting
+/// height only while `s` is the whole scale, so the same mismatch slides the caption up and back
+/// on every click, against the design's "a pop/press never moves it". Every caller in the app
+/// passes the press-inclusive scale (Home, the Library's shelves AND its grid, Search, Detail's
+/// Related, Person, the profile picker); the grid was the one exception, for the length of
+/// phase 8, and `screens/library/parts.rs::treatment_scale` carries that account.
 pub(crate) fn draw_focused(
     p: Painter,
     art: Art,
@@ -1288,10 +1317,22 @@ pub(crate) fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn restored_scroll_is_retained_and_clamped_to_current_content() {
+        let mut row = CardRow::new();
+        row.restore_scroll(900.0, 24, &RowStyle::HOME);
+        assert_eq!(row.scroll_x(), 900.0);
+        assert_eq!(row.scroll_x.vel, 0.0);
+        row.restore_scroll(900.0, 2, &RowStyle::HOME);
+        assert_eq!(row.scroll_x(), 0.0);
+        row.restore_scroll(-50.0, 24, &RowStyle::HOME);
+        assert_eq!(row.scroll_x(), 0.0);
+    }
+
     const DT: f32 = 1.0 / 60.0;
     /// The full clearance a HOME shelf's heading needs over a popped tile — asked of
     /// [`heading_lift_max`] rather than restating its three terms, because a screen now RESERVES
-    /// this same number in its layout (`ui::home`'s `row_reveal_band`) and a test that re-derived it
+    /// this same number in its layout (the home grid's `row_reveal_band`) and a test that re-derived it
     /// would keep passing while the two drifted.
     fn full() -> f32 {
         heading_lift_max(&RowStyle::HOME)

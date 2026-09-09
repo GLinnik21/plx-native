@@ -789,7 +789,7 @@ impl ProfilesScreen {
         }
     }
 
-    fn draw_pad<H: AppLike>(&self, f: &mut DrawFrame<'_, H>, p: Painter, cur: Option<u32>) {
+    fn draw_pad<H: AppLike>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, cur: Option<u32>) {
         let (title_y, dots_y, _) = pad_geom(f.measure);
         let users = auth::users();
         let name = users.get(self.pad.target).map(|u| u.title.as_str()).unwrap_or("");
@@ -1092,7 +1092,7 @@ impl<H: AppLike> Screen<H> for ProfilesScreen {
         None
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = Painter::root();
         // The picker has no page of its own to layer over (same reasoning as
         // `screens::login::LoginScreen::draw`): draw the ambient ground off `Painter::root()`
@@ -1271,7 +1271,7 @@ mod tests {
             tick: Tick::default(),
             measure: &MEASURE,
             press: PressRead::default(),
-            focus: FocusRead { current: focus },
+            focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(EntryId(0)),
         }
     }

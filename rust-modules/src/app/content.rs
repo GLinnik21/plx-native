@@ -2,7 +2,7 @@
 
 use super::*;
 use super::run::Frame;
-use crate::screens::registry::{AppMsg, ContentArg, ContentReq, PageMemory};
+use crate::screens::registry::{AppMsg, ContentArg, ContentReq, HomeHubIdentity, HomeItemIdentity, HomeReq, HomeTab, PageMemory};
 use crate::ui::machine::{Delivery, EntryId, Fx, InputOwner, MachineId, NavOp};
 use crate::ui::screen::{ReturnState, ScreenEvent};
 
@@ -137,6 +137,9 @@ fn node(arg: ContentArg) -> Option<Node> {
 }
 
 pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: &Frame) {
+    home_requests(app, mt);
+    library_requests(app, mt);
+    search_requests(app);
     for (source, request, ret) in app.bridge.take_content_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -190,6 +193,281 @@ pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: 
         }
     }
     let _ = fr;
+}
+
+/// Home chooses an action and a stable item; only the application performs navigation,
+/// playback or legacy-modal work. Recheck the emitting entry before every queued action.
+fn home_requests(app: &mut App, mt: &crate::task::MainThread) {
+    for (source, request, ret) in app.bridge.take_home_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry))
+            || !matches!(app.route, Route::Home) { continue; }
+        match request {
+            HomeReq::FoldToHero => {
+                // The screen owns the fold; the input engine owns the hero group's last
+                // control. Restore that cursor without introducing a Home-local focus copy.
+                let remembered = app.pages.input.engine.remembered_for(entry).into_iter()
+                    .find(|(group, _)| *group == crate::ui::machine::GroupId(0)).map(|(_, elem)| elem);
+                let focus = remembered.map(|elem| crate::ui::screen::FocusTarget::Elem(
+                    crate::ui::machine::FocusKey { entry, elem }))
+                    .unwrap_or(crate::ui::screen::FocusTarget::ContainerGroup(crate::ui::machine::GroupId(0)));
+                app.pages.emit(MachineId::Nav, Fx::Deliver(source,
+                    Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh { focus }))));
+            }
+            HomeReq::Account => chip_activate(&mut app.route),
+            HomeReq::Tab(tab) => {
+                // A pointer may name the last presented map after favourites changed. The
+                // stable key must not resurrect a destination the current strip withdrew.
+                let kind = match tab { HomeTab::Movies => Some(crate::browse::SecKind::Movie),
+                    HomeTab::Shows => Some(crate::browse::SecKind::Show), _ => None };
+                if kind.is_some_and(|kind| crate::browse::tab_of_kind(kind).is_none()) { continue; }
+                app.trail.reset();
+                match tab {
+                    HomeTab::Home => { nav_cancel(app.route, &mut app.nav_pending); }
+                    HomeTab::Movies => nav_to(app.route, Nav::Library(crate::browse::SecKind::Movie), &mut app.nav_pending),
+                    HomeTab::Shows => nav_to(app.route, Nav::Library(crate::browse::SecKind::Show), &mut app.nav_pending),
+                    HomeTab::Search => nav_to(app.route, Nav::Search, &mut app.nav_pending),
+                }
+                freeze_request(app, Some(entry), ret);
+            }
+            HomeReq::Play { sid, rk, resume_ns } =>
+                activate_home_item(app, mt, source, entry, sid, &rk, Some(resume_ns), ret),
+            HomeReq::Detail { sid, rk } =>
+                activate_home_item(app, mt, source, entry, sid, &rk, None, ret),
+            HomeReq::ItemMenu { sid, rk } => {
+                let snapshot = crate::pms::hubs_snapshot();
+                let Some(item) = home_item(snapshot.view(), sid, &rk)
+                    .filter(|item| crate::ui::item_menu::has_actions(item)) else { continue };
+                let from_deck = home_menu_from_deck(&ret);
+                let opener = app.bridge.home_opener(&app.pages, entry, ret.focus);
+                crate::ui::item_menu::open(item, from_deck, opener);
+                app.bridge.menu_opener = Some((entry, ret.focus));
+                app.route = Route::ItemMenu { over: MenuHost::Home };
+                app.input.press.cancel();
+                app.ok_armed = false;
+            }
+        }
+    }
+}
+
+fn home_item<'a>(view: crate::pms::HubsView<'a>, sid: crate::plex::ServerId, rk: &str) -> Option<&'a crate::pms::PmsMovie> {
+    (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
+        .find(|item| crate::plex::same_item((item.sid, &item.rk), (sid, rk))))
+}
+
+/// Resolve identity against the retained selected item, never against the current server.
+fn search_target(item: &crate::search::Item, request: &crate::screens::registry::SearchReq) -> Option<Node> {
+    use crate::screens::registry::SearchReq;
+    match (item, request) {
+        (crate::search::Item::Media(item), SearchReq::Detail { sid, rk })
+            if item.sid == *sid && item.rk == *rk && !rk.is_empty() => Some(to_detail(*sid, rk)),
+        (crate::search::Item::Tag(item), SearchReq::Person { sid, key, guid, .. }) => {
+            let current = if item.id.is_empty() || item.id == "0" { &item.tag_key } else { &item.id };
+            (item.sid == *sid && current == key && !key.is_empty() && item.tag_key == *guid)
+                .then(|| Node::Person { sid: *sid, key: current.clone(), guid: item.tag_key.clone(),
+                    name: item.name.clone(), thumb: item.thumb.clone() })
+        }
+        _ => None,
+    }
+}
+
+fn search_requests(app: &mut App) {
+    use crate::screens::registry::SearchReq;
+    for (source, request, ret) in app.bridge.take_search_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if app.route != Route::Search || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
+        match &request {
+            SearchReq::Back => {
+                nav_to(app.route, Nav::Home { focus_pill: None }, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            SearchReq::Tab(tab) => {
+                if !app.bridge.search_tab_available(*tab) { continue; }
+                let target = match tab {
+                    HomeTab::Home => Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Home) },
+                    HomeTab::Movies => Nav::Library(crate::browse::SecKind::Movie),
+                    HomeTab::Shows => Nav::Library(crate::browse::SecKind::Show),
+                    HomeTab::Search => continue,
+                };
+                nav_to(app.route, target, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            SearchReq::Account => {
+                // The owned screen releases its keyboard before emitting this request. Do not
+                // call chip_activate's legacy Search editing-state teardown a second time.
+                crate::ui::account_menu::open();
+                app.route = Route::Account { over: BarHost::Search };
+            }
+            SearchReq::Detail { .. } | SearchReq::Person { .. } => {
+                let Some((item, _)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
+                let Some(target) = search_target(&item, &request) else { continue };
+                nav_open(app.route, target, None, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            SearchReq::ItemMenu { sid, rk } => {
+                let Some((crate::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
+                if item.sid != *sid || item.rk != *rk || !crate::ui::item_menu::has_actions(&item) { continue; }
+                crate::ui::item_menu::open(&item, false, opener);
+                app.bridge.menu_opener = Some((entry, ret.focus));
+                app.route = Route::ItemMenu { over: MenuHost::Search };
+                app.input.press.cancel();
+                app.ok_armed = false;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_action_tests {
+    use super::*;
+    use crate::screens::registry::SearchReq;
+    use crate::search::{Item, TagHit};
+
+    #[test]
+    fn owned_search_targets_validate_retained_identity_and_use_retained_labels() {
+        let _serial = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let a = crate::plex::register_for_test("action-a", "127.0.0.1", 1, "synthetic", "fixture");
+        let b = crate::plex::register_for_test("action-b", "127.0.0.1", 2, "synthetic", "fixture");
+        let media = Item::Media(crate::pms::PmsMovie { sid: a, rk: "same".into(), ..Default::default() });
+        assert!(matches!(search_target(&media, &SearchReq::Detail { sid: a, rk: "same".into() }),
+            Some(Node::Detail { sid, rk, .. }) if sid == a && rk == "same"));
+        assert!(search_target(&media, &SearchReq::Detail { sid: b, rk: "same".into() }).is_none());
+        assert!(search_target(&media, &SearchReq::Detail { sid: a, rk: "old".into() }).is_none());
+        let person = |sid, key: &str, guid: &str| SearchReq::Person {
+            sid, key: key.into(), guid: guid.into(), name: "stale name".into(), thumb: "stale thumb".into(),
+        };
+        for id in ["42", "0", ""] {
+            let tag = Item::Tag(TagHit { sid: a, id: id.into(), tag_key: "person-guid".into(),
+                name: "Current name".into(), thumb: "current-thumb".into(), ..Default::default() });
+            let key = if id == "42" { "42" } else { "person-guid" };
+            assert!(matches!(search_target(&tag, &person(a, key, "person-guid")),
+                Some(Node::Person { sid, name, thumb, .. })
+                    if sid == a && name == "Current name" && thumb == "current-thumb"));
+            assert!(search_target(&tag, &person(b, key, "person-guid")).is_none());
+            assert!(search_target(&tag, &person(a, "old", "person-guid")).is_none());
+            assert!(search_target(&tag, &person(a, key, "old-guid")).is_none());
+            assert!(search_target(&tag, &SearchReq::Detail { sid: a, rk: key.into() }).is_none());
+        }
+        assert!(search_target(&Item::Tag(TagHit::default()), &person(Default::default(), "", "")).is_none());
+        crate::plex::reset_servers_for_test();
+    }
+}
+
+fn library_requests(app: &mut App, mt: &crate::task::MainThread) {
+    use crate::screens::registry::{LibraryReq, LibraryMenuArg};
+    for (source, request, ret) in app.bridge.take_library_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if let LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
+            if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && page_of(app.route) == Route::Library {
+                // Apply through the store vocabulary at this boundary. The press check and commit
+                // are adjacent; no queued boolean can outlive an input arm created later.
+                crate::stores::browse::apply(library_publication_command(&app.pages, target, hidden_page, at_head));
+            }
+            continue;
+        }
+        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || app.route != Route::Library { continue; }
+        match request {
+            LibraryReq::PublishShelves { .. } => unreachable!(),
+            LibraryReq::Menu { kind, anchor, target } => {
+                app.pages.nav.next_style = crate::ui::containers::modal::Style::Compact;
+                app.pages.request(source, NavOp::Present(bridge::AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
+            }
+            LibraryReq::Account => chip_activate(&mut app.route),
+            LibraryReq::BackToHome { kind } => {
+                nav_to(app.route, Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Section(kind)) }, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            LibraryReq::Tab(tab) => {
+                let nav = match tab {
+                    HomeTab::Home => Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Home) },
+                    HomeTab::Movies => Nav::Library(crate::browse::SecKind::Movie),
+                    HomeTab::Shows => Nav::Library(crate::browse::SecKind::Show),
+                    HomeTab::Search => Nav::Search,
+                };
+                nav_to(app.route, nav, &mut app.nav_pending);
+                freeze_request(app, Some(entry), ret);
+            }
+            LibraryReq::ItemMenu { sid, rk, from_deck } => {
+                let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
+                if item.sid != sid || item.rk != rk || !crate::ui::item_menu::has_actions(&item) { continue; }
+                crate::ui::item_menu::open(&item, from_deck, opener);
+                app.bridge.menu_opener = Some((entry, ret.focus));
+                app.route = Route::ItemMenu { over: MenuHost::Library };
+                app.input.press.cancel();
+                app.ok_armed = false;
+            }
+            LibraryReq::Detail { sid, ref rk } | LibraryReq::Play { sid, ref rk, .. } => {
+                let Some((mut item, _)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
+                if item.sid != sid || &item.rk != rk { continue; }
+                let play = matches!(request, LibraryReq::Play { .. });
+                if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
+                unsafe { activate_card(mt, &item, play, HUD_LINGER_MS, &mut app.route, &mut app.play_from,
+                    &app.trail, &mut app.hud.nav, &mut app.nav_pending); }
+                freeze_request(app, Some(entry), ret);
+            }
+        }
+    }
+}
+
+fn library_publication_command(
+    dispatcher: &crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    target: crate::stores::browse::SectionAddress,
+    hidden_page: bool,
+    at_head: bool,
+) -> crate::stores::browse::BrowseCmd {
+    crate::stores::browse::BrowseCmd::Addressed { target,
+        work: crate::stores::browse::LibraryWork::Hubs {
+            may_publish: hidden_page || (at_head && !dispatcher.input.press.is_live()),
+        },
+    }
+}
+
+#[cfg(test)]
+mod library_publication_tests {
+    use super::*;
+    #[test]
+    fn a_fresh_arm_at_rest_scale_still_blocks_visible_shelf_publication() {
+        let mut dispatcher = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let target = crate::stores::browse::SectionAddress { epoch: 1, sid: crate::plex::ServerId::from_raw(0), section: 1 };
+        let allowed = |d: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
+            matches!(library_publication_command(d, target, hidden, head),
+                crate::stores::browse::BrowseCmd::Addressed { work: crate::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
+        };
+        assert!(allowed(&dispatcher, false, true));
+        dispatcher.input.press.begin(0);
+        assert_eq!(dispatcher.input.press.scale(), 1.0);
+        assert!(!allowed(&dispatcher, false, true));
+        assert!(!allowed(&dispatcher, false, false));
+        assert!(allowed(&dispatcher, true, false));
+        dispatcher.input.press.cancel();
+        assert!(allowed(&dispatcher, false, true));
+    }
+}
+
+fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
+    let (Some(focus), PageMemory::Home(memory)) = (ret.focus, &ret.memory) else { return false };
+    memory.items.iter().any(|key| key.elem == focus.elem && matches!(&key.identity,
+        HomeItemIdentity::Item { hub: HomeHubIdentity::ContinueWatching, .. }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn activate_home_item(app: &mut App, mt: &crate::task::MainThread, source: MachineId, entry: EntryId,
+    sid: crate::plex::ServerId, rk: &str, resume_ns: Option<i64>, ret: ReturnState<u32, PageMemory>) {
+    let snapshot = crate::pms::hubs_snapshot();
+    let Some(mut item) = home_item(snapshot.view(), sid, rk).cloned() else { return };
+    if let Some(resume_ns) = resume_ns { item.resume_ms = resume_ns.max(0) / 1_000_000; }
+    app.trail.reset();
+    unsafe { activate_card(mt, &item, resume_ns.is_some(), HUD_LINGER_MS, &mut app.route,
+        &mut app.play_from, &app.trail, &mut app.hud.nav, &mut app.nav_pending); }
+    if matches!(app.route, Route::Player { .. }) {
+        app.pages.request_with_return(source, NavOp::Push(bridge::AppArg::Legacy(app.route)), ret);
+    } else {
+        freeze_request(app, Some(entry), ret);
+    }
 }
 
 fn cancel_content_navigation(app: &mut App) -> bool {

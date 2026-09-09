@@ -79,7 +79,7 @@ pub struct Navigation<H: Host> {
 }
 
 /// Shape of the fields encoded by Navigation::write, independent of application screen types.
-pub const STATE_SHAPE: &str = "Navigation{Entry:(EntryId,evicted:bool,H::Arg,ReturnState),pages:[Entry,Option<(InstanceId,StateHash)>],surfaces:[Entry,Phase,Option<(InstanceId,StateHash)>],suspended:bool,covered:[EntryId,[Entry,Phase,Option<(InstanceId,StateHash)>]]}";
+pub const STATE_SHAPE: &str = "Navigation{strip_fallback:Option<ElemIndex>,Entry:(EntryId,evicted:bool,H::Arg,ReturnState),strip:[Option<ElemIndex>],pages:[Entry,Option<(InstanceId,StateHash)>],surfaces:[Entry,Phase,Option<(InstanceId,StateHash)>],suspended:bool,covered:[EntryId,[Entry,Phase,Option<(InstanceId,StateHash)>]]}";
 
 impl<H: Host> Navigation<H> {
     pub fn new(transition: Box<dyn Transition>) -> Self {
@@ -411,6 +411,11 @@ impl<H: Host> Navigation<H> {
     /// The tree's contribution to the logical-state hash (§5.4): entry ids, bodies' hashes,
     /// surface phases, in a fixed order.
     pub fn write(&self, c: &mut Canon) where H::Elem: IndexElem {
+        c.option(self.tabs.strip_fallback.and_then(|key| key.index()), |c, key| { c.u32(key); });
+        c.seq(self.tabs.strip.len());
+        for member in &self.tabs.strip {
+            c.option(member.elem.index(), |c, id| { c.u32(id); });
+        }
         c.seq(self.tabs.stack.entries.len());
         for e in &self.tabs.stack.entries {
             write_entry(e, c);

@@ -228,7 +228,7 @@ pub const PAD_V: f32 = TOP_PAD + BOT_PAD;
 /// A plain row (label only) — mockup rowBase padding 13 + 34px label.
 ///
 /// `pub` for the same caller shape [`CONTENT_X`] is: a block that draws ROWS of its own on the
-/// app's ground rather than mounting a [`TableView`] (`ui/search/recents.rs` — its rows are the
+/// app's ground rather than mounting a [`TableView`] (`screens::search::render`'s `recents` — its rows are the
 /// user's own words and have to stay editable in place). It re-derived this and the four constants
 /// below from the mockup, so a row-height change here silently misaligned that block while both
 /// modules' own tests stayed green.
@@ -337,6 +337,17 @@ pub struct TableView {
     scroll: Spring,
 }
 impl TableView {
+    pub(crate) const MOTION_SHAPE: &'static str = "TableViewMotion{sel:i32,list_focused:bool,compact:bool,tall:bool,header_ink:[f32;4],hl_top:Spring{pos:f32,vel:f32},hl_bot:Spring{pos:f32,vel:f32},scroll:Spring{pos:f32,vel:f32}}";
+
+    /// The owner records its row data separately. These fields determine layout, the selected
+    /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
+    pub(crate) fn write_motion(&self, c: &mut crate::ui::machine::Canon) {
+        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll } = self;
+        c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
+        for component in header_ink { c.f32(*component); }
+        for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
+    }
+
     /// **Two-line rows at the CATALOG measure (98) rather than the settings one (92).**
     ///
     /// Opt-in per table, because both are right: a settings row is a line of chrome in a panel, and
@@ -992,6 +1003,31 @@ impl TableView {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn table_motion_canonical_state_covers_hidden_spring_velocity_and_layout_flags() {
+        fn hash(table: &super::TableView) -> u64 {
+            let mut c = crate::ui::machine::Canon::new();
+            table.write_motion(&mut c);
+            c.finish()
+        }
+        let baseline = hash(&super::TableView::new());
+        for field in 0..7 {
+            let mut table = super::TableView::new();
+            match field {
+                0 => table.hl_top.vel = 1.0,
+                1 => table.hl_bot.vel = 1.0,
+                2 => table.scroll.vel = 1.0,
+                3 => table.sel = 7,
+                4 => table.list_focused = !table.list_focused,
+                5 => table.compact = !table.compact,
+                6 => table.tall = !table.tall,
+                _ => unreachable!(),
+            }
+            assert_ne!(hash(&table), baseline, "field {field}");
+            assert_eq!(hash(&table), hash(&table), "reading state must not advance animation");
+        }
+    }
+
     use super::*;
 
     /// ONE trailing read-out per row, resolved in ONE place. The rule the design system states and

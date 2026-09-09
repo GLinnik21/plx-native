@@ -418,8 +418,8 @@ pub fn roster_gen() -> u32 {
 /// **Not every published field moves it**, and the exception is deliberate:
 /// [`commit_reachability_if_current`] can merge a fresher machine NAME — the server naming itself,
 /// on a path that runs per request — without bumping this. A cache that needs to follow that has
-/// the facts POINTER to key on (`ui::search::field::Key` does exactly that, and it is how a name
-/// landing reaches the Search scope line); making a per-request commit move a counter that
+/// the facts POINTER to key on (`search::scope::Key`'s own `facts` fingerprint does exactly that,
+/// and it is how a name landing reaches the Search scope line); making a per-request commit move a counter that
 /// `pms::sync_roster` rebuilds Home's whole source table on would be a poor trade for a field Home
 /// does not draw.
 pub fn facts_gen() -> u32 {

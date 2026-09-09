@@ -49,29 +49,29 @@ focus capsule with them instead of being a separate colour story.
 
 ### The layout is dictated by the keyboard
 
-The TV's own panel covers the bottom **324px**, MEASURED off four device captures (`ui/search/mod.rs`'s
-`KEYBOARD_H`; it was a 380px guess until 2026-08-15). The rule the numbers come from: **with the
-keyboard raised, nothing the app owns hides behind it.** The field, the first shelf's heading and
-that shelf's full row of posters are sized to land above its top edge — `CONTENT_TOP` 300 +
-`HEAD_TO_ROW` 60 + a 375-tall poster = 735, against a panel edge at 756.
+The TV's own panel covers the bottom **324px**, MEASURED off four device captures
+(`screens/search/layout.rs`'s `KEYBOARD_H`; it was a 380px guess until 2026-08-15). The rule the
+numbers come from: **with the keyboard raised, nothing the app owns hides behind it.** The field,
+the first shelf's heading and that shelf's full row of posters are sized to land above its top edge
+— `CONTENT_TOP` 300 + `HEAD_TO_ROW` 60 + a 375-tall poster = 735, against a panel edge at 756.
 
 Both of those numbers have moved since this section was first written, and in opposite directions:
 the keyboard turned out to be 56px shorter than the guess, and `CONTENT_TOP` moved down twice — once
 with the top bar, and once when the field stopped being an 820×60 capsule and became a full-width
 `size::HERO` line with its scope block underneath. What did not move is the rule, and
-`results.rs`'s `the_first_shelfs_whole_row_clears_the_raised_keyboard` is where the arithmetic is
+`layout.rs`'s `the_first_shelfs_whole_row_clears_the_raised_keyboard` is where the arithmetic is
 graded rather than described.
 
 That is also why **nothing scrolls while the panel is up**: the result set has to be stable under
 the user's eyes while they are still typing.
 
-`MAX_RECENTS` is **four, not five**, for the same reason — with the keyboard raised the header, the
+`search::recents::CAP` is **four, not five**, for the same reason — with the keyboard raised the header, the
 rows and the Clear control all have to finish above its edge. The fifth is *dropped*, not scrolled:
 a list you cannot see the end of asks to be paged, and there is no paging in this product.
 
 ### The caret and the one-character hint stay in the field
 
-`ui/search/field.rs` states it: the caret is 5px wide, one HERO cap band tall and **blinks** in
+`screens/search/render.rs` states it: the caret is 5px wide, one HERO cap band tall and **blinks** in
 530ms phases while the television's keyboard is up. That is intentional device feedback: the
 solid bar specified by the design component read on the couch as a field that was not accepting
 input. The implementation still obeys `ui::idle` — the whole-frame present gate cannot see a clock
@@ -120,16 +120,86 @@ The practical consequence for anyone adding motion here: **a clock-driven animat
 only when its pixels change.** See `fps:search-idle` in §5, which is the assertion that catches an
 animation keeping a settled screen awake.
 
-### Five files, because the state machine is not the drawing
+### The state machine, the geometry and the drawing are three files, not one
 
-`ui/search/mod.rs` owns zones, focus, scroll and the draw ORDER and nothing else; `field.rs`,
-`recents.rs`, `results.rs` and `empty.rs` each draw one region from the same per-frame `View`
-snapshot, so a region can never read a different focus than the state machine believes in.
+`screens/search/mod.rs` (`SearchScreen`) owns the zones, focus, scroll and the draw ORDER and
+nothing else; `layout.rs` is the pure geometry both `mod.rs`'s placement and `render.rs`'s paint
+read from (`FIELD`, `CONTENT_TOP`, `KEYBOARD_H`, the field/results/recents rects); `render.rs`
+paints from the instance and its retained frame views only — no live Search/roster/focus reads —
+so a region can never draw a different focus than the state machine believes in. Two more files
+round it out: `draft.rs` is the instance's own unacknowledged editing state (the store owns the
+committed query/results; the draft owns edits until the next store notice acknowledges them), and
+`memory.rs` is the entry-owned `PageMemory` a return visit restores from (current focus itself
+stays in the container's `ReturnState`).
 
 Recents are rows and not a shelf (nothing there has artwork), they are the **user's own words** and
 stay editable in place, and Clear leaves the list to become a Button — a verb never sits in the same
 column as the words you searched for. They persist in the session file beside the roster behind a
 soft-failing deserializer, so a corrupt entry costs that entry and never the session.
+
+The recents data owner is now `search/recents.rs`: profile-generation cache, immutable term
+publications, normalization, and worker persistence. `SearchCmd` carries remember/clear requests
+with the captured profile generation; the store refuses a command after that generation changes.
+Pending saves coalesce per profile, so switching profiles cannot replace another profile's
+accepted history. Returning before the worker drains reads that pending history. The worker
+checks the captured installation and account credentials against the session under its IO lock;
+an old account's pending history cannot be written into a replacement account. The queue admits
+64 distinct profiles at once (a resource ceiling, not a Plex limit); when full it refuses a new
+profile's edit without evicting accepted saves and retries the background drain.
+The renderer in `screens/search/render.rs` keeps only geometry and a glyph cache keyed on that
+publication. `SearchSnapshot` includes recents beside query/results and is retained at the bridge's
+frame boundary. `SearchScreen` consumes these retained views and never reads the session or stores
+directly during draw.
+
+Text editing itself uses `ui/text_buffer.rs`: an owned UTF-8 buffer and caret, with literal
+insertion, character-wise movement/deletion, and the TV's whole-commit prediction rule. The owned
+screen's `draft.rs` retains a draft across successive input events while the frame's store view is
+frozen. A prediction publishes the completed replacement once, without exposing an intermediate
+deleted word to the store.
+
+The normalized input vocabulary carries a whole immutable `TextEdit::Commit`, plus Backspace,
+Clear, Left and Right. Keyboard ownership edges take effect in delivery order, including several
+edges in one frame; the page keeps its focus read while `Cx.owner` is `System(Keyboard)`.
+An ownership change cancels both an active page gesture and its queued hold/commit result.
+Pending inputs include their payload in the canonical state hash. The fixture recorder/replayer
+round-trips these events. Screen keyboard requests are distinct from OS observations: Input
+binds accepted requests to the requesting instance, rejects stale opens/closes, then invokes the
+main-thread adapter's existing `textinput::start/stop` operations. Cover and suspend release that
+binding. Both the binding and queued keyboard requests are included in the state hash.
+The owned path normalizes SDL and FIFO commits at ingress, before later edit keys, and uses
+`adopt` (never `start`) for a panel observation. Text recording preserves commit boundaries,
+original timing/source, and the observed panel capability, and replay reuses that observation
+rather than probing its current platform.
+
+**Live cutover is finished.** `Route::Search` mounts `screens::search::SearchScreen`
+unconditionally — there is no `AppMounter::search_owned` flag any more, no legacy ingress/lifecycle
+ladder in `app/{nav,input,run}.rs` for it to coexist with, and no separate "contract reference"
+route: `screens/search` is both the production implementation and the thing its own tests grade.
+It consumes `AppViews.search`, keeps an unacknowledged draft, uses engine-owned focus groups and
+supplies query/profile-guarded entry restoration data. Only Search-store notices acknowledge a
+pending draft; an unrelated store notice cannot treat matching frozen text as confirmation of an
+edit that has not reached the next frame publication. Its renderer reads retained query, result
+and source-scope publications. Keyboard hooks and navigation/menu request execution run
+unconditionally. Action resolution checks the retained selection's server and local identity; BACK
+returns to Home without selecting its pill, unlike activating the Home pill itself. The menu
+opener uses the owned page's captured focus and drawn geometry. The legacy `ui/search/` module
+tree (`mod.rs`, `field.rs`, `results.rs`, `empty.rs`, `recents.rs`) is deleted; its 83 test bodies
+were reconciled against the owned screen, store and shared-component contracts before deletion —
+68 Ported under the same or a stated name, 13 Covered by an existing owned test, 2 Retired as
+implementation-history assertions with no migration contract of their own
+(`docs/measurements/search-render-contract-ledger.md` is the row-by-row record). Host tests are
+still not visual verification — device-level pixel and text-rasterization verification of the
+owned screen is a separate obligation this cutover does not retire (§5's regression scenes are
+host-side rate/frame-time gates, not that proof).
+
+The owned page requests discovery and Search debounce/landing work once per active Tick through
+the store dispatcher. Its external Cover/Suspend/WillLeave/Unmount events release editing without
+filing the draft in recents. A background keyboard observation is ordered after earlier input and
+also releases the native start latch, so a later OK can reopen the panel.
+Unlike the legacy wheel-as-D-pad path, the owned path follows specification §7.3: a wheel scrolls
+the document without changing focus. Focus movement reveals the selected region again; editing
+parks the document at the top. Page hit clips stop below the standing tab strip even though the
+document continues painting underneath its glass.
 
 ---
 
@@ -286,10 +356,12 @@ Neither the TV harness nor the desktop simulator can type, so both would otherwi
 empty state.
 
 - **`/tmp/plxnative-search[=<query>]`** — boot straight into Search with the field already holding
-  `<query>`. Read once at boot in `app.rs`, through `dev::read` like every other trigger.
+  `<query>`. Read once at boot in `app/boot.rs`, through `dev::read` like every other trigger; it
+  seeds `stores::search::SearchCmd::SetQuery` directly rather than driving a screen method.
 - **`/tmp/plxnative-searchosc`** — sweep the result shelves' focus down↔up perpetually: one step per
   350 ms, reversing every 3 s, the same cadence `homeosc` and `libosc` use so all three read the same
-  in a log. It drives the real `ui::search::move_focus`, not an imitation of it.
+  in a log. It injects synthetic D-pad input through the real dispatcher (`bridge::script_key`),
+  exactly as `homeosc` does, rather than reaching into the screen's focus state directly.
 
 **`searchosc` does not reach the screen on its own** — pair it with `plxnative-search`. Neither is on
 `dev.rs`'s `DIAG` exemption list, and neither should be: DIAG is for files that are pure diagnostics

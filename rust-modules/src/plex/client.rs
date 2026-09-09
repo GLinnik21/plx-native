@@ -125,6 +125,9 @@ pub struct Client {
     // share a value: a cache that only compares "did this number move" therefore also flushes
     // when `client()` starts answering with a different server.
     token_gen: AtomicU32,
+    /// Immutable process-local instance identity for adapter recordings, distinct from both the
+    /// secret token and the Plex device identifier. A token swap must not rename this instance.
+    instance_gen: u32,
     /// HOW this server is reached — the tier of the connection that won the probe, or "nobody has
     /// said yet" ([`LINK_UNKNOWN`]). A property of the SERVER, not of the request, which is why it
     /// lives beside its address rather than being recomputed at a call site.
@@ -216,6 +219,7 @@ impl Client {
         token: &str,
         client_id: &str,
     ) -> Client {
+        let generation = next_gen();
         Client {
             id,
             machine_id: machine_id.to_owned(),
@@ -226,7 +230,8 @@ impl Client {
             product: super::identity::PRODUCT.into(),
             version: super::identity::VERSION.into(),
             platform: super::identity::PLATFORM.into(),
-            token_gen: AtomicU32::new(next_gen()),
+            token_gen: AtomicU32::new(generation),
+            instance_gen: generation,
             link: AtomicU8::new(LINK_UNKNOWN),
             ip_version: AtomicU8::new(IP_UNKNOWN),
         }
@@ -307,6 +312,7 @@ impl Client {
     pub fn token_gen(&self) -> u32 {
         self.token_gen.load(Relaxed)
     }
+    pub(crate) fn instance_gen(&self) -> u32 { self.instance_gen }
     /// The host to DIAL — never bracketed, even for a v6 literal (see [`Origin::host`]). Unchanged
     /// in meaning and in bytes from when this was a plain field.
     pub fn host(&self) -> &str {
@@ -913,10 +919,13 @@ mod tests {
         let (a, b) = (a_client("mach-A", "tok-a"), a_client("mach-B", "tok-b"));
         let (ga, gb) = (a.token_gen(), b.token_gen());
         assert_ne!(ga, gb, "distinct clients, distinct generations");
+        let instance = a.instance_gen();
+        assert_ne!(instance, b.instance_gen());
 
         a.set_token("tok-a2");
         assert_eq!(a.with_token("/x"), "/x?X-Plex-Token=tok-a2");
         assert_ne!(a.token_gen(), ga, "the swapped client's generation moved");
+        assert_eq!(a.instance_gen(), instance, "a token swap does not replace the client");
         assert_eq!(b.token_gen(), gb, "the other client's did not");
     }
 

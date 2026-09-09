@@ -82,7 +82,7 @@ pub(crate) mod testlock {
 mod text;
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
 mod ui;
-mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename) // retui — retained UI framework; ui/home.rs now owns the home-screen C ABI
+mod webos; // which webOS this set is — nyx's os_info.json, read once at boot (release + codename)
 
 /// Strip any PMS/plex.tv token from a line bound for the event log.
 ///

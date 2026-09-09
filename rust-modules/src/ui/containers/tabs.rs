@@ -4,8 +4,8 @@
 //! to the grid) and a `Link{STRIP, Down, <entry group>}`; both are `Screen` methods with defaults.
 //! A pill's activation is `ScreenEvent::Activate` on the page.
 //!
-//! The pills' rects come from the strip as DRAWN (`widgets::tab_pill_rects` on the legacy strip,
-//! the container's own draw from phase 8); until then the application hands them in per frame.
+//! The application publishes strip members by stable control identity, with drawn and target
+//! geometry from the shared renderer. Removing a destination never renumbers another control.
 
 use super::super::machine::{EntryId, GroupId, Host};
 use super::super::screen::{AxisMask, EdgeRule, ElemKind, GroupKind, GroupSpec, Seat};
@@ -16,12 +16,29 @@ use super::transition::Transition;
 /// The strip's group id — a library constant so a page's `Link` can name it.
 pub const STRIP: GroupId = GroupId(0xFFFF_0001);
 
+#[derive(Clone, Copy)]
+pub struct StripMember<K> {
+    pub elem: K,
+    pub drawn: Rect,
+    pub target: Rect,
+    pub clip: Rect,
+}
+
+impl<K> StripMember<K> {
+    pub fn new(elem: K, rect: Rect) -> Self {
+        Self { elem, drawn: rect, target: rect, clip: Rect::FULL }
+    }
+}
+
 pub struct TabContainer<H: Host> {
     pub stack: NavStack<H>,
     /// The pills, in strip order: what each selects.
     pub pills: Vec<H::Arg>,
-    /// The pills' rects as drawn this frame (screen space).
-    pub pill_rects: Vec<Rect>,
+    /// Visual order is independent of identity. Geometry is render state, keys are logical state.
+    pub strip: Vec<StripMember<H::Elem>>,
+    /// Preferred surviving destination if the focused member disappears. Independent of visual
+    /// order: a profile chip may be first without being the application's recovery destination.
+    pub strip_fallback: Option<H::Elem>,
     /// The selected pill: the destination's while a transition is in flight (`ui::nav::view_tab`).
     pub selected: usize,
 }
@@ -31,7 +48,8 @@ impl<H: Host> TabContainer<H> {
         Self {
             stack: NavStack::new(transition),
             pills: Vec::new(),
-            pill_rects: Vec::new(),
+            strip: Vec::new(),
+            strip_fallback: None,
             selected: 0,
         }
     }
@@ -39,18 +57,20 @@ impl<H: Host> TabContainer<H> {
     /// The strip as a focus group — contributed above the page's when the page allows it.
     pub fn strip_group(&self) -> GroupSpec {
         let extent = self
-            .pill_rects
+            .strip
             .iter()
-            .fold(None::<Rect>, |acc, r| Some(acc.map_or(*r, |a| a.union(*r))))
+            .fold(None::<Rect>, |acc, member| Some(acc.map_or(member.target, |a| a.union(member.target))))
             .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
         GroupSpec {
             id: STRIP,
             kind: GroupKind::Row { wrap: false },
             seat: Seat::Nearest,
             reachable: AxisMask::VERTICAL,
-            edge: [EdgeRule::Geometric; 4],
+            // The strip's horizontal endpoints are terminal, independent of where a page's
+            // other groups happen to be placed. Only UP/DOWN may cross to page content.
+            edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
             extent,
-            len: self.pill_rects.len(),
+            len: self.strip.len(),
             elem: ElemKind::Control,
         }
     }

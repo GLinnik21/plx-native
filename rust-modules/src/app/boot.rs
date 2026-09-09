@@ -551,7 +551,6 @@ pub(super) unsafe fn boot(
     // string constant nobody had moved, and it was invisible because the file still compiled.
     super::adapters::poster::init();
     crate::capture::init(); // dev live UI capture stream (no-op without /tmp/plxnative-capture)
-    crate::ui::home::home_init();
 
     // Any dev trigger under /tmp marks the boot as automated (the harness token override,
     // autoplay/detail captures, playback-path knobs): those runs need a deterministic Home,
@@ -637,7 +636,7 @@ pub(super) unsafe fn boot(
             crate::auth::install_stored_roster(&session);
             // WHO is watching, before anything reads a per-profile store. It drives the Home
             // profile chip, and it is also what `browse::resolve_pins` and
-            // `ui::search::recents` key on — `install_pms` below ends in the section fetch
+            // `search::recents` key on — `install_pms` below ends in the section fetch
             // that resolves the Home selection, so set after it that resolve ran against the
             // OWNER's record whoever was actually signed in. (`auth::take_ready`, the other
             // way into Home, already sets it before its own `install_pms` for this reason.)
@@ -1186,10 +1185,9 @@ pub(super) unsafe fn boot(
         maybe_ask_consent(&mut app.pages);
     }
     // The recorder / replay driver, armed ONCE, here, at the end of boot (spec §5.3): the
-    // header's initial conditions are what this boot reached — route, sign-in, roster size,
-    // consent — and nothing has ticked yet. Phase 2 honesty: the stores have already spawned
-    // their first fetches above (they still talk to the network themselves until phase 4), so
-    // a replay runs those LIVE against the same synthetic server and grades the machines.
+    // Coarse boot facts go to the recorder; an armed recording also captures Home's complete
+    // initial backing state before the first frame. Boot restoration and adapter suppression
+    // are not wired yet: replay still runs LIVE and compares its observed result stream.
     {
         let consent = crate::telemetry::consent::current();
         let init = super::recorder::AppInit {

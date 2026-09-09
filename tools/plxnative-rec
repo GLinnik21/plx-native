@@ -37,6 +37,7 @@ import os
 import re
 import shutil
 import sys
+from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -115,6 +116,9 @@ def cmd_info(d):
     print("  schema=%s state_fp=%s build=%s features=%s" % (
         header.get("schema"), header.get("state_fp"), header.get("build"), ",".join(header.get("features", []))))
     print("  frames=%d event_frames=%d presented=%d" % (len(frames), ev, pres))
+    counts = Counter(kind for frame in frames for kind in frame["kinds"])
+    print("  inputs=%d effects=%d results=%d lifecycle=%d" % (
+        counts["in"], counts["eff"], counts["async"], counts["life"]))
     return 0
 
 
@@ -212,6 +216,7 @@ def cmd_rerecord(d, name):
 
 DIVERGE_RE = re.compile(r"^replay: diverge f=(\d+) expected=(0x[0-9a-f]+) got=(0x[0-9a-f]+) inputs=(\d+)")
 DONE_RE = re.compile(r"^replay: done .*verdict=(SAME|DIVERGED)")
+RESULT_DIFFS_RE = re.compile(r"\bresult_diffs=(\d+)\b")
 
 
 def divergence_record(fixture_dir, log_path):
@@ -225,8 +230,16 @@ def divergence_record(fixture_dir, log_path):
     verdict = None
     first = None
     for ln in lines:
+        # The adoption record below proves a STATE divergence only. Do not erase a result
+        # mismatch by selecting some later state hash from the same log. Either witness is
+        # sufficient for refusal, including an inconsistent summary or missing detail lines.
+        if ln.startswith("replay: result diverge "):
+            return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
         m = DONE_RE.match(ln)
         if m:
+            results = RESULT_DIFFS_RE.search(ln)
+            if results and int(results.group(1)) != 0:
+                return None, "result divergences need an adapter adoption record; state-only rebaseline is refused"
             verdict = m.group(1)
         m = DIVERGE_RE.match(ln)
         if m and first is None:

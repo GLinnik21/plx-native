@@ -1393,9 +1393,14 @@ fn maybe_spawn(i: usize) {
 /// in the app carries, via the same [`AccountClient`](crate::plex::account::AccountClient). Reading
 /// the session here rather than passing it in keeps this off the main thread's critical path; it is
 /// one small file read per person page.
+///
+/// **`peek`, not `load`, and "off the main thread" is why rather than an excuse.** `load` re-persists
+/// a plaintext session, and it takes `session::IO` across that write — a temp file, `sync_all`, a
+/// rename and a second `sync_all` — so a worker calling it PARKS the next main-thread `peek` for as
+/// long as the flash takes. This reader only reads: it wants a `client_id` and a token.
 #[cfg(not(test))]
 fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
-    let s = crate::plex::session::load();
+    let s = crate::plex::session::peek();
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_profile(guid)
 }
@@ -1404,7 +1409,7 @@ fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
 /// respect — same identity, same session read, same host — so the two share a spawn arm.
 #[cfg(not(test))]
 fn fetch_credits(guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>> {
-    let s = crate::plex::session::load();
+    let s = crate::plex::session::peek();
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_credits(guid)
 }

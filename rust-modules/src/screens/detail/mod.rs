@@ -319,7 +319,7 @@ impl DetailScreen {
 
     pub(crate) fn redraw_focused<H: ContentLike>(
         &self,
-        f: &mut DrawFrame<'_, H>,
+        f: &mut DrawFrame<'_, '_, H>,
         focus: Option<FocusKey<u32>>,
     ) {
         let Some(d) = self.detail() else { return };
@@ -1171,14 +1171,15 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
 
     fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
 
-    fn draw(&mut self, f: &mut DrawFrame<'_, H>) {
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter;
+        let nav_page_alpha = f.nav_page_alpha;
         let d = self.detail();
         self.draw_backdrop(p, d);
         let hero_vis = hero_alpha(self.scroll.pos, HERO_FADE);
         if hero_vis > 0.01 {
-            self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d);
+            self.draw_hero(p.translate(0.0, -self.scroll.pos).alpha(hero_vis), f, d, nav_page_alpha);
         }
         if let Some(d) = d {
             self.draw_compact_title(p, d, hero_vis);
@@ -1375,7 +1376,7 @@ impl DetailScreen {
         }
     }
 
-    fn draw_hero<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>) {
+    fn draw_hero<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
         use crate::ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
 
         let (_, rk, _) = self.art_identity(d);
@@ -1411,7 +1412,7 @@ impl DetailScreen {
             hero::draw_facts(p, d, chain.facts_y);
             hero::draw_people(p, d, chain.btn_y);
         }
-        self.draw_buttons(p, cx, chain.btn_y);
+        self.draw_buttons(p, cx, chain.btn_y, nav_page_alpha);
     }
 
     fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32) {
@@ -1500,7 +1501,7 @@ impl DetailScreen {
         }
     }
 
-    fn draw_buttons<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32) {
+    fn draw_buttons<H: ContentLike>(&self, p: Painter, cx: &Cx<'_, H>, y: f32, nav_page_alpha: f32) {
         let set = self.hero_set();
         let widths = hero::hero_widths(
             cx.measure,
@@ -1518,8 +1519,7 @@ impl DetailScreen {
             last.x + last.w - crate::ui::consts::MARGIN_X,
             hero::CD,
         ];
-        let may_read =
-            crate::ui::nav::page_alpha() >= 0.999 && hero_alpha(self.scroll.pos, HERO_FADE) > 0.99;
+        let may_read = may_sample_control_ground(nav_page_alpha, hero_alpha(self.scroll.pos, HERO_FADE));
         let palette = crate::gfx::sample_control_ground(row, may_read)
             .map(ControlPalette::ambient)
             .unwrap_or_default();
@@ -1598,7 +1598,7 @@ impl DetailScreen {
             );
     }
 
-    fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, H>) {
+    fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let mut elems = Vec::new();
         let set = self.hero_set();
         let (controls, n) = hero::hero_ctls(set);
@@ -1673,6 +1673,34 @@ fn play_resume_ns(from_start: bool, resume_ms: i64, duration_ms: i64) -> i64 {
         0
     } else {
         crate::metadata::resume_ns(resume_ms, duration_ms)
+    }
+}
+
+/// Is it safe to sample the panel behind the hero buttons for the ambient control palette this
+/// frame (spec §14 phase 8)? Only once BOTH the route-level nav dip (`nav_page_alpha`,
+/// `DrawFrame::nav_page_alpha` — replaces the old live `ui::nav::page_alpha()` read) and the
+/// hero's own scroll fade have fully settled — a frame either is still fading through is not a
+/// stable backdrop to sample: `sample_control_ground` caches its result across frames
+/// (`CONTROL_GROUND_SAMPLE_EVERY`), so a sample taken mid-transition would be read back for
+/// several frames after the transition ends, on a real device screen this cannot be tested on.
+fn may_sample_control_ground(nav_page_alpha: f32, hero_alpha: f32) -> bool {
+    nav_page_alpha >= 0.999 && hero_alpha > 0.99
+}
+
+#[cfg(test)]
+mod may_sample_control_ground_tests {
+    use super::may_sample_control_ground;
+
+    #[test]
+    fn requires_both_the_route_dip_and_the_hero_fade_to_have_settled() {
+        assert!(may_sample_control_ground(1.0, 1.0), "fully settled: safe to sample");
+        assert!(!may_sample_control_ground(0.5, 1.0), "a route change in flight must not sample");
+        assert!(!may_sample_control_ground(1.0, 0.5), "a scrolling hero must not sample either");
+        assert!(!may_sample_control_ground(0.5, 0.5), "neither settled: must not sample");
+        // the exact thresholds this frame's caller passes in, at their boundary
+        assert!(!may_sample_control_ground(0.998, 1.0));
+        assert!(may_sample_control_ground(0.999, 1.0));
+        assert!(!may_sample_control_ground(1.0, 0.99));
     }
 }
 

@@ -1002,6 +1002,12 @@ fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> St
             .map(|c| text_width(c.as_ptr(), sz, bold))
             .unwrap_or(0.0)
     };
+    elide_by(s, budget, cont, measure)
+}
+
+/// The same truncation rule through a supplied metric source (recorded/fixture/native).
+/// Callers cache the result with their render publication; this function owns no cache or font.
+pub(crate) fn elide_by(s: &str, budget: f32, cont: bool, measure: impl Fn(&str) -> f32) -> String {
     let target = if cont {
         format!("{s}\u{2026}")
     } else {
@@ -1033,6 +1039,19 @@ fn elide_compute(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> St
         .trim_end()
         .to_string()
         + "\u{2026}"
+}
+
+#[cfg(test)]
+mod supplied_elide_tests {
+    #[test]
+    fn supplied_metrics_keep_unicode_boundaries_and_the_existing_zero_budget_rule() {
+        let width = |s: &str| s.chars().count() as f32;
+        assert_eq!(super::elide_by("абвг", 3.0, false, width), "аб…");
+        assert_eq!(super::elide_by("a🙂bc", 3.0, false, width), "a🙂…");
+        assert_eq!(super::elide_by("short", 8.0, false, width), "short");
+        assert_eq!(super::elide_by("short", 0.0, false, width), "short");
+        assert_eq!(super::elide_by("short", 8.0, true, width), "short…");
+    }
 }
 
 /// rendered height in px of a line of text at `sz`/`bold` — the font's line height, independent of

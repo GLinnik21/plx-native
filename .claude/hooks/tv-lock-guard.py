@@ -14,6 +14,13 @@ WHAT IT COSTS. Nothing on an unrelated command: the classifier is pure string wo
 command line, and the lease check is a single small file read, with no ssh and no network. The
 television is never contacted from here.
 
+LANE IDENTITY has to agree with `tools/tv-lock.sh`'s, and `payload["cwd"]` cannot supply it by
+itself: the harness reports the SESSION's own checkout as `cwd` for every subagent's Bash call,
+whatever worktree that agent actually runs in. `lane_from_command()` below is what a subagent
+uses instead — an explicit `PLX_TV_LOCK_LANE=<its worktree>` prefixed on the command, so several
+subagents can each hold their own lease and the lock still arbitrates between them rather than
+collapsing onto one lane. See that function's docstring for the full resolution order.
+
 WHAT IT DELIBERATELY DOES NOT BLOCK.
   * read-only diagnostics that cannot disturb a running session: `tools/crash-report.sh`,
     `tv-session.sh log|status`, `make -s print-*`;
@@ -202,6 +209,87 @@ def repo_root(cwd):
     return os.path.abspath(cwd)
 
 
+_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_LEADING_CD_RE = re.compile(r'^cd\s+((?:"[^"]*")|(?:\'[^\']*\')|\S+)\s*&&\s*', re.S)
+
+
+def _strip_quotes(s):
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        return s[1:-1]
+    return s
+
+
+def _leading_env_assignments(text):
+    """The `NAME=value` tokens sitting at the very start of `text`, optionally after a leading
+    `env`. Stops at the first token that is not itself an assignment — that token is the real
+    command, and everything after it is none of this function's business.
+    """
+    assigns = []
+    n = len(text)
+
+    def next_token(p):
+        while p < n and text[p] in " \t":
+            p += 1
+        if p >= n:
+            return None, p
+        if text[p] in "'\"":
+            q = text[p]
+            j = p + 1
+            while j < n and text[j] != q:
+                j += 1
+            return text[p:j + 1], min(j + 1, n)
+        j = p
+        while j < n and text[j] not in " \t":
+            j += 1
+        return text[p:j], j
+
+    pos = 0
+    tok, pos = next_token(pos)
+    if tok == "env":
+        tok, pos = next_token(pos)
+    while tok is not None:
+        m = _ASSIGN_RE.match(tok)
+        if not m:
+            break
+        assigns.append((m.group(1), _strip_quotes(m.group(2))))
+        tok, pos = next_token(pos)
+    return assigns
+
+
+def lane_from_command(command, env, cwd):
+    """The lane identity the hook must agree with `tools/tv-lock.sh` about.
+
+    `tv-lock.sh` names a lane `LANE="${PLX_TV_LOCK_LANE:-$REPO}"` — the env var if set, else the
+    checkout the script itself is running from. `cwd` cannot play that role here: the harness
+    reports the SESSION's own checkout as `payload["cwd"]` for every subagent's Bash call
+    regardless of which worktree that agent is actually acting in, so a hook that only ever reads
+    `cwd` refuses a subagent's own, correctly-taken lease (wrong lane) — and the workaround of
+    exporting `PLX_TV_LOCK_LANE` once for the whole session collapses every agent onto ONE lane,
+    which is the failure this exists to prevent (`docs/agent-reference.md`, the 2026-09-03
+    collision). So the resolution order is, in this order:
+
+      1. an explicit `PLX_TV_LOCK_LANE=<path>` assignment PREFIXING the command text — directly,
+         after a leading `env `, or after a leading `cd <dir> &&`. This is the only spelling that
+         can vary per Bash call, which is what a subagent naming its OWN worktree needs.
+      2. `PLX_TV_LOCK_LANE` in the hook's own environment (a human or wrapper that exported it for
+         the whole process rather than per command).
+      3. the git toplevel of `cwd`, exactly as before this change.
+
+    A `#`-comment or a heredoc BODY never counts — only the start of the command text, after
+    heredoc bodies are stripped, is ever inspected.
+    """
+    text = strip_heredocs(command).lstrip()
+    m = _LEADING_CD_RE.match(text)
+    if m:
+        text = text[m.end():].lstrip()
+    for name, value in _leading_env_assignments(text):
+        if name == "PLX_TV_LOCK_LANE" and value:
+            return value
+    if env.get("PLX_TV_LOCK_LANE"):
+        return env["PLX_TV_LOCK_LANE"]
+    return repo_root(cwd)
+
+
 def lease_for(lane):
     """A live lease for THIS lane (this checkout), or None.
 
@@ -253,7 +341,7 @@ def main():
     if not reasons:
         return 0
 
-    lane = repo_root(payload.get("cwd") or os.getcwd())
+    lane = lane_from_command(cmd, os.environ, payload.get("cwd") or os.getcwd())
     if lease_for(lane):
         return 0
 

@@ -1,7 +1,8 @@
-//! search — the search screen's data layer (the store `ui/search/` draws).
+//! search — the search screen's data layer (the store the owned `screens::search::SearchScreen` draws).
 //!
 //! One query, fanned out across every registered source, merged into typed shelves and pumped once
-//! a frame while the screen is up. The types down to [`shelves`] are what `ui/search/` draws;
+//! a frame while the screen is up. The types down to [`shelves`] are what `screens::search::render`
+//! draws;
 //! everything below the *fetch plumbing* banner is the machine that fills them. [`terms`] is the
 //! one predicate the screen shares with the store — see its doc before writing a second one.
 //!
@@ -29,8 +30,9 @@
 //!
 //! The merge is **round robin** ([`merge`]), not source-by-source the way Home groups its shelves.
 //! Home groups because a shelf there BELONGS to a source and adjacency is what says so; a search
-//! shelf is genuinely mixed (`ui/search/results.rs`: the heading "cannot claim an owner — the
-//! owner annotation follows FOCUS"), so concatenating would bury a friend's best match behind
+//! shelf is genuinely mixed (the deleted legacy `ui/search/results.rs`'s own reasoning, carried
+//! onto the owned `screens::search::mod.rs`'s `OWNER_FLOOR`: the owner annotation follows FOCUS,
+//! not a fixed shelf owner), so concatenating would bury a friend's best match behind
 //! twenty-three worse ones of ours. There is no cross-server relevance score to sort on — the only
 //! ranking any server hands over is the order of its own list — so taking one from each in turn is
 //! the most each server's ranking can be honoured at once.
@@ -79,7 +81,11 @@ use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+pub(crate) mod view;
+pub(crate) mod recents;
+pub(crate) mod scope;
 
 /// Below this many characters the server answers with nothing, so asking is pure latency.
 /// Measured, not guessed — see the module doc.
@@ -280,6 +286,7 @@ pub(crate) fn section_is_fav(favs: &[(ServerId, i64, bool)], sid: ServerId, key:
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Shelf {
     pub(crate) kind: Kind,
     pub(crate) items: Vec<Item>,
@@ -324,13 +331,15 @@ impl State {
     }
 }
 
-static mut QUERY: String = String::new();
-static mut SHELVES: Vec<Shelf> = Vec::new();
+// Published buffers are shared with retained frame views. Only the main-thread store writes
+// them; replacing a query or landing cannot invalidate a frame that still owns the old Arc.
+static mut QUERY: Option<Arc<str>> = None;
+static mut SHELVES: Option<Arc<Vec<Shelf>>> = None;
 static mut STATE: State = State::Idle;
 
 /// The query as typed, verbatim — trailing space and all, because the FIELD draws this.
 pub(crate) fn query() -> &'static str {
-    unsafe { &*addr_of!(QUERY) }
+    unsafe { (&*addr_of!(QUERY)).as_deref().unwrap_or("") }
 }
 
 /// **THE predicate for "is this a real query"**, and the terms a fetch would actually be addressed
@@ -345,7 +354,7 @@ pub(crate) fn query() -> &'static str {
 ///   keyboard: `len()` would put a one-letter Cyrillic or CJK query over a floor the server will
 ///   still answer nothing to, spending a round trip per keystroke on a guaranteed empty response.
 ///
-/// `pub(crate)` so `ui/search/` asks instead of re-deriving it. "Is a search on screen", "may this
+/// `pub(crate)` so the owned `screens::search::mod.rs` asks instead of re-deriving it. "Is a search on screen", "may this
 /// term be filed in the recents", and "is a fetch owed" are the SAME question, and a screen that
 /// spells its own copy of the test can disagree with the store about whether a search is happening
 /// at all — a results region drawn over a store parked on [`State::Idle`], which never asked
@@ -355,20 +364,40 @@ pub(crate) fn terms(q: &str) -> Option<&str> {
     (t.chars().count() >= MIN_QUERY).then_some(t)
 }
 
+/// The query's own drawability invariant: no control byte reaches the store. **NUL is the one
+/// that bites** — it survives every `String` operation on the way in from a boot trigger's file
+/// and `CString::new` refuses it at the far end, so the field's run and the empty statement both
+/// blank over a query the app still believes it is holding. Borrowed when there is nothing to
+/// remove, which is every keystroke: the television's panel cannot commit one
+/// (`textinput::decode_text_at` ends its string AT the NUL) and a remembered term is refused by
+/// `recents::usable`, so the seed path is the only way one gets in — and that path now enters
+/// through the STORE rather than through a screen's mount.
+pub(crate) fn sanitize_query(q: &str) -> std::borrow::Cow<'_, str> {
+    if q.chars().any(char::is_control) {
+        std::borrow::Cow::Owned(q.chars().filter(|c| !c.is_control()).collect())
+    } else {
+        std::borrow::Cow::Borrowed(q)
+    }
+}
+
 /// Replace the query. Idempotent on an unchanged string, so a caller may hand it every frame.
 pub(crate) fn set_query(q: &str) {
+    let q = &*sanitize_query(q);
     // Two different changes, and only one of them is news for the SERVER: the field draws the raw
     // string (so a typed space must repaint), while the fetch is addressed to the trimmed one (so
     // that same space must not supersede an answer that is still correct). Collapsing the two
     // re-asks the whole roster for the identical terms every time the space bar is pressed.
+    // Finish reading the caller's string before replacing storage: even a caller deriving
+    // a shorter query from the legacy read facade must not leave us reading a retired buffer.
+    let real_query = terms(q).is_some();
     let restart = unsafe {
         let cur = &mut *addr_of_mut!(QUERY);
-        if cur == q {
+        let old = cur.as_deref().unwrap_or("");
+        if old == q {
             return;
         }
-        let restart = cur.trim() != q.trim();
-        cur.clear();
-        cur.push_str(q);
+        let restart = old.trim() != q.trim();
+        *cur = Some(Arc::from(q));
         restart
     };
     if restart {
@@ -376,8 +405,8 @@ pub(crate) fn set_query(q: &str) {
         // while the next lands would show results for a string that is no longer on screen.
         supersede();
         unsafe {
-            (*addr_of_mut!(SHELVES)).clear();
-            *addr_of_mut!(STATE) = if terms(q).is_some() {
+            *addr_of_mut!(SHELVES) = None;
+            *addr_of_mut!(STATE) = if real_query {
                 State::Searching
             } else {
                 State::Idle
@@ -385,7 +414,7 @@ pub(crate) fn set_query(q: &str) {
             // …and the debounce restarts with it: the fetch is owed to the LAST keystroke, not to
             // the first one of the burst.
             *addr_of_mut!(SETTLE) = 0.0;
-            *addr_of_mut!(ARMED) = terms(q).is_some();
+            *addr_of_mut!(ARMED) = real_query;
         }
     }
     crate::ui::idle::invalidate();
@@ -403,10 +432,29 @@ pub(crate) fn query_gen() -> u32 {
     GEN.load(Ordering::SeqCst)
 }
 
+/// Publish a bounded catalog through the real retained-view boundary, without network work.
+#[cfg(test)]
+pub(crate) fn publish_shelves_for_test(shelves: Vec<Shelf>) {
+    // A published catalog represents completed source answers, not merely painted rows over
+    // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
+    VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
+    snapshot_favs();
+    for i in slots() {
+        let items = std::array::from_fn(|k| shelves.iter().filter(|s| s.kind == KINDS[k])
+            .flat_map(|s| &s.items).filter(|item| item.sid().raw() as usize == i).cloned().collect());
+        record(i, Some(items));
+    }
+    unsafe {
+        *addr_of_mut!(ARMED) = false;
+        *addr_of_mut!(SHELVES) = Some(Arc::new(shelves));
+        *addr_of_mut!(STATE) = State::Ready;
+    }
+}
+
 /// The shelves, already in [`KINDS`] order, with empty ones omitted — an empty type draws nothing
 /// at all, so the UI never has to test for it.
 pub(crate) fn shelves() -> &'static [Shelf] {
-    unsafe { &*addr_of!(SHELVES) }
+    unsafe { (&*addr_of!(SHELVES)).as_deref().map(Vec::as_slice).unwrap_or(&[]) }
 }
 
 /// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
@@ -436,8 +484,13 @@ pub(crate) fn set_watched_local(sid: ServerId, rk: &str, on: bool) -> bool {
     {
         flip(it);
     }
-    for it in unsafe { (&mut *addr_of_mut!(SHELVES)).iter_mut() }.flat_map(|s| s.items.iter_mut()) {
-        flip(it);
+    if let Some(shelves) = unsafe { &mut *addr_of_mut!(SHELVES) } {
+        // A write outside the visible result cap must not clone a retained catalog it cannot
+        // change. The catalog itself is bounded by KINDS × SHELF_MAX, never library-sized.
+        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
+            Item::Media(m) if crate::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
+            for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
+        }
     }
     hit
 }
@@ -690,7 +743,7 @@ pub(crate) fn pump(dt: f32) -> bool {
         // generation so a slot reactivated for another profile cannot surface rows fetched with
         // the credential it held before it was hidden.
         supersede();
-        unsafe { (*addr_of_mut!(SHELVES)).clear() };
+        unsafe { *addr_of_mut!(SHELVES) = None };
     }
     // **The second generation, and it moves without the first.** Discovery appending a library and
     // a favourites edit both bump `SECTIONS_GEN`, and this screen runs discovery immediately before
@@ -705,7 +758,7 @@ pub(crate) fn pump(dt: f32) -> bool {
         if terms(query()).is_some() {
             supersede();
             unsafe {
-                (*addr_of_mut!(SHELVES)).clear();
+                *addr_of_mut!(SHELVES) = None;
                 *addr_of_mut!(SETTLE) = 0.0;
                 *addr_of_mut!(ARMED) = true;
             }
@@ -854,7 +907,7 @@ fn rebuild() {
         shelves.len(),
         items
     ));
-    unsafe { *addr_of_mut!(SHELVES) = shelves };
+    unsafe { *addr_of_mut!(SHELVES) = Some(Arc::new(shelves)) };
 }
 
 /// The merged result set: [`KINDS`] order, empty shelves omitted, sources taken **round robin** so
@@ -1139,8 +1192,8 @@ pub(crate) fn reset() {
     supersede();
     VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
     unsafe {
-        (*addr_of_mut!(QUERY)).clear();
-        (*addr_of_mut!(SHELVES)).clear();
+        *addr_of_mut!(QUERY) = None;
+        *addr_of_mut!(SHELVES) = None;
         *addr_of_mut!(STATE) = State::Idle;
         *addr_of_mut!(SETTLE) = 0.0;
         *addr_of_mut!(ARMED) = false;
@@ -1267,12 +1320,12 @@ mod tests {
         register(3);
         hold_off();
         unsafe {
-            (*addr_of_mut!(QUERY)).push_str("wallace");
+            *addr_of_mut!(QUERY) = Some(Arc::from("wallace"));
             (*addr_of_mut!(SRC))[0].status = Status::Answered;
-            *addr_of_mut!(SHELVES) = vec![Shelf {
+            *addr_of_mut!(SHELVES) = Some(Arc::new(vec![Shelf {
                 kind: Kind::Movie,
                 items: vec![media("old-profile")],
-            }];
+            }]));
             *addr_of_mut!(STATE) = State::Ready;
         }
 
@@ -1931,7 +1984,7 @@ mod tests {
         assert_eq!(state_from(&[empty(), failed()], true), State::Ready);
     }
 
-    /// [`terms`] is THE predicate — the store's own gate and the one `ui/search/` asks — so it is
+    /// [`terms`] is THE predicate — the store's own gate and the one the owned `screens::search::mod.rs` asks — so it is
     /// graded here rather than at each screen that used to re-spell it. Two properties, both of
     /// which a re-spelling has got wrong: the trim (the FIELD's spaces are not part of what is being
     /// looked for) and the floor counted in CHARACTERS, since a two-letter Cyrillic query is four
@@ -1955,6 +2008,32 @@ mod tests {
             "one letter, two bytes — a byte count would have asked"
         );
         assert_eq!(terms("ко"), Some("ко"));
+    }
+
+    /// **A control byte in a seeded query never reaches the store**, and NUL is the one that
+    /// bites: it survives every `String` operation on the way in from a boot trigger's file, and
+    /// `CString::new` refuses it at the far end — so the field's run and the empty statement both
+    /// blank over a query the app still believes it is holding. Filtered at [`set_query`], the one
+    /// entrance to the query, rather than at a seeding CALLER: the owned Search screen seeds
+    /// through `stores::search::SearchCmd`, so a filter living at the legacy mount would have been
+    /// deleted with it (legacy `a_control_byte_in_the_seed_never_reaches_the_query`).
+    #[test]
+    fn a_control_byte_in_a_seeded_query_never_reaches_the_store() {
+        let _g = fresh();
+        set_query("wal\0lace");
+        assert_eq!(query(), "wallace");
+        assert!(
+            std::ffi::CString::new(query()).is_ok(),
+            "…so every run drawn from it can be drawn at all"
+        );
+        set_query("a\tb\nc");
+        assert_eq!(query(), "abc", "a hand-edited file's tab or newline is not a query");
+        set_query("wallace ");
+        assert_eq!(
+            query(),
+            "wallace ",
+            "an ordinary trailing space is the FIELD's own text and survives"
+        );
     }
 
     /// The query state machine: below `MIN_QUERY` nothing is asked at all, at it the screen goes
@@ -2272,6 +2351,9 @@ mod tests {
 /// invisible — its only effect is that `maybe_spawn` declines — and a debounce that silently stops
 /// releasing is a screen that never searches.
 #[cfg(test)]
-fn settling() -> bool {
+pub(crate) fn settling() -> bool {
     unsafe { *addr_of!(ARMED) }
 }
+
+#[cfg(test)]
+pub(crate) fn debounce_elapsed_for_test() -> f32 { unsafe { *addr_of!(SETTLE) } }

@@ -86,6 +86,16 @@ class _Overlay:
 
 
 class ContentFocusFlows(unittest.TestCase):
+    def test_home_down_must_reach_the_second_shelf_not_bounce_to_the_hero(self):
+        log = ["focus route=home snapt=0 hf=-1 row=-1 col=-1",
+               "focus route=home snapt=0 hf=0 row=-1 col=-1",
+               "focus route=home snapt=1 hf=-1 row=0 col=0",
+               "focus route=home snapt=0 hf=0 row=-1 col=-1"]
+        self.assertIsNotNone(focusfp_check.check(1, log))
+        log[-1] = "focus route=home snapt=1 hf=-1 row=1 col=0"
+        self.assertIsNone(focusfp_check.check(1, log))
+        self.assertIsNotNone(focusfp_check.check(1, log[1:]))
+
     def test_settings_family_must_visit_privacy_as_well_as_legal(self):
         log = ["hb route=home overlay=settings", "hb route=home overlay=legal",
                "hb route=home overlay=settings", "hb route=home"]
@@ -117,6 +127,86 @@ class ContentFocusFlows(unittest.TestCase):
         self.assertIsNotNone(focusfp_check.check(2, log[:-1]))
         self.assertIsNotNone(focusfp_check.check(2, [*log[:-1], log[-1].replace("rk=1001", "rk=1002")]))
         self.assertIsNotNone(focusfp_check.check(2, ["focus route=home", "focus route=detail", "focus route=home"]))
+
+    @staticmethod
+    def _library_adoption_log():
+        return [
+            "focus route=home snapt=1 hf=-1 row=1 col=0 sid=0 rk=1046",
+            "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1046 row=2 col=4 viewport=2",
+            "focus route=detail sid=0 rk=1046",
+            "focus route=library pill=-1 card=1 menu=0 sid=0 rk=1046 row=2 col=4 viewport=2",
+        ]
+
+    def test_library_flow_rejects_the_recorded_home_detail_home_false_pass(self):
+        # This is the shape from the verified false-PASS artifact: the old flow had enough lines
+        # to look alive, but it never entered the Library at all.
+        log = [
+            "focus route=home snapt=0 snapp=0 hf=-1 row=-1 col=-1 sid=- rk=- press=0",
+            "focus route=home snapt=1 snapp=1 hf=-1 row=1 col=0 sid=0 rk=1048 press=0",
+            "focus route=detail sec=0 col=0 sid=0 rk=1048 press=1",
+            "focus route=home snapt=1 snapp=1 hf=-1 row=1 col=0 sid=0 rk=1048 press=0",
+        ]
+        self.assertIsNotNone(focusfp_check.check(3, log))
+
+    def test_library_adoption_requires_the_same_card_and_focus_position(self):
+        log = self._library_adoption_log()
+        self.assertIsNone(focusfp_check.check(3, log))
+
+        for label, replacement in (
+            ("server slot", ("sid=0", "sid=1")),
+            ("rating key", ("rk=1046", "rk=1047")),
+            ("grid position", ("col=4", "col=5")),
+        ):
+            with self.subTest(label=label):
+                changed = list(log)
+                changed[-1] = changed[-1].replace(*replacement)
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_adoption_refuses_missing_identity_or_focus_fields(self):
+        log = self._library_adoption_log()
+        for label, missing in (("rating key", " rk=1046"), ("grid position", " col=4")):
+            with self.subTest(label=label):
+                changed = list(log)
+                changed[-1] = changed[-1].replace(missing, "")
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_adoption_requires_a_card_and_the_matching_detail(self):
+        log = self._library_adoption_log()
+        for field in ("pill", "card", "menu"):
+            changed = [re.sub(r" " + field + r"=[^ ]+", "", line) for line in log]
+            with self.subTest(missing_both_sides=field):
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+        for field, value in (("card", "0"), ("menu", "1")):
+            changed = [re.sub(r" " + field + r"=[^ ]+", " " + field + "=" + value, line) for line in log]
+            with self.subTest(not_a_card=field):
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+        for replacement in ("sid=1 rk=1046", "sid=0 rk=9999", "sid=0"):
+            changed = list(log)
+            changed[2] = "focus route=detail " + replacement
+            with self.subTest(wrong_detail=replacement):
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_flow_validates_every_focus_record_after_back(self):
+        log = self._library_adoption_log()
+        corruptions = (
+            ("wrong item", ("rk=1046", "rk=1047")),
+            ("wrong server", ("sid=0", "sid=1")),
+            ("missing identity", (" rk=1046", "")),
+            ("viewport drift", ("viewport=2", "viewport=3")),
+        )
+        for label, replacement in corruptions:
+            with self.subTest(label=label):
+                changed = log + [log[-1].replace(*replacement)]
+                self.assertIsNotNone(focusfp_check.check(3, changed))
+
+    def test_library_flow_rejects_a_later_route_departure(self):
+        log = self._library_adoption_log()
+        self.assertIsNotNone(focusfp_check.check(3, log + ["focus route=home"]))
+
+    def test_library_flow_allows_press_only_changes_after_back(self):
+        log = self._library_adoption_log()
+        changed = log + [log[-1] + " press=1"]
+        self.assertIsNone(focusfp_check.check(3, changed))
 
     def test_a_person_boot_alone_does_not_prove_a_nested_return(self):
         log = ["focus route=" + r for r in ("home", "detail", "person", "person")]
@@ -199,6 +289,20 @@ class ReplayFixtures(unittest.TestCase):
         return subprocess.run([sys.executable, os.path.abspath(tool), *args],
                               capture_output=True, text=True)
 
+    def test_recording_info_reports_adapter_event_counts_without_payloads(self):
+        with tempfile.TemporaryDirectory() as root:
+            recording = self._synthetic_recording(root)
+            result = self._tool("info", recording)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("effects=0 results=0", result.stdout)
+            with open(os.path.join(recording, "rec-0000.jsonl"), "a", encoding="utf-8") as f:
+                for kind in ["eff", "eff", "async", "life"]:
+                    f.write(json.dumps({"f": 1, "t": kind, "payload": "not-for-info-output"}) + "\n")
+            result = self._tool("info", recording)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("effects=2 results=1 lifecycle=1", result.stdout)
+            self.assertNotIn("not-for-info-output", result.stdout)
+
     def _synthetic_recording(self, root, st=0x1234, anchor=False):
         d = os.path.join(root, "rec")
         os.makedirs(d)
@@ -249,6 +353,27 @@ class ReplayFixtures(unittest.TestCase):
             r = run("rebaseline", new, "flow", "--log", log)
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("not this fixture", r.stdout)
+            # Result mismatches cannot be hidden behind an otherwise valid state divergence.
+            # Until the adoption record can represent them, refuse without replacing the fixture.
+            kept = {}
+            for name in ("manifest.json", "rec-0000.jsonl"):
+                with open(os.path.join(fixtures, "flow", name), "rb") as f:
+                    kept[name] = f.read()
+            for result_line, count in [("replay: result diverge f=0 index=0 reason=changed\n", 1),
+                                       ("", 1),
+                                       ("replay: result diverge f=0 index=0 reason=missing\n", 0)]:
+                log = os.path.join(tmp, "result.log")
+                with open(log, "w") as f:
+                    f.write(result_line +
+                            "replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n" +
+                            "replay: done frames=1 graded=1 diverged=1 present_diffs=0 result_diffs=%d verdict=DIVERGED\n" % count)
+                r = run("rebaseline", new, "flow", "--log", log)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("result", r.stdout)
+                self.assertFalse(os.path.exists(os.path.join(fixtures, "flow", "divergence.json")))
+                for name, contents in kept.items():
+                    with open(os.path.join(fixtures, "flow", name), "rb") as f:
+                        self.assertEqual(f.read(), contents)
             # 4. a real record: accepted, and divergence.json is written beside the new recording
             log = os.path.join(tmp, "real.log")
             open(log, "w").write("replay: diverge f=0 expected=0x0000000000000010 got=0x0000000000000020 inputs=1\n"
@@ -274,6 +399,21 @@ class ReplayFixtures(unittest.TestCase):
             self.assertFalse(v in lits or any(p.match(v) for p in pats), v)
         for v in ("s0a1b2c3d", "tick", "inst:3", "0.7.0-dev", "Landing(Instance(4))", "plxnative-rec"):
             self.assertTrue(v in lits or any(p.match(v) for p in pats), v)
+
+    def test_home_payload_alphabet_accepts_only_the_mock_protocol_and_synthetic_words(self):
+        lits, pats = self._alphabet()
+        accepts = lambda value: value in lits or any(p.match(value) for p in pats)
+        for value in ("", "hubs", "PG-13", "TV-14", "ac3", "h264", "home.movies.recent",
+                      "home.television.recent", "/library/sections/1/recentlyAdded",
+                      "/library/sections/2/recentlyAdded", "/library/metadata/1001/thumb/1",
+                      "/library/metadata/2001/art/1", "/library/parts/2/1700000002/file.mkv",
+                      "2024-03-14", " ".join(["s01234567"] * 24)):
+            self.assertTrue(accepts(value), value)
+        for value in ("A household summary", "s01234567 household", "/library/metadata/My Film/thumb/1",
+                      "/library/metadata/1001/thumb/1?X-Plex-Token=secret",
+                      "/library/parts/2/1700000002/household.mkv", "http://nas.local/library/metadata/1001",
+                      "s01234567\nThe Godfather", " ".join(["s01234567"] * 23 + ["household"])):
+            self.assertFalse(accepts(value), value)
 
 
 class TeardownProcessTable(unittest.TestCase):
@@ -3734,6 +3874,13 @@ class DepGates(unittest.TestCase):
 
     def test_check_deps_is_green(self):
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_check_statics_is_green(self):
+        """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` under ui/ and screens/
+        is a named render cache (ci/allow/statics.txt) or sits in a legacy module still awaiting its
+        phase (ci/allow/statics-migration.txt), and no allowlist entry is stale."""
+        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-statics.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_every_allowlist_declares_its_own_count(self):
