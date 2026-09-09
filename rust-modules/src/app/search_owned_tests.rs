@@ -7,6 +7,37 @@ fn owned_search_probe(d: &Dispatcher<AppHost>) -> String {
 }
 
 #[test]
+fn owned_search_unrelated_store_notice_cannot_ack_a_net_zero_edit_batch() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-ack");
+    session.watching("synthetic-ack-profile");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    let target = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
+    for kind in [InputKind::SystemKeyboard(true),
+        InputKind::Text(crate::ui::machine::TextEdit::Commit("a".into())),
+        InputKind::Text(crate::ui::machine::TextEdit::Backspace)] {
+        d.emit(MachineId::Input, Fx::Deliver(target, Delivery::Screen(ScreenEvent::Input(InputEvent {
+            at: tick(1), source: Source::Script, kind,
+        }))));
+    }
+    d.emit(MachineId::Store(StoreId::Browse.ord()), Fx::Deliver(target,
+        Delivery::Screen(ScreenEvent::StoreChanged(StoreId::Browse.ord(), 100))));
+    frame(&mut d, &mut rig, Route::Search, tick(1), vec![]);
+    assert_eq!(crate::search::query(), "");
+    assert!(owned_search_probe(&d).contains("pending=true"),
+        "matching frozen text is not an acknowledgement from another store");
+    frame(&mut d, &mut rig, Route::Search, tick(2), vec![]);
+    assert!(owned_search_probe(&d).contains("pending=false"));
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
 fn owned_search_keeps_several_commits_while_the_frame_view_is_frozen() {
     let _serial = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("owned-search-text");

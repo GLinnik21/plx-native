@@ -274,7 +274,9 @@ impl SearchScreen {
 impl<H: SearchLike> Machine<H> for SearchScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        self.sync(cx, matches!(ev, ScreenEvent::Mount | ScreenEvent::StoreChanged(..)), fx);
+        let acknowledged = matches!(ev, ScreenEvent::Mount)
+            || matches!(ev, ScreenEvent::StoreChanged(store, _) if *store == StoreId::Search.ord());
+        self.sync(cx, acknowledged, fx);
         match ev {
             ScreenEvent::RestoreMemory(PageMemory::Search(memory)) => { self.restore(memory); self.sync(cx, true, fx); }
             ScreenEvent::Mount => {

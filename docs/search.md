@@ -162,6 +162,8 @@ screen remains part of the migration, not a claim this vocabulary alone complete
 The owned `screens/search` implementation now compiles and is mounted by integration fixtures
 through `AppMounter::search_owned`. It consumes `AppViews.search`, keeps an unacknowledged draft,
 uses engine-owned focus groups and supplies query/profile-guarded entry restoration data.
+Only Search-store notices acknowledge a pending draft; an unrelated store notice cannot treat
+matching frozen text as confirmation of an edit that has not reached the next frame publication.
 Its renderer reads retained query, result and source-scope publications. The temporary mounter
 gate is **off in the live loop** until native keyboard and navigation adapters are connected;
 host tests are not visual verification, and the legacy Search implementation remains the live
