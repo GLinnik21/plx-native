@@ -462,20 +462,7 @@ pub(crate) fn pump() {
     if is_busy() {
         return; // a burst still has writes to send — one refresh at the end of it, not per write
     }
-    let (hubs, detail) = unsafe {
-        (
-            std::mem::take(&mut *addr_of_mut!(WANT_HUBS)),
-            (*addr_of_mut!(WANT_DETAIL)).take(),
-        )
-    };
-    if let Some(keep) = detail {
-        // BEFORE the hubs: this re-reads the item the page is mounted on, and the hub refetch's own
-        // reconcile (`detail::reselect`) then re-resolves the catalog row under it. If the user has
-        // walked to a DIFFERENT page in the meantime it re-reads that one instead — one wasted
-        // fetch, the same contract this call has always had ("re-read the mounted item"), and the
-        // keep-focus latch simply does not resolve there (`take_kept_episode` starts the row over).
-        crate::ui::detail::refresh_view_state(&keep);
-    }
+    let hubs = unsafe { std::mem::take(&mut *addr_of_mut!(WANT_HUBS)) };
     if hubs {
         crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::RefetchHubs);
         // the same staleness, one screen over: a library's own shelves carry watch state and its
@@ -483,6 +470,12 @@ pub(crate) fn pump() {
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
         crate::ui::idle::invalidate();
     }
+}
+
+/// The owning application addresses the refresh to the mounted entry after the write burst.
+pub(crate) fn take_detail_refresh() -> Option<String> {
+    if is_busy() { return None; }
+    unsafe { (*addr_of_mut!(WANT_DETAIL)).take() }
 }
 
 // ---- the fan-out: one title, every source that holds it ---------------------------------------

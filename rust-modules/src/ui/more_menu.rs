@@ -399,7 +399,7 @@ mod tests {
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
         assert_eq!(
             quality_detail(crate::route::Quality::Original, false),
-            crate::ui::detail::CONVERTS_ON_SERVER,
+            crate::ui::fmt::CONVERTS_ON_SERVER,
         );
     }
 

@@ -122,6 +122,10 @@ impl Host for InnerHost {
     type Elem = u32;
     type Views<'a> = ();
     type Init = NoInit;
+    // No family page remembers anything on its own `ReturnState` today (`ui/machine.rs`'s
+    // `Host::Memory` doc) — the surface's own `NavStack<InnerHost>` restores its child pages by
+    // focus alone.
+    type Memory = ();
 }
 
 /// The outer context as the inner pages see it: everything but the views, which the family's

@@ -28,7 +28,7 @@ pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
 pub(crate) mod decision_alert;
-pub mod detail;
+pub(crate) mod detail_layout;
 pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
 pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine world, and its test stub
 pub(crate) mod geom; // RESTRUCTURE (spec §7.1): `Focusable` for the widgets — geometry IS `place`
@@ -65,8 +65,6 @@ pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own 
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
-pub mod filmography; // the person page's FILMOGRAPHY route — every credit, and which of them you hold
-pub mod person; // the person / actor page (Apple-TV shape) — opened from a detail page's cast row
 pub mod person_bio; // ...and that page's bio ALERT panel — the full biography behind its `MORE` mark
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;

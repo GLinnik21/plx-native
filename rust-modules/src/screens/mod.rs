@@ -12,6 +12,9 @@
 //! carries the legacy `Route` — see `registry`'s doc.
 
 pub(crate) mod consent;
+pub(crate) mod detail;
+pub(crate) mod person;
+pub(crate) mod filmography;
 pub(crate) mod family;
 pub(crate) mod legal;
 pub(crate) mod login;

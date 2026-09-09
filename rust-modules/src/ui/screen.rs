@@ -24,6 +24,8 @@ use super::{Painter, Rect};
 /// Everything a mounted screen can be told (§6.1).
 pub enum ScreenEvent<H: Host> {
     Mount,
+    /// Frozen request-time memory, delivered before restored Enter for live and remounted bodies.
+    RestoreMemory(H::Memory),
     Enter(Enter<H::Elem>),
     Cover,
     Uncover,
@@ -52,6 +54,7 @@ impl<H: Host> ScreenEvent<H> {
     pub fn name(&self) -> &'static str {
         match self {
             ScreenEvent::Mount => "mount",
+            ScreenEvent::RestoreMemory(_) => "restore_memory",
             ScreenEvent::Enter(_) => "enter",
             ScreenEvent::Cover => "cover",
             ScreenEvent::Uncover => "uncover",
@@ -111,6 +114,8 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
     fn draw(&mut self, f: &mut DrawFrame<'_, H>);
     fn render(&self) -> RenderStrategy;
+    /// Whether remounting an evicted child surface can read this page's identity-matched data.
+    fn covered_surfaces_ready(&self) -> bool { true }
     /// May the container's strip be reached from this page right now (§6.2)? Home answers
     /// `false` while snapped to the grid.
     fn strip_reachable(&self) -> bool {
@@ -134,10 +139,32 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn ground_ready(&self) -> bool {
         false
     }
+    /// This screen's own [`ReturnState::memory`] payload, RIGHT NOW — asked by the dispatcher's
+    /// `ret()` (spec §6.1 tier 2) at the moment a navigation OFF this screen is raised, exactly as
+    /// `focus` is read off the engine at the same instant. **Pure, like every other query here**:
+    /// answering is a snapshot, never a mutation, and a screen that has nothing worth remembering
+    /// (most of them) takes the default and never overrides this. `stores/metadata.rs`'s module
+    /// doc is the worked example (Detail's `Spot`) and the contract every phase-7 screen that
+    /// needs to remember something builds against, rather than re-deciding where its own memory
+    /// lives.
+    fn memory(&self) -> H::Memory {
+        H::Memory::default()
+    }
+    /// Capture entry memory using the engine's current focus without storing a second cursor.
+    fn memory_at(&self, _focus: Option<FocusKey<H::Elem>>) -> H::Memory {
+        self.memory()
+    }
+    /// Typed application inspection during migration; the library never names a screen type.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// The application's screen argument (§6.1).
-pub trait ScreenArg: Clone + 'static {
+pub trait ScreenArg: Clone + LogicalState + 'static {
     fn chrome(&self) -> Chrome;
     fn id(&self) -> ScreenId;
     fn title(&self) -> Option<&str>;
@@ -146,17 +173,40 @@ pub trait ScreenArg: Clone + 'static {
 
 /// Return state (§6.1 tier 2): on the `Entry`, captured at request time — what an evicted entry
 /// remounts from.
-#[derive(Clone, Copy, Debug)]
-pub struct ReturnState<K> {
+///
+/// `M` is the opaque per-screen payload (`Host::Memory`), defaulted to `()` so every existing
+/// spelling — `ReturnState<H::Elem>`, `ReturnState::default()` — keeps meaning exactly what it did
+/// before this field existed: a Host with nothing to remember (`InnerHost`/`FixtureHost`,
+/// and any container that only ever names `ReturnState<K>` with one type
+/// argument) pays nothing and changes nothing. A screen that DOES need to remember something asks
+/// for it through [`Screen::memory_at`] and fixes its Host's `Memory` associated type to a concrete
+/// payload — see that method's doc and `stores/metadata.rs`'s module doc (`Spot`, the worked case).
+///
+/// **Not `Copy`.** It was, while its only fields were a key and a float; `M` is application data
+/// (a `Spot` is not `Copy`) and every real use here is a single owned value passed once — `Clone`
+/// costs nothing to keep for a caller that genuinely needs a second copy, and dropping the derive
+/// only removes a bound this type never relied on.
+#[derive(Clone, Debug)]
+pub struct ReturnState<K, M = ()> {
     pub focus: Option<FocusKey<K>>,
+    /// Engine-owned cursors for every group in this entry, including inactive groups.
+    pub remembered: Vec<(GroupId, K)>,
     pub scroll: f32,
+    /// The screen's own [`Screen::memory`] snapshot, taken the moment a navigation off it was
+    /// raised — tier 2's answer to "where was this page standing" for whatever a screen's `focus`
+    /// and `scroll` alone cannot say (spec §6.1; e.g. Detail's season/column/sub-row `Spot`).
+    pub memory: M,
 }
 
-impl<K> Default for ReturnState<K> {
+pub const RETURN_STATE_SHAPE: &str = "ReturnState{focus:Option<(EntryId,H::Elem)>,remembered:[(GroupId,H::Elem)],scroll:f32,memory:H::Memory}";
+
+impl<K, M: Default> Default for ReturnState<K, M> {
     fn default() -> Self {
         Self {
             focus: None,
+            remembered: Vec::new(),
             scroll: 0.0,
+            memory: M::default(),
         }
     }
 }
@@ -168,7 +218,7 @@ pub trait Mounter<H: Host> {
         &mut self,
         id: InstanceId,
         arg: &H::Arg,
-        ret: &ReturnState<H::Elem>,
+        ret: &ReturnState<H::Elem, H::Memory>,
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
     ) -> Box<dyn Screen<H>>;

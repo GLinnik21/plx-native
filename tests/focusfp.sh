@@ -125,9 +125,16 @@ run_flow() {
   if [ -n "$REPLAY" ]; then
     # The recording carries the inputs; the app ends the run itself when the recording does.
     local waited=0
-    while kill -0 "$SIM_PID" 2>/dev/null && [ "$waited" -lt 120 ]; do sleep 1; waited=$((waited+1)); done
+    while kill -0 "$SIM_PID" 2>/dev/null && [ "$waited" -lt 120 ]; do
+      grep -q '^replay: REFUSED' "$log" && break
+      sleep 1; waited=$((waited+1))
+    done
     kill "$SIM_PID" 2>/dev/null || true; wait "$SIM_PID" 2>/dev/null || true; SIM_PID=""
     local verdict
+    if verdict=$(grep -E '^replay: REFUSED' "$log" | head -1) && [ -n "$verdict" ]; then
+      echo "  [FAIL] $n $name: $verdict"
+      return 1
+    fi
     verdict=$(grep -E '^replay: done ' "$log" | tail -1 || true)
     grep -E '^replay: (diverge|present|INITIAL)' "$log" | head -20 | sed 's/^/    /'
     if [ -z "$verdict" ]; then
@@ -166,8 +173,17 @@ run_flow() {
     echo "  [FAIL] $n $name: the app DIED during the flow ($lines fingerprint lines; $d/sim.out)"
     return 1
   fi
-  if [ "$lines" -lt "$MIN_LINES" ]; then
-    echo "  [FAIL] $n $name: only $lines fingerprint line(s) (need >= $MIN_LINES) — $fp"
+  local min_lines="$MIN_LINES"
+  # The Settings overlays leave the underlying Home fingerprint unchanged. Their actual
+  # traversal is asserted from heartbeat stages below, not from unrelated Home log volume.
+  [ "$n" = 6 ] && min_lines=1
+  if [ "$lines" -lt "$min_lines" ]; then
+    echo "  [FAIL] $n $name: only $lines fingerprint line(s) (need >= $min_lines) — $fp"
+    return 1
+  fi
+  local proof
+  if ! proof=$(python3 "$ROOT/tests/focusfp_check.py" "$n" "$fp"); then
+    echo "  [FAIL] $n $name: $proof — $fp"
     return 1
   fi
   echo "  [PASS] $n $name: $lines fingerprint lines -> $fp"
@@ -191,17 +207,23 @@ want 4 && { ran=$((ran+1)); run_flow 4 search-shelf-detail-back "search=s0" "sle
 # 5 Detail -> Person -> Detail -> BACK -> Person -> BACK -> Detail
 want 5 && { ran=$((ran+1)); run_flow 5 detail-person-detail "detail=$RK_MOVIE detailsec=1 detailok" "sleep:2 down ok sleep:2 back sleep:1 back sleep:1 down ok sleep:2 back" 'route=person' || fails=$((fails+1)); }
 # 6 chip -> Account -> Settings -> Privacy -> Legal -> document -> BACK x4
-want 6 && { ran=$((ran+1)); run_flow 6 settings-family "settings=root" "sleep:1 down ok sleep:1 back sleep:1 down down ok sleep:1 ok sleep:1 back back back back" 'overlay=settings' || fails=$((fails+1)); }
+# The synthetic token boot has no signed-in account: Favourites is absent, so Privacy is row 0.
+# Visit it and toggle its first choice, then return to row 0 and step down once to Legal.
+want 6 && { ran=$((ran+1)); run_flow 6 settings-family "settings=root" "sleep:1 ok sleep:1 ok sleep:1 back sleep:1 down ok sleep:1 ok sleep:1 back back back" 'overlay=settings' || fails=$((fails+1)); }
 # 7 first-run consent -> onboard -> Home
 want 7 && { ran=$((ran+1)); run_flow 7 firstrun-consent-onboard "firstrun" "sleep:1 ok sleep:1 ok sleep:1 down ok sleep:2" 'route=' || fails=$((fails+1)); }
-# 8 Detail -> hold on Related -> ItemMenu -> BACK
-want 8 && { ran=$((ran+1)); run_flow 8 detail-hold-itemmenu "detail=$RK_MOVIE detailsec=3" "sleep:2 okdown sleep:0.7 okup sleep:1 back" 'route=detail' || fails=$((fails+1)); }
+# 8 Detail -> hold on Related -> ItemMenu -> BACK. detailsec is a DOWN count, not a section id:
+# the synthetic movie's order is hero -> Cast -> Related -> About.
+want 8 && { ran=$((ran+1)); run_flow 8 detail-hold-itemmenu "detail=$RK_MOVIE detailsec=2" "sleep:2 okdown sleep:0.7 okup sleep:1 back" 'route=detail' || fails=$((fails+1)); }
 # 9 player (the mock's part bytes are not a film: the run lands on the failure read-out, which is
 #   the one screen the simulator reaches for playback — spec §15.4 requires a player line)
 want 9 && { ran=$((ran+1)); run_flow 9 player-readout "play=$RK_MOVIE clocksink" "sleep:3 down sleep:1 ok sleep:1 back" 'route=player' || fails=$((fails+1)); }
 want 10 && { skipped=$((skipped+1)); echo "  [SKIP] 10 root-back: a television flow (tv-session skill) — the simulator's root BACK is a log line"; }
 # 11 pointer clicks on every stop class incl. a clipped one and one under the tab track
 want 11 && { ran=$((ran+1)); run_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:1 ck:220,960 sleep:1 ck:1850,960 sleep:1 ck:960,540" 'hubs: landed' || fails=$((fails+1)); }
+# 12 Phase-7 adoption: Filmography owns its own focus scope. A library-matched credit opens Detail, BACK
+# restores the Filmography entry and the next BACK dismisses it to its Person host.
+want 12 && { ran=$((ran+1)); run_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person' || fails=$((fails+1)); }
 
 echo "=== focusfp: $((ran - fails)) passed, $fails failed of $ran, $skipped skipped ==="
 [ "$fails" -eq 0 ]

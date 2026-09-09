@@ -89,6 +89,17 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
             .map(|(_, k)| *k)
     }
 
+    pub fn remembered_for(&self, entry: EntryId) -> Vec<(GroupId, K)> {
+        self.remembered.iter().filter_map(|((e, g), k)| (*e == entry).then_some((*g, *k))).collect()
+    }
+
+    pub fn restore_remembered(&mut self, entry: EntryId, saved: &[(GroupId, K)]) {
+        self.remembered.retain(|((e, _), _)| *e != entry);
+        for &(group, elem) in saved {
+            self.remember(FocusKey { entry, elem }, group);
+        }
+    }
+
     /// Park focus (a pointer hover, a restore, a reconcile): the engine records it and answers
     /// the move for the owner to act on. `group` is the key's group when known (remembered).
     pub fn set(&mut self, owner: InputOwner, key: FocusKey<K>, group: Option<GroupId>, by: By) -> Outcome<K> {

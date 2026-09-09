@@ -34,6 +34,18 @@ pub trait Host: 'static {
     type Views<'a>: Copy;
     /// The application's initial conditions for a recording header (§5.3).
     type Init: LogicalState + 'static;
+    /// The opaque per-screen payload `ReturnState`'s tier-2 `memory` field carries (spec §6.1;
+    /// `ui::screen::ReturnState<K, M>`'s `M`, defaulted to `()` there so a Host that has nothing to
+    /// remember pays nothing). **The library never names what is INSIDE it** — that would be an
+    /// application type crossing the layer rule (§2.1) — only that every screen's payload lives in
+    /// ONE type, because one `NavStack<H, T>` holds heterogeneous `Entry<H>`s and so cannot carry a
+    /// different concrete memory type per screen. An application with several screens that need to
+    /// remember something (Detail's `Spot`, a future Library `Cursor` mirror, …) folds them into
+    /// one enum and fixes `Memory` to it (`AppHost` uses `PageMemory`); a bundle with
+    /// nothing to remember fixes it to `()`, like `FixtureHost` and `InnerHost`.
+    /// See `stores/metadata.rs`'s module doc for the worked case (`Spot`) and
+    /// the rationale for landing it here rather than as tier-3 store state.
+    type Memory: Clone + Default + std::fmt::Debug + LogicalState + 'static;
 }
 
 macro_rules! newtype {
@@ -595,6 +607,11 @@ pub trait LogicalState {
     }
 }
 
+impl LogicalState for () {
+    fn write(&self, _: &mut Canon) {}
+    fn probe(&self, _: &mut String) {}
+}
+
 #[cfg(test)]
 mod canon_tests {
     use super::*;
@@ -627,6 +644,10 @@ mod canon_tests {
     struct NoHost;
     #[derive(Clone)]
     struct NoArg;
+    impl LogicalState for NoArg {
+        fn write(&self, c: &mut Canon) { c.u32(0); }
+        fn probe(&self, _: &mut String) {}
+    }
     impl ScreenArg for NoArg {
         fn chrome(&self) -> Chrome {
             Chrome::None
@@ -653,6 +674,7 @@ mod canon_tests {
         type Elem = u32;
         type Views<'a> = ();
         type Init = NoInit;
+        type Memory = ();
     }
 
     #[test]

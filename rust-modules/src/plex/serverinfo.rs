@@ -239,7 +239,7 @@ fn store(id: ServerId, sub: Subscription, version: &str) {
 /// Test-only: publish one server's answer without a round trip.
 ///
 /// [`store`] is this module's private seam, and the suites that need it are the ones grading its
-/// READERS — `player::playing_subscription` and `ui::detail::item_subscription`, both of which
+/// READERS — `player::playing_subscription` and `screens::detail::hero::item_subscription`, both of which
 /// answer "whose server is this item on" and neither of which can reach a real PMS. Callers must
 /// hold `crate::testlock::serial()`: the slot arrays are crate globals, and they deliberately
 /// outlive `servers::reset_for_test` (they are keyed on the SLOT, not on the client), so a test

@@ -8,6 +8,80 @@ use super::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, Fixt
 use super::machine::{Edge, FocusKey, InputEvent, InputKind, Key, MachineId, NavOp, Source, StoreOrd, Tick};
 use super::Rect;
 
+fn interactive_event(kind: u8, at: Tick) -> super::screen::ScreenEvent<FixtureHost> {
+    use super::machine::PressId;
+    use super::screen::ScreenEvent;
+    match kind {
+        0 => ScreenEvent::Input(key(Key::Ok, at)),
+        1 => ScreenEvent::Activate(0),
+        2 => ScreenEvent::PressHold(PressId(9)),
+        3 => ScreenEvent::PressCommit(PressId(9)),
+        _ => unreachable!(),
+    }
+}
+
+fn rejects_inactive_interactive_delivery(kind: u8) {
+    use super::machine::{Delivery, Fx};
+    let (mut d, mut rig) = boot(FixtureArg::Page(800));
+    d.nav.tabs.stack.transition = Box::new(super::containers::transition::Immediate);
+    let old = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+    let before = rig.store.view.items.len();
+    // Positive control: while the page owns input, its sentinel handler really writes a store.
+    d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(old),
+        Delivery::Screen(interactive_event(kind, tick(8)))));
+    d.frame(&mut rig, tick(8), vec![], vec![], &mut NoTap);
+    assert_eq!(rig.store.view.items.len(), before + 1);
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(20)));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.tabs.stack.depth(), 2);
+    assert_ne!(d.nav.top_page().unwrap().inst.as_ref().unwrap().id, old);
+    let events = events_of(&d, 0);
+    let items = rig.store.view.items.clone();
+    let requests = rig.net_requests.len();
+    d.emit(MachineId::Input, Fx::Deliver(MachineId::Instance(old),
+        Delivery::Screen(interactive_event(kind, tick(32)))));
+    let report = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(events_of(&d, 0), events, "a covered live instance must not be stepped");
+    assert_eq!(rig.store.view.items, items, "no store write may escape the stale handler");
+    assert_eq!(rig.net_requests.len(), requests, "no adapter request may escape the stale handler");
+    assert_eq!(report.dropped_deliveries, 1);
+}
+
+#[test]
+fn inactive_input_delivery_never_steps_the_old_owner() { rejects_inactive_interactive_delivery(0); }
+#[test]
+fn inactive_activate_delivery_never_steps_the_old_owner() { rejects_inactive_interactive_delivery(1); }
+#[test]
+fn inactive_press_hold_delivery_never_steps_the_old_owner() { rejects_inactive_interactive_delivery(2); }
+#[test]
+fn inactive_press_commit_delivery_never_steps_the_old_owner() { rejects_inactive_interactive_delivery(3); }
+
+#[test]
+fn covered_entries_still_receive_addressed_commands_memory_and_restore_focus() {
+    use super::fixture::FixtureMsg;
+    use super::machine::{Delivery, Fx};
+    use super::screen::{By, ScreenEvent};
+    let (mut d, mut rig) = boot(FixtureArg::Page(800));
+    let entry = d.nav.top_page().unwrap().id;
+    let old = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+    d.nav.next_style = Style::Opaque { snapshot: true };
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    for event in [
+        ScreenEvent::StoreChanged(StoreOrd(0), 1),
+        ScreenEvent::App(FixtureMsg::Store(StoreOrd(0), 7)),
+        ScreenEvent::RestoreMemory(()),
+        ScreenEvent::Uncover,
+        ScreenEvent::FocusMoved { from: None, to: FocusKey { entry, elem: 0 }, by: By::Restore },
+    ] {
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(old), Delivery::Screen(event)));
+    }
+    let report = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(report.dropped_deliveries, 0);
+    let events = events_of(&d, 0);
+    assert!(events.contains("\"store_changed\", \"app\", \"restore_memory\", \"uncover\", \"focus_moved\""), "{events}");
+}
+
 fn ev(kind: InputKind<u32>, at: Tick) -> InputEvent<u32> {
     InputEvent {
         at,
@@ -35,6 +109,49 @@ fn key_up(k: Key, at: Tick) -> InputEvent<u32> {
         },
         at,
     )
+}
+
+#[test]
+fn fifo_same_frame_card_tap_commits_once_and_never_becomes_a_hold() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16)), key_up(Key::Ok, tick(16))], vec![], &mut NoTap);
+    for ms in (32..=800).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    let events = events_of(&d, 0);
+    assert!(!events.contains("\"press_hold\""), "a FIFO tap has a release, so it cannot open the hold menu: {events}");
+    assert_eq!(events.matches("\"press_commit\"").count(), 1, "the tap commits exactly once: {events}");
+}
+
+#[test]
+fn fifo_same_frame_control_tap_does_not_wait_for_the_lost_key_up_cap() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(600));
+    d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16)), key_up(Key::Ok, tick(16))], vec![], &mut NoTap);
+    for ms in (32..=320).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(events_of(&d, 0).matches("\"press_commit\"").count(), 1);
+    // The visual bounce may still be live after commitment; the logical arm must be consumed.
+    assert!(d.input.arm.is_none());
+}
+
+#[test]
+fn a_card_held_with_repeat_beats_still_delivers_one_hold_and_no_tap() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    for ms in (32..=640).step_by(16) {
+        let inputs = if ms % 64 == 0 { vec![ev(InputKind::Key {
+            key: Key::Ok, sym: 0, wcode: 0, edge: Edge::Repeat, at_edge: false,
+        }, tick(ms))] } else { vec![] };
+        d.frame(&mut rig, tick(ms), inputs, vec![], &mut NoTap);
+    }
+    d.frame(&mut rig, tick(656), vec![key_up(Key::Ok, tick(656))], vec![], &mut NoTap);
+    for ms in (672..=960).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    let events = events_of(&d, 0);
+    assert_eq!(events.matches("\"press_hold\"").count(), 1, "{events}");
+    assert!(!events.contains("\"press_commit\""), "a real hold does not also activate the card");
 }
 
 /// Boot straight into a page of the given argument (a `Root` at frame 1).

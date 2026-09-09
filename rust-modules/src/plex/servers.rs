@@ -81,7 +81,7 @@ pub const MAX_SERVERS: usize = 16;
 
 /// A registry slot — a small `Copy` handle that names a server without borrowing it. Stable for
 /// the life of the process, so it can sit in UI state, a route, or a queued job.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct ServerId(u16);
 
 impl ServerId {

@@ -1210,7 +1210,6 @@ fn commit(build: HubBuild) -> c_int {
         *std::ptr::addr_of_mut!(HUBS) = new_hubs;
         *std::ptr::addr_of_mut!(HERO_POOL) = new_pool;
     }
-    crate::ui::detail::reselect();
     crate::ui::idle::invalidate();
     n as c_int
 }

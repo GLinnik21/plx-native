@@ -20,26 +20,170 @@ use crate::ui::machine::Host;
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
-    ///
-    /// **`#[allow(dead_code)]` because nothing CONSTRUCTS it outside a test yet.** The bridge
-    /// matches it (`app/bridge.rs`'s `app_fx` drain turns it into the `Deliver` above), and a
-    /// match is not a construction as far as `dead_code` is concerned, so `-D warnings` fails the
-    /// `--no-default-features` gate on the variant alone. The owned screens that mutate a store
-    /// still call `stores::<store>::apply` directly — the synchronous shim phase 4 landed — and
-    /// the variant becomes live the first time one emits its mutation as an EFFECT instead
-    /// (spec §14's "same drain" ordering, phase 6). Delete this attribute then; it costs nothing
-    /// while it is stale, but it is a claim about the tree and should not outlive being true.
-    #[allow(dead_code)]
     Store(StoreId, StoreCmd),
     /// The consent MACHINE's command (§2.2): it owns the two decisions and publishes them.
     Consent(ConsentCmd),
     /// A request of the legacy loop (§14) — see [`LoopReq`].
     Loop(LoopReq),
+    /// Content-page requests, executed by the navigation bridge during coexistence (phase 7).
+    Content(ContentReq),
 }
+
+/// An item's or person's identity travels with the navigation entry, never in a screen global.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ContentArg {
+    Detail { sid: crate::plex::ServerId, rk: String },
+    Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
+    Filmography { sid: crate::plex::ServerId, key: String },
+}
+
+impl crate::ui::machine::LogicalState for ContentArg {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        match self {
+            Self::Detail { sid, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(rk); }
+            Self::Person { sid, key, guid, name, thumb } => { c.u32(1).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(thumb); }
+            Self::Filmography { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
+        }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("content_arg"); }
+}
+
+impl ContentArg {
+    pub(crate) fn same_item(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Detail { sid: a, rk: x }, Self::Detail { sid: b, rk: y }) =>
+                a == b && x == y,
+            (Self::Person { sid: a, key: x, guid: g, .. },
+             Self::Person { sid: b, key: y, guid: h, .. }) =>
+                if !g.is_empty() && !h.is_empty() { g == h } else { a == b && x == y },
+            (Self::Filmography { sid: a, key: x }, Self::Filmography { sid: b, key: y }) =>
+                a == b && x == y,
+            _ => false,
+        }
+    }
+}
+
+/// Application payload on the container's return state. Focus itself remains engine-owned.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum DetailIdentity {
+    /// A published placeholder with no server-side identity yet; never equal to a landed item.
+    Slot(u32),
+    Season { sid: crate::plex::ServerId, show: String, rk: String },
+    Episode { sid: crate::plex::ServerId, rk: String, text: bool },
+    Related { sid: crate::plex::ServerId, rk: String },
+    Cast { sid: crate::plex::ServerId, key: String, guid: String, name: String, role: String },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DetailKey {
+    pub(crate) identity: DetailIdentity,
+    pub(crate) elem: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DetailMemory {
+    pub(crate) spot: crate::metadata::Spot,
+    pub(crate) keys: Vec<DetailKey>,
+    pub(crate) next_elem: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardIdentity {
+    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) rk: String,
+    pub(crate) elem: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PersonMemory {
+    pub(crate) card_keys: Vec<CardIdentity>,
+    pub(crate) next_card_elem: u32,
+    pub(crate) header_marked: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FilmographyKey {
+    pub(crate) department: String,
+    /// None identifies the department tab; Some identifies a provider credit within it.
+    pub(crate) catalog_id: Option<String>,
+    pub(crate) elem: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FilmographyMemory {
+    pub(crate) keys: Vec<FilmographyKey>,
+    pub(crate) next_elem: u32,
+    pub(crate) department: String,
+    pub(crate) preview: Option<(String, String)>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) enum PageMemory {
+    #[default]
+    None,
+    Detail(DetailMemory),
+    Person(PersonMemory),
+    Filmography(FilmographyMemory),
+}
+
+impl crate::ui::machine::LogicalState for DetailIdentity {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        match self {
+            Self::Slot(local) => { c.u32(4).u32(*local); }
+            Self::Season { sid, show, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(show).str(rk); }
+            Self::Episode { sid, rk, text } => { c.u32(1).u32(u32::from(sid.raw())).str(rk).bool(*text); }
+            Self::Related { sid, rk } => { c.u32(2).u32(u32::from(sid.raw())).str(rk); }
+            Self::Cast { sid, key, guid, name, role } => { c.u32(3).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(role); }
+        }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("detail_identity"); }
+}
+
+impl crate::ui::machine::LogicalState for PageMemory {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        match self {
+            Self::None => { c.u32(0); }
+            Self::Detail(memory) => {
+                c.u32(1).u32(memory.spot.section as u32).u32(memory.spot.col as u32).bool(memory.spot.ep_text);
+                for col in memory.spot.saved_col { c.u32(col as u32); }
+                c.option(memory.spot.season, |c, season| { c.u64(season as u64); });
+                c.u32(memory.next_elem).seq(memory.keys.len());
+                for key in &memory.keys { key.identity.write(c); c.u32(key.elem); }
+            }
+            Self::Person(memory) => {
+                c.u32(2).u32(memory.next_card_elem).bool(memory.header_marked).seq(memory.card_keys.len());
+                for key in &memory.card_keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
+            }
+            Self::Filmography(memory) => {
+                c.u32(3).u32(memory.next_elem).str(&memory.department).seq(memory.keys.len());
+                for key in &memory.keys {
+                    c.str(&key.department).option(key.catalog_id.as_ref(), |c, id| { c.str(id); }).u32(key.elem);
+                }
+                c.option(memory.preview.as_ref(), |c, (department, id)| { c.str(department).str(id); });
+            }
+        }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("page_memory"); }
+}
+
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;6],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>}}";
+
+/// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
+pub(crate) enum ContentReq {
+    Push(ContentArg),
+    Present(ContentArg),
+    Back,
+    Play { resume_ns: i64 },
+    ItemMenu,
+}
+
+pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
+impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
     Store(StoreCmd),
+    DetailRestore { spot: crate::metadata::Spot, episode: Option<String> },
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.
@@ -99,6 +243,7 @@ impl<H: Host<Elem = u32, Fx = AppFx, Msg = AppMsg>> AppLike for H {}
 /// (`tests/manifest.json`'s `route` field), so a changed spelling silently disarms a scene rather
 /// than failing anything visible.
 pub(crate) mod word {
+    pub(crate) const PERSON: &str = "person";
     pub(crate) const SETTINGS: &str = "settings";
     pub(crate) const PRIVACY: &str = "privacy";
     pub(crate) const LEGAL: &str = "legal";

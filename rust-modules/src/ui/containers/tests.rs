@@ -4,6 +4,28 @@
 
 use super::modal::{HostRender, HostUpdate, Phase, Style};
 use super::stack::CAP;
+
+#[test]
+fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
+    for evict in [false, true] {
+        let (mut d, mut rig, _) = booted();
+        let root = d.nav.top_page().unwrap().id;
+        let count = if evict { CAP + 1 } else { 1 };
+        for i in 0..count {
+            d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(20 + i as u32)));
+            let report = d.frame(&mut rig, tick(16 + i as u32 * 16), vec![], vec![], &mut NoTap);
+            d.prune(&report.unmounted);
+        }
+        assert_eq!(d.nav.entry(root).unwrap().inst.is_none(), evict);
+        d.request(MachineId::Nav, NavOp::PopTo(root));
+        let report = d.frame(&mut rig, tick(400), vec![], vec![], &mut NoTap);
+        d.prune(&report.unmounted);
+        let events = events_of(&d, 0);
+        let memory = events.rfind("\"restore_memory\"").expect("return hydration is a lifecycle event");
+        let enter = events.rfind("\"enter\"").unwrap();
+        assert!(memory < enter, "memory precedes restored Enter, evicted={evict}: {events}");
+    }
+}
 use super::transition::PageDip;
 use crate::ui::dispatch::{Dispatcher, NoTap};
 use crate::ui::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig};
@@ -14,6 +36,122 @@ fn open_modal(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, style: Styl
     d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
     d.frame(rig, tick(ms), vec![], vec![], &mut NoTap);
     d.nav.modals.top().expect("presented").entry.id
+}
+
+#[test]
+fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade() {
+    use crate::ui::machine::GroupId;
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 2 }), Some(GroupId(71)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 1 }), Some(GroupId(1)));
+    let saved = d.return_state();
+    d.nav.tabs.stack.transition = Box::new(PageDip::new());
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(9)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 4 }), Some(GroupId(71)));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    for ms in (32..=192).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(d.nav.entry(home).unwrap().ret.focus, saved.focus);
+    assert_eq!(d.nav.entry(home).unwrap().ret.remembered, saved.remembered);
+    d.request(MachineId::Nav, NavOp::Pop);
+    for ms in (208..=448).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(d.nav.top_page().unwrap().id, home);
+    assert!(d.return_state().remembered.contains(&(GroupId(71), 2)));
+    assert!(!d.return_state().remembered.contains(&(GroupId(71), 4)));
+}
+
+#[test]
+fn filmography_detail_back_restores_the_same_modal_instance_and_cursor() {
+    use crate::ui::machine::GroupId;
+    let (mut d, mut rig, _) = booted();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(1)));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let person = d.nav.top_page().unwrap().id;
+    let person_focus = FocusKey { entry: person, elem: 1 };
+    d.set_focus_in(Some(person_focus), Some(GroupId(1)));
+    let filmography = open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, 32);
+    let instance = d.nav.instance_of(filmography).unwrap();
+    let focus = FocusKey { entry: filmography, elem: 0 };
+    d.set_focus_in(Some(focus), Some(GroupId(9)));
+    // Page(2) deliberately pushes Page(3) on Enter in FixtureScreen; use a passive page.
+    d.request(MachineId::Instance(instance), NavOp::Push(FixtureArg::Page(20)));
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    assert!(d.nav.modals.is_empty(), "Filmography is not drawn over Detail");
+    assert_eq!(d.nav.instance_of(filmography), Some(instance), "the covered surface stays mounted");
+    let report = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+    assert!(!report.ticked.contains(&instance), "the covered Filmography does not animate");
+    d.request(MachineId::Nav, NavOp::Pop);
+    d.frame(&mut rig, tick(80), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.top_page().unwrap().id, person);
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(filmography)));
+    assert_eq!(d.nav.instance_of(filmography), Some(instance));
+    assert_eq!(d.focus(), Some(focus));
+    assert_eq!(d.nav.entry(person).unwrap().ret.focus, Some(person_focus), "the modal did not overwrite its host's return state");
+    d.request(MachineId::Nav, NavOp::Dismiss(filmography));
+    d.frame(&mut rig, tick(96), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(person)));
+    assert_eq!(d.focus(), Some(person_focus), "dismiss restores the Person entry control, not Filmography's row key");
+}
+
+#[test]
+fn scoped_surface_bodies_are_bounded_and_remount_after_their_owner_data_lands() {
+    let (mut d, mut rig, _) = booted();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(901)));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let owner = d.nav.top_page().unwrap().id;
+    let child = open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, 32);
+    let original = d.nav.instance_of(child).unwrap();
+    let focus = d.focus();
+    let mut ms = 48;
+    for n in 0..CAP + 2 {
+        d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(100 + n as u32)));
+        let report = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&report.unmounted);
+        ms += 16;
+        open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, ms);
+        ms += 16;
+        assert!(d.nav.bodies().count() <= 2 * CAP, "a child body is bounded by its owner's lifetime");
+    }
+    assert!(d.nav.entry(owner).unwrap().inst.is_none());
+    assert!(d.nav.entry(child).unwrap().inst.is_none());
+    assert_eq!(d.nav.entry(child).unwrap().ret.focus, focus);
+    d.request(MachineId::Nav, NavOp::PopTo(owner));
+    let report = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    d.prune(&report.unmounted);
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.pending_surface(), Some(child));
+    assert!(d.nav.entry(child).unwrap().inst.is_none(), "remount waits for owner data, not just owner body");
+    rig.store.view.items.push(7);
+    d.store_changed(crate::ui::machine::StoreOrd(0), 1);
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(child)));
+    assert_ne!(d.nav.instance_of(child), Some(original), "eviction creates a fresh body");
+    assert!(d.nav.instance_of(child).is_some());
+    assert_eq!(d.focus(), focus, "the EntryId and its engine focus survive body eviction");
+    assert!(d.nav.bodies().count() <= 3);
+}
+
+#[test]
+fn an_owned_surface_finishes_opening_independently_of_legacy_page_alpha() {
+    let (mut d, mut rig, _) = booted();
+    rig.page_alpha = 0.52;
+    let id = open_modal(&mut d, &mut rig, Style::Opaque { snapshot: true }, 16);
+    for ms in (32..=9616).step_by(16) {
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        if d.nav.modals.surface(id).unwrap().phase == Phase::Open { break; }
+    }
+    let surface = d.nav.modals.surface(id).unwrap();
+    assert_eq!(surface.phase, Phase::Open, "the surface must settle within the bounded frame budget");
+    assert!(surface.motion.settled());
+    let page = d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureModal>().unwrap();
+    assert_eq!(page.last_draw_alpha, 1.0, "legacy page fading cannot cap the surface's own slide/opacity");
 }
 
 /// Present a Sheet (the account menu's shape): the page beneath is FROZEN and CACHED and
@@ -133,7 +271,7 @@ fn back_off_a_detail_restores_the_spot_captured_at_the_press() {
     assert_eq!(d.nav.top_page().unwrap().id, home);
     assert_eq!(d.nav.entry(home).unwrap().ret.focus, Some(spot));
     let ev = events_of(&d, 0);
-    assert!(ev.ends_with("\"uncover\", \"enter\"]") || ev.contains("\"uncover\", \"enter\""), "{ev}");
+    assert!(ev.ends_with("\"uncover\", \"restore_memory\", \"enter\"]") || ev.contains("\"uncover\", \"restore_memory\", \"enter\""), "{ev}");
 }
 
 /// Detail → Person → Detail is three entries with three ids (§5.1: supersede-by-identity).
@@ -212,8 +350,16 @@ fn switching_profile_drops_every_tab_instance() {
 #[test]
 fn an_evicted_entry_keeps_its_focus_identity_on_remount() {
     let (mut d, mut rig, _) = booted();
+    // The original test only inspected the saved key. The stronger engine assertion below
+    // needs slot 5 to exist, so reconciliation cannot legitimately clamp it on remount.
+    rig.store.view.items.resize(6, 0);
+    d.store_changed(crate::ui::machine::StoreOrd(0), 1);
+    d.frame(&mut rig, tick(1), vec![], vec![], &mut NoTap);
     let home = d.nav.top_page().unwrap().id;
-    d.set_focus(Some(FocusKey { entry: home, elem: 5 }));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 2 }), Some(crate::ui::machine::GroupId(71)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 4 }), Some(crate::ui::machine::GroupId(72)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 5 }), Some(crate::ui::machine::GroupId(1)));
+    let remembered = d.return_state().remembered;
     let mut evicted_at = None;
     for i in 0..(CAP as u32 + 2) {
         let ms = 16 * (i + 1);
@@ -245,8 +391,12 @@ fn an_evicted_entry_keeps_its_focus_identity_on_remount() {
     assert!(e.inst.is_some(), "remounted");
     assert!(!e.evicted);
     assert_eq!(e.ret.focus, Some(FocusKey { entry: home, elem: 5 }));
+    assert_eq!(e.ret.remembered, remembered, "inactive groups survive body eviction");
+    for cursor in remembered {
+        assert!(d.return_state().remembered.contains(&cursor));
+    }
     let ev = events_of(&d, 0);
-    assert!(ev.contains("\"mount\", \"uncover\", \"enter\""), "remount then restore: {ev}");
+    assert!(ev.contains("\"mount\", \"uncover\", \"restore_memory\", \"enter\""), "remount then restore: {ev}");
 }
 
 /// While a surface is up it owns input: a key goes to it and never to the page beneath.

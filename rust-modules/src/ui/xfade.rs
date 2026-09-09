@@ -64,6 +64,21 @@ pub(crate) struct Xfade {
     t: f32,
 }
 
+impl crate::ui::machine::LogicalState for Xfade {
+    fn write(&self, w: &mut crate::ui::machine::Canon) {
+        w.u8(match self.phase {
+            Phase::Idle => 0,
+            Phase::Out => 1,
+            Phase::Hold => 2,
+            Phase::In => 3,
+        }).f32(self.t);
+    }
+
+    fn probe(&self, out: &mut String) {
+        out.push_str(&format!("xfade phase={:?} t={}", self.phase, self.t));
+    }
+}
+
 impl Xfade {
     /// A fader at rest with its content fully present — the state a screen that has never swapped
     /// anything sits in, and what a `static mut` initializer needs (hence `const`).

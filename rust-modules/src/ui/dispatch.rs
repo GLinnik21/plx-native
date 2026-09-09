@@ -194,6 +194,11 @@ pub trait Rig<H: Host> {
     /// Execute an application effect against the adapters; may emit more (an adapter result
     /// available at once, an `Emit`).
     fn app_fx(&mut self, from: MachineId, fx: H::Fx, parts: &CxParts<H::Elem>, out: &mut Effects<'_, H>);
+    /// Snapshot at effect execution, before another input can move the requesting page.
+    fn app_return(&mut self, _from: MachineId, _ret: ReturnState<H::Elem, H::Memory>) {}
+    fn page_alpha(&self) -> f32 { 1.0 }
+    /// The application lifts its legacy host-cache cull before drawing an owned surface.
+    fn surface_scope(&mut self) -> Option<super::popover::host::Live> { None }
     /// Write one log line (machines never log directly).
     fn log(&mut self, line: &str);
     /// The application's prepare work outside any screen (the `TexCache` upload step, §10).
@@ -270,7 +275,8 @@ pub struct FrameReport {
 /// present gate, the budget, the tree.
 pub struct Dispatcher<H: Host> {
     queue: VecDeque<Stamped<H>>,
-    parked: Vec<Stamped<H>>,
+    parked: Vec<(Stamped<H>, ReturnState<H::Elem, H::Memory>)>,
+    app_returns: VecDeque<(MachineId, ReturnState<H::Elem, H::Memory>)>,
     /// Lifecycle steps queued from outside a step (suspend/resume/profile reset), applied at
     /// the next commit ahead of the tree's own.
     parked_life: Vec<Life<H>>,
@@ -319,6 +325,7 @@ where
         Self {
             queue: VecDeque::new(),
             parked: Vec::new(),
+            app_returns: VecDeque::new(),
             parked_life: Vec::new(),
             timers: Vec::new(),
             present: Present::new(),
@@ -435,16 +442,28 @@ where
     /// Queue an effect from OUTSIDE a step (the application's loop handing a store command to the
     /// dispatcher path): it drains in this frame's step 6 like any machine's emission.
     pub fn emit(&mut self, from: MachineId, fx: Fx<H>) {
+        if matches!(fx, Fx::App(_)) {
+            self.app_returns.push_back((from, self.return_state()));
+        }
         self.queue.push_back(Stamped { from, fx });
     }
 
     /// Queue a structural op from OUTSIDE a step (boot's `Root`, a lifecycle `Suspend`): it is
     /// parked like any other and applies at this frame's NAV COMMIT.
     pub fn request(&mut self, from: MachineId, op: NavOp<H::Arg>) {
-        self.parked.push(Stamped {
+        self.request_with_return(from, op, self.return_state());
+    }
+
+    pub fn request_with_return(&mut self, from: MachineId, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) {
+        self.parked.push((Stamped {
             from,
             fx: Fx::Nav(op),
-        });
+        }, ret));
+    }
+
+    fn park(&mut self, item: Stamped<H>) {
+        let ret = self.return_state();
+        self.parked.push((item, ret));
     }
 
     /// `Lifecycle(0x103/0x104)`: `Suspend` down the tree at the next commit.
@@ -474,6 +493,10 @@ where
     /// The top page's screen, for a test to read.
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
+    }
+
+    pub fn has_pending_navigation(&self) -> bool {
+        self.parked.iter().any(|(s, _)| matches!(s.fx, Fx::Nav(_)))
     }
 
     /// The engine's current focus for the input owner (§7.3 step 5).
@@ -514,11 +537,22 @@ where
         ))
     }
 
-    fn ret(&self) -> ReturnState<H::Elem> {
+    /// The outgoing top screen's return state (spec §6.1 tier 2): focus off the engine, and
+    /// [`Screen::memory`] off the screen itself — the same "ask the owner, never assume" rule
+    /// [`Screen::state`]/`crumb` already follow. `top_screen()` is `None` only before the very
+    /// first mount, when there is nothing to remember either.
+    pub fn return_state(&self) -> ReturnState<H::Elem, H::Memory> {
         ReturnState {
             focus: self.focus(),
+            remembered: self.owner_entry().map(|e| self.input.engine.remembered_for(e)).unwrap_or_default(),
             scroll: 0.0,
+            memory: self.owner_entry().and_then(|e| self.nav.entry(e))
+                .and_then(|e| e.inst.as_ref()).map(|i| i.screen.memory_at(self.focus())).unwrap_or_default(),
         }
+    }
+
+    fn ret(&self) -> ReturnState<H::Elem, H::Memory> {
+        self.return_state()
     }
 
     fn parts(&self, tick: Tick) -> CxParts<H::Elem> {
@@ -659,7 +693,7 @@ where
                         }
                         if res.miss {
                             if let Some((id, super::containers::modal::OnMiss::Dismiss)) = self.nav.modals.on_miss() {
-                                self.parked.push(Stamped {
+                                self.park(Stamped {
                                     from: MachineId::Input,
                                     fx: Fx::Nav(NavOp::Dismiss(id)),
                                 });
@@ -734,6 +768,8 @@ where
             .stack
             .entries
             .iter()
+            .rev()
+            .take(if self.nav.tabs.stack.transition.draws_below() { 2 } else { 1 })
             .filter_map(|e| e.inst.as_ref())
             .map(|i| i.id)
             .collect();
@@ -870,17 +906,22 @@ where
         self.budget.begin_frame(rig.now_us());
         let parts = self.parts(tick);
         {
-            let Dispatcher { nav, budget, .. } = self;
+            let Dispatcher { nav, input, budget, .. } = self;
             let Split { views, measure, .. } = rig.split();
-            let cx = parts.cx::<H>(views, measure);
             if host_render == HostRender::Live {
-                if let Some(inst) = nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
-                    inst.screen.prepare(budget, &cx);
+                if let Some(e) = nav.tabs.stack.top_mut() {
+                    let mut page_cx = parts.cx::<H>(views, measure);
+                    page_cx.owner = InputOwner::Entry(e.id);
+                    page_cx.focus.current = input.engine.current(page_cx.owner);
+                    if let Some(inst) = e.inst.as_mut() { inst.screen.prepare(budget, &page_cx); }
                 }
             }
             for s in &mut nav.modals.surfaces {
                 if let Some(inst) = s.entry.inst.as_mut() {
-                    inst.screen.prepare(budget, &cx);
+                    let mut surface_cx = parts.cx::<H>(views, measure);
+                    surface_cx.owner = InputOwner::Entry(s.entry.id);
+                    surface_cx.focus.current = input.engine.current(surface_cx.owner);
+                    inst.screen.prepare(budget, &surface_cx);
                 }
             }
         }
@@ -910,12 +951,11 @@ where
     }
 
     fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool) {
+        let page_alpha = rig.page_alpha();
         let (_, host_render) = self.nav.modals.host_policy();
         rig.clear_opaque_region();
         let parts = self.parts(tick);
-        let Dispatcher { nav, .. } = self;
-        let Split { views, measure, .. } = rig.split();
-        let cx = parts.cx::<H>(views, measure);
+        let Dispatcher { nav, input, .. } = self;
         let mut stops = Vec::new();
         let mut set = RenderSet::default();
         // the page pass: the top page (and, under a push, the level beneath it), unless the
@@ -926,8 +966,12 @@ where
             let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
             for e in nav.tabs.stack.entries[from..].iter_mut() {
                 if let Some(inst) = e.inst.as_mut() {
-                    let mut f = DrawFrame::new(&cx, Painter::root());
-                    f.page_alpha = nav.tabs.stack.transition.page_alpha();
+                    let Split { views, measure, .. } = rig.split();
+                    let mut page_cx = parts.cx::<H>(views, measure);
+                    page_cx.owner = InputOwner::Entry(e.id);
+                    page_cx.focus.current = input.engine.current(page_cx.owner);
+                    let mut f = DrawFrame::new(&page_cx, Painter::root());
+                    f.page_alpha = nav.tabs.stack.transition.page_alpha() * page_alpha;
                     inst.screen.draw(&mut f);
                     stops.extend(f.into_stops());
                     set.pages += 1;
@@ -941,7 +985,12 @@ where
         // the surfaces, bottom to top; a later stop is above an earlier one
         for s in &mut nav.modals.surfaces {
             if let Some(inst) = s.entry.inst.as_mut() {
-                let mut f = DrawFrame::new(&cx, Painter::root());
+                let _surface_scope = rig.surface_scope();
+                let Split { views, measure, .. } = rig.split();
+                let mut surface_cx = parts.cx::<H>(views, measure);
+                surface_cx.owner = InputOwner::Entry(s.entry.id);
+                surface_cx.focus.current = input.engine.current(surface_cx.owner);
+                let mut f = DrawFrame::new(&surface_cx, Painter::root());
                 f.page_alpha = s.motion.appear;
                 inst.screen.draw(&mut f);
                 stops.extend(f.into_stops());
@@ -953,8 +1002,10 @@ where
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
         let hit_page = self.hit_page();
-        self.input.hit.fill(if hit_page { stops } else { Vec::new() });
-        self.input.hit.swap();
+        if !crate::gfx::blur_source_pass() {
+            self.input.hit.fill(if hit_page { stops } else { Vec::new() });
+            self.input.hit.swap();
+        }
         if let Err(breach) = set.check() {
             debug_assert!(false, "render set breach: {breach}");
             if !self.render_breach_logged {
@@ -1001,7 +1052,7 @@ where
             report.queue_hwm = report.queue_hwm.max(self.queue.len() + 1);
             tap.effect(self.frame, &item);
             match item.fx {
-                Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.parked.push(item),
+                Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.park(item),
                 Fx::Deliver(to, delivery) => {
                     steps += 1;
                     let mut out: Vec<Stamped<H>> = Vec::new();
@@ -1020,6 +1071,10 @@ where
                 Fx::Log(line) => rig.log(&line.0),
                 Fx::App(app_fx) => {
                     steps += 1;
+                    let captured = self.app_returns.iter().position(|(from, _)| *from == item.from)
+                        .and_then(|i| self.app_returns.remove(i)).map(|(_, ret)| ret)
+                        .unwrap_or_else(|| self.return_state());
+                    rig.app_return(item.from, captured);
                     let mut out: Vec<Stamped<H>> = Vec::new();
                     {
                         let Dispatcher { present, .. } = self;
@@ -1035,13 +1090,25 @@ where
 
     /// A step's emissions: the structural three are PARKED at once (so a key that opens a page
     /// mounts it this frame even when the drain's budget was spent before the FIFO reached its
-    /// op — `a_key_that_opens_a_page_mounts_in_the_same_frame`); everything else joins the tail.
+    /// op — `a_key_that_opens_a_page_mounts_in_the_same_frame`). Press arms precede the next queued
+    /// input edge so a same-frame release can see its gesture; other effects join the tail.
     fn absorb(&mut self, out: Vec<Stamped<H>>) {
+        let mut press_arms = Vec::new();
         for s in out {
             match s.fx {
-                Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.parked.push(s),
+                Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.park(s),
+                // An OK-up already queued behind its OK-down must see this arm. Keeping it
+                // at the FIFO tail loses same-frame releases (remote_synth_key emits both).
+                Fx::Press(_) => press_arms.push(s),
+                Fx::App(_) => {
+                    self.app_returns.push_back((s.from, self.return_state()));
+                    self.queue.push_back(s);
+                }
                 _ => self.queue.push_back(s),
             }
+        }
+        for arm in press_arms.into_iter().rev() {
+            self.queue.push_front(arm);
         }
     }
 
@@ -1056,6 +1123,32 @@ where
     ) {
         match (to, delivery) {
             (MachineId::Instance(id), Delivery::Screen(ev)) => {
+                // A carried event can outlive its input owner. Reject it before the handler
+                // can write stores or request playback; a later navigation-effect guard is
+                // too late. Addressed commands, notices and lifecycle restoration still reach
+                // covered entries (including the host beneath a restored modal).
+                if matches!(ev, ScreenEvent::Input(_) | ScreenEvent::Activate(_) |
+                    ScreenEvent::PressHold(_) | ScreenEvent::PressCommit(_))
+                    && self.owner_entry().and_then(|entry| self.nav.instance_of(entry)) != Some(id)
+                {
+                    report.dropped_deliveries += 1;
+                    return;
+                }
+                // Ingest releases an already-live gesture before the press Tick. A Down in
+                // THIS input batch creates its arm later, while draining, so apply subsequent
+                // physical edges in delivery order too. These operations are idempotent for
+                // an arm ingest already saw, and never act on another instance's gesture.
+                if self.input.arm.is_some_and(|arm| arm.owner == MachineId::Instance(id)) {
+                    if let ScreenEvent::Input(InputEvent {
+                        kind: InputKind::Key { key: Key::Ok, edge, .. }, ..
+                    }) = &ev {
+                        match edge {
+                            Edge::Up => self.input.release(parts.tick.ms),
+                            Edge::Repeat => self.input.note_alive(parts.tick.ms),
+                            Edge::Down => {}
+                        }
+                    }
+                }
                 let back = matches!(
                     ev,
                     ScreenEvent::Input(InputEvent {
@@ -1067,6 +1160,11 @@ where
                         ..
                     })
                 );
+                let mut addressed = *parts;
+                if let Some(entry) = self.nav.entry_of_instance(id) {
+                    addressed.owner = InputOwner::Entry(entry);
+                    addressed.focus.current = self.input.engine.current(addressed.owner);
+                }
                 let Dispatcher { nav, present, .. } = self;
                 // a surface's springs report under their own scope (§4.4 MotionScope)
                 let is_surface = nav
@@ -1085,7 +1183,7 @@ where
                     return;
                 };
                 let Split { views, measure, .. } = rig.split();
-                let cx = parts.cx::<H>(views, measure);
+                let cx = addressed.cx::<H>(views, measure);
                 let mut fx = Effects::new(out, to, present);
                 let handled = inst.screen.step(&ev, &cx, &mut fx);
                 drop(fx);
@@ -1101,7 +1199,7 @@ where
                     self.pending_back = true;
                 }
                 // the engine's half: after the owner's refusal, and after an Enter / a hold
-                self.after_step(rig, parts, id, &ev, handled, out);
+                self.after_step(rig, &addressed, id, &ev, handled, out);
             }
             (MachineId::Instance(_), Delivery::Machine(_)) => {
                 report.dropped_deliveries += 1;
@@ -1140,6 +1238,11 @@ where
                 self.input.cancel_press();
             }
             ScreenEvent::Enter(e) if is_owner && self.engine_page() => {
+                if matches!(e, Enter::Restored) {
+                    if let Some(saved) = self.nav.entry(entry) {
+                        self.input.engine.restore_remembered(entry, &saved.ret.remembered);
+                    }
+                }
                 let (target, restored) = match e {
                     Enter::Fresh { focus } => (*focus, None),
                     Enter::Restored => (
@@ -1261,7 +1364,7 @@ where
                             }
                         }
                         Outcome::Edge(EdgeRule::Nav(super::machine::NavOpKind::Dismiss)) => {
-                            self.parked.push(Stamped {
+                            self.park(Stamped {
                                 from: MachineId::Input,
                                 fx: Fx::Nav(NavOp::Dismiss(entry)),
                             });
@@ -1345,10 +1448,9 @@ where
                 rig.back_at_root();
             }
         }
-        for item in parked {
+        for (item, ret) in parked {
             match item.fx {
                 Fx::Nav(op) => {
-                    let ret = self.ret();
                     life.extend(self.nav.request(op, ret));
                 }
                 Fx::Mount(eid) => life.push(Life::Mount(eid)),
@@ -1361,7 +1463,8 @@ where
             match step {
                 Life::Mount(eid) => self.mount(rig, parts, eid, &mut post, report),
                 Life::Ev(eid, ev) => self.push_lifecycle(eid, ev, &mut post),
-                Life::Unmount(eid) | Life::Evict(eid) => self.unmount(eid, &mut post, report),
+                Life::Unmount(eid) => self.unmount(eid, false, &mut post, report),
+                Life::Evict(eid) => self.unmount(eid, true, &mut post, report),
             }
         }
         // ahead of the carried queue: the mount that a key asked for happens THIS frame
@@ -1372,6 +1475,13 @@ where
 
     fn push_lifecycle(&mut self, eid: EntryId, ev: ScreenEvent<H>, post: &mut Vec<Stamped<H>>) {
         if let Some(id) = self.nav.instance_of(eid) {
+            if matches!(ev, ScreenEvent::Enter(Enter::Restored)) {
+                let memory = self.nav.entry(eid).expect("live entry").ret.memory.clone();
+                post.push(Stamped {
+                    from: MachineId::Nav,
+                    fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::RestoreMemory(memory))),
+                });
+            }
             post.push(Stamped {
                 from: MachineId::Nav,
                 fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ev)),
@@ -1432,18 +1542,14 @@ where
         }
     }
 
-    fn unmount(&mut self, eid: EntryId, post: &mut Vec<Stamped<H>>, report: &mut FrameReport) {
+    fn unmount(&mut self, eid: EntryId, evicted: bool, post: &mut Vec<Stamped<H>>, report: &mut FrameReport) {
+        if !evicted { self.input.engine.forget(eid); }
         let Some(inst) = self.nav.entry_mut(eid).and_then(|e| e.inst.take()) else {
             return;
         };
         // retire inflight: the live index no longer answers for it (§6.1 eviction rule)
         report.unmounted.push(inst.id);
-        // the engine forgets an entry only when it leaves for GOOD; an evicted body keeps its
-        // cursor for the remount (§6.1)
-        let evicted = self.nav.entry(eid).map_or(false, |e| e.evicted);
-        if !evicted {
-            self.input.engine.forget(eid);
-        }
+        // Eviction retains engine state; retiring even a bodyless entry forgets it above.
         if self.input.arm.map_or(false, |a| a.owner == MachineId::Instance(inst.id)) {
             self.input.cancel_press();
         }

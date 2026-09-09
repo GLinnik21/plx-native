@@ -80,6 +80,13 @@ pub(super) fn state_fp() -> u64 {
     crate::ui::rec::state_fp(&[
         crate::ui::press::Press::SHAPE,
         "AppFrame{route:str,overlay:str,focus:str,tree:u64}",
+        crate::ui::containers::STATE_SHAPE,
+        super::bridge::ARG_SHAPE,
+        crate::ui::screen::RETURN_STATE_SHAPE,
+        crate::screens::registry::PAGE_MEMORY_SHAPE,
+        crate::screens::detail::SHAPE,
+        crate::screens::person::PersonScreen::SHAPE,
+        crate::screens::filmography::FilmographyScreen::SHAPE,
         AppInit::SHAPE,
     ])
 }
@@ -430,32 +437,10 @@ mod tests {
         let mut p = String::new();
         init.probe(&mut p);
         assert_eq!(p, "route=home session=1 servers=1 consent=3/1/0 seed=7");
-        // Re-pin only with a named reason: a shape change invalidates every committed fixture.
-        // Re-pinned 2026-09-07 for phase 5b's `tree:u64` — see `state_fp`'s own doc for why the
-        // dispatcher's hash had to join the frame's state. The previous value was
-        // `0x8216_7933_2b91_39ba`.
-        //
-        // **Both committed fixtures are re-recorded at this pin — done by commit `28f94d12`.** An
-        // earlier version of this comment said re-recording was "OWED, not done", which was true
-        // when written and is exactly the kind of claim that goes stale here: check it yourself
-        // rather than trust this sentence. `tests/fixtures/replay/1-boot-home-chip-grid/manifest.json`
-        // and the new anchor `tests/fixtures/replay/6-settings-family/manifest.json` both carry
-        // `state_fp: 9531416515347811954` (`0x8446_64d2_3399_0e72`), matching the pin above, so
-        // `Recording::parse` loads them and `tests/focusfp.sh --replay` runs against this build.
-        // Both were re-recorded with `tools/plxnative-rec rerecord` — the verb exists for exactly
-        // this case, a SHAPE bump rather than a behaviour judgement: the old artifact fails to
-        // even LOAD, so there is nothing to diff and no divergence record to produce, which is
-        // also why (unlike `rebaseline`) it is permitted on an anchor at all.
-        //
-        // **And the number pinned today is not guaranteed to be the LAST one this phase needs.**
-        // `tree` folds in `Dispatcher::state_hash`, which walks every live instance's
-        // `LogicalState` — exactly the Settings-family surface state other lanes of this same fix
-        // pass are still reshaping concurrently. If any of that reshaping changes what a
-        // `LogicalState::write` encodes (as opposed to merely how it is spelled), this hash moves
-        // again. Whoever re-records the fixture must first re-run this test against the FINAL
-        // merged tree and use whatever `state_fp()` reports then, rather than assume the value
-        // sitting here — which is only known-correct as of this commit — still holds.
-        assert_eq!(state_fp(), 0x8446_64d2_3399_0e72);
+        // Phase 7: scoped modal stacks and opaque content identity memory change the shape.
+        // Previous pin: 0x8446_64d2_3399_0e72. Old fixtures must be refused and rerecorded;
+        // this is a schema transition, not a behavior rebaseline.
+        assert_eq!(state_fp(), 0x002c_b89e_e6a9_3668);
     }
 
     #[test]
@@ -470,6 +455,14 @@ mod tests {
             triggers_differ(&s(&["plxnative-focus", "plxnative-grid"]), &s(&["plxnative-focus", "plxnative-noidle"])),
             Some("missing=[plxnative-grid] extra=[plxnative-noidle]".to_string())
         );
+    }
+
+    #[test]
+    fn the_pre_content_navigation_recording_shape_is_refused() {
+        let old = 0x8446_64d2_3399_0e72;
+        let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, crate::ui::rec::SCHEMA);
+        assert_eq!(crate::ui::rec::Recording::parse(&manifest, &[], state_fp()).err(),
+            Some(crate::ui::rec::RecError::StateShape { theirs: old, ours: state_fp() }));
     }
 
     #[test]

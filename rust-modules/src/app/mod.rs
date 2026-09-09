@@ -120,6 +120,7 @@ mod playback;
 mod nav;
 mod input;
 mod bridge;
+mod content;
 mod run;
 use self::boot::*;
 use self::events::*;
@@ -127,6 +128,7 @@ use self::lifecycle::*;
 use self::playback::*;
 use self::nav::*;
 use self::input::*;
+use self::content::*;
 
 extern "C" {
     fn SDL_SetMainReady();
@@ -190,7 +192,7 @@ extern "C" {
 use crate::log;
 /// The BACK trail's vocabulary — `Trail` is a run-loop local, `Node` its pages, `Spot` the place a
 /// detail page is restored to. See `ui/trail.rs`.
-use crate::ui::detail::Spot;
+use crate::metadata::Spot;
 use crate::ui::popover::Opener;
 use crate::ui::trail::{Node, Trail};
 /// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
@@ -270,6 +272,7 @@ struct App {
     quality_tried: bool,
     quality_playing_since: Option<u32>,
     detail_tried: bool,
+    content_boot: Option<ContentBoot>,
     play_tried: bool,
     menu_tried: bool,
     menupick_tried: bool,
@@ -490,13 +493,13 @@ mod route_tests {
                 "going deeper must leave the page behind it standing"
             );
         }
-        // …and the two that HAVE a teardown really do, so the line above is about the RULE rather
-        // than about there being nothing to run either way.
+        // Owned pages receive WillLeave/Unmount through Navigation on a pop; the legacy
+        // callback must not clear their shared store a second time before that lifecycle.
         assert!(
-            leave_of(Route::Detail).is_some(),
-            "a BACK off a detail page still closes it"
+            leave_of(Route::Detail).is_none(),
+            "Detail teardown belongs to its navigation entry"
         );
-        assert!(leave_of(Route::Person).is_some());
+        assert!(leave_of(Route::Person).is_none());
     }
 
     /// Search is the other half, and the reason the rule is trail membership rather than direction:
@@ -537,8 +540,8 @@ mod route_tests {
             "the detail page under the menu stays mounted"
         );
         assert!(
-            leave_of(menu).is_some(),
-            "…and a BACK off it still closes that page"
+            leave_of(menu).is_none(),
+            "the owned host is retired by Navigation, not a legacy callback"
         );
         assert!(
             forward_leave(Route::Account {

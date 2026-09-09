@@ -94,8 +94,14 @@ impl PopoverMotion {
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
         motion::spring(&mut self.appear, &mut self.vel, self.target, APPEAR_K, t, present);
         if self.settled() {
+            let changed = self.appear != self.target || self.vel != 0.0;
             self.appear = self.target;
             self.vel = 0.0;
+            // The generic spring's visual epsilon can stop requesting presents before this
+            // exact endpoint. The surface must paint the snap, including its last closing frame.
+            if changed {
+                present.note(super::super::present::PresentEvent::Motion);
+            }
         }
     }
 }
@@ -321,6 +327,11 @@ impl<H: Host> ModalStack<H> {
     pub fn drop_unmounted(&mut self, unmounted: &[super::super::machine::InstanceId]) {
         self.retired
             .retain(|e| !e.inst.as_ref().map_or(true, |i| unmounted.contains(&i.id)));
+        for surface in &mut self.surfaces {
+            if surface.entry.evicted && surface.entry.inst.as_ref().is_some_and(|i| unmounted.contains(&i.id)) {
+                surface.entry.inst = None;
+            }
+        }
     }
 
     /// The fold (§6.2): bottom-to-top, update Frozen if any surface freezes, render the most

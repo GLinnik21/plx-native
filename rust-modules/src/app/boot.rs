@@ -1136,6 +1136,7 @@ pub(super) unsafe fn boot(
         quality_tried,
         quality_playing_since,
         detail_tried,
+        content_boot: None,
         play_tried,
         menu_tried,
         menupick_tried,

@@ -139,7 +139,7 @@ pub(super) unsafe fn home_activate(
     // draws the amber ▶) and it is the surface that delivers it.
     let want_play = hf == 0
         || (!hero_view && crate::pms::hub_is_continue(crate::ui::home::row().max(0) as usize));
-    activate_card(mt, mm, want_play, hud_ms, route, play_from, hud_nav, nav);
+    activate_card(mt, mm, want_play, hud_ms, route, play_from, trail, hud_nav, nav);
 }
 
 /// **What a card ACTIVATION does, once its screen has decided whether the press means PLAY.**
@@ -163,6 +163,7 @@ pub(super) unsafe fn activate_card(
     hud_ms: u32,
     route: &mut Route,
     play_from: &mut Node,
+    trail: &Trail,
     hud_nav: &mut HudNav,
     nav: &mut Option<NavReq>,
 ) {
@@ -173,7 +174,7 @@ pub(super) unsafe fn activate_card(
                 mt,
                 mm,
                 false,
-                origin_here(*route),
+                origin_here(*route, trail),
                 hud_ms,
                 route,
                 play_from,
@@ -191,19 +192,20 @@ pub(super) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
+                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid, rk: expect.clone() });
                 if mm.kind == 2 {
-                    crate::ui::detail::open_rk_season(sid, &expect, mm.season_index);
-                } else {
-                    crate::ui::detail::open_rk_now(sid, &expect); // BLOCKING: `loaded` below gates the play
+                    if let Some(i) = crate::metadata::current().and_then(|d| d.seasons.iter().position(|s| s.index == mm.season_index as i64)) {
+                        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeasonNow(i));
+                    }
                 }
                 let loaded = crate::metadata::current()
                     .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
                     .unwrap_or(false);
-                if loaded && crate::ui::detail::on_ok() {
+                if let Some(resume_ns) = loaded.then(request_loaded_hero).flatten() {
                     start_playback(
                         mt,
-                        crate::ui::detail::last_resume_ns(),
-                        origin_here(*route),
+                        resume_ns,
+                        origin_here(*route, trail),
                         hud_ms,
                         route,
                         play_from,
@@ -371,12 +373,12 @@ pub(super) unsafe fn apply_item_action(
             // lookup would miss and the press would do nothing — it takes the card-row arm below,
             // which plays the row the menu captured.
             if host.is_loaded_episode() {
-                if crate::ui::detail::play_episode_rk_from_start(&rk) {
-                    let resume = crate::ui::detail::last_resume_ns();
+                if request_loaded_episode(&rk) {
+                    let resume = 0;
                     start_playback(
                         mt,
                         resume,
-                        origin_here(*route),
+                        origin_here(*route, trail),
                         HUD_LINGER_MS,
                         route,
                         play_from,
@@ -402,7 +404,7 @@ pub(super) unsafe fn apply_item_action(
                     mt,
                     mm,
                     true,
-                    origin_here(*route),
+                    origin_here(*route, trail),
                     HUD_LINGER_MS,
                     route,
                     play_from,
@@ -1027,10 +1029,8 @@ pub(super) unsafe fn key_item_menu(
 /// D-pad on a NON-player screen: hand the direction to whichever screen owns focus, then arm the
 /// client-side hold-repeat.
 pub(super) fn key_move_focus(key: Key, sym: c_uint, route: Route, now: u32, held: &mut HeldKey) {
-    if matches!(route, Route::Detail) {
-        crate::ui::detail::move_focus(sym as c_int);
-    } else if matches!(route, Route::Person) {
-        crate::ui::person::move_focus(sym);
+    if matches!(route, Route::Detail | Route::Person) {
+        return;
     } else if matches!(route, Route::Library) {
         crate::ui::library::move_focus(sym);
     } else if matches!(route, Route::Search) {
@@ -1236,7 +1236,7 @@ pub(super) unsafe fn key_ok(
                         let want_play = from_deck;
                         unsafe {
                             activate_card(
-                                mt, mm, want_play, HUD_LINGER_MS, route, play_from, &mut hud.nav,
+                                mt, mm, want_play, HUD_LINGER_MS, route, play_from, trail, &mut hud.nav,
                                 nav,
                             )
                         };
@@ -1245,49 +1245,8 @@ pub(super) unsafe fn key_ok(
                 crate::ui::library::Action::Card | crate::ui::library::Action::None => {}
             }
         }
-    } else if matches!(*route, Route::Detail) {
-        // OK on a detail CARD (episode / Related / Cast) → tvOS press: dip now,
-        // commit on the spring-back (the route-agnostic press handler runs on_ok
-        // then). So does the hero's CONTROL ROW — the same press with the hold
-        // gesture left off, since no context menu grows out of a Play pill.
-        // Season tabs, About rows and the filmstrip's metadata block still
-        // activate immediately: none of them draws `press::scale()`.
-        if crate::ui::detail::focus_is_card() {
-            press.begin(clock::now());
-            *ok_armed = true;
-        } else if crate::ui::detail::focus_is_ctl() {
-            press.begin_ctl(now);
-            *ok_armed = true;
-        } else if crate::ui::detail::on_ok() {
-            start_playback(
-                mt,
-                crate::ui::detail::last_resume_ns(),
-                origin_here(*route), // Stop/BACK/EOS returns to this detail page
-                HUD_LINGER_MS,
-                route,
-                play_from,
-                &mut hud.nav,
-            );
-        }
-    } else if matches!(*route, Route::Person) {
-        // every focusABLE thing on the person page is a poster card → the
-        // same tvOS press as home's grid, committed on the spring-back
-        if crate::ui::person::focus_is_card() {
-            press.begin(clock::now());
-            *ok_armed = true;
-        } else {
-            // …and the page's two CARDLESS focus rows: the HEADER, where OK
-            // opens the bio alert when there is more biography than the band
-            // shows, and the FILMOGRAPHY ENTRY at the end of the shelves, where
-            // it replaces the page with that route. No press is armed for
-            // either, because a tvOS dip needs something to dip — neither the
-            // band nor a row spanning the frame draws `press::scale()` — and
-            // waiting for a spring-back nobody can see would only add latency.
-            // `person::header_ok` owns every test (which row is it, is the bio
-            // actually truncated, is there a filmography at all) and answers
-            // false when it did nothing.
-            crate::ui::person::header_ok();
-        }
+    } else if matches!(*route, Route::Detail | Route::Person) {
+        // Owned screen input has already been dispatched.
     } else {
         // home: dispatch through the ONE activation (shared with pointer
         // clicks). Gate hero-vs-grid on the spring POSITION (what's on
@@ -1382,13 +1341,7 @@ pub(super) fn key_back(
         // Person — which was true only while Person had no panel of its own,
         // and stopped being true when the bio alert landed. A page-owned modal
         // BACK cannot close is a screen the user is stuck on.
-        let panel_took_it = match *route {
-            Route::Person => crate::ui::person::back(),
-            _ => crate::ui::detail::back(),
-        };
-        if !panel_took_it {
-            nav_back(*route, trail, nav);
-        }
+        // Content screens own BACK, including their page-local panels.
     } else if matches!(*route, Route::Search) {
         // `back()` answers true while it still had something to close (the
         // raised keyboard); false means leave, and the destination is Home —
@@ -1493,4 +1446,3 @@ pub(super) fn delete_all_local_data_and_sign_out(route: &mut Route, trail: &mut 
         *route = Route::Login;
     }
 }
-

@@ -7,7 +7,7 @@ use crate::pms::PmsMovie;
 use crate::ui::label::{HAlign, Label};
 use crate::ui::theme;
 use crate::ui::{Env, Painter, Rect, Spring, View};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
@@ -4439,11 +4439,33 @@ pub(crate) fn strip_layout(
     sz: c_int,
     gap: f32,
 ) -> Vec<StripLay> {
+    strip_layout_by(labels, x0, gap, |label| {
+        crate::text::text_width(label.as_ptr(), sz, 1)
+    })
+}
+
+/// The same strip geometry using an owned screen's measurement capability.
+pub(crate) fn strip_layout_measured(
+    labels: impl Iterator<Item = String>,
+    x0: f32,
+    sz: c_int,
+    gap: f32,
+    measure: &dyn crate::ui::machine::Measure,
+) -> Vec<StripLay> {
+    strip_layout_by(labels, x0, gap, |label| measure.width(label, sz, true))
+}
+
+fn strip_layout_by(
+    labels: impl Iterator<Item = String>,
+    x0: f32,
+    gap: f32,
+    mut width: impl FnMut(&CStr) -> f32,
+) -> Vec<StripLay> {
     let mut x = x0;
     let mut out = Vec::new();
     for (i, label) in labels.enumerate() {
         let Ok(lc) = CString::new(label) else { continue };
-        let w = crate::text::text_width(lc.as_ptr(), sz, 1);
+        let w = width(&lc);
         out.push(StripLay { i, x, w, label: lc });
         x += w + 2.0 * STRIP_PAD + gap;
     }
@@ -7159,6 +7181,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn measured_strip_reuses_shared_padding_gap_and_source_indices() {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let size = theme::size::BODY;
+        let gap = 37.0;
+        let lays = strip_layout_measured(
+            ["A".into(), "bad\0label".into(), "Longer".into()].into_iter(),
+            96.0, size, gap, &measure,
+        );
+        assert_eq!(lays.len(), 2);
+        assert_eq!((lays[0].i, lays[1].i), (0, 2));
+        assert_eq!(lays[0].x, 96.0);
+        for lay in &lays {
+            assert_eq!(lay.w, crate::ui::machine::Measure::width(&measure, &lay.label, size, true));
+        }
+        let first = strip_pill_rect(&lays[0], 10.0, 60.0);
+        let second = strip_pill_rect(&lays[1], 10.0, 60.0);
+        assert_eq!(second.x, first.x + first.w + gap);
+    }
+
+    #[test]
     fn continuous_document_rail_tracks_both_ends_and_disappears_when_content_fits() {
         assert_eq!(
             continuous_rail_geom(0.0, 900.0, 300.0),
@@ -9183,7 +9225,7 @@ mod tests {
 
     /// The same line on the detail page, where the band's anchor is `TITLE_BOTTOM` outright.
     fn detail_title_cap_top() -> f32 {
-        crate::ui::detail::TITLE_BOTTOM - HERO_CAP_H
+        crate::ui::detail_layout::TITLE_BOTTOM - HERO_CAP_H
     }
 
     /// **The prize: "is the hero readable" as an assertion instead of a judgement on a television.**
@@ -9220,14 +9262,14 @@ mod tests {
     #[test]
     fn the_hero_text_reads_over_bright_artwork() {
         use crate::ui::consts::{MARGIN_X, SCR_W};
-        let hc = crate::ui::detail::hero_chain(
+        let hc = crate::ui::detail_layout::hero_chain(
             // a two-line blurb — the shape `hero_chain`'s own doc is tuned on. Measuring is the one
             // thing the host cannot do, so the height is quoted, not computed.
             76.0, true,
         );
         let band = crate::ui::hero_logo::band_h(crate::ui::hero_logo::LogoRung::Hero);
         let home_col_r = MARGIN_X + crate::ui::home::HERO_COL_W; // 750 — the column's right end
-        let det_col_r = MARGIN_X + crate::ui::detail::HERO_TEXT_W; // 990 — the synopsis' wrap edge,
+        let det_col_r = MARGIN_X + crate::ui::detail_layout::HERO_TEXT_W; // 990 — the synopsis' wrap edge,
                                                                    // and since nit 2 the title band's column too: a very wide wordmark runs the same 990.
         let people_r = SCR_W - MARGIN_X; // 1830 — the right-aligned people column's own edge
 
@@ -9318,8 +9360,8 @@ mod tests {
             (
                 "detail people (top line)",
                 people_r,
-                crate::ui::detail::people_top(hc.btn_y, crate::ui::detail::PEOPLE_MAX_LINES),
-                crate::ui::detail::PEOPLE_INK,
+                crate::ui::detail_layout::people_top(hc.btn_y, crate::ui::detail_layout::PEOPLE_MAX_LINES),
+                crate::ui::detail_layout::PEOPLE_INK,
                 true,
                 3.0,
                 2.5,
@@ -9330,7 +9372,7 @@ mod tests {
             let base = if label.starts_with("home") {
                 crate::ui::home::base_scrim_a(y, 1.0)
             } else {
-                crate::ui::detail::base_scrim_a(y, 1.0)
+                crate::ui::detail_layout::base_scrim_a(y, 1.0)
             };
             let wedge = hero_scrim_a(x, 1.0);
             let rw = if right {

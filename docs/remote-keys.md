@@ -20,7 +20,7 @@ done offline is read out of the television's own harvested `libSDL2`, which is s
 ## 1. How a press reaches the app
 
 An `SDL_KEYDOWN` / `SDL_KEYUP` from LG's SDL fork is read by raw byte offset, because the fork's
-`SDL_KeyboardEvent` is **shifted four bytes** against the headers (`app.rs::decode_key`, and the
+`SDL_KeyboardEvent` is **shifted four bytes** against the headers (`app/events.rs::decode_key`, and the
 gotcha in `docs/agent-reference.md`):
 
 | offset | field | the app calls it |
@@ -71,7 +71,7 @@ The table is otherwise byte-for-byte SDL's own standard `linux_scancode_table`, 
 
 ## 2. The map
 
-`classify` (`ui/consts.rs`) resolves one `(sym, wcode)` pair to one `Key`; the ladder in `app.rs`
+`classify` (`ui/consts.rs`) resolves one `(sym, wcode)` pair to one `Key`; the ladder in `app/run.rs`
 dispatches on that. **Two sets are bound OUTSIDE the classifier** and are listed with the rest —
 being `Key::Other` does not mean unbound (§3).
 
@@ -121,7 +121,7 @@ before `SDL_Init` (§5).
 | `301` | `wcode` | `page_dir`, Library route only | CH▼ pages down (evdev 403 `KEY_CHANNELDOWN`) |
 | `8` | `sym` | `ui::search::key`, while editing | backspace |
 | `156 \| 1<<30` | `sym` | `ui::search::key`, while editing | the panel's **Clear all**. **Not producible from the evdev table** — it reaches us through the fork's own text/IME path, which is why it is measured but has no evdev provenance. |
-| `48..=57` | `sym` | `ui::profiles`, PIN keypad | type that digit into the PIN. `profiles::digit_of` also reads the range out of `wcode`, where it is **not** a digit — §9. |
+| `48..=57` | `sym` | `screens::profiles`, PIN keypad | type that digit into the PIN. `screens::profiles::digit_of` also reads the range out of `wcode`, where it is **not** a digit — §9. |
 
 ### Swallowed
 
@@ -143,7 +143,7 @@ before `SDL_Init` (§5).
 ## 3. Three asymmetries that are behaviour, not untidiness
 
 **PAUSE and PLAY are matched in `wcode` ALONE; their alternates, and STOP, in either field.** That
-is how the two `app.rs` arms spelled it before `classify` existed, and it was preserved verbatim.
+is how the two arms now in `app/run.rs` spelled it before `classify` existed, and it was preserved verbatim.
 Widening or narrowing one of them is a behaviour change and needs its own argument — the codes come
 from two different namespaces (§1, §4), so "make them consistent" is not the tidy-up it looks like.
 
@@ -204,7 +204,7 @@ either direction. **Settle all four together, with the §7 capture plus a USB ke
 ### 4.3 and 4.4 — `SDLK_SELECT`, and `digit_of`'s `wcode` arm
 
 The other two are written up in §9, whose first and third bullets they are: `SDLK_SELECT` is
-`SDL_SCANCODE_END`, and `profiles::digit_of` reads ASCII digits out of the scancode field. Both are
+`SDL_SCANCODE_END`, and `screens::profiles::digit_of` reads ASCII digits out of the scancode field. Both are
 misreadings of the same field, both are recorded rather than changed, and the reasons are there.
 `is_bound` (§6) declines to inherit the second of them.
 
@@ -262,7 +262,7 @@ LG's own sense — "we never tested it" is not a markable state.
 **A press consumed by neither a route-specific handler nor the global key ladder must produce no
 global side effect.**
 
-The hazard was structural rather than a missing arm. `app.rs::begin_fresh_press` runs for **every**
+The hazard was structural rather than a missing arm. `app/input.rs::begin_fresh_press` runs for **every**
 fresh press, *before* the ladder decides whether anything takes it, and two of the things it does
 belong to no arm:
 
@@ -275,11 +275,11 @@ predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym i
 **or** the **sym** is an ASCII digit — **or**, in a Lab Diagnostics build only, the press is that
 build's configured upload trigger (`crate::lab::is_trigger_key`, `false` at compile time in every
 build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
-`app.rs::note_global_press`, split
+`app/input.rs::note_global_press`, split
 out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, a webOS-only SDL
 symbol, and a host test that reaches it fails at `ld` rather than at an assertion.
 
-**The digit term reads `sym` and not `wcode`, diverging from `profiles::digit_of`, on purpose.**
+**The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'
 scancodes are 30–39, which is how 33/34 turned out to be `4` and `5` in the first place). Mirroring
 `digit_of` would have put the retired mis-reading straight back inside the gate that exists to stop
@@ -298,7 +298,7 @@ un-dismisses the HUD. Narrowing that means making the predicate route-aware, i.e
 the ladder's own order — the duplication `page_dir` exists to have ended. A number key is also,
 unlike a colour button, a key this app really does bind, so calling it bound is honest.
 
-Graded twice, because neither half implies the other: `app.rs`'s `unsupported_key_tests` covers the
+Graded twice, because neither half implies the other: `app/input.rs`'s `unsupported_key_tests` covers the
 two global effects (invisible to any focus fingerprint), and `tools/keytable.py` covers "moves
 nothing on any screen" — its `k:0,269` (HOME) and `k:53,34` (the digit 5) rows are inert on Home,
 Library and Search in `tests/keytable.json`.
@@ -402,15 +402,15 @@ reproduce rather than a rule to obey by quitting.
   in the `INSERT`/`HOME`/`PAGEUP`/`DELETE`/`END`/`PAGEDOWN` run at 73–78, and the television's table
   confirms it — entry 107 (`KEY_END`) is what produces 77. So `is_ok` accepts a keyboard's **End**
   key and would NOT accept a remote's real SELECT. Left as-is: the name is read from
-  `ui/profiles.rs`'s test, and repointing the value would make `is_ok` answer a different key on no
+  `ui/consts.rs`'s `every_spelling_lands_on_its_own_key` test, and repointing the value would make `is_ok` answer a different key on no
   evidence that any remote sends 119 either. OK itself is unaffected — the remote's OK is
   `SDL_SCANCODE_RETURN`, captured and bound.
 * **§4.2** — `19` is `SDL_SCANCODE_P` and is bound to PLAY. Untested on a device; needs a USB
   keyboard as well as §7.
-* **`ui::profiles`' `digit_of` reads the digit range in `wcode` too**, where 48–57 are not digits at
+* **`screens::profiles`' `digit_of` reads the digit range in `wcode` too**, where 48–57 are not digits at
   all but `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock — and its own test asserts
   `digit_of(0, 55) == Some(b'7')`, where scancode 55 is a full stop. No remote has those keys, so it
-  is harmless in practice and `profiles.rs` is left alone here; a USB keyboard on the PIN screen
+  is harmless in practice and `screens/profiles.rs` is left alone here; a USB keyboard on the PIN screen
   would type digits from punctuation. `is_bound` deliberately does **not** mirror it (§6). The same
   capture settles both.
 * **`461` and `156` are not producible from the evdev table.** 156 is explained — the panel's *Clear

@@ -61,7 +61,7 @@ impl<H: Host> TabContainer<H> {
     }
 
     /// Select a pill: `Root(pill)` on the shared stack; the capsule moves on the press frame.
-    pub fn select(&mut self, i: usize, ret: super::super::screen::ReturnState<H::Elem>) {
+    pub fn select(&mut self, i: usize, ret: super::super::screen::ReturnState<H::Elem, H::Memory>) {
         let Some(arg) = self.pills.get(i).cloned() else {
             return;
         };

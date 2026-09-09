@@ -48,6 +48,7 @@ sys.path.append(os.path.join(REPO_ROOT, "tools"))
 import netcond  # noqa: E402
 import run  # noqa: E402  (path juggling above is the point)
 import serve_fixtures  # noqa: E402
+import focusfp_check  # noqa: E402
 
 _FIXTURE_GEN_SPEC = importlib.util.spec_from_file_location(
     "plx_make_fixtures", os.path.join(TESTS_DIR, "fixtures", "make_fixtures.py"))
@@ -82,6 +83,67 @@ class _Overlay:
     def __exit__(self, *exc):
         run.MANIFEST_LOCAL = self.saved
         os.unlink(self.fh.name)
+
+
+class ContentFocusFlows(unittest.TestCase):
+    def test_settings_family_must_visit_privacy_as_well_as_legal(self):
+        log = ["hb route=home overlay=settings", "hb route=home overlay=legal",
+               "hb route=home overlay=settings", "hb route=home"]
+        self.assertIsNotNone(focusfp_check.check(6, log))
+        log[1:1] = ["hb route=home overlay=privacy", "hb route=home overlay=settings"]
+        self.assertIsNone(focusfp_check.check(6, log))
+        self.assertIsNotNone(focusfp_check.check(6, log[:-1]))
+
+    def test_the_old_about_only_false_pass_does_not_prove_a_related_hold(self):
+        log = ["focus route=home sid=0 rk=200622",
+               "focus route=detail sec=5 col=0 card=0 sid=0 rk=1001",
+               "focus route=detail sec=5 col=0 card=0 sid=0 rk=1001 press=1"]
+        self.assertIn("never opened", focusfp_check.check(8, log))
+
+    def test_the_menu_must_open_over_detail_and_return_to_the_same_card(self):
+        log = ["focus route=detail sec=3 col=2 card=1 sid=0 rk=1001",
+               "focus route=itemmenu over=detail",
+               "focus route=detail sec=3 col=2 card=1 sid=0 rk=1001"]
+        self.assertIsNone(focusfp_check.check(8, log))
+        self.assertIsNotNone(focusfp_check.check(8, log[:-1]))
+        self.assertIsNotNone(focusfp_check.check(8, [log[0], log[1].replace("detail", "home"), log[2]]))
+        self.assertIsNotNone(focusfp_check.check(8, [*log[:-1], log[-1].replace("col=2", "col=0")]))
+
+    def test_detail_back_restores_the_home_card_identity_and_position(self):
+        log = ["focus route=home row=1 col=2 sid=0 rk=1001",
+               "focus route=detail sid=0 rk=1001",
+               "focus route=home row=1 col=2 sid=0 rk=1001"]
+        self.assertIsNone(focusfp_check.check(2, log))
+        self.assertIsNotNone(focusfp_check.check(2, log[:-1]))
+        self.assertIsNotNone(focusfp_check.check(2, [*log[:-1], log[-1].replace("rk=1001", "rk=1002")]))
+        self.assertIsNotNone(focusfp_check.check(2, ["focus route=home", "focus route=detail", "focus route=home"]))
+
+    def test_a_person_boot_alone_does_not_prove_a_nested_return(self):
+        log = ["focus route=" + r for r in ("home", "detail", "person", "person")]
+        self.assertIsNotNone(focusfp_check.check(5, log))
+        log[-1] += " sid=0 rk=1001"
+        log += ["focus route=detail", "focus route=person sid=0 rk=1001", "focus route=detail"]
+        self.assertIsNone(focusfp_check.check(5, log))
+
+    def test_person_return_preserves_the_selected_card(self):
+        log = ["focus route=person card=1 sid=0 rk=1001 group=2 elem=4096",
+               "focus route=detail sid=0 rk=1001",
+               "focus route=person card=1 sid=0 rk=1001 group=2 elem=4096",
+               "focus route=detail sid=0 rk=1001"]
+        self.assertIsNone(focusfp_check.check(5, log))
+        self.assertIsNotNone(focusfp_check.check(5, [*log[:2], log[2].replace("rk=1001", "rk=1002"), log[3]]))
+        self.assertIsNotNone(focusfp_check.check(5, [*log[:2], log[2].replace("elem=4096", "elem=4097"), log[3]]))
+
+    def test_filmography_is_restored_before_back_dismisses_it(self):
+        log = ["focus route=person filmography=1 group=0 elem=0",
+               "focus route=person filmography=1 group=1 elem=42",
+               "focus route=detail",
+               "focus route=person filmography=1 group=1 elem=42",
+               "focus route=person filmography=0 group=2 elem=1"]
+        self.assertIsNone(focusfp_check.check(12, log))
+        self.assertIsNotNone(focusfp_check.check(12, [*log[:3], log[-1]]))
+        self.assertIsNotNone(focusfp_check.check(12, [*log[:3], log[3].replace("elem=42", "elem=0"), log[-1]]))
+        self.assertIsNotNone(focusfp_check.check(12, log[:-1]))
 
 
 class ReplayFixtures(unittest.TestCase):

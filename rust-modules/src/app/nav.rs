@@ -186,7 +186,7 @@ pub(super) enum Route {
     },
     Library, // the browse grid (ui/library.rs); its sort/filter menus are internal state
     Detail,
-    /// The person/actor page (ui/person.rs), reached by OK on a detail page's cast
+    /// The person/actor page (screens/person.rs), reached by OK on a detail page's cast
     /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
     /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
     /// exists: a `Route` names one screen, and person→detail→person is three.
@@ -314,8 +314,8 @@ mod host_page_lifecycle_tests {
 /// it left behind reappears under the next one.
 pub(super) fn leave_of(r: Route) -> Option<fn()> {
     match page_of(r) {
-        Route::Detail => Some(crate::ui::detail::close as fn()),
-        Route::Person => Some(crate::ui::person::leave as fn()),
+        Route::Detail => None,
+        Route::Person => None,
         // Nothing loaded that outlives the page. Home and the Library keep their stores for
         // as long as the profile does (`browse.rs` is re-ENTERED, never re-queried — that is
         // why `Node::Library` carries no payload), Login/Profiles/Onboard are boot gates the app
@@ -541,16 +541,40 @@ pub(super) struct NavReq {
     /// re-read at the commit because the user can still move focus during the 70 ms, and
     /// BACK must return them to where they pressed, not to where the fade found them.
     pub(super) spot: Option<Spot>,
+    pub(super) entry: Option<crate::ui::machine::EntryId>,
+    pub(super) owner: Option<crate::ui::machine::InputOwner>,
+    pub(super) ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
+}
+
+impl NavReq {
+    pub(super) fn is_current(&self, route: Route, entry: Option<crate::ui::machine::EntryId>, owner: Option<crate::ui::machine::InputOwner>) -> bool {
+        self.from == route && self.entry.is_none_or(|id| entry == Some(id))
+            && self.owner.is_none_or(|from| owner == Some(from))
+    }
+}
+
+#[cfg(test)]
+mod content_request_identity_tests {
+    use super::*;
+    use crate::ui::machine::{EntryId, InputOwner};
+
+    #[test]
+    fn cancelling_a_content_request_compares_entry_and_surface_not_route_kind() {
+        let req = NavReq { to: Nav::Back { bar: false }, from: Route::Person, spot: None,
+            entry: Some(EntryId(1)), owner: Some(InputOwner::Entry(EntryId(2))), ret: None };
+        assert!(req.is_current(Route::Person, Some(EntryId(1)), Some(InputOwner::Entry(EntryId(2)))));
+        assert!(!req.is_current(Route::Person, Some(EntryId(3)), Some(InputOwner::Entry(EntryId(2)))));
+        assert!(!req.is_current(Route::Person, Some(EntryId(1)), Some(InputOwner::Entry(EntryId(4)))));
+    }
 }
 /// Where the page being left is standing, for [`NavReq::spot`]. Only a detail page has a
 /// place worth restoring (`Trail::set_top_spot` ignores every other node), so this is the
 /// whole rule — no per-arm decision, and no call site that can forget it. On a BACK the
 /// node it is recorded onto is the one about to be popped, so the write is simply spent;
 /// that costs one struct copy and buys the rule its uniformity.
-pub(super) fn leaving_spot(cur: Route) -> Option<Spot> {
-    matches!(page_of(cur), Route::Detail).then(crate::ui::detail::spot)
-}
-/// Ask for `to`, through the page cross-fade, carrying the outgoing page's teardown.
+pub(super) fn leaving_spot(_cur: Route) -> Option<Spot> {
+    None // owned pages capture their engine focus through the bridge's ReturnState
+}/// Ask for `to`, through the page cross-fade, carrying the outgoing page's teardown.
 ///
 /// **Both halves of a route change land at the floor**: the outgoing page's teardown and
 /// the incoming page's mount. That uniformity is the design — the alternative is a per-arm
@@ -568,6 +592,9 @@ pub(super) fn nav_req(cur: Route, to: Nav, leave: Option<fn()>, pending: &mut Op
         to,
         from: cur,
         spot: leaving_spot(cur),
+        entry: None,
+        owner: None,
+        ret: None,
     });
 }
 /// A FORWARD navigation. It carries a teardown only when the page it leaves is NOT one the
@@ -683,23 +710,12 @@ pub(super) fn return_page(r: Route, detail: Option<Node>, person: Option<Node>) 
 /// The detail node carries the page's [`Spot`], so a return is a RESTORE (the Related tile the user
 /// pressed on is still the focused one) rather than a fresh arrival at the hero. An empty mounted
 /// rk means the page never mounted, which is not a page anyone can be returned to.
-pub(super) fn origin_here(r: Route) -> Origin {
-    let rk = crate::ui::detail::mounted_rk();
-    let detail = (!rk.is_empty()).then(|| Node::Detail {
-        sid: crate::ui::detail::mounted_sid(),
-        rk,
-        spot: crate::ui::detail::spot(),
-    });
-    let person = crate::person::current().map(|p| Node::Person {
-        sid: p.sid,
-        key: p.key.clone(),
-        guid: p.guid.clone(),
-        name: p.name.clone(),
-        thumb: p.thumb.clone(),
-    });
+pub(super) fn origin_here(r: Route, trail: &Trail) -> Origin {
+    let node = trail.top().clone();
+    let detail = matches!(&node, Node::Detail { .. }).then(|| node.clone());
+    let person = matches!(&node, Node::Person { .. }).then(|| node.clone());
     Origin::From(return_page(r, detail, person))
 }
-
 /// Record where the session that is STARTING returns to.
 ///
 /// One line, named because the `Unchanged` half is the whole of the auto-advance rule and is
@@ -725,28 +741,6 @@ pub(super) fn open_library_card(cur: Route, nav: &mut Option<NavReq>) {
         return;
     }
     nav_open(cur, to_detail(mm.sid, &mm.rk), None, nav);
-}
-
-/// Open whatever the person page's focused thing points AT — the ONE person-card activation
-/// (OK-press commit AND pointer click), the twin of [`open_library_card`]. The person page
-/// is left standing behind it on the trail, so BACK comes straight back to the same shelf
-/// position.
-///
-/// **It asks `focused_target`, not `focused_item`, and the difference is the Filmography
-/// route.** A credit row there is a plex.tv item that MAY be joined to a local copy, so the
-/// only thing it can answer is a `(server, ratingKey)` pair — there is no `PmsMovie` behind
-/// it to hand back, and the one that used to be synthesised for this call site was a
-/// skeleton that every other reader of `focused_item` then believed (see that function's
-/// doc). `focused_target` is the narrow question this arm actually asks, so both surfaces
-/// answer it honestly and no caller is handed a stand-in.
-pub(super) fn open_person_card(cur: Route, nav: &mut Option<NavReq>) {
-    let Some((sid, rk)) = crate::ui::person::focused_target() else {
-        return;
-    };
-    if rk.is_empty() {
-        return;
-    }
-    nav_open(cur, to_detail(sid, &rk), None, nav);
 }
 
 /// Enter `rk`'s detail page with a HARD CUT — no transition. The one caller left is the
@@ -803,69 +797,9 @@ pub(super) fn menu_leave(trail: &mut Trail, host: MenuHost) {
 /// end, so this function and `node_wears_tab_bar` cannot come to disagree about what page a
 /// node is. The `match` stays exhaustive for the mounts themselves.
 pub(super) fn enter_node(n: &Node, route: &mut Route) {
-    match n {
-        // Nothing to mount for either root. No `library::enter`: `browse.rs` still holds the
-        // section, focus and scroll, and re-entering would re-query and lose them.
-        // …and nothing for Search either, for the SAME reason and it is worth saying twice:
-        // `crate::search` still holds the query and the shelves, `ui::search` still holds
-        // the zone and both cursors, and `search::enter` would reset every one of them —
-        // re-entering would land the user on an empty field over their own recents list
-        // (which is exactly what the first version of this did).
-        //
-        // Not even `search::resume`, which the PILL now takes: a BACK is a return to the
-        // exact spot, so the zone and the shelf scroll stay where the user left them — you
-        // came back to the tile you opened. `resume` re-seats those on purpose, because a
-        // pill press is an arrival at the screen rather than a return to a place in it.
-        Node::Home | Node::Library | Node::Search => {}
-        Node::Person {
-            sid,
-            key,
-            guid,
-            name,
-            thumb,
-        } => {
-            // "already the one loaded?" through the trail's own person-identity rule
-            // (`trail::same_person`), so the guid decides when both sides have one and the
-            // server-scoped local id decides otherwise. The bare `p.key != *key` this
-            // replaces compared a `personId` across machines, where it means nothing.
-            let same = crate::person::current()
-                .map(|p| crate::ui::trail::same_person((p.sid, &p.key, &p.guid), (*sid, key, guid)))
-                .unwrap_or(false);
-            if !same {
-                // `reopen`, NOT `open`: `open` raises the latch the drain below turns into a
-                // route change PLUS a push, so a single BACK would land here and immediately
-                // push back the node it just popped — which reads as "BACK does nothing".
-                crate::ui::person::reopen(*sid, key, guid, name, thumb);
-            }
-        }
-        Node::Detail { sid, rk, spot } => {
-            // …and the same for the detail page: the pair, never the rk alone (a share's
-            // item 42 and ours are different pages, and re-entering must fetch the one the
-            // node names rather than deciding it is already up).
-            if !crate::plex::same_item(
-                (
-                    crate::ui::detail::mounted_sid(),
-                    &crate::ui::detail::mounted_rk(),
-                ),
-                (*sid, rk),
-            ) {
-                // A RESTORE carries a place to put the page back at. A forward navigation
-                // carries the EMPTY spot `to_detail` builds, and must not arm a placement:
-                // `open_rk_at`'s two-stage pump fires when the fetch lands, and on a fresh
-                // open that would yank focus back to the hero from wherever the user had
-                // moved it while waiting. The test is sound because the two branches agree
-                // on the value it splits — an empty spot IS the state `open_rk` mounts in.
-                if *spot == Spot::default() {
-                    crate::ui::detail::open_rk(*sid, rk);
-                } else {
-                    crate::ui::detail::open_rk_at(*sid, rk, spot);
-                }
-            }
-        }
-    }
+    // The navigation container mounts or uncovers the entry at this commit.
     *route = node_route(n);
 }
-
 /// Open the item context menu on the focused HOME GRID card — the press-and-hold half of the
 /// Continue Watching interaction (a SHORT press still plays/opens immediately; see
 /// `home_activate`). Reports whether it opened, so the caller only flips the route when a
@@ -925,48 +859,3 @@ pub(super) fn open_tile_menu(
     *route = Route::ItemMenu { over: host };
     true
 }
-
-/// The same popover on the DETAIL page's SEASON strip — the grain between the episode's own hold
-/// and the hero's show-wide toggle, and the one this page could not express at all.
-///
-/// Reports whether it opened, so the caller only flips the route when a menu is actually up: the
-/// strip may not hold focus, a show may have no seasons, and a season fetch in flight makes the
-/// row's contents a lie (`detail::focused_season`, which declines on all three).
-pub(super) fn open_season_menu(route: &mut Route) -> bool {
-    let Some((rk, mark)) = crate::ui::detail::focused_season() else {
-        return false;
-    };
-    let opener = Opener {
-        rect: crate::ui::detail::focused_season_rect(),
-        redraw: crate::ui::detail::redraw_focused_season,
-    };
-    crate::ui::item_menu::open_season(crate::ui::detail::mounted_sid(), &rk, mark, opener);
-    *route = Route::ItemMenu {
-        over: MenuHost::Detail,
-    };
-    true
-}
-
-/// The same popover on the DETAIL page's episode filmstrip — the owner-reported gap: a long
-/// press on an episode still did nothing, so there was nowhere to mark an episode watched.
-/// Reports whether it opened, so the caller only flips the route when a menu is actually up:
-/// the filmstrip may not hold focus, and a season fetch in flight makes the row's contents a
-/// lie (see `detail::focused_episode`).
-pub(super) fn open_episode_menu(route: &mut Route) -> bool {
-    let Some((rk, mark)) = crate::ui::detail::focused_episode() else {
-        return false;
-    };
-    if rk.is_empty() {
-        return false;
-    }
-    let opener = Opener {
-        rect: crate::ui::detail::focused_episode_rect(),
-        redraw: crate::ui::detail::redraw_focused_episode,
-    };
-    crate::ui::item_menu::open_episode(crate::ui::detail::mounted_sid(), &rk, mark, opener);
-    *route = Route::ItemMenu {
-        over: MenuHost::Detail,
-    };
-    true
-}
-

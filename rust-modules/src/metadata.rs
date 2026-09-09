@@ -2,8 +2,42 @@
 //! audio/subtitle streams), the TV season/episode hierarchy, and the related hub —
 //! fetched on demand into a single CURRENT item. Idiomatic Rust (String/Vec), like the
 //! browse catalog (pms.rs) — the fixed C buffers from the C port are gone.
+use std::os::raw::c_int;
 use std::panic::catch_unwind;
 use std::ptr::{addr_of, addr_of_mut};
+
+/// Where the Detail page was standing — enough to put it back when BACK returns to it, and nothing
+/// more. **Moved here from `ui::detail` for restructure phase 7a** (`stores/metadata.rs`'s module
+/// doc has the full read/write contract this type is §4 of); `ui::detail` re-exports it
+/// (`pub(crate) use crate::metadata::Spot;`) so every existing caller — `ui::trail::Node::Detail`,
+/// `app::nav`'s `leaving_spot`/`Origin`, `ui::detail`'s own `spot()`/`spot_landing`/`open_rk_at` —
+/// compiles unchanged; only the OWNERSHIP moved, not the shape.
+///
+/// A `Spot` names FOCUS, not pixels: the vertical scroll is derived from the focused section
+/// (`scroll_target`) and both h-scrolls from `col`, so recording them too would be two sources for
+/// one fact — and the second would be wrong the moment the item came back with a different-length
+/// list. `Default` is a page that has been entered and not left yet: hero, item 0.
+///
+/// `season` is the season NUMBER, not `cur_season`'s POSITION: a `/children` refetch can reorder or
+/// re-title the list, and the number is what the user actually saw on the tab. `None` for a movie —
+/// and that `None` is load-bearing, because it is what stops a movie's restore waiting for a season
+/// list that will never arrive (see `ui::detail::spot_season_gate`).
+#[derive(Clone, Default, PartialEq, Debug)]
+pub(crate) struct Spot {
+    /// section id (0 hero, 1 tabs, 2 episodes, 3 related, 4 cast, 5 about)
+    pub(crate) section: c_int,
+    /// focused item within that section
+    pub(crate) col: c_int,
+    /// the episode filmstrip's sub-row (still vs. its metadata block) — a bool because the enum
+    /// naming the two (`ui::detail::EpRow`) is private to that module and this type has no
+    /// business naming it
+    pub(crate) ep_text: bool,
+    /// the per-section focus memory, so LEFT/RIGHT in a row the user never returned to still comes
+    /// back where they left it
+    pub(crate) saved_col: [c_int; 6],
+    /// the selected season's NUMBER, or `None` for an item with no seasons
+    pub(crate) season: Option<i64>,
+}
 
 /// Plex's resume rule, in ONE place (home Continue-Watching, the detail Play button, and the
 /// plxnative-play harness all apply it): resume only past 10s and before 95% watched, else start
@@ -2034,6 +2068,25 @@ type DetailKey = (crate::plex::ServerId, String);
 /// The item the page is awaiting, or `None` when nothing is (then every landing is wanted —
 /// the shape the tests drive through a bare generation bump).
 static DETAIL_WANT: std::sync::Mutex<Option<DetailKey>> = std::sync::Mutex::new(None);
+
+/// The addressed request's status: None means another item (or no request), true means
+/// in flight, false means the matching request settled, including failure/refusal.
+pub(crate) fn detail_request_status(sid: crate::plex::ServerId, rk: &str) -> Option<bool> {
+    let want = DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner());
+    want.as_ref().filter(|(wanted_sid, wanted_rk)| *wanted_sid == sid && wanted_rk == rk)
+        .map(|_| detail_loading())
+}
+
+#[cfg(test)]
+pub(crate) fn begin_detail_for_test(sid: crate::plex::ServerId, rk: &str) -> u32 {
+    begin_detail_request(sid, rk).0
+}
+
+#[cfg(test)]
+pub(crate) fn land_detail_for_test(sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
+    land_detail(sid, rk, gen, detail);
+    pump_detail()
+}
 
 fn detail_addr(gen: u32) -> crate::ui::machine::Addr {
     crate::ui::machine::Addr {

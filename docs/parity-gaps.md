@@ -265,8 +265,8 @@ Our rows, adapted (Watchlist doesn't exist yet; see the account domain):
 
 | Row | Status |
 |---|---|
-| **Go to Episode** | `ui::detail::open_rk(episode_rk)` — exists |
-| **Go to Show** | `ui::detail::open_rk_season(show_rk, season)` — exists (`ui/detail.rs:1345`) |
+| **Go to Episode** | `item_menu::Action::GoToItem`; `app::input::apply_item_action` opens that detail entry — exists |
+| **Go to Show** | `item_menu::Action::GoToShow`; `app::input::apply_item_action` opens the show detail entry with the season — exists |
 | — separator — | |
 | **Mark as Watched** | needs `viewCount` on `Episode` (cheap win #2); `scrobble` takes any rating key |
 | **Play from Start** | needs the restart path (cheap win #4) |
@@ -901,7 +901,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **"Go to Show" has no route from a Continue Watching card** — `major` / `medium`  
   **Design note (owner, 2026-07-29): resuming on OK is INTENTIONAL** — a CW tile plays straight away and the amber play badge on the card is the affordance that announces it. Do not "fix" `home_activate` to open detail. The gap is the *other* half: **long-press should open the item menu, with "Go to Show" as its headline action.** The context menu is also the official client's route to "Mark as Watched" etc. Until it exists, a CW tile can only be resumed — the show/movie page, the synopsis, a different episode and the watched toggle have no route from that shelf.  
-  *Where:* ui/item_menu.rs plus the hook in app.rs:888 home_activate (the one activation function both key and pointer already share); a "Go to Show" row would call ui::detail::open_rk_season(show_rk, season_index), which already exists (ui/detail.rs:1345).  
+  *Where:* `ui/item_menu.rs`; its `Action::GoToShow` is applied by `app/input.rs::apply_item_action`, which calls `nav_open(to_detail(...), season)` for key and pointer activation alike.
   *Verified:* CONFIRMED with one correction that narrows the gap. app.rs:931-933 is exact: `want_play = hf == 0 || (!hero_view && (pms::hub_is_continue(row) || mm.kind == 3))` — so EVERY tile in the CW shelf (movies included) and every episode tile in any shelf plays on OK, and home.rs Grid renders no per-card info affordance. CORRECTION: the CW items are ALSO the front of the rotating hero pool (pms.rs:301-325 seeds the pool from hub_id=="home.continue" first, then "recent", capped at HERO_MAX=8, skipping seasons and art-less items), and the hero's Info disc (hf==1) DOES reach the detail page — app.rs:956-
 
 - **Mark Watched/Unwatched only works on the whole loaded detail item — never per episode, never from a grid** — `major` / `medium`  

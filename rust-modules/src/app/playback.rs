@@ -820,6 +820,40 @@ pub(super) fn resume_if_paused(mt: &crate::task::MainThread) {
     }
 }
 
+/// Legacy card launches resolve media data without creating an invisible Detail screen.
+pub(super) fn request_loaded_hero() -> Option<i64> {
+    let d = crate::metadata::current()?;
+    if d.kind == "show" || !d.seasons.is_empty() {
+        let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
+            || d.seasons.iter().any(|s| s.viewed_leaf_count > 0);
+        let ep = (if started { d.on_deck.as_ref() } else { None })
+            .or_else(|| d.episodes.first())?;
+        request_episode(d, ep).then(|| crate::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+    } else {
+        crate::route::request_play(crate::route::item_sid(d.sid), &d.rk, &d.part,
+            &d.vcodec, &d.acodec, &d.title, "")
+            .then(|| crate::metadata::resume_ns(d.resume_ms, d.dur_ms))
+    }
+}
+
+pub(super) fn request_loaded_episode(rk: &str) -> bool {
+    let Some(d) = crate::metadata::current() else { return false };
+    d.episodes.iter().find(|e| e.rk == rk).is_some_and(|ep| request_episode(d, ep))
+}
+
+fn request_episode(d: &crate::metadata::Detail, ep: &crate::metadata::Episode) -> bool {
+    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
+        is_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
+        season: ep.season, index: ep.index, summary: ep.summary.clone(),
+        year: ep.aired.get(..4).and_then(|s| s.parse().ok()).unwrap_or(0),
+        dur_ms: ep.dur_ms, rating: ep.rating.clone(), thumb: ep.thumb.clone(), detail_rk: d.rk.clone(),
+    })));
+    let title = if ep.title.is_empty() { &d.title } else { &ep.title };
+    let context = format!("{}  ·  S{} E{}", d.title, ep.season, ep.index);
+    crate::route::request_play(crate::route::item_sid(d.sid), &ep.rk, &ep.part,
+        &ep.vcodec, &ep.acodec, title, &context)
+}
+
 /// Leaving playback (Stop / BACK / EOS / Info's jump-to-detail): close every in-player
 /// overlay so no stale popover OPEN flag survives into the next session — the route flip
 /// alone hides them but leaves the module state set (the EOS path once forgot the menu).
@@ -863,7 +897,7 @@ pub(super) fn reveal_played_episode(from: &Node) -> bool {
     if !crate::plex::same_item((psid, &show_rk), (*sid, rk)) {
         return false;
     }
-    crate::ui::detail::open_show_at_episode(psid, &show_rk, season, &crate::route::cur_rk());
+    let _ = season; // The addressed reveal is applied after the origin entry is uncovered.
     true
 }
 
@@ -1407,7 +1441,6 @@ pub(super) fn commit_info_panel(
                     .map(|p| p.sid)
                     .unwrap_or_else(crate::plex::current_server);
                 exit_player(mt, route, play_from, refresh_hubs_at, trail);
-                crate::ui::detail::open_rk(sid, &rk);
                 // A LANDING, not a navigation, so the trail is made to agree
                 // rather than pushed blindly: the exit above has usually
                 // already put this very page on top (the show playback
@@ -1600,6 +1633,7 @@ pub(super) unsafe fn key_play(
     route: &mut Route,
     play_from: &mut Node,
     ptr: &mut Pointer,
+    trail: &Trail,
 ) {
     let was_off_player = !matches!(*route, Route::Player { .. });
     if was_off_player {
@@ -1619,7 +1653,7 @@ pub(super) unsafe fn key_play(
     } else if matches!(activation, ForegroundActivation::Ordinary) {
         if !matches!(*route, Route::Player { .. }) {
             if crate::player::start_bufferfeed(mt) {
-                if let Origin::From(n) = origin_here(*route) {
+                if let Origin::From(n) = origin_here(*route, trail) {
                     *play_from = n;
                 }
                 *route = Route::Player {
@@ -1809,4 +1843,3 @@ mod play_landing_order_tests {
         assert_eq!(*order.borrow(), ["landing", "observation"]);
     }
 }
-

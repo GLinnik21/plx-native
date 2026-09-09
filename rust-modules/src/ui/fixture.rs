@@ -73,6 +73,19 @@ impl ScreenArg for FixtureArg {
     }
 }
 
+impl LogicalState for FixtureArg {
+    fn write(&self, c: &mut Canon) {
+        match self {
+            Self::Home => { c.u32(0); }
+            Self::Page(n) => { c.u32(1).u32(*n); }
+            Self::Modal => { c.u32(2); }
+            Self::Legacy => { c.u32(3); }
+            Self::Snapped => { c.u32(4); }
+        }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("fixture_arg"); }
+}
+
 /// The app's effects: a store command, a network request, a poster request.
 pub enum FixtureFx {
     StoreAdd(u32),
@@ -120,6 +133,8 @@ impl Host for FixtureHost {
     type Elem = u32;
     type Views<'a> = FixtureViews<'a>;
     type Init = FixtureInit;
+    /// No fixture screen remembers anything on its own `ReturnState` (`ui::machine::Host::Memory`).
+    type Memory = ();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -310,12 +325,22 @@ impl Machine<FixtureHost> for FixtureScreen {
         fx: &mut Effects<'_, FixtureHost>,
     ) -> Handled {
         self.state.events.push(ev.name());
+        // Page 800 makes stale interactive delivery observable at BOTH exits: the logical
+        // handler and an adapter/store write. The dispatcher must reject it before step.
+        if self.arg == FixtureArg::Page(800) && matches!(ev,
+            ScreenEvent::Input(_) | ScreenEvent::Activate(_) |
+            ScreenEvent::PressHold(_) | ScreenEvent::PressCommit(_)) {
+            self.state.keys += 1;
+            fx.push(Fx::App(FixtureFx::StoreAdd(61)));
+            return Handled::Yes;
+        }
         match ev {
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: Key::Ok, .. },
                 ..
-            }) if self.row.kind == ElemKind::Card => {
+            }) if self.row.kind == ElemKind::Card && self.arg != FixtureArg::Page(700) => {
                 // OK on a card page opens a page: the structural op that must mount THIS frame.
+                // Page 700 instead exercises the engine's holdable card press path.
                 // A Bare or Control row leaves OK to the engine (`after_step`): activation on the
                 // down edge, or a non-holdable press.
                 self.state.keys += 1;
@@ -373,6 +398,10 @@ impl Machine<FixtureHost> for FixtureScreen {
 }
 
 impl Screen<FixtureHost> for FixtureScreen {
+    fn covered_surfaces_ready(&self) -> bool {
+        // Page 901 models a remounted owner awaiting an identity-matched store notice.
+        self.arg != FixtureArg::Page(901) || self.state.items_seen > 0
+    }
     fn name(&self) -> &'static str {
         match self.arg {
             FixtureArg::Home | FixtureArg::Legacy | FixtureArg::Snapped => "home",
@@ -430,6 +459,7 @@ pub struct FixtureModal {
     entry: super::machine::EntryId,
     /// A foreground spring of the surface's own (the appear pop), reported as motion on Tick.
     pub pop: f32,
+    pub last_draw_alpha: f32,
 }
 
 impl FixtureModal {
@@ -442,6 +472,7 @@ impl FixtureModal {
             state: FixtureState::default(),
             entry,
             pop: 0.0,
+            last_draw_alpha: 0.0,
         }
     }
 
@@ -592,6 +623,7 @@ impl Machine<FixtureHost> for FixtureModal {
 }
 
 impl Screen<FixtureHost> for FixtureModal {
+    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn name(&self) -> &'static str {
         "settings"
     }
@@ -603,6 +635,7 @@ impl Screen<FixtureHost> for FixtureModal {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, FixtureHost>) {
+        self.last_draw_alpha = f.page_alpha;
         let p = f.painter;
         let r = Rect::new(600.0, 200.0, 720.0, 600.0);
         f.stop(p, Stop {
@@ -699,6 +732,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
 }
 
 pub struct FixtureRig {
+    pub page_alpha: f32,
     mounter: FixtureMounter,
     pub store: FixtureStore,
     measure: FixtureMeasure,
@@ -715,6 +749,7 @@ pub struct FixtureRig {
 impl FixtureRig {
     pub fn new() -> Self {
         Self {
+            page_alpha: 1.0,
             mounter: FixtureMounter { mounted: 0 },
             store: FixtureStore::default(),
             measure: FixtureMeasure,
@@ -731,6 +766,7 @@ impl FixtureRig {
 }
 
 impl Rig<FixtureHost> for FixtureRig {
+    fn page_alpha(&self) -> f32 { self.page_alpha }
     fn split(&mut self) -> Split<'_, FixtureHost> {
         Split {
             mounter: &mut self.mounter,
@@ -950,7 +986,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     let home_inst = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap();
     let mut probe = String::new();
     home_inst.screen.state().probe(&mut probe);
-    assert!(probe.contains("\"uncover\", \"enter\""), "{probe}");
+    assert!(probe.contains("\"uncover\", \"restore_memory\", \"enter\""), "{probe}");
     assert_ne!(home_inst.screen.state().hash(), 0);
 }
 
@@ -1360,4 +1396,3 @@ mod phase_3a {
         the_source_pass_registers_no_stops_and_mutates_no_render_cache,
     );
 }
-

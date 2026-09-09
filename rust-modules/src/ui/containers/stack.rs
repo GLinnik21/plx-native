@@ -30,7 +30,7 @@ pub struct Instance<H: Host> {
 pub struct Entry<H: Host> {
     pub id: EntryId,
     pub arg: H::Arg,
-    pub ret: ReturnState<H::Elem>,
+    pub ret: ReturnState<H::Elem, H::Memory>,
     pub inst: Option<Instance<H>>,
     /// The body was evicted at `CAP` (as opposed to never mounted): it remounts on `Enter(Restored)`.
     pub evicted: bool,
@@ -100,7 +100,7 @@ impl<H: Host> NavStack<H> {
 
     /// Queue an op (§6.2): the top's `ReturnState` is captured NOW, the transition is asked to
     /// run, and the newest request wins. `ret` is what the dispatcher read off the engine.
-    pub fn request(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem>) {
+    pub fn request(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) {
         let from = self.top().map(|e| e.id);
         let continuous = self.continuous_for(&op);
         if let Some(top) = self.top_mut() {

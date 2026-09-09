@@ -238,11 +238,11 @@ crate::dev::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) {
+pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     if !armed() {
         return;
     }
-    let line = fingerprint(route, screen, hud, ctrl);
+    let line = fingerprint_content(route, screen, hud, ctrl, content);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(line.as_str()) {
@@ -260,17 +260,22 @@ pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) {
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
-    fingerprint(route, screen, hud, ctrl)
+pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+    fingerprint_content(route, screen, hud, ctrl, content)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
+#[cfg(test)]
 fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
+    fingerprint_content(route, screen, hud, ctrl, "")
+}
+
+fn fingerprint_content(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
-    push_fields(&mut s, screen, hud, ctrl);
+    push_fields(&mut s, screen, hud, ctrl, content);
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
@@ -281,7 +286,7 @@ fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> Stri
 /// One screen's own fields. Split out of [`fingerprint`] so [`Screen::ItemMenu`] can spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
+fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     match screen {
         Screen::Login { has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
@@ -315,7 +320,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // menu opened from the Library fingerprinted as though the user were standing on Home,
             // and a harness diffing two presses across it read the wrong screen's cursor.
             let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl);
+            push_fields(s, over.screen(), hud, ctrl, content);
             let _ = write!(
                 s,
                 " acct={} asel={}",
@@ -330,7 +335,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             // two hosts have the same fields to print. Anything reading a schema off this line needs
             // `over=` as well as `route=`.
             let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl);
+            push_fields(s, over.screen(), hud, ctrl, content);
             let _ = write!(
                 s,
                 " imenu={} isel={} imsid=",
@@ -356,11 +361,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot) {
             );
             push_item(s, crate::ui::library::focused_item());
         }
-        Screen::Detail => push_detail(s),
-        Screen::Person => {
-            let _ = write!(s, " card={}", b(crate::ui::person::focus_is_card()));
-            push_item(s, crate::ui::person::focused_item());
-        }
+        Screen::Detail | Screen::Person => s.push_str(content),
         Screen::Search => {
             // The whole state machine, from the snapshot the screen's own regions already draw off
             // (`search::view`) — so the fingerprint and the picture are built from one read. `zone`
@@ -426,66 +427,6 @@ fn push_home(s: &mut String) {
         crate::ui::home::hero_item()
     };
     push_item(s, item);
-}
-
-/// The detail page: its whole [`crate::ui::detail::Spot`], plus the panel that can be over it.
-fn push_detail(s: &mut String) {
-    let sp = crate::ui::detail::spot();
-    let _ = write!(
-        s,
-        " sec={} col={} eptext={}",
-        sp.section,
-        sp.col,
-        b(sp.ep_text)
-    );
-    match sp.season {
-        Some(n) => {
-            let _ = write!(s, " season={n}");
-        }
-        None => s.push_str(" season=-"),
-    }
-    // The per-section column memory: six integers the ladder writes on every move OFF a section and
-    // reads back on every move onto one, so a fingerprint without it cannot explain where a DOWN
-    // then UP lands.
-    s.push_str(" saved=");
-    for (i, c) in sp.saved_col.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        let _ = write!(s, "{c}");
-    }
-    let _ = write!(
-        s,
-        " card={} alt={} show={} sid=",
-        b(crate::ui::detail::focus_is_card()),
-        b(crate::ui::alt_sources::is_open()),
-        b(crate::ui::detail::is_show())
-    );
-    push_sid(s, crate::ui::detail::mounted_sid());
-    s.push_str(" rk=");
-    push_rk(s, &crate::ui::detail::mounted_rk());
-    // The focused EPISODE is a second identity on this page and not derivable from `col` alone: the
-    // filmstrip is per season, and this reads `None` while a season is still loading.
-    s.push_str(" ep=");
-    match crate::ui::detail::focused_episode() {
-        Some((rk, mark)) => {
-            push_rk(s, &rk);
-            // THREE-valued, not a bool: the still's context menu builds its row set from this exact
-            // state (one write row at either end, BOTH in the middle), so a fingerprint that reduced
-            // it to watched/not could not tell a 2-row menu from a 3-row one. A `&'static str` tag
-            // chosen here, like every other enum this line carries.
-            let _ = write!(
-                s,
-                " epwatched={}",
-                match mark {
-                    crate::ui::widgets::PosterMark::None => "no",
-                    crate::ui::widgets::PosterMark::InProgress => "part",
-                    crate::ui::widgets::PosterMark::Watched => "yes",
-                }
-            );
-        }
-        None => s.push_str("- epwatched=-"),
-    }
 }
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
@@ -579,7 +520,7 @@ fn push_sid(s: &mut String, sid: crate::plex::ServerId) {
 /// that gets pasted into public issues, and a field that simply trusted the server's string would
 /// be one upstream change away from carrying a path or a title into it. Bounded too, for the same
 /// reason: a key is a handful of digits, so anything longer is not a key.
-fn push_rk(s: &mut String, rk: &str) {
+pub(crate) fn push_rk(s: &mut String, rk: &str) {
     let mut n = 0;
     for c in rk.chars() {
         if n == RK_MAX {

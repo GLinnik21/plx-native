@@ -3,7 +3,7 @@
  "blobs": false,
  "build": "0.7.0-dev",
  "clock": {
-  "start": 122
+  "start": 154
  },
  "features": [
   "devtools",
@@ -15,7 +15,7 @@
   "probe": "route=home session=0 servers=1 consent=0/0/0 seed=0"
  },
  "schema": 1,
- "state_fp": 9531416515347811954,
+ "state_fp": 12587891589461608,
  "triggers": [
   "plxnative-focus",
   "plxnative-noidle",

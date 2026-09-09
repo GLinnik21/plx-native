@@ -25,9 +25,9 @@ exactly these (file: callers):
 | browse | `apply_pins`, `retry_discovery` | none — closed by phase 5b, same day; see note below (`apply_pins` still direct from `ui/library.rs`'s own tests) |
 | browse | `reset`, `discover_pump` | `app/boot.rs`, `ui/home.rs`, `screens/onboard.rs`, `ui/search/mod.rs`, `ui/search/field.rs` |
 | browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` | `ui/library.rs`, `viewstate.rs` |
-| viewstate | `request` | `app/input.rs`, `ui/detail.rs` |
-| person | `open`, `close`, `pump` | `ui/person.rs`, `ui/detail.rs` |
-| metadata | `request_detail`, `load_detail_now`, `clear`, `load_season`, `set_now_playing`, `set_watched_local`, `pump_season` | `ui/detail.rs`, `app/{input,playback,run}.rs` |
+| viewstate | `request` | `app/input.rs`, `screens/detail/mod.rs` |
+| person | `open`, `close`, `pump` | `screens/person.rs` |
+| metadata | `request_detail`, `load_detail_now`, `clear`, `load_season`, `set_now_playing`, `set_watched_local`, `pump_season` | `screens/detail/mod.rs`, `app/{input,playback,run}.rs` |
 | metadata | `install_playing`, `mark_skipped`, `pump_detail`, `pump_alt_sources` | `route.rs`, `app/{playback,run}.rs` |
 | search | `set_query`, `reset`, `pump` | `ui/search/mod.rs`, `ui/search/recents.rs` |
 | pms | `request_refetch_hubs`, `request_retry`, `reset`, `pump` | `ui/home.rs`, `app/{boot,run}.rs` |
@@ -50,6 +50,10 @@ is a per-frame poll, not a mutation `Machine::step` could usefully gate) — onl
 FILENAME moved, which the row above already reflects. Do not re-derive this by re-grepping the
 census columns without reading this note; the table's own count is dead the moment it is taken, and
 this paragraph is the amendment for the one phase that happened to land on the same day.
+
+Phase 7 (2026-09-08) mounted Detail and Person from `screens/` and retired their old `ui/` files;
+the table now names the live callers. Filmography reads
+the Person store and reacts to its notices but does not mutate it.
 
 Every one of those calls is followed, in the SAME frame and often in the same statement, by a
 read that assumes it took effect: `set_cur` then `kick_letters` (reads `cur()`), `set_query` then

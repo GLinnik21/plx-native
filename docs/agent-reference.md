@@ -455,7 +455,7 @@ which the linking section explains is load-bearing rather than tidy.
   token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
-  and the screens (`home.rs`/`detail.rs`/`player_hud.rs`/…). **`rust-modules/src/ui/CLAUDE.md` is the
+  and the remaining legacy screens (`home.rs`/`player_hud.rs`/…); owned content screens live under `screens/`. **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -1408,10 +1408,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `FixtureHost` pages — nothing wires it to a real screen, so an on-device recording never runs in
   this mode. That is no longer because every product page is a `LegacyPage`: since phase 5b
   (2026-09-07) the Settings family and first-run Favourites answer
-  `FocusSource::Engine`/`HitSource::Engine` for real, and `tests/fixtures/replay/6-settings-family/`
-  is a committed on-device recording of them — replayed the only way `plxnative-recplay` runs
-  anything, in `targets` mode. Every OTHER product page is still a `LegacyPage`, and, like these
-  Engine ones, replays on device by target only). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
+  Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
+  recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
+  `targets` mode. Engine pages and the remaining `LegacyPage` routes alike replay on device by
+  target only). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
   it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part
