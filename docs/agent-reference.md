@@ -784,13 +784,16 @@ which the linking section explains is load-bearing rather than tidy.
   256 KiB durable-record ceiling; the importer still rejects an oversized envelope rather than
   claiming a bound for an arbitrary 256-LWP process. The JSON therefore carries ARM registers and
   real multi-frame stacks for all successfully captured threads, plus modules and both Linux-kernel
-  and webOS firmware context. The pin is **0.16.5** (`ci/build-sentry-native.sh`), and the patch
-  beside it (`vendor/sentry-native/webos-arm32.patch`) is down to what upstream does not do: a
-  `process_vm_readv` wrapper for glibc 2.12, ARM32 registers in the event, a frame-pointer walk that
-  reads BOTH ARM32 frame records — GCC leaves `fp` on the LR slot (`[fp-4]`/`[fp]`), rustc/LLVM on
-  the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds both — pointer-width stack reads, the 32-frame cap for non-crashed threads,
-  the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process libunwind,
-  no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
+  and webOS firmware context. The pin is **0.16.6** (`ci/build-sentry-native.sh`). The ARM32
+  registers-in-the-event and dual-frame-record walk (GCC leaves `fp` on the LR slot
+  (`[fp-4]`/`[fp]`), rustc/LLVM on the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds
+  both) and the pointer-width stack reads that make the walk safe on a 32-bit target are now
+  **upstream** (getsentry/sentry-native#2052 and #2053, contributed from this repo, merged
+  2026-09-03/04, released in 0.16.6) — the patch beside the pin
+  (`vendor/sentry-native/webos-arm32.patch`) carries neither any more and is down to what upstream
+  still does not do: a `process_vm_readv` wrapper for glibc 2.12, the 32-frame cap for non-crashed
+  threads, the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process
+  libunwind, no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
   The SDK has **no HTTP transport and writes no minidump**: it launches the
   same `plxnative` binary in spool-only mode, which moves the bounded envelope into the install's
   runtime root. A healthy launch strips path prefixes, rejects request scope and every `user`

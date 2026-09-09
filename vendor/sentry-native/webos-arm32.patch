@@ -1,6 +1,7 @@
-diff -ruN a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/native/minidump/sentry_minidump_linux.c
---- a/src/backends/native/minidump/sentry_minidump_linux.c	2026-09-01 09:07:33
-+++ b/src/backends/native/minidump/sentry_minidump_linux.c	2026-09-03 01:03:38
+diff --git a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/native/minidump/sentry_minidump_linux.c
+index 753a1939..db3c09bb 100644
+--- a/src/backends/native/minidump/sentry_minidump_linux.c
++++ b/src/backends/native/minidump/sentry_minidump_linux.c
 @@ -12,6 +12,7 @@
  #    include <string.h>
  #    include <sys/ptrace.h>
@@ -9,11 +10,10 @@ diff -ruN a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/
  #    include <sys/types.h>
  #    include <sys/uio.h>
  #    include <sys/user.h>
-@@ -19,6 +20,20 @@
- #    include <sys/wait.h>
+@@ -20,6 +21,20 @@
  #    include <time.h>
  #    include <unistd.h>
-+
+ 
 +#    if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 +#        if !__GLIBC_PREREQ(2, 15)
 +// glibc before 2.15 has the process_vm_readv system call but no wrapper.
@@ -27,13 +27,15 @@ diff -ruN a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/
 +}
 +#        endif
 +#    endif
- 
++
  #    include "sentry_alloc.h"
  #    include "sentry_elf.h"
-diff -ruN a/src/backends/native/sentry_crash_context.h b/src/backends/native/sentry_crash_context.h
---- a/src/backends/native/sentry_crash_context.h	2026-09-01 09:07:33
-+++ b/src/backends/native/sentry_crash_context.h	2026-09-03 01:03:38
-@@ -93,6 +93,15 @@
+ #    include "sentry_logger.h"
+diff --git a/src/backends/native/sentry_crash_context.h b/src/backends/native/sentry_crash_context.h
+index b57264a7..a5c89d00 100644
+--- a/src/backends/native/sentry_crash_context.h
++++ b/src/backends/native/sentry_crash_context.h
+@@ -93,6 +93,15 @@ typedef DWORD pid_t;
  #    define SENTRY_CRASH_HANDLER_WAIT_TIMEOUT_MS                               \
          10000 // 10s max wait for daemon
  #endif
@@ -49,9 +51,10 @@ diff -ruN a/src/backends/native/sentry_crash_context.h b/src/backends/native/sen
  #define SENTRY_CRASH_DAEMON_WAIT_TIMEOUT_MS                                    \
      5000 // 5 seconds between daemon health checks
  #define SENTRY_CRASH_HANDLER_POLL_INTERVAL_MS                                  \
-diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
---- a/src/backends/native/sentry_crash_daemon.c	2026-09-01 09:07:33
-+++ b/src/backends/native/sentry_crash_daemon.c	2026-09-03 01:34:04
+diff --git a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
+index 377f9162..6d1b3077 100644
+--- a/src/backends/native/sentry_crash_daemon.c
++++ b/src/backends/native/sentry_crash_daemon.c
 @@ -38,10 +38,24 @@
  #    include <inttypes.h>
  #    include <signal.h>
@@ -77,182 +80,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
  #    if defined(SENTRY_PLATFORM_MACOS)
  #        include <crt_externs.h>
  #        include <mach-o/dyld.h>
-@@ -50,6 +64,132 @@
- #    if defined(SENTRY_PLATFORM_LINUX)
- #        include "unwinder/sentry_unwinder.h"
- #    endif
-+#    if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
-+/**
-+ * Read one logical line of `/proc/<pid>/maps`. A pathname longer than the
-+ * buffer is truncated, and the rest of that line is consumed rather than
-+ * handed to the next `fgets` as if it were a mapping of its own.
-+ */
-+static bool
-+read_maps_line(FILE *f, char *line, size_t size)
-+{
-+    if (!fgets(line, size, f)) {
-+        return false;
-+    }
-+    size_t len = strlen(line);
-+    if (len > 0 && line[len - 1] == '\n') {
-+        return true;
-+    }
-+    int c;
-+    while ((c = fgetc(f)) != EOF && c != '\n') {
-+    }
-+    return true;
-+}
-+#    endif
-+#    if defined(__arm__)
-+/**
-+ * Every mapping of the crashed process, recorded while `/proc/<pid>/maps` is
-+ * parsed for modules. Unlike the module inventory this includes anonymous and
-+ * special mappings and keeps the permission bits, so the ARM32 frame-pointer
-+ * walk can answer "is this a return address" (executable, not writable) and
-+ * "is this a saved frame pointer" (writable, above the current frame) without
-+ * guessing. `g_vma_complete` is true only when the whole file was read and
-+ * recorded; `vma_snapshot_unchanged` lets the walk notice a snapshot that
-+ * changed under it, since only the crashing thread is stopped while the
-+ * daemon works.
-+ * ARM32 only: nothing else consumes it, so nothing else pays for it.
-+ */
-+typedef struct {
-+    uint64_t start;
-+    uint64_t end;
-+    bool write;
-+    bool exec;
-+} vma_range_t;
-+static vma_range_t *g_vmas = NULL;
-+static size_t g_vma_count = 0;
-+static size_t g_vma_capacity = 0;
-+static bool g_vma_alloc_failed = false;
-+static bool g_vma_complete = false;
-+
-+static bool
-+vma_record(uint64_t start, uint64_t end, const char *perms)
-+{
-+    if (g_vma_alloc_failed) {
-+        return false;
-+    }
-+    if (g_vma_count == g_vma_capacity) {
-+        size_t capacity = g_vma_capacity ? g_vma_capacity * 2 : 256;
-+        if (capacity < g_vma_capacity
-+            || capacity > SIZE_MAX / sizeof(vma_range_t)) {
-+            g_vma_alloc_failed = true;
-+            return false;
-+        }
-+        vma_range_t *grown = sentry_malloc(capacity * sizeof(vma_range_t));
-+        if (!grown) {
-+            g_vma_alloc_failed = true;
-+            return false;
-+        }
-+        if (g_vmas) {
-+            memcpy(grown, g_vmas, g_vma_count * sizeof(vma_range_t));
-+            sentry_free(g_vmas);
-+        }
-+        g_vmas = grown;
-+        g_vma_capacity = capacity;
-+    }
-+    g_vmas[g_vma_count].start = start;
-+    g_vmas[g_vma_count].end = end;
-+    g_vmas[g_vma_count].write = perms[1] == 'w';
-+    g_vmas[g_vma_count].exec = perms[2] == 'x';
-+    g_vma_count++;
-+    return true;
-+}
-+
-+static const vma_range_t *
-+vma_containing(uint64_t addr)
-+{
-+    for (size_t i = 0; i < g_vma_count; i++) {
-+        if (addr >= g_vmas[i].start && addr < g_vmas[i].end) {
-+            return &g_vmas[i];
-+        }
-+    }
-+    return NULL;
-+}
-+
-+/**
-+ * Re-read the mappings and answer whether every one of them still matches
-+ * the recorded snapshot, field by field and in order. Called after the stack
-+ * bytes have been copied, so a mapping change between the two reads is
-+ * detected rather than reasoned about.
-+ */
-+static bool
-+vma_snapshot_unchanged(pid_t pid)
-+{
-+    char maps_path[64];
-+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
-+    FILE *f = fopen(maps_path, "r");
-+    if (!f) {
-+        return false;
-+    }
-+    char line[1024];
-+    size_t i = 0;
-+    bool same = true;
-+    while (same && read_maps_line(f, line, sizeof(line))) {
-+        unsigned long long start, end;
-+        char perms[5];
-+        if (sscanf(line, "%llx-%llx %4s", &start, &end, perms) != 3) {
-+            same = false;
-+            break;
-+        }
-+        same = i < g_vma_count && g_vmas[i].start == start
-+            && g_vmas[i].end == end && g_vmas[i].write == (perms[1] == 'w')
-+            && g_vmas[i].exec == (perms[2] == 'x');
-+        i++;
-+    }
-+    same = same && i == g_vma_count && !ferror(f);
-+    fclose(f);
-+    return same;
-+}
-+#    endif
- #elif defined(SENTRY_PLATFORM_WINDOWS)
- #    include <dbghelp.h>
- #    include <fcntl.h>
-@@ -420,6 +560,41 @@
-         registers, "sp", sentry__value_new_addr(uctx->uc_mcontext.sp));
-     sentry_value_set_by_key(
-         registers, "pc", sentry__value_new_addr(uctx->uc_mcontext.pc));
-+#    elif defined(__arm__)
-+    sentry_value_set_by_key(
-+        registers, "r0", sentry__value_new_addr(uctx->uc_mcontext.arm_r0));
-+    sentry_value_set_by_key(
-+        registers, "r1", sentry__value_new_addr(uctx->uc_mcontext.arm_r1));
-+    sentry_value_set_by_key(
-+        registers, "r2", sentry__value_new_addr(uctx->uc_mcontext.arm_r2));
-+    sentry_value_set_by_key(
-+        registers, "r3", sentry__value_new_addr(uctx->uc_mcontext.arm_r3));
-+    sentry_value_set_by_key(
-+        registers, "r4", sentry__value_new_addr(uctx->uc_mcontext.arm_r4));
-+    sentry_value_set_by_key(
-+        registers, "r5", sentry__value_new_addr(uctx->uc_mcontext.arm_r5));
-+    sentry_value_set_by_key(
-+        registers, "r6", sentry__value_new_addr(uctx->uc_mcontext.arm_r6));
-+    sentry_value_set_by_key(
-+        registers, "r7", sentry__value_new_addr(uctx->uc_mcontext.arm_r7));
-+    sentry_value_set_by_key(
-+        registers, "r8", sentry__value_new_addr(uctx->uc_mcontext.arm_r8));
-+    sentry_value_set_by_key(
-+        registers, "r9", sentry__value_new_addr(uctx->uc_mcontext.arm_r9));
-+    sentry_value_set_by_key(
-+        registers, "r10", sentry__value_new_addr(uctx->uc_mcontext.arm_r10));
-+    sentry_value_set_by_key(
-+        registers, "fp", sentry__value_new_addr(uctx->uc_mcontext.arm_fp));
-+    sentry_value_set_by_key(
-+        registers, "ip", sentry__value_new_addr(uctx->uc_mcontext.arm_ip));
-+    sentry_value_set_by_key(
-+        registers, "sp", sentry__value_new_addr(uctx->uc_mcontext.arm_sp));
-+    sentry_value_set_by_key(
-+        registers, "lr", sentry__value_new_addr(uctx->uc_mcontext.arm_lr));
-+    sentry_value_set_by_key(
-+        registers, "pc", sentry__value_new_addr(uctx->uc_mcontext.arm_pc));
-+    sentry_value_set_by_key(registers, "cpsr",
-+        sentry__value_new_addr(uctx->uc_mcontext.arm_cpsr));
- #    endif
- 
- #elif defined(SENTRY_PLATFORM_MACOS)
-@@ -582,6 +757,12 @@
+@@ -752,6 +766,12 @@ build_registers_from_remote_registers(
   */
  #define MAX_STACK_FRAMES 128
  
@@ -265,68 +93,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
  /**
   * Read a pointer-sized value from the stack buffer.
   * Returns true if successful, false if address is outside the buffer.
-@@ -590,15 +771,57 @@
- read_stack_value(const uint8_t *stack_buf, uint64_t stack_start,
-     uint64_t stack_size, uint64_t addr, uint64_t *out_value)
- {
--    if (addr < stack_start
--        || addr + sizeof(uint64_t) > stack_start + stack_size) {
-+    // Range-check by subtraction: `addr` comes from a frame pointer in a
-+    // crashed process, and a corrupted value near the top of the address
-+    // space would wrap an `addr + size` sum past the naive comparison.
-+    if (addr < stack_start) {
-         return false;
-     }
-     uint64_t offset = addr - stack_start;
--    memcpy(out_value, stack_buf + offset, sizeof(uint64_t));
-+    if (offset > stack_size || stack_size - offset < sizeof(uintptr_t)) {
-+        return false;
-+    }
-+    uintptr_t value = 0;
-+    memcpy(&value, stack_buf + (size_t)offset, sizeof(value));
-+    *out_value = (uint64_t)value;
-     return true;
- }
- 
-+#if defined(__arm__)
-+/**
-+ * Does a (saved fp, return address) pair look like a frame record?
-+ *
-+ * Judged against the crashed process's mappings. A return address must be in
-+ * an executable mapping that is not writable: that is what separates code
-+ * from a stack (writable, and on some systems executable too) and from the
-+ * heap. A non-zero saved fp must be above the current frame and in a
-+ * writable mapping: stacks are writable, code is not, so the other compiler's
-+ * record shape - whose "saved fp" is really a return address - is rejected
-+ * even when code sits numerically below the stack. The walk reads frame
-+ * records out of the one captured window, so a chain is followed only while
-+ * it stays inside that window; a signal stack or a split stack that links to
-+ * a lower or non-contiguous segment ends the walk. Not walked either: JIT
-+ * code in writable mappings.
-+ */
-+static bool
-+arm_frame_record_plausible(
-+    uint64_t saved_fp, uint64_t return_addr, uint64_t current_fp)
-+{
-+    const vma_range_t *code = vma_containing(return_addr);
-+    if (!code || !code->exec || code->write) {
-+        return false;
-+    }
-+    if (saved_fp == 0) {
-+        return true;
-+    }
-+    if (saved_fp <= current_fp) {
-+        return false;
-+    }
-+    const vma_range_t *stack = vma_containing(saved_fp);
-+    return stack && stack->write;
-+}
-+#endif
-+
- #if defined(SENTRY_PLATFORM_MACOS) && defined(__aarch64__)
- #    define SENTRY__STRIP_PAC(addr) ((addr) & 0x00007FFFFFFFFFFFULL)
- #else
-@@ -693,6 +916,9 @@
+@@ -905,6 +925,9 @@ build_stacktrace_for_thread(
      uint64_t ip = 0;
      uint64_t fp = 0;
      uint64_t sp = 0;
@@ -336,7 +103,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
  #if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
      // Use thread-specific context, defaulting to crashed thread
      const ucontext_t *thread_context = &ctx->platform.context;
-@@ -959,7 +1185,7 @@
+@@ -1174,7 +1197,7 @@ build_stacktrace_for_thread(
                  = sentry_malloc(sizeof(*remote_frames) * MAX_STACK_FRAMES);
              size_t remote_count = remote_frames
                  ? sentry__unwind_stack_from_thread(
@@ -345,7 +112,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
                  : 0;
  
              if (remote_count > 0) {
-@@ -967,7 +1193,7 @@
+@@ -1182,7 +1205,7 @@ build_stacktrace_for_thread(
                      remote_count, tid);
  
                  for (size_t i = 0;
@@ -354,7 +121,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
                      if (remote_frames[i].ip == 0
                          || !is_valid_code_addr(remote_frames[i].ip)) {
                          continue;
-@@ -1036,7 +1262,7 @@
+@@ -1251,7 +1274,7 @@ build_stacktrace_for_thread(
              ctx->platform.backtrace_count);
  
          for (size_t i = 0;
@@ -363,7 +130,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
              i++) {
              uint64_t frame_ip = ctx->platform.backtrace_ips[i];
              if (frame_ip == 0 || !is_valid_code_addr(frame_ip)) {
-@@ -1079,7 +1305,7 @@
+@@ -1294,7 +1317,7 @@ build_stacktrace_for_thread(
  #endif
  
      // Add the crashing frame (instruction pointer)
@@ -372,7 +139,7 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
          temp_frames[frame_count] = sentry_value_new_object();
          sentry_value_set_by_key(temp_frames[frame_count], "instruction_addr",
              sentry__value_new_addr(ip));
-@@ -1095,9 +1321,21 @@
+@@ -1310,7 +1333,7 @@ build_stacktrace_for_thread(
      }
  
      // Walk the frame pointer chain if we have stack memory
@@ -380,22 +147,17 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
 +    if (stack_buf && fp != 0 && frame_count < frame_limit) {
          uint64_t current_fp = fp;
          int walk_count = 0;
-+#if defined(__arm__)
-+        // Fail closed: without a complete and still-current picture of the
-+        // mappings neither frame-record shape can be told from the other,
-+        // and guessing would emit fabricated frames rather than a shorter,
-+        // honest stack. Only the crashing thread is stopped, so the mappings
-+        // are re-read now that the stack bytes are in hand.
-+        if (!g_vma_complete || !vma_snapshot_unchanged(ctx->crashed_pid)) {
-+            SENTRY_TRACE("Mappings incomplete or changed; skipping the ARM32 "
-+                         "frame-pointer walk");
+ #if defined(__arm__)
+@@ -1320,7 +1343,7 @@ build_stacktrace_for_thread(
+         if (!g_vma_complete) {
+             SENTRY_TRACE(
+                 "Mappings incomplete; skipping the ARM32 frame-pointer walk");
+-            walk_count = MAX_STACK_FRAMES;
 +            walk_count = frame_limit;
-+        }
-+#endif
+         }
+ #endif
  
-         // Check if FP is within captured stack range
-         uint64_t stack_end = stack_start + stack_size;
-@@ -1107,10 +1345,47 @@
+@@ -1332,7 +1355,7 @@ build_stacktrace_for_thread(
                  (unsigned long long)stack_end);
          }
  
@@ -404,134 +166,25 @@ diff -ruN a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sent
              uint64_t saved_fp = 0;
              uint64_t return_addr = 0;
  
-+#if defined(__arm__)
-+            // Two frame-record shapes coexist in one ARM32 process. GCC's
-+            // `push {.., fp, lr}; add fp, sp, #N` leaves fp on the LR slot
-+            // ([fp-4] = saved fp, [fp] = return address), while rustc/LLVM's
-+            // leaves it on the saved-fp slot ([fp] = saved fp, [fp+4] = return
-+            // address). Read both records and keep the one shaped like a
-+            // frame: a return address outside this stack, and a saved fp that
-+            // is zero or further up the same stack.
-+            {
-+                uint64_t fp_a = 0, ret_a = 0, fp_b = 0, ret_b = 0;
-+                bool ok_a = read_stack_value(stack_buf, stack_start,
-+                                stack_size, current_fp, &fp_a)
-+                    && read_stack_value(stack_buf, stack_start, stack_size,
-+                        current_fp + sizeof(uintptr_t), &ret_a);
-+                bool ok_b = read_stack_value(stack_buf, stack_start,
-+                                stack_size, current_fp - sizeof(uintptr_t),
-+                                &fp_b)
-+                    && read_stack_value(stack_buf, stack_start, stack_size,
-+                        current_fp, &ret_b);
-+                if (ok_a
-+                    && arm_frame_record_plausible(fp_a, ret_a, current_fp)) {
-+                    saved_fp = fp_a;
-+                    return_addr = ret_a;
-+                } else if (ok_b
-+                    && arm_frame_record_plausible(fp_b, ret_b, current_fp)) {
-+                    saved_fp = fp_b;
-+                    return_addr = ret_b;
-+                } else {
-+                    SENTRY_TRACEF("No frame record at FP=0x%llx (stack: 0x%llx "
-+                                  "- 0x%llx)",
-+                        (unsigned long long)current_fp,
-+                        (unsigned long long)stack_start,
-+                        (unsigned long long)stack_end);
-+                    break;
-+                }
-+            }
-+#else
-             // Read saved frame pointer and return address
-             // Frame layout: [FP+0] = saved FP, [FP+8] = return addr
-             if (!read_stack_value(stack_buf, stack_start, stack_size,
-@@ -1123,11 +1398,12 @@
-                 break;
-             }
-             if (!read_stack_value(stack_buf, stack_start, stack_size,
--                    current_fp + sizeof(uint64_t), &return_addr)) {
-+                    current_fp + sizeof(uintptr_t), &return_addr)) {
-                 SENTRY_TRACEF("Cannot read return addr at 0x%llx",
--                    (unsigned long long)(current_fp + sizeof(uint64_t)));
-+                    (unsigned long long)(current_fp + sizeof(uintptr_t)));
-                 break;
-             }
-+#endif
-             saved_fp = SENTRY__STRIP_PAC(saved_fp);
-             return_addr = SENTRY__STRIP_PAC(return_addr);
- 
-@@ -1711,9 +1987,14 @@
- 
-     char line[1024];
-     ctx->module_count = 0;
-+#    if defined(__arm__)
-+    g_vma_count = 0;
-+    g_vma_complete = false;
-+    g_vma_alloc_failed = false;
-+    bool vma_ok = true;
-+#    endif
- 
--    while (fgets(line, sizeof(line), f)
--        && ctx->module_count < SENTRY_CRASH_MAX_MODULES) {
-+    while (read_maps_line(f, line, sizeof(line))) {
- 
-         // Parse line: "start-end perms offset dev inode pathname"
-         unsigned long long start, end, offset;
-@@ -1724,9 +2004,26 @@
-             perms, &offset, &pathname_offset);
- 
-         if (parsed < 4) {
-+#    if defined(__arm__)
-+            vma_ok = false; // a line this parser cannot read is a mapping it
-+                            // does not know about
-+#    endif
-             continue;
-         }
- 
-+#    if defined(__arm__)
-+        if (!vma_record(start, end, perms)) {
-+            vma_ok = false;
-+        }
-+        if (ctx->module_count >= SENTRY_CRASH_MAX_MODULES) {
-+            continue; // module inventory is full; keep reading for mappings
-+        }
-+#    else
-+        if (ctx->module_count >= SENTRY_CRASH_MAX_MODULES) {
-+            break;
-+        }
-+#    endif
-+
-         // Must have a valid pathname (not [stack], [heap], etc.)
-         if (pathname_offset <= 0 || line[pathname_offset] == '\0'
-             || line[pathname_offset] == '[' || line[pathname_offset] == '\n') {
-@@ -1801,6 +2098,11 @@
-         ctx->module_count++;
-     }
- 
-+#    if defined(__arm__)
-+    g_vma_complete = vma_ok && !ferror(f);
-+    SENTRY_DEBUGF("Captured %zu mappings (%s) from /proc/%d/maps", g_vma_count,
-+        g_vma_complete ? "complete" : "INCOMPLETE", ctx->crashed_pid);
-+#    endif
-     fclose(f);
-     SENTRY_DEBUGF("Captured %u modules from /proc/%d/maps", ctx->module_count,
-         ctx->crashed_pid);
-@@ -3143,6 +3445,12 @@
-     // Set platform to native
+@@ -3413,6 +3436,13 @@ build_native_event(const sentry_crash_context_t *ctx,
      sentry_value_set_by_key(
          event, "platform", sentry_value_new_string("native"));
-+
+ 
 +    // The daemon is ordinary process context; stamp the actual crash-processing
 +    // time here rather than asking the fatal-signal handler to enter libc's
 +    // non-signal-safe time-zone machinery.
-+    sentry_value_set_by_key(event, "timestamp", sentry__value_new_string_owned(
-+        sentry__usec_time_to_iso8601(sentry__usec_time())));
- 
++    sentry_value_set_by_key(event, "timestamp",
++        sentry__value_new_string_owned(
++            sentry__usec_time_to_iso8601(sentry__usec_time())));
++
      sentry_value_set_by_key(event, "level", sentry_value_new_string(level));
  
-diff -ruN a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sentry_crash_handler.c
---- a/src/backends/native/sentry_crash_handler.c	2026-09-01 09:07:33
-+++ b/src/backends/native/sentry_crash_handler.c	2026-09-03 01:03:38
-@@ -360,10 +360,13 @@
+     // Build exception
+diff --git a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sentry_crash_handler.c
+index ab709321..c447d3f8 100644
+--- a/src/backends/native/sentry_crash_handler.c
++++ b/src/backends/native/sentry_crash_handler.c
+@@ -360,10 +360,13 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
          sizeof(ctx->platform.threads[0].context));
  
      // Capture backtrace using libunwind (DWARF-based, works without frame
@@ -549,7 +202,7 @@ diff -ruN a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sen
      ctx->platform.backtrace_count = 0;
      {
          unw_cursor_t cursor;
-@@ -754,13 +757,17 @@
+@@ -754,13 +757,17 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
      sentry__page_allocator_enable();
  #    endif
  
@@ -569,9 +222,10 @@ diff -ruN a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sen
  
      // Try to notify daemon
      if (sentry__atomic_compare_swap(&ctx->state, SENTRY_CRASH_STATE_READY,
-diff -ruN a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
---- a/src/modulefinder/sentry_modulefinder_linux.c	2026-09-01 09:07:33
-+++ b/src/modulefinder/sentry_modulefinder_linux.c	2026-09-03 01:03:38
+diff --git a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
+index 7d6b0d66..1a1b28cd 100644
+--- a/src/modulefinder/sentry_modulefinder_linux.c
++++ b/src/modulefinder/sentry_modulefinder_linux.c
 @@ -22,6 +22,14 @@
  #include <unistd.h>
  
@@ -587,7 +241,7 @@ diff -ruN a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sent
  static ssize_t
  process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
      unsigned long __local_iov_count, const struct iovec *__remote_iov,
-@@ -30,6 +38,7 @@
+@@ -30,6 +38,7 @@ process_vm_readv(pid_t __pid, const struct iovec *__local_iov,
      return syscall(__NR_process_vm_readv, __pid, __local_iov, __local_iov_count,
          __remote_iov, __remote_iov_count, __flags);
  }

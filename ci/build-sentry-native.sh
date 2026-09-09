@@ -8,17 +8,23 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VERSION=0.16.5
+VERSION=0.16.6
 ARCHIVE="$ROOT/vendor/sentry-native-$VERSION.tar.gz"
 SOURCE="$ROOT/vendor/sentry-native-src"
 BUILD="$ROOT/vendor/sentry-native-build"
 PREFIX="$ROOT/vendor/sentry-native-prefix"
 PATCH="$ROOT/vendor/sentry-native/webos-arm32.patch"
-# Two hunks of that patch are upstream PRs and drop out of it once they land in a release we pin:
-# pointer-width stack reads (getsentry/sentry-native#2052) and the ARM32 registers + both
-# frame-record shapes (#2053). The rest is webOS-only and stays.
+# Both PRs this patch used to carry (pointer-width stack reads, getsentry/sentry-native#2052; the
+# ARM32 registers + both frame-record shapes, #2053) landed in 0.16.6, so the patch is down to what
+# upstream does not do at all: the glibc<2.15 process_vm_readv shim, the 30s ARM handler timeout,
+# the two webOS/ARM signal-handler escapes (recursive SIGSEGV through getenv), and the 32-frame cap
+# on non-crashed threads.
 URL="https://github.com/getsentry/sentry-native/archive/refs/tags/$VERSION.tar.gz"
-SHA256=8d3f63f092ab24ab7f5d30cd8f0e80dc78670a3b3be3f1237948667907cdc3a4
+# Take this from the URL above and nothing else: GitHub's API tarball endpoint
+# (repos/<o>/<r>/tarball/<tag>) serves a DIFFERENT artifact for the same tag — its own top-level
+# directory name and its own gzip stream — so a checksum taken from it fails here on every clean
+# build while passing on the machine that cached the file.
+SHA256=a194ac434da1534723556c5628256752208b0b6989fee7bf5ed6c5b3c84773ab
 
 WEBOS_SDK=${WEBOS_SDK:-"$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot"}
 CC="$WEBOS_SDK/bin/arm-webos-linux-gnueabi-gcc"
