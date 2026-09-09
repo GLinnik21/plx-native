@@ -1019,6 +1019,9 @@ impl Rig<AppHost> for Bridge {
             AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
                 crate::stores::browse::BrowseStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
             }
+            AppMsg::StoreWork(crate::stores::StoreWork::Search) => {
+                crate::stores::search::SearchStore.step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+            }
             _ => Handled::No,
         }
     }

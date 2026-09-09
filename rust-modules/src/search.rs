@@ -416,7 +416,17 @@ pub(crate) fn query_gen() -> u32 {
 /// Publish a bounded catalog through the real retained-view boundary, without network work.
 #[cfg(test)]
 pub(crate) fn publish_shelves_for_test(shelves: Vec<Shelf>) {
+    // A published catalog represents completed source answers, not merely painted rows over
+    // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
+    VISIBLE.store(crate::plex::server_roster_gen(), Ordering::SeqCst);
+    snapshot_favs();
+    for i in slots() {
+        let items = std::array::from_fn(|k| shelves.iter().filter(|s| s.kind == KINDS[k])
+            .flat_map(|s| &s.items).filter(|item| item.sid().raw() as usize == i).cloned().collect());
+        record(i, Some(items));
+    }
     unsafe {
+        *addr_of_mut!(ARMED) = false;
         *addr_of_mut!(SHELVES) = Some(Arc::new(shelves));
         *addr_of_mut!(STATE) = State::Ready;
     }
@@ -2296,6 +2306,9 @@ mod tests {
 /// invisible — its only effect is that `maybe_spawn` declines — and a debounce that silently stops
 /// releasing is a screen that never searches.
 #[cfg(test)]
-fn settling() -> bool {
+pub(crate) fn settling() -> bool {
     unsafe { *addr_of!(ARMED) }
 }
+
+#[cfg(test)]
+pub(crate) fn debounce_elapsed_for_test() -> f32 { unsafe { *addr_of!(SETTLE) } }

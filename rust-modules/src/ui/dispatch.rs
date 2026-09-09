@@ -1262,6 +1262,7 @@ where
                     kind: InputKind::SystemKeyboard(up), ..
                 }) = &ev {
                     if *up { rig.adopt_system_keyboard(); }
+                    else { rig.system_keyboard(false); }
                     let owner = up.then_some(id);
                     if self.input.keyboard != *up || self.input.keyboard_owner != owner {
                         self.input.keyboard = *up;

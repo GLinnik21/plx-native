@@ -7,6 +7,170 @@ fn owned_search_probe(d: &Dispatcher<AppHost>) -> String {
 }
 
 #[test]
+fn owned_search_external_departure_never_submits_the_draft() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-external-leave");
+    session.watching("synthetic-external-leave");
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery("unfinished draft".into()));
+    let mut rig = Bridge::for_test(|| 0);
+    rig.search = crate::stores::search::snapshot();
+    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+        owner: InputOwner::Entry(EntryId(1)) };
+    let split = rig.split();
+    let cx = parts.cx::<AppHost>(split.views, split.measure);
+    for event in [ScreenEvent::Suspend, ScreenEvent::Cover, ScreenEvent::Unmount,
+        ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper)] {
+        let mut screen = crate::screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        {
+            let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(1)), &mut present);
+            screen.step(&ScreenEvent::Mount, &cx, &mut fx);
+            screen.step(&ScreenEvent::Input(InputEvent { at: tick(0), source: Source::Sdl,
+                kind: InputKind::SystemKeyboard(true) }), &cx, &mut fx);
+            screen.step(&event, &cx, &mut fx);
+        }
+        assert!(out.iter().any(|effect| matches!(&effect.fx,
+            Fx::Deliver(_, Delivery::Keyboard { up: false }))));
+        assert!(!out.iter().any(|effect| matches!(&effect.fx,
+            Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(
+                crate::stores::search::SearchCmd::RememberRecent { .. }))))),
+            "external lifecycle events are not search submissions");
+    }
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
+fn owned_search_ticks_request_search_work_once_after_step() {
+    let _serial = crate::testlock::serial();
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    let mut rig = Bridge::for_test(|| 0);
+    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+        owner: InputOwner::Entry(EntryId(1)) };
+    let split = rig.split();
+    let cx = parts.cx::<AppHost>(split.views, split.measure);
+    let mut screen = crate::screens::search::SearchScreen::new(EntryId(1), InstanceId(1));
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    {
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(1)), &mut present);
+        screen.step(&ScreenEvent::Mount, &cx, &mut fx);
+        screen.step(&ScreenEvent::Tick(tick(1)), &cx, &mut fx);
+    }
+    assert_eq!(out.iter().filter(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::StoreWork(work)) if work.store() == StoreId::Search)).count(), 1,
+        "each owned tick owes the Search debounce/landing pass");
+    assert_eq!(out.iter().filter(|effect| matches!(&effect.fx,
+        Fx::App(AppFx::StoreWork(crate::stores::StoreWork::BrowseDiscovery)))).count(), 1);
+}
+
+#[test]
+fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-wheel");
+    session.watching("synthetic-wheel");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery("wheel".into()));
+    crate::search::publish_shelves_for_test([crate::search::Kind::Movie, crate::search::Kind::Show,
+        crate::search::Kind::Episode].into_iter().map(|kind| crate::search::Shelf { kind,
+            items: vec![crate::search::Item::Media(crate::pms::PmsMovie {
+                rk: format!("synthetic-{kind:?}"), title: "Synthetic wheel result".into(), ..Default::default()
+            })] }).collect());
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    let field = d.focus().unwrap();
+    let field_y = |d: &Dispatcher<AppHost>, rig: &Bridge| {
+        let parts = CxParts { tick: tick(0), press: Default::default(),
+            focus: d.input.engine.read(InputOwner::Entry(field.entry)), owner: InputOwner::Entry(field.entry) };
+        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
+        d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
+    };
+    let before = field_y(&d, &rig);
+    frame(&mut d, &mut rig, Route::Search, tick(1), vec![InputEvent { at: tick(1), source: Source::Sdl,
+        kind: InputKind::Wheel { dy: -1.0 } }]);
+    for i in 2..80 { frame(&mut d, &mut rig, Route::Search, tick(i), vec![]); }
+    assert_eq!(d.focus(), Some(field));
+    assert!(field_y(&d, &rig) < before - 10.0, "wheel motion persists after the next Tick");
+    {
+        let parts = CxParts { tick: tick(79), press: Default::default(), focus: Default::default(),
+            owner: InputOwner::Entry(field.entry) };
+        let split = rig.split();
+        let cx = parts.cx::<AppHost>(split.views, split.measure);
+        let placed = d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap();
+        assert_eq!(placed.clip.y, crate::ui::widgets::TOP_BAR_BOTTOM,
+            "scrolling under the tab track must not leave an active page hit above its floor");
+    }
+    frame(&mut d, &mut rig, Route::Search, tick(80), script_key(Key::Down, tick(80)));
+    frame(&mut d, &mut rig, Route::Search, tick(81), script_key(Key::Up, tick(81)));
+    for i in 82..160 { frame(&mut d, &mut rig, Route::Search, tick(i), vec![]); }
+    assert_eq!(d.focus(), Some(field));
+    assert!((field_y(&d, &rig) - before).abs() < 0.5, "D-pad focus reveals the field again");
+    frame(&mut d, &mut rig, Route::Search, tick(160), script_key(Key::Ok, tick(160)));
+    frame(&mut d, &mut rig, Route::Search, tick(161), vec![InputEvent { at: tick(161), source: Source::Sdl,
+        kind: InputKind::Wheel { dy: -1.0 } }]);
+    for i in 162..200 { frame(&mut d, &mut rig, Route::Search, tick(i), vec![]); }
+    assert!((field_y(&d, &rig) - before).abs() < 0.5, "the keyboard's editing flow stays parked");
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
+fn owned_search_dispatch_advances_debounce_once_and_only_while_page_updates() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-debounce");
+    session.watching("synthetic-debounce");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery("not sent to any server".into()));
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    let step = |ms| Tick { ms, dt_us: 100_000 };
+    frame(&mut d, &mut rig, Route::Search, Tick { ms: 0, dt_us: 0 }, vec![]);
+    frame(&mut d, &mut rig, Route::Search, step(100), vec![]);
+    assert_eq!(crate::search::debounce_elapsed_for_test(), 0.1);
+    assert!(crate::search::settling());
+    frame(&mut d, &mut rig, Route::Search, step(200), vec![]);
+    assert_eq!(crate::search::debounce_elapsed_for_test(), 0.2);
+    assert!(crate::search::settling(), "a double pump would already have passed the 250ms debounce");
+    frame(&mut d, &mut rig, Route::Search, step(300), vec![]);
+    assert!(!crate::search::settling(), "the owned page must release the debounce");
+    frame(&mut d, &mut rig, Route::Home, step(400), vec![]);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery("another pending query".into()));
+    for ms in [500, 600, 700, 800] { frame(&mut d, &mut rig, Route::Home, step(ms), vec![]); }
+    assert!(crate::search::settling(), "a hidden Search entry must not keep pumping");
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
+fn owned_search_observed_keyboard_dismissal_releases_native_latch_and_reopens() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-observed-dismissal");
+    session.watching("synthetic-observed-dismissal");
+    crate::plex::reset_servers_for_test();
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    let mut events = script_key(Key::Ok, tick(1));
+    events.push(InputEvent { at: tick(1), source: Source::Sdl, kind: InputKind::SystemKeyboard(false) });
+    frame(&mut d, &mut rig, Route::Search, tick(1), events);
+    assert!(!d.input.keyboard);
+    assert_eq!(rig.keyboard_calls, [true, false], "the native STARTED latch must also be released");
+    frame(&mut d, &mut rig, Route::Search, tick(2), script_key(Key::Ok, tick(2)));
+    assert!(d.input.keyboard);
+    assert_eq!(rig.keyboard_calls, [true, false, true]);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
 fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
     let _serial = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("owned-search-adopt");

@@ -50,11 +50,14 @@ pub(crate) enum StoreWork {
     BrowseDiscovery,
     /// Full Library landing pass: pages, menus, discovery and per-section hubs.
     Browse,
+    /// Search debounce, worker spawning and result landings.
+    Search,
 }
 
 impl StoreWork {
     pub(crate) fn store(self) -> StoreId {
-        match self { Self::Hubs => StoreId::Hubs, Self::BrowseDiscovery | Self::Browse => StoreId::Browse }
+        match self { Self::Hubs => StoreId::Hubs, Self::BrowseDiscovery | Self::Browse => StoreId::Browse,
+            Self::Search => StoreId::Search }
     }
 }
 

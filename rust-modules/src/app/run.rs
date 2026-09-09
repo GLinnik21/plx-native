@@ -385,7 +385,16 @@ unsafe fn ingest_sdl_event(app: &mut App, mt: &crate::task::MainThread, fr: &mut
         // their recent searches by an app switch. Unconditional because `EDITING` is
         // this screen's alone and both calls under it are guarded, so it costs a
         // predictable nothing on every other route.
-        crate::ui::search::leave();
+        if super::bridge::page_owned(&app.pages, Route::Search) {
+            // Keep dismissal after earlier text/keys in this input batch. The dispatcher
+            // releases both system ownership and the native start latch at delivery.
+            app.inputs.push(crate::ui::machine::InputEvent {
+                at: crate::ui::machine::Tick { ms: fr.now, dt_us: 0 }, source: crate::ui::machine::Source::Sdl,
+                kind: crate::ui::machine::InputKind::SystemKeyboard(false),
+            });
+        } else {
+            crate::ui::search::leave();
+        }
         if matches!(app.route, Route::Player { .. }) && !app.foreground.awaiting_load() {
             // INTENDED, not published: this snapshot is the only thing the foreground
             // restore has, and `suspend_bufferfeed` below drops the pending seek target
@@ -1205,7 +1214,13 @@ unsafe fn ingest_sdl_event(app: &mut App, mt: &crate::task::MainThread, fr: &mut
                 // `wheel:0` token — not a step in either direction
                 return;
             }
-            if super::bridge::owns_input(&app.pages, app.route) {
+            if super::bridge::search_owns_input(&app.pages, app.route) {
+                app.inputs.push(crate::ui::machine::InputEvent {
+                    at: crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                    source: crate::ui::machine::Source::Sdl,
+                    kind: crate::ui::machine::InputKind::Wheel { dy: dy as f32 },
+                });
+            } else if super::bridge::owns_input(&app.pages, app.route) {
                 // A tick becomes the DIRECTION KEY it stands for (`bridge::wheel_input`),
                 // rather than a `Wheel` the family's tables would each have to interpret:
                 // one tick is one row, which is what `on_updown(±1)` meant. `RepeatGate`

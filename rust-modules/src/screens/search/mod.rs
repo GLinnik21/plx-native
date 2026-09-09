@@ -113,7 +113,7 @@ impl SearchScreen {
         if !up && commit { self.remember(fx); }
         self.editing = up;
         self.blink_us = 0;
-        if up { self.draft.to_end(); }
+        if up { self.draft.to_end(); self.scroll_target = 0.0; }
         fx.push(Fx::Deliver(MachineId::Instance(self.instance), Delivery::Keyboard { up }));
         fx.invalidate(Provenance::Input);
     }
@@ -159,6 +159,8 @@ impl SearchScreen {
         }
         if self.publication.as_ref().is_some_and(|old| view.same_publication(old))
             && !self.content_dirty && pending == self.draft.pending() { return; }
+        let shelves_changed = self.publication.as_ref().is_none_or(|old|
+            !std::ptr::eq(old.view().shelves(), view.shelves()));
         self.publication = Some(view.snapshot());
         self.content_dirty = false;
         let query_changed = self.query_gen != view.query_gen();
@@ -204,6 +206,9 @@ impl SearchScreen {
                     row.motion.restore_scroll(*x, row.elems.len(), &layout::style(row.kind));
                 }
             }
+        }
+        if shelves_changed {
+            if let Some(key) = cx.focus.current { self.reveal(key, cx); }
         }
     }
 
@@ -284,7 +289,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 self.fade.mount();
                 self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
             }
-            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, true, fx),
+            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, false, fx),
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
             ScreenEvent::PressCommit(_) => {
                 if let Some(key) = cx.focus.current { return self.activate(key.elem, false, cx, fx); }
@@ -294,6 +299,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
             }
             ScreenEvent::Input(input) => match &input.kind {
                 InputKind::SystemKeyboard(up) => {
+                    if *up { self.scroll_target = 0.0; }
                     if *up && !self.editing {
                         self.draft.to_end();
                         if cx.focus.current != Some(self.key(FIELD)) {
@@ -303,6 +309,15 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     self.editing = *up; self.blink_us = 0;
                 }
                 InputKind::Text(edit) if self.editing || matches!(cx.owner, InputOwner::System(_)) => self.edit(edit, fx),
+                InputKind::Wheel { dy } => {
+                    if !self.editing && dy.is_finite() {
+                        let (kinds, n) = self.kinds();
+                        let end = layout::top(&kinds[..n], n, |i| self.rows[i].motion.band_expand());
+                        let max = (end + crate::ui::consts::MARGIN_Y - SCR_H).max(0.0);
+                        self.scroll_target = (self.scroll_target - dy * crate::ui::table::ROW_H).clamp(0.0, max);
+                        fx.invalidate(Provenance::Input);
+                    }
+                }
                 InputKind::Key { key, sym, edge, .. } if *edge != Edge::Up => {
                     if self.editing {
                         let edit = match (*key, *sym) {
@@ -407,6 +422,8 @@ impl SearchScreen {
         };
     }
     fn tick<H: SearchLike>(&mut self, tick: crate::ui::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::BrowseDiscovery)));
+        fx.push(Fx::App(AppFx::StoreWork(crate::stores::StoreWork::Search)));
         if self.step_blink(tick.dt_us) { fx.invalidate(Provenance::Input); }
         self.hot.step(if self.field_hot(cx) { 1.0 } else { 0.0 }, crate::ui::consts::K_SCALE, tick.dt());
         for row in &mut self.rows {
@@ -415,7 +432,6 @@ impl SearchScreen {
             };
             row.motion.update(row.elems.len(), focused, &layout::style(row.kind), tick.dt());
         }
-        if let Some(key) = cx.focus.current { self.reveal(key, cx); }
         self.scroll.step(self.scroll_target, crate::ui::consts::K_SCROLL, tick.dt());
         self.fade.tick(tick.dt(), !self.draft.pending() && H::search(cx).state() != crate::search::State::Searching);
         let colours = cx.focus.current.and_then(|key| self.rows.iter().enumerate().find_map(|(row, model)|
@@ -491,7 +507,10 @@ impl<H: SearchLike> Focusable<H> for SearchScreen {
         let painted = if at == At::Drawn {
             self.rows.iter().find(|row| row.group == group).map_or(rect, |row| rect.scaled(row.motion.scale(index)))
         } else { rect };
-        Some(Placed { rect: painted, rest_rect: rect, clip: Rect::FULL, index: Some(index as u32) })
+        // The page still paints beneath the glass, but the standing strip owns those hits.
+        let floor = crate::ui::widgets::TOP_BAR_BOTTOM;
+        Some(Placed { rect: painted, rest_rect: rect,
+            clip: Rect::new(0.0, floor, SCR_W, SCR_H - floor), index: Some(index as u32) })
     }
     fn reconcile(&self, want: FocusKey<u32>, _: &Cx<'_, H>) -> FocusKey<u32> {
         if want.entry == self.entry && self.index(want.elem).is_some() { return want; }

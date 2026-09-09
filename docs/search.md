@@ -181,6 +181,15 @@ The menu opener uses the owned page's captured focus and drawn geometry;
 host tests are not visual verification, and the legacy Search implementation remains the live
 route and the contract reference until that cutover is finished.
 
+The owned page requests discovery and Search debounce/landing work once per active Tick through
+the store dispatcher. Its external Cover/Suspend/WillLeave/Unmount events release editing without
+filing the draft in recents. A background keyboard observation is ordered after earlier input and
+also releases the native start latch, so a later OK can reopen the panel.
+Unlike the legacy wheel-as-D-pad path, the owned path follows specification §7.3: a wheel scrolls
+the document without changing focus. Focus movement reveals the selected region again; editing
+parks the document at the top. Page hit clips stop below the standing tab strip even though the
+document continues painting underneath its glass.
+
 ---
 
 ## 2. The data layer
