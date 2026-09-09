@@ -112,6 +112,7 @@ pub(super) fn state_fp() -> u64 {
     crate::ui::rec::state_fp(&[
         crate::ui::press::Press::SHAPE,
         crate::ui::input::STATE_SHAPE,
+        "TextInputWire{kind:text,text:str,panel:bool,ms:u32,dt_us:u32,source:{Sdl,RemoteFifo,Script,Replay}}",
         "AppFrame{route:str,overlay:str,focus:str,tree:u64}",
         crate::ui::containers::STATE_SHAPE,
         super::bridge::ARG_SHAPE,
@@ -587,6 +588,21 @@ pub(super) fn enc_token(tok: &str) -> Value {
     json!({"kind": "token", "tok": tok})
 }
 
+pub(super) fn enc_text(text: &str, panel: bool, at: crate::ui::machine::Tick, source: crate::ui::machine::Source) -> Value {
+    use crate::ui::machine::Source;
+    let source = match source { Source::Sdl => 0, Source::RemoteFifo => 1, Source::Script => 2, Source::Replay => 3 };
+    json!({"kind":"text", "text":text, "panel":panel, "ms":at.ms, "dt_us":at.dt_us, "source":source})
+}
+
+pub(super) fn dec_text(v: &Value) -> Option<Vec<crate::ui::machine::InputEvent<u32>>> {
+    use crate::ui::machine::{Source, Tick};
+    if v["kind"].as_str()? != "text" { return None; }
+    let source = match v["source"].as_u64()? { 0 => Source::Sdl, 1 => Source::RemoteFifo,
+        2 => Source::Script, 3 => Source::Replay, _ => return None };
+    let at = Tick { ms: v["ms"].as_u64()?.try_into().ok()?, dt_us: v["dt_us"].as_u64()?.try_into().ok()? };
+    Some(super::events::text_inputs(v["text"].as_str()?, v["panel"].as_bool()?, at, source))
+}
+
 pub(super) fn enc_pointer(kind: &str, x: i32, y: i32) -> Value {
     json!({"kind": kind, "x": x, "y": y})
 }
@@ -598,6 +614,34 @@ pub(super) fn enc_lifecycle(code: u32) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_records_preserve_commit_boundaries_clock_source_and_panel_observation() {
+        use crate::ui::machine::{Canon, InputEvent, Source, Tick};
+        let digest = |events: &[InputEvent<u32>]| {
+            let mut c = Canon::new(); c.seq(events.len());
+            for event in events { event.write_with(&mut c, &|elem, c| { c.u32(*elem); }); }
+            c.finish()
+        };
+        let text = "synthetic whole commit длиннее тридцати двух байтов 🙂 ";
+        for source in [Source::Sdl, Source::RemoteFifo, Source::Script, Source::Replay] {
+            for panel in [false, true] {
+                let at = Tick { ms: u32::MAX - 10, dt_us: 16_667 };
+                let expected = super::super::events::text_inputs(text, panel, at, source);
+                let wire = enc_text(text, panel, at, source);
+                let actual = dec_text(&wire).unwrap();
+                assert_eq!(actual.len(), if panel { 2 } else { 1 });
+                assert_eq!(digest(&actual), digest(&expected));
+                let mut invalid = wire.clone(); invalid["source"] = json!(99);
+                assert!(dec_text(&invalid).is_none());
+                invalid = wire.clone(); invalid["ms"] = json!(u64::from(u32::MAX) + 1);
+                assert!(dec_text(&invalid).is_none());
+                invalid = wire; invalid["panel"] = json!("yes");
+                assert!(dec_text(&invalid).is_none());
+            }
+        }
+        assert!(super::super::events::text_inputs("", true, Tick { ms: 0, dt_us: 0 }, Source::Sdl).is_empty());
+    }
 
     #[test]
     fn recording_header_contains_home_boot_contents_and_hashes_hidden_state() {
@@ -779,7 +823,8 @@ mod tests {
         // Pending normalized input now includes its full payload, including whole text commits.
         // The owned Search state and its entry restoration payload join the inventory.
         // Input now binds accepted keyboard requests to their instance and hashes queued requests.
-        assert_eq!(state_fp(), 0x23d43c3e57ba2eee);
+        // Text records include their original clock, source and observed panel capability.
+        assert_eq!(state_fp(), 0xd7e3de34afc81f6c);
     }
 
     #[test]

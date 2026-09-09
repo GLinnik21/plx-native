@@ -7,6 +7,74 @@ fn owned_search_probe(d: &Dispatcher<AppHost>) -> String {
 }
 
 #[test]
+fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-adopt");
+    session.watching("synthetic-adopt-profile");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::SetQuery("ab".into()));
+    crate::search::publish_shelves_for_test(vec![crate::search::Shelf { kind: crate::search::Kind::Movie,
+        items: vec![crate::search::Item::Media(crate::pms::PmsMovie {
+            rk: "adopt-result".into(), title: "Synthetic result".into(), ..Default::default()
+        })] }]);
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    let field = d.focus();
+    frame(&mut d, &mut rig, Route::Search, tick(1), script_key(Key::Down, tick(1)));
+    assert_ne!(d.focus(), field);
+    frame(&mut d, &mut rig, Route::Search, tick(2),
+        crate::app::events::text_inputs("stray", false, tick(2), Source::Sdl));
+    assert_eq!(crate::search::query(), "ab", "closed desktop fields reject stray text");
+    frame(&mut d, &mut rig, Route::Search, tick(3),
+        crate::app::events::text_inputs("X", true, tick(3), Source::Sdl));
+    assert_eq!(crate::search::query(), "abX");
+    assert!(owned_search_probe(&d).contains("editing=true"));
+    assert_eq!(rig.keyboard_adoptions, 1);
+    assert_eq!(d.focus(), field, "adoption returns focus from results to the editing field");
+    assert!(rig.keyboard_calls.is_empty(), "adoption must not call start, which clears pending text");
+    let mut events = script_key(Key::Left, tick(4));
+    events.extend(crate::app::events::text_inputs("Y", true, tick(4), Source::Sdl));
+    frame(&mut d, &mut rig, Route::Search, tick(4), events);
+    assert_eq!(crate::search::query(), "abYX", "an already-editing field keeps its chosen caret");
+    assert_eq!(rig.keyboard_adoptions, 2);
+    assert!(rig.keyboard_calls.is_empty());
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
+fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-ingress-order");
+    session.watching("synthetic-ingress-order");
+    crate::plex::reset_servers_for_test();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.mounter.search_owned = true;
+    frame(&mut d, &mut rig, Route::Search, tick(0), vec![]);
+    let text = |s: &str, at| InputEvent { at, source: Source::Script,
+        kind: InputKind::Text(crate::ui::machine::TextEdit::Commit(s.into())) };
+    let mut events = script_key(Key::Ok, tick(1));
+    events.push(text("a", tick(1)));
+    events.extend(script_key(Key::Left, tick(1)));
+    events.push(text("b", tick(1)));
+    frame(&mut d, &mut rig, Route::Search, tick(1), events);
+    assert_eq!(crate::search::query(), "ba");
+    assert_eq!(rig.keyboard_calls, [true]);
+    let mut events = script_key(Key::Back, tick(2));
+    events.push(text("x", tick(2)));
+    frame(&mut d, &mut rig, Route::Search, tick(2), events);
+    assert_eq!(crate::search::query(), "ba", "desktop text after dismissal is not a new edit");
+    assert_eq!(rig.keyboard_calls, [true, false]);
+    crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
+}
+
+#[test]
 fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     let _serial = crate::testlock::serial();
     let session = crate::plex::session::TempSession::new("owned-search-keyboard-owner");
@@ -30,12 +98,10 @@ fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     frame(&mut d, &mut rig, Route::Search, tick(3), script_key(Key::Ok, tick(3)));
     assert!(d.input.keyboard);
     assert_eq!(d.input.keyboard_owner, Some(current));
-    d.emit(MachineId::Instance(old), Fx::App(AppFx::Search(
-        crate::screens::registry::SearchReq::Keyboard { up: false })));
+    d.emit(MachineId::Instance(old), Fx::Deliver(MachineId::Instance(old), Delivery::Keyboard { up: false }));
     frame(&mut d, &mut rig, Route::Search, tick(4), vec![]);
     assert!(d.input.keyboard, "a stale request is not an authoritative OS dismissal");
-    d.emit(MachineId::Instance(old), Fx::App(AppFx::Search(
-        crate::screens::registry::SearchReq::Keyboard { up: true })));
+    d.emit(MachineId::Instance(old), Fx::Deliver(MachineId::Instance(old), Delivery::Keyboard { up: true }));
     frame(&mut d, &mut rig, Route::Search, tick(5), vec![]);
     assert_eq!(d.input.keyboard_owner, Some(current));
     assert_eq!(rig.keyboard_calls, [true, false, true], "rejected requests must not reach the native adapter");

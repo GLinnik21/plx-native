@@ -86,7 +86,7 @@ pub(super) unsafe fn run(app: &mut App, mt: &crate::task::MainThread) {
         if let Some(t) = app.rec.replay_tick() {
             clock::set_replay(t.ms);
             for v in app.rec.replay_inputs() {
-                replay_inject(&v);
+                replay_inject(app, mt, fr, &v);
             }
         }
         crate::system::ls2_pump();
@@ -263,10 +263,7 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
         // command here for the SDL thread so the same dispatcher and event queue remain the
         // only input path. Acknowledge acceptance after dispatch, before polling SDL below.
         for command in crate::lab::take_commands() {
-            let ok = dispatch_remote_token(&command.token);
-            if ok && token_is_direct(&command.token) {
-                app.rec.input(super::recorder::enc_token(&command.token));
-            }
+            let ok = ingress_token(app, mt, fr, &command.token);
             crate::lab::command_done(command.id, ok);
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
@@ -277,936 +274,973 @@ pub(super) unsafe fn ingest(app: &mut App, mt: &crate::task::MainThread, fr: &mu
             r.drain(|tok| toks.push(tok.to_string()));
         }
         for tok in toks {
-            if dispatch_remote_token(&tok) && token_is_direct(&tok) {
-                app.rec.input(super::recorder::enc_token(&tok));
+            let _ = ingress_token(app, mt, fr, &tok);
+        }
+        drain_sdl(app, mt, fr);
+}
+
+unsafe fn drain_sdl(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame) {
+    while SDL_PollEvent(app.ev.as_mut_ptr() as *mut c_void) != 0 {
+        ingest_sdl_event(app, mt, fr);
+    }
+}
+
+unsafe fn ingress_token(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame, token: &str) -> bool {
+    // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
+    // before a following direct text token, rather than moving all text ahead of all keys.
+    if super::bridge::search_owns_input(&app.pages, app.route) { drain_sdl(app, mt, fr); }
+    if super::bridge::search_owns_input(&app.pages, app.route) {
+        if let Some(text) = token.strip_prefix("txt:") {
+            ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
+                crate::ui::machine::Source::RemoteFifo);
+            return true;
+        }
+    }
+    let accepted = dispatch_remote_token(token);
+    if accepted && token_is_direct(token) { app.rec.input(super::recorder::enc_token(token)); }
+    accepted
+}
+
+fn ingest_text(app: &mut App, text: &str, panel: bool, source: crate::ui::machine::Source) {
+    if text.is_empty() { return; }
+    let at = crate::ui::machine::Tick { ms: clock::now(), dt_us: 0 };
+    app.rec.input(super::recorder::enc_text(text, panel, at, source));
+    app.inputs.extend(text_inputs(text, panel, at, source));
+    app.last_input = at.ms;
+    crate::ui::idle::invalidate();
+}
+
+/// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
+unsafe fn ingest_sdl_event(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame) {
+    let et = rd_u32(&app.ev, 0);
+    // INPUT while a popover holds the page frozen is the POPOVER's: every invalidate
+    // such an event raises — the one below, and whatever its handler adds — is
+    // attributed to it, so the frozen host is not re-rendered on every key-up
+    // (`popover::host::input_scope`). Only input: a lifecycle or window event is the
+    // APP's and may change the page under the panel (backgrounding drops Search's
+    // editing layout), so its damage stays the page's and the snapshot is retaken.
+    let _own_input = if is_input_event(et) {
+        crate::ui::popover::host::input_scope()
+    } else {
+        None
+    };
+    // ANY event is a reason to repaint (`ui::idle`): a key changes focus or a label,
+    // a lifecycle event changes the whole screen. Marked here — once, for every event
+    // kind — rather than in each of the ~30 arms below, where the next one added would
+    // silently draw nothing.
+    crate::ui::idle::invalidate();
+    if et == SDL_KEYDOWN
+        || et == SDL_KEYUP
+        || et == SDL_TEXTINPUT
+        || et == SDL_TEXTEDITING
+    {
+        // 48 bytes, not 32: a TEXTINPUT event's `text[32]` starts at +16 on the
+        // television (LG's `inputSource` shifts it), so it ENDS at exactly +48. At the
+        // old width the one event whose payload the offsets are most easily wrong
+        // about would have left a forensic trail that stopped just before the payload.
+        let mut hex = String::with_capacity(96);
+        for b in &app.ev[..48] {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        let what = match et {
+            SDL_TEXTINPUT => "text",
+            // **The IME's PRE-EDIT, and the reason it is logged at all.** The panel's
+            // word prediction is a REPLACE — tapping "summer" under a typed "summ"
+            // means *delete what I was predicting on, then commit this* — and the app
+            // sees only the commit, so the field reads "summsummer" (reported from the
+            // couch 2026-08-15). Whether the delete half reaches us as `SDL_TEXTEDITING`
+            // (`text_model.delete_surrounding_text` mapped onto SDL's pre-edit) or as
+            // nothing at all decides whether the fix can be exact or has to be a
+            // heuristic — and this arm is the only way to find out, since nothing in
+            // the app has ever read this event.
+            SDL_TEXTEDITING => "edit",
+            _ => "key",
+        };
+        log(&format!(
+            "[{}] {what} type=0x{et:x} raw={hex}",
+            clock::now()
+        ));
+    }
+    if (0x103..=0x106).contains(&et) {
+        app.rec.input(super::recorder::enc_lifecycle(et));
+    }
+    if et == SDL_QUIT {
+        app.running = false;
+    } else if et == 0x103 || et == 0x104 {
+        // WILL/DID ENTER BACKGROUND
+        log(&format!(
+            "LIFECYCLE: background (playing={})",
+            matches!(app.route, Route::Player { .. }) as i32
+        ));
+        // **The TELEVISION'S KEYBOARD goes with the panel, and it is not ours to keep.**
+        // The compositor tears its own IME down when it takes the screen away, and it
+        // tells the app nothing — so a field left `editing` comes back to the
+        // foreground drawing an editing layout and a blinking caret over a keyboard
+        // that is gone, and typing is dead in a way no press can recover:
+        // `textinput::start` early-returns while its own `STARTED` is set, so OK on the
+        // field would toggle our flag and raise nothing. This is `leave` — the same
+        // dismissal a route change runs (`leave_of`) — and deliberately NOT the commit
+        // path `leave_field` takes: the OS moving the screen is not the user saying
+        // "that is the search I meant", and a half-typed term must not be filed in
+        // their recent searches by an app switch. Unconditional because `EDITING` is
+        // this screen's alone and both calls under it are guarded, so it costs a
+        // predictable nothing on every other route.
+        crate::ui::search::leave();
+        if matches!(app.route, Route::Player { .. }) && !app.foreground.awaiting_load() {
+            // INTENDED, not published: this snapshot is the only thing the foreground
+            // restore has, and `suspend_bufferfeed` below drops the pending seek target
+            // with the session — so a background that lands while a seek is still
+            // resolving would otherwise save (and restore to) the spot the user just
+            // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
+            let saved_ns = intended_pos();
+            let clock = app.foreground.clock_for_suspend(paused());
+            app.foreground.suspend(saved_ns, clock);
+            app.scrubber.disengage();
+            app.ptr.drag = false;
+            app.held_key.sym = 0; // this async route flip must not leave a held key repeating into Home
+            set_scrub(-1);
+            close_player_overlays();
+            crate::player::suspend_bufferfeed(mt); // preserve the session for a clean fg reload
+                                                   // …and drop any play resolve still in flight. `start_playback` flips to
+                                                   // Route::Player as soon as a resolve starts, with NO engine behind it, so
+                                                   // this arm fires during that whole window — and `suspend_bufferfeed` is a
+                                                   // no-op when there is no engine yet. Without this the plan lands later in
+                                                   // the route-UNCONDITIONAL `pump_play` arm and starts playback with the UI
+                                                   // on Home, where OK/Stop/seek and the EOS teardown are all route-gated:
+                                                   // audio and video running that the user cannot pause or end.
+            crate::route::cancel_play();
+            // The BACK trail is deliberately NOT touched: this is the OS taking the
+            // screen away, not the user navigating, and the foreground arm below reloads
+            // straight back into the player. Route and trail may therefore disagree for
+            // as long as the app is backgrounded, which is safe because Home's BACK
+            // branch never consults the trail and the first Home activation truncates it.
+            app.route = Route::Home;
+        }
+    } else if et == 0x105 || et == 0x106 {
+        // WILL/DID ENTER FOREGROUND
+        log(&format!(
+            "LIFECYCLE: foreground (wasPlaying={})",
+            app.foreground.awaiting_load() as i32
+        ));
+        if et == 0x106 {
+            let activation = drive_foreground(
+                &mut app.foreground,
+                ForegroundInput::DidForeground,
+                &mut PlayerForegroundActuator {
+                    mt,
+                    repause_at: &mut app.repause_at,
+                },
+            );
+            if matches!(activation, ForegroundActivation::Launched) {
+                app.route = Route::Player {
+                    overlay: Overlay::None,
+                };
+                set_hud(clock::now() + HUD_LINGER_MS);
             }
         }
-        while SDL_PollEvent(app.ev.as_mut_ptr() as *mut c_void) != 0 {
-            let et = rd_u32(&app.ev, 0);
-            // INPUT while a popover holds the page frozen is the POPOVER's: every invalidate
-            // such an event raises — the one below, and whatever its handler adds — is
-            // attributed to it, so the frozen host is not re-rendered on every key-up
-            // (`popover::host::input_scope`). Only input: a lifecycle or window event is the
-            // APP's and may change the page under the panel (backgrounding drops Search's
-            // editing layout), so its damage stays the page's and the snapshot is retaken.
-            let _own_input = if is_input_event(et) {
-                crate::ui::popover::host::input_scope()
-            } else {
-                None
-            };
-            // ANY event is a reason to repaint (`ui::idle`): a key changes focus or a label,
-            // a lifecycle event changes the whole screen. Marked here — once, for every event
-            // kind — rather than in each of the ~30 arms below, where the next one added would
-            // silently draw nothing.
-            crate::ui::idle::invalidate();
-            if et == SDL_KEYDOWN
-                || et == SDL_KEYUP
-                || et == SDL_TEXTINPUT
-                || et == SDL_TEXTEDITING
-            {
-                // 48 bytes, not 32: a TEXTINPUT event's `text[32]` starts at +16 on the
-                // television (LG's `inputSource` shifts it), so it ENDS at exactly +48. At the
-                // old width the one event whose payload the offsets are most easily wrong
-                // about would have left a forensic trail that stopped just before the payload.
-                let mut hex = String::with_capacity(96);
-                for b in &app.ev[..48] {
-                    hex.push_str(&format!("{b:02x}"));
-                }
-                let what = match et {
-                    SDL_TEXTINPUT => "text",
-                    // **The IME's PRE-EDIT, and the reason it is logged at all.** The panel's
-                    // word prediction is a REPLACE — tapping "summer" under a typed "summ"
-                    // means *delete what I was predicting on, then commit this* — and the app
-                    // sees only the commit, so the field reads "summsummer" (reported from the
-                    // couch 2026-08-15). Whether the delete half reaches us as `SDL_TEXTEDITING`
-                    // (`text_model.delete_surrounding_text` mapped onto SDL's pre-edit) or as
-                    // nothing at all decides whether the fix can be exact or has to be a
-                    // heuristic — and this arm is the only way to find out, since nothing in
-                    // the app has ever read this event.
-                    SDL_TEXTEDITING => "edit",
-                    _ => "key",
-                };
-                log(&format!(
-                    "[{}] {what} type=0x{et:x} raw={hex}",
-                    clock::now()
-                ));
+    } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
+        let (state, wcode, sym) = decode_key(&app.ev);
+        // The press's IDENTITY, resolved once from the two raw fields
+        // (`ui::consts::classify`, which is where the spellings live and where they
+        // are tested). `sym` and `wcode` are still read raw by the arms below — the
+        // ones that forward them to a screen's own `move_focus`/`key`, and the modal
+        // panels and the CH▲/CH▼ pager, which still spell their own key tests.
+        let key = classify(sym, wcode);
+        let isnav = matches!(key, Key::Left { .. } | Key::Right { .. });
+        app.rec.input(super::recorder::enc_key(
+            sym,
+            wcode,
+            (state & 0xff) == 1,
+            state & 0x100 != 0,
+        ));
+        // **Does the TREE own this key?** (phase 5b, `app/bridge.rs`'s coexistence
+        // contract.) Asked once, here, above all three edges — because the dispatcher's
+        // press machine wants ALL of them: `Edge::Down` arms, `Edge::Repeat` is the
+        // dropped-key-up net's liveness beat, and `Edge::Up` is the release. Handing it
+        // only the fresh presses would leave a dipped control committing a second later
+        // at `press::MAX_HOLD_MS` instead of on the button coming up.
+        let tree_owns_key = super::bridge::owns_input(&app.pages, app.route);
+        // `clock::now()`, not `fr.now`: INGEST runs before the frame stamps its own time
+        // (see `run`'s phase order), so `fr.now` is still 0 here — the same reason the
+        // ladder below reaches for the clock to fill `app.last_input`. `dt_us` is 0
+        // because an event's `at` is a stamp, not a timestep: every machine the
+        // dispatcher steps is driven by the FRAME's tick, which `bridge::frame` supplies.
+        let tree_tick = crate::ui::machine::Tick {
+            ms: clock::now(),
+            dt_us: 0,
+        };
+        if (state & 0xff) != 1 {
+            if tree_owns_key {
+                app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
             }
-            if (0x103..=0x106).contains(&et) {
-                app.rec.input(super::recorder::enc_lifecycle(et));
-            }
-            if et == SDL_QUIT {
-                app.running = false;
-            } else if et == 0x103 || et == 0x104 {
-                // WILL/DID ENTER BACKGROUND
-                log(&format!(
-                    "LIFECYCLE: background (playing={})",
-                    matches!(app.route, Route::Player { .. }) as i32
-                ));
-                // **The TELEVISION'S KEYBOARD goes with the panel, and it is not ours to keep.**
-                // The compositor tears its own IME down when it takes the screen away, and it
-                // tells the app nothing — so a field left `editing` comes back to the
-                // foreground drawing an editing layout and a blinking caret over a keyboard
-                // that is gone, and typing is dead in a way no press can recover:
-                // `textinput::start` early-returns while its own `STARTED` is set, so OK on the
-                // field would toggle our flag and raise nothing. This is `leave` — the same
-                // dismissal a route change runs (`leave_of`) — and deliberately NOT the commit
-                // path `leave_field` takes: the OS moving the screen is not the user saying
-                // "that is the search I meant", and a half-typed term must not be filed in
-                // their recent searches by an app switch. Unconditional because `EDITING` is
-                // this screen's alone and both calls under it are guarded, so it costs a
-                // predictable nothing on every other route.
-                crate::ui::search::leave();
-                if matches!(app.route, Route::Player { .. }) && !app.foreground.awaiting_load() {
-                    // INTENDED, not published: this snapshot is the only thing the foreground
-                    // restore has, and `suspend_bufferfeed` below drops the pending seek target
-                    // with the session — so a background that lands while a seek is still
-                    // resolving would otherwise save (and restore to) the spot the user just
-                    // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
-                    let saved_ns = intended_pos();
-                    let clock = app.foreground.clock_for_suspend(paused());
-                    app.foreground.suspend(saved_ns, clock);
-                    app.scrubber.disengage();
-                    app.ptr.drag = false;
-                    app.held_key.sym = 0; // this async route flip must not leave a held key repeating into Home
-                    set_scrub(-1);
-                    close_player_overlays();
-                    crate::player::suspend_bufferfeed(mt); // preserve the session for a clean fg reload
-                                                           // …and drop any play resolve still in flight. `start_playback` flips to
-                                                           // Route::Player as soon as a resolve starts, with NO engine behind it, so
-                                                           // this arm fires during that whole window — and `suspend_bufferfeed` is a
-                                                           // no-op when there is no engine yet. Without this the plan lands later in
-                                                           // the route-UNCONDITIONAL `pump_play` arm and starts playback with the UI
-                                                           // on Home, where OK/Stop/seek and the EOS teardown are all route-gated:
-                                                           // audio and video running that the user cannot pause or end.
-                    crate::route::cancel_play();
-                    // The BACK trail is deliberately NOT touched: this is the OS taking the
-                    // screen away, not the user navigating, and the foreground arm below reloads
-                    // straight back into the player. Route and trail may therefore disagree for
-                    // as long as the app is backgrounded, which is safe because Home's BACK
-                    // branch never consults the trail and the first Home activation truncates it.
-                    app.route = Route::Home;
-                }
-            } else if et == 0x105 || et == 0x106 {
-                // WILL/DID ENTER FOREGROUND
-                log(&format!(
-                    "LIFECYCLE: foreground (wasPlaying={})",
-                    app.foreground.awaiting_load() as i32
-                ));
-                if et == 0x106 {
-                    let activation = drive_foreground(
-                        &mut app.foreground,
-                        ForegroundInput::DidForeground,
-                        &mut PlayerForegroundActuator {
-                            mt,
-                            repause_at: &mut app.repause_at,
-                        },
-                    );
-                    if matches!(activation, ForegroundActivation::Launched) {
-                        app.route = Route::Player {
-                            overlay: Overlay::None,
-                        };
-                        set_hud(clock::now() + HUD_LINGER_MS);
-                    }
-                }
-            } else if et == SDL_KEYDOWN || et == SDL_KEYUP {
-                let (state, wcode, sym) = decode_key(&app.ev);
-                // The press's IDENTITY, resolved once from the two raw fields
-                // (`ui::consts::classify`, which is where the spellings live and where they
-                // are tested). `sym` and `wcode` are still read raw by the arms below — the
-                // ones that forward them to a screen's own `move_focus`/`key`, and the modal
-                // panels and the CH▲/CH▼ pager, which still spell their own key tests.
-                let key = classify(sym, wcode);
-                let isnav = matches!(key, Key::Left { .. } | Key::Right { .. });
-                app.rec.input(super::recorder::enc_key(
-                    sym,
-                    wcode,
-                    (state & 0xff) == 1,
-                    state & 0x100 != 0,
-                ));
-                // **Does the TREE own this key?** (phase 5b, `app/bridge.rs`'s coexistence
-                // contract.) Asked once, here, above all three edges — because the dispatcher's
-                // press machine wants ALL of them: `Edge::Down` arms, `Edge::Repeat` is the
-                // dropped-key-up net's liveness beat, and `Edge::Up` is the release. Handing it
-                // only the fresh presses would leave a dipped control committing a second later
-                // at `press::MAX_HOLD_MS` instead of on the button coming up.
-                let tree_owns_key = super::bridge::owns_input(&app.pages, app.route);
-                // `clock::now()`, not `fr.now`: INGEST runs before the frame stamps its own time
-                // (see `run`'s phase order), so `fr.now` is still 0 here — the same reason the
-                // ladder below reaches for the clock to fill `app.last_input`. `dt_us` is 0
-                // because an event's `at` is a stamp, not a timestep: every machine the
-                // dispatcher steps is driven by the FRAME's tick, which `bridge::frame` supplies.
-                let tree_tick = crate::ui::machine::Tick {
-                    ms: clock::now(),
-                    dt_us: 0,
-                };
-                if (state & 0xff) != 1 {
-                    if tree_owns_key {
-                        app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
-                    }
-                    // …and the loop's own key-up bookkeeping runs either way: it retires the sym
-                    // from both held-key slots, which is state about the PHYSICAL key rather than
-                    // about whoever read it. Skipping it while a surface is up would leave a key
-                    // the ladders never saw go down looking held the moment the surface closes.
-                    on_key_up(
-                        sym,
-                        isnav,
-                        app.route,
-                        app.ok_armed,
-                        &mut app.held_key,
-                        &mut app.scrubber,
-                        &mut app.repause_at,
-                        &mut app.input.press,
-                    );
-                    continue;
-                }
-                // A repeat is only a repeat if we watched the key go down. See
-                // `HeldKey::down_sym`: the system keyboard eats key-ups, so the driver stamps
-                // 0x100 on presses that are the FIRST of their own gesture, and dropping those
-                // loses one press in two.
-                if state & 0x100 != 0 && sym == app.held_key.down_sym {
-                    if tree_owns_key {
-                        // **Item 13 survives the migration, and only the DIRECTIONS are gated.**
-                        // A held key repeats every ~50 ms; a settings row or a line of reading
-                        // text per beat is a blur nobody can track, and the focus engine has no
-                        // cadence of its own — so `RepeatGate` still throttles the moves. The OK
-                        // edges go through UNGATED, deliberately: `dispatch`'s ingest reads an OK
-                        // `Edge::Repeat` as `press.note_alive`, so a swallowed beat is a hold that
-                        // looks like a lost key-up and springs back without activating.
-                        let ok = is_ok(sym);
-                        if ok || app.modal_repeat.ready(tree_tick.ms) {
-                            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
-                        }
-                        continue;
-                    }
-                    on_auto_repeat(
-                        sym,
-                        isnav,
-                        app.route,
-                        app.ok_armed,
-                        app.hud.nav,
-                        &mut app.held_key,
-                        &mut app.scrubber,
-                        &mut app.input.press,
-                    );
-                    continue;
-                }
-                // From here down this IS a fresh press, whatever the driver stamped on it.
-                app.last_input = clock::now();
-                begin_fresh_press(
-                    key,
-                    sym,
-                    wcode,
-                    app.last_input,
-                    &mut app.held_key,
-                    &mut app.hud,
-                    &mut app.ptr,
-                    &mut app.ok_armed,
-                    &mut app.input.press,
-                );
-
-                // LAB BUILDS ONLY, and above every arm below including the modals: the
-                // diagnostics trigger. It has to outrank the chain because the screen a tester
-                // most needs a snapshot of is the playback failure read-out, whose own arm
-                // `continue`s on every key — and because a snapshot changes no app state, so
-                // there is nothing for a later arm to have wanted first. Compiles to `false`
-                // in every other build (`crate::lab::key_press`).
-                if crate::lab::key_press(sym, wcode) {
-                    continue;
-                }
-
-                // ---- the route-scoped arms, each of which `continue`s once it has taken the
-                // press. That makes the chain itself the priority statement: an earlier guard
-                // subsumes each later one it overlaps with, which the playback-failure guard
-                // below does deliberately. Keep it a chain — a `match` over the same routes
-                // compiles and keeps the suite green while silently reordering it, because
-                // exhaustiveness cannot see subsumption.
-                //
-                // **THE DISPATCHER'S ARM, and it is one line because that is the whole point**
-                // (phase 5b). Three hand-written arms stood here — consent above legal above the
-                // settings root — and the height of each in this chain WAS its modality: each
-                // `continue`d on every key, and the ordering was load-bearing because BACK out of
-                // the privacy notice would otherwise have been read as Home's ROOT PRESS and
-                // handed the screen to the television. That ordering is now a container's: the
-                // Settings family is a modal SURFACE on the app's `ModalStack`, whose inner
-                // `NavStack` walks itself on BACK and only then lets the container dismiss it, so
-                // "which of the four answers this key" is a tree walk rather than a chain the next
-                // editor has to keep in order. `owns_input` is the same question the pointer,
-                // click and wheel arms below ask, which is what stops the four drifting apart.
-                //
-                // It stays HIGH in the chain for the reason the old arms did: an owned surface is
-                // modal over whatever route is behind it, and every route arm below would
-                // otherwise act on a page the user cannot see.
-                //
-                // **The fourth root is closed here** (`app/input.rs`'s `back_at_root`). BACK at
-                // the FIRST consent stage used to be swallowed — the step behind it is sign-in,
-                // which cannot be undone — and the old comment recorded why the 2026-09-03 root
-                // rule could not reach it: `ui::consent::on_back` reported `true` for both the
-                // stepped-back and the swallowed case, so a BACK arm could not tell them apart
-                // without changing that module's return type. The owned screen simply says which
-                // it is: `ConsentPage` answers `Handled::No` at a Settings BACK and pushes
-                // `LoopReq::BackAtRoot` at the first stage, and the request drain below performs
-                // it. Nothing is stranded by going to the television's Home — the question is
-                // neither answered nor dismissed, and selecting the tile again comes back to it.
-                if tree_owns_key {
+            // …and the loop's own key-up bookkeeping runs either way: it retires the sym
+            // from both held-key slots, which is state about the PHYSICAL key rather than
+            // about whoever read it. Skipping it while a surface is up would leave a key
+            // the ladders never saw go down looking held the moment the surface closes.
+            on_key_up(
+                sym,
+                isnav,
+                app.route,
+                app.ok_armed,
+                &mut app.held_key,
+                &mut app.scrubber,
+                &mut app.repause_at,
+                &mut app.input.press,
+            );
+            return;
+        }
+        // A repeat is only a repeat if we watched the key go down. See
+        // `HeldKey::down_sym`: the system keyboard eats key-ups, so the driver stamps
+        // 0x100 on presses that are the FIRST of their own gesture, and dropping those
+        // loses one press in two.
+        if state & 0x100 != 0 && sym == app.held_key.down_sym {
+            if tree_owns_key {
+                // **Item 13 survives the migration, and only the DIRECTIONS are gated.**
+                // A held key repeats every ~50 ms; a settings row or a line of reading
+                // text per beat is a blur nobody can track, and the focus engine has no
+                // cadence of its own — so `RepeatGate` still throttles the moves. The OK
+                // edges go through UNGATED, deliberately: `dispatch`'s ingest reads an OK
+                // `Edge::Repeat` as `press.note_alive`, so a swallowed beat is a hold that
+                // looks like a lost key-up and springs back without activating.
+                let ok = is_ok(sym);
+                if ok || app.modal_repeat.ready(tree_tick.ms) {
                     app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
-                    continue;
                 }
-                // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
-                // `Route::Onboard`'s own removal in 5b): both are OWNED screens now, so a key on
-                // either was already taken by `tree_owns_key` above and never reaches this chain.
-                if let Route::Account { over } = app.route {
-                    key_account(over, sym, wcode, &mut app.route, &mut app.pages);
-                    continue;
+                return;
+            }
+            on_auto_repeat(
+                sym,
+                isnav,
+                app.route,
+                app.ok_armed,
+                app.hud.nav,
+                &mut app.held_key,
+                &mut app.scrubber,
+                &mut app.input.press,
+            );
+            return;
+        }
+        // From here down this IS a fresh press, whatever the driver stamped on it.
+        app.last_input = clock::now();
+        begin_fresh_press(
+            key,
+            sym,
+            wcode,
+            app.last_input,
+            &mut app.held_key,
+            &mut app.hud,
+            &mut app.ptr,
+            &mut app.ok_armed,
+            &mut app.input.press,
+        );
+
+        // LAB BUILDS ONLY, and above every arm below including the modals: the
+        // diagnostics trigger. It has to outrank the chain because the screen a tester
+        // most needs a snapshot of is the playback failure read-out, whose own arm
+        // `continue`s on every key — and because a snapshot changes no app state, so
+        // there is nothing for a later arm to have wanted first. Compiles to `false`
+        // in every other build (`crate::lab::key_press`).
+        if crate::lab::key_press(sym, wcode) {
+            return;
+        }
+
+        // ---- the route-scoped arms, each of which `continue`s once it has taken the
+        // press. That makes the chain itself the priority statement: an earlier guard
+        // subsumes each later one it overlaps with, which the playback-failure guard
+        // below does deliberately. Keep it a chain — a `match` over the same routes
+        // compiles and keeps the suite green while silently reordering it, because
+        // exhaustiveness cannot see subsumption.
+        //
+        // **THE DISPATCHER'S ARM, and it is one line because that is the whole point**
+        // (phase 5b). Three hand-written arms stood here — consent above legal above the
+        // settings root — and the height of each in this chain WAS its modality: each
+        // `continue`d on every key, and the ordering was load-bearing because BACK out of
+        // the privacy notice would otherwise have been read as Home's ROOT PRESS and
+        // handed the screen to the television. That ordering is now a container's: the
+        // Settings family is a modal SURFACE on the app's `ModalStack`, whose inner
+        // `NavStack` walks itself on BACK and only then lets the container dismiss it, so
+        // "which of the four answers this key" is a tree walk rather than a chain the next
+        // editor has to keep in order. `owns_input` is the same question the pointer,
+        // click and wheel arms below ask, which is what stops the four drifting apart.
+        //
+        // It stays HIGH in the chain for the reason the old arms did: an owned surface is
+        // modal over whatever route is behind it, and every route arm below would
+        // otherwise act on a page the user cannot see.
+        //
+        // **The fourth root is closed here** (`app/input.rs`'s `back_at_root`). BACK at
+        // the FIRST consent stage used to be swallowed — the step behind it is sign-in,
+        // which cannot be undone — and the old comment recorded why the 2026-09-03 root
+        // rule could not reach it: `ui::consent::on_back` reported `true` for both the
+        // stepped-back and the swallowed case, so a BACK arm could not tell them apart
+        // without changing that module's return type. The owned screen simply says which
+        // it is: `ConsentPage` answers `Handled::No` at a Settings BACK and pushes
+        // `LoopReq::BackAtRoot` at the first stage, and the request drain below performs
+        // it. Nothing is stranded by going to the television's Home — the question is
+        // neither answered nor dismissed, and selecting the tile again comes back to it.
+        if tree_owns_key {
+            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, crate::ui::machine::Source::Sdl));
+            return;
+        }
+        // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
+        // `Route::Onboard`'s own removal in 5b): both are OWNED screens now, so a key on
+        // either was already taken by `tree_owns_key` above and never reaches this chain.
+        if let Route::Account { over } = app.route {
+            key_account(over, sym, wcode, &mut app.route, &mut app.pages);
+            return;
+        }
+        if let Route::ItemMenu { over } = app.route {
+            key_item_menu(
+                mt,
+                over,
+                sym,
+                wcode,
+                app.last_input,
+                &mut app.route,
+                &mut app.play_from,
+                &mut app.trail,
+                &mut app.hud.nav,
+                &mut app.nav_pending,
+                &mut app.held_key,
+            );
+            return;
+        }
+        // A failure owns the frame, except for the recovery-quality popover it opened
+        // itself.  Stale Menu / Info / Chapters panels remain unreachable; More is the
+        // one drawn and drivable escape promised by the failure read-out.
+        if matches!(app.route, Route::Player { .. })
+            && crate::ui::player_hud::transport_hidden()
+            && !matches!(
+                app.route,
+                Route::Player {
+                    overlay: Overlay::More
                 }
-                if let Route::ItemMenu { over } = app.route {
-                    key_item_menu(
-                        mt,
-                        over,
-                        sym,
-                        wcode,
-                        app.last_input,
-                        &mut app.route,
-                        &mut app.play_from,
-                        &mut app.trail,
-                        &mut app.hud.nav,
-                        &mut app.nav_pending,
-                        &mut app.held_key,
-                    );
-                    continue;
-                }
-                // A failure owns the frame, except for the recovery-quality popover it opened
-                // itself.  Stale Menu / Info / Chapters panels remain unreachable; More is the
-                // one drawn and drivable escape promised by the failure read-out.
-                if matches!(app.route, Route::Player { .. })
-                    && crate::ui::player_hud::transport_hidden()
-                    && !matches!(
-                        app.route,
-                        Route::Player {
-                            overlay: Overlay::More
-                        }
-                    )
-                {
-                    key_player_failed(
-                        mt,
-                        sym,
-                        wcode,
-                        &mut app.route,
-                        &app.play_from,
-                        &mut app.refresh_hubs_at,
-                        &mut app.trail,
-                    );
-                    continue;
-                }
-                // Each of these three ALSO gates on `overlay_swallows_key`: a modal overlay
-                // swallows everything except the transport keys (Pause/Play/PlayPause), which
-                // fall through — not `continue` here — to the ordinary Key::Pause/Key::Play/
-                // Key::PlayPause arms further down this chain, none of which carry an overlay
-                // term of their own. That reaches the exact toggle the HUD uses with no
-                // overlay open, and leaves `route` (so the open panel) untouched. See
-                // `overlay_swallows_key`'s doc comment for why `Overlay::More` keeps the old
-                // swallow-everything behaviour.
-                if matches!(
-                    app.route,
-                    Route::Player {
-                        overlay: Overlay::Menu
-                    }
-                ) && overlay_swallows_key(app.route, key)
-                {
-                    key_track_menu(sym, wcode, app.last_input, &mut app.route, &mut app.held_key);
-                    continue;
-                }
-                if matches!(
-                    app.route,
-                    Route::Player {
-                        overlay: Overlay::More
-                    }
-                ) {
-                    key_more_menu(mt, sym, wcode, app.last_input, &mut app.route, &mut app.held_key);
-                    continue;
-                }
-                if matches!(
-                    app.route,
-                    Route::Player {
-                        overlay: Overlay::Info
-                    }
-                ) && overlay_swallows_key(app.route, key)
-                {
-                    key_info_panel(
-                        mt,
-                        sym,
-                        wcode,
-                        app.last_input,
-                        &mut app.route,
-                        &app.play_from,
-                        &mut app.refresh_hubs_at,
-                        &mut app.trail,
-                        &mut app.hud.nav,
-                        &mut app.held_key,
-                        &mut app.ok_armed,
-                        &mut app.input.press,
-                    );
-                    continue;
-                }
-                if matches!(
-                    app.route,
-                    Route::Player {
-                        overlay: Overlay::Chapters
-                    }
-                ) && overlay_swallows_key(app.route, key)
-                {
-                    key_chapters(
-                        mt,
-                        key,
-                        sym,
-                        wcode,
-                        app.last_input,
-                        &mut app.route,
-                        &mut app.hud.nav,
-                        &mut app.held_key,
-                    );
-                    continue;
-                }
-                if matches!(app.route, Route::Player { .. }) && matches!(key, Key::Up | Key::Down) {
-                    key_player_updown(key, app.last_input, &mut app.hud, &mut app.scrubber);
-                    continue;
-                }
-                // Search's field takes the press first — but this arm has no body to name,
-                // because `search::key` IS the body: it handles the key and returns whether it
-                // did. So the route test is a guard around CALLING it, not a term to be `&&`ed
-                // with it, and it is written as the nested `if` it always meant. Off Search the
-                // call must not happen at all; on Search, a key it declines falls through to
-                // the chain below exactly as it did.
-                if matches!(app.route, Route::Search) {
-                    if crate::ui::search::key(sym) {
-                        continue;
-                    }
-                }
-                // ---- and the arms on key IDENTITY, which the routes above have already had
-                // their pick of. Still one `else if` chain, still in this order: four of its
-                // nine tests carry a route term as well as a key one (this first arm, Stop, the
-                // player's LEFT/RIGHT and the Library pager), so the order is behaviour too.
-                //
-                // The plain syms only (`alt: false`) — the alternate D-pad codes reach no arm
-                // that navigates a non-player screen. See `Key::Left`, which carries that
-                // asymmetry between this test and the player's scrub arm below.
-                if !matches!(app.route, Route::Player { .. })
-                    && matches!(
-                        key,
-                        Key::Up
-                            | Key::Down
-                            | Key::Left { alt: false }
-                            | Key::Right { alt: false }
-                    )
-                {
-                    key_move_focus(key, sym, app.route, app.last_input, &mut app.held_key);
-                } else if wcode == WCODE_POINTER_HIDDEN {
-                    // LG pointer auto-hidden; ignore.
-                    //
-                    // THE RAW `wcode`, not `Key::PointerHidden`, and this is the one arm in the
-                    // ladder that cannot use the classified value. Its precedence here is
-                    // ROUTE-DEPENDENT: the nav arm above it is `!Player && <direction>`, so for
-                    // an event carrying BOTH a direction sym and this wcode, Home moves focus
-                    // (the nav arm wins, being higher) while the player swallows it (the nav arm
-                    // is skipped, and this one catches it before the scrub arm below).
-                    //
-                    // `classify` is a pure function of the pair and cannot express that — it has
-                    // one linear order and no route. Ordering it directions-first reproduces
-                    // Home and makes the player SEEK on a pointer notification; ordering it
-                    // pointer-first reproduces the player and freezes Home's navigation. So the
-                    // classifier keeps directions first (Home correct) and the raw test stays
-                    // here, at the position that was always the player's answer.
-                    //
-                    // Whether any real event carries that pair is unrecorded: nothing in the
-                    // tree names the sym beside wcode 0x1e4, `remote_token_key` never emits it,
-                    // and the simulator cannot produce one — so `tools/keytable.py` is blind to
-                    // this by construction. Settling it needs a `key` line off the television.
-                } else if matches!(key, Key::Ok) {
-                    key_ok(
-                        mt,
-                        app.last_input,
-                        &mut app.route,
-                        &mut app.hud,
-                        &mut app.ptr,
-                        &mut app.trail,
-                        &mut app.nav_pending,
-                        &mut app.play_from,
-                        &mut app.ok_armed,
-                        &mut app.input.press,
-                    );
-                } else if matches!(key, Key::Pause) {
-                    key_pause(mt, app.route, app.last_input);
-                } else if matches!(key, Key::Play) {
-                    key_play(
-                        mt,
-                        app.last_input,
-                        &mut app.foreground,
-                        &mut app.repause_at,
-                        &mut app.route,
-                        &mut app.play_from,
-                        &mut app.ptr,
-                        &app.trail,
-                    );
-                } else if matches!(key, Key::PlayPause) {
-                    // ONE key, both directions. `key_play`/`key_pause` are each half of the
-                    // toggle, so this arm picks; off the player route `key_play` is what starts
-                    // playback, which is the right answer for a PLAYPAUSE press on a card.
-                    if paused() || !matches!(app.route, Route::Player { .. }) {
-                        key_play(
-                            mt,
-                            app.last_input,
-                            &mut app.foreground,
-                            &mut app.repause_at,
-                            &mut app.route,
-                            &mut app.play_from,
-                            &mut app.ptr,
-                        &app.trail,
-                        );
-                    } else {
-                        key_pause(mt, app.route, app.last_input);
-                    }
-                } else if matches!(key, Key::Exit) {
-                    // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
-                    // and unlike BACK at Home's root there is nothing ambiguous about a key
-                    // labelled EXIT, so unlike BACK it really does end the process — and it
-                    // is now the only key that does.
-                    log("EXIT key: terminating");
-                    app.running = false;
-                } else if matches!(app.route, Route::Player { .. }) && matches!(key, Key::Stop) {
-                    // Stop — the whole arm is the one ritual, already named.
-                    exit_player(mt, &mut app.route, &app.play_from, &mut app.refresh_hubs_at, &mut app.trail);
-                } else if matches!(app.route, Route::Player { .. })
-                    && matches!(key, Key::Left { .. } | Key::Right { .. })
-                {
-                    key_scrub(key, app.last_input, fr.ctrl, &mut app.hud, &mut app.ptr, &mut app.scrubber);
-                } else if matches!(key, Key::Back) {
-                    key_back(
-                        mt,
-                        &mut app.route,
-                        &mut app.nav_pending,
-                        &mut app.trail,
-                        &app.play_from,
-                        &mut app.refresh_hubs_at,
-                    );
-                }
-            } else if et == SDL_MOUSEMOTION {
-                app.last_input = clock::now();
-                app.ptr.last_motion = app.last_input;
-                app.ptr.cur_hidden = false;
-                let (mx, my) = ptr_xy(&app.ev);
-                app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
-                if app.ptr.prev_mx >= 0.0 {
-                    app.ptr.mot_accum += (mx - app.ptr.prev_mx).abs() + (my - app.ptr.prev_my).abs();
-                }
-                app.ptr.prev_mx = mx;
-                app.ptr.prev_my = my;
-                if matches!(app.route, Route::Player { .. }) {
-                    // Player owns this arm before the generic per-route hover ladder below, so
-                    // the overflow popover must be dispatched here.  Otherwise its later
-                    // `Overlay::More` arm is unreachable for every playback, including the
-                    // terminal recovery picker.
-                    if matches!(
-                        app.route,
-                        Route::Player {
-                            overlay: Overlay::More
-                        }
-                    ) {
-                        crate::ui::more_menu::pointer_focus(mx, my);
-                        continue;
-                    }
-                    app.hud.dismissed = false;
-                    extend_hud(app.last_input, HUD_LINGER_MS);
-                    if app.ptr.drag && dur() > 0 {
-                        let frac = crate::ui::player_hud::scrub_frac_x(mx) as f64;
-                        set_scrub((frac * dur() as f64) as i64);
-                    }
-                    continue;
-                }
-                if app.ptr.dpad_mode {
-                    if app.ptr.mot_accum < 120.0 {
-                        continue;
-                    }
-                    app.ptr.dpad_mode = false;
-                }
-                // Hover is the tree's on every screen it owns — `ui::route_screen`'s rule 11
-                // ("hover parks focus on every screen in the family") is the HIT MAP's job now.
-                // Three hand-written arms stood here, keyed by the same open-state flags the key
-                // ladder used, and they existed because a hover ladder keyed by `route` reached
-                // none of the family: a pointer move across Settings, Privacy & data or Legal
-                // drove HOME's focus underneath instead. The press-cancel each of them paid for
-                // by hand — a pointer sliding off the control it armed must abandon that press —
-                // is `dispatch`'s ingest, which cancels an arm whose hit no longer resolves to it.
-                if super::bridge::owns_input(&app.pages, app.route) {
-                    // `app.last_input`, stamped from the clock at the top of this arm: `fr.now`
-                    // is not written until after ingest (`tree_tick` above says why).
-                    app.inputs.push(super::bridge::pointer_input(
-                        mx,
-                        my,
-                        crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
-                    ));
-                    continue;
-                }
-                // `Route::Profiles` is deliberately absent (phase 6): the picker is an owned
-                // screen, so its hover was already taken by `owns_input()` above.
-                if matches!(app.route, Route::Account { .. }) {
-                    crate::ui::account_menu::pointer_focus(mx, my);
-                } else if matches!(app.route, Route::ItemMenu { .. }) {
-                    crate::ui::item_menu::pointer_focus(mx, my);
-                } else if matches!(app.route, Route::Search) {
-                    let (mx, my) = ptr_xy(&app.ev);
-                    crate::ui::search::pointer_focus(mx, my);
-                }
-            } else if et == SDL_MOUSEBUTTONDOWN {
-                app.last_input = clock::now();
-                {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    app.rec.input(super::recorder::enc_pointer("click", cx as i32, cy as i32));
-                }
-                // A FRESH click supersedes a press still in flight from the previous one — the
-                // pointer's twin of `begin_fresh_press`'s nav-key abort. Without it, clicking a
-                // control and then something else inside the ~210 ms commit window let the first
-                // click's deferred activation fire AFTER the second had already acted (two
-                // `on_ok`s: the watched toggle flipped twice, each with its own blocking
-                // refetch). Every arm below re-arms from scratch.
-                //
-                // It sits at the TOP of the pointer handler rather than inside one route's arm,
-                // where it lived while only detail cards armed a press from a click. Every
-                // control face defers now, so the interleaving it guards is reachable on every
-                // screen — including across arms, e.g. Home's hero pill pressed and then a tab
-                // pill clicked, which navigates at once and would otherwise have played the
-                // hero a moment later on the page it had just left.
-                if app.ok_armed {
-                    app.input.press.cancel();
-                    app.ok_armed = false;
-                }
-                // Rule 11's click half, and the same one arm the hover path takes. The three it
-                // replaces each spelled out the two activation shapes by hand — a control FACE
-                // dips and commits on the spring-back, a table row commits on the button-down —
-                // which is exactly what `ElemKind` says once, per element, for every owned screen.
-                if super::bridge::owns_input(&app.pages, app.route) {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    app.inputs.push(super::bridge::click_input(
-                        cx,
-                        cy,
-                        crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
-                    ));
-                    continue;
-                }
-                // …and the pointer's half of the same rule.  The erased transport geometry is
-                // still inert, but the read-out now exposes one real target: choose quality.
-                // Once that opens More, the popover owns clicks through the ordinary modal arm
-                // below; every other click on the failed frame remains nothing.
-                if matches!(app.route, Route::Player { .. })
-                    && crate::ui::player_hud::transport_hidden()
-                    && !matches!(
-                        app.route,
-                        Route::Player {
-                            overlay: Overlay::More
-                        }
-                    )
-                {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    if crate::ui::player_hud::failure_quality_hit(cx, cy) {
-                        crate::ui::more_menu::open_quality();
-                        app.route = Route::Player {
-                            overlay: Overlay::More,
-                        };
-                    }
-                    continue;
-                }
-                if matches!(app.route, Route::Player { .. }) {
-                    // Sample HUD visibility BEFORE re-arming it: a click must only act on
-                    // transport geometry the user can SEE (the key path's vis gate — a
-                    // hidden-HUD OK falls through to play/pause). Without this, a click in
-                    // the invisible timed-out scrub band committed a blind seek.
-                    let hud_vis = hud_visible(app.last_input, hud_until(), paused(), app.hud.dismissed);
-                    app.hud.dismissed = false;
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    // Which control-row ITEM the click landed on, resolved ONCE: the arm below
-                    // both guards on it and parks the ring with it, and re-asking would be two
-                    // derivations of one answer — the thing `ControlSlot` exists to prevent.
-                    // `None` for the discs, whose own `icon_hit` is consulted further down.
-                    let ctrl_click = if hud_vis { fr.ctrl.hit(cx, cy) } else { None };
-                    // An open panel owns the click: dismiss it and STOP. The transport is
-                    // partly hidden while a panel is up (draw_hud gets transport:false), so
-                    // its rects must not be consulted — mirrors the modal key arms above.
-                    match modal_of(app.route) {
-                        Modal::Menu => {
-                            crate::ui::track_menu::close();
-                            app.route = Route::Player {
-                                overlay: Overlay::None,
-                            };
-                        }
-                        Modal::Info => {
-                            crate::ui::info_panel::close();
-                            app.route = Route::Player {
-                                overlay: Overlay::None,
-                            };
-                        }
-                        Modal::Chapters => {
-                            crate::ui::chapters_panel::close();
-                            app.route = Route::Player {
-                                overlay: Overlay::None,
-                            };
-                        }
-                        // Unlike the panels above, this popover's rows are ACTIONS, so a click
-                        // that lands on one commits it (and a click outside reports None and
-                        // just dismisses) — `account_menu`'s contract, same as its key path.
-                        Modal::More => {
-                            apply_more_action(mt, crate::ui::more_menu::click(cx, cy));
-                            app.route = Route::Player {
-                                overlay: Overlay::None,
-                            };
-                        }
-                        // The stand-ins are HUD furniture, so both are gated on the transport
-                        // actually being on screen — `hud_vis` is sampled before the click
-                        // re-arms it, exactly like the rects below. One shared dispatch with
-                        // the key path, from the same resolved slot — and the click PARKS the
-                        // ring on what it hit first, because Up Next's row holds two items
-                        // and `activate_ctrl_row` reads the cursor, not the coordinates.
-                        _ if ctrl_click.is_some() => {
-                            app.hud.nav.focus = 1;
-                            app.hud.nav.btn = ctrl_click.unwrap_or(0);
-                            // …then the tvOS press, exactly as the key arm does it:
-                            // `activate_player_row` reads `hud.nav`, which the two lines
-                            // above have just parked on what was clicked.
-                            app.input.press.begin_ctl(app.last_input);
-                            app.ok_armed = true;
-                        }
-                        _ => {
-                            // shared HUD geometry: player_hud owns the button rects + scrub
-                            // band — consulted only while that geometry is on screen
-                            let icon = if hud_vis {
-                                crate::ui::player_hud::icon_hit(fr.ctrl, cx, cy)
-                            } else {
-                                None
-                            };
-                            let on_scrub = if hud_vis && dur() > 0 {
-                                crate::ui::player_hud::scrub_hit(cx, cy)
-                            } else {
-                                None
-                            };
-                            if let Some(idx) = icon {
-                                // Park the ring on the disc, then dip it — which panel opens is
-                                // `activate_player_row`'s to decide on the spring-back, off the
-                                // same `hud.nav.btn` the key path hands it. The panel used to
-                                // open here, on the button-DOWN, and the disc's own dip could
-                                // never be seen under it.
-                                app.hud.nav.focus = 1;
-                                app.hud.nav.btn = idx;
-                                app.input.press.begin_ctl(app.last_input);
-                                app.ok_armed = true;
-                            } else if let Some(frac) = on_scrub {
-                                let mut t = (frac as f64 * dur() as f64) as i64;
-                                let cap = dur() - 3 * 1_000_000_000;
-                                if cap > 0 && t > cap {
-                                    t = cap;
-                                }
-                                set_scrub(t);
-                                app.ptr.drag = true;
-                            } else {
-                                let np = !paused();
-                                if np {
-                                    if set_transport_paused(mt, true) {
-                                        crate::diag::event(
-                                            crate::diag::schema::DiagEvent::FeatureUsed {
-                                                feature: crate::diag::schema::Feature::Pause,
-                                            },
-                                        );
-                                    }
-                                } else {
-                                    set_transport_paused(mt, false);
-                                }
-                            }
-                        }
-                    }
-                    extend_hud(app.last_input, HUD_LINGER_MS);
-                } else if chip_clicked(app.route, &app.ev) {
-                    // the shared bar's profile chip, on whichever of the three screens is up —
-                    // the pointer twin of `key_ok`'s own `TopFocus::Chip` arm. It sits ahead of
-                    // all three so none of them has to carry a copy of the rule (Home did, and
-                    // that is why the other two had a chip nothing could press).
-                    chip_activate(&mut app.route);
-                } else if matches!(app.route, Route::Search) {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    // The strip is shared chrome and is hit-tested here, not by the screen —
-                    // `tab_pill_at` owns the clipped rects, so a pill scrolled half out of the
-                    // track is clickable across exactly the half you can see.
-                    if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
-                        match crate::ui::widgets::pill_at(i) {
-                            Pill::Search => {} // the screen we are already on
-                            Pill::Section(kind) => {
-                                nav_to(app.route, Nav::Library(kind), &mut app.nav_pending)
-                            }
-                            Pill::Home => nav_to(
-                                app.route,
-                                Nav::Home {
-                                    focus_pill: Some(crate::ui::widgets::Pill::Home),
-                                },
-                                &mut app.nav_pending,
-                            ),
-                        }
-                    } else if let crate::ui::search::Action::Open(node) =
-                        crate::ui::search::click(cx, cy)
-                    {
-                        nav_open(app.route, node, None, &mut app.nav_pending);
-                    }
-                } else if let Route::Account { over } = app.route {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    // a click on a row commits it; anywhere else dismisses the popover
-                    match crate::ui::account_menu::click(cx, cy) {
-                        // No `enter()` on any of these three (phase 6): naming the route is the
-                        // whole of mounting the owned screen it lands on, exactly as
-                        // `key_account`'s twin below no longer calls it.
-                        crate::ui::account_menu::Action::ChangeProfile => {
-                            crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
-                            app.route = Route::Profiles;
-                        }
-                        crate::ui::account_menu::Action::SignIn => {
-                            crate::auth::start_login();
-                            app.route = Route::Login;
-                        }
-                        crate::ui::account_menu::Action::SignOut => {
-                            crate::auth::sign_out();
-                            app.route = Route::Login;
-                        }
-                        // the pointer twin of `key_account`'s Settings arm
-                        crate::ui::account_menu::Action::Settings => {
-                            super::bridge::open_settings(&mut app.pages);
-                            app.route = over.route();
-                        }
-                        // the pointer twin of `key_account`'s arm — lab builds only
-                        crate::ui::account_menu::Action::SendDiagnostics => {
-                            crate::lab::request_upload("menu");
-                            app.route = over.route();
-                        }
-                        crate::ui::account_menu::Action::None => {
-                            // back to the PAGE the popover is on — the pointer's twin of
-                            // `key_account`'s BACK arm
-                            crate::ui::account_menu::close();
-                            app.route = over.route();
-                        }
-                    }
-                } else if let Route::ItemMenu { over } = app.route {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    // a click on a row commits it; anywhere else dismisses the popover. THIS arm
-                    // existing before the Home arm below is what keeps a click off the panel
-                    // from falling through onto the shelf and launching whatever card it hit —
-                    // the failure `modal_of` was written for. (`modal_of` itself is only
-                    // consulted inside the Player branch, so its ItemMenu case is there for the
-                    // same completeness as `Modal::Account`, not because this arm reads it.)
-                    let act = crate::ui::item_menu::click(cx, cy);
-                    app.route = over.route();
-                    apply_item_action(
-                        mt,
-                        act,
-                        over,
-                        &mut app.route,
-                        &mut app.play_from,
-                        &mut app.trail,
-                        &mut app.hud.nav,
-                        &mut app.nav_pending,
-                    );
-                }
-                // `Route::Profiles` and `Route::Login` are deliberately absent here (phase 6):
-                // both are owned screens now, so a click on either was already taken by
-                // `owns_input()`'s click arm above and never reaches this chain.
-            } else if et == SDL_MOUSEBUTTONUP {
-                app.last_input = clock::now();
-                {
-                    let (cx, cy) = ptr_xy(&app.ev);
-                    app.rec.input(super::recorder::enc_pointer("release", cx as i32, cy as i32));
-                }
-                // a click that armed the tvOS press (a detail card) releases on the button-up,
-                // the pointer's twin of the OK key-up: without it the dip would sit there until
-                // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
-                app.input.press.release(app.last_input);
-                // …and the same release for the TREE's press machine, which has no pointer-up of
-                // its own: `dispatch`'s ingest reaches `InputMachine::release` from exactly one
-                // place, an `Ok` key on the `Up` edge, so that is what a button-up becomes here
-                // (`bridge::release_input` carries the reasoning and why it is inert everywhere
-                // else). Unconditional on ownership for `press.release`'s reason above — a
-                // release with nothing armed is a no-op, and asking `owns_input` would drop the
-                // release of a press armed on the frame a surface began to close.
-                app.inputs.push(super::bridge::release_input(crate::ui::machine::Tick {
-                    ms: app.last_input,
-                    dt_us: 0,
-                }));
-                if app.ptr.drag {
-                    app.ptr.drag = false;
-                    if scrub() >= 0 {
-                        commit_seek(scrub(), &mut app.repause_at);
-                    }
-                    extend_hud(app.last_input, HUD_LINGER_MS);
-                }
-            } else if et == SDL_MOUSEWHEEL {
-                app.last_input = clock::now();
-                if app.last_input.wrapping_sub(app.ptr.last_wheel) > 250 {
-                    app.ptr.last_wheel = app.last_input;
-                    // **The host reads a DIFFERENT offset, and this one is not the LG-fork
-                    // shift `decode_key` documents — it is macOS `libSDL2` again being
-                    // sdl2-compat forwarding into SDL3.** `SDL_MouseWheelEvent` on real SDL2
-                    // (what the television runs) carries a plain `Sint32 y` at +20, which is
-                    // what production code always read. Measured 2026-09-02 by dumping the
-                    // polled bytes of an injected -40 tick on this host: `+20` came back 0, and
-                    // -40.0 arrived instead as the FLOAT `preciseY` field at `+32` — SDL2's own
-                    // struct gained that field in 2.0.18 for fractional trackpad scroll, and
-                    // sdl2-compat's round trip apparently only forwards it, leaving the legacy
-                    // integer field zeroed for both a genuine trackpad tick and anything
-                    // `SDL_PushEvent`d in this shape (item 13's `wheel:<dy>` FIFO token hit
-                    // this the first time anything synthesized a wheel event at all — nothing
-                    // needed one before). `cfg!`, not `#[cfg]`, so both arms keep compiling.
-                    let dy = if cfg!(feature = "hostsim") {
-                        rd_f32(&app.ev, 32).round() as i32
-                    } else {
-                        rd_i32(&app.ev, 20)
-                    };
-                    app.rec.input(super::recorder::enc_pointer("wheel", 0, dy));
-                    // the wheel scrolls VERTICALLY only, and only on routes with a vertical
-                    // flow (it used to drive home's focus behind every other screen)
-                    //
-                    // Item 13: an owned surface takes the wheel BEFORE the route dispatch below
-                    // ever sees it — otherwise a wheel tick over Settings/Privacy/Legal fell
-                    // through to whatever route sat behind it (Home's own hero/grid dive, a
-                    // Detail scroll, …), which is the same ownership question the key ladder
-                    // answers for a fresh press, asked here for the wheel instead. It is the
-                    // same `owns_input` the other three arms ask, so the four cannot drift.
-                    if dy == 0 {
-                        // a fractional trackpad tick that rounded to nothing (hostsim), or a
-                        // `wheel:0` token — not a step in either direction
-                        continue;
-                    }
-                    if super::bridge::owns_input(&app.pages, app.route) {
-                        // A tick becomes the DIRECTION KEY it stands for (`bridge::wheel_input`),
-                        // rather than a `Wheel` the family's tables would each have to interpret:
-                        // one tick is one row, which is what `on_updown(±1)` meant. `RepeatGate`
-                        // is deliberately NOT applied — a wheel gesture's ticks are the user's own
-                        // cadence and the gate is armed against the remote's 50 ms hardware
-                        // repeat, so sharing it would let a held key mute a scroll and vice versa.
-                        app.inputs.extend(super::bridge::wheel_input(
-                            dy,
-                            crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
-                        ));
-                    } else if matches!(app.route, Route::Search) {
-                        crate::ui::search::wheel(dy as f32);
-                    }
-                }
-            } else if et == SDL_TEXTINPUT {
-                // The television's own keyboard committing text. Route-UNCONDITIONAL, and
-                // `textinput::on_event` queues unconditionally too — it does NOT check
-                // whether we asked for the panel, deliberately. This is the raw platform
-                // seam: SDL delivered a character because SDL believes text input is on, and
-                // discarding it against our own flag would silently eat REAL typing the first
-                // time the two disagree (a panel dismissed from outside the app, or any
-                // future caller that enables text events another way). Dropping input is the
-                // worse failure, so instead both leaks are closed downstream, where they can
-                // be closed completely: `textinput::start` clears the queue, so nothing typed
-                // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
-                // nobody drains. Gating here would also be a second, weaker copy of a rule
-                // that lives in one place — and it would flip a frame away from the field's
-                // own edit state, because the route changes at the fade floor.
-                crate::textinput::on_event(&app.ev);
+            )
+        {
+            key_player_failed(
+                mt,
+                sym,
+                wcode,
+                &mut app.route,
+                &app.play_from,
+                &mut app.refresh_hubs_at,
+                &mut app.trail,
+            );
+            return;
+        }
+        // Each of these three ALSO gates on `overlay_swallows_key`: a modal overlay
+        // swallows everything except the transport keys (Pause/Play/PlayPause), which
+        // fall through — not `continue` here — to the ordinary Key::Pause/Key::Play/
+        // Key::PlayPause arms further down this chain, none of which carry an overlay
+        // term of their own. That reaches the exact toggle the HUD uses with no
+        // overlay open, and leaves `route` (so the open panel) untouched. See
+        // `overlay_swallows_key`'s doc comment for why `Overlay::More` keeps the old
+        // swallow-everything behaviour.
+        if matches!(
+            app.route,
+            Route::Player {
+                overlay: Overlay::Menu
+            }
+        ) && overlay_swallows_key(app.route, key)
+        {
+            key_track_menu(sym, wcode, app.last_input, &mut app.route, &mut app.held_key);
+            return;
+        }
+        if matches!(
+            app.route,
+            Route::Player {
+                overlay: Overlay::More
+            }
+        ) {
+            key_more_menu(mt, sym, wcode, app.last_input, &mut app.route, &mut app.held_key);
+            return;
+        }
+        if matches!(
+            app.route,
+            Route::Player {
+                overlay: Overlay::Info
+            }
+        ) && overlay_swallows_key(app.route, key)
+        {
+            key_info_panel(
+                mt,
+                sym,
+                wcode,
+                app.last_input,
+                &mut app.route,
+                &app.play_from,
+                &mut app.refresh_hubs_at,
+                &mut app.trail,
+                &mut app.hud.nav,
+                &mut app.held_key,
+                &mut app.ok_armed,
+                &mut app.input.press,
+            );
+            return;
+        }
+        if matches!(
+            app.route,
+            Route::Player {
+                overlay: Overlay::Chapters
+            }
+        ) && overlay_swallows_key(app.route, key)
+        {
+            key_chapters(
+                mt,
+                key,
+                sym,
+                wcode,
+                app.last_input,
+                &mut app.route,
+                &mut app.hud.nav,
+                &mut app.held_key,
+            );
+            return;
+        }
+        if matches!(app.route, Route::Player { .. }) && matches!(key, Key::Up | Key::Down) {
+            key_player_updown(key, app.last_input, &mut app.hud, &mut app.scrubber);
+            return;
+        }
+        // Search's field takes the press first — but this arm has no body to name,
+        // because `search::key` IS the body: it handles the key and returns whether it
+        // did. So the route test is a guard around CALLING it, not a term to be `&&`ed
+        // with it, and it is written as the nested `if` it always meant. Off Search the
+        // call must not happen at all; on Search, a key it declines falls through to
+        // the chain below exactly as it did.
+        if matches!(app.route, Route::Search) {
+            if crate::ui::search::key(sym) {
+                return;
             }
         }
+        // ---- and the arms on key IDENTITY, which the routes above have already had
+        // their pick of. Still one `else if` chain, still in this order: four of its
+        // nine tests carry a route term as well as a key one (this first arm, Stop, the
+        // player's LEFT/RIGHT and the Library pager), so the order is behaviour too.
+        //
+        // The plain syms only (`alt: false`) — the alternate D-pad codes reach no arm
+        // that navigates a non-player screen. See `Key::Left`, which carries that
+        // asymmetry between this test and the player's scrub arm below.
+        if !matches!(app.route, Route::Player { .. })
+            && matches!(
+                key,
+                Key::Up
+                    | Key::Down
+                    | Key::Left { alt: false }
+                    | Key::Right { alt: false }
+            )
+        {
+            key_move_focus(key, sym, app.route, app.last_input, &mut app.held_key);
+        } else if wcode == WCODE_POINTER_HIDDEN {
+            // LG pointer auto-hidden; ignore.
+            //
+            // THE RAW `wcode`, not `Key::PointerHidden`, and this is the one arm in the
+            // ladder that cannot use the classified value. Its precedence here is
+            // ROUTE-DEPENDENT: the nav arm above it is `!Player && <direction>`, so for
+            // an event carrying BOTH a direction sym and this wcode, Home moves focus
+            // (the nav arm wins, being higher) while the player swallows it (the nav arm
+            // is skipped, and this one catches it before the scrub arm below).
+            //
+            // `classify` is a pure function of the pair and cannot express that — it has
+            // one linear order and no route. Ordering it directions-first reproduces
+            // Home and makes the player SEEK on a pointer notification; ordering it
+            // pointer-first reproduces the player and freezes Home's navigation. So the
+            // classifier keeps directions first (Home correct) and the raw test stays
+            // here, at the position that was always the player's answer.
+            //
+            // Whether any real event carries that pair is unrecorded: nothing in the
+            // tree names the sym beside wcode 0x1e4, `remote_token_key` never emits it,
+            // and the simulator cannot produce one — so `tools/keytable.py` is blind to
+            // this by construction. Settling it needs a `key` line off the television.
+        } else if matches!(key, Key::Ok) {
+            key_ok(
+                mt,
+                app.last_input,
+                &mut app.route,
+                &mut app.hud,
+                &mut app.ptr,
+                &mut app.trail,
+                &mut app.nav_pending,
+                &mut app.play_from,
+                &mut app.ok_armed,
+                &mut app.input.press,
+            );
+        } else if matches!(key, Key::Pause) {
+            key_pause(mt, app.route, app.last_input);
+        } else if matches!(key, Key::Play) {
+            key_play(
+                mt,
+                app.last_input,
+                &mut app.foreground,
+                &mut app.repause_at,
+                &mut app.route,
+                &mut app.play_from,
+                &mut app.ptr,
+                &app.trail,
+            );
+        } else if matches!(key, Key::PlayPause) {
+            // ONE key, both directions. `key_play`/`key_pause` are each half of the
+            // toggle, so this arm picks; off the player route `key_play` is what starts
+            // playback, which is the right answer for a PLAYPAUSE press on a card.
+            if paused() || !matches!(app.route, Route::Player { .. }) {
+                key_play(
+                    mt,
+                    app.last_input,
+                    &mut app.foreground,
+                    &mut app.repause_at,
+                    &mut app.route,
+                    &mut app.play_from,
+                    &mut app.ptr,
+                &app.trail,
+                );
+            } else {
+                key_pause(mt, app.route, app.last_input);
+            }
+        } else if matches!(key, Key::Exit) {
+            // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
+            // and unlike BACK at Home's root there is nothing ambiguous about a key
+            // labelled EXIT, so unlike BACK it really does end the process — and it
+            // is now the only key that does.
+            log("EXIT key: terminating");
+            app.running = false;
+        } else if matches!(app.route, Route::Player { .. }) && matches!(key, Key::Stop) {
+            // Stop — the whole arm is the one ritual, already named.
+            exit_player(mt, &mut app.route, &app.play_from, &mut app.refresh_hubs_at, &mut app.trail);
+        } else if matches!(app.route, Route::Player { .. })
+            && matches!(key, Key::Left { .. } | Key::Right { .. })
+        {
+            key_scrub(key, app.last_input, fr.ctrl, &mut app.hud, &mut app.ptr, &mut app.scrubber);
+        } else if matches!(key, Key::Back) {
+            key_back(
+                mt,
+                &mut app.route,
+                &mut app.nav_pending,
+                &mut app.trail,
+                &app.play_from,
+                &mut app.refresh_hubs_at,
+            );
+        }
+    } else if et == SDL_MOUSEMOTION {
+        app.last_input = clock::now();
+        app.ptr.last_motion = app.last_input;
+        app.ptr.cur_hidden = false;
+        let (mx, my) = ptr_xy(&app.ev);
+        app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
+        if app.ptr.prev_mx >= 0.0 {
+            app.ptr.mot_accum += (mx - app.ptr.prev_mx).abs() + (my - app.ptr.prev_my).abs();
+        }
+        app.ptr.prev_mx = mx;
+        app.ptr.prev_my = my;
+        if matches!(app.route, Route::Player { .. }) {
+            // Player owns this arm before the generic per-route hover ladder below, so
+            // the overflow popover must be dispatched here.  Otherwise its later
+            // `Overlay::More` arm is unreachable for every playback, including the
+            // terminal recovery picker.
+            if matches!(
+                app.route,
+                Route::Player {
+                    overlay: Overlay::More
+                }
+            ) {
+                crate::ui::more_menu::pointer_focus(mx, my);
+                return;
+            }
+            app.hud.dismissed = false;
+            extend_hud(app.last_input, HUD_LINGER_MS);
+            if app.ptr.drag && dur() > 0 {
+                let frac = crate::ui::player_hud::scrub_frac_x(mx) as f64;
+                set_scrub((frac * dur() as f64) as i64);
+            }
+            return;
+        }
+        if app.ptr.dpad_mode {
+            if app.ptr.mot_accum < 120.0 {
+                return;
+            }
+            app.ptr.dpad_mode = false;
+        }
+        // Hover is the tree's on every screen it owns — `ui::route_screen`'s rule 11
+        // ("hover parks focus on every screen in the family") is the HIT MAP's job now.
+        // Three hand-written arms stood here, keyed by the same open-state flags the key
+        // ladder used, and they existed because a hover ladder keyed by `route` reached
+        // none of the family: a pointer move across Settings, Privacy & data or Legal
+        // drove HOME's focus underneath instead. The press-cancel each of them paid for
+        // by hand — a pointer sliding off the control it armed must abandon that press —
+        // is `dispatch`'s ingest, which cancels an arm whose hit no longer resolves to it.
+        if super::bridge::owns_input(&app.pages, app.route) {
+            // `app.last_input`, stamped from the clock at the top of this arm: `fr.now`
+            // is not written until after ingest (`tree_tick` above says why).
+            app.inputs.push(super::bridge::pointer_input(
+                mx,
+                my,
+                crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+            ));
+            return;
+        }
+        // `Route::Profiles` is deliberately absent (phase 6): the picker is an owned
+        // screen, so its hover was already taken by `owns_input()` above.
+        if matches!(app.route, Route::Account { .. }) {
+            crate::ui::account_menu::pointer_focus(mx, my);
+        } else if matches!(app.route, Route::ItemMenu { .. }) {
+            crate::ui::item_menu::pointer_focus(mx, my);
+        } else if matches!(app.route, Route::Search) {
+            let (mx, my) = ptr_xy(&app.ev);
+            crate::ui::search::pointer_focus(mx, my);
+        }
+    } else if et == SDL_MOUSEBUTTONDOWN {
+        app.last_input = clock::now();
+        {
+            let (cx, cy) = ptr_xy(&app.ev);
+            app.rec.input(super::recorder::enc_pointer("click", cx as i32, cy as i32));
+        }
+        // A FRESH click supersedes a press still in flight from the previous one — the
+        // pointer's twin of `begin_fresh_press`'s nav-key abort. Without it, clicking a
+        // control and then something else inside the ~210 ms commit window let the first
+        // click's deferred activation fire AFTER the second had already acted (two
+        // `on_ok`s: the watched toggle flipped twice, each with its own blocking
+        // refetch). Every arm below re-arms from scratch.
+        //
+        // It sits at the TOP of the pointer handler rather than inside one route's arm,
+        // where it lived while only detail cards armed a press from a click. Every
+        // control face defers now, so the interleaving it guards is reachable on every
+        // screen — including across arms, e.g. Home's hero pill pressed and then a tab
+        // pill clicked, which navigates at once and would otherwise have played the
+        // hero a moment later on the page it had just left.
+        if app.ok_armed {
+            app.input.press.cancel();
+            app.ok_armed = false;
+        }
+        // Rule 11's click half, and the same one arm the hover path takes. The three it
+        // replaces each spelled out the two activation shapes by hand — a control FACE
+        // dips and commits on the spring-back, a table row commits on the button-down —
+        // which is exactly what `ElemKind` says once, per element, for every owned screen.
+        if super::bridge::owns_input(&app.pages, app.route) {
+            let (cx, cy) = ptr_xy(&app.ev);
+            app.inputs.push(super::bridge::click_input(
+                cx,
+                cy,
+                crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+            ));
+            return;
+        }
+        // …and the pointer's half of the same rule.  The erased transport geometry is
+        // still inert, but the read-out now exposes one real target: choose quality.
+        // Once that opens More, the popover owns clicks through the ordinary modal arm
+        // below; every other click on the failed frame remains nothing.
+        if matches!(app.route, Route::Player { .. })
+            && crate::ui::player_hud::transport_hidden()
+            && !matches!(
+                app.route,
+                Route::Player {
+                    overlay: Overlay::More
+                }
+            )
+        {
+            let (cx, cy) = ptr_xy(&app.ev);
+            if crate::ui::player_hud::failure_quality_hit(cx, cy) {
+                crate::ui::more_menu::open_quality();
+                app.route = Route::Player {
+                    overlay: Overlay::More,
+                };
+            }
+            return;
+        }
+        if matches!(app.route, Route::Player { .. }) {
+            // Sample HUD visibility BEFORE re-arming it: a click must only act on
+            // transport geometry the user can SEE (the key path's vis gate — a
+            // hidden-HUD OK falls through to play/pause). Without this, a click in
+            // the invisible timed-out scrub band committed a blind seek.
+            let hud_vis = hud_visible(app.last_input, hud_until(), paused(), app.hud.dismissed);
+            app.hud.dismissed = false;
+            let (cx, cy) = ptr_xy(&app.ev);
+            // Which control-row ITEM the click landed on, resolved ONCE: the arm below
+            // both guards on it and parks the ring with it, and re-asking would be two
+            // derivations of one answer — the thing `ControlSlot` exists to prevent.
+            // `None` for the discs, whose own `icon_hit` is consulted further down.
+            let ctrl_click = if hud_vis { fr.ctrl.hit(cx, cy) } else { None };
+            // An open panel owns the click: dismiss it and STOP. The transport is
+            // partly hidden while a panel is up (draw_hud gets transport:false), so
+            // its rects must not be consulted — mirrors the modal key arms above.
+            match modal_of(app.route) {
+                Modal::Menu => {
+                    crate::ui::track_menu::close();
+                    app.route = Route::Player {
+                        overlay: Overlay::None,
+                    };
+                }
+                Modal::Info => {
+                    crate::ui::info_panel::close();
+                    app.route = Route::Player {
+                        overlay: Overlay::None,
+                    };
+                }
+                Modal::Chapters => {
+                    crate::ui::chapters_panel::close();
+                    app.route = Route::Player {
+                        overlay: Overlay::None,
+                    };
+                }
+                // Unlike the panels above, this popover's rows are ACTIONS, so a click
+                // that lands on one commits it (and a click outside reports None and
+                // just dismisses) — `account_menu`'s contract, same as its key path.
+                Modal::More => {
+                    apply_more_action(mt, crate::ui::more_menu::click(cx, cy));
+                    app.route = Route::Player {
+                        overlay: Overlay::None,
+                    };
+                }
+                // The stand-ins are HUD furniture, so both are gated on the transport
+                // actually being on screen — `hud_vis` is sampled before the click
+                // re-arms it, exactly like the rects below. One shared dispatch with
+                // the key path, from the same resolved slot — and the click PARKS the
+                // ring on what it hit first, because Up Next's row holds two items
+                // and `activate_ctrl_row` reads the cursor, not the coordinates.
+                _ if ctrl_click.is_some() => {
+                    app.hud.nav.focus = 1;
+                    app.hud.nav.btn = ctrl_click.unwrap_or(0);
+                    // …then the tvOS press, exactly as the key arm does it:
+                    // `activate_player_row` reads `hud.nav`, which the two lines
+                    // above have just parked on what was clicked.
+                    app.input.press.begin_ctl(app.last_input);
+                    app.ok_armed = true;
+                }
+                _ => {
+                    // shared HUD geometry: player_hud owns the button rects + scrub
+                    // band — consulted only while that geometry is on screen
+                    let icon = if hud_vis {
+                        crate::ui::player_hud::icon_hit(fr.ctrl, cx, cy)
+                    } else {
+                        None
+                    };
+                    let on_scrub = if hud_vis && dur() > 0 {
+                        crate::ui::player_hud::scrub_hit(cx, cy)
+                    } else {
+                        None
+                    };
+                    if let Some(idx) = icon {
+                        // Park the ring on the disc, then dip it — which panel opens is
+                        // `activate_player_row`'s to decide on the spring-back, off the
+                        // same `hud.nav.btn` the key path hands it. The panel used to
+                        // open here, on the button-DOWN, and the disc's own dip could
+                        // never be seen under it.
+                        app.hud.nav.focus = 1;
+                        app.hud.nav.btn = idx;
+                        app.input.press.begin_ctl(app.last_input);
+                        app.ok_armed = true;
+                    } else if let Some(frac) = on_scrub {
+                        let mut t = (frac as f64 * dur() as f64) as i64;
+                        let cap = dur() - 3 * 1_000_000_000;
+                        if cap > 0 && t > cap {
+                            t = cap;
+                        }
+                        set_scrub(t);
+                        app.ptr.drag = true;
+                    } else {
+                        let np = !paused();
+                        if np {
+                            if set_transport_paused(mt, true) {
+                                crate::diag::event(
+                                    crate::diag::schema::DiagEvent::FeatureUsed {
+                                        feature: crate::diag::schema::Feature::Pause,
+                                    },
+                                );
+                            }
+                        } else {
+                            set_transport_paused(mt, false);
+                        }
+                    }
+                }
+            }
+            extend_hud(app.last_input, HUD_LINGER_MS);
+        } else if chip_clicked(app.route, &app.ev) {
+            // the shared bar's profile chip, on whichever of the three screens is up —
+            // the pointer twin of `key_ok`'s own `TopFocus::Chip` arm. It sits ahead of
+            // all three so none of them has to carry a copy of the rule (Home did, and
+            // that is why the other two had a chip nothing could press).
+            chip_activate(&mut app.route);
+        } else if matches!(app.route, Route::Search) {
+            let (cx, cy) = ptr_xy(&app.ev);
+            // The strip is shared chrome and is hit-tested here, not by the screen —
+            // `tab_pill_at` owns the clipped rects, so a pill scrolled half out of the
+            // track is clickable across exactly the half you can see.
+            if let Some(i) = crate::ui::widgets::tab_pill_at(cx, cy) {
+                match crate::ui::widgets::pill_at(i) {
+                    Pill::Search => {} // the screen we are already on
+                    Pill::Section(kind) => {
+                        nav_to(app.route, Nav::Library(kind), &mut app.nav_pending)
+                    }
+                    Pill::Home => nav_to(
+                        app.route,
+                        Nav::Home {
+                            focus_pill: Some(crate::ui::widgets::Pill::Home),
+                        },
+                        &mut app.nav_pending,
+                    ),
+                }
+            } else if let crate::ui::search::Action::Open(node) =
+                crate::ui::search::click(cx, cy)
+            {
+                nav_open(app.route, node, None, &mut app.nav_pending);
+            }
+        } else if let Route::Account { over } = app.route {
+            let (cx, cy) = ptr_xy(&app.ev);
+            // a click on a row commits it; anywhere else dismisses the popover
+            match crate::ui::account_menu::click(cx, cy) {
+                // No `enter()` on any of these three (phase 6): naming the route is the
+                // whole of mounting the owned screen it lands on, exactly as
+                // `key_account`'s twin below no longer calls it.
+                crate::ui::account_menu::Action::ChangeProfile => {
+                    crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
+                    app.route = Route::Profiles;
+                }
+                crate::ui::account_menu::Action::SignIn => {
+                    crate::auth::start_login();
+                    app.route = Route::Login;
+                }
+                crate::ui::account_menu::Action::SignOut => {
+                    crate::auth::sign_out();
+                    app.route = Route::Login;
+                }
+                // the pointer twin of `key_account`'s Settings arm
+                crate::ui::account_menu::Action::Settings => {
+                    super::bridge::open_settings(&mut app.pages);
+                    app.route = over.route();
+                }
+                // the pointer twin of `key_account`'s arm — lab builds only
+                crate::ui::account_menu::Action::SendDiagnostics => {
+                    crate::lab::request_upload("menu");
+                    app.route = over.route();
+                }
+                crate::ui::account_menu::Action::None => {
+                    // back to the PAGE the popover is on — the pointer's twin of
+                    // `key_account`'s BACK arm
+                    crate::ui::account_menu::close();
+                    app.route = over.route();
+                }
+            }
+        } else if let Route::ItemMenu { over } = app.route {
+            let (cx, cy) = ptr_xy(&app.ev);
+            // a click on a row commits it; anywhere else dismisses the popover. THIS arm
+            // existing before the Home arm below is what keeps a click off the panel
+            // from falling through onto the shelf and launching whatever card it hit —
+            // the failure `modal_of` was written for. (`modal_of` itself is only
+            // consulted inside the Player branch, so its ItemMenu case is there for the
+            // same completeness as `Modal::Account`, not because this arm reads it.)
+            let act = crate::ui::item_menu::click(cx, cy);
+            app.route = over.route();
+            apply_item_action(
+                mt,
+                act,
+                over,
+                &mut app.route,
+                &mut app.play_from,
+                &mut app.trail,
+                &mut app.hud.nav,
+                &mut app.nav_pending,
+            );
+        }
+        // `Route::Profiles` and `Route::Login` are deliberately absent here (phase 6):
+        // both are owned screens now, so a click on either was already taken by
+        // `owns_input()`'s click arm above and never reaches this chain.
+    } else if et == SDL_MOUSEBUTTONUP {
+        app.last_input = clock::now();
+        {
+            let (cx, cy) = ptr_xy(&app.ev);
+            app.rec.input(super::recorder::enc_pointer("release", cx as i32, cy as i32));
+        }
+        // a click that armed the tvOS press (a detail card) releases on the button-up,
+        // the pointer's twin of the OK key-up: without it the dip would sit there until
+        // press.rs's dropped-key-up ceiling fired. A no-op when no press is in flight.
+        app.input.press.release(app.last_input);
+        // …and the same release for the TREE's press machine, which has no pointer-up of
+        // its own: `dispatch`'s ingest reaches `InputMachine::release` from exactly one
+        // place, an `Ok` key on the `Up` edge, so that is what a button-up becomes here
+        // (`bridge::release_input` carries the reasoning and why it is inert everywhere
+        // else). Unconditional on ownership for `press.release`'s reason above — a
+        // release with nothing armed is a no-op, and asking `owns_input` would drop the
+        // release of a press armed on the frame a surface began to close.
+        app.inputs.push(super::bridge::release_input(crate::ui::machine::Tick {
+            ms: app.last_input,
+            dt_us: 0,
+        }));
+        if app.ptr.drag {
+            app.ptr.drag = false;
+            if scrub() >= 0 {
+                commit_seek(scrub(), &mut app.repause_at);
+            }
+            extend_hud(app.last_input, HUD_LINGER_MS);
+        }
+    } else if et == SDL_MOUSEWHEEL {
+        app.last_input = clock::now();
+        if app.last_input.wrapping_sub(app.ptr.last_wheel) > 250 {
+            app.ptr.last_wheel = app.last_input;
+            // **The host reads a DIFFERENT offset, and this one is not the LG-fork
+            // shift `decode_key` documents — it is macOS `libSDL2` again being
+            // sdl2-compat forwarding into SDL3.** `SDL_MouseWheelEvent` on real SDL2
+            // (what the television runs) carries a plain `Sint32 y` at +20, which is
+            // what production code always read. Measured 2026-09-02 by dumping the
+            // polled bytes of an injected -40 tick on this host: `+20` came back 0, and
+            // -40.0 arrived instead as the FLOAT `preciseY` field at `+32` — SDL2's own
+            // struct gained that field in 2.0.18 for fractional trackpad scroll, and
+            // sdl2-compat's round trip apparently only forwards it, leaving the legacy
+            // integer field zeroed for both a genuine trackpad tick and anything
+            // `SDL_PushEvent`d in this shape (item 13's `wheel:<dy>` FIFO token hit
+            // this the first time anything synthesized a wheel event at all — nothing
+            // needed one before). `cfg!`, not `#[cfg]`, so both arms keep compiling.
+            let dy = if cfg!(feature = "hostsim") {
+                rd_f32(&app.ev, 32).round() as i32
+            } else {
+                rd_i32(&app.ev, 20)
+            };
+            app.rec.input(super::recorder::enc_pointer("wheel", 0, dy));
+            // the wheel scrolls VERTICALLY only, and only on routes with a vertical
+            // flow (it used to drive home's focus behind every other screen)
+            //
+            // Item 13: an owned surface takes the wheel BEFORE the route dispatch below
+            // ever sees it — otherwise a wheel tick over Settings/Privacy/Legal fell
+            // through to whatever route sat behind it (Home's own hero/grid dive, a
+            // Detail scroll, …), which is the same ownership question the key ladder
+            // answers for a fresh press, asked here for the wheel instead. It is the
+            // same `owns_input` the other three arms ask, so the four cannot drift.
+            if dy == 0 {
+                // a fractional trackpad tick that rounded to nothing (hostsim), or a
+                // `wheel:0` token — not a step in either direction
+                return;
+            }
+            if super::bridge::owns_input(&app.pages, app.route) {
+                // A tick becomes the DIRECTION KEY it stands for (`bridge::wheel_input`),
+                // rather than a `Wheel` the family's tables would each have to interpret:
+                // one tick is one row, which is what `on_updown(±1)` meant. `RepeatGate`
+                // is deliberately NOT applied — a wheel gesture's ticks are the user's own
+                // cadence and the gate is armed against the remote's 50 ms hardware
+                // repeat, so sharing it would let a held key mute a scroll and vice versa.
+                app.inputs.extend(super::bridge::wheel_input(
+                    dy,
+                    crate::ui::machine::Tick { ms: app.last_input, dt_us: 0 },
+                ));
+            } else if matches!(app.route, Route::Search) {
+                crate::ui::search::wheel(dy as f32);
+            }
+        }
+    } else if et == SDL_TEXTINPUT {
+        // The television's own keyboard committing text. Route-UNCONDITIONAL, and
+        // `textinput::on_event` queues unconditionally too — it does NOT check
+        // whether we asked for the panel, deliberately. This is the raw platform
+        // seam: SDL delivered a character because SDL believes text input is on, and
+        // discarding it against our own flag would silently eat REAL typing the first
+        // time the two disagree (a panel dismissed from outside the app, or any
+        // future caller that enables text events another way). Dropping input is the
+        // worse failure, so instead both leaks are closed downstream, where they can
+        // be closed completely: `textinput::start` clears the queue, so nothing typed
+        // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
+        // nobody drains. Gating here would also be a second, weaker copy of a rule
+        // that lives in one place — and it would flip a frame away from the field's
+        // own edit state, because the route changes at the fade floor.
+        if super::bridge::search_owns_input(&app.pages, app.route) {
+            let text = crate::textinput::decode(&app.ev);
+            ingest_text(app, &text, crate::textinput::available(), crate::ui::machine::Source::Sdl);
+        } else {
+            crate::textinput::on_event(&app.ev);
+        }
+    }
 }
 
 /// The boot-trigger SCRIPTS (autoplay, grid, settings, press, detail, play, seek, quality, pause,
@@ -3628,11 +3662,20 @@ pub(super) unsafe fn shutdown(mt: &crate::task::MainThread) {
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL
 /// kinds through the same synthesis the remote FIFO uses, direct tokens through the dispatcher.
 /// An unknown kind is logged once per kind rather than silently skipped.
-unsafe fn replay_inject(v: &serde_json::Value) {
+unsafe fn replay_inject(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame, v: &serde_json::Value) {
+    if super::bridge::search_owns_input(&app.pages, app.route) { drain_sdl(app, mt, fr); }
     let kind = v["kind"].as_str().unwrap_or("");
     let i = |k: &str| v[k].as_i64().unwrap_or(0) as i32;
     let u = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
     match kind {
+        "text" => {
+            if !super::bridge::search_owns_input(&app.pages, app.route) {
+                log("replay: text has no owned Search recipient");
+            } else if let Some(events) = super::recorder::dec_text(v) {
+                app.inputs.extend(events);
+                crate::ui::idle::invalidate();
+            } else { log("replay: malformed text input"); }
+        }
         "key" => {
             if v["repeat"].as_bool().unwrap_or(false) {
                 remote_synth_key_repeat(u("sym"), u("wcode"));
@@ -3646,7 +3689,7 @@ unsafe fn replay_inject(v: &serde_json::Value) {
         "wheel" => remote_synth_wheel(i("y")),
         "lifecycle" => remote_synth_lifecycle(u("code")),
         "token" => {
-            let _ = dispatch_remote_token(v["tok"].as_str().unwrap_or(""));
+            let _ = ingress_token(app, mt, fr, v["tok"].as_str().unwrap_or(""));
         }
         other => log(&format!("replay: input kind {other:?} is not replayable; skipped")),
     }

@@ -364,7 +364,8 @@ pub enum PressFrom {
     Pointer,
 }
 
-/// Input (§3.2). The remote FIFO produces these directly; there is no SDL byte-array synthesis.
+/// Normalized input (§3.2). Text enters directly; the application's legacy FIFO key synthesis
+/// remains in its adapter during coexistence, not in this vocabulary.
 #[derive(Clone, Debug)]
 pub struct InputEvent<K> {
     pub at: Tick,

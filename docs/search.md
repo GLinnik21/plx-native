@@ -160,8 +160,12 @@ round-trips these events. Screen keyboard requests are distinct from OS observat
 binds accepted requests to the requesting instance, rejects stale opens/closes, then invokes the
 main-thread adapter's existing `textinput::start/stop` operations. Cover and suspend release that
 binding. Both the binding and queued keyboard requests are included in the state hash.
-SDL/FIFO text ingress, adoption and the product recorder still need their live integration;
-start/stop wiring alone does not complete the native keyboard migration.
+The gated owned path now normalizes SDL and FIFO commits at ingress, before later edit keys,
+and uses `adopt` (never `start`) for a panel observation. Earlier synthesized FIFO keys are polled
+before a direct text token; legacy key synthesis remains during coexistence. Text recording
+preserves commit boundaries, original timing/source, and the observed panel capability, and
+replay reuses that observation rather than probing its current platform. Live cutover and native
+verification remain pending; ingress wiring alone does not complete the keyboard migration.
 
 The owned `screens/search` implementation now compiles and is mounted by integration fixtures
 through `AppMounter::search_owned`. It consumes `AppViews.search`, keeps an unacknowledged draft,

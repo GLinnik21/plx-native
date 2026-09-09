@@ -199,6 +199,8 @@ pub trait Rig<H: Host> {
     fn app_return(&mut self, _from: MachineId, _ret: ReturnState<H::Elem, H::Memory>) {}
     /// Main-thread native operation, reached only after Input validates the requesting owner.
     fn system_keyboard(&mut self, _up: bool) {}
+    /// A native text commit proves the panel is already active; do not start it again.
+    fn adopt_system_keyboard(&mut self) {}
     fn page_alpha(&self) -> f32 { 1.0 }
     fn navigation_presentation(&self) -> super::screen::NavPresentation {
         super::screen::NavPresentation { page_alpha: self.page_alpha(), ..Default::default() }
@@ -1186,16 +1188,17 @@ where
 
     /// A step's emissions: the structural three are PARKED at once (so a key that opens a page
     /// mounts it this frame even when the drain's budget was spent before the FIFO reached its
-    /// op — `a_key_that_opens_a_page_mounts_in_the_same_frame`). Press arms precede the next queued
-    /// input edge so a same-frame release can see its gesture; other effects join the tail.
+    /// op — `a_key_that_opens_a_page_mounts_in_the_same_frame`). Immediate input operations
+    /// precede the next input: releases see their arms, and text sees its field/keyboard state.
     fn absorb(&mut self, out: Vec<Stamped<H>>) {
-        let mut press_arms = Vec::new();
+        let mut immediate_input = Vec::new();
         for s in out {
             match s.fx {
                 Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) => self.park(s),
                 // An OK-up already queued behind its OK-down must see this arm. Keeping it
                 // at the FIFO tail loses same-frame releases (remote_synth_key emits both).
-                Fx::Press(_) => press_arms.push(s),
+                Fx::Press(_) | Fx::Deliver(_, Delivery::Keyboard { .. }) => immediate_input.push(s),
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Activate(_))) if s.from == MachineId::Input => immediate_input.push(s),
                 Fx::App(_) => {
                     self.app_returns.push_back((s.from, self.return_state()));
                     self.queue.push_back(s);
@@ -1203,7 +1206,7 @@ where
                 _ => self.queue.push_back(s),
             }
         }
-        for arm in press_arms.into_iter().rev() {
+        for arm in immediate_input.into_iter().rev() {
             self.queue.push_front(arm);
         }
     }
@@ -1258,6 +1261,7 @@ where
                 if let ScreenEvent::Input(InputEvent {
                     kind: InputKind::SystemKeyboard(up), ..
                 }) = &ev {
+                    if *up { rig.adopt_system_keyboard(); }
                     let owner = up.then_some(id);
                     if self.input.keyboard != *up || self.input.keyboard_owner != owner {
                         self.input.keyboard = *up;

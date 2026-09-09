@@ -113,7 +113,7 @@ impl SearchScreen {
         self.editing = up;
         self.blink_us = 0;
         if up { self.draft.to_end(); }
-        fx.push(Fx::App(AppFx::Search(SearchReq::Keyboard { up })));
+        fx.push(Fx::Deliver(MachineId::Instance(self.instance), Delivery::Keyboard { up }));
         fx.invalidate(Provenance::Input);
     }
     fn edit<H: SearchLike>(&mut self, edit: &TextEdit, fx: &mut Effects<'_, H>) {
@@ -292,7 +292,15 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 if let Some(key) = cx.focus.current { return self.activate(key.elem, true, cx, fx); }
             }
             ScreenEvent::Input(input) => match &input.kind {
-                InputKind::SystemKeyboard(up) => { self.editing = *up; self.blink_us = 0; }
+                InputKind::SystemKeyboard(up) => {
+                    if *up && !self.editing {
+                        self.draft.to_end();
+                        if cx.focus.current != Some(self.key(FIELD)) {
+                            self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
+                        }
+                    }
+                    self.editing = *up; self.blink_us = 0;
+                }
                 InputKind::Text(edit) if self.editing || matches!(cx.owner, InputOwner::System(_)) => self.edit(edit, fx),
                 InputKind::Key { key, sym, edge, .. } if *edge != Edge::Up => {
                     if self.editing {

@@ -494,6 +494,8 @@ pub(super) struct Bridge {
     search_reqs: Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
+    #[cfg(test)]
+    keyboard_adoptions: usize,
     effect_return: ReturnState<u32, PageMemory>,
     pub(super) menu_opener: Option<(EntryId, Option<FocusKey<u32>>)>,
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
@@ -544,6 +546,8 @@ impl Bridge {
             search_reqs: Vec::new(),
             #[cfg(test)]
             keyboard_calls: Vec::new(),
+            #[cfg(test)]
+            keyboard_adoptions: 0,
             effect_return: ReturnState::default(),
             menu_opener: None,
             held: Vec::new(),
@@ -1006,13 +1010,7 @@ impl Rig<AppHost> for Bridge {
             AppFx::Content(req) => self.content_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
-            AppFx::Search(req) => {
-                if let crate::screens::registry::SearchReq::Keyboard { up } = &req {
-                    out.push(Fx::Deliver(from, Delivery::Keyboard { up: *up }));
-                } else {
-                    self.search_reqs.push((from, req, self.effect_return.clone()));
-                }
-            }
+            AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
         }
     }
     fn log(&mut self, line: &str) {
@@ -1023,6 +1021,12 @@ impl Rig<AppHost> for Bridge {
         self.keyboard_calls.push(up);
         #[cfg(not(test))]
         if up { crate::textinput::start(); } else { crate::textinput::stop(); }
+    }
+    fn adopt_system_keyboard(&mut self) {
+        #[cfg(test)]
+        { self.keyboard_adoptions += 1; }
+        #[cfg(not(test))]
+        crate::textinput::adopt();
     }
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
     fn ls2_pump(&mut self) {}
@@ -1433,6 +1437,12 @@ pub(super) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
 pub(super) fn page_owned(d: &Dispatcher<AppHost>, route: Route) -> bool {
     d.nav.top_page().and_then(|e| e.arg.route()) == Some(super::page_of(route))
         && d.top_screen().map_or(false, |s| s.focus_source() == FocusSource::Engine)
+}
+
+pub(super) fn search_owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
+    route == Route::Search && !d.surface_up()
+        && d.top_screen().and_then(|screen| screen.as_any())
+            .is_some_and(|screen| screen.is::<crate::screens::search::SearchScreen>())
 }
 
 pub(super) fn owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
