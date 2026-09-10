@@ -2971,8 +2971,21 @@ fn maybe_spawn() {
 /// TV Shows, and a friend's films and shows that fold onto them — four libraries projecting to
 /// two library-type pills (Home/Search are supplied by chrome). Writes crate globals, so the caller holds
 /// [`crate::testlock::serial`] and `reset()`s afterwards.
+///
+/// **"Two pills" is a claim about the PINS as well as about the table**, and it is the half this
+/// fixture used to leave to chance. [`append_sections`] ends in [`resolve_pins`], which reads the
+/// CURRENT PROFILE's recorded answer out of the session file — so a record naming these very
+/// machines turns a library off and the fixture quietly produces a different strip. That is not
+/// hypothetical: `library_publishes_the_actual_container_strip` and
+/// `four_libraries_on_two_servers_publish_two_type_destinations` failed alone and single-threaded
+/// in one checkout, and passed in another built from the same commit, on nothing but a
+/// `home_pins` record left in `target/<profile>/deps/auth.json` by an earlier run
+/// (`plex::session::fallback_file` is the account, and the reason a test binary can no longer
+/// reach such a file at all). Forgetting the record first is what makes the documented shape the
+/// shape every caller actually gets: the ownership defaults, yours On and a friend's Off.
 #[cfg(test)]
 pub(crate) fn seed_two_source_table_for_test() {
+    crate::plex::session::forget_pins_for_test(&crate::plex::session::current_profile_key());
     tests::seed_sources(vec![
         tests::a_source("mac-mini", "", true),
         tests::a_source("nas-home", "friend", true),
@@ -4208,6 +4221,67 @@ mod tests {
         assert!(!toggle_pin(2), "the last pinned library is refused");
         assert!(pinned(2), "…and refused means UNCHANGED, not toggled twice");
         assert_eq!(pinned_count(), 1);
+        reset();
+    }
+
+    /// **The SHARED fixture's shape is its own, not the disk's.**
+    ///
+    /// [`seed_two_source_table_for_test`] is used by three dozen tests in a dozen modules and its
+    /// doc promises one thing — four libraries projecting to two library-type pills. That promise
+    /// is about the pins as much as about the table, because [`append_sections`] ends in
+    /// [`resolve_pins`]. This plants exactly the record that broke it: an answer for the CURRENT
+    /// profile naming this fixture's own machines, with Movies switched off.
+    ///
+    /// It is the regression artifact for a failure that was NOT a race. A record of this shape,
+    /// for the empty profile key, was sitting in one checkout's `target/debug/deps/auth.json` —
+    /// which is where `paths::in_app_dir` resolves for a TEST BINARY — and it made
+    /// `app::bridge::library_publishes_the_actual_container_strip` and
+    /// `app::chrome::four_libraries_on_two_servers_publish_two_type_destinations` fail alone,
+    /// single-threaded, in that checkout only. Run against the fixture as it was, this test is red
+    /// with the Movies pill missing, in exactly the way those two were.
+    #[test]
+    fn the_shared_fixture_resolves_the_defaults_over_a_recorded_answer() {
+        let _g = crate::testlock::serial();
+        let t = TempPins::new("fixture-owns-its-pins");
+        t.watching("u-fixture-owns-its-pins");
+        let user = crate::plex::session::current_profile_key();
+        let lib = |machine: &str, key| crate::plex::session::PinnedLib {
+            machine_id: machine.into(),
+            key,
+        };
+        assert!(
+            crate::plex::session::update(|s| {
+                let mut next = s.clone();
+                next.set_pins_for(
+                    &user,
+                    crate::plex::session::HomePins {
+                        user: user.clone(),
+                        asked: true,
+                        on: vec![lib("mac-mini", 2)],
+                        off: vec![lib("mac-mini", 1), lib("nas-home", 1), lib("nas-home", 2)],
+                    },
+                );
+                Some(next)
+            }),
+            "the answer really is on disk, or this test grades nothing"
+        );
+
+        seed_two_source_table_for_test();
+
+        assert_eq!(
+            (tab_kind(0), tab_kind(1), tab_count()),
+            (Some(SecKind::Movie), Some(SecKind::Show), 2),
+            "the fixture's own two pills, whatever anybody recorded for this profile"
+        );
+        assert_eq!(
+            (pinned(0), pinned(1), pinned(2), pinned(3)),
+            (true, true, false, false),
+            "…and they are the OWNERSHIP defaults: yours On, a friend's Off"
+        );
+        assert!(
+            crate::plex::session::peek().pins_for(&user).is_none(),
+            "the record was forgotten rather than worked around, so a later resolve agrees"
+        );
         reset();
     }
 

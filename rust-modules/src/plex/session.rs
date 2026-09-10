@@ -62,10 +62,10 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
     crate::paths::session_candidates()
 }
 
-/// The test build's [`auth_paths`]: the real search order until a test redirects it to a file of
-/// its own (see `tests::TempSession`). A `#[cfg(test)]` global, so a shipped binary has neither the
-/// static nor the branch — the file this module writes on a television is decided by `paths.rs` and
-/// by nothing else.
+/// The test build's [`auth_paths`]: the scratch file a test redirected to (see
+/// `tests::TempSession`), else this PROCESS's own scratch file. A `#[cfg(test)]` global, so a
+/// shipped binary has neither the static nor the branch — the file this module writes on a
+/// television is decided by `paths.rs` and by nothing else.
 ///
 /// It exists because there is no other way to exercise the writing half at all: every candidate
 /// `paths.rs` offers is either a device path that does not exist on the dev Mac or — for
@@ -74,15 +74,60 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 static TEST_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
+/// **The fallback is a scratch file, NEVER [`crate::paths::session_candidates`].**
+///
+/// That fall-through was the whole bug. Off a television the real search order ends at
+/// `paths::in_app_dir("auth.json")`, and for a test binary `in_app_dir` resolves through
+/// `current_exe()` to the directory the binary runs from — `rust-modules/target/<profile>/deps/`.
+/// So the host suite read and wrote a real session file that no test owned, one per checkout,
+/// surviving every run. Three consequences — the first MEASURED, the second and third read off
+/// the code that produced it:
+///
+/// * **A test's answer was decided by that file.** `browse::append_sections` calls `resolve_pins`,
+///   which reads this module for the current profile's `home_pins` — so EVERY use of
+///   `browse::seed_two_source_table_for_test` resolved its favourite libraries against whatever
+///   record happened to be on that developer's disk. A record for the empty profile key naming
+///   the fixture's own machines (`mac-mini`, `nas-home`) with Movies switched off deletes the
+///   Movies pill, and `app::bridge`'s `library_publishes_the_actual_container_strip` and
+///   `app::chrome`'s `four_libraries_on_two_servers_publish_two_type_destinations` then failed
+///   ALONE, single-threaded, in one checkout while passing in another built from the same commit.
+/// * **The suite WROTE it.** [`update`] resolves `auth_paths()` once for its read and again for
+///   its write, and `redirect_for_test` used to move `TEST_FILE` without holding [`IO`] — so a
+///   redirect landing between the two halves of somebody else's read-modify-write put a scratch
+///   session's contents, `home_pins` and all, at the persistent path. That is the ONLY route to
+///   the record above this module offers — no test records pins with the real path in play, and
+///   the whole suite single-threaded leaves `home_pins` empty — and it fits its one odd feature,
+///   the EMPTY profile key, which is what a `TempSession` with no `watching` has. Inferred, not
+///   caught in the act: the interleaving is narrow, which is also why the failure arrived as an
+///   occasional red rather than all at once. `redirect_for_test` takes `IO` now.
+/// * **`save_locked` DELETES the losing candidates.** With the real order in play that is a test
+///   binary reaching for `pkg/auth.json` and the two `/media/…` paths.
+///
+/// Per process rather than per test: `TempSession` is how a test gets a file of its own, and this
+/// is only the neutral floor beneath it — empty at every start, so nothing an earlier RUN left
+/// behind can be read, and nothing this run writes can outlive it.
+#[cfg(test)]
+fn fallback_file() -> std::path::PathBuf {
+    static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-session-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("auth.json")
+    })
+    .clone()
+}
+
 #[cfg(test)]
 fn auth_paths() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(p) => vec![p],
-        None => crate::paths::session_candidates(),
+        None => vec![fallback_file()],
     }
 }
 
-/// Point this module's file at `p`, or back at the real search order with `None`.
+/// Point this module's file at `p`, or back at [`fallback_file`] with `None`.
 ///
 /// `pub(crate)` because the writing half is no longer only this module's business: `browse`'s
 /// per-profile Home selection round-trips through this file, and grading THAT end to end is the
@@ -92,8 +137,18 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 /// The caller owes the same discipline `tests::TempSession` documents: hold
 /// [`crate::testlock::serial`] for the whole test, because this is a crate global and several
 /// modules reach `session::load` indirectly.
+///
+/// **It takes [`IO`] to make the swap, and that is not tidiness.** [`update`] is a read-modify-write
+/// that resolves [`auth_paths`] TWICE — once for `peek_locked`, once inside `save_locked` — so a
+/// redirect moving between the two makes it read one file and write another. That is a transplant:
+/// a scratch session's contents, `home_pins` and all, land at whatever path the second resolution
+/// answers. Taking `IO` here means a redirect can only ever move between complete cycles, so both
+/// halves of every read-modify-write see one file. (Callers hold `testlock::serial`, which
+/// serializes the TESTS — but a test writing the session does not have to be the test that moved
+/// the redirect, and the crate lock cannot see that pairing.)
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
+    let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
 }
 
@@ -1200,6 +1255,27 @@ fn io() -> std::sync::MutexGuard<'static, ()> {
 pub fn peek() -> Session {
     let _io = io();
     peek_locked()
+}
+
+/// **Forget one profile's recorded favourite libraries.**
+///
+/// For a fixture that must resolve against the OWNERSHIP DEFAULTS rather than against an answer
+/// somebody recorded earlier — `browse::seed_two_source_table_for_test` and its registered twin,
+/// whose whole contract ("four libraries projecting to two library-type pills") is a statement
+/// about a table with no recorded pins behind it.
+///
+/// Not [`update`]: that refuses a file with no `client_id`, which is exactly the state a scratch
+/// session is in before anything has signed in, so the clear would silently not happen — the
+/// failure mode this exists to remove.
+#[cfg(test)]
+pub(crate) fn forget_pins_for_test(user: &str) {
+    let _io = io();
+    let mut s = peek_locked();
+    let before = s.home_pins.len();
+    s.home_pins.retain(|p| p.user != user);
+    if s.home_pins.len() != before {
+        save_locked(&s);
+    }
 }
 
 /// [`peek`] with the lock already held — the read half every entry point here shares.
