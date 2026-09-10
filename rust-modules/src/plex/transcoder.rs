@@ -194,9 +194,12 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
                 .to_string()
         }
     };
+    // pgs,vobsub: the demuxer client-renders those bitmaps (`ff.rs` / the track menu). Leaving
+    // them off made MDE answer transcode whenever a Blu-ray image sub was selected, which then
+    // 503'd the Original part GET ("decision is for a transcode").
     format!(
         "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={dp_video}\
-         &audioCodec={dp_audio}&subtitleCodec=srt,subrip,ass,ssa)\
+         &audioCodec={dp_audio}&subtitleCodec=srt,subrip,ass,ssa,pgs,vobsub)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value={w}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value={h}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
@@ -329,7 +332,16 @@ impl Client {
     /// Decision Engine whether the item direct-plays given our capability profile. Registers
     /// the session as a side effect. The caller reads `Part.decision` ("directplay" vs
     /// "transcode") and the verdict codes off the returned container.
-    pub fn mde_decision(&self, rating_key: &str, session: &str) -> Option<MediaContainer> {
+    ///
+    /// `audio_stream_id` is the track the demuxer will actually feed (0 = omit, PMS uses the
+    /// part default). Smart direct-play names the AAC/AC3/EAC3 sibling here so MDE does not
+    /// veto a TrueHD/DTS default we never intended to play.
+    pub fn mde_decision(
+        &self,
+        rating_key: &str,
+        session: &str,
+        audio_stream_id: i64,
+    ) -> Option<MediaContainer> {
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
             .int("mediaIndex", 0)
@@ -341,7 +353,8 @@ impl Client {
             .int("directStreamAudio", 1)
             .int("mediaBufferSize", 20971)
             .str("session", session)
-            .str("X-Plex-Session-Identifier", session);
+            .str("X-Plex-Session-Identifier", session)
+            .opt_int("audioStreamID", audio_stream_id);
         let q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
@@ -410,6 +423,9 @@ impl Client {
     /// [`super::library::Client::scrobble`], it does not tell a 200 from a 404: `get_ok` is
     /// `http_get`'s own success, which is the honest limit of a GET whose body carries nothing.
     pub fn transcode_stop(&self, session: &str) -> bool {
+        if session.is_empty() {
+            return false;
+        }
         self.get_ok(&self.transcode_stop_query(session, true))
     }
 
@@ -417,6 +433,9 @@ impl Client {
     /// HLS→direct recovery uses this after decoded source frames: that raw Part is exact-borrowing
     /// the same resource, and terminating it here would make the next Range/seek return 503.
     pub(crate) fn transcode_stop_physical(&self, session: &str) -> bool {
+        if session.is_empty() {
+            return false;
+        }
         self.get_ok(&self.transcode_stop_query(session, false))
     }
 
@@ -442,6 +461,9 @@ impl Client {
     /// For the same authenticated owner, 404 is the idempotent already-closed answer; every other
     /// non-2xx status and transport failure remains inconclusive.
     pub fn transcode_resource_reconciled(&self, session: &str) -> Option<bool> {
+        if session.is_empty() {
+            return None;
+        }
         let q =
             QueryBuilder::new("/status/sessions/close").str("X-Plex-Session-Identifier", session);
         match self.post_status(&q.build())? {
@@ -458,6 +480,9 @@ impl Client {
     /// physical half; callers must follow it with [`Client::transcode_resource_reconciled`]. Every
     /// other response remains unknown.
     pub fn transcode_session_present(&self, session: &str) -> Option<bool> {
+        if session.is_empty() {
+            return None;
+        }
         let q = QueryBuilder::new("/video/:/transcode/universal/ping").str("session", session);
         match self.get_status(&q.build())? {
             200..=299 => Some(true),
@@ -643,6 +668,30 @@ mod tests {
             );
         }
         server.join().unwrap();
+    }
+
+    /// An empty `session=` is not a transcode identity. PMS logs "without a valid session GUID"
+    /// (and the matching ping warning) for that request; nothing on the server can be retired.
+    #[test]
+    fn an_empty_transcode_session_does_not_hit_the_wire() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port() as i32;
+        let client = Client::new(
+            ServerId::from_raw(1),
+            "mach",
+            Origin::http("127.0.0.1", port),
+            "tok",
+            "cid",
+        );
+        assert!(!client.transcode_stop(""));
+        assert!(!client.transcode_stop_physical(""));
+        assert_eq!(client.transcode_session_present(""), None);
+        assert_eq!(client.transcode_resource_reconciled(""), None);
+        match listener.accept() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("empty session must not open a socket: {other:?}"),
+        }
     }
 
     /// **`directStream` is the server's permission to copy the video track, and the ordinary
@@ -1059,7 +1108,7 @@ mod tests {
         assert_eq!(
             super::profile_for(&Caps::assumed()),
             "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc\
-             &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa)\
+             &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa,pgs,vobsub)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\

@@ -214,6 +214,11 @@ class Upnp:
                     loc = m.group(1).decode()
                     if loc not in locations:
                         locations.append(loc)
+        except OSError:
+            # macOS EHOSTUNREACH ("No route to host") when the laptop has no multicast route —
+            # offline, VPN-only, no default. Selftest must still pass with no router in the room;
+            # `start` already turns a missing IGD into a status string.
+            pass
         finally:
             s.close()
         for loc in locations:
@@ -1193,6 +1198,7 @@ def selftest(_args) -> int:
         srv.shutdown()
 
     # UPnP is the one half a selftest cannot fake: report what is on this LAN rather than assert.
+    # A missing multicast route is "not found", not a crash — this gate has to pass offline.
     igd = Upnp.discover(timeout=2.0)
     print(f"note  UPnP IGD on this LAN: {'yes — ' + igd.control_url if igd else 'not found'}")
     if igd:

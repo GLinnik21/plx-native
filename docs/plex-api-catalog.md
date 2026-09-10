@@ -293,8 +293,11 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   `download` (query, 0/1, not used).
 - **Response:** raw media bytes. Notable error codes: **503/509** = "requested the part without
   a decision and no decision could be inferred" — i.e. some server configs require a
-  `transcodeDecision` call even for direct-play. The app's h264+ac3 direct-play path works
-  today without one; keep this in mind if a direct-play 503 ever appears.
+  `transcodeDecision` call even for direct-play. PMS 1.43 logs that 503 as "Denying access due
+  to session lacking permission to direct play" (or "due to terminated session" after
+  `/stop?closeResourceSession=1`). Every Original Part GET now registers
+  `GET /video/:/transcode/universal/decision?hasMDE=1&directPlay=1` first so the session is
+  admitted; smart-DP names the chosen AAC/AC3/EAC3 track as `audioStreamID` on that query.
 - **Divergences:** none (the key comes straight from `part.key`). The middle path segment is a
   **changestamp** (part updatedAt), not a byte offset — the app treats it as opaque, which is
   correct.

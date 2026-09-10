@@ -1637,10 +1637,10 @@ pub(crate) struct PlayingItem {
     pub(crate) subs: Vec<Stream>,
     pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
     /// The source's stored frame size, `Media[0]` (0 = unknown). `route.rs`'s local direct-play
-    /// gate tests it against the device table's bound: the smart-DP branch never asks PMS, so
-    /// the profile's `*`-scoped width/height limitation cannot stop a 4K source from reaching a
-    /// 1080p-bounded decoder unless the client also checks it here (issue #22's over-claim
-    /// class — docs/plex-pass-audit.md, closing section).
+    /// gate tests it against the device table's bound: when `/decision` is unreachable the
+    /// fallback still never asks PMS, so the profile's `*`-scoped width/height limitation cannot
+    /// stop a 4K source from reaching a 1080p-bounded decoder unless the client also checks it
+    /// here (issue #22's over-claim class — docs/plex-pass-audit.md, closing section).
     pub(crate) width: i64,
     pub(crate) height: i64,
     /// Whole-file bitrate in kbps (`Media[0].bitrate`). Auto uses this—not merely the video
@@ -1648,7 +1648,7 @@ pub(crate) struct PlayingItem {
     /// original file, because the transport also has to carry audio and container overhead.
     pub(crate) bitrate: i64,
     /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
-    /// frame size above and for the same reason: the smart-DP branch never asks PMS, so a file
+    /// frame size above and for the same reason: the local fallback never asks PMS, so a file
     /// whose base layer we cannot display correctly (Profile 5, or a dual-layer Profile 7) would
     /// otherwise be fed to the decoder verbatim and shown in the wrong colours. See [`Dovi`].
     pub(crate) dovi: Dovi,

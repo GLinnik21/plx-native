@@ -779,18 +779,21 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // direct-playable (AAC/AC3/E-AC3) — even if the DEFAULT track isn't. We own the demuxer, so
     // we direct-play the raw file and FEED a direct-playable track (e.g. a 4K HEVC item: TrueHD
     // default + an AC3 track → native 4K HEVC + AC3, no transcode — beats the server's
-    // video-downscaling transcode). Falls back to the server /decision (then the local codec
-    // test) when the video isn't direct-playable or NO audio track is (TrueHD/DTS-only → transcode).
+    // video-downscaling transcode). The chosen audio rides `audioStreamID` on `/decision` so MDE
+    // evaluates that sibling rather than vetoing the TrueHD/DTS default. Falls back to the local
+    // codec test when the server returns no usable decision. PMS 1.43 503s a Part GET without a
+    // registered decision ("session lacking permission to direct play"), so the smart-DP audio
+    // pick is no longer a reason to skip `/decision`.
     // The video gate consults the DEVICE's own decoder table (devcaps), not this codebase's
     // memory of the dev TV: "the panel decodes HEVC" was the last dev-environment claim still
     // asserted as universal (issue #22's bug class — docs/plex-pass-audit.md, closing section).
     // This is belt-and-braces with the profile — a no-hevc profile means PMS should never
-    // *offer* hevc direct-play, but the smart-DP branch below can bypass the server's /decision
-    // entirely, so the local gate must agree with the profile on BOTH axes it asserts: the codec
+    // *offer* hevc direct-play, and when `/decision` is unreachable the local gate must still
+    // agree with the profile on BOTH axes it asserts: the codec
     // AND the width/height bound. Codec agreement alone left the resolution half open — the
     // profile's `*`-scoped limitation makes PMS transcode a 4K source down for a 1080p-bounded
-    // SoC, but a branch that never asks the server never meets the limitation, so a 4K file with
-    // any AAC/AC3 track (nearly every file has one) direct-played straight onto the bounded
+    // SoC, but a fallback that never asked the server never meets the limitation, so a 4K file with
+    // any AAC/AC3 track (nearly every file has one) would direct-play straight onto the bounded
     // decoder. See `video_direct_plays` for the gate itself.
     let (src_w, src_h) = plan
         .playing
@@ -901,14 +904,19 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // RE-ENCODE side of the branch below (a remux would copy the too-big pixels verbatim);
         // its /decision carries the profile's own bound, so PMS scales the video down.
         false
-    } else if !streamable {
-        false // non-MKV container → remux (the transcode branch copies the source codecs)
-    } else if audio_sel.is_some() {
-        true
-    } else if rk.is_empty() {
+    } else if !streamable || rk.is_empty() {
+        // non-streamable container → remux (transcode branch copies the source codecs);
+        // empty rk (local sample) → no MDE / no Original
         false
     } else {
-        server_decision(client, rk, &session).unwrap_or_else(|| crate::plex::is_dp_audio(acodec))
+        // Register the session before any Part GET. PMS 1.43 maps a part without a decision
+        // (or whose decision is a transcode) to HTTP 503: "Denying access due to session
+        // lacking permission to direct play". Smart-DP used to skip this because MDE would
+        // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on
+        // the query is what keeps that class on Original.
+        let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
+        server_decision(client, rk, &session, audio_id)
+            .unwrap_or_else(|| audio_sel.is_some() || crate::plex::is_dp_audio(acodec))
     };
 
     // A container-only remux also preserves the original video and avoids the GPU, so it belongs
@@ -1405,10 +1413,11 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
 /// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
 /// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
 /// local agreement with the profile's `*`-scoped `video.width`/`video.height` limitation: the
-/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but the smart-DP branch
-/// never asks PMS, so without this test a 4K file with one direct-playable audio track was fed
-/// verbatim to a decoder whose table says 1920x1088 — the wrong-side failure devcaps' own doc
-/// names (issue #22's over-claim class), invisible on the dev TV, whose bound is 4096x2176.
+/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but when `/decision` is
+/// unreachable the fallback never asks PMS, so without this test a 4K file with one
+/// direct-playable audio track was fed verbatim to a decoder whose table says 1920x1088 — the
+/// wrong-side failure devcaps' own doc names (issue #22's over-claim class), invisible on the
+/// dev TV, whose bound is 4096x2176.
 ///
 /// **The Dolby Vision half is the same shape of bug, found the same way, and it is NOT about the
 /// decoder.** Every profile's base layer is ordinary HEVC and every one of them decodes here — so
@@ -2632,10 +2641,11 @@ mod tests {
         );
     }
 
-    /// The RESOLUTION half of the gate (issue #22's over-claim class): the smart-DP branch never
-    /// asks PMS, so the profile's `*`-scoped width/height limitation cannot save a 4K source from
-    /// direct-playing onto a 1080p-bounded decoder — the client must refuse it locally. Invisible
-    /// on the dev TV (bound 4096x2176); this drives the gate with the reviewer-class caps.
+    /// The RESOLUTION half of the gate (issue #22's over-claim class): when `/decision` is
+    /// unreachable the fallback never asks PMS, so the profile's `*`-scoped width/height limitation
+    /// cannot save a 4K source from direct-playing onto a 1080p-bounded decoder — the client must
+    /// refuse it locally. Invisible on the dev TV (bound 4096x2176); this drives the gate with the
+    /// reviewer-class caps.
     #[test]
     fn a_source_beyond_the_device_bound_does_not_direct_play() {
         let caps = crate::devcaps::Caps {
