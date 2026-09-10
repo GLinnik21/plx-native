@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.6.2. Last updated 10 September 2026.
+Applies to PlxNative 0.6.1. Last updated 10 September 2026.
 
 ## Who is responsible for PlxNative data
 
