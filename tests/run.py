@@ -5376,6 +5376,16 @@ def main():
     ap.add_argument("--owner", action="store_true",
                     help="run as the config.local.h OWNER token (default: run as the overlay's "
                          "test_user, so watch history stays off your real account)")
+    ap.add_argument("--print-test-token", action="store_true",
+                    help="resolve manifest.local.json's test_user to its per-server Plex token, "
+                         "print it to stdout and exit -- no cases, no television, no TV lock. "
+                         "This is the identity-resolution half of the --owner/test_user split "
+                         "above, exposed standalone so tools/tv-session.sh's `up --guest` can "
+                         "reuse it instead of re-deriving the plex.tv shared_servers call: a "
+                         "guest boot must resolve the REAL managed-user token or refuse, never "
+                         "fall through to the owner's (see the 2026-09-10 postmortem in that "
+                         "script's header — a silent fallback wrote real progress into the "
+                         "household account and unscrobbling it also reset the item's viewCount).")
     ap.add_argument("--shared-server", action="store_true",
                     help="inject the overlay's `shared_server` credentials into EVERY case/scene of "
                          "this run, not just the ones declaring needs_shared_server. For bringing "
@@ -5409,6 +5419,28 @@ def main():
                     help="port for the fixture HTTP server (default: pick a free one). Pin it when "
                          "a firewall rule names a port")
     args = ap.parse_args()
+    if args.print_test_token:
+        # Standalone: this mode answers one question (what token is the managed test user's?)
+        # and touches nothing else -- no case selection, no TV lock, no launch. Reject every flag
+        # that implies one of those instead of silently ignoring it, so a copy-pasted command line
+        # fails loudly rather than quietly running the wrong thing.
+        conflicting = [f for f, v in [
+            ("--list", args.list), ("--server", args.server), ("--fps", args.fps),
+            ("--fps-player", args.fps_player), ("--pipeline", args.pipeline),
+            ("--owner", args.owner), ("--build", args.build),
+        ] if v]
+        if conflicting:
+            sys.exit(f"--print-test-token is standalone and cannot combine with {', '.join(conflicting)}")
+        manifest = load_manifest(pipeline_only=False, tv_override=args.tv)
+        test_user = manifest.get("test_user")
+        if not test_user:
+            sys.exit("no test_user in manifest.local.json -- nothing to resolve as a guest "
+                     "identity (add a test_user block, see manifest.local.json.example; or boot "
+                     "as the owner explicitly instead of asking for a guest)")
+        pms = manifest["pms"]
+        token = fetch_managed_user_token(read_token(), pms["host"], pms["port"], test_user["id"])
+        print(token)
+        return 0
     if args.graphics_profile and not (args.fps or args.fps_player):
         sys.exit("--graphics-profile operates on one deterministic FPS scene; combine it with "
                  "--fps or --fps-player and select one with --only/--filter")
