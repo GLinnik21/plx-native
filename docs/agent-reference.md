@@ -201,8 +201,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `-dev`** for every other one — `0.6.0` published, `0.7.0-dev` in the tree. The minor rather than the
   patch because development is TRUNK-BASED here: features land on main, so the next release cut from
   it is a minor (or a major, which no build script can predict); a patch is cut from an existing
-  minor's own line, where trunk's number is not the question. It also makes the semver ordering
-  mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
+  minor's own line, where trunk's number is not the question — this remains exactly true for a
+  checkout of `main` itself, with no marker file. **A checkout of a maintenance line has that
+  input now**, and `build.rs` names the next PATCH there instead: a tracked `RELEASE_LINE` marker
+  at the repo root (`X.Y`, e.g. `0.6`) says "this checkout IS that line, not trunk", so `0.6.0` in
+  `Cargo.toml` plus a present `RELEASE_LINE` reports `0.6.1-dev` rather than `0.7.0-dev`. The file's
+  absence is unconditionally the trunk behaviour above — nothing about a `main` checkout changes.
+  It also makes the semver ordering mean something — `0.7.0-dev` precedes `0.7.0`. That is the string every
   surface reports (X-Plex-Version, the Sentry release, PostHog's `app_version`, the lab snapshot, the
   photographed diagnostics panel); before it, a release commit left the whole tree claiming to BE the
   release it had just cut, and nothing downstream could separate a working tree from the shipped
