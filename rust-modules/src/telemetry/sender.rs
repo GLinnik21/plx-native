@@ -250,12 +250,19 @@ pub(crate) const DEFAULT_HOLD_S: u64 = 60;
 /// records of a category that is now off, and the whole point of storing the category with the
 /// record is that this question has an answer.
 pub(crate) fn allowed(r: &Record, c: &consent::Consent) -> bool {
+    // A one-off report's consent is the single press that queued it, not this snapshot — see
+    // `queue::Category::OneOff`'s doc. It is allowed regardless of whether the standing question
+    // has even been answered.
+    if r.category == Category::OneOff {
+        return true;
+    }
     if !c.answered() {
         return false;
     }
     match r.category {
         Category::Errors => c.errors,
         Category::Usage => c.usage,
+        Category::OneOff => unreachable!("handled above"),
     }
 }
 
@@ -556,6 +563,36 @@ mod tests {
         let nothing = consent::Consent::default();
         assert!(!allowed(&rec(Category::Errors, Dest::Sentry), &nothing));
         assert!(!allowed(&rec(Category::Usage, Dest::PostHog), &nothing));
+    }
+
+    /// **A `OneOff` record is allowed under ANY consent, including a snapshot that allows
+    /// nothing and one where the standing question has never even been asked.** Its consent was
+    /// the one explicit press that queued it, not this snapshot — see `queue::Category::OneOff`.
+    #[test]
+    fn a_one_off_record_is_allowed_under_a_consent_that_allows_nothing() {
+        let nothing = consent::Consent::default();
+        assert!(!nothing.answered());
+        assert!(allowed(&rec(Category::OneOff, Dest::Sentry), &nothing));
+
+        let refused = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: false,
+            usage: false,
+            install_id: None,
+            errors_id: None,
+        };
+        assert!(refused.answered());
+        assert!(allowed(&rec(Category::OneOff, Dest::Sentry), &refused));
+    }
+
+    /// **A `OneOff` record routes to Sentry exactly like an `Errors` record** — same endpoint,
+    /// same envelope framing — since `route`/`wire_body` key off `Dest`, not `Category`.
+    #[test]
+    fn a_one_off_record_routes_to_sentry() {
+        if SENTRY_DSN.is_none() {
+            return; // no DSN in this checkout: route() has nothing to build a URL from
+        }
+        assert!(route(&rec(Category::OneOff, Dest::Sentry)).is_some());
     }
 
     /// **An unconfigured build cannot send, and says so as a compile-time fact.** This assertion

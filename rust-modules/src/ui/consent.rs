@@ -1,8 +1,12 @@
 //! **The consent routes** — two independent choices, asked once, changeable forever after.
 //!
 //! This is the surface every other part of the telemetry work waits on: nothing may be collected
-//! before it has been shown and answered, so until it existed `telemetry::consent`'s transition
-//! functions had no caller and carried `#[allow(dead_code)]` saying so. It is also the screen most
+//! under a STANDING decision before it has been shown and answered, so until it existed
+//! `telemetry::consent`'s transition functions had no caller and carried `#[allow(dead_code)]`
+//! saying so. Two things are collected with no standing decision at all: `diag::defer` holds the
+//! sign-in family (capped, in memory, session-only) while the question sits unanswered, and
+//! `telemetry::signin::send_once` sends the one-off sign-in report, whose consent is a single
+//! press on another screen entirely. It is also the screen most
 //! likely to decide what people think of the whole feature, which is why the wording below is
 //! argued for rather than filled in.
 //!
@@ -109,11 +113,17 @@ const PRODUCT_TITLE: &str = "Share product analytics?";
 /// carry runtime strings and native envelopes must pass a fixed allowlist that rejects content and
 /// identity scopes. Usage action fields remain fixed typed values; the only runtime strings are
 /// the separately allowlisted and bounded compatibility/network dimensions shown in the preview.
-const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
+// **Shortened 2026-09-10 (issue #75 review).** The version that named both sign-in reporting
+// paths in full wrapped to ~17 lines against this route's 12-line cap
+// (`route_screen::RouteLayout::draw_narrative`'s `TextView::max_lines(12)`), so the tail —
+// including the whole "no identifier of any kind" guarantee — fell off the screen with no
+// ellipsis and no MORE affordance. This says the same things in fewer words; every substring the
+// tests below pin is still here.
+const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem: the signal, code addresses, thread information and device compatibility details, plus a random crash report identifier, cleared when you turn it off or sign out. It also covers a handled sign-in error report; even while this is off, the sign-in screen may send a one-off report with no identifier of any kind. Reports never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
 const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.";
 
 const ROW_ERRORS: &str = "Crash reports";
-const ROW_ERRORS_SUB: &str = "Optional technical crash reports.";
+const ROW_ERRORS_SUB: &str = "Optional technical crash and sign-in reports.";
 const ROW_USAGE: &str = "Product analytics";
 const ROW_USAGE_SUB: &str = "Optional feature and playback outcomes.";
 /// **Item 14: one row per CHANNEL, not one row for both.** A single combined preview left it
@@ -1201,6 +1211,20 @@ pub(crate) fn preview_crash() -> String {
     out.push_str(&handled_text);
     out.push_str("\n\n");
     out.push_str(&crate::telemetry::playback::preview_domains());
+    out.push_str("\n\nHandled sign-in error, standing form (only when error reporting is on):\n");
+    let signin = crate::telemetry::signin::preview_event();
+    let signin_text = serde_json::from_slice::<serde_json::Value>(&signin)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&signin).into_owned());
+    out.push_str(&signin_text);
+    out.push_str(
+        "\n\nThe sign-in screen can also offer to send a ONE-OFF report about a specific sign-in \
+         problem, sent only by your own explicit press — regardless of whether this switch is on. \
+         It has the same shape as the sample above but with `contexts.signin.consent` and \
+         `tags[\"signin.consent\"]` read \"one_off\" instead of \"standing\", and it carries no \
+         `user` field at all: no crash report identifier, no identifier of any kind.",
+    );
     out
 }
 
@@ -2252,6 +2276,60 @@ mod tests {
         }
         assert!(PRODUCT_BODY.contains("exact viewing history"));
         assert_ne!(CRASH_TITLE, PRODUCT_TITLE);
+    }
+
+    /// **Issue #75: the crash/errors question names BOTH sign-in reporting paths** — the standing
+    /// handled-error report this switch actually gates, and the separate one-off "Send report"
+    /// press the sign-in screen can offer even while this switch is off, which this text must say
+    /// is NOT gated by it and carries no identifier at all. `ROW_ERRORS_SUB` gets the short form.
+    #[test]
+    fn crash_question_names_both_signin_reporting_paths() {
+        assert!(CRASH_BODY.contains("sign-in error report"));
+        assert!(
+            CRASH_BODY.contains("one-off report"),
+            "the text must distinguish the one-off path from the standing crash-report switch"
+        );
+        assert!(
+            CRASH_BODY.contains("no identifier of any kind"),
+            "the one-off path must say plainly that it carries no identifier"
+        );
+        assert!(ROW_ERRORS_SUB.contains("sign-in"));
+    }
+
+    /// **CRASH_BODY must fit the route family's 12-line narrative cap** (`route_screen.rs`'s
+    /// `draw_narrative`, `TextView::max_lines(12)`), or its tail — the "never include" sentence —
+    /// falls off the screen silently. The version naming both sign-in paths in full wrapped to
+    /// about 17 lines; this pins the shortened one.
+    ///
+    /// **A character budget, not a measurement, and that is forced rather than lazy**: the real
+    /// wrap goes through `text::text_width`, i.e. SDL2_ttf, and a host test that reaches it does
+    /// not fail — it does not LINK (`_TTF_OpenFont` undefined for the test binary). The budget is
+    /// measured on the simulator instead: the 539-character text below wraps to 11 of the 12
+    /// lines at the narrative column's width with its last sentence intact
+    /// (`/tmp/sim-issue75f/consent.png`, 2026-09-10), so the budget is that plus a few
+    /// characters of slack. Growing the text needs a new capture, not a bigger number.
+    #[test]
+    fn crash_body_stays_inside_its_routes_line_cap() {
+        let budget = 560;
+        let n = CRASH_BODY.chars().count();
+        assert!(
+            n <= budget,
+            "CRASH_BODY is {n} characters, over the {budget} the first-run route is known to \
+             fit in 12 lines — shorten it; the privacy sentences must not fall off"
+        );
+    }
+
+    /// The Crashes/Errors preview shows the STANDING sign-in sample and describes the one-off
+    /// path in prose beside it — the person deciding this switch must see both without the
+    /// one-off path being made to look gated by the switch it is describing.
+    #[test]
+    fn preview_crash_describes_both_signin_reporting_paths() {
+        let text = preview_crash();
+        assert!(text.contains("Handled sign-in error, standing form"));
+        assert!(text.contains("ONE-OFF report"));
+        assert!(text.contains("\"standing\""));
+        assert!(text.contains("\"one_off\""));
+        assert!(text.contains("no identifier of any kind"));
     }
 
     /// **Toggling a switch leaves focus on the switch.** Reported: "focus immediately jumps to

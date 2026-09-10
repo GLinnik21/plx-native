@@ -242,6 +242,10 @@ pub(crate) fn commit_retiring(retired: &[String]) {
 ///
 /// Per category, never wholesale: the two switches are independent, and turning off usage must not
 /// discard crash reports somebody is still consenting to.
+///
+/// **`Category::OneOff` is never named here, and that is deliberate, not an omission.** A one-off
+/// record's consent was the single press that queued it, not either standing switch, so there is
+/// no decision here for it to be withdrawn BY — see that variant's doc.
 pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
     let _g = lock();
     let mut all = read_locked();
@@ -258,6 +262,26 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
             before - all.len()
         ));
         write_locked(&all);
+    }
+}
+
+/// **Destroy EVERY queued record, `Category::OneOff` included.**
+///
+/// [`purge_withdrawn`] deliberately spares a one-off record — its consent was the single press
+/// that queued it, not a standing switch a withdrawal can name — but sign-out and Delete all
+/// local data are not a withdrawal of that press, they are an erasure of this television's local
+/// data, and PRIVACY.md/`legal.rs`'s PRIVACY const both promise sign-out removes "any queued
+/// report" and that Delete all local data "removes all of it". Called only from
+/// `telemetry::forget()`, never from the ordinary consent-change path `purge_withdrawn` guards.
+pub(crate) fn purge_all_local() {
+    let _g = lock();
+    let all = read_locked();
+    if all.is_empty() {
+        return;
+    }
+    let n = all.len();
+    if write_locked(&Vec::new()) {
+        crate::log(&format!("telemetry: local erasure purged {n} queued records"));
     }
 }
 
@@ -486,6 +510,54 @@ mod tests {
         purge_withdrawn(&c);
 
         assert_eq!(ids(), vec!["a-crash".to_string()]);
+    }
+
+    /// **A `OneOff` record is never purged by a withdrawal, even when BOTH standing switches are
+    /// off** — its consent was the one press that queued it, not either switch, so there is no
+    /// decision here to withdraw it by. See `Category::OneOff`'s doc and `purge_withdrawn`'s.
+    #[test]
+    fn a_withdrawal_never_touches_a_one_off_record() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("withdraw-oneoff");
+
+        append(&Record {
+            category: Category::OneOff,
+            ..rec("signin-one-off")
+        });
+        append(&Record {
+            category: Category::Errors,
+            ..rec("a-crash")
+        });
+
+        let mut c = crate::telemetry::consent::Consent::default();
+        c.errors = false; // withdrawn
+        c.usage = false; // withdrawn
+        purge_withdrawn(&c);
+
+        assert_eq!(ids(), vec!["signin-one-off".to_string()]);
+    }
+
+    /// **Unlike a withdrawal, a LOCAL ERASURE (sign-out, Delete all local data) takes the `OneOff`
+    /// record too.** `telemetry::forget()` calls this instead of `purge_withdrawn`, and the two
+    /// must stay opposite: PRIVACY.md promises sign-out removes "any queued report" and Delete all
+    /// local data "removes all of it", which a one-off record surviving either would contradict.
+    #[test]
+    fn a_local_erasure_purges_a_one_off_record_too() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("erase-oneoff");
+
+        append(&Record {
+            category: Category::OneOff,
+            ..rec("signin-one-off")
+        });
+        append(&Record {
+            category: Category::Errors,
+            ..rec("a-crash")
+        });
+
+        purge_all_local();
+
+        assert!(ids().is_empty());
     }
 
     /// **0600.** The spool holds no credential, but it holds what a person consented to send and

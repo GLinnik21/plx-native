@@ -5085,6 +5085,13 @@ unsafe fn key_onboarding(
     // reach first — the profile picker's PIN keypad — is why [`onboarding_back`] exists and why
     // this is not a bare `is_back`.
     if is_back(sym, wcode) {
+        // Issue #75: the sign-in screen's one-off report alert claims BACK for itself while open —
+        // it is not this screen's root, and letting the root rule fire first would back the whole
+        // sign-in out (or hand the screen to the television) instead of dismissing the alert.
+        if matches!(route, Route::Login) && crate::ui::login::modal_open() {
+            crate::ui::login::key(sym, wcode);
+            return crate::ui::onboard::Action::None;
+        }
         match onboarding_back(route, profiles_pin_pad_open()) {
             // the screen's own handler has it — fall through to the dispatch below
             OnboardBack::Screen => {}
@@ -5246,7 +5253,11 @@ fn apply_onboarding_action(action: crate::ui::onboard::Action, trail: &mut Trail
 ///
 /// It is still not asked at BOOT: a fresh install boots to the QR screen with nothing to consent
 /// about yet, and asking before somebody has managed to sign in is asking while they have nothing
-/// to lose by walking away.
+/// to lose by walking away. **The sign-in screen's one-off "Send report" alert (issue #75) is
+/// NOT this question and does not contradict this sentence** — it can appear on the QR screen
+/// before any account exists, but it records no decision, mints no identifier, and never touches
+/// this function's `should_show`/`install` path; it is a single explicit press about one specific
+/// problem, not the standing crash/analytics question.
 ///
 /// Cheap and idempotent: `should_show` is false once a decision has been recorded, and false on any
 /// automated boot, so every call site can simply ask. Nothing is stored by asking.
@@ -8585,8 +8596,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                             crate::ui::onboard::click(cx, cy);
                         }
                     } else if matches!(route, Route::Login) {
-                        // one actionable thing on the login screen (retry on error) — click = OK
-                        crate::ui::login::key(SDLK_RETURN, 0);
+                        if crate::ui::login::modal_open() {
+                            // Issue #75 review: route the click THROUGH the one-off report alert
+                            // instead of synthesizing a bare OK — `alert_press_at` hits an actual
+                            // answer (or refuses on a miss), so a click on the scrim or outside the
+                            // panel can no longer activate whichever answer the D-pad last
+                            // focused.
+                            let (cx, cy) = ptr_xy(&ev);
+                            crate::ui::login::alert_press_at(cx, cy);
+                        } else {
+                            // one actionable thing on the login screen (retry on error) — click = OK
+                            crate::ui::login::key(SDLK_RETURN, 0);
+                        }
                     }
                 } else if et == SDL_MOUSEBUTTONUP {
                     last_input = SDL_GetTicks();

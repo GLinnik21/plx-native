@@ -1,6 +1,6 @@
 # PlxNative Privacy Policy
 
-Applies to PlxNative 0.6.0. Last updated 4 September 2026.
+Applies to PlxNative 0.6.2. Last updated 10 September 2026.
 
 ## Who is responsible for PlxNative data
 
@@ -37,8 +37,10 @@ Those lifetimes differ. Signing out removes the sign-in, the servers registered 
 tokens — and with them your optional-reporting answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
-not a sign-out and keeps them. A queued report is deleted once sent, or at the moment you switch
-its category off or sign out. The log rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
+not a sign-out and keeps them. A queued report is deleted once sent. Switching a category off
+deletes that category's own queued reports; signing out, or Delete all local data, destroys
+everything queued, including a one-off report you already pressed "Send" for — a one-off report
+belongs to no category, so only those two erase it. The log rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
 sign-in and the reporting answers can survive an uninstall — use Delete all local data before
 uninstalling if you want nothing of PlxNative left on the television.
 
@@ -49,8 +51,10 @@ details to Sentry in Germany. A report may include the signal, code addresses, t
 internal component labels, app and webOS versions, television model and hardware compatibility
 details needed to reproduce and symbolicate the failure.
 
-Every crash and error report carries a **Crash report ID**: a random identifier created on this
-television when you turn crash reports on, sent as the report's `user.id`. It exists so that
+Every crash report and every automatic error report carries a **Crash report ID**: a random
+identifier created on this television when you turn crash reports on, sent as the report's
+`user.id`. The one-off sign-in report described below is the one exception and carries no `user`
+field at all. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's
 "users affected" figure is the number of distinct Crash report IDs an issue has reached — which is
 what tells a problem that hit many people apart from one television that hit it many times. It is not derived from your Plex
@@ -71,6 +75,26 @@ The closed diagnostic vocabulary includes terminal kinds such as `playback_inter
 `original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
+
+The same independent choice also covers a handled sign-in error report when a sign-in attempt
+fails, sent automatically the same way a crash report is. That report contains which stage failed
+(`pin_create`, `authorization`, `discovery` or `other`), a coarse class of what the last attempt to
+reach plex.tv actually did (an HTTP status range such as `answered_4xx`, or a transport class such
+as `dns`, `tls`, `timeout` or `transport_other`), that exact HTTP status or curl return code as a
+bare number, a bucketed count of consecutive unanswered attempts, a bucketed duration of how long
+the attempt had been failing, and which automatic code the flow was on. It contains no PIN, sign-in
+code, token, account, URL, hostname or address, and carries the same Crash report ID as a crash
+report.
+
+Separately, **whether or not crash reporting is on**, the sign-in screen can offer to send a
+**one-off report** about a specific sign-in problem — sent only if you explicitly press "Send
+report" on the screen where it is offered. It has the same shape as the automatic report above but
+carries **no identifier that persists between reports or identifies you or this television** — not the Crash report ID, not the Analytics ID. It
+is not a reporting decision and does not turn anything on: nothing is recorded about the press
+itself, and no later change to either optional-reporting switch withdraws a report already sent
+this way. Every report of either kind is tagged `standing` (the automatic form, gated on crash
+reports being on) or `one_off` (the explicit press, gated on nothing) so the two are never
+confused.
 
 ## Optional product analytics
 
@@ -127,14 +151,18 @@ names or addresses, access tokens, subtitle text, or exact viewing history.
 Crash reports and product analytics are independent. You can enable either, both or neither during
 setup, and change either choice later in Settings → Privacy & data. Withdrawing a choice stops new
 reports of that category, removes queued records that are no longer permitted, and deletes that
-category's identifier from this television. Signing out does the same for both categories at once.
-One report that the sender had already picked up at the moment you withdraw or sign out may still
-be sent; no further report is picked up after it.
+category's identifier from this television. One report that the sender had already picked up at
+the moment you withdraw a category may still be sent; no further report of that category is picked
+up after it. Signing out, or Delete all local data, is a harder stop: it purges everything queued
+for either category at once, including a one-off report, so nothing further goes out from either
+path.
 
 To ask what a category holds for your installation, or to have it deleted, write to the contact
 below and quote the identifier Settings shows for that category — the Crash report ID for crash
 and error reports, the Analytics ID for product analytics. Each identifier is the only handle its
-reports carry, so a request without it cannot be matched to anything.
+reports carry, so a request without it cannot be matched to anything — and a one-off sign-in
+report carries no handle at all, so it cannot be looked up or deleted on request; that is the
+trade the no-identifier guarantee makes.
 
 ## Contact and non-affiliation
 

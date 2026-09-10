@@ -10,9 +10,10 @@
 //!
 //! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record: the
 //! guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
-//! destroys what it withdrew, that the event path fails closed, that a record queued while a flush
-//! was on the network is not erased by that flush's commit — and a test behind a feature the
-//! default gate does not build is a test that never runs.
+//! destroys what it withdrew, that the event path fails closed on an ANSWERED "no" (an unanswered
+//! decision defers the sign-in family instead, bounded, in memory — see `diag::defer`), that a
+//! record queued while a flush was on the network is not erased by that flush's commit — and a
+//! test behind a feature the default gate does not build is a test that never runs.
 pub(crate) mod consent;
 pub(crate) mod crashreport;
 pub(crate) mod native;
@@ -21,6 +22,7 @@ pub(crate) mod posthog;
 pub(crate) mod queue;
 pub(crate) mod sender;
 pub(crate) mod sentry;
+pub(crate) mod signin;
 pub(crate) mod spool;
 
 use consent::Consent;
@@ -140,6 +142,11 @@ pub(crate) fn record(c: Consent) {
         crashreport::discard_pending_before_opt_in();
     }
     consent::install(c.clone());
+    // Issue #75: replay whatever sign-in funnel `diag::event` had to hold back because the consent
+    // question was still unanswered when it happened. Unconditional — a "yes" lets the replay
+    // through the normal gate, a "no" hits that same gate and drops, and either way the queue must
+    // not survive to be misread by the next decision.
+    crate::diag::replay_deferred();
     if !c.errors {
         crate::player::report::clear_error_trace();
     }
@@ -152,15 +159,19 @@ pub(crate) fn record(c: Consent) {
 }
 
 /// **End the signed-in account's tenure over telemetry.** The decision returns to *unanswered*
-/// and is PUBLISHED FIRST — before any file I/O — so from that instant every producer's gate
-/// answers no and the sender's per-record revision check picks up no further record; this is what
-/// lets `PRIVACY.md` say that no further report is picked up after a sign-out. ONE record the
-/// sender had already passed through that check may still go out — the check-to-POST gap has no
-/// cancellation — and the policy says exactly that, no more. Then both identifiers are gone with it, the consent file
+/// and is PUBLISHED FIRST — before any file I/O — so from that instant every STANDING producer's
+/// gate answers no and the sender's per-record revision check picks up no further standing
+/// record; this is what lets `PRIVACY.md` say that no further report of a category is picked up
+/// after a sign-out. ONE record the sender had already passed through that check may still go
+/// out — the check-to-POST gap has no cancellation — and the policy says exactly that, no more.
+/// The one-off sign-in report is not a standing producer and answers no gate at all; what actually
+/// removes it here is the purge below, same as everything else queued. Then both identifiers are
+/// gone with it, the consent file
 /// is unlinked from every candidate location — a candidate that cannot be unlinked is overwritten
 /// with the default decision, and one that refuses both is logged: that disk is also refusing the
-/// session's own clear, the same failure sign-out already has for the credentials — queued records
-/// are purged, and the native capture backend is stopped with its pending envelopes removed.
+/// session's own clear, the same failure sign-out already has for the credentials — every queued
+/// record, standing or one-off, is purged (`spool::purge_all_local`), and the native capture
+/// backend is stopped with its pending envelopes removed.
 /// Nothing is written otherwise: a missing file IS "never asked", which is what Delete all local
 /// data needs the name to mean.
 ///
@@ -198,7 +209,11 @@ pub(crate) fn forget() {
             }
         }
     }
-    spool::purge_withdrawn(&c);
+    // Not `purge_withdrawn` — a queued `Category::OneOff` record survives THAT on purpose (see its
+    // doc), but sign-out and Delete all local data are an erasure of this television's local
+    // state, not a withdrawal of the single press that queued a one-off report, and PRIVACY.md
+    // promises both remove "any queued report".
+    spool::purge_all_local();
     native::sync_change(&c);
 }
 

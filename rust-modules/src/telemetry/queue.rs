@@ -49,6 +49,9 @@
 //! maps line and breadcrumbs is orders of magnitude larger than `app.launch`, so "200 records" is
 //! not a size. The byte cap is what keeps this off a 615 MB partition shared with every other app.
 //! Crash/error records have priority over usage records; within each category the newest survive.
+//! **A `OneOff` record is highest priority of all** — it is a report a person explicitly pressed
+//! Send for, on the one screen it was offered, and there is no re-offering it if this trim drops
+//! it (unlike Errors/Usage, which the next crash or the next route re-produces).
 //! The dropped count is
 //! returned rather than swallowed, because a queue that silently discards is a queue whose numbers
 //! are wrong in a direction nobody can see.
@@ -64,6 +67,17 @@ pub(crate) enum Category {
     Errors,
     /// which screens and features get used
     Usage,
+    /// **A single report the person explicitly pressed Send for**, on the screen where it was
+    /// offered — issue #75's one-off sign-in report is the first and, today, only producer. Its
+    /// consent is that one press: it is answered before it is ever spooled, so
+    /// `sender::allowed` lets it through regardless of the standing consent snapshot, and
+    /// `spool::purge_withdrawn` never touches it — there is no standing decision to withdraw,
+    /// because none was recorded. It carries no identifier (no Crash report ID, no Analytics ID),
+    /// so "withdrawing consent" cannot even name which reports of this kind exist to be pulled
+    /// back. A record either sends on the next flush or it is dropped by the ordinary spool caps,
+    /// exactly like any other record — it is only EXEMPT from consent-driven purge, not from
+    /// space or corruption handling.
+    OneOff,
 }
 
 /// Where the record goes. Stored rather than derived from the category, because the mapping is
@@ -253,7 +267,7 @@ pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
     // Select newest records up to both caps, visiting Errors before Usage, then restore FIFO order.
     let mut selected = Vec::new();
     let mut bytes = 0usize;
-    for category in [Category::Errors, Category::Usage] {
+    for category in [Category::OneOff, Category::Errors, Category::Usage] {
         for (index, record) in records.iter().enumerate().rev() {
             if record.category != category || selected.len() >= MAX_RECORDS {
                 continue;
@@ -499,6 +513,42 @@ mod tests {
         assert!(
             kept.contains(&crash),
             "usage records evicted the crash report"
+        );
+        assert!(kept.len() <= MAX_RECORDS);
+    }
+
+    /// **`trim` must visit `Category::OneOff` at all** — the priority loop used to enumerate only
+    /// `[Errors, Usage]`, so a `OneOff` record was invisible to `selected` and every compaction
+    /// silently dropped it, whatever the caps said. Reproduces the exact shape that broke:
+    /// compaction runs the very first time a record is trimmed (`ON_DISK == UNKNOWN`), so this is
+    /// a `OneOff` record trimmed alongside plenty of room in both caps — nothing should be
+    /// evicted, and yet the old loop evicted the one record that was never on its list.
+    #[test]
+    fn trim_never_drops_a_one_off_record() {
+        let one_off = rec("signin-one-off", Category::OneOff, b"report");
+        let (kept, dropped) = trim(vec![one_off.clone()]);
+        assert_eq!(dropped, 0);
+        assert!(
+            kept.contains(&one_off),
+            "a OneOff record must survive a trim with room to spare"
+        );
+    }
+
+    /// A `OneOff` record outranks both other categories under the record-count cap — it is a
+    /// report a person explicitly pressed Send for, and unlike a crash or a usage event there is
+    /// no later occurrence of the same thing that could re-produce it if this trim drops it. Same
+    /// shape as `usage_volume_never_evicts_an_error_record`, one priority tier up.
+    #[test]
+    fn a_one_off_record_outranks_errors_and_usage_under_the_record_cap() {
+        let one_off = rec("signin-one-off", Category::OneOff, b"report");
+        let mut rs = vec![one_off.clone()];
+        rs.extend((0..MAX_RECORDS + 5).map(|i| rec(&format!("crash-{i}"), Category::Errors, b"x")));
+        rs.extend((0..20).map(|i| rec(&format!("usage-{i}"), Category::Usage, b"x")));
+        let (kept, dropped) = trim(rs);
+        assert!(dropped > 0);
+        assert!(
+            kept.contains(&one_off),
+            "the one-off record must survive ahead of both errors and usage"
         );
         assert!(kept.len() <= MAX_RECORDS);
     }

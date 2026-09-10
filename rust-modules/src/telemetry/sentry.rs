@@ -502,8 +502,10 @@ fn load_span(buf: &[u8]) -> Option<u64> {
 pub(crate) const MAX_COMPRESSED: usize = 200 * 1024;
 
 /// Attach the crash-report identifier to an event body as Sentry's `user.id` — **the one shape
-/// every Sentry-bound producer shares**, so the three of them (the native envelope via the SDK
-/// scope, both fallback bodies, the handled playback error) cannot drift into three spellings.
+/// every Sentry-bound producer THAT CARRIES AN IDENTIFIER shares**, so the native envelope (via
+/// the SDK scope), both fallback bodies, and the two handled errors (playback and sign-in) cannot
+/// drift into different spellings. The one-off sign-in report (`signin::send_once`) passes `None`
+/// by design and so carries no `user` key at all, same as the `None` case below.
 ///
 /// `user.id` and not a tag or a context, because Sentry's "users affected" count is defined as the
 /// distinct values of the promoted `sentry:user` tag, which Relay derives from `user.id` (then

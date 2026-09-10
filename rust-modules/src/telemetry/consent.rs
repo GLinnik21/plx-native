@@ -70,7 +70,12 @@ use std::sync::RwLock;
 // there is no version-4 answer in the world to expand — only the maintainer's own debug installs,
 // which are re-answered by hand. The first release that ships the question ships it with the
 // identifier already in it. The rule above stands for every bump after that one.
-pub(crate) const POLICY_VERSION: u32 = 4;
+//
+// Version 5 (issue #75) adds the handled sign-in error event — a new report a version-4 answer
+// never covered, since sign-in was previously invisible to this channel by construction (a failed
+// sign-in never reaches an authorized account, and `maybe_ask_consent` only asks once one
+// exists). Every existing version-4 answer must be asked again.
+pub(crate) const POLICY_VERSION: u32 = 5;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.

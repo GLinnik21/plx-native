@@ -198,6 +198,67 @@ struct Ctl {
     /// published, and never reused: it is allocated from a process-global sequence precisely so
     /// that a `Ctl` reset cannot hand two different codes the same number.
     qr_gen: u64,
+    /// Consecutive plex.tv pin polls (or the pin creation that opens the flow) that came back with
+    /// no usable answer. See [`LinkState`] for what this and the next two fields become on screen.
+    link_unanswered: u32,
+    /// When the CURRENT run of misses started. `None` exactly when `link_unanswered == 0` — reset
+    /// together on any real answer (Pending, Authorized, or Gone all count).
+    link_failing_since: Option<Instant>,
+    /// The most recent plex.tv call's outcome, in `net.rs`'s own words (e.g. "HTTP 429" or
+    /// "could not resolve host (curl 6)"). Refreshed on every poll regardless of its own result, so
+    /// it always names what actually happened on the wire, not what this loop inferred from it.
+    link_last_call: Option<String>,
+    /// Which automatic code (1..=[`MAX_PIN_GENERATIONS`]) [`mint_pin`] last published — written in
+    /// the same call that writes the code itself, so a failure reported any time after a code
+    /// exists names the attempt that was actually on screen. `0` until the first code is minted.
+    /// Read by [`set_error`] to build the issue #75 handled-error report's `code_generation` field.
+    code_generation: u32,
+    /// **The run of misses' duration, FROZEN the moment this flow settled into [`Phase::Error`].**
+    /// `link_failing_since.elapsed()` keeps counting up for as long as the process lives, even
+    /// though nothing is polling any more once the flow is settled — so the failed read-out's "…,
+    /// N s" would climb forever for a screen that made its last call minutes ago, and re-render
+    /// every second doing it (`ui::login::update`'s `link_detail_changed` gate wakes the settled
+    /// screen for exactly that reason). Set once, in [`set_error`], from whatever
+    /// `link_failing_since` held at that instant; `None` until then, and cleared with the rest of
+    /// `Ctl` on the next attempt.
+    link_frozen_secs: Option<u64>,
+    /// Which sign-in attempt is currently live — see [`next_attempt`]. Bumped by every flow reset
+    /// (`start_login`, `retry`/`restart`, `cancel`'s resume-stored, `sign_out`, `erase_local_state`
+    /// — every site that replaces or re-seeds `Ctl`), so [`trouble_snapshot`] can tell "this
+    /// trouble belongs to the attempt on screen right now" from "this trouble is a leftover from
+    /// the one before it".
+    attempt: u64,
+    /// **Issue #75.** This attempt's sign-in trouble, if any — set by [`set_error`] (a failed
+    /// attempt) or [`note_waiting_trouble`] (a stuck one), read once a frame by the sign-in
+    /// screen's one-off report alert. `None` for a healthy attempt, and cleared to `None` on every
+    /// flow reset like the rest of `Ctl`.
+    trouble: Option<Trouble>,
+    /// Issue #75 dev seam only (`/tmp/plxnative-signinfail`) — overrides what
+    /// [`signin_error_context`] reads as the last plex.tv call, so [`synth_signin_trouble`] can
+    /// shape a realistic report with no real network call and without reaching into `net.rs`'s
+    /// process-wide record at all. `None` on every ordinary flow.
+    dev_link_outcome: Option<crate::net::CallOutcome>,
+}
+
+/// One attempt's sign-in trouble, held for [`trouble_snapshot`]/[`send_trouble_once`].
+struct Trouble {
+    ctx: crate::telemetry::signin::SignInErrorContext,
+    /// True once this trouble has actually left the television — either automatically
+    /// ([`set_error`]'s call to `telemetry::signin::report_error`, standing consent already on) or
+    /// by the person's own "Send report" press ([`send_trouble_once`]). Either way the sign-in
+    /// screen must show "a report was sent" and never offer to send a second one for the same
+    /// trouble.
+    reported: bool,
+}
+
+/// Allocator for [`Ctl::attempt`] — process-global for the same reason [`QR_GENERATION`] is:
+/// `Ctl` is replaced or re-seeded wholesale at every flow reset, so a counter that lived only
+/// inside it could not tell "this reset began a new attempt" from "the field happened to default
+/// to the value the last one had".
+static SIGNIN_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_attempt() -> u64 {
+    SIGNIN_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
 }
 
 static CTL: Mutex<Option<Ctl>> = Mutex::new(None);
@@ -348,6 +409,90 @@ pub fn qr_snapshot() -> QrCode {
 pub fn error() -> String {
     with_ctl(|c| c.error.clone())
 }
+
+/// **Whether plex.tv is answering during this sign-in — issue #75.** Neither the phase nor
+/// [`error`] can tell "not reachable" from "not yet scanned": both sit in [`Phase::Waiting`]
+/// drawing the same "Waiting for you to sign in…" the whole time. This is read under its own lock
+/// (mirroring [`qr_snapshot`]) rather than folded into it, because it changes every poll — roughly
+/// every 2 s — while the code on screen does not, and the two must not force each other's readers
+/// to re-derive a cache key from an unrelated field.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct LinkState {
+    /// Consecutive plex.tv pin polls (or the pin creation that opens the flow) that got no usable
+    /// answer. `0` means plex.tv answered the most recent call, whatever the answer was.
+    pub unanswered: u32,
+    /// How long plex.tv has been failing to answer. `None` exactly when `unanswered == 0`.
+    pub failing_for: Option<Duration>,
+    /// What the most recent plex.tv call did, in `net.rs`'s own words — e.g. `"couldn't resolve
+    /// host (curl 6)"` or `"HTTP 429"`. `None` before any plex.tv call has happened this process.
+    pub last_call: Option<String>,
+}
+
+/// PURE (given the `Ctl` snapshot). Shared by [`link_state`] and [`signin_error_context`], which
+/// both need the same read under whatever lock they already hold.
+fn link_state_of(c: &Ctl) -> LinkState {
+    LinkState {
+        unanswered: c.link_unanswered,
+        // A settled flow (`link_frozen_secs`, set once by `set_error`) reports the duration of the
+        // run of misses that actually happened; a live one keeps measuring against `Instant::now`.
+        failing_for: c
+            .link_frozen_secs
+            .map(Duration::from_secs)
+            .or_else(|| c.link_failing_since.map(|t| t.elapsed())),
+        last_call: c.link_last_call.clone(),
+    }
+}
+
+pub fn link_state() -> LinkState {
+    with_ctl(|c| link_state_of(c))
+}
+
+/// PURE. Is the link bad enough that the sign-in screen should stop saying "waiting for you" and
+/// start saying "check the connection"? True once two consecutive polls came back with nothing —
+/// one miss can be a blip in an otherwise healthy 2 s cadence, and reporting on it would flicker a
+/// warning at ordinary jitter. [`link_detail`] draws the same line, for the same reason.
+pub fn link_unreachable(s: &LinkState) -> bool {
+    s.unanswered >= 2
+}
+
+/// PURE. The one diagnostic sentence the sign-in screen draws under its status while it is still
+/// WAITING — `None` while plex.tv is answering, and gated at the same two-consecutive-miss
+/// threshold as [`link_unreachable`] so it cannot flicker at ordinary jitter in an otherwise
+/// healthy 2 s poll cadence.
+pub fn link_detail(s: &LinkState) -> Option<String> {
+    link_detail_at(s, 2)
+}
+
+/// PURE. The same sentence for a SETTLED read-out (`Phase::Error`), where there is no live poll
+/// left to flicker against and so no reason to wait for a second miss. **This is the one that
+/// actually reaches the screen on the dominant issue-#75 path**: pin CREATION failing records
+/// exactly one miss and then the flow is over — `login_thread` returns without polling again, and
+/// every retry starts a fresh `Ctl` with the counter back at zero — so gating this read-out at two
+/// misses meant it could never show the curl reason on that path, however many times the user
+/// pressed *Try again*.
+pub fn link_detail_settled(s: &LinkState) -> Option<String> {
+    link_detail_at(s, 1)
+}
+
+/// PURE. Shared sentence builder — bounded and identifier-free: curl's own reason (or an HTTP
+/// status), a try count, and how long the run of misses has lasted — never a URL, host, or token.
+/// The prefix distinguishes a call plex.tv genuinely never answered from one it DID answer but
+/// that the sign-in could not use (a 2xx whose body would not parse): "not answering" about a
+/// call that got HTTP 200 back reads as contradicting itself.
+fn link_detail_at(s: &LinkState, min_misses: u32) -> Option<String> {
+    if s.unanswered < min_misses {
+        return None;
+    }
+    let reason = s.last_call.as_deref().unwrap_or("no answer yet");
+    let secs = s.failing_for.unwrap_or_default().as_secs();
+    let prefix = if reason.starts_with("HTTP") {
+        "plex.tv answered but the sign-in could not use it"
+    } else {
+        "plex.tv is not answering"
+    };
+    let tries = if s.unanswered == 1 { "try" } else { "tries" };
+    Some(format!("{prefix} — {reason}, {} {tries}, {secs} s", s.unanswered))
+}
 /// Did the last profile-switch failure blame the submitted PIN? Drives the PIN pad's red-flash
 /// (vs closing so the picker's error banner can show a non-PIN failure).
 pub fn pin_denied() -> bool {
@@ -379,16 +524,47 @@ pub(crate) fn set_pin_denied_for_test(v: bool) {
 
 // ---- flow control ----
 
+/// The `Ctl` a fresh QR sign-in opens with — shared by [`start_login`] and `restart`'s
+/// [`Restart::Login`] branch, which is the same reset by a different door. Pure given `session`
+/// (the caller reads it from disk), so a new attempt id is the one observable effect a host test
+/// can pin without spawning the worker either caller starts next.
+fn fresh_login_ctl(session: Session) -> Ctl {
+    Ctl {
+        phase: Phase::Creating,
+        session,
+        signin_active: true,
+        attempt: next_attempt(),
+        ..Ctl::default()
+    }
+}
+
+/// The in-place reset `restart`'s [`Restart::Discovery`] branch applies — the account credential
+/// this flow already earned is kept (that is the whole point of that branch), but it is still a
+/// fresh ATTEMPT for the one-off report offer: the trouble it may have carried belonged to the
+/// failure this press is retrying, not to whatever the retry itself does.
+fn restart_discovery_ctl(c: &mut Ctl) {
+    c.error.clear();
+    c.phase = Phase::Discovering;
+    c.signin_active = true;
+    c.attempt = next_attempt();
+    c.trouble = None;
+    // The link-health RUN belongs to the failure this press is retrying, exactly like `trouble`
+    // above — a fresh attempt must not carry a frozen `failing_for` into a retry that never fails
+    // for a link reason at all, which is otherwise readable in the next report `set_error` builds
+    // (`link_frozen_secs`'s own doc says it is "cleared with the rest of `Ctl` on the next
+    // attempt", and this reset was the one attempt-boundary that left it standing).
+    c.link_frozen_secs = None;
+    c.link_failing_since = None;
+    c.link_unanswered = 0;
+    c.link_last_call = None;
+    c.dev_link_outcome = None;
+}
+
 /// Begin the QR login: reset state, load the persisted `client_id`, and kick off the pin thread.
 pub fn start_login() {
     crate::diag::event(crate::diag::schema::DiagEvent::SignInStarted);
     let (epoch, ()) = begin_flow(|c| {
-        *c = Ctl {
-            phase: Phase::Creating,
-            session: session::load(),
-            signin_active: true,
-            ..Ctl::default()
-        };
+        *c = fresh_login_ctl(session::load());
     });
     if !crate::task::spawn_small("login", move || login_thread(epoch)) {
         // Phase::Creating is a spinner with a worker behind it. Without the worker it never ends,
@@ -448,19 +624,8 @@ fn restart(expected: Option<(Phase, u64)>) -> bool {
             // error read-out, whose `set_error` already reported the failure) begins a new one.
             let fresh_attempt = restart_is_a_new_attempt(c.signin_active);
             match plan {
-                Restart::Discovery { .. } => {
-                    c.error.clear();
-                    c.phase = Phase::Discovering;
-                    c.signin_active = true;
-                }
-                Restart::Login => {
-                    *c = Ctl {
-                        phase: Phase::Creating,
-                        session: session::load(),
-                        signin_active: true,
-                        ..Ctl::default()
-                    };
-                }
+                Restart::Discovery { .. } => restart_discovery_ctl(c),
+                Restart::Login => *c = fresh_login_ctl(session::load()),
             }
             (plan, fresh_attempt)
         },
@@ -743,6 +908,7 @@ fn resume_stored(sess: Session) -> bool {
             session: sess,
             apply_pending: true,
             from,
+            attempt: next_attempt(),
             ..Ctl::default()
         }
     });
@@ -934,6 +1100,9 @@ pub fn erase_local_state() {
 /// it does not have to.
 fn forget_account() {
     crate::telemetry::forget();
+    // A sign-in event held back by an unanswered consent question belongs to the account whose
+    // attempt caused it — never to whoever signs in next (issue #75's deferral, `diag::mod.rs`).
+    crate::diag::clear_deferred();
     let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
     AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     session::clear();
@@ -945,6 +1114,7 @@ fn forget_account() {
 fn deleted_ctl() -> Ctl {
     Ctl {
         phase: Phase::Deleted,
+        attempt: next_attempt(),
         ..Ctl::default()
     }
 }
@@ -953,6 +1123,10 @@ fn deleted_ctl() -> Ctl {
 
 fn login_thread(epoch: u64) {
     let cid = with_ctl(|c| c.session.client_id.clone());
+    // Issue #75 dev seam — `/tmp/plxnative-signinfail[=error|stall]`. See `synth_signin_trouble`.
+    if let Some(spec) = crate::dev::read("signinfail") {
+        return synth_signin_trouble(&spec);
+    }
     let ac = AccountClient::new(&cid, None);
 
     // 1) create a pin, and KEEP creating one for as long as this screen is up and the last one
@@ -1045,6 +1219,53 @@ fn login_thread(epoch: u64) {
     finish_sign_in(&ac, epoch);
 }
 
+/// **Issue #75 dev seam** — `/tmp/plxnative-signinfail[=error|stall]`, read once at the top of
+/// [`login_thread`]. Neither leg makes a real plex.tv call. `error` (the default — anything but
+/// exactly `stall`) fails the flow at once through the ordinary [`set_error`] path with a
+/// synthetic DNS-shaped outcome (one miss, frozen 3s), so the failed read-out and its one-off
+/// report alert are both reachable with no working network at all. `stall` instead seeds
+/// `Phase::Waiting` with three unanswered polls and a failing-since 70s in the past, so the
+/// sign-in screen's own stalled-wait escape and the trouble alert both have something to offer the
+/// moment it draws — neither actually polls plex.tv, since there is no worker behind this `Ctl`.
+///
+/// `Ctl::dev_link_outcome` is what lets this shape a realistic
+/// [`crate::telemetry::signin::SignInErrorContext`] without touching `net.rs`'s process-wide
+/// [`crate::net::last_plex_tv_call`] record at all — that record is real evidence about this
+/// process's actual network calls, and a synthetic trigger must not be able to plant a fake one
+/// for every OTHER caller of it to trip over.
+fn synth_signin_trouble(spec: &str) {
+    with_ctl(|c| {
+        c.dev_link_outcome = Some(crate::net::CallOutcome::Transport(6));
+        c.link_last_call = Some("couldn't resolve host (curl 6)".to_string());
+    });
+    if spec == "stall" {
+        with_ctl(|c| {
+            c.phase = Phase::Waiting;
+            c.pin_code = "SIGN75".to_string();
+            c.link_unanswered = 3;
+            // `checked_sub`, not a bare `-`: `Instant` subtraction panics rather than saturating
+            // when the result would precede the monotonic clock's own origin (system boot on
+            // Linux), which a process launched within 70s of boot — plausible for an app auto-
+            // started at TV boot with this dev trigger armed — would hit on every launch.
+            c.link_failing_since = Some(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(70))
+                    .unwrap_or_else(Instant::now),
+            );
+        });
+        return;
+    }
+    with_ctl(|c| {
+        c.link_unanswered = 1;
+        c.link_failing_since = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(3))
+                .unwrap_or_else(Instant::now),
+        );
+    });
+    set_error("Couldn't create a sign-in code — check the connection.");
+}
+
 /// How many codes ONE visit to the sign-in screen may burn through before it gives up and offers
 /// its own *Try again*.
 ///
@@ -1092,7 +1313,40 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
     let pin = match ac.create_pin() {
         Some(p) if p.id != 0 && !p.code.is_empty() => p,
         _ => {
-            set_error_if_live(epoch, "Couldn't reach Plex — check the connection.");
+            // Three different things can put us in this arm, and only one of them is "plex.tv is
+            // not answering". A non-2xx is a REFUSAL (rate limiting is the one seen in practice) —
+            // not fixed by checking this TV's own network, so the message stops telling the user
+            // to. A 2xx whose body did not parse is plex.tv ANSWERING with something this client
+            // could not use — also not a connectivity fault, and — since 2026-09-10 — no longer
+            // counted as a miss against the link-health run: the wire worked. Anything else —
+            // timeout, transport error, no answer at all — is the real "not answering" case, now
+            // naming plex.tv rather than "Plex" so it reads consistently with [`link_detail`]'s own
+            // sentence.
+            let outcome = crate::net::last_plex_tv_call().map(|c| c.outcome);
+            let refused_status = match outcome {
+                Some(crate::net::CallOutcome::Answered(status)) if !(200..300).contains(&status) => {
+                    Some(status)
+                }
+                _ => None,
+            };
+            let bad_body_status = match outcome {
+                Some(crate::net::CallOutcome::Answered(status)) if (200..300).contains(&status) => {
+                    Some(status)
+                }
+                _ => None,
+            };
+            let unreachable = refused_status.is_none() && bad_body_status.is_none();
+            note_link_answer(epoch, unreachable);
+            let msg = if let Some(status) = refused_status {
+                format!("plex.tv refused the sign-in request (HTTP {status}) — try again in a minute.")
+            } else if let Some(status) = bad_body_status {
+                format!(
+                    "plex.tv answered but the response could not be read (HTTP {status}) — try again in a minute."
+                )
+            } else {
+                "Couldn't reach plex.tv — check this TV's internet connection.".to_string()
+            };
+            set_error_if_live(epoch, &msg);
             return None;
         }
     };
@@ -1129,6 +1383,9 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
             // see one without the other — see [`qr_snapshot`].
             c.qr_gen = QR_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
             c.phase = Phase::Waiting;
+            // See `Ctl::code_generation`'s doc: written in the same call that publishes the code it
+            // describes, so a later `set_error` reports the attempt that was actually on screen.
+            c.code_generation = generation;
         });
     })?;
     Some(MintedCode {
@@ -1287,7 +1544,9 @@ struct LivePin<'a> {
 
 impl PinWatch for LivePin<'_> {
     fn poll(&mut self) -> PinPoll {
-        self.ac.poll_pin(self.id)
+        let result = self.ac.poll_pin(self.id);
+        note_link_answer(self.epoch, matches!(result, PinPoll::Unreachable));
+        result
     }
     fn wait(&mut self, d: Duration) -> bool {
         // SLICED, so a cancel is noticed within a slice however far the backoff has grown. The
@@ -1310,6 +1569,33 @@ impl PinWatch for LivePin<'_> {
     fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }
+}
+
+/// Update the [`LinkState`] after one plex.tv answer (a pin poll, or the pin-creation call that
+/// opens the flow) — `missed` is [`PinPoll::Unreachable`], or a pin-create failure that named no
+/// HTTP status. Any real answer (`Pending`, `Authorized`, `Gone`, or an `Answered` HTTP status,
+/// even a refusal) resets the run; a miss extends it and arms the failing-since clock on the
+/// first one. `link_last_call` is refreshed every time regardless, from `net.rs`'s own record of
+/// what the wire actually did — so the sentence [`link_detail`] builds always names the call that
+/// just happened, not the one before it.
+///
+/// Written under the same epoch gate as everything else this flow publishes: a superseded
+/// worker's straggling answer must not overwrite a fresher flow's link state, the same reasoning
+/// [`with_live_epoch`]'s other callers rely on.
+fn note_link_answer(epoch: u64, missed: bool) {
+    let last_call = crate::net::last_plex_tv_call().map(|c| crate::net::describe_outcome(c.outcome));
+    let _ = with_live_epoch(epoch, || {
+        with_ctl(|c| {
+            if missed {
+                c.link_unanswered = c.link_unanswered.saturating_add(1);
+                c.link_failing_since.get_or_insert_with(Instant::now);
+            } else {
+                c.link_unanswered = 0;
+                c.link_failing_since = None;
+            }
+            c.link_last_call = last_call;
+        });
+    });
 }
 
 /// Is this worker still the one the sign-in screen belongs to?
@@ -3300,22 +3586,142 @@ fn switch_thread(index: usize, pin: Option<String>) {
 
 // ---- helpers ----
 
+/// PURE (given the `Ctl` snapshot). Build the issue #75 handled-error report's context from the
+/// flow's own state — factored out of [`set_error`] so it can be exercised directly against a
+/// constructed `Ctl` in tests, with no thread, no network and no consent gate in the way.
+fn signin_error_context(c: &Ctl) -> crate::telemetry::signin::SignInErrorContext {
+    let kind = match c.phase {
+        Phase::Creating => crate::telemetry::signin::SignInFailureKind::PinCreate,
+        Phase::Waiting => crate::telemetry::signin::SignInFailureKind::Authorization,
+        Phase::Discovering => crate::telemetry::signin::SignInFailureKind::Discovery,
+        _ => crate::telemetry::signin::SignInFailureKind::Other,
+    };
+    let outcome = c
+        .dev_link_outcome
+        .or_else(|| crate::net::last_plex_tv_call().map(|l| l.outcome));
+    crate::telemetry::signin::context_from(kind, &link_state_of(c), outcome, c.code_generation)
+}
+
 fn set_error(msg: &str) {
     log(&format!("auth: ERROR {msg}"));
-    with_ctl(|c| {
-        if c.signin_active {
+    // Only the CHEAP `Ctl` fields are collected under the lock — the phase-derived diag kind and
+    // the pure context — and both the diag event and the telemetry report are emitted AFTER the
+    // lock is released. `crate::diag::event` and `crate::telemetry::signin::report_error` both do
+    // spool I/O (a lock of their own, a disk read/write, possibly a log line), and this `Ctl` lock
+    // is also taken from the render thread every frame — nothing that could block belongs inside
+    // `with_ctl`. This used to call `diag::event` from inside the closure; found in review.
+    let report = with_ctl(|c| {
+        let ctx = if c.signin_active {
+            let ctx = signin_error_context(c);
             let kind = match c.phase {
                 Phase::Creating => crate::diag::schema::SignInFailure::PinCreate,
                 Phase::Waiting => crate::diag::schema::SignInFailure::Authorization,
                 Phase::Discovering => crate::diag::schema::SignInFailure::Discovery,
                 _ => crate::diag::schema::SignInFailure::Other,
             };
-            crate::diag::event(crate::diag::schema::DiagEvent::SignInFailed { kind });
             c.signin_active = false;
-        }
+            // Captured under the SAME lock the context and kind came from — `report_error` below
+            // does spool I/O outside this closure, and a reset landing in that window bumps
+            // `c.attempt`, so the write that follows must be able to tell whether it is still
+            // installing a trouble for the attempt that is actually on screen.
+            Some((kind, ctx, c.attempt))
+        } else {
+            None
+        };
         c.error = msg.to_owned();
         c.phase = Phase::Error;
+        // Freeze the link-health clock here, at the moment nothing is polling any more — see
+        // `link_frozen_secs`'s doc. `get_or_insert` would be wrong: a second `set_error` on an
+        // already-settled flow (there isn't one today, but nothing enforces it) must not push the
+        // frozen instant forward.
+        c.link_frozen_secs = c.link_failing_since.map(|t| t.elapsed().as_secs());
+        ctx
     });
+    if let Some((kind, ctx, attempt)) = report {
+        crate::diag::event(crate::diag::schema::DiagEvent::SignInFailed { kind });
+        // Issue #75: the STANDING path — sends automatically when crash/error consent is already
+        // on. `sent` says whether it actually reached the spool, so the trouble this attempt is
+        // recorded with already knows whether the sign-in screen should offer the one-off alert
+        // or simply say "a report was sent".
+        let sent = crate::telemetry::signin::report_error(ctx);
+        with_ctl(|c| {
+            // The reset that would bump this has to land inside the disk-I/O window `report_error`
+            // just spent — a human press on the render thread, on the one frame between this
+            // attempt settling into `Phase::Error` and this write landing. Practically
+            // unreachable, but installing a stale attempt's trouble under a fresh one's id is
+            // exactly what `Ctl::attempt`'s own invariant promises never happens.
+            if c.attempt != attempt {
+                return;
+            }
+            // A one-off "Send report" press can already have reported THIS trouble while the
+            // standing report above was still in flight (`note_waiting_trouble` + a fast press,
+            // then a later `set_error` on the same attempt) — that flag must survive, or a
+            // trouble already sent loses its "was sent" note and a second call could resend it.
+            let already_reported = c.trouble.as_ref().is_some_and(|t| t.reported);
+            c.trouble = Some(Trouble {
+                ctx,
+                reported: sent || already_reported,
+            });
+        });
+    }
+}
+
+/// **Issue #75.** Build a trouble report from the LIVE link state, for the sign-in screen's one-off
+/// alert while it is stuck rather than failed — same context shape a failed sign-in reports
+/// (`kind` reads `Authorization` off the live `Phase::Waiting`), since the flow never actually
+/// reaches [`Phase::Error`] here and would otherwise have nothing to offer. Called from
+/// `ui::login::update` while the screen is in `Phase::Waiting`, the link is unreachable, and its
+/// own stalled-wait escape is already on offer.
+///
+/// **At most once per attempt.** The caller runs this every frame the screen is in that state, and
+/// the FIRST call wins — a later poll landing between two frames must not silently replace a
+/// context the person may already be reading in an open alert.
+///
+/// **Deliberately press-only, unlike [`set_error`] — it never calls `telemetry::signin::
+/// report_error` even when standing crash-report consent is already on.** A stuck sign-in has not
+/// actually failed; the flow may still recover on its own, so recording it here only sets up the
+/// one-off alert's context and leaves `reported` at `false`, and the person sees "Send report" on
+/// this screen even with the switch already on. `send_trouble_once` is the only door this trouble
+/// leaves through.
+pub fn note_waiting_trouble() {
+    with_ctl(|c| {
+        if c.trouble.is_some() {
+            return;
+        }
+        let ctx = signin_error_context(c);
+        c.trouble = Some(Trouble { ctx, reported: false });
+    });
+}
+
+/// This attempt's sign-in trouble, if any, plus which attempt it belongs to and whether it has
+/// already been reported — read once a frame by `ui::login`'s one-off report alert. The attempt id
+/// is what lets the screen tell "reopen for a new failure" from "already answered this one": a
+/// flow reset bumps [`Ctl::attempt`] and clears `trouble`, so a stale id can never be mistaken for
+/// the trouble on screen right now.
+pub fn trouble_snapshot() -> Option<(u64, crate::telemetry::signin::SignInErrorContext, bool)> {
+    with_ctl(|c| c.trouble.as_ref().map(|t| (c.attempt, t.ctx, t.reported)))
+}
+
+/// The one-off alert's "Send report" press ([`telemetry::signin::send_once`]). Takes the current
+/// attempt's trouble, sends it, and marks it reported so a second call — unreachable through the
+/// screen, since the alert dismisses on the same press, but not unreachable from a test — cannot
+/// resend it. Returns whether it was actually queued.
+pub fn send_trouble_once() -> bool {
+    let Some(ctx) = with_ctl(|c| match &c.trouble {
+        Some(t) if !t.reported => Some(t.ctx),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let sent = crate::telemetry::signin::send_once(ctx);
+    if sent {
+        with_ctl(|c| {
+            if let Some(t) = c.trouble.as_mut() {
+                t.reported = true;
+            }
+        });
+    }
+    sent
 }
 
 fn finish_signin_cancelled() {
@@ -5881,5 +6287,377 @@ mod tests {
         assert!(!c.signin_active);
         assert!(!c.apply_pending);
         assert!(c.pin_code.is_empty());
+    }
+
+    // ---- link health (issue #75) ----
+
+    /// plex.tv answering (however it answers) is not a fact the login screen needs a sentence
+    /// for — the default, empty [`LinkState`] says nothing.
+    #[test]
+    fn link_detail_is_silent_while_healthy() {
+        assert_eq!(link_detail(&LinkState::default()), None);
+    }
+
+    /// **One miss is a blip, not a diagnosis.** The pin-poll cadence is 2 s; a single unanswered
+    /// poll is exactly the kind of thing a healthy link produces occasionally, and saying so would
+    /// make the sign-in screen flicker a warning at the ordinary jitter of the wait it has always
+    /// drawn as calm. [`link_unreachable`] draws the same line for the same reason.
+    #[test]
+    fn link_detail_is_silent_after_one_miss() {
+        let s = LinkState {
+            unanswered: 1,
+            failing_for: Some(Duration::from_secs(2)),
+            last_call: Some("timed out (curl 28)".into()),
+        };
+        assert_eq!(link_detail(&s), None);
+    }
+
+    /// Three misses is the case issue #75 needs: a bounded, identifier-free sentence naming
+    /// curl's own reason, the try count and the duration — the phone photograph this stage exists
+    /// to make legible.
+    ///
+    /// Built from [`crate::net::describe_outcome`] rather than a hand-typed string, so a wording
+    /// change in `net.rs` is caught HERE rather than leaving this pinned against a sentence the
+    /// code can no longer produce.
+    #[test]
+    fn link_detail_names_the_reason_after_repeated_misses() {
+        let reason = crate::net::describe_outcome(crate::net::CallOutcome::Transport(6));
+        assert_eq!(reason, "could not resolve host (curl 6)");
+        let s = LinkState {
+            unanswered: 3,
+            failing_for: Some(Duration::from_secs(41)),
+            last_call: Some(reason),
+        };
+        assert_eq!(
+            link_detail(&s),
+            Some("plex.tv is not answering — could not resolve host (curl 6), 3 tries, 41 s".into())
+        );
+    }
+
+    /// **A call plex.tv actually ANSWERED — refusal or otherwise — must never be read back as
+    /// "not answering".** That sentence was self-contradictory for exactly this case until
+    /// 2026-09-10 ("plex.tv is not answering — HTTP 429…"): a 429 is plex.tv answering, just not
+    /// usefully, so the sign-in screen has to say so differently from a call that never got a
+    /// response at all.
+    #[test]
+    fn link_detail_names_an_answered_refusal_without_contradicting_itself() {
+        let s = LinkState {
+            unanswered: 2,
+            failing_for: Some(Duration::from_secs(6)),
+            last_call: Some("HTTP 429".into()),
+        };
+        assert_eq!(
+            link_detail(&s),
+            Some("plex.tv answered but the sign-in could not use it — HTTP 429, 2 tries, 6 s".into())
+        );
+    }
+
+    /// The line the sign-in screen switches its own copy on: healthy and one blip both read as
+    /// "still waiting for you", two or more consecutive misses read as "check the connection".
+    #[test]
+    fn link_unreachable_needs_at_least_two_consecutive_misses() {
+        assert!(!link_unreachable(&LinkState {
+            unanswered: 0,
+            ..LinkState::default()
+        }));
+        assert!(!link_unreachable(&LinkState {
+            unanswered: 1,
+            ..LinkState::default()
+        }));
+        assert!(link_unreachable(&LinkState {
+            unanswered: 2,
+            ..LinkState::default()
+        }));
+        assert!(link_unreachable(&LinkState {
+            unanswered: 5,
+            ..LinkState::default()
+        }));
+    }
+
+    /// **Issue #75 stage E: a failure while waiting on the code builds the right report context.**
+    /// Three unanswered polls bucket to `TwoToFive`, the phase (`Waiting`) maps to `Authorization`,
+    /// and the code generation `mint_pin` last stored is carried through unchanged.
+    #[test]
+    fn signin_error_context_reports_authorization_with_the_live_flow_state() {
+        let c = Ctl {
+            phase: Phase::Waiting,
+            link_unanswered: 3,
+            link_failing_since: Some(Instant::now()),
+            code_generation: 2,
+            ..Ctl::default()
+        };
+        let ctx = signin_error_context(&c);
+        assert_eq!(ctx.kind, crate::telemetry::signin::SignInFailureKind::Authorization);
+        assert_eq!(ctx.unanswered, crate::telemetry::signin::UnansweredBucket::TwoToFive);
+        assert_eq!(ctx.code_generation, 2);
+    }
+
+    /// A flow that never minted a code (a pin-CREATE failure, `Phase::Creating`) reports generation
+    /// `0` clamped up to `1` by `context_from` — `Ctl::code_generation`'s documented default.
+    #[test]
+    fn signin_error_context_reports_pin_create_with_no_code_yet() {
+        let c = Ctl {
+            phase: Phase::Creating,
+            ..Ctl::default()
+        };
+        let ctx = signin_error_context(&c);
+        assert_eq!(ctx.kind, crate::telemetry::signin::SignInFailureKind::PinCreate);
+        assert_eq!(ctx.code_generation, 1, "0 clamps up to 1");
+    }
+
+    /// A fresh flow starts believing plex.tv is fine — the failing state of whatever flow came
+    /// before must never leak into the next one's first frame.
+    #[test]
+    fn a_fresh_ctl_has_a_healthy_link_state() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| *c = Ctl::default());
+        let s = link_state();
+        assert_eq!(s, LinkState::default());
+        assert_eq!(s.unanswered, 0);
+        assert!(s.failing_for.is_none());
+        assert!(s.last_call.is_none());
+    }
+
+    /// **The one thing the failed read-out actually needs (issue #75): a single recorded miss is
+    /// enough to say why, once the flow has SETTLED.** [`link_detail`]'s two-miss gate exists only
+    /// to stop the still-live WAITING screen flickering at ordinary 2 s jitter — a settled `Error`
+    /// screen has no live poll left to flicker against. This is the fix for the dominant path:
+    /// pin CREATION failing records exactly one miss (`mint_pin`'s failure branch) and the flow is
+    /// over right there, so a two-miss gate on this read-out could never be reached however many
+    /// times *Try again* was pressed.
+    #[test]
+    fn link_detail_settled_speaks_after_a_single_miss() {
+        let s = LinkState {
+            unanswered: 1,
+            failing_for: Some(Duration::from_secs(3)),
+            last_call: Some("could not resolve host (curl 6)".into()),
+        };
+        assert_eq!(link_detail(&s), None, "still gated for the live waiting screen");
+        assert_eq!(
+            link_detail_settled(&s),
+            Some("plex.tv is not answering — could not resolve host (curl 6), 1 try, 3 s".into())
+        );
+        assert_eq!(
+            link_detail_settled(&LinkState::default()),
+            None,
+            "a healthy link has nothing to settle on"
+        );
+    }
+
+    /// **The elapsed counter must STOP once the flow settles into `Phase::Error`** — otherwise a
+    /// photograph of a screen that made its last call minutes ago reads "…, 900 s" and keeps
+    /// climbing forever, waking `ui::idle`'s settled-screen gate once a second for no reason (the
+    /// sentence is compared string-for-string by `ui::login::link_detail_changed`, so a changing
+    /// duration alone was enough to keep invalidating it). Reproduced by seeding `link_failing_since`
+    /// in the past, settling through the real `set_error`, and confirming `link_state()` reports the
+    /// SAME duration on two reads taken a moment apart — a live `Instant::elapsed()` could not pass
+    /// this.
+    #[test]
+    fn the_failing_duration_freezes_once_the_flow_settles() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| {
+            *c = Ctl::default();
+            c.signin_active = false; // set_error's diagnostics branch needs no live attempt here
+            c.link_unanswered = 3;
+            c.link_failing_since = Some(Instant::now() - Duration::from_secs(5));
+            c.link_last_call = Some("could not resolve host (curl 6)".into());
+        });
+        set_error("Couldn't reach plex.tv — check this TV's internet connection.");
+        let before = link_state().failing_for.expect("a miss was recorded");
+        assert!(
+            before.as_secs() >= 5,
+            "the snapshot must capture what had already elapsed, not restart at 0"
+        );
+        std::thread::sleep(Duration::from_millis(1100));
+        let after = link_state()
+            .failing_for
+            .expect("still frozen, not cleared");
+        assert_eq!(
+            before, after,
+            "a settled flow's duration must not keep climbing after the last real call"
+        );
+    }
+
+    // ---- issue #75: the one-off sign-in report ----
+
+    /// The raw allocator: every call hands out a new, larger id.
+    #[test]
+    fn next_attempt_only_ever_climbs() {
+        let a = next_attempt();
+        let b = next_attempt();
+        let c = next_attempt();
+        assert!(b > a);
+        assert!(c > b);
+    }
+
+    /// **Every reset SHAPE stamps a strictly newer attempt than the one before it** — a fresh
+    /// login, a discovery-only retry (which keeps the account credential but is still a new
+    /// attempt for the report offer), a resumed stored session, and a local-data erasure.
+    #[test]
+    fn attempt_id_bumps_across_every_reset_shape() {
+        let login = fresh_login_ctl(Session::default());
+
+        let mut discovery = fresh_login_ctl(Session::default());
+        // Seed a link-health run as if THIS (about-to-be-discarded) attempt had been failing —
+        // `restart_discovery_ctl` keeps the account credential, but the failure run belongs to
+        // the attempt this press is retrying, exactly like `trouble` below.
+        discovery.link_unanswered = 3;
+        discovery.link_failing_since = Some(Instant::now());
+        discovery.link_frozen_secs = Some(30);
+        discovery.link_last_call = Some("could not resolve host (curl 6)".to_string());
+        restart_discovery_ctl(&mut discovery);
+        assert!(
+            discovery.attempt > login.attempt,
+            "a discovery retry is still a fresh attempt"
+        );
+        assert!(
+            discovery.link_frozen_secs.is_none()
+                && discovery.link_failing_since.is_none()
+                && discovery.link_unanswered == 0
+                && discovery.link_last_call.is_none(),
+            "a discovery retry must not carry the previous attempt's link-health run forward — \
+             `link_frozen_secs`'s own doc says it is cleared with the rest of `Ctl` on the next \
+             attempt, and this reset is that next attempt"
+        );
+
+        let deleted = deleted_ctl();
+        assert!(
+            deleted.attempt > discovery.attempt,
+            "a local-data erasure is a fresh attempt too"
+        );
+    }
+
+    /// [`resume_stored`] (BACK out of the flow) is the one reset shape that mutates the shared
+    /// `Ctl` directly rather than through a pure constructor — tested against the live global the
+    /// way the file's other `resume_stored` tests already do.
+    #[test]
+    fn resuming_the_stored_session_stamps_a_new_attempt_and_clears_any_trouble() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| {
+            *c = Ctl {
+                phase: Phase::Waiting,
+                from: Picker::Boot,
+                ..Ctl::default()
+            }
+        });
+        note_waiting_trouble(); // nothing was seeded, so this is a no-op — the point is the id below
+        let before = with_ctl(|c| c.attempt);
+        assert!(resume_stored(signed_in_as("u-kid")), "an unprotected profile resumes");
+        let after = with_ctl(|c| c.attempt);
+        assert!(after > before);
+        assert!(trouble_snapshot().is_none(), "a resumed session starts with no trouble");
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// **`note_waiting_trouble` is at most once per attempt.** A second call while the screen is
+    /// still stuck must not silently replace the context an open alert may already be showing.
+    #[test]
+    fn note_waiting_trouble_is_recorded_at_most_once_per_attempt() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| {
+            *c = Ctl::default();
+            c.phase = Phase::Waiting;
+            c.link_unanswered = 3;
+            c.link_failing_since = Some(Instant::now());
+            c.code_generation = 1;
+        });
+        note_waiting_trouble();
+        let (attempt, first, _) = trouble_snapshot().expect("a trouble was recorded");
+        // Something the context reads changes — a real poll landing between two frames — and the
+        // SECOND call must still report the FIRST context, unchanged.
+        with_ctl(|c| c.code_generation = 4);
+        note_waiting_trouble();
+        let (attempt2, second, _) = trouble_snapshot().expect("still recorded");
+        assert_eq!(attempt, attempt2, "still the same attempt");
+        assert_eq!(
+            first.code_generation, second.code_generation,
+            "the first call's context wins — a later poll must not silently replace it"
+        );
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// A flow reset (a fresh login here — the shape every other reset shares) leaves the new
+    /// attempt with no trouble at all, whatever the attempt before it was carrying.
+    #[test]
+    fn a_flow_reset_clears_the_remembered_trouble() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| {
+            *c = Ctl::default();
+            c.phase = Phase::Waiting;
+            c.link_unanswered = 2;
+            c.link_failing_since = Some(Instant::now());
+        });
+        note_waiting_trouble();
+        assert!(trouble_snapshot().is_some());
+        // The reset every top-level entry point performs, without spawning the worker behind it.
+        with_ctl(|c| *c = fresh_login_ctl(Session::default()));
+        assert!(
+            trouble_snapshot().is_none(),
+            "a fresh attempt must not inherit the trouble the one before it recorded"
+        );
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// **`set_error` must not clobber a trouble THIS attempt already reported.** A one-off "Send
+    /// report" press can mark the current attempt's trouble reported before the flow later
+    /// settles into `Phase::Error` for an unrelated reason (e.g. the pin-generation cap) —
+    /// `set_error` used to write `Ctl::trouble` unconditionally, silently flipping `reported`
+    /// back to `false` and losing the "a report was sent" note the person had just been shown
+    /// (and, per `send_trouble_once`'s own "at most once" doc, reopening the door to a second
+    /// send of the same trouble).
+    #[test]
+    fn set_error_preserves_an_already_reported_trouble_on_the_same_attempt() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| {
+            *c = Ctl::default();
+            c.signin_active = true;
+            c.phase = Phase::Waiting;
+            c.link_unanswered = 2;
+            c.link_failing_since = Some(Instant::now());
+        });
+        note_waiting_trouble();
+        let (attempt, _, reported_before) =
+            trouble_snapshot().expect("a trouble was recorded");
+        assert!(!reported_before, "note_waiting_trouble never reports on its own");
+        // Stand in for a successful one-off "Send report" press, without a real Sentry endpoint.
+        with_ctl(|c| {
+            if let Some(t) = c.trouble.as_mut() {
+                t.reported = true;
+            }
+        });
+        set_error("network refused");
+        let (attempt2, _, reported_after) = trouble_snapshot().expect("still a trouble");
+        assert_eq!(attempt, attempt2, "same attempt — set_error must not have reset it");
+        assert!(
+            reported_after,
+            "an already-reported trouble must stay reported through set_error"
+        );
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// **`send_trouble_once` refuses a trouble already marked reported**, whether that happened
+    /// automatically (standing consent) or by an earlier press — the guard this function's whole
+    /// "at most once" promise rests on, gradeable with no real Sentry endpoint in the loop.
+    #[test]
+    fn send_trouble_once_refuses_an_already_reported_trouble() {
+        let _lock = crate::testlock::serial();
+        let ctx = signin_error_context(&Ctl::default());
+        with_ctl(|c| {
+            *c = Ctl::default();
+            c.trouble = Some(Trouble { ctx, reported: true });
+        });
+        assert!(
+            !send_trouble_once(),
+            "already reported — a second press must never resend it"
+        );
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    /// With no trouble recorded at all, there is nothing to send.
+    #[test]
+    fn send_trouble_once_with_no_trouble_sends_nothing() {
+        let _lock = crate::testlock::serial();
+        with_ctl(|c| *c = Ctl::default());
+        assert!(!send_trouble_once());
     }
 }

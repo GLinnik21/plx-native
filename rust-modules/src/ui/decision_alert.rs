@@ -56,6 +56,19 @@ pub(crate) enum Choice {
     Destructive,
 }
 
+/// Which face the second answer wears. **Not every two-choice question ends something** — issue
+/// #75's one-off "Send report" needed a second button beside "Not now", and the alert's only look
+/// until then was [`ControlStyle::Danger`] for that slot. Shipping "Send report" in the same red
+/// [`theme::DANGER`] face `ui::consent`'s *Delete all local data* uses would say the press is
+/// destructive when it is the opposite — a report leaves, nothing is lost. `Destructive` is the
+/// default and the delete alert's own look is unchanged by this existing at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tone {
+    Destructive,
+    /// Both answers are ordinary controls — no danger tint on either.
+    Neutral,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Layout {
     pub(crate) panel: Rect,
@@ -116,6 +129,10 @@ pub(crate) struct DecisionAlert {
     /// per-frame would be correct for drawing and wrong for the first hit test after an open, which
     /// is precisely the frame a fast click lands on.
     body: Option<&'static str>,
+    /// Which face the destructive-slot answer wears — see [`Tone`]. Defaults to
+    /// [`Tone::Destructive`], so every alert built before this field existed looks exactly as it
+    /// did.
+    tone: Tone,
 }
 
 impl DecisionAlert {
@@ -131,7 +148,13 @@ impl DecisionAlert {
             choice: Choice::Cancel,
             controls: CtlPop::new(),
             body: None,
+            tone: Tone::Destructive,
         }
+    }
+    /// Set the second answer's face. Called once, outside the draw loop — a tone is a property of
+    /// what the alert is FOR, not something that changes frame to frame.
+    pub(crate) fn set_tone(&mut self, tone: Tone) {
+        self.tone = tone;
     }
     pub(crate) fn is_open(&self) -> bool {
         self.pop.is_open()
@@ -170,10 +193,18 @@ impl DecisionAlert {
             .map_or(0.0, |b| Self::body_view(b).measure_h(BODY_W));
         layout(qh, bh)
     }
-    fn body_view(text: &str) -> TextView<'_> {
+    /// **8, not 4.** `DELETE_SCOPE` — the only body this alert shipped with before issue #75 —
+    /// wraps to 4 lines and is unaffected either way. Issue #75's one-off report body is roughly
+    /// twice that long (the full "what this sends, and what it never sends" disclosure), and at 4
+    /// lines it was cut off mid-sentence with no ellipsis and no MORE affordance, silently
+    /// dropping the whole "it carries no identifier" half — the one sentence a first-run person
+    /// with no other privacy notice on screen yet is being asked to trust before pressing Send.
+    /// The panel already grows to whatever `measure_h` reports (`layout`'s `body_h` term), so
+    /// raising the cap costs nothing for a body that already fits in fewer lines.
+    pub(crate) fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
             .h(HAlign::Center)
-            .max_lines(4)
+            .max_lines(8)
     }
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
@@ -257,8 +288,12 @@ impl DecisionAlert {
             .focused(self.choice == Choice::Cancel)
             .scale(self.controls.scale(0))
             .draw(&env, p);
+        let destructive_style = match self.tone {
+            Tone::Destructive => ControlStyle::Danger,
+            Tone::Neutral => ControlStyle::Accent,
+        };
         Button::new(destructive.as_ptr(), theme::size::BODY, l.destructive)
-            .style(ControlStyle::Danger)
+            .style(destructive_style)
             .focused(self.choice == Choice::Destructive)
             .scale(self.controls.scale(1))
             .draw(&env, p);
@@ -325,6 +360,16 @@ mod tests {
         assert_eq!(with.cancel.y - with.body.y, 90.0 + QUESTION_GAP);
         assert!(with.body.y > with.question.y);
         assert!(with.cancel.y > with.body.y + with.body.h);
+    }
+
+    /// **The tone defaults to `Destructive`**, so a caller that never touches it — every alert
+    /// this app shipped before issue #75 — looks exactly as it always did.
+    #[test]
+    fn tone_defaults_to_destructive_and_the_setter_changes_it() {
+        let mut a = DecisionAlert::new();
+        assert_eq!(a.tone, Tone::Destructive);
+        a.set_tone(Tone::Neutral);
+        assert_eq!(a.tone, Tone::Neutral);
     }
 
     #[test]

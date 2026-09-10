@@ -5,7 +5,8 @@
 #![allow(non_upper_case_globals)]
 use crate::auth::{self, Phase};
 use crate::ui::consts::*;
-use crate::ui::label::HAlign;
+use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
+use crate::ui::label::{HAlign, Label};
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::text_view::TextView;
 use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay};
@@ -31,6 +32,26 @@ struct Scene {
     /// How many files the last **Delete all local data** could not unlink. Drives the wording of
     /// the `Deleted` read-out, which must not claim a wipe it did not achieve.
     delete_leftovers: usize,
+    /// The link-health sentence ([`auth::link_detail`]) this screen last drew, or `None` while
+    /// plex.tv was answering. Cached so [`update`] can tell whether the text on screen actually
+    /// changed — the link snapshot is sampled every frame, but the sentence itself only moves
+    /// roughly once a poll (~2 s), and a settled screen must not be woken every frame by a value
+    /// that reads the same both times (see `ui::idle`'s discrete-change rule).
+    last_link_detail: Option<String>,
+    /// **Issue #75** — the one-off sign-in report alert, opened over the failed or stuck read-out.
+    report_alert: DecisionAlert,
+    /// Which attempt [`report_alert`] was last opened (or answered) for — see [`offer_alert`].
+    /// `None` before this boot has offered one at all. Never explicitly reset on a flow restart:
+    /// `auth::trouble_snapshot`'s attempt id keeps climbing, so a fresh attempt's id can never
+    /// equal an old one this field remembers, and the alert opens again on its own.
+    report_offered_for: Option<u64>,
+    /// **Issue #75 review.** Did the most recent deliberate "Send report" press fail to queue
+    /// (no Sentry endpoint, no `/dev/urandom`, or the durable spool refused it)? Reset to `false`
+    /// every time [`report_alert`] opens for a new attempt, so a stale failure from a previous
+    /// trouble cannot linger over one this attempt never tried to send. Drives
+    /// [`report_note`]'s third state — without it a failed press was completely silent, dismissing
+    /// the alert and leaving the read-out byte-identical to "Not now".
+    report_send_failed: bool,
 }
 
 /// How long a working phase runs before the read-out grows a way out.
@@ -68,6 +89,10 @@ fn scene() -> &'static mut Scene {
 }
 
 pub fn init() {
+    let mut report_alert = DecisionAlert::new();
+    // The "Send report" answer ends nothing — it is the opposite of the delete alert's
+    // `Tone::Destructive` default, and shipping it red would say otherwise.
+    report_alert.set_tone(Tone::Neutral);
     unsafe {
         *addr_of_mut!(SCENE) = Some(Scene {
             spin_ms: 0.0,
@@ -77,6 +102,10 @@ pub fn init() {
             phase_ms: 0.0,
             wait: wait_id(),
             delete_leftovers: 0,
+            last_link_detail: None,
+            report_alert,
+            report_offered_for: None,
+            report_send_failed: false,
         });
     }
 }
@@ -89,6 +118,14 @@ pub fn enter() {
     // A fresh visit is a fresh wait, whatever phase the last one died in.
     s.phase_ms = 0.0;
     s.wait = wait_id();
+    // **Issue #75 review.** A one-off report alert left OPEN when the flow leaves this route
+    // (the link recovers and finishes the sign-in right after `note_waiting_trouble` opened it,
+    // with nobody dismissing it) would otherwise reappear over the NEXT visit's fresh QR screen —
+    // a sign-out then a re-entry here — and swallow every key exactly as it does while genuinely
+    // open. `close()`, not `dismiss()`: an instant hide is right for "the subject vanished out
+    // from under the alert" (`Popover::close`'s own case), which this is — the trouble this alert
+    // was about belongs to the attempt that just ended.
+    s.report_alert.close();
     crate::ui::idle::invalidate();
 }
 
@@ -106,6 +143,139 @@ pub fn update(dt: f32) {
         s.phase_ms += dt * 1000.0;
     }
     drop_a_stale_qr(s, auth::qr_generation());
+    // `link_detail` is sampled from a mutex updated roughly once a poll (~2 s), not from a spring
+    // `ui::idle` can already see — so this screen must report the discrete change itself, exactly
+    // as `Xfade::tick`/`Spinner::draw` do for their own clocks. Comparing against the LAST DRAWN
+    // sentence (not e.g. a bare `unanswered` counter) is what stops a healthy link — where every
+    // poll answers and `link_detail` stays `None` forever — from invalidating every frame.
+    let detail = auth::link_detail(&auth::link_state());
+    if link_detail_changed(&s.last_link_detail, &detail) {
+        s.last_link_detail = detail;
+        crate::ui::idle::invalidate();
+    }
+    s.report_alert.update(dt);
+    // **Issue #75.** While stuck (not merely erroring), note the trouble only once the screen's
+    // own stalled-wait escape is already on offer — the same gate as the escape itself, so the
+    // report alert and "press OK for a new code" arrive together rather than the alert jumping the
+    // gun on a sign-in that is still perfectly healthy.
+    if qr_escape_ready(s) && auth::link_unreachable(&auth::link_state()) {
+        auth::note_waiting_trouble();
+    }
+    if let Some(attempt) = offer_alert(
+        s.report_offered_for,
+        auth::trouble_snapshot().map(|(a, _, reported)| (a, reported)),
+    ) {
+        s.report_offered_for = Some(attempt);
+        // A failure to send belongs to the press that failed, not to whatever this attempt does
+        // next — reset so a stale "couldn't be sent" from an earlier trouble cannot linger over
+        // an alert that has not been pressed yet.
+        s.report_send_failed = false;
+        s.report_alert.open_with_body(REPORT_BODY);
+    }
+}
+
+/// **Issue #75.** PURE. Should the one-off report alert open now? `offered_for` is the attempt
+/// [`Scene::report_alert`] was last opened (or answered) for; `snapshot` is `(attempt,
+/// auto_reported)` from [`auth::trouble_snapshot`] when a trouble exists for the CURRENT attempt.
+/// Returns the attempt id to open for, or `None` to leave the alert alone.
+///
+/// Never a bool — comparing attempt IDs rather than "is there a trouble right now" is what stops a
+/// fresh flow reset (whose new attempt starts with no trouble at all, then earns one) from being
+/// read as "still the trouble already answered".
+fn offer_alert(offered_for: Option<u64>, snapshot: Option<(u64, bool)>) -> Option<u64> {
+    let (attempt, auto_reported) = snapshot?;
+    if auto_reported || offered_for == Some(attempt) {
+        return None;
+    }
+    Some(attempt)
+}
+
+/// **Issue #75.** PURE. The caption drawn once a trouble has actually left the television — by
+/// either path, the automatic standing-consent send or the one-off press — or, once a deliberate
+/// "Send report" press has failed to queue, a caption saying so. `None` while neither is true.
+/// `sent` wins over `send_failed` (a trouble the standing path already reported is "sent" even if
+/// a later one-off press against a NEW trouble failed to queue — the two can never both be true
+/// for the same trouble, since `send_trouble_once` only runs when `!reported`, but the precedence
+/// is stated here rather than left as an accident of argument order).
+fn report_note(sent: bool, send_failed: bool) -> Option<&'static std::ffi::CStr> {
+    if sent {
+        Some(c"A report about this sign-in was sent \u{2014} thank you.")
+    } else if send_failed {
+        Some(c"That report couldn\u{2019}t be sent right now.")
+    } else {
+        None
+    }
+}
+
+/// The current attempt's report note, if one is owed — the one call site both [`draw_failed`] and
+/// [`draw_waiting`] use, so the two can never disagree about what "sent" (or "failed to send")
+/// means. `send_failed` is per-screen-instance state (reset per attempt in [`update`]), not part
+/// of `auth::Trouble`, because it describes a UI press outcome the auth layer never needed to know.
+fn current_report_note(send_failed: bool) -> Option<&'static std::ffi::CStr> {
+    let sent = auth::trouble_snapshot().is_some_and(|(_, _, reported)| reported);
+    report_note(sent, send_failed)
+}
+
+/// **Issue #75.** Everything the one-off report alert's body states about what it sends — the
+/// stage of the sign-in, a coarse class of plex.tv's last answer with its bare status/error code,
+/// bucketed try counts and durations, and this app's version — and what it does not: no PIN, no
+/// code, no account, no token, no address, no identifier of any kind. It does NOT name webOS
+/// version or TV model — `telemetry::signin::event_body` attaches neither to this report (its
+/// only fields are the ones this sentence lists, pinned exactly by
+/// `event_body_top_level_keys_are_exact`), and this text used to claim it did, overstating what
+/// actually leaves the television.
+const REPORT_BODY: &str = "This includes the sign-in stage, a general class of \
+plex.tv\u{2019}s last answer with its bare status or error code, rounded try counts and \
+durations, and this app\u{2019}s version. It never includes your PIN, code, account, token, or \
+this television\u{2019}s address, and it carries no identifier.";
+
+/// Is the one-off report alert open (or still fading out)? `app.rs` checks this before its
+/// onboarding-screen root BACK rule fires, so the alert can claim BACK for itself instead of
+/// backing the whole sign-in out.
+///
+/// **`visible()`, not `is_open()`.** `DecisionAlert::dismiss` sets `open = false` at once and
+/// then fades for a few frames — `is_open()` alone treats that fade as "closed", so a second BACK
+/// during it fell through to the root rule and handed the whole screen to the television
+/// (`webos::go_home`) while the alert was still visibly on top of it. `visible()` claims input for
+/// the remainder of the fade instead, and [`key`]'s own alert branch (below) does the same.
+pub fn modal_open() -> bool {
+    scene().report_alert.visible()
+}
+
+/// **Issue #75 review.** A pointer click at `(mx, my)` while the one-off report alert is open:
+/// hits an answer and, when it does, performs exactly the action [`key`]'s `is_ok` branch performs
+/// — send (if the hit answer is `Destructive`) then dismiss — refusing entirely when the click
+/// misses both buttons.
+///
+/// **This exists because `app.rs`'s `Route::Login` pointer arm used to synthesize a bare OK key
+/// for every click on this route**, which was harmless while the only target was "Try again" but,
+/// once this alert could open, meant a click ANYWHERE on the screen — the scrim, outside the
+/// panel, a click aimed at "Not now" — activated whichever answer the last D-pad press had
+/// focused. Gated on [`DecisionAlert::settled`] for the reason every other pointer caller in this
+/// app gates on it (`ui::route_screen`'s rule 11): a fast click during the entrance spring must
+/// not land on a panel that is still displaced and nearly invisible.
+pub fn alert_press_at(mx: f32, my: f32) -> bool {
+    let s = scene();
+    if !s.report_alert.is_open() || !s.report_alert.settled() {
+        return false;
+    }
+    if !s.report_alert.press_at(mx, my) {
+        return false;
+    }
+    if s.report_alert.choice() == Choice::Destructive {
+        s.report_send_failed = !auth::send_trouble_once();
+    }
+    s.report_alert.dismiss();
+    true
+}
+
+/// PURE. Has the sentence the sign-in screen draws under its status changed since the last frame?
+/// Trivial today (`!=`), but factored out because it is the one thing standing between a settled
+/// FAILED read-out and a per-frame `ui::idle::invalidate()` — a later refinement (e.g. rounding
+/// `failing_for` to the second so the trailing "…, 41 s" does not itself force a wake every
+/// second) belongs here, not inlined into [`update`].
+fn link_detail_changed(prev: &Option<String>, next: &Option<String>) -> bool {
+    prev != next
 }
 
 /// Release the cached QR texture as soon as it stops describing the code the flow is showing.
@@ -176,6 +346,19 @@ pub fn draw() {
         Phase::Discovering => draw_working(p, &env, s, "Finding your server\u{2026}"),
         _ => draw_working(p, &env, s, "Connecting to Plex\u{2026}"),
     }
+    // Every read-out on this route carries the identification footer (issue #75) — not just the
+    // two that used to call it — because a television can die on ANY of these four screens, and a
+    // "Connecting to Plex…" spinner stuck on an offline set is exactly the frame most likely to get
+    // photographed and posted.
+    draw_footer(p);
+    // **Issue #75.** The one-off report alert draws LAST, over everything on this route including
+    // the footer — its scrim is meant to cover the whole screen it is answering for.
+    s.report_alert.draw_scrim();
+    s.report_alert.draw(
+        c"Send a report about this sign-in problem?",
+        c"Not now",
+        c"Send report",
+    );
 }
 
 /// The three non-QR states are ONE centred read-out, not the two-column route.
@@ -194,6 +377,13 @@ fn draw_readout(
     kind: StatusKind,
     reason: Option<&std::ffi::CStr>,
     action: Option<&'static std::ffi::CStr>,
+    // The plex.tv link-health sentence (issue #75) — `None` everywhere but [`draw_failed`], the
+    // one caller that has something to say about the WIRE rather than the account flow.
+    detail: Option<&std::ffi::CStr>,
+    // **Issue #75.** "A report about this sign-in was sent" — drawn LAST, below whatever else this
+    // read-out drew (the action pill if there is one, the detail sentence if there is one of
+    // those too), once the current attempt's trouble has actually left the television.
+    note: Option<&std::ffi::CStr>,
 ) {
     let mut o = StatusOverlay::new(Rect::FULL, caption, kind).phase(s.spin_ms as u32);
     if let Some(r) = reason {
@@ -204,7 +394,37 @@ fn draw_readout(
         // else for the ring to be, and OK must reach it without a press to move focus first.
         o = o.action(a).focused(true);
     }
+    // Computed before the draw (geometry, not paint) and used after it: the detail sentence sits
+    // BELOW everything the read-out already draws, and today that is always the action pill —
+    // every caller that passes `detail` also passes `action`, which the `expect` below states
+    // rather than lets a future caller discover as a mis-placed line.
+    // `detail` is only ever passed alongside `action` (every caller today does — `draw_failed` is
+    // the only one that passes `detail`, and it always passes `Some(ESCAPE)` with it) — but this
+    // draws inside the SDL frame loop, where an unwind kills the app on the television. A future
+    // caller that got the pairing wrong should lose the line, not the process.
+    debug_assert!(
+        detail.is_none() || o.action_frame().is_some(),
+        "draw_readout's `detail` is only ever passed alongside an `action`"
+    );
     o.draw(env, p);
+    let line_h = crate::text::text_height(theme::size::CAPTION, 0);
+    // The bottom edge of whatever the read-out has drawn so far — the action pill if there is one,
+    // else the panel itself. `detail` and `note` stack below it in that order, each owing the next
+    // one `theme::space::SM` of air.
+    let mut below = o.action_frame().map(|a| a.y + a.h);
+    if let Some(d) = detail {
+        let y = below.map_or(o.frame.y + o.frame.h, |b| b + theme::space::SM);
+        Label::new(d.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
+            .h(HAlign::Center)
+            .draw(p, Rect::new(o.frame.x, y, o.frame.w, line_h));
+        below = Some(y + line_h);
+    }
+    if let Some(n) = note {
+        let y = below.map_or(o.frame.y + o.frame.h, |b| b + theme::space::SM);
+        Label::new(n.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
+            .h(HAlign::Center)
+            .draw(p, Rect::new(o.frame.x, y, o.frame.w, line_h));
+    }
 }
 
 fn draw_working(p: Painter, env: &Env, s: &Scene, msg: &str) {
@@ -220,11 +440,19 @@ fn draw_working(p: Painter, env: &Env, s: &Scene, msg: &str) {
         // just appeared under a spinner that was doing fine a moment ago.
         stuck.then_some(c"This is taking longer than usual."),
         stuck.then_some(ESCAPE),
+        None,
+        None,
     );
 }
 
 fn draw_failed(p: Painter, env: &Env, s: &Scene) {
     let reason = CString::new(auth::error()).unwrap_or_default();
+    // A SETTLED read-out, not `auth::link_detail` — this screen has no live poll left to flicker
+    // against, so it does not wait for a second miss. That distinction matters on the dominant
+    // issue-#75 path: a pin-CREATION failure records exactly one miss and the flow is over, so
+    // gating this on two misses meant the curl reason could never reach the one screen the user
+    // actually photographs.
+    let detail = auth::link_detail_settled(&auth::link_state()).and_then(|d| CString::new(d).ok());
     draw_readout(
         p,
         env,
@@ -233,6 +461,8 @@ fn draw_failed(p: Painter, env: &Env, s: &Scene) {
         StatusKind::Failed,
         (!reason.is_empty()).then_some(reason.as_c_str()),
         Some(ESCAPE),
+        detail.as_deref(),
+        current_report_note(s.report_send_failed),
     );
 }
 
@@ -275,7 +505,44 @@ fn draw_deleted(p: Painter, env: &Env, s: &Scene) {
         StatusKind::Empty,
         Some(reason),
         Some(c"Sign in"),
+        None,
+        None,
     );
+}
+
+/// PURE. The permanent identification line — issue #75's phone photograph needs to say which
+/// build and which television it is looking at, not only what plex.tv is doing. `release` and
+/// `set` are already-formatted strings (see [`draw_footer`]) with `"?"` already substituted by
+/// the caller for whatever the platform did not answer, so this function never special-cases
+/// emptiness itself — it is a plain, deterministic join.
+fn footer_line(version: &str, release: &str, set: &str) -> String {
+    format!(
+        "{} {version} \u{00B7} {release} \u{00B7} {set}",
+        crate::plex::identity::PRODUCT
+    )
+}
+
+/// Draw [`footer_line`] bottom-left inside the safe area, in the family's caption rung and its
+/// dimmest ink — a permanent line that must never compete with the read-out it sits under.
+///
+/// Built from [`crate::webos::Info::release_line`] and [`crate::webos::Hardware::set_line`] —
+/// **not** a third, local spelling of "which firmware, which set" — so this screen, the
+/// diagnostics panel and the playback failure read-out cannot drift apart on the same two facts,
+/// and so the SoC/board field `set_line` carries (the one that actually correlates with a decode
+/// or plane failure) reaches the one screen a stranger with a broken sign-in will photograph.
+/// `set_line` returns an empty string when nyx never answered; this footer substitutes its own
+/// `"?"` for that case, same as an unresolved `release_line`.
+fn draw_footer(p: Painter) {
+    let release = crate::webos::info().release_line();
+    let set = crate::webos::device().set_line();
+    let set: &str = if set.is_empty() { "?" } else { &set };
+    let line = footer_line(crate::plex::identity::VERSION, &release, set);
+    let Ok(text) = CString::new(line) else {
+        return;
+    };
+    let h = crate::text::text_height(theme::size::CAPTION, 0);
+    Label::new(text.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .draw(p, Rect::new(SAFE.x, SAFE.y + SAFE.h - h, SAFE.w, h));
 }
 
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
@@ -332,9 +599,14 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
         );
     }
 
+    let link = auth::link_state();
     let wr = 15.0;
     let wy = right.status.cy();
-    let status = waiting_status(qr.replaced, qr_escape_offered(s.phase_ms));
+    let status = waiting_status(
+        qr.replaced,
+        qr_escape_offered(s.phase_ms),
+        auth::link_unreachable(&link),
+    );
     let status_w = crate::text::text_width(status.as_ptr(), theme::size::BODY, 0);
     let sx = right.status.cx() - (wr * 2.0 + theme::space::SM + status_w) * 0.5;
     Spinner::new(sx + wr, wy, wr)
@@ -351,6 +623,27 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
         0,
         0,
     );
+
+    // The plex.tv link-health sentence (issue #75) — silent while the link is healthy, so an
+    // ordinary sign-in draws exactly what it always did.
+    if let Some(detail) = auth::link_detail(&link) {
+        // **`TextView`, not a single-line `Label`.** The longest curl reasons (a TLS/cert failure's
+        // sentence) run past 1100px at this rung — well over the 884px right column — and a `Label`
+        // neither elides nor wraps, so the tail of exactly the sentence this screen exists to show
+        // ran off the panel's right edge. Two lines, word-wrapped by measured pixel width, fit the
+        // column the same way every other multi-line block in this app does.
+        TextView::new(&detail, theme::size::CAPTION, theme::TEXT_SECONDARY)
+            .h(HAlign::Center)
+            .max_lines(2)
+            .draw(p, right.detail);
+    }
+    // **Issue #75.** "A report was sent" — drawn once the current attempt's trouble has actually
+    // left the television, under the link-health sentence in the same secondary stack.
+    if let Some(note) = current_report_note(s.report_send_failed) {
+        Label::new(note.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
+            .h(HAlign::Center)
+            .draw(p, right.note);
+    }
 }
 
 /// The line under the code, which has to answer a question that only exists now that a code can be
@@ -363,8 +656,22 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
 /// spinner: one sentence swapped for another, never a second read-out.
 /// **`stalled` outranks `code_replaced`**: one of these sentences carries an ACTION, and a line
 /// that explains history is worth less than the one that offers a way forward.
-fn waiting_status(code_replaced: bool, stalled: bool) -> &'static std::ffi::CStr {
-    if stalled {
+///
+/// **`unreachable` outranks BOTH, for the same argument carried one step further (issue #75).** A
+/// new code cannot help while plex.tv itself is not answering — pressing OK just mints another pin
+/// nobody can poll — so once two consecutive polls have come back empty, the sentence that names
+/// the real action (check this TV's connection) is worth more than either a code offer or a
+/// history note, exactly as `stalled`'s own sentence already outranks `code_replaced`'s. The
+/// [`auth::link_detail`] line drawn under this one carries the *why*; this one only ever needs to
+/// say *what to do*.
+fn waiting_status(
+    code_replaced: bool,
+    stalled: bool,
+    unreachable: bool,
+) -> &'static std::ffi::CStr {
+    if unreachable {
+        c"Can\u{2019}t reach plex.tv — check this TV\u{2019}s internet connection"
+    } else if stalled {
         c"Still waiting — press OK for a new code"
     } else if code_replaced {
         c"That code expired — scan this one"
@@ -430,6 +737,13 @@ struct QrLayout {
     card: Rect,
     code: Rect,
     status: Rect,
+    /// The plex.tv link-health sentence (issue #75), directly under `status` — the same secondary
+    /// stack, one rung down in size, since it is de-emphasized diagnostic text rather than the
+    /// status line's own verdict.
+    detail: Rect,
+    /// **Issue #75.** "A report about this sign-in was sent", directly under `detail` — drawn only
+    /// once the current attempt's trouble has actually been sent, in the same secondary stack.
+    note: Rect,
 }
 
 fn qr_layout(layout: RouteLayout) -> QrLayout {
@@ -443,6 +757,30 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
     let url_h = theme::size::TITLE as f32 + theme::space::XS;
     let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
     let status_h = theme::size::BODY as f32 + theme::space::SM;
+    // Two lines, not one: the diagnostic sentence this band holds can run to the longest curl
+    // reason plus a try count and a duration, which does not fit one CAPTION line at this column's
+    // 884px width (see `draw_waiting`'s `TextView` call). `TextView`'s own default leading (`sz *
+    // 1.32`) is what the wrap actually draws at, so the reserved band uses the same formula rather
+    // than a second, driftable one.
+    let detail_h = theme::size::CAPTION as f32 * 1.32 * 2.0;
+    // **Issue #75 review flagged this line as under-reserved** (`CAPTION`'s bare 24 against
+    // `draw_footer`'s own measured ~30px line), and drawing this box a `space::XS` taller was the
+    // obvious fix by analogy with `url_h`/`code_h`/`status_h` above — **and it is refused,
+    // verified rather than assumed**: at this stack's tallest content (a two-line `detail`
+    // sentence, which is exactly when `note` is likeliest to be showing too — both fire once a
+    // sign-in is stuck), the taller box pushed `note`'s bottom edge to 1033.36 against `SAFE`'s
+    // own 1026, failing `qr_is_vertically_centred_and_the_whole_link_stack_stays_in_the_right_
+    // column`'s containment assertion — trading a footer-overlap risk for an outright safe-area
+    // violation, a worse defect than the one being fixed. The stack has no slack left to spend at
+    // this box alone: closing the gap for real means shrinking a gap earlier in the stack
+    // (`card`↔`status`'s `space::LG` + `space::MD`, sized for the ordinary QR/short-code case) or
+    // the `detail` reservation itself, both a layout decision beyond a text-and-logic review.
+    // `note_h` stays bare `CAPTION`, as `qr_is_vertically_centred_and_the_whole_link_stack_stays_
+    // in_the_right_column` already requires; a device capture of the worst case (stuck sign-in,
+    // already-sent report, a long curl reason) is what should decide which upstream gap gives.
+    let note_h = theme::size::CAPTION as f32;
+    let status_y = card.y + card.h + theme::space::LG + code_h + theme::space::MD;
+    let detail_y = status_y + status_h + theme::space::SM;
     QrLayout {
         url: Rect::new(
             layout.content.x,
@@ -457,16 +795,38 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
             layout.content.w,
             code_h,
         ),
-        status: Rect::new(
+        status: Rect::new(layout.content.x, status_y, layout.content.w, status_h),
+        detail: Rect::new(layout.content.x, detail_y, layout.content.w, detail_h),
+        note: Rect::new(
             layout.content.x,
-            card.y + card.h + theme::space::LG + code_h + theme::space::MD,
+            detail_y + detail_h + theme::space::XS,
             layout.content.w,
-            status_h,
+            note_h,
         ),
     }
 }
 
 pub fn key(sym: c_uint, wcode: c_uint) {
+    // **Issue #75.** The one-off report alert claims every key while it is open OR still fading
+    // out — nothing reaches the read-out underneath, exactly as `ui::consent`'s delete alert does.
+    // `visible()`, not `is_open()`: see [`modal_open`]'s doc for why a second BACK during the exit
+    // fade must still be swallowed here rather than falling through to the root rule.
+    if scene().report_alert.visible() {
+        let s = scene();
+        if is_back(sym, wcode) {
+            s.report_alert.dismiss();
+        } else if sym == SDLK_LEFT {
+            s.report_alert.move_focus(-1);
+        } else if sym == SDLK_RIGHT {
+            s.report_alert.move_focus(1);
+        } else if is_ok(sym) {
+            if s.report_alert.choice() == Choice::Destructive {
+                s.report_send_failed = !auth::send_trouble_once();
+            }
+            s.report_alert.dismiss();
+        }
+        return;
+    }
     if auth::phase() == Phase::Deleted && is_ok(sym) {
         auth::start_login();
         return;
@@ -623,14 +983,39 @@ mod tests {
     fn a_swapped_code_says_so_rather_than_changing_under_the_user() {
         let says =
             |s: &std::ffi::CStr, word: &[u8]| s.to_bytes().windows(word.len()).any(|w| w == word);
-        assert!(says(waiting_status(false, false), b"Waiting"));
+        assert!(says(waiting_status(false, false, false), b"Waiting"));
         assert!(
-            says(waiting_status(true, false), b"expired"),
+            says(waiting_status(true, false, false), b"expired"),
             "it names what happened; a code that simply changes reads as a fault"
         );
         // …and the sentence that carries an ACTION outranks the one that carries history.
-        assert!(says(waiting_status(true, true), b"press OK"));
-        assert!(says(waiting_status(false, true), b"press OK"));
+        assert!(says(waiting_status(true, true, false), b"press OK"));
+        assert!(says(waiting_status(false, true, false), b"press OK"));
+    }
+
+    /// **`unreachable` outranks both `stalled` and `code_replaced` (issue #75).** A fresh code or a
+    /// "press OK" offer are both things a working plex.tv could act on; while plex.tv itself is not
+    /// answering, neither helps, so the sentence that names the real action — check this
+    /// television's own connection — wins regardless of what else is true of the wait.
+    #[test]
+    fn unreachable_outranks_every_other_waiting_sentence() {
+        let says =
+            |s: &std::ffi::CStr, word: &[u8]| s.to_bytes().windows(word.len()).any(|w| w == word);
+        for (code_replaced, stalled) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert!(
+                says(
+                    waiting_status(code_replaced, stalled, true),
+                    b"Can\xe2\x80\x99t reach plex.tv"
+                ),
+                "code_replaced={code_replaced} stalled={stalled}: unreachable must win regardless"
+            );
+        }
+        // …and stays silent about the link whenever plex.tv is answering, whatever else is true.
+        assert!(!says(
+            waiting_status(true, true, false),
+            b"Can\xe2\x80\x99t reach plex.tv"
+        ));
     }
 
     /// **The QR screen's clock is not the spinner's, and it must not be.**
@@ -687,10 +1072,156 @@ mod tests {
         let route = RouteLayout::screen();
         let q = qr_layout(route);
         assert_eq!(q.card.cy(), Rect::FULL.cy());
-        for r in [q.url, q.card, q.code, q.status] {
+        // `detail` (issue #75's diagnostic sentence) and `note` (the one-off report's "sent" line)
+        // join the same right-column stack the URL, QR and status line already share, and must
+        // stay inside the safe area exactly as they do — each is drawn whenever it has something
+        // to say, not only in a screenshot taken while designing the layout.
+        for r in [q.url, q.card, q.code, q.status, q.detail, q.note] {
             assert!(r.x >= route.content.x);
             assert!(r.x + r.w <= route.content.x + route.content.w);
             assert!(inside_safe(r));
         }
+        assert!(
+            q.detail.y >= q.status.y + q.status.h,
+            "the link-health sentence must sit BELOW the status line, never overlap it"
+        );
+        assert!(
+            q.note.y >= q.detail.y + q.detail.h,
+            "the report-sent note must sit BELOW the link-health sentence, never overlap it"
+        );
+    }
+
+    // ---- issue #75: plex.tv link health on the sign-in screen ----
+
+    /// The footer is a plain, deterministic join — no locale formatting, no truncation — so a
+    /// caller can trust its shape without reading the implementation. Built on
+    /// `crate::plex::identity::PRODUCT` rather than a literal, so a product rename cannot leave
+    /// this the one surface still saying the old name.
+    #[test]
+    fn footer_line_joins_the_three_facts_with_the_dot_separator() {
+        assert_eq!(
+            footer_line(
+                crate::plex::identity::VERSION,
+                "webOS 4.10.2",
+                "49SM9000PLA"
+            ),
+            format!(
+                "{} {} \u{00B7} webOS 4.10.2 \u{00B7} 49SM9000PLA",
+                crate::plex::identity::PRODUCT,
+                crate::plex::identity::VERSION
+            )
+        );
+    }
+
+    /// [`draw_footer`] substitutes `"?"` and `release_line`'s own `"webOS unknown"` before calling
+    /// in, and the pure function must not try to be clever about an already-substituted
+    /// placeholder — it is just another string here.
+    #[test]
+    fn footer_line_passes_an_unknown_placeholder_through_unchanged() {
+        assert_eq!(
+            footer_line("0.7.0-dev", "webOS unknown", "?"),
+            format!("{} 0.7.0-dev \u{00B7} webOS unknown \u{00B7} ?", crate::plex::identity::PRODUCT)
+        );
+    }
+
+    /// The one thing standing between a screen that must keep animating (the link sentence counts
+    /// up while plex.tv stays unreachable) and one that must stop (a healthy sign-in, where the
+    /// sentence is `None` forever): comparing the drawn value, not a bare "did a poll happen" flag.
+    #[test]
+    fn link_detail_changed_is_silent_on_a_repeated_value_and_reports_a_real_one() {
+        assert!(!link_detail_changed(&None, &None), "healthy the whole time");
+        assert!(link_detail_changed(&None, &Some("x".into())), "went bad");
+        assert!(
+            !link_detail_changed(&Some("a".into()), &Some("a".into())),
+            "same sentence redrawn is not a change"
+        );
+        assert!(
+            link_detail_changed(&Some("a".into()), &Some("b".into())),
+            "the try count or duration advanced — a real change while still unreachable"
+        );
+        assert!(link_detail_changed(&Some("x".into()), &None), "recovered");
+    }
+
+    // ---- issue #75: the one-off sign-in report alert ----
+
+    /// **A fresh attempt with no trouble yet offers nothing**, whatever this screen last offered
+    /// an alert for.
+    #[test]
+    fn no_trouble_offers_no_alert() {
+        assert_eq!(offer_alert(None, None), None);
+        assert_eq!(offer_alert(Some(3), None), None);
+    }
+
+    /// **A new attempt's trouble is offered exactly once**, and never again for the SAME attempt
+    /// once it has been answered — dismissed or sent, `offered_for` records either the same way.
+    #[test]
+    fn a_trouble_is_offered_once_per_attempt() {
+        assert_eq!(
+            offer_alert(None, Some((5, false))),
+            Some(5),
+            "a fresh trouble with nothing offered yet must open"
+        );
+        assert_eq!(
+            offer_alert(Some(5), Some((5, false))),
+            None,
+            "already offered (and, however it was answered) for this same attempt — must not reopen"
+        );
+        assert_eq!(
+            offer_alert(Some(5), Some((6, false))),
+            Some(6),
+            "a LATER attempt's trouble is a different question and must open on its own"
+        );
+    }
+
+    /// **A trouble already sent automatically (standing consent) is never offered as a one-off** —
+    /// the person has nothing left to press, whatever this screen has or hasn't offered before.
+    #[test]
+    fn an_auto_reported_trouble_is_never_offered() {
+        assert_eq!(offer_alert(None, Some((5, true))), None);
+        assert_eq!(offer_alert(Some(1), Some((5, true))), None);
+    }
+
+    /// The "sent" caption draws only once something has actually left the television, "sent"
+    /// wins over a stale "failed", and a failed press with nothing sent yet gets its own caption
+    /// rather than silence.
+    #[test]
+    fn the_sent_note_only_draws_once_something_was_actually_sent() {
+        assert_eq!(report_note(false, false), None);
+        assert!(report_note(true, false).is_some());
+        assert_ne!(report_note(true, false), report_note(false, true));
+        assert!(report_note(false, true).is_some());
+        assert_eq!(
+            report_note(true, true),
+            report_note(true, false),
+            "a sent trouble reads as sent even if some earlier press on it had failed"
+        );
+    }
+
+    /// **REPORT_BODY must not be truncated by the alert it is drawn in.** The alert's body view
+    /// caps at a fixed line count (`decision_alert::DecisionAlert::body_view`, 8 lines) — it used to
+    /// be 4, which cut this exact text off mid-sentence and dropped the whole "it carries no
+    /// identifier" half, the one privacy disclosure a first-run person sees before pressing Send.
+    ///
+    /// **A character budget, not a measurement, and that is forced rather than lazy**: the real
+    /// wrap goes through `text::text_width`, i.e. SDL2_ttf, and a host test that reaches it does
+    /// not fail — it does not LINK (`_TTF_OpenFont` undefined for the test binary; the symbols are
+    /// dead-stripped until a test references the path). The budget is the simulator's own number:
+    /// at `decision_alert::BODY_W` this body wraps to 7 lines of about 42 characters
+    /// (`/tmp/sim-issue75e/failed-alert.png`, 2026-09-10), so 8 lines hold roughly 336 and the
+    /// budget keeps one line of slack under that. A longer body needs a new capture, not a bigger
+    /// number.
+    #[test]
+    fn report_body_stays_inside_the_alerts_line_cap() {
+        const BUDGET_CHARS: usize = 300;
+        let n = REPORT_BODY.chars().count();
+        assert!(
+            n <= BUDGET_CHARS,
+            "REPORT_BODY is {n} characters; over {BUDGET_CHARS} it no longer fits the alert's \
+             8-line body cap — shorten it, never let the privacy disclosure fall off silently"
+        );
+        assert!(
+            REPORT_BODY.contains("carries no identifier"),
+            "the disclosure's last sentence is the one truncation used to eat"
+        );
     }
 }

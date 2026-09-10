@@ -496,6 +496,114 @@ pub(crate) enum RequestError {
     Transport,
 }
 
+/// What the **most recent plex.tv account API call** actually did, in curl's own terms — recorded
+/// so the sign-in screen (which cannot otherwise tell "not reachable" from "not yet scanned") can
+/// say why. `Answered` carries the HTTP status whatever it was (a `429` is as much an answer as a
+/// `200`); `Transport` carries the raw `CURLcode` (a negative value means libcurl itself could not
+/// be loaded — there was no code to report); `TimedOut` is curl's own `CURLE_OPERATION_TIMEDOUT`
+/// (28), split out because it is the one rc callers already treat specially.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CallOutcome {
+    Answered(u16),
+    Transport(i32),
+    TimedOut,
+}
+
+/// One recorded outcome plus when it happened, so a caller can also say "as of Ns ago".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LastCall {
+    pub outcome: CallOutcome,
+    pub at: std::time::Instant,
+}
+
+/// Sentinel [`CallOutcome::Transport`] code meaning "libcurl could not be loaded at all" — there is
+/// no `CURLcode` for that, since the request was never handed to curl.
+const CURL_UNAVAILABLE: i32 = -1;
+
+static LAST_PLEX_TV_CALL: Mutex<Option<LastCall>> = Mutex::new(None);
+
+/// The most recent recorded plex.tv account API call, if any has happened this process.
+///
+/// Read by `auth.rs` — the sign-in screen's link-health sentence and its issue #75 sign-in error
+/// report both build from this (`signin_error_context`, `link_detail_at`'s caller).
+pub(crate) fn last_plex_tv_call() -> Option<LastCall> {
+    *LAST_PLEX_TV_CALL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn record_plex_tv_call(outcome: CallOutcome) {
+    let mut g = LAST_PLEX_TV_CALL.lock().unwrap_or_else(|e| e.into_inner());
+    *g = Some(LastCall {
+        outcome,
+        at: std::time::Instant::now(),
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn reset_last_plex_tv_call_for_test() {
+    *LAST_PLEX_TV_CALL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Serializes tests that touch the process-wide [`LAST_PLEX_TV_CALL`] store — it is shared state,
+/// and `cargo test` runs this module's tests concurrently by default.
+#[cfg(test)]
+static LAST_CALL_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+/// The URL's host, by parsing the authority — never by substring match, since `plex.tv` is a
+/// substring of `discover.provider.plex.tv` and of a token embedded elsewhere in a URL. Returns
+/// `None` for a URL with no `scheme://` prefix rather than guessing.
+fn url_host(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://")?.1;
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    if let Some(rest) = host_port.strip_prefix('[') {
+        // An IPv6 literal: host ends at the closing bracket, whatever follows it (a port).
+        return rest.split(']').next();
+    }
+    Some(host_port.split(':').next().unwrap_or(host_port))
+}
+
+/// Is this request's host **exactly** `plex.tv` — the account API, not a subdomain
+/// (`discover.provider.plex.tv`, `api.plex.tv`) and not a user's own `*.plex.direct` PMS origin.
+fn is_plex_tv_host(url: &str) -> bool {
+    url_host(url).is_some_and(|h| h.eq_ignore_ascii_case("plex.tv"))
+}
+
+/// The reason string [`request_tls_result`] logs beside a nonzero `CURLcode` — factored out here so
+/// the sign-in screen can show the caller the same words the event log already carries, rather than
+/// a second, drifting table. Unrecognised codes fall back to the generic "transport error" the log
+/// has always used for them.
+pub(crate) fn curl_rc_why(rc: i32) -> &'static str {
+    match rc {
+        60 => "peer certificate could not be verified (CA store too old?)",
+        35 => "TLS handshake failed (protocol too new for this firmware?)",
+        77 => "CA bundle could not be read",
+        6 => "could not resolve host",
+        28 => "timed out",
+        90 => "certificate pin did not match (stale lab session?)",
+        _ => "transport error",
+    }
+}
+
+/// A bounded, identifier-free one-line description of a [`CallOutcome`] for the sign-in screen —
+/// never a URL, host, or token, just curl's own vocabulary.
+///
+/// Read by `auth.rs`'s sign-in link-health sentence (`link_last_call`, refreshed on every poll).
+pub(crate) fn describe_outcome(o: CallOutcome) -> String {
+    match o {
+        CallOutcome::Answered(status) => format!("HTTP {status}"),
+        CallOutcome::TimedOut => "timed out (curl 28)".to_string(),
+        CallOutcome::Transport(rc) if rc < 0 => "libcurl unavailable".to_string(),
+        CallOutcome::Transport(rc) => format!("{} (curl {rc})", curl_rc_why(rc)),
+    }
+}
+
 /// **How long one call may take.** The values are a PER-CALL argument rather than constants
 /// because the right policy depends entirely on what is being fetched.
 ///
@@ -687,10 +795,14 @@ fn request_tls_result(
         .map(|line| CString::new(line.as_str()))
         .collect::<Result<_, _>>()
         .map_err(|_| RequestError::Transport)?;
+    let host_is_plex_tv = is_plex_tv_host(url);
     // The guard `CURL_OK` exists for. Without it, a device with no libcurl this app can bind
     // reaches `curl_easy_init`'s wrapper and takes `dynlib::missing_symbol`, which panics — an
     // account lookup failing should return None and let the caller fall back, not kill a thread.
     if !available() {
+        if host_is_plex_tv {
+            record_plex_tv_call(CallOutcome::Transport(CURL_UNAVAILABLE));
+        }
         return Err(RequestError::Transport);
     }
     // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
@@ -882,21 +994,23 @@ fn request_tls_result(
             // stale CA bundle on a set nobody here owns indistinguishable from being offline: the
             // QR sign-in simply never completes. These four are the ones that mean something
             // different from "the network is down".
-            let why = match rc {
-                60 => "peer certificate could not be verified (CA store too old?)",
-                35 => "TLS handshake failed (protocol too new for this firmware?)",
-                77 => "CA bundle could not be read",
-                6 => "could not resolve host",
-                28 => "timed out",
-                90 => "certificate pin did not match (stale lab session?)",
-                _ => "transport error",
-            };
+            let why = curl_rc_why(rc);
             crate::log(&format!("net: curl rc={rc} — {why}"));
+            if host_is_plex_tv {
+                record_plex_tv_call(if rc == 28 {
+                    CallOutcome::TimedOut
+                } else {
+                    CallOutcome::Transport(rc)
+                });
+            }
             return Err(if rc == 28 {
                 RequestError::TimedOut
             } else {
                 RequestError::Transport
             });
+        }
+        if host_is_plex_tv {
+            record_plex_tv_call(CallOutcome::Answered(code as u16));
         }
         Ok(Resp {
             status: code as u16,
@@ -1074,6 +1188,80 @@ mod request_tests {
             "plaintext may upgrade, but the inverse is forbidden"
         );
         assert_eq!(PUBLIC_MAX_REDIRECTS, 5);
+    }
+
+    #[test]
+    fn plex_tv_host_is_matched_exactly() {
+        assert!(is_plex_tv_host("https://plex.tv/api/v2/pins"));
+        assert!(is_plex_tv_host("https://PLEX.TV/api/v2/pins"), "case-insensitive");
+        assert!(is_plex_tv_host("https://plex.tv:443/api/v2/pins"), "port is stripped");
+        assert!(
+            !is_plex_tv_host("https://api.plex.tv/api/v2/pins"),
+            "a subdomain is not plex.tv"
+        );
+        assert!(
+            !is_plex_tv_host("https://discover.provider.plex.tv/hubs"),
+            "a subdomain is not plex.tv"
+        );
+        assert!(
+            !is_plex_tv_host("https://abc123.def456.plex.direct:32400/library"),
+            "a user's own PMS is never plex.tv"
+        );
+        assert!(
+            !is_plex_tv_host("http://192.168.1.50:32400/library"),
+            "a plain PMS origin is never plex.tv"
+        );
+        assert!(!is_plex_tv_host("not a url at all"));
+    }
+
+    #[test]
+    fn curl_rc_why_names_the_codes_the_sign_in_screen_cares_about() {
+        assert_eq!(curl_rc_why(6), "could not resolve host");
+        assert_eq!(curl_rc_why(28), "timed out");
+        assert_eq!(
+            curl_rc_why(35),
+            "TLS handshake failed (protocol too new for this firmware?)"
+        );
+        assert_eq!(
+            curl_rc_why(60),
+            "peer certificate could not be verified (CA store too old?)"
+        );
+        assert_eq!(curl_rc_why(77), "CA bundle could not be read");
+        assert_eq!(curl_rc_why(9999), "transport error", "unknown codes fall back");
+    }
+
+    #[test]
+    fn describe_outcome_is_bounded_and_identifier_free() {
+        assert_eq!(describe_outcome(CallOutcome::Answered(200)), "HTTP 200");
+        assert_eq!(describe_outcome(CallOutcome::Answered(429)), "HTTP 429");
+        assert_eq!(describe_outcome(CallOutcome::TimedOut), "timed out (curl 28)");
+        assert_eq!(
+            describe_outcome(CallOutcome::Transport(6)),
+            "could not resolve host (curl 6)"
+        );
+        assert_eq!(
+            describe_outcome(CallOutcome::Transport(CURL_UNAVAILABLE)),
+            "libcurl unavailable"
+        );
+    }
+
+    #[test]
+    fn last_plex_tv_call_reports_the_most_recent_record() {
+        let _serial = LAST_CALL_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_last_plex_tv_call_for_test();
+        assert!(last_plex_tv_call().is_none(), "nothing recorded yet");
+
+        record_plex_tv_call(CallOutcome::Transport(6));
+        let first = last_plex_tv_call().expect("a call was recorded");
+        assert_eq!(first.outcome, CallOutcome::Transport(6));
+
+        record_plex_tv_call(CallOutcome::Answered(201));
+        let second = last_plex_tv_call().expect("a call was recorded");
+        assert_eq!(second.outcome, CallOutcome::Answered(201));
+        assert!(second.at >= first.at, "the record advances in time");
+
+        reset_last_plex_tv_call_for_test();
+        assert!(last_plex_tv_call().is_none(), "reset clears it again");
     }
 }
 
