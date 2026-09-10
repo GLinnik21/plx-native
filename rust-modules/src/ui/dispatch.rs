@@ -508,8 +508,20 @@ where
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }
 
+    /// **Is a PAGE navigation already parked for this frame's commit?**
+    ///
+    /// Asked by `app::bridge::sync_page`, whose whole job is to put the committed route's page on
+    /// top: a page op parked by the loop itself (`Nav::Open`'s `Push`, `Nav::Back`'s `Pop`) is
+    /// already that decision, and a second one would duplicate the page. A parked SURFACE op is
+    /// not — `Navigation::moves_page` is the one classifier, so this and the commit that routes
+    /// the op give the same answer. It used to match `Fx::Nav(_)` flatly, which made
+    /// `exit_player`'s `NavOp::Dismiss` of an open player panel suppress the page sync for the
+    /// very frame that carried the post-player route.
     pub fn has_pending_navigation(&self) -> bool {
-        self.parked.iter().any(|(s, _)| matches!(s.fx, Fx::Nav(_)))
+        self.parked.iter().any(|(s, _)| match &s.fx {
+            Fx::Nav(op) => self.nav.moves_page(op),
+            _ => false,
+        })
     }
 
     /// The engine's current focus for the input owner (§7.3 step 5).

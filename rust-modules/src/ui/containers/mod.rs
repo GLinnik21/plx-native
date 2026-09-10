@@ -203,10 +203,46 @@ impl<H: Host> Navigation<H> {
 
     // ---- structural ops ----------------------------------------------------------------------
 
+    /// **Does this op move the PAGE stack?** The ONE classifier — [`request`](Self::request)
+    /// routes by it, and the dispatcher's `has_pending_navigation` asks it of a parked op.
+    ///
+    /// The two questions have to be one answer. `sync_page` mirrors the legacy `app.route` onto
+    /// the tree and skips a frame whose page op is already parked (the loop's own `Nav::Open`
+    /// parks a `Push` and flips the route in the same breath, so a second op would duplicate the
+    /// page); a SURFACE op parked in that same breath — `exit_player`'s `NavOp::Dismiss` of the
+    /// panel that was up when the film ended — is not that, and reading it as one left the tree's
+    /// top page naming `player` under a route that already said `home`.
+    ///
+    /// `Dismiss(id)` is the ambiguous spelling: on a live or covered surface it is the modal
+    /// stack's, and on anything else it reaches `NavStack::apply`'s `PopTo` arm, so it answers by
+    /// WHERE the entry is rather than by the variant.
+    pub fn moves_page(&self, op: &NavOp<H::Arg>) -> bool {
+        match op {
+            // `Present` mounts a surface; `Cancel` withdraws a pending op without moving the top.
+            NavOp::Present(_) | NavOp::Cancel => false,
+            NavOp::Dismiss(id) => {
+                !self.is_surface(*id)
+                    && !self.covered_modals.iter().any(|(_, m)| m.surface(*id).is_some())
+            }
+            _ => true,
+        }
+    }
+
     /// A parked `NavOp` at NAV COMMIT: page-stack ops are requested on the shared stack (and
     /// apply at the transition's commit point); `Present`/`Dismiss`/`Cancel` are immediate.
     /// Returns the immediate lifecycle steps (a surface's), if any.
+    ///
+    /// [`moves_page`](Self::moves_page) makes the split, so the guard the dispatcher asks and the
+    /// routing performed here cannot drift.
     pub fn request(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) -> Vec<Life<H>> {
+        if self.moves_page(&op) {
+            let ret = if let Some(InputOwner::Entry(owner)) = self.modals.input_owner() {
+                if let Some(e) = self.modals.entry_mut(owner) { e.ret = ret; }
+                self.top_page().map(|e| e.ret.clone()).unwrap_or_default()
+            } else { ret };
+            self.tabs.stack.request(op, ret);
+            return Vec::new();
+        }
         match op {
             NavOp::Present(arg) => {
                 let host = self.top_page().map(|e| e.id);
@@ -254,14 +290,9 @@ impl<H: Host> Navigation<H> {
                 }
                 Vec::new()
             }
-            other => {
-                let ret = if let Some(InputOwner::Entry(owner)) = self.modals.input_owner() {
-                    if let Some(e) = self.modals.entry_mut(owner) { e.ret = ret; }
-                    self.top_page().map(|e| e.ret.clone()).unwrap_or_default()
-                } else { ret };
-                self.tabs.stack.request(other, ret);
-                Vec::new()
-            }
+            // `Root`/`Push`/`Pop`/`PopTo`/`Replace`/`SelectTab`, and a `Dismiss` naming a page
+            // entry: `moves_page` answered true for every one of them and took the branch above.
+            _ => unreachable!("a page op reached the surface arms"),
         }
     }
 

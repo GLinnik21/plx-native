@@ -530,3 +530,44 @@ fn a_page_dip_commits_at_its_floor_and_a_back_inside_the_window_withdraws_it() {
     assert_eq!(d.nav.tabs.stack.depth(), 1);
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0);
 }
+
+/// **`has_pending_navigation` is a question about the PAGE stack**, and [`Navigation::moves_page`]
+/// is the one classifier that answers it — the same one [`Navigation::request`] routes by, so the
+/// guard and the commit cannot disagree about what a parked op is.
+///
+/// Its caller is `app::bridge::sync_page`, which mirrors the committed route onto the tree and
+/// stands down for a frame whose page op the loop already parked. Reading a parked SURFACE op as
+/// one is what stranded the player page under a route that had already left it: `exit_player`
+/// parks a `Dismiss` for the panel that was up and flips the route in the same breath.
+///
+/// [`Navigation::moves_page`]: super::Navigation::moves_page
+/// [`Navigation::request`]: super::Navigation::request
+#[test]
+fn only_a_parked_page_op_counts_as_a_pending_navigation() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    assert!(!d.has_pending_navigation(), "a settled tree has nothing parked");
+    let surface = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    assert!(!d.has_pending_navigation(), "presenting a surface does not move the page");
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    d.request(MachineId::Nav, NavOp::Dismiss(surface));
+    assert!(!d.has_pending_navigation(), "…and neither does dismissing one");
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    let mut ms = 64;
+    for op in [
+        NavOp::Push(FixtureArg::Page(9)),
+        NavOp::Pop,
+        NavOp::Root(FixtureArg::Home),
+        // a `Dismiss` naming a PAGE entry reaches `NavStack::apply`'s `PopTo` arm, so it is one
+        NavOp::Dismiss(home),
+        NavOp::PopTo(home),
+    ] {
+        d.request(MachineId::Nav, op);
+        assert!(d.has_pending_navigation(), "a page op is a pending navigation");
+        let report = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&report.unmounted);
+        ms += 16;
+        assert!(!d.has_pending_navigation(), "…consumed at the commit");
+    }
+}

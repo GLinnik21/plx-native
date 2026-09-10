@@ -1310,6 +1310,17 @@ pub(super) fn frame_with_results(
 }
 
 /// Follow external legacy route changes without replacing a covered content instance.
+///
+/// **The guard is about a PAGE op and only a page op.** The loop parks its own `Push`/`Pop` at the
+/// fade floor and flips the route in the same breath (`run::nav_commit`'s `Nav::Open`/`Nav::Back`),
+/// so a second op here would mint a duplicate page — but a parked SURFACE op is a different animal
+/// and must not stand the page sync down. `exit_player` parks a `NavOp::Dismiss` for whichever
+/// player panel was up and then flips the route to the origin page, and while
+/// `has_pending_navigation` counted that Dismiss, this returned early on the one frame that had
+/// the post-player route to mirror — leaving the tree's top page naming `player` under a route
+/// that already said `home`, which `frame_with_results`'s `debug_assert_eq!` is exactly there to
+/// catch. `Navigation::moves_page` is the classifier now, shared with the commit that routes the
+/// op, so the guard cannot mean something the container disagrees with.
 fn sync_page(d: &mut Dispatcher<AppHost>, route: Route, trail: &super::Trail) {
     use crate::ui::screen::ScreenArg;
     if d.has_pending_navigation() { return; }
@@ -2656,6 +2667,38 @@ mod tests {
         frame(&mut d, &mut rig, Route::Detail, tick(4), vec![]);
         assert_eq!(d.nav.top_page().map(|e| e.id), detail);
         assert_eq!(d.top_page(), body, "player return uncovers the same Detail instance");
+    }
+
+    /// **Leaving the player while one of its panels is still up** — EOS, the Stop key, or an Info
+    /// press that navigates — and the page has to follow the route in the SAME frame.
+    ///
+    /// `playback::exit_player` performs its two acts before the loop's `bridge::frame`: it parks a
+    /// `NavOp::Dismiss` for every open panel (`dismiss_player_overlays`) and then flips the route
+    /// to the origin page. Both reach the dispatcher through the one queue, so the frame that
+    /// carries the new route also carries a parked SURFACE op — which `sync_page`'s guard read as
+    /// "a page navigation is already in flight" and skipped the page sync for, leaving the tree's
+    /// top page on `player` under a route that already said `home`.
+    ///
+    /// Reproduced on the simulator by `tests/player_shots.sh`, whose clip reaches EOS with the Info
+    /// card open: `assertion failed: the tree's top page names the committed route, left: "player",
+    /// right: "home"` at `frame_with_results`'s `debug_assert_eq!`.
+    #[test]
+    fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame() {
+        use crate::screens::player::overlay::OverlayKind;
+        let _g = crate::testlock::serial();
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        let home = d.nav.top_page().map(|e| e.id);
+        assert_eq!(frame(&mut d, &mut rig, Route::Player, tick(1), vec![]).0, "player");
+        open_player_overlay(crate::route::idle_session_for_test(), &mut d, OverlayKind::Info);
+        frame(&mut d, &mut rig, Route::Player, tick(2), vec![]);
+        assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
+        // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
+        dismiss_player_overlays(&mut d);
+        assert_eq!(frame(&mut d, &mut rig, Route::Home, tick(3), vec![]).0, "home");
+        assert_eq!(d.nav.top_page().map(|e| e.id), home, "…and it is the origin page, not a new one");
+        assert!(!player_overlay_up(&d), "the panel left with the page that hosted it");
     }
 
     /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
