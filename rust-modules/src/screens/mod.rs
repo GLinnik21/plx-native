@@ -22,6 +22,7 @@ pub(crate) mod family;
 pub(crate) mod legal;
 pub(crate) mod login;
 pub(crate) mod onboard;
+pub(crate) mod player;
 pub(crate) mod profiles;
 pub(crate) mod registry;
 pub(crate) mod settings;

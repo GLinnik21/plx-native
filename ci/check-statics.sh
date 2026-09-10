@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The statics gate of the UI restructure (spec §0 done-criterion 1, §15.2): `static mut` in a
 # screen or engine module is ZERO except for render caches allowlisted BY NAME with a reason, and
-# the three main-thread machine globals (`route.rs SESSION`, `player/engine.rs ENGINE`,
+# the three main-thread machine globals (`route/decision.rs SESSION`, `player/engine.rs ENGINE`,
 # `ui/press.rs S`) are gone. `ui/press.rs S` went in phase 2; the other two go in phase 9.
 #
 # Two allowlists, both `# count: N` files that `tests/test_harness.py` audits (declared count ==
@@ -24,7 +24,7 @@ ok()   { echo "  ok — $*"; }
 # matches: `path<TAB>NAME` for every static mut declaration in the gated set.
 matches() {
   { grep -rnE --include='*.rs' '^\s*static mut [A-Za-z_][A-Za-z_0-9]*' "$SRC/ui" "$SRC/screens" 2>/dev/null
-    grep -nE '^\s*static mut SESSION\b' "$SRC/route.rs" 2>/dev/null | sed "s|^|$SRC/route.rs:|"
+    grep -nE '^\s*static mut SESSION\b' "$SRC/route/decision.rs" 2>/dev/null | sed "s|^|$SRC/route/decision.rs:|"
     grep -nE '^\s*static mut ENGINE\b' "$SRC/player/engine.rs" 2>/dev/null | sed "s|^|$SRC/player/engine.rs:|"
     grep -nE '^\s*static mut S\b' "$SRC/ui/press.rs" 2>/dev/null | sed "s|^|$SRC/ui/press.rs:|"
   } | sed -E "s/^([^:]+):[0-9]+:[[:space:]]*static mut ([A-Za-z_][A-Za-z_0-9]*).*/\1	\2/" | sort -u
@@ -58,7 +58,7 @@ done < <(grep -v '^#' "$migr")
 if [ "$stale" -eq 0 ]; then ok "no stale allowlist entry"; else fail "$stale stale allowlist entr(ies) — delete them with the static"; fi
 
 # the three machine globals: reported by name so the phase-9 deletion is visible here.
-for g in "$SRC/route.rs	SESSION" "$SRC/player/engine.rs	ENGINE" "$SRC/ui/press.rs	S"; do
+for g in "$SRC/route/decision.rs	SESSION" "$SRC/player/engine.rs	ENGINE" "$SRC/ui/press.rs	S"; do
   p="${g%%	*}"; n="${g##*	}"
   if grep -qE "^${p}	${n}$" <<<"$all"; then echo "    pending: $p $n (allowlisted under migration)"; else ok "global gone: $p $n"; fi
 done

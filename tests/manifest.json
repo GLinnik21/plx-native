@@ -388,7 +388,8 @@
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-menu": "0"
-      }
+      },
+      "_more_note": "overlay=more (the \"...\" options popover; it IS one of OVERLAY_WORDS, see app/mod.rs) has no fps:more-menu scene here on purpose, not by omission: it has no headless boot trigger. app/playback.rs and app/run.rs only ever open ui::more_menu from a live remote key (MORE, or the OK-hold item context path), the same way info-panel/track-menu/chapters-panel are opened from plxnative-info/plxnative-menu/plxnative-chapters. If a plxnative-more (or equivalent) boot trigger is ever added, mirror this scene as fps:more-menu: route player, overlay more, tier player, loop_floor 45, run_secs 26, warmup_s 9, the same item shape."
     },
     {
       "name": "chapters-panel",
@@ -400,7 +401,7 @@
       "warmup_s": 9,
       "item": "movie_hevc_4k_hdr10_truehd",
       "comment": "The Chapters strip: the third glass overlay the player can raise, and the last one with a boot trigger of its own (plxnative-chapters, app.rs). It sat outside the suite while info-panel and track-menu were gated, which is the gap this closes -- the strip carries a horizontal row of chapter THUMBNAILS over live video, so it is the only player overlay whose cost scales with artwork rather than with rows of text.",
-      "_floor_note": "45, the player-overlay tier, exactly as info-panel and track-menu: same route, same live decode underneath, same cached-glass popover over it. No fps_floor and no fps_ceiling, and that is the tier's shape rather than an omission -- the present gate deliberately EXCLUDES the player route (system.rs slaves the video plane to our surface), so fps= on a player scene grades neither an animator nor an idle screen. loop= is the signal that exists here.",
+      "_floor_note": "45, the player-overlay tier, exactly as info-panel and track-menu: same route, same live decode underneath, same cached-glass popover over it. No fps_floor and no fps_ceiling, and that is the tier's shape rather than an omission -- the present gate answers true while the hardware video plane stays bound (Player::set_video_plane_bound), which is this whole scene, so fps= on a player scene grades neither an animator nor an idle screen. loop= is the signal that exists here.",
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-chapters": true

@@ -207,6 +207,12 @@ impl RouteGround {
     /// the consent question moved ahead of the profile picker it usually has no rendered host to
     /// sample at all.
     pub(crate) fn draw_host(&mut self, p: Painter) {
+        // §9: the sample below reads back framebuffer 0, and on a video-plane frame framebuffer 0
+        // is the hole the television composites the plane through — so the latch would freeze
+        // transparent black as this route's ambient colour, for the life of the ground.
+        if crate::gfx::video_plane_refuses("RouteGround::draw_host") {
+            return;
+        }
         if !self.latched {
             let sample = crate::gfx::sample_modal_ambient();
             self.latch(sample.corners, sample.key);

@@ -4,7 +4,10 @@
 > component sweep landed as planned; the **view-tree half below is stale planning-tense** (it
 > predates the executed work and e.g. describes a 5-field `DetailView` that is now ~17 fields).
 > The accurate executed record for the view-tree migration — including the later Step 8
-> (shared scroll/cull/hero infra, stopped after 8.5) — is `docs/ui-viewtree-plan.md` §G. Only
+> (shared scroll/cull/hero infra, stopped after 8.5) — is `docs/ui-viewtree-plan.md` §G, accurate
+> through restructure phase 7: §G still describes `ui/home.rs`'s two-pass focused-last grid, and
+> phase 8 (2026-09-09) deleted that file for the engine-owned `screens/home/mod.rs`, whose row in
+> `rust-modules/src/ui/CLAUDE.md` is the current description. Only
 > the explicitly optional 7b (unified FocusPath) remains unbuilt, by design. This file is kept
 > for the design rationale (token values, carve-outs, player-as-reference stance).
 

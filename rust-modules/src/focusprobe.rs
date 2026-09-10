@@ -238,11 +238,11 @@ crate::dev::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
+pub(crate) fn sample(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     if !armed() {
         return;
     }
-    let line = fingerprint_content(route, screen, hud, ctrl, content);
+    let line = fingerprint_content(ps, route, screen, hud, ctrl, content);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(line.as_str()) {
@@ -260,22 +260,22 @@ pub(crate) fn sample(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, c
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
-    fingerprint_content(route, screen, hud, ctrl, content)
+pub(crate) fn line(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, content)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 #[cfg(test)]
-fn fingerprint(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
-    fingerprint_content(route, screen, hud, ctrl, "")
+fn fingerprint(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, "")
 }
 
-fn fingerprint_content(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
+fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
-    push_fields(&mut s, screen, hud, ctrl, content);
+    push_fields(ps, &mut s, screen, hud, ctrl, content);
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
@@ -286,7 +286,7 @@ fn fingerprint_content(route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot,
 /// One screen's own fields. Split out of [`fingerprint`] so [`Screen::ItemMenu`] can spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
-fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
+fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
     match screen {
         Screen::Login { has_control } => {
             // The phase is still most of this screen's state — it is a projection of the auth
@@ -320,7 +320,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
             // menu opened from the Library fingerprinted as though the user were standing on Home,
             // and a harness diffing two presses across it read the wrong screen's cursor.
             let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl, content);
+            push_fields(ps, s, over.screen(), hud, ctrl, content);
             let _ = write!(
                 s,
                 " acct={} asel={}",
@@ -335,7 +335,7 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
             // two hosts have the same fields to print. Anything reading a schema off this line needs
             // `over=` as well as `route=`.
             let _ = write!(s, " over={}", over.word());
-            push_fields(s, over.screen(), hud, ctrl, content);
+            push_fields(ps, s, over.screen(), hud, ctrl, content);
             let _ = write!(
                 s,
                 " imenu={} isel={} imsid=",
@@ -350,13 +350,22 @@ fn push_fields(s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, cont
         // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
         // `LogicalState::probe` output), not read off a legacy global here.
         Screen::Search => s.push_str(content),
-        Screen::Player { overlay } => push_player(s, overlay, hud, ctrl),
+        // The panels' own fields ride on `content`, for the same reason Library's, Detail's and
+        // Search's do: since restructure phase 9 each is the state of a MOUNTED INSTANCE
+        // (`screens::player::overlay`), and this module cannot reach into the container — the
+        // caller (`app::bridge::content_probe`) builds them from the surface that is up.
+        Screen::Player { overlay } => {
+            push_player(ps, s, overlay, hud, ctrl);
+            s.push_str(content);
+        }
     }
 }
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
+fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
+    // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
+    // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
         ControlSlot::Discs => "discs",
         ControlSlot::Skip(_) => "skip",
@@ -368,7 +377,7 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
     // this field would record those arms as dead code rather than as shadowed ones.
     let _ = write!(
         s,
-        " ov={} hud={} f={} btn={} tab={} slot={} items={} hidden={} upnext={}",
+        " ov={} hud={} f={} btn={} tab={} slot={} items={} hidden={}",
         overlay,
         b(hud.visible),
         hud.focus,
@@ -376,8 +385,7 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
         hud.tab,
         slot,
         ctrl.items(),
-        b(crate::ui::player_hud::transport_hidden()),
-        b(crate::ui::up_next::armed())
+        b(crate::ui::player_hud::transport_hidden(ps))
     );
     // The panels: whether each is open, ITS HIGHLIGHTED ROW, and for the track menu the two tracks
     // already committed. The row is what makes the overlay arms characterizable at all — each has
@@ -388,19 +396,8 @@ fn push_player(s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot) {
     // without it a paging press is invisible here (it moves nothing but that number).
     let _ = write!(
         s,
-        " menu={} msel={} taudio={} tsub={} info={} isel={} infolast={} chap={} csel={} haschap={} more={} osel={}",
-        b(crate::ui::track_menu::is_open()),
-        crate::ui::track_menu::sel(),
-        crate::ui::track_menu::active_audio(),
-        crate::ui::track_menu::active_sub(),
-        b(crate::ui::info_panel::is_open()),
-        crate::ui::info_panel::sel(),
-        b(crate::ui::info_panel::at_last()),
-        b(crate::ui::chapters_panel::is_open()),
-        crate::ui::chapters_panel::sel(),
-        b(crate::ui::chapters_panel::has_chapters()),
-        b(crate::ui::more_menu::is_open()),
-        crate::ui::more_menu::sel()
+        " haschap={}",
+        b(crate::ui::chapters_panel::has_chapters())
     );
     let _ = write!(
         s,
@@ -538,10 +535,11 @@ mod tests {
     /// which read process-global stores that other modules' tests mutate.
     #[test]
     fn a_fingerprint_is_stable_while_nothing_moves() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (rn, sc) in every_screen() {
-            let a = fingerprint(rn, sc, hud(), ControlSlot::Discs);
-            let b = fingerprint(rn, sc, hud(), ControlSlot::Discs);
+            let a = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
+            let b = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
             assert_eq!(a, b, "{rn} fingerprinted differently twice in a row");
         }
     }
@@ -551,9 +549,10 @@ mod tests {
     /// bring a space, a URL or path would bring a slash, and either would fail here.
     #[test]
     fn the_line_is_one_ordered_row_of_safe_key_value_pairs() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (rn, sc) in every_screen() {
-            let line = fingerprint(rn, sc, hud(), ControlSlot::Discs);
+            let line = fingerprint(&ps, rn, sc, hud(), ControlSlot::Discs);
             assert!(
                 !line.contains('\n'),
                 "{rn}: a fingerprint is ONE line: {line}"
@@ -581,9 +580,10 @@ mod tests {
     /// two fingerprints key by key instead of re-parsing a variable schema.
     #[test]
     fn one_screen_always_carries_the_same_keys() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         let keys = |rn, sc, ctrl| {
-            fingerprint(rn, sc, hud(), ctrl)
+            fingerprint(&ps, rn, sc, hud(), ctrl)
                 .split(' ')
                 .skip(1)
                 .filter_map(|f| f.split_once('=').map(|(k, _)| k.to_string()))
@@ -612,7 +612,7 @@ mod tests {
             "the control row's occupant changed the SCHEMA, not just a value"
         );
         // …and a HUD cursor move is a value change, never a key change
-        let moved = fingerprint(
+        let moved = fingerprint(&ps, 
             "player",
             Screen::Player { overlay: "none" },
             Hud {
@@ -635,9 +635,10 @@ mod tests {
     /// one assertion that fails if a future edit prints a constant where a getter belongs.
     #[test]
     fn moving_the_hud_cursor_changes_the_line() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         let at = |f, btn, tab| {
-            fingerprint(
+            fingerprint(&ps, 
                 "player",
                 Screen::Player { overlay: "none" },
                 Hud {
@@ -666,7 +667,7 @@ mod tests {
         );
         assert_ne!(
             at(0, 0, 0),
-            fingerprint(
+            fingerprint(&ps, 
                 "player",
                 Screen::Player { overlay: "info" },
                 Hud {
@@ -691,9 +692,10 @@ mod tests {
     /// `moving_the_hud_cursor_changes_the_line` above, for this screen's own one cursor.
     #[test]
     fn the_login_screens_stalled_control_appearing_is_observable() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
-        let without = fingerprint("login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
-        let with = fingerprint("login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
+        let without = fingerprint(&ps, "login", Screen::Login { has_control: false }, hud(), ControlSlot::Discs);
+        let with = fingerprint(&ps, "login", Screen::Login { has_control: true }, hud(), ControlSlot::Discs);
         assert_ne!(
             without, with,
             "the login screen's escape/retry/restart control appearing is not observable"

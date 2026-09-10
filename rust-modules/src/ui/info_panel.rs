@@ -6,43 +6,482 @@
 use crate::metadata;
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
-use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets::{badge, badge_w, resolve_tex_on, BadgeStyle};
 use crate::ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
-use std::ptr::{addr_of, addr_of_mut};
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum InfoAction {
     None,
     FromBeginning,
     GoToDetail(String), // rk to open: the show (episode) or the movie
 }
 
-static mut POP: Popover = Popover::new(); // shared open/appear choreography
-static mut FOCUS: c_int = 0; // index into the action-button column
-
-/// The focused action button, for the focus probe (`crate::focusprobe`). Same reason as the other
-/// panels: the card's UP/DOWN arm moves this alone, so nothing else in the log would show it.
-pub(crate) fn sel() -> c_int {
-    unsafe { addr_of!(FOCUS).read() }
+/// The card's whole state, owned by the container that mounts this panel — the modal PHASE and the
+/// appear spring belong to `ui::containers::modal::ModalStack` now, not to this struct; `draw`
+/// takes the appear fraction as a parameter instead of stepping its own `Popover`.
+pub(crate) struct InfoPanelState {
+    focus: c_int, // index into the action-button column
+    /// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two,
+    /// the whole of [`actions`].
+    ctl_pop: crate::ui::widgets::CtlPop<2>,
 }
 
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
-}
+impl InfoPanelState {
+    pub(crate) fn new() -> Self {
+        InfoPanelState {
+            focus: 0,
+            ctl_pop: crate::ui::widgets::CtlPop::new(),
+        }
+    }
 
-pub(crate) fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
-}
-pub(crate) fn open() {
-    unsafe { addr_of_mut!(FOCUS).write(0) }
-    pop().open();
-}
-pub(crate) fn close() {
-    pop().close();
+    /// The focused action button, for the focus probe (`crate::focusprobe`). Same reason as the
+    /// other panels: the card's UP/DOWN arm moves this alone, so nothing else in the log would show
+    /// it.
+    pub(crate) fn sel(&self) -> c_int {
+        self.focus
+    }
+
+    /// true when focus is on the last action button — a further DOWN should leave the card (back to
+    /// the tabs) rather than staying pinned to the bottom row
+    pub(crate) fn at_last(&self) -> bool {
+        self.focus >= actions().len() as c_int - 1
+    }
+
+    pub(crate) fn move_focus(&mut self, sym: c_int) {
+        let n = actions().len() as c_int;
+        let sym = sym as u32;
+        let f = self.focus;
+        let nf = if sym == SDLK_UP {
+            (f - 1).max(0)
+        } else if sym == SDLK_DOWN {
+            (f + 1).min(n - 1)
+        } else {
+            f
+        };
+        self.focus = nf;
+    }
+
+    /// activate the focused action — dismissing the card afterward is the container's job now, not
+    /// this method's.
+    pub(crate) fn on_ok(&self) -> InfoAction {
+        let f = self.focus;
+        if f <= 0 {
+            return InfoAction::FromBeginning;
+        }
+        // second action opens the show (episode) or the movie
+        let rk = metadata::now_playing()
+            .map(|n| n.detail_rk.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| metadata::current().map(|d| d.rk.clone()))
+            .unwrap_or_default();
+        if rk.is_empty() {
+            InfoAction::None
+        } else {
+            InfoAction::GoToDetail(rk)
+        }
+    }
+
+    /// The focused thing is a pressable CONTROL FACE — one of the card's two action buttons, rather
+    /// than the tab row above them. The card's `focus` walks both, and is the button index only
+    /// while it is inside the column; the same filter [`InfoPanelState::update`] pops on, asked here
+    /// so the button that dips is always the button that popped.
+    pub(crate) fn focus_is_ctl(&self) -> bool {
+        self.ctl_index().is_some()
+    }
+
+    /// **The one filter, asked by both callers.** Which action button `focus` is on, if it is in
+    /// the column at all — [`focus_is_ctl`](Self::focus_is_ctl) asks it to decide whether a press
+    /// may dip, and [`update`](Self::update) asks it to decide which button `ctl_pop` pops. The doc
+    /// above promised those were the same filter; they were the same expression written twice,
+    /// seven lines apart, in two spellings.
+    fn ctl_index(&self) -> Option<usize> {
+        usize::try_from(self.focus)
+            .ok()
+            .filter(|&i| i < actions().len())
+    }
+
+    pub(crate) fn update(&mut self, dt: f32) {
+        // The card's focus walks the tabs above these buttons too, and `focus` is the button index
+        // only while it is inside the column — outside it, every pop closes.
+        let idx = self.ctl_index();
+        self.ctl_pop.step(idx, dt);
+    }
+
+    pub(crate) fn draw(&mut self, ps: &crate::route::PlaybackSession, appear: f32) {
+        let np = metadata::now_playing();
+        let d = metadata::current();
+        if np.is_none() && d.is_none() {
+            return;
+        }
+        // no scrim — the card floats over the transport; reproduces exactly what
+        // `Popover::painter(0.0, 20.0)` (i.e. no scrim + `Popover::content_painter(20.0)`) drew.
+        let p = Painter::root()
+            .alpha(appear)
+            .translate(0.0, crate::ui::popover::Popover::RISE * (1.0 - appear));
+
+        // Resolve the playing leaf's fields: `now_playing` describes the episode (show title + SxEy
+        // + its still) or the movie; the loaded `Detail` backs the capability badges + genres.
+        let is_ep = np.map(|n| n.is_episode).unwrap_or(false);
+        let big_title = np
+            .map(|n| n.title.clone())
+            .or_else(|| d.map(|x| x.title.clone()))
+            .unwrap_or_default();
+        let ep_name = np.map(|n| n.ep_title.clone()).unwrap_or_default();
+        let summary = np
+            .map(|n| n.summary.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| d.map(|x| x.summary.clone()))
+            .unwrap_or_default();
+        let year = np
+            .map(|n| n.year)
+            .or_else(|| d.map(|x| x.year))
+            .unwrap_or(0);
+        let dur_ms = np
+            .map(|n| n.dur_ms)
+            .or_else(|| d.map(|x| x.dur_ms))
+            .unwrap_or(0);
+        let rating = np
+            .map(|n| n.rating.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| d.map(|x| x.rating.clone()))
+            .unwrap_or_default();
+        let thumb_path = np
+            .map(|n| n.thumb.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                d.map(|x| {
+                    if !x.art.is_empty() {
+                        x.art.clone()
+                    } else {
+                        x.thumb.clone()
+                    }
+                })
+            })
+            .unwrap_or_default();
+        // capability badges come from the PLAYING item's own tracks — `current()` is the show
+        // (episode-1 streams) during a show-page episode play, or another item entirely
+        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match metadata::playing() {
+            Some(t) => (&t.audio, &t.subs),
+            None => (
+                d.map(|x| x.audio.as_slice()).unwrap_or(&[]),
+                d.map(|x| x.subs.as_slice()).unwrap_or(&[]),
+            ),
+        };
+
+        // card — tall enough that the still gets equal padding on every side (see `pad`/`sh` below)
+        let cx = 80.0f32;
+        let cw = SCR_W - 160.0;
+        let ch = 236.0f32;
+        let cyt = SCR_H - 176.0 - ch; // sit just above the Info/Chapters tabs (tabs at SCR_H-128)
+        let card = Rect::new(cx, cyt, cw, ch);
+        // near-opaque dark card keeps the title/synopsis legible over any scene
+        let cardbg = theme::PANEL_TOP;
+        p.rrect(card, 28.0, 28.0, cardbg);
+
+        let pad = 28.0f32;
+        // still (16:9), left — the *episode's* thumbnail (or the movie's landscape art). `ch` is sized
+        // so (ch - sh)/2 == pad, giving the still an equal `pad` margin on every side.
+        let sw = 320.0f32;
+        let sh = 180.0f32;
+        let sx = cx + pad;
+        let sy = cyt + (ch - sh) * 0.5;
+        let mut drawn = false;
+        if !thumb_path.is_empty() {
+            // the PLAYING item's server — the info panel describes what is on the video plane
+            let t = resolve_tex_on(
+                crate::route::item_sid(crate::route::cur_sid(ps)),
+                &thumb_path,
+                480,
+                270,
+                0,
+            );
+            if t != 0 {
+                p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
+                drawn = true;
+            }
+        }
+        if !drawn {
+            p.rrect(
+                Rect::new(sx, sy, sw, sh),
+                16.0,
+                16.0,
+                theme::CARD_PLACEHOLDER,
+            );
+        }
+
+        // action buttons (right column)
+        let acts = actions();
+        let bw = 352.0f32;
+        let bh = 70.0f32;
+        let bx = cx + cw - pad - bw;
+        let focus = self.focus;
+        let total_bh = acts.len() as f32 * bh + (acts.len().saturating_sub(1)) as f32 * 16.0;
+        let mut by = cyt + (ch - total_bh) * 0.5;
+        let env = crate::ui::Env::inert();
+        for (i, label) in acts.iter().enumerate() {
+            let icon = if *label == "From Beginning" {
+                Icon::Play
+            } else {
+                Icon::Info
+            };
+            if let Ok(cs) = CString::new(*label) {
+                crate::ui::widgets::Button::new(
+                    cs.as_ptr(),
+                    theme::size::BODY,
+                    Rect::new(bx, by, bw, bh),
+                )
+                .icon(icon)
+                .focused(i as c_int == focus)
+                .scale(self.ctl_pop.scale(i))
+                .draw(&env, p);
+            }
+            by += bh + 16.0;
+        }
+
+        // text block (between the still and the buttons): title + synopsis + tags, cap-band centred as a
+        // group. Title is the playing leaf's own name (episode name / movie title) — the show-title +
+        // SxEy treatment lives on the transport HUD under the playbar, not this card.
+        let tx = sx + sw + 34.0;
+        let tright = bx - 34.0;
+        let tw = tright - tx;
+        let white = theme::TEXT_PRIMARY;
+        let dim = theme::TEXT_SECONDARY;
+
+        let info_title = if is_ep {
+            ep_name.clone()
+        } else {
+            big_title.clone()
+        };
+        // What the server is actually sending, straight off the resolved route — see `playback_now`.
+        // `has_url`, not `!url().is_empty()`: this card sits on the one route exempt from the idle
+        // present gate, so it draws at ~60/s, and `url()` clones the longest string in the app (a
+        // universal-transcode `start.mkv` query is several hundred bytes) purely to test emptiness.
+        // The `play_pending` half is the resolve window — see the doc.
+        let now_fact = playback_now(
+            crate::route::has_url(ps) && !crate::route::play_pending(),
+            crate::route::is_transcoding(ps),
+            crate::route::is_remux(ps),
+            &crate::route::stream_vcodec(ps),
+        );
+        // metadata line (genres · year · duration) + capability badges. Built and FIT here, before the
+        // title/synopsis layout below, rather than inside its own draw block further down — see
+        // `chips_that_fit`'s doc for issue #26 itself; the reason this part specifically has to happen
+        // before `span` is a second, smaller bug the same fix could otherwise reintroduce. `span` folds
+        // in a fixed `gap_tags + tag_h` for this row whenever it might have anything to say
+        // (`has_tags`), which used to be exactly right because the row always drew SOMETHING once
+        // `has_tags` was true. Once a row can be fit down to nothing at all — a single candidate (one
+        // very long genre string, say) wider than `tw` on its own — `has_tags` and "this row draws a
+        // pixel" stop being the same question, and centring the title/synopsis group as though a tag
+        // row existed would leave a blank gap where one doesn't. So the row's actual chip COUNT, `n`,
+        // has to be known before `span` is computed, not decided by a separate boolean.
+        let has_tags = year > 0
+            || dur_ms > 0
+            || !rating.is_empty()
+            || d.map(|x| !x.genres.is_empty()).unwrap_or(false)
+            || !subs.is_empty()
+            || audio.iter().any(|s| s.ad)
+            || now_fact.is_some()
+            || audio.first().and_then(|s| audio_badge(&s.codec)).is_some();
+
+        // `has_tags` is the cheap pre-filter (a handful of comparisons, no allocation) that skips this
+        // entirely for the common "nothing at all to report" case; once it's true the row still might
+        // fit zero chips (see above), which is exactly what `n` then says.
+        let (chips, n): (Vec<Chip>, usize) = if has_tags {
+            let mut meta = Vec::new();
+            if let Some(x) = d {
+                for g in x.genres.iter().take(2) {
+                    meta.push(g.clone());
+                }
+            }
+            if year > 0 {
+                meta.push(year.to_string());
+            }
+            if dur_ms > 0 {
+                meta.push(crate::ui::fmt::dur_short(dur_ms));
+            }
+            let meta_line = (!meta.is_empty()).then(|| meta.join("   \u{b7}   "));
+
+            // …then the live playback fact, in its own quieter ink. It is a separate run rather than
+            // one more entry joined into `meta` because it is a different KIND of statement — a fact
+            // about this session, not a property of the item — and tertiary is what says so. No chip
+            // and no capsule: a conversion that worked is not a warning.
+            //
+            // REGULAR weight, unlike the item run beside it, and that is the mock's: its whole meta line
+            // is `font-weight:400` at `--text-tertiary`. The item run's bold/primary is this screen's own
+            // long-standing deviation (the card is read over live video, not over a panel); repeating it
+            // on a run the mock has no bold in would make the quiet fine print the loudest thing on the
+            // row.
+            //
+            // The separator is baked into the STRING (rather than a stored `gap_before`) because
+            // whether it is needed depends only on whether the meta line EXISTS, which is known right
+            // here — not on whether the meta line ends up FITTING. By construction a chip only draws
+            // once every higher-priority chip already fit (see `chips_that_fit`'s front-fill), so by
+            // the time this fact chip is actually on screen those two questions have the same answer.
+            let fact_run = now_fact.as_ref().map(|fact| {
+                if meta_line.is_some() {
+                    format!("   \u{b7}   {fact}")
+                } else {
+                    fact.clone()
+                }
+            });
+
+            // pure measurement — no draw — so every candidate's width is known before any of them
+            // touches the screen
+            let text_w = |s: &str, bold: c_int| -> f32 {
+                CString::new(s)
+                    .ok()
+                    .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, bold))
+                    .unwrap_or(0.0)
+            };
+
+            let mut chips: Vec<Chip> = Vec::with_capacity(7);
+            let mut prev_kind: Option<ChipKind> = None;
+            let mut push = |label: String, kind: ChipKind| {
+                let gap_before = chip_gap(prev_kind, kind);
+                let w = match kind {
+                    ChipKind::Text { bold, .. } => text_w(&label, bold),
+                    ChipKind::Badge => badge_w(&label, None),
+                };
+                chips.push(Chip {
+                    label,
+                    kind,
+                    gap_before,
+                    w,
+                });
+                prev_kind = Some(kind);
+            };
+
+            if let Some(line) = meta_line {
+                push(
+                    line,
+                    ChipKind::Text {
+                        bold: 1,
+                        col: white,
+                    },
+                );
+            }
+            if let Some(fact) = fact_run {
+                push(
+                    fact,
+                    ChipKind::Text {
+                        bold: 0,
+                        col: theme::TEXT_TERTIARY,
+                    },
+                );
+            }
+            // badges: rating (from the leaf), top-audio Dolby tag, CC/SDH/AD (from the loaded streams)
+            if !rating.is_empty() {
+                push(rating.clone(), ChipKind::Badge);
+            }
+            if let Some(tag) = audio.first().and_then(|s| audio_badge(&s.codec)) {
+                push(tag, ChipKind::Badge);
+            }
+            if !subs.is_empty() {
+                push("CC".to_string(), ChipKind::Badge);
+            }
+            if subs.iter().any(|s| s.sdh) {
+                push("SDH".to_string(), ChipKind::Badge);
+            }
+            if audio.iter().any(|s| s.ad) {
+                push("AD".to_string(), ChipKind::Badge);
+            }
+
+            let n = chips_that_fit(chips.iter().map(|c| (c.w, c.gap_before)), tw);
+            (chips, n)
+        } else {
+            (Vec::new(), 0)
+        };
+
+        // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
+        let title_h = 42.0f32; // title advance (font 40)
+        // Issue #29: the synopsis is reading copy (the longest run of prose on this card), which is
+        // exactly the case `ui/CLAUDE.md` rule 2 already settled — the hero blurb is `size::LABEL` 26
+        // through `ui::hero_synopsis`, one rung below plain `size::BODY`, precisely because a blurb
+        // reads as prose rather than as chrome. This card built its own synopsis at `BODY` instead of
+        // going through that shared helper (it needs its own 2-line cap and card-local ink, not the
+        // hero's 3-line one), so it never inherited the correction; stepping it to `LABEL` brings the
+        // player's synopsis in line with both heroes' own settled rung. The line advance keeps the same
+        // `font + 3` rhythm the card already used at `BODY` (31 = 28 + 3), rather than carrying the old
+        // px figure forward onto a smaller font, which would leave the new rung looking loose.
+        let syn_lh = theme::size::LABEL as f32 + 3.0; // synopsis line advance (font 26) — 29
+        let tag_h = 34.0f32;
+        let gap_title = 6.0f32; // title → synopsis
+        let gap_tags = 12.0f32; // synopsis → tags
+
+        // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
+        // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
+        let title_v = TextView::new(&info_title, theme::size::TITLE, white)
+            .bold()
+            .max_lines(1);
+        let syn_v = TextView::new(&summary, theme::size::LABEL, dim)
+            .leading(syn_lh)
+            .max_lines(2);
+        let syn_h = if summary.is_empty() {
+            0.0
+        } else {
+            syn_v.measure_h(tw)
+        };
+
+        // centre the [title + synopsis + tag row] group in the card (cap-top coordinates). The tag
+        // row's contribution is gated on `n > 0` — whether the chip row ACTUALLY has something to draw
+        // — not `has_tags`; see the comment above where `chips`/`n` are built for why those are two
+        // different questions once a fit can drop every candidate.
+        let span = title_h
+            + if syn_h > 0.0 { gap_title + syn_h } else { 0.0 }
+            + if n > 0 { gap_tags + tag_h } else { 0.0 };
+        let mut ty = cyt + (ch - span) * 0.5;
+        title_v.draw(p, Rect::new(tx, ty, tw, 0.0));
+        ty += title_h;
+        if syn_h > 0.0 {
+            ty += gap_title;
+            syn_v.draw(p, Rect::new(tx, ty, tw, 0.0));
+            ty += syn_h;
+        }
+        // metadata line (genres · year · duration) + capability badges, centred on the tag row —
+        // `chips`/`n` were already measured and fit above, so this is draw-only.
+        //
+        // **Issue #26.** This row used to draw every candidate unconditionally and let `mx` run past
+        // the action column whenever an item had enough facts — a rating, a premium audio tag, CC, SDH
+        // and AD can all be true of one stream at once — so the chips drew straight under "From
+        // Beginning"/"Go to Show". The fix constrains the row to `tw`, the SAME right edge the title
+        // and synopsis above it already respect, and decides what fits by measuring every candidate
+        // BEFORE drawing any of it, in a fixed priority order: the item's own facts (genres/year/
+        // duration) first, then the live playback fact (what the server is actually sending — the
+        // technical heart of this panel, and the one thing here that can surprise a viewer), then the
+        // rating badge, then the premium-audio badge, then the accessibility badges CC/SDH/AD — each
+        // rarer, and each a smaller part of why this panel got opened, than the one before it. Dropped
+        // chips are hidden outright rather than faded: each one is a discrete fact (a word, a bordered
+        // badge), and a badge sliced in half by a fade band reads as a rendering bug, not as "there was
+        // more" — a clean drop keeps every chip that IS shown fully legible, which a fade cannot
+        // promise once it crosses a border. [`chips_that_fit`] is the pure packer that turns the
+        // measured candidates into a cut, so the maths is pinned by a host test with no font involved.
+        if n > 0 {
+            ty += gap_tags;
+            let my = ty + tag_h * 0.5; // vertical centre of the tag row
+            let mut mx = tx;
+            for (i, chip) in chips.iter().take(n).enumerate() {
+                if i > 0 {
+                    mx += chip.gap_before;
+                }
+                match chip.kind {
+                    ChipKind::Text { bold, col } => {
+                        if let Ok(cs) = CString::new(chip.label.as_str()) {
+                            let y = crate::text::text_vcenter_y(theme::size::CAPTION, bold, my);
+                            p.text(cs.as_ptr(), mx, y, theme::size::CAPTION, col, 0, bold);
+                        }
+                    }
+                    ChipKind::Badge => {
+                        meta_badge(p, mx, my, &chip.label);
+                    }
+                }
+                mx += chip.w;
+            }
+        }
+    }
 }
 
 /// whether the playing item is an episode (→ "Go to Show") rather than a movie ("Go to Movie")
@@ -53,9 +492,9 @@ fn is_episode() -> bool {
 }
 
 /// the action-button labels for the playing item. An ARRAY, not a `Vec`: the count is fixed at two
-/// (it is what `CTL_POP`'s const generic is sized from), and five callers ask this — one of them
-/// [`draw`], every frame the card is up — so a heap allocation to hand back two `&'static str`s was
-/// paid 60 times a second to learn a constant.
+/// (it is what `CtlPop`'s const generic is sized from), and five callers ask this — one of them
+/// [`InfoPanelState::draw`], every frame the card is up — so a heap allocation to hand back two
+/// `&'static str`s was paid 60 times a second to learn a constant.
 fn actions() -> [&'static str; 2] {
     [
         "From Beginning",
@@ -65,76 +504,6 @@ fn actions() -> [&'static str; 2] {
             "Go to Movie"
         },
     ]
-}
-
-/// true when focus is on the last action button — a further DOWN should leave the card (back to the
-/// tabs) rather than staying pinned to the bottom row
-pub(crate) fn at_last() -> bool {
-    let f = unsafe { addr_of!(FOCUS).read() };
-    f >= actions().len() as c_int - 1
-}
-
-pub(crate) fn move_focus(sym: c_int) {
-    let n = actions().len() as c_int;
-    let sym = sym as u32;
-    let f = unsafe { addr_of!(FOCUS).read() };
-    let nf = if sym == SDLK_UP {
-        (f - 1).max(0)
-    } else if sym == SDLK_DOWN {
-        (f + 1).min(n - 1)
-    } else {
-        f
-    };
-    unsafe { addr_of_mut!(FOCUS).write(nf) }
-}
-
-/// activate the focused action, then close
-pub(crate) fn on_ok() -> InfoAction {
-    let f = unsafe { addr_of!(FOCUS).read() };
-    close();
-    if f <= 0 {
-        return InfoAction::FromBeginning;
-    }
-    // second action opens the show (episode) or the movie
-    let rk = metadata::now_playing()
-        .map(|n| n.detail_rk.clone())
-        .filter(|s| !s.is_empty())
-        .or_else(|| metadata::current().map(|d| d.rk.clone()))
-        .unwrap_or_default();
-    if rk.is_empty() {
-        InfoAction::None
-    } else {
-        InfoAction::GoToDetail(rk)
-    }
-}
-
-/// The focused thing is a pressable CONTROL FACE — one of the card's two action buttons, rather than
-/// the tab row above them. The card's `FOCUS` walks both, and is the button index only while it is
-/// inside the column; the same filter [`update`] pops on, asked here so the button that dips is
-/// always the button that popped.
-pub(crate) fn focus_is_ctl() -> bool {
-    ctl_index().is_some()
-}
-
-/// **The one filter, asked by both callers.** Which action button `FOCUS` is on, if it is in the
-/// column at all — [`focus_is_ctl`] asks it to decide whether a press may dip, and [`update`] asks
-/// it to decide which button `CTL_POP` pops. The doc above promised those were the same filter;
-/// they were the same expression written twice, seven lines apart, in two spellings.
-fn ctl_index() -> Option<usize> {
-    usize::try_from(unsafe { addr_of!(FOCUS).read() })
-        .ok()
-        .filter(|&i| i < actions().len())
-}
-
-/// The action column's FOCUS POP — one spring per button ([`crate::ui::widgets::CtlPop`]). Two, the
-/// whole of [`actions`].
-static mut CTL_POP: crate::ui::widgets::CtlPop<2> = crate::ui::widgets::CtlPop::new();
-
-pub(crate) fn update(dt: f32) {
-    pop().update(dt);
-    // The card's focus walks the tabs above these buttons too, and `FOCUS` is the button index only
-    // while it is inside the column — outside it, every pop closes.
-    unsafe { (*addr_of_mut!(CTL_POP)).step(ctl_index(), dt) };
 }
 
 // ---- helpers ----
@@ -319,377 +688,6 @@ fn chips_that_fit(items: impl Iterator<Item = (f32, f32)>, avail_w: f32) -> usiz
         n += 1;
     }
     n
-}
-
-pub(crate) fn draw() {
-    if !is_open() {
-        return;
-    }
-    let np = metadata::now_playing();
-    let d = metadata::current();
-    if np.is_none() && d.is_none() {
-        return;
-    }
-    let p = pop().painter(0.0, 20.0); // no scrim — the card floats over the transport
-
-    // Resolve the playing leaf's fields: `now_playing` describes the episode (show title + SxEy +
-    // its still) or the movie; the loaded `Detail` backs the capability badges + genres.
-    let is_ep = np.map(|n| n.is_episode).unwrap_or(false);
-    let big_title = np
-        .map(|n| n.title.clone())
-        .or_else(|| d.map(|x| x.title.clone()))
-        .unwrap_or_default();
-    let ep_name = np.map(|n| n.ep_title.clone()).unwrap_or_default();
-    let summary = np
-        .map(|n| n.summary.clone())
-        .filter(|s| !s.is_empty())
-        .or_else(|| d.map(|x| x.summary.clone()))
-        .unwrap_or_default();
-    let year = np
-        .map(|n| n.year)
-        .or_else(|| d.map(|x| x.year))
-        .unwrap_or(0);
-    let dur_ms = np
-        .map(|n| n.dur_ms)
-        .or_else(|| d.map(|x| x.dur_ms))
-        .unwrap_or(0);
-    let rating = np
-        .map(|n| n.rating.clone())
-        .filter(|s| !s.is_empty())
-        .or_else(|| d.map(|x| x.rating.clone()))
-        .unwrap_or_default();
-    let thumb_path = np
-        .map(|n| n.thumb.clone())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            d.map(|x| {
-                if !x.art.is_empty() {
-                    x.art.clone()
-                } else {
-                    x.thumb.clone()
-                }
-            })
-        })
-        .unwrap_or_default();
-    // capability badges come from the PLAYING item's own tracks — `current()` is the show
-    // (episode-1 streams) during a show-page episode play, or another item entirely
-    let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match metadata::playing() {
-        Some(t) => (&t.audio, &t.subs),
-        None => (
-            d.map(|x| x.audio.as_slice()).unwrap_or(&[]),
-            d.map(|x| x.subs.as_slice()).unwrap_or(&[]),
-        ),
-    };
-
-    // card — tall enough that the still gets equal padding on every side (see `pad`/`sh` below)
-    let cx = 80.0f32;
-    let cw = SCR_W - 160.0;
-    let ch = 236.0f32;
-    let cyt = SCR_H - 176.0 - ch; // sit just above the Info/Chapters tabs (tabs at SCR_H-128)
-    let card = Rect::new(cx, cyt, cw, ch);
-    // near-opaque dark card keeps the title/synopsis legible over any scene
-    let cardbg = theme::PANEL_TOP;
-    p.rrect(card, 28.0, 28.0, cardbg);
-
-    let pad = 28.0f32;
-    // still (16:9), left — the *episode's* thumbnail (or the movie's landscape art). `ch` is sized
-    // so (ch - sh)/2 == pad, giving the still an equal `pad` margin on every side.
-    let sw = 320.0f32;
-    let sh = 180.0f32;
-    let sx = cx + pad;
-    let sy = cyt + (ch - sh) * 0.5;
-    let mut drawn = false;
-    if !thumb_path.is_empty() {
-        // the PLAYING item's server — the info panel describes what is on the video plane
-        let t = resolve_tex_on(
-            crate::route::item_sid(crate::route::cur_sid()),
-            &thumb_path,
-            480,
-            270,
-            0,
-        );
-        if t != 0 {
-            p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
-            drawn = true;
-        }
-    }
-    if !drawn {
-        p.rrect(
-            Rect::new(sx, sy, sw, sh),
-            16.0,
-            16.0,
-            theme::CARD_PLACEHOLDER,
-        );
-    }
-
-    // action buttons (right column)
-    let acts = actions();
-    let bw = 352.0f32;
-    let bh = 70.0f32;
-    let bx = cx + cw - pad - bw;
-    let focus = unsafe { addr_of!(FOCUS).read() };
-    let total_bh = acts.len() as f32 * bh + (acts.len().saturating_sub(1)) as f32 * 16.0;
-    let mut by = cyt + (ch - total_bh) * 0.5;
-    let env = crate::ui::Env::inert();
-    for (i, label) in acts.iter().enumerate() {
-        let icon = if *label == "From Beginning" {
-            Icon::Play
-        } else {
-            Icon::Info
-        };
-        if let Ok(cs) = CString::new(*label) {
-            crate::ui::widgets::Button::new(
-                cs.as_ptr(),
-                theme::size::BODY,
-                Rect::new(bx, by, bw, bh),
-            )
-            .icon(icon)
-            .focused(i as c_int == focus)
-            .scale(unsafe { addr_of!(CTL_POP).as_ref().unwrap().scale(i) })
-            .draw(&env, p);
-        }
-        by += bh + 16.0;
-    }
-
-    // text block (between the still and the buttons): title + synopsis + tags, cap-band centred as a
-    // group. Title is the playing leaf's own name (episode name / movie title) — the show-title +
-    // SxEy treatment lives on the transport HUD under the playbar, not this card.
-    let tx = sx + sw + 34.0;
-    let tright = bx - 34.0;
-    let tw = tright - tx;
-    let white = theme::TEXT_PRIMARY;
-    let dim = theme::TEXT_SECONDARY;
-
-    let info_title = if is_ep {
-        ep_name.clone()
-    } else {
-        big_title.clone()
-    };
-    // What the server is actually sending, straight off the resolved route — see `playback_now`.
-    // `has_url`, not `!url().is_empty()`: this card sits on the one route exempt from the idle
-    // present gate, so it draws at ~60/s, and `url()` clones the longest string in the app (a
-    // universal-transcode `start.mkv` query is several hundred bytes) purely to test emptiness.
-    // The `play_pending` half is the resolve window — see the doc.
-    let now_fact = playback_now(
-        crate::route::has_url() && !crate::route::play_pending(),
-        crate::route::is_transcoding(),
-        crate::route::is_remux(),
-        &crate::route::stream_vcodec(),
-    );
-    // metadata line (genres · year · duration) + capability badges. Built and FIT here, before the
-    // title/synopsis layout below, rather than inside its own draw block further down — see
-    // `chips_that_fit`'s doc for issue #26 itself; the reason this part specifically has to happen
-    // before `span` is a second, smaller bug the same fix could otherwise reintroduce. `span` folds
-    // in a fixed `gap_tags + tag_h` for this row whenever it might have anything to say
-    // (`has_tags`), which used to be exactly right because the row always drew SOMETHING once
-    // `has_tags` was true. Once a row can be fit down to nothing at all — a single candidate (one
-    // very long genre string, say) wider than `tw` on its own — `has_tags` and "this row draws a
-    // pixel" stop being the same question, and centring the title/synopsis group as though a tag
-    // row existed would leave a blank gap where one doesn't. So the row's actual chip COUNT, `n`,
-    // has to be known before `span` is computed, not decided by a separate boolean.
-    let has_tags = year > 0
-        || dur_ms > 0
-        || !rating.is_empty()
-        || d.map(|x| !x.genres.is_empty()).unwrap_or(false)
-        || !subs.is_empty()
-        || audio.iter().any(|s| s.ad)
-        || now_fact.is_some()
-        || audio.first().and_then(|s| audio_badge(&s.codec)).is_some();
-
-    // `has_tags` is the cheap pre-filter (a handful of comparisons, no allocation) that skips this
-    // entirely for the common "nothing at all to report" case; once it's true the row still might
-    // fit zero chips (see above), which is exactly what `n` then says.
-    let (chips, n): (Vec<Chip>, usize) = if has_tags {
-        let mut meta = Vec::new();
-        if let Some(x) = d {
-            for g in x.genres.iter().take(2) {
-                meta.push(g.clone());
-            }
-        }
-        if year > 0 {
-            meta.push(year.to_string());
-        }
-        if dur_ms > 0 {
-            meta.push(crate::ui::fmt::dur_short(dur_ms));
-        }
-        let meta_line = (!meta.is_empty()).then(|| meta.join("   \u{b7}   "));
-
-        // …then the live playback fact, in its own quieter ink. It is a separate run rather than
-        // one more entry joined into `meta` because it is a different KIND of statement — a fact
-        // about this session, not a property of the item — and tertiary is what says so. No chip
-        // and no capsule: a conversion that worked is not a warning.
-        //
-        // REGULAR weight, unlike the item run beside it, and that is the mock's: its whole meta line
-        // is `font-weight:400` at `--text-tertiary`. The item run's bold/primary is this screen's own
-        // long-standing deviation (the card is read over live video, not over a panel); repeating it
-        // on a run the mock has no bold in would make the quiet fine print the loudest thing on the
-        // row.
-        //
-        // The separator is baked into the STRING (rather than a stored `gap_before`) because
-        // whether it is needed depends only on whether the meta line EXISTS, which is known right
-        // here — not on whether the meta line ends up FITTING. By construction a chip only draws
-        // once every higher-priority chip already fit (see `chips_that_fit`'s front-fill), so by
-        // the time this fact chip is actually on screen those two questions have the same answer.
-        let fact_run = now_fact.as_ref().map(|fact| {
-            if meta_line.is_some() {
-                format!("   \u{b7}   {fact}")
-            } else {
-                fact.clone()
-            }
-        });
-
-        // pure measurement — no draw — so every candidate's width is known before any of them
-        // touches the screen
-        let text_w = |s: &str, bold: c_int| -> f32 {
-            CString::new(s)
-                .ok()
-                .map(|c| crate::text::text_width(c.as_ptr(), theme::size::CAPTION, bold))
-                .unwrap_or(0.0)
-        };
-
-        let mut chips: Vec<Chip> = Vec::with_capacity(7);
-        let mut prev_kind: Option<ChipKind> = None;
-        let mut push = |label: String, kind: ChipKind| {
-            let gap_before = chip_gap(prev_kind, kind);
-            let w = match kind {
-                ChipKind::Text { bold, .. } => text_w(&label, bold),
-                ChipKind::Badge => badge_w(&label, None),
-            };
-            chips.push(Chip {
-                label,
-                kind,
-                gap_before,
-                w,
-            });
-            prev_kind = Some(kind);
-        };
-
-        if let Some(line) = meta_line {
-            push(
-                line,
-                ChipKind::Text {
-                    bold: 1,
-                    col: white,
-                },
-            );
-        }
-        if let Some(fact) = fact_run {
-            push(
-                fact,
-                ChipKind::Text {
-                    bold: 0,
-                    col: theme::TEXT_TERTIARY,
-                },
-            );
-        }
-        // badges: rating (from the leaf), top-audio Dolby tag, CC/SDH/AD (from the loaded streams)
-        if !rating.is_empty() {
-            push(rating.clone(), ChipKind::Badge);
-        }
-        if let Some(tag) = audio.first().and_then(|s| audio_badge(&s.codec)) {
-            push(tag, ChipKind::Badge);
-        }
-        if !subs.is_empty() {
-            push("CC".to_string(), ChipKind::Badge);
-        }
-        if subs.iter().any(|s| s.sdh) {
-            push("SDH".to_string(), ChipKind::Badge);
-        }
-        if audio.iter().any(|s| s.ad) {
-            push("AD".to_string(), ChipKind::Badge);
-        }
-
-        let n = chips_that_fit(chips.iter().map(|c| (c.w, c.gap_before)), tw);
-        (chips, n)
-    } else {
-        (Vec::new(), 0)
-    };
-
-    // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
-    let title_h = 42.0f32; // title advance (font 40)
-    // Issue #29: the synopsis is reading copy (the longest run of prose on this card), which is
-    // exactly the case `ui/CLAUDE.md` rule 2 already settled — the hero blurb is `size::LABEL` 26
-    // through `ui::hero_synopsis`, one rung below plain `size::BODY`, precisely because a blurb
-    // reads as prose rather than as chrome. This card built its own synopsis at `BODY` instead of
-    // going through that shared helper (it needs its own 2-line cap and card-local ink, not the
-    // hero's 3-line one), so it never inherited the correction; stepping it to `LABEL` brings the
-    // player's synopsis in line with both heroes' own settled rung. The line advance keeps the same
-    // `font + 3` rhythm the card already used at `BODY` (31 = 28 + 3), rather than carrying the old
-    // px figure forward onto a smaller font, which would leave the new rung looking loose.
-    let syn_lh = theme::size::LABEL as f32 + 3.0; // synopsis line advance (font 26) — 29
-    let tag_h = 34.0f32;
-    let gap_title = 6.0f32; // title → synopsis
-    let gap_tags = 12.0f32; // synopsis → tags
-
-    // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
-    // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
-    let title_v = TextView::new(&info_title, theme::size::TITLE, white)
-        .bold()
-        .max_lines(1);
-    let syn_v = TextView::new(&summary, theme::size::LABEL, dim)
-        .leading(syn_lh)
-        .max_lines(2);
-    let syn_h = if summary.is_empty() {
-        0.0
-    } else {
-        syn_v.measure_h(tw)
-    };
-
-    // centre the [title + synopsis + tag row] group in the card (cap-top coordinates). The tag
-    // row's contribution is gated on `n > 0` — whether the chip row ACTUALLY has something to draw
-    // — not `has_tags`; see the comment above where `chips`/`n` are built for why those are two
-    // different questions once a fit can drop every candidate.
-    let span = title_h
-        + if syn_h > 0.0 { gap_title + syn_h } else { 0.0 }
-        + if n > 0 { gap_tags + tag_h } else { 0.0 };
-    let mut ty = cyt + (ch - span) * 0.5;
-    title_v.draw(p, Rect::new(tx, ty, tw, 0.0));
-    ty += title_h;
-    if syn_h > 0.0 {
-        ty += gap_title;
-        syn_v.draw(p, Rect::new(tx, ty, tw, 0.0));
-        ty += syn_h;
-    }
-    // metadata line (genres · year · duration) + capability badges, centred on the tag row —
-    // `chips`/`n` were already measured and fit above, so this is draw-only.
-    //
-    // **Issue #26.** This row used to draw every candidate unconditionally and let `mx` run past
-    // the action column whenever an item had enough facts — a rating, a premium audio tag, CC, SDH
-    // and AD can all be true of one stream at once — so the chips drew straight under "From
-    // Beginning"/"Go to Show". The fix constrains the row to `tw`, the SAME right edge the title
-    // and synopsis above it already respect, and decides what fits by measuring every candidate
-    // BEFORE drawing any of it, in a fixed priority order: the item's own facts (genres/year/
-    // duration) first, then the live playback fact (what the server is actually sending — the
-    // technical heart of this panel, and the one thing here that can surprise a viewer), then the
-    // rating badge, then the premium-audio badge, then the accessibility badges CC/SDH/AD — each
-    // rarer, and each a smaller part of why this panel got opened, than the one before it. Dropped
-    // chips are hidden outright rather than faded: each one is a discrete fact (a word, a bordered
-    // badge), and a badge sliced in half by a fade band reads as a rendering bug, not as "there was
-    // more" — a clean drop keeps every chip that IS shown fully legible, which a fade cannot
-    // promise once it crosses a border. [`chips_that_fit`] is the pure packer that turns the
-    // measured candidates into a cut, so the maths is pinned by a host test with no font involved.
-    if n > 0 {
-        ty += gap_tags;
-        let my = ty + tag_h * 0.5; // vertical centre of the tag row
-        let mut mx = tx;
-        for (i, chip) in chips.iter().take(n).enumerate() {
-            if i > 0 {
-                mx += chip.gap_before;
-            }
-            match chip.kind {
-                ChipKind::Text { bold, col } => {
-                    if let Ok(cs) = CString::new(chip.label.as_str()) {
-                        let y = crate::text::text_vcenter_y(theme::size::CAPTION, bold, my);
-                        p.text(cs.as_ptr(), mx, y, theme::size::CAPTION, col, 0, bold);
-                    }
-                }
-                ChipKind::Badge => {
-                    meta_badge(p, mx, my, &chip.label);
-                }
-            }
-            mx += chip.w;
-        }
-    }
 }
 
 #[cfg(test)]

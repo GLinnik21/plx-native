@@ -599,12 +599,12 @@ pub(crate) struct PlaybackErrorContext {
     pub(crate) started: bool,
 }
 
-fn delivery_class() -> DeliveryClass {
-    if crate::route::is_segmented_hls() {
+fn delivery_class(ps: &crate::route::PlaybackSession) -> DeliveryClass {
+    if crate::route::is_segmented_hls(ps) {
         DeliveryClass::Hls
-    } else if crate::route::is_transcoding() && crate::route::is_remux() {
+    } else if crate::route::is_transcoding(ps) && crate::route::is_remux(ps) {
         DeliveryClass::Remux
-    } else if crate::route::is_transcoding() {
+    } else if crate::route::is_transcoding(ps) {
         DeliveryClass::Transcode
     } else {
         DeliveryClass::Direct
@@ -721,8 +721,8 @@ pub(crate) fn note_original_probe_for(
     push_trace_for(generation, TraceEvent::OriginalProbe { phase, outcome });
 }
 
-fn error_context() -> PlaybackErrorContext {
-    let delivery = delivery_class();
+fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
+    let delivery = delivery_class(ps);
     let selected = QualityClass::selected(crate::route::quality());
     let requested = if delivery == DeliveryClass::Hls {
         QualityClass::from_kbps(super::SHARED.dg_abr_kbps.load(Relaxed))
@@ -745,8 +745,8 @@ fn error_context() -> PlaybackErrorContext {
     }
 }
 
-fn presented_event() -> TraceEvent {
-    let delivery = delivery_class();
+fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
+    let delivery = delivery_class(ps);
     let requested = if delivery == DeliveryClass::Hls {
         QualityClass::from_kbps(super::SHARED.dg_abr_kbps.load(Relaxed))
     } else if matches!(delivery, DeliveryClass::Direct | DeliveryClass::Remux) {
@@ -766,8 +766,8 @@ fn presented_event() -> TraceEvent {
 ///
 /// Mints the id and clears every latch, so a second Play on the same item is a second attempt with
 /// its own funnel rather than a silent no-op against the first one's latches.
-pub(crate) fn requested(server: crate::plex::ServerId) -> u32 {
-    resolve_replaced_attempt();
+pub(crate) fn requested(ps: &crate::route::PlaybackSession, server: crate::plex::ServerId) -> u32 {
+    resolve_replaced_attempt(ps);
     let id = new_attempt_id();
     let at = now_ms();
     // **`fetch_update`'s own read-modify-write loop, written out.** That method was deprecated on
@@ -843,7 +843,7 @@ fn replacement(saw_start: bool, saw_fail: bool, saw_end: bool) -> Replacement {
     }
 }
 
-fn resolve_replaced_attempt() {
+fn resolve_replaced_attempt(ps: &crate::route::PlaybackSession) {
     let id = ATTEMPT.swap(0, Relaxed);
     if id == 0 {
         return;
@@ -857,14 +857,14 @@ fn resolve_replaced_attempt() {
         Replacement::Cancelled => {
             emit(DiagEvent::PlaybackCancelled {
                 playback_id: id,
-                mode: mode(),
+                mode: mode(ps),
             });
         }
         Replacement::Abandoned => {
             report_quality(id);
             emit(DiagEvent::PlaybackAbandoned {
                 playback_id: id,
-                mode: mode(),
+                mode: mode(ps),
             });
         }
     }
@@ -872,7 +872,7 @@ fn resolve_replaced_attempt() {
 
 /// The process is leaving an unresolved attempt. Unlike a newer Play, this was not a replacement
 /// choice, so classify it as abandonment; if playback had started, close its quality summary too.
-pub(crate) fn abandon_pending() {
+pub(crate) fn abandon_pending(ps: &crate::route::PlaybackSession) {
     let id = ATTEMPT.load(Relaxed);
     if id == 0 || SAW_FAIL.load(Relaxed) || SAW_END.swap(true, Relaxed) {
         return;
@@ -880,7 +880,7 @@ pub(crate) fn abandon_pending() {
     report_quality(id);
     emit(DiagEvent::PlaybackAbandoned {
         playback_id: id,
-        mode: mode(),
+        mode: mode(ps),
     });
 }
 
@@ -920,37 +920,37 @@ fn transition(
 }
 
 /// **Observe the state the HUD is rendering.** Called once a frame from the main loop.
-pub(crate) fn tick() {
-    let now = super::state();
+pub(crate) fn tick(ps: &crate::route::PlaybackSession) {
+    let now = super::state(ps);
     let prev = super::shared::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
     note_rebuffer(prev, now, SAW_START.load(Relaxed));
     if prev != now && now == super::shared::PlaybackState::Playing {
         // Unlike the usage funnel's once-per-attempt `Started`, every return to actual presented
         // video is useful causal evidence after a seek or delivery reload.
-        push_trace(presented_event());
+        push_trace(presented_event(ps));
     }
     match transition(prev, now, SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed)) {
         Some(What::Started) => {
             SAW_START.store(true, Relaxed);
             emit(DiagEvent::PlaybackStarted {
                 playback_id: ATTEMPT.load(Relaxed),
-                mode: mode(),
+                mode: mode(ps),
                 raster: raster_class(super::SHARED.video_raster().1),
-                fps: fps_rung(crate::route::stream_fps()),
-                video: video_codec_class(&crate::route::stream_vcodec()),
-                audio: audio_codec_class(&crate::route::stream_acodec()),
+                fps: fps_rung(crate::route::stream_fps(ps)),
+                video: video_codec_class(&crate::route::stream_vcodec(ps)),
+                audio: audio_codec_class(&crate::route::stream_acodec(ps)),
                 startup: startup_class(now_ms() - REQUESTED_MS.load(Relaxed)),
             });
         }
         Some(What::Failed) => {
             SAW_FAIL.store(true, Relaxed);
             report_quality(ATTEMPT.load(Relaxed));
-            let shape = super::error_now();
+            let shape = super::error_now(ps);
             let trace = finish_trace(TraceEvent::Failed { kind: shape.kind });
-            crate::telemetry::playback::report_error(shape.kind, error_context(), &trace);
+            crate::telemetry::playback::report_error(shape.kind, error_context(ps), &trace);
             emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
-                mode: mode(),
+                mode: mode(ps),
                 kind: shape.kind.code(),
             });
         }
@@ -960,7 +960,7 @@ pub(crate) fn tick() {
 
 /// **A real teardown.** Called from the one place playback actually ends — never from a seek, a
 /// rung change or a suspend, each of which destroys an engine and keeps the playback.
-pub(crate) fn ended(position_ns: i64, duration_ns: i64) {
+pub(crate) fn ended(ps: &crate::route::PlaybackSession, position_ns: i64, duration_ns: i64) {
     if SAW_END.swap(true, Relaxed) || SAW_FAIL.load(Relaxed) {
         clear_error_trace();
         return; // already terminal
@@ -973,7 +973,7 @@ pub(crate) fn ended(position_ns: i64, duration_ns: i64) {
     if !SAW_START.load(Relaxed) {
         emit(DiagEvent::PlaybackAbandoned {
             playback_id: id,
-            mode: mode(),
+            mode: mode(ps),
         });
         clear_error_trace();
         return;
@@ -981,7 +981,7 @@ pub(crate) fn ended(position_ns: i64, duration_ns: i64) {
     report_quality(id);
     emit(DiagEvent::PlaybackEnded {
         playback_id: id,
-        mode: mode(),
+        mode: mode(ps),
         watched: watched_class(position_ns, duration_ns),
     });
     clear_error_trace();
@@ -1053,8 +1053,8 @@ fn rebuffer_time_class(ms: i64) -> &'static str {
     }
 }
 
-fn mode() -> &'static str {
-    if crate::route::is_transcoding() {
+fn mode(ps: &crate::route::PlaybackSession) -> &'static str {
+    if crate::route::is_transcoding(ps) {
         "transcode"
     } else {
         "direct"

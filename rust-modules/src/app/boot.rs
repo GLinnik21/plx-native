@@ -314,7 +314,7 @@ pub(super) fn install_pms(
 pub(super) unsafe fn boot(
     pms_host: *const c_char,
     pms_port: c_int,
-    mt: &crate::task::MainThread,
+    mt: crate::task::MainThread,
 ) -> Result<App, c_int> {
     SDL_SetMainReady();
     // DEAD END, measured 2026-07-31 — do not re-try this. The obvious answer to "a parked TV
@@ -660,7 +660,7 @@ pub(super) unsafe fn boot(
         log("boot: no session — starting QR sign-in");
         BootTo::Login
     };
-    crate::player::acb_init(mt);
+    crate::player::acb_init(&mt);
     crate::ff::boot(); // FFmpeg version smoke test + optional /tmp/plxnative-ffprobe ABI probe
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
@@ -902,22 +902,26 @@ pub(super) unsafe fn boot(
     let buffer_flip_count = 0u8;
 
     let held_key = HeldKey::IDLE;
-    let scrubber = Scrub::IDLE;
     // Item 13: rate-limits a hardware auto-repeat forwarded into the Settings family, which is
     // owned by the dispatcher since phase 5b — so the gate is applied at the loop's hand-over,
     // to the DIRECTIONS only. See `run`'s auto-repeat arm for why the OK edges go through
     // ungated, and `on_auto_repeat`'s doc for what is left on the legacy side.
     let modal_repeat = RepeatGate::IDLE;
-    let hud = HudState::IDLE;
     let marker_tried = false; // dev: the /tmp/plxnative-marker jump has been resolved
-    let foreground = ForegroundLifecycle::IDLE;
+    let player = crate::player::machine::Player::new();
+    // The token stops being an argument here and becomes a field. `PlayerAdapter::new` CONSUMES
+    // it, so the adapter is the only thing in the process that holds one, and a `&mut` to it is
+    // what every native-session call now asks for. See `player::adapter`.
+    let adapters = super::Adapters {
+        player: crate::player::adapter::PlayerAdapter::new(mt),
+    };
     let repause_at = 0i64;
     // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
     // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
     // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
     let ok_armed = false;
     // Which route name was last REPORTED as an event. Not `route` itself: several `Route`
-    // values share one name (every `Route::Player { overlay }` is "player"), and an overlay
+    // values share one name (every `Route::Player` is "player"), and an overlay
     // opening is not a screen change.
     let last_route_reported: &'static str = "";
     let press_tried = false; // dev: /tmp/plxnative-press fires one simulated grid-card press
@@ -1049,6 +1053,7 @@ pub(super) unsafe fn boot(
     let play_tried = false;
     let menu_tried = false;
     let menupick_tried = false;
+    let menupick_row = None;
     let pause_tried = false;
     // `/tmp/plxnative-autopause`: an authored Pause edge, plus the optional Resume edge which
     // owns the same script. External effects retry until the synchronized player state machine
@@ -1104,11 +1109,10 @@ pub(super) unsafe fn boot(
         #[cfg(feature = "devtools")]
         buffer_flip_count,
         held_key,
-        scrubber,
         modal_repeat,
-        hud,
         marker_tried,
-        foreground,
+        player,
+        adapters,
         repause_at,
         ok_armed,
         last_route_reported,
@@ -1139,6 +1143,7 @@ pub(super) unsafe fn boot(
         play_tried,
         menu_tried,
         menupick_tried,
+        menupick_row,
         pause_tried,
         pause_script,
         pause_resume_at,

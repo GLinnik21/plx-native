@@ -20,8 +20,12 @@
 #              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
 #              `stores::StoreCmd` applied through `stores::<store>::apply` (spec §14, the
 #              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
-#              a `#[cfg(test)] mod` seeds a store however it likes. The player side (route.rs,
-#              player/) joins in phase 9.
+#              a `#[cfg(test)] mod` seeds a store however it likes. The player side joins in phase
+#              9: `route/` (both halves of the split — `plan.rs`, the pure selection half, and
+#              `decision.rs`, the network/adapter half) and `player/` are scanned the same as
+#              `screens/`/`app/` (zero hits at the split, so green on day one; the `wall` rule below
+#              is the one that distinguishes the halves: it gates `route/plan.rs` and exempts
+#              `route/decision.rs`).
 #
 # Phase 8 rule (§14, §6.2):
 #   nav      — a screen under rust-modules/src/screens/ never calls `crate::ui::nav::` (any
@@ -88,7 +92,7 @@ done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
 
 gate ticks 'SDL_GetTicks\(' "$SRC"
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app"
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC/ui" "$SRC/app" "$SRC/route/plan.rs"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^\s*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -127,7 +131,7 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
-done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" -name '*.rs' | sort)
+done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" -name '*.rs' | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
 gate nav 'crate::ui::nav::' "$SRC/screens"

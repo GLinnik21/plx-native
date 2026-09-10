@@ -46,13 +46,16 @@ pub enum FixtureArg {
     Legacy,
     /// A page snapped to its grid: the strip is unreachable from it (§6.2).
     Snapped,
+    /// A page whose picture is the hardware VIDEO PLANE (`RenderStrategy::VideoPlane`, §9) — the
+    /// player's shape. It draws a hole in the surface, not a picture.
+    VideoPlane,
 }
 
 impl ScreenArg for FixtureArg {
     fn chrome(&self) -> Chrome {
         match self {
             FixtureArg::Home => Chrome::TabBar,
-            FixtureArg::Page(_) | FixtureArg::Modal => Chrome::None,
+            FixtureArg::Page(_) | FixtureArg::Modal | FixtureArg::VideoPlane => Chrome::None,
             FixtureArg::Legacy | FixtureArg::Snapped => Chrome::TabBar,
         }
     }
@@ -63,6 +66,7 @@ impl ScreenArg for FixtureArg {
             FixtureArg::Modal => ScreenId(3),
             FixtureArg::Legacy => ScreenId(4),
             FixtureArg::Snapped => ScreenId(5),
+            FixtureArg::VideoPlane => ScreenId(6),
         }
     }
     fn title(&self) -> Option<&str> {
@@ -81,6 +85,7 @@ impl LogicalState for FixtureArg {
             Self::Modal => { c.u32(2); }
             Self::Legacy => { c.u32(3); }
             Self::Snapped => { c.u32(4); }
+            Self::VideoPlane => { c.u32(5); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("fixture_arg"); }
@@ -357,6 +362,7 @@ impl Machine<FixtureHost> for FixtureScreen {
                     FixtureArg::Page(n) => n + 1,
                     FixtureArg::Modal => 200,
                     FixtureArg::Legacy | FixtureArg::Snapped => 300,
+                    FixtureArg::VideoPlane => 400,
                 };
                 fx.push(Fx::Nav(NavOp::Push(FixtureArg::Page(next))));
                 fx.invalidate(Provenance::Input);
@@ -406,6 +412,7 @@ impl Machine<FixtureHost> for FixtureScreen {
 }
 
 impl Screen<FixtureHost> for FixtureScreen {
+    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn covered_surfaces_ready(&self) -> bool {
         // Page 901 models a remounted owner awaiting an identity-matched store notice.
         self.arg != FixtureArg::Page(901) || self.state.items_seen > 0
@@ -415,6 +422,7 @@ impl Screen<FixtureHost> for FixtureScreen {
             FixtureArg::Home | FixtureArg::Legacy | FixtureArg::Snapped => "home",
             FixtureArg::Page(_) => "detail",
             FixtureArg::Modal => "settings",
+            FixtureArg::VideoPlane => "player",
         }
     }
     fn strip_reachable(&self) -> bool {
@@ -725,6 +733,9 @@ impl Mounter<FixtureHost> for FixtureMounter {
         if *arg == FixtureArg::Modal {
             return Box::new(FixtureModal::new(entry));
         }
+        if *arg == FixtureArg::VideoPlane {
+            return Box::new(VideoPlaneScreen { entry, state: FixtureState::default(), drawn: 0 });
+        }
         let kind = match arg {
             FixtureArg::Page(n) if (500..600).contains(n) => ElemKind::Bare,
             FixtureArg::Page(n) if (600..700).contains(n) => ElemKind::Control,
@@ -742,6 +753,68 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
         })
+    }
+}
+
+/// **A page whose picture is the hardware VIDEO PLANE** (§9) — the player's shape, in the harness.
+///
+/// It draws nothing and registers no stop: what the viewer sees is a plane the television
+/// composites UNDER a hole punched in our surface, and the page's whole job is to leave the hole
+/// alone. `drawn` is what a test reads to see whether the page pass reached it.
+pub struct VideoPlaneScreen {
+    pub entry: super::machine::EntryId,
+    pub state: FixtureState,
+    pub drawn: u32,
+}
+
+impl Focusable<FixtureHost> for VideoPlaneScreen {
+    fn groups(&self, _cx: &Cx<'_, FixtureHost>, _out: &mut Vec<GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+        None
+    }
+    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
+        Step::Edge
+    }
+    fn place(&self, _key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+        None
+    }
+    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+        want
+    }
+    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+        FocusKey { entry: self.entry, elem: 0 }
+    }
+}
+
+impl Machine<FixtureHost> for VideoPlaneScreen {
+    type Ev = ScreenEvent<FixtureHost>;
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        _cx: &Cx<'_, FixtureHost>,
+        _fx: &mut Effects<'_, FixtureHost>,
+    ) -> Handled {
+        self.state.events.push(ev.name());
+        Handled::No
+    }
+}
+
+impl Screen<FixtureHost> for VideoPlaneScreen {
+    fn name(&self) -> &'static str {
+        "player"
+    }
+    fn state(&self) -> &dyn LogicalState {
+        &self.state
+    }
+    fn crumb(&self, _cx: &Cx<'_, FixtureHost>) -> Option<Cow<'_, str>> {
+        None
+    }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+    fn draw(&mut self, _f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.drawn += 1;
+    }
+    fn render(&self) -> RenderStrategy {
+        RenderStrategy::VideoPlane
     }
 }
 
@@ -1451,5 +1524,237 @@ mod phase_3a {
     pending!("3a":
         a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare,
         the_source_pass_registers_no_stops_and_mutates_no_render_cache,
+    );
+}
+
+/// How many frames the level BELOW the top page has drawn.
+fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
+    d.nav
+        .tabs
+        .stack
+        .entries
+        .iter()
+        .rev()
+        .nth(1)
+        .and_then(|e| e.inst.as_ref())
+        .and_then(|i| i.screen.as_any())
+        .and_then(|a| a.downcast_ref::<FixtureScreen>())
+        .map(|p| p.row.drawn)
+        .expect("Home is still on the stack under the player")
+}
+
+/// **Spec §15.1, phase 9 — a page whose picture is the hardware VIDEO PLANE replaces everything
+/// below it, and nothing in that frame takes a snapshot.**
+///
+/// Two halves, and they fail differently on a television.
+///
+/// *Replaces its host.* A push or pop transition draws the level BENEATH the top page so the two
+/// can cross-fade. Under a bound plane there is nothing to cross-fade with: the surface has a hole
+/// punched in it and the television composites the film through it, so a page drawn "underneath"
+/// is drawn OVER the film. `(Frozen, Replaced)` in §6.2's vocabulary — and Frozen matters as much
+/// as Replaced, since a page stepped behind the picture runs its springs out and lands settled,
+/// so the fade back out of the player would begin already over.
+///
+/// *Takes no snapshot.* Four doors read framebuffer 0 back — the frozen-host snapshot
+/// (`popover::host::begin_frame`), Glass, `RouteGround`'s ambient sample and `FrameCache::capture`
+/// — and on this frame framebuffer 0 IS the hole. What each of them would cache is a photograph of
+/// transparent black, served back over the film for as long as the cache lives. Before phase 9 the
+/// only statement of that rule was prose ("never call it on the player route") plus the loop
+/// happening not to call `begin_frame` on one branch; `gfx::video_plane_refuses` is the same rule
+/// where it can be BROKEN, and a shipping debug build panics on it.
+///
+/// Observed RED (simulated — the fix adds the terms the old code had no notion of): deleting the
+/// `&& !video_plane` from `draw_with`'s `draws_below` fails the first half at "the level below a
+/// bound video plane must not draw", and deleting the `video_plane_refuses` call from
+/// `FrameCache::capture` fails the second at "must refuse".
+#[test]
+fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
+    let _g = crate::testlock::serial();
+    // A transition that DRAWS BELOW while it is in flight (`RoutePush`, the Settings family's).
+    // The default `Immediate` never draws the level under the top one, so on it this test's first
+    // half would be vacuous — it would pass whether or not the rule exists.
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(
+        crate::ui::containers::transition::RoutePush::new(),
+    ));
+    let mut rig = FixtureRig::new();
+
+    // Home, then the player pushed over it — the push transition is what makes the level below
+    // draw at all, so it is the only shape in which "replaces its host" can be observed.
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::VideoPlane));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert!(
+        d.nav.tabs.stack.transition.draws_below(),
+        "the fixture: the push is in flight, so an ordinary frame WOULD draw the level below",
+    );
+    assert_eq!(
+        d.top_screen().map(|s| s.render()),
+        Some(crate::ui::screen::RenderStrategy::VideoPlane),
+        "the fixture: the player-shaped page is on top",
+    );
+
+    // ---- the plane is NOT bound yet: an ordinary page, an ordinary frame ----
+    assert!(!d.video_plane_frame(), "declaring VideoPlane is not the same as being bound");
+    assert_eq!(
+        *rig.opaque_route_calls.last().unwrap(),
+        false,
+        "…and the compositor is told exactly that, every frame",
+    );
+
+    // ---- the plane binds: the ONE input, from the machine's edge ----
+    d.present.note(crate::ui::present::PresentEvent::VideoPlane(true));
+    assert!(d.video_plane_frame(), "declared AND bound");
+
+    let drew_before_the_plane = below_drawn(&d);
+    let before = rig.opaque_route_calls.len();
+    let r = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert!(r.presented, "a bound plane presents every frame, unconditionally");
+    assert_eq!(
+        &rig.opaque_route_calls[before..],
+        &[true],
+        "step 9 hands the rig the plane's bit, every frame, presented or not",
+    );
+
+    // …the top page drew, and the level below it did NOT.
+    let below_drew = below_drawn(&d);
+    assert_eq!(
+        below_drew, drew_before_the_plane,
+        "the level below a bound video plane must not draw: it would be a page composited OVER \
+         the film, the plane being under a hole in this surface rather than in it",
+    );
+    assert!(
+        !r.ticked.contains(
+            &d.nav
+                .tabs
+                .stack
+                .entries
+                .iter()
+                .rev()
+                .nth(1)
+                .and_then(|e| e.inst.as_ref())
+                .map(|i| i.id)
+                .unwrap()
+        ),
+        "…and it must not be stepped either: a page ticked behind the picture lands settled",
+    );
+
+    // ---- and nothing in such a frame may sample the framebuffer ----
+    //
+    // The draw arms the flag for its own length and restores it, so by here it is down again.
+    assert!(
+        !crate::gfx::video_plane_frame(),
+        "the flag is armed for the LENGTH OF THE DRAW and restored, like the page freeze",
+    );
+    let was = crate::gfx::set_video_plane_frame(true);
+    assert!(
+        crate::gfx::video_plane_refuses("Glass::backdrop"),
+        "the one door must refuse while a video-plane frame is being drawn",
+    );
+    crate::gfx::set_video_plane_frame(was);
+    assert!(
+        !crate::gfx::video_plane_refuses("FrameCache::capture"),
+        "and off such a frame it must be open again, or every other route loses its snapshots",
+    );
+
+    // Each of the FOUR doors the spec names has to go through it. Pinned from source, because a
+    // host test cannot drive them for real - `FrameCache::capture` refuses on a 0x0 viewport,
+    // Glass needs a GL context and `popover::host` needs both, so an assertion on their return
+    // values would pass with the guard deleted. This cannot.
+    for (file, door) in [
+        ("src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
+        ("src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
+        ("src/ui/popover.rs", "video_plane_refuses(\"popover::host::begin_frame\")"),
+        ("src/ui/route_screen.rs", "video_plane_refuses(\"RouteGround::draw_host\")"),
+    ] {
+        let src =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+                .unwrap_or_else(|e| panic!("read {file}: {e}"));
+        assert!(
+            src.contains(door),
+            "{file} must take the video-plane refusal at {door} - a door that samples \
+             framebuffer 0 without it caches a photograph of the punch-through hole",
+        );
+    }
+}
+
+/// **Spec §12.1 — an app switch PARKS the tree, and the loop is what says so.**
+///
+/// webOS sends `0x103`/`0x104` when it takes the screen and `0x105`/`0x106` when it gives it back.
+/// The container library has had the whole mechanism since it landed — `Navigation::suspend`
+/// delivers `ScreenEvent::Suspend` to every mounted body and sets `Navigation.suspended`,
+/// `Dispatcher::suspend` parks it for the next NAV COMMIT — and until phase 9 **nothing called
+/// either**. Two owned screens answer the event: Settings forwards it down its own stack, and
+/// Search drops the television's keyboard, which the compositor tears down without telling the app
+/// (a field left `editing` comes back drawing a caret over a keyboard that is gone). Both were
+/// answering an event that could not arrive.
+///
+/// Two claims, and the second is the one a library test alone cannot make.
+///
+/// Observed RED (simulated — the loop's arms did not exist to compile against): deleting
+/// `self.parked_life.extend(life)` from `Dispatcher::suspend` fails the first at "every mounted
+/// body must hear it"; deleting `app.pages.suspend();` from `app/run.rs`'s background arm fails the
+/// second.
+#[test]
+fn an_app_switch_suspends_every_body_and_the_loop_is_what_delivers_it() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+
+    // Home, with a modal surface over it: a page AND a surface, so "every body" means something.
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    assert!(!d.nav.suspended, "the fixture starts awake");
+
+    // ---- 0x103/0x104 ----
+    d.suspend();
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert!(d.nav.suspended, "the tree must record that it is parked");
+    let heard = |d: &Dispatcher<FixtureHost>, what: &str| -> usize {
+        d.nav
+            .tabs
+            .stack
+            .entries
+            .iter()
+            .filter_map(|e| e.inst.as_ref())
+            .filter_map(|i| i.screen.as_any())
+            .filter_map(|a| a.downcast_ref::<FixtureScreen>())
+            .filter(|p| p.state.events.iter().any(|e| *e == what))
+            .count()
+    };
+    assert_eq!(
+        heard(&d, "suspend"),
+        1,
+        "every mounted body must hear `Suspend` — the page did not",
+    );
+
+    // ---- 0x105/0x106 ----
+    d.resume();
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    assert!(!d.nav.suspended, "…and the foreground edge un-parks it");
+    assert_eq!(heard(&d, "resume"), 1, "every mounted body must hear `Resume`");
+
+    // The second claim: the LOOP calls them. No host test can drive `app::run` — it needs a live
+    // SDL window — so this is pinned from its source, in the two arms that own the question.
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+    )
+    .expect("read run.rs");
+    let bg = src
+        .find("et == 0x103 || et == 0x104")
+        .expect("the background arm");
+    let fg = src
+        .find("et == 0x105 || et == 0x106")
+        .expect("the foreground arm");
+    assert!(
+        src[bg..fg].contains("app.pages.suspend();"),
+        "the BACKGROUND arm must park the container tree, or Settings and Search answer an event \
+         that never arrives",
+    );
+    assert!(
+        src[fg..].contains("app.pages.resume();"),
+        "…and the FOREGROUND arm must un-park it, or the tree stays parked for the rest of the run",
     );
 }

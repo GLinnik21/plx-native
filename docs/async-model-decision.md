@@ -333,6 +333,15 @@ are the only way in, and `ENGINE`'s four raw `addr_of` touches became four token
 `start_bufferfeed` is the proof this mattered — it was the one function whose `mt` the compiler
 flagged as unused, precisely because it reached the static directly instead of through `engine()`.
 
+**Superseded for the slot, 2026-09-10 (UI restructure phase 9).** `ENGINE` is no longer a `static
+mut` and the four accessors are gone: the slot is a FIELD, `App.adapters.player`, and
+`player::adapter::PlayerAdapter::new` **consumes** the one token `plex_run` mints. So the token is
+no longer an argument that ASSERTS main-thread confinement for the session — holding
+`&mut PlayerAdapter` IS the confinement, and the borrow checker keeps it. The seam half of this
+finding is unchanged: `ffi.rs`'s wrappers still take `&MainThread`, reached as `pa.mt()`. What the
+change buys beyond tidiness is below, under `reload_transcode` — that "`eng` dangles" wrinkle was a
+comment and three hand-written `return`s, and is now a borrow the compiler refuses.
+
 **Verified with teeth, both directions.** A temporary `task::spawn("evil", move || pause(mt))`
 fails to compile (`*const () cannot be shared between threads safely`), and the host test
 `the_main_thread_token_cannot_cross_a_spawn` asserts the `!Send`-ness the whole thing rests on —
@@ -396,7 +405,9 @@ The other half stands. "Self-DoS'd before" is not rhetoric: the
 There is also a structural wrinkle the plan did not name: `reload_transcode` **replaces the
 ENGINE**, so `eng` dangles and both arms `return` immediately — a deferred continuation would have
 to resume against an engine that no longer exists, which is precisely the "cannot be expressed as a
-two-state enum" shape.
+two-state enum" shape. (Since phase 9 that wrinkle is checked rather than asserted: `pump` holds
+the live session as a borrow of `App.adapters.player`, and `reload_transcode` wants the adapter
+back, so a path that used the stale `eng` afterwards does not compile.)
 
 **But none of that was ever measured or written down as a decision, so it is an open question.**
 What is missing is a number. Nobody has measured what these two arms actually cost on the main

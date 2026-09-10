@@ -1,5 +1,6 @@
 //! `Landing` — a bounded per-addressee QUEUE with backpressure (spec §5.2), the shape every
-//! one-slot mailbox (`metadata::DETAIL`, `search::SLOT`, `route::PLAY_SLOT`) becomes in phase 4.
+//! one-slot mailbox (`metadata::DETAIL`, `search::SLOT`, `route::decision::PLAY_SLOT`) becomes in
+//! phase 4.
 //!
 //! Interior mutability because `put` is called from workers and `take_for` from the main thread.
 //! Two lanes: DATA (capped; a full queue drops the NEWEST result, which is re-requestable) and

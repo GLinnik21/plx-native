@@ -1791,6 +1791,9 @@ impl FrameCache {
         if self.off || blur_source_pass() {
             return false;
         }
+        if video_plane_refuses("FrameCache::capture") {
+            return false;
+        }
         let (vx, vy, vw, vh) = crate::surface::viewport();
         if vw <= 0 || vh <= 0 {
             return false;
@@ -3796,6 +3799,68 @@ pub(crate) fn page_frozen() -> bool {
     unsafe { PAGE_FROZEN }
 }
 
+thread_local! {
+    /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
+    /// length of the draw by `Dispatcher::draw_with`.
+    ///
+    /// THREAD-LOCAL, unlike the `static mut` page freeze beside it, and deliberately: it is draw
+    /// state, the draw is one thread's, and the host suite runs several dispatchers at once — a
+    /// process-wide flag would let one test's video-plane frame refuse another test's perfectly
+    /// ordinary snapshot, which is the cross-test pollution `lib.rs::testlock` exists to describe
+    /// and cannot fix from outside.
+    static VIDEO_PLANE_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// The release build's once-per-process log latch — see [`video_plane_refuses`].
+static VIDEO_PLANE_TOLD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Arm or lift the video-plane frame, returning what was in force (restored, like the page freeze).
+#[inline]
+pub(crate) fn set_video_plane_frame(on: bool) -> bool {
+    VIDEO_PLANE_FRAME.with(|f| f.replace(on))
+}
+
+/// Is this frame's picture the hardware video plane?
+#[inline]
+pub(crate) fn video_plane_frame() -> bool {
+    VIDEO_PLANE_FRAME.with(|f| f.get())
+}
+
+/// **The refusal every framebuffer-SAMPLING door takes on a video-plane frame** (spec §9).
+///
+/// `true` = refuse. The four doors are `popover::host::begin_frame` (the frozen-host snapshot),
+/// `draw_blur_backdrop` (Glass), `RouteGround::draw_host` (the ambient sample) and
+/// `FrameCache::capture`. Every one of them answers a question by READING BACK framebuffer 0 —
+/// and on this frame framebuffer 0 is a hole: the picture the viewer sees is a hardware plane the
+/// television composites underneath our surface, which GL cannot read. What each of them would
+/// cache is therefore a photograph of transparent black, served back over the video for as long as
+/// the cache lives.
+///
+/// **A debug build PANICS**, because reaching one of these is a structural mistake — a screen that
+/// declared `RenderStrategy::VideoPlane` and then asked for a snapshot — and the picture it
+/// produces on a television is a black rectangle nobody can explain from a log. A release build
+/// logs ONCE and refuses; the once is deliberate, since a door reached at all is reached every
+/// frame and a per-frame line would bury the event log during playback.
+pub(crate) fn video_plane_refuses(what: &str) -> bool {
+    if !video_plane_frame() {
+        return false;
+    }
+    // Under `cargo test` these doors are driven ON PURPOSE — the point of
+    // `a_video_plane_screen_replaces_its_host_and_takes_no_snapshot` is to watch each one refuse —
+    // so the assertion is the SHIPPING debug build's, not the harness's.
+    #[cfg(all(debug_assertions, not(test)))]
+    panic!("{what} on a VIDEO PLANE frame: the plane is not in our framebuffer to sample");
+    #[allow(unreachable_code)]
+    {
+        if !VIDEO_PLANE_TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::log(&format!(
+                "videoplane: refused {what} — the plane is not in our framebuffer to sample"
+            ));
+        }
+        true
+    }
+}
+
 /// Should this quad be skipped entirely?
 ///
 /// Two independent reasons. The frozen page ([`PAGE_FROZEN`]) is tested first because it is a
@@ -4130,6 +4195,13 @@ pub(crate) fn draw_blur_backdrop(
         // `false` is also the right picture: the caller falls back to its opaque ground, which is
         // what belongs under a blur anyway. See `BLUR_IN_PASS`.
         if BLUR_IN_PASS {
+            return false;
+        }
+        // §9: a Glass surface samples the framebuffer behind it, and on a video-plane frame there
+        // is nothing behind it in OUR framebuffer — the picture is a hardware plane. `ui/mod.rs`
+        // has said "never call it on the player route" in prose since the blur landed; this is the
+        // same rule, enforced, and keyed on the plane being BOUND rather than on the route.
+        if video_plane_refuses("Glass::backdrop") {
             return false;
         }
         // A glass surface belonging to a FROZEN page is in the snapshot already, and the chain it

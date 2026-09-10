@@ -53,9 +53,12 @@ use std::thread::{Builder, JoinHandle};
 ///   to that module, so the token is the only way in. Bind order (`setMediaId` → `LOADED` →
 ///   `setMediaVideoData` → `setDisplayWindow` → `PLAYING`) is a sequence of calls with no
 ///   locking behind it; a second thread stepping into the middle of it corrupts the sink.
-/// * **the `ENGINE` slot** — `player::engine::engine()`. `static mut`, handed out as
-///   `&'static mut`, with worker threads holding raw pointers into the boxes it owns. Two live
-///   `&mut` to it is instant UB, and nothing else prevents that.
+/// * **the native session slot** — `App.adapters.player`. Until phase 9 that was
+///   `player::engine::ENGINE`, a `static mut` handed out as `&'static mut` with worker threads
+///   holding raw pointers into the boxes it owns: two live `&mut` to it is instant UB, and the
+///   token was the only thing standing between the code and one. It is a FIELD now, so the token
+///   is CONSUMED into [`crate::player::adapter::PlayerAdapter`] and `&mut PlayerAdapter` is the
+///   proof instead — one the borrow checker keeps rather than one a caller can satisfy twice.
 ///
 /// The one deliberate hole: `assume` is callable, so `unsafe { MainThread::assume() }` inside a
 /// worker would defeat this. That is the ceiling of the pattern, not an oversight — what it buys
@@ -69,7 +72,7 @@ impl MainThread {
     /// # Safety
     /// The caller asserts this is the SDL main thread. It is not a memory-safety obligation in
     /// itself — it is the premise every `&MainThread` downstream is trusted on, including the
-    /// aliasing of `ENGINE`, so a false one reintroduces exactly the races this prevents.
+    /// one the Player adapter holds, so a false one reintroduces exactly the races this prevents.
     pub(crate) unsafe fn assume() -> Self {
         MainThread(PhantomData)
     }

@@ -592,6 +592,26 @@ where
         Some(PageWithStrip { page, strip, strip_fallback: nav.tabs.strip_fallback, entry })
     }
 
+    /// **Is this frame's picture a hardware VIDEO PLANE?** (spec §9, §16 risk 10.)
+    ///
+    /// TWO terms, and both are required. The top page must ANSWER
+    /// [`RenderStrategy::VideoPlane`] — a declaration about what it draws, not about where it is —
+    /// and the plane must actually be BOUND, which arrives as the gate's
+    /// [`PresentEvent::VideoPlane`](super::present::PresentEvent::VideoPlane) input from the one
+    /// machine that owns that bit. Either term alone is wrong: the player page is up for the whole
+    /// pre-bind spinner and the whole post-unbind read-out, where our surface holds an ordinary
+    /// picture, and a bound plane under some other page is not a thing this tree can produce.
+    ///
+    /// What it decides, in this file: nothing below the top page ticks or draws — `(Frozen,
+    /// Replaced)` in §6.2's vocabulary, applied to everything UNDER the page rather than to the
+    /// page itself — because there is nothing to see under a hole punched in the surface. The
+    /// other half, the four framebuffer-sampling doors, is armed for the length of the draw and
+    /// enforced in `gfx::video_plane_refuses`.
+    pub fn video_plane_frame(&self) -> bool {
+        self.present.video_plane()
+            && self.top_screen().map(|s| s.render()) == Some(super::screen::RenderStrategy::VideoPlane)
+    }
+
     /// ONE frame (§3.3): the ten steps in order.
     pub fn frame(
         &mut self,
@@ -794,7 +814,15 @@ where
             .entries
             .iter()
             .rev()
-            .take(if self.nav.tabs.stack.transition.draws_below() { 2 } else { 1 })
+            .take(if self.nav.tabs.stack.transition.draws_below() && !self.video_plane_frame() {
+                2
+            } else {
+                // §9: `(Frozen, …)` on everything below a bound video plane. A page that cannot be
+                // seen must not be stepped either — its springs would run out their travel behind
+                // the picture and land settled, so the cross-fade back out of the player would
+                // begin already over.
+                1
+            })
             .filter_map(|e| e.inst.as_ref())
             .map(|i| i.id)
             .collect();
@@ -979,6 +1007,10 @@ where
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation();
         let (_, host_render) = self.nav.modals.host_policy();
+        // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
+        // page freeze is. Every framebuffer-sampling door is refused while it is up.
+        let video_plane = self.video_plane_frame();
+        let was_video_plane = crate::gfx::set_video_plane_frame(video_plane);
         rig.clear_opaque_region();
         let parts = self.parts(tick);
         let Dispatcher { nav, input, .. } = self;
@@ -987,7 +1019,10 @@ where
         // the page pass: the top page (and, under a push, the level beneath it), unless the
         // host fold REPLACED it
         if pages && host_render != HostRender::Replaced {
-            let draws_below = nav.tabs.stack.transition.draws_below();
+            // §9: `(…, Replaced)` on everything below a bound video plane — the level a push or
+            // pop transition would otherwise draw beneath the top one. Drawing it would put a page
+            // on the panel UNDER a hole, i.e. over the film.
+            let draws_below = nav.tabs.stack.transition.draws_below() && !video_plane;
             let n = nav.tabs.stack.entries.len();
             let top_entry = nav.tabs.stack.top().map(|entry| entry.id);
             let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
@@ -1053,6 +1088,7 @@ where
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
         let hit_page = self.hit_page();
+        crate::gfx::set_video_plane_frame(was_video_plane);
         if !crate::gfx::blur_source_pass() {
             self.input.hit.fill(if hit_page { stops } else { Vec::new() });
             self.input.hit.swap();

@@ -1,15 +1,7 @@
-# count: 18
+# count: 10
 rust-modules/src/ui/nav.rs	phase 8: the nav alphas move onto DrawFrame; the statics die in 12
 rust-modules/src/ui/widgets.rs	phase 8/11: the strip statics become the container's group (8); the glass/material caches move under the frame plan (11) and are then named in statics.txt
-rust-modules/src/ui/player_hud.rs	phase 9: PlayerScreen owns hud/scrub/held; SET/KEY/SEL/MEMO become PlayerRender fields
-rust-modules/src/ui/up_next.rs	phase 9: an Up Next surface on the player's ModalStack; DEADLINE becomes a Timer
-rust-modules/src/ui/track_menu.rs	phase 9: a player overlay on its ModalStack
-rust-modules/src/ui/info_panel.rs	phase 9: a player overlay on its ModalStack
-rust-modules/src/ui/chapters_panel.rs	phase 9: a player overlay on its ModalStack
-rust-modules/src/ui/tracks_panel.rs	phase 9: a player overlay on its ModalStack
-rust-modules/src/ui/more_menu.rs	phase 9: a player overlay on its ModalStack
-rust-modules/src/route.rs	phase 9: SESSION becomes the Player machine's PlaybackSession
-rust-modules/src/player/engine.rs	phase 9: ENGINE becomes the Player adapter's slot
+rust-modules/src/ui/tracks_panel.rs	phase 10: a Detail page-owned panel (with alt_sources/about_panel)
 rust-modules/src/ui/account_menu.rs	phase 10: a ModalStack instance
 rust-modules/src/ui/item_menu.rs	phase 10: a ModalStack instance
 rust-modules/src/ui/about_panel.rs	phase 10: a ModalStack instance (the FIRST conversion, §0 done-criterion 5)

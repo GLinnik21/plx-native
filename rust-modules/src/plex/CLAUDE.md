@@ -7,7 +7,8 @@ library/hubs/metadata reads (`library.rs`/`hubs.rs`/`models.rs`), and the whole
 playback protocol — the MDE/transcode decision + capability profile (`transcoder.rs`), the
 timeline/PlayQueue/identity session ops (`timeline.rs`), stream selection + the direct-play
 target (`library.rs`), with typed request params in `params.rs`. **Every PMS query in the app
-is built here** (route.rs holds playback *state* + policy, never a query string). The
+is built here** (the `route/` module holds playback *state* (`decision.rs`) + policy (`plan.rs`),
+never a query string). The
 authoritative REST spec is **`docs/pms-api.md`** (verified) — read it before adding an
 endpoint; don't reverse-engineer PMS from scratch.
 

@@ -34,6 +34,43 @@ pub(crate) enum AppFx {
     /// Library-page semantic requests. The bridge owns navigation/player/item-menu execution.
     Library(LibraryReq),
     Search(SearchReq),
+    /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
+    /// loop, because the thing being asked for needs the `MainThread` token, the route or the
+    /// trail (§14). Executed by `app/playback.rs`'s drain.
+    Player(PlayerReq),
+}
+
+/// **What a player overlay asks for**, once its own `step` has decided.
+///
+/// A panel on the player's page-owned `ModalStack` owns its own state and its own input, but not
+/// the playback: seeking, pausing, applying a quality rung and leaving for a detail page all need
+/// the `MainThread` token and the legacy `Route`/`Trail`, none of which a screen may name (§2.1).
+/// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PlayerReq {
+    /// A transport key FELL THROUGH the panel (§ `overlay_transport_key_tests`): a viewer holding
+    /// the track menu, the Info card or the Chapters strip open still expects PAUSE/PLAY to work,
+    /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
+    /// neither and is carried as `None`.
+    Transport(Option<bool>),
+    /// Seek to this position in ns and resume if paused — the Chapters strip's OK.
+    SeekTo(i64),
+    /// Apply the `…` popover's chosen row.
+    More(crate::ui::more_menu::Action),
+    /// Apply the Info card's focused action.
+    Info(crate::ui::info_panel::InfoAction),
+    /// The panel took a DOWN past its own bottom: drop the HUD's ring onto the tabs row.
+    FocusTabs,
+    /// Keep the transport alive while a panel is being read (`HUD_MENU_MS`), or hand it the
+    /// ordinary linger as a panel closes (`HUD_LINGER_MS`).
+    ExtendHud(u32),
+    /// The Info card's OK landed on a control FACE, which has a press dip of its own: arm the
+    /// tvOS press and commit on the spring-back rather than acting now.
+    ArmInfoPress,
+    /// The track menu picked a row. `route::commit_audio_selection`/`commit_subtitle_selection`
+    /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
+    /// and the loop performs, exactly as every other request in this enum.
+    CommitTrack(crate::ui::track_menu::TrackCommit),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -486,8 +523,31 @@ pub(crate) enum ContentReq {
     Push(ContentArg),
     Present(ContentArg),
     Back,
-    Play { resume_ns: i64 },
+    Play { play: PlayIntent, resume_ns: i64 },
     ItemMenu,
+}
+
+/// **The play a content page decided on, for the loop to start** (spec §2.2, phase 9).
+///
+/// `route::request_play` takes the playback session's `&mut`, and an owned screen is only ever
+/// shown the frame's publication (`AppViews::session`) — so Detail names the item and the loop
+/// performs the request, exactly as Home's [`HomeReq::Play`] already did. The loop also owns what
+/// happens when the request is REFUSED (a PMS/native route transition still owns the reducer):
+/// the page's navigation is skipped, which is what the page's own discarded `started` bool used
+/// to decide.
+pub(crate) enum PlayIntent {
+    /// An item off this page's own metadata.
+    Item {
+        sid: crate::plex::ServerId,
+        rk: String,
+        part: String,
+        vcodec: String,
+        acodec: String,
+        title: String,
+        context: String,
+    },
+    /// The alternative source the page had selected (`route::request_play_movie`).
+    Movie(&'static crate::pms::PmsMovie),
 }
 
 pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
@@ -497,6 +557,14 @@ impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
 pub(crate) trait HomeLike: AppLike<Memory = PageMemory> + Sized {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a>;
+}
+
+/// A host that publishes this frame's playback session (spec §2.3). The player's owned screens
+/// read the Player machine's decisions through it; a change is asked for as an effect
+/// (`AppFx::Player`, `ContentReq::Play`), because the publication is a copy and there is no `&mut`
+/// on this path by construction.
+pub(crate) trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
+    fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession;
 }
 
 pub(crate) trait SearchLike: AppLike<Memory = PageMemory> + Sized {

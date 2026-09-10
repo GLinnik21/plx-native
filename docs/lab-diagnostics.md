@@ -153,9 +153,9 @@ The host enqueues through `/v1/control/enqueue` and reads `/v1/control/status`, 
 require a loopback peer address in addition to the bearer. They cannot be reached through the
 router mapping even by somebody who extracted the session secret from the `.ipk`.
 
-Playback mode (Direct Play / Direct Stream / Transcode) is **not** in `Diag` today; it is decided in
-`route.rs`. MVP takes it from the log lines (`load:` and route's own lines are already in the ring);
-promoting it to a `Diag` field is a follow-up, not a blocker.
+Playback mode (Direct Play / Direct Stream / Transcode) is **not** in `Diag` today; it is decided
+in `route/plan.rs`. MVP takes it from the log lines (`load:` and route's own lines are already in
+the ring); promoting it to a `Diag` field is a follow-up, not a blocker.
 
 ---
 

@@ -108,6 +108,12 @@ fn initial_header(app: &AppInit) -> Header {
 /// Settings, Privacy, Legal and first-run Favourites as identical — a recording that diverges by
 /// opening the wrong page would have come back `SAME`. It invalidates every committed fixture,
 /// which is the cost the pin below exists to make visible rather than silent.
+///
+/// **Phase 9 bumps it twice over**: `ARG_SHAPE` lost `Player{overlay:…}` and gained
+/// `PlayerOverlay{…}`, and the player itself now contributes state at all — its HUD timer, cursor
+/// and scrub gesture were `static mut`s and `TX` atomics that no `LogicalState` could see, so a
+/// recording that diverged by leaving the transport up, or by scrubbing to a different second,
+/// came back `SAME`.
 pub(super) fn state_fp() -> u64 {
     crate::ui::rec::state_fp(&[
         crate::ui::press::Press::SHAPE,
@@ -136,6 +142,8 @@ pub(super) fn state_fp() -> u64 {
         crate::screens::detail::SHAPE,
         crate::screens::person::PersonScreen::SHAPE,
         crate::screens::filmography::FilmographyScreen::SHAPE,
+        crate::screens::player::SHAPE,
+        crate::screens::player::overlay::SHAPE,
         AppInit::SHAPE,
     ])
 }
@@ -832,7 +840,12 @@ mod tests {
         // `AppMsg` (`DetailRestore`) was already present at this position in phase 8's own
         // inventory, so the merge is a pure union with no new hashed term and the pin is
         // unchanged from the pre-merge phase 8 value.
-        assert_eq!(state_fp(), 0xd1f5_9fcf_db3a_98fc);
+        // Phase 9: the player is an owned screen, so `ARG_SHAPE` loses `Player{overlay:…}`, gains
+        // `PlayerOverlay{kind}`, and the player's own state joins the inventory for the first time
+        // (`PlayerScreen` + `PlayerOverlayScreen`). A schema transition, not a rebaseline: every
+        // fixture recorded against 0xd1f5_9fcf_db3a_98fc must be refused and rerecorded, because a
+        // recording taken before this could not hash the transport's timer, cursor or scrub at all.
+        assert_eq!(state_fp(), 0x1006_0b14_b43f_5f57);
     }
 
     #[test]

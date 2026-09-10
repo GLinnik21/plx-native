@@ -53,7 +53,13 @@ pub(crate) fn clear_opaque_region() {
         //
         // Nothing to do on the simulator: there is no video plane underneath to show through, so
         // a non-opaque surface would buy a desktop compositor nothing but per-frame blending.
-        #[cfg(not(feature = "hostsim"))]
+        //
+        // …and nothing to LINK against under `cargo test`. Since phase 9 this is reached through
+        // `Rig::clear_opaque_region` (`app/bridge.rs`), which the host suite exercises, where
+        // before it was reachable only from `plex_run` and the dead-strip hid the missing
+        // `libwayland-client`. The guard below is `G_WL_SURFACE`, which is null in a test, so
+        // nothing is skipped that would have run.
+        #[cfg(all(not(feature = "hostsim"), not(test)))]
         wl_proxy_marshal(surface, 4, std::ptr::null_mut::<c_void>());
     }
 }
@@ -176,12 +182,13 @@ use crate::log;
 // **Default behaviour is byte-identical.** Without the trigger `region_init` never runs, `ENABLED`
 // stays false, and `opaque_route` returns on its first load.
 //
-// **Route-scoped, and it must be.** Marking the surface opaque while the hardware video plane is
-// slaved beneath it would occlude a plane that has not torn down yet — which is why the player
-// route re-asserts NULL every frame today. `opaque_route(player)` therefore asserts NULL on the
-// player route and the full region everywhere else, and remembers which it last sent so an
-// unchanged route costs one atomic load and no protocol traffic (the region is double-buffered
-// but otherwise STICKY: "the pending and current regions are never changed" otherwise).
+// **Plane-scoped, and it must be.** Marking the surface opaque while the hardware video plane is
+// bound beneath it would occlude a plane that has not torn down yet — which is why this reasserts
+// NULL every frame while the plane is bound. `opaque_route(video_plane_bound)` therefore asserts
+// NULL while the plane is bound and the full region otherwise (a pre-bind spinner or a post-unbind
+// read-out gets the opaque region back), and remembers which it last sent so an unchanged state
+// costs one atomic load and no protocol traffic (the region is double-buffered but otherwise
+// STICKY: "the pending and current regions are never changed" otherwise).
 //
 // **No new link dependency, deliberately.** A `wl_region` needs `wl_compositor.create_region`, and
 // the only wayland objects this app has are the display and surface SDL handed it — so the
@@ -398,8 +405,8 @@ pub(crate) fn opaque_route(player: bool) {
         if !G_OPAQUE_ENABLED {
             return;
         }
-        // Opaque only where nothing is behind us. The player route keeps NULL, and gets it back on
-        // the transition, so a video plane is never occluded by a claim we made on Home.
+        // Opaque only where nothing is behind us. A bound video plane keeps NULL, and gets it back
+        // on the transition, so a video plane is never occluded by a claim we made on Home.
         let want = i8::from(!player);
         if G_OPAQUE_SENT == want {
             return;
@@ -413,7 +420,13 @@ pub(crate) fn opaque_route(player: bool) {
         } else {
             std::ptr::null_mut()
         };
+        // See `clear_opaque_region` for why the host suite must not need this symbol. `G_WL_SURFACE`
+        // and `G_OPAQUE_ENABLED` are both false/null in a test, so the two returns above have
+        // already fired.
+        #[cfg(not(test))]
         wl_proxy_marshal(surface, WL_SURFACE_SET_OPAQUE_REGION, region);
+        #[cfg(test)]
+        let _ = (region, WL_SURFACE_SET_OPAQUE_REGION);
         G_OPAQUE_SENT = want;
         log(&format!(
             "opaque: set_opaque_region({}) for route player={player}",

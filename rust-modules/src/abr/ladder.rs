@@ -418,10 +418,10 @@ impl HlsActuatorCatalog {
     ///
     /// N14 asked for a `source_raster` field on `ModeInputs`, "threaded through `HlsAbrControl` to
     /// the worker — that one does cross a thread". It does not: `route::auto_catalog` builds this
-    /// catalog from `session().cur_src` on the main thread and `HlsAbrControl` already carries the
-    /// whole catalog to the worker, so the raster has been on the worker's stack all along, one
-    /// accessor away. Adding a parallel field would have been a second copy of one fact, free to
-    /// disagree with the bound it describes.
+    /// catalog from `ps.cur_src`, threaded as `&PlaybackSession`, and `HlsAbrControl` already
+    /// carries the whole catalog to the worker, so the raster has been on the worker's stack all
+    /// along, one accessor away. Adding a parallel field would have been a second copy of one
+    /// fact, free to disagree with the bound it describes.
     pub(crate) fn source_raster(&self) -> (u16, u16) {
         self.source
     }

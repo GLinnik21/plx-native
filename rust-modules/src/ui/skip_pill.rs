@@ -71,21 +71,27 @@ pub(crate) fn prompt_for(m: metadata::Marker) -> Prompt {
 }
 
 /// The button's rect — the SHARED control-row slot, so it and Up Next cannot drift apart.
-pub(crate) fn rect(pr: Prompt) -> Rect {
-    super::player_hud::ctrl_slot(pr.label())
+///
+/// `row` is the player instance's own [`crate::ui::player_hud::TransportRow`] (restructure phase
+/// 9): it carries both the label-width memo this measurement is cached in and the control row's
+/// focus springs. It was a module `static mut` on the other side of `ctrl_slot` until then.
+pub(crate) fn rect(row: &mut crate::ui::player_hud::TransportRow, pr: Prompt) -> Rect {
+    super::player_hud::ctrl_slot(row, pr.label())
 }
 
 /// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
-pub(crate) fn draw(p: Painter, pr: Prompt, focused: bool) {
+pub(crate) fn draw(row: &mut crate::ui::player_hud::TransportRow, p: Painter, pr: Prompt, focused: bool) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };
     // No leading icon: the label alone carries it, and a chevron on a control that does not
     // navigate anywhere was reading as "more" rather than "skip".
-    // Its slot's only item, so index 0 — the pop is the control ROW's (`player_hud::row_pop`),
+    // Its slot's only item, so index 0 — the pop is the control ROW's (`TransportRow::scale`),
     // shared with the transport discs this pill stands in for.
-    Button::new(label.as_ptr(), theme::size::BODY, rect(pr))
-        .scale(crate::ui::player_hud::row_pop(0))
+    let slot = rect(row, pr);
+    let pop = row.scale(0);
+    Button::new(label.as_ptr(), theme::size::BODY, slot)
+        .scale(pop)
         .focused(focused)
         // It stands in the transport discs' own slot, over the video plane and on the HUD's ramp,
         // so it wears their ground as well as their pop — see `ControlGround`.

@@ -136,10 +136,28 @@ fn node(arg: ContentArg) -> Option<Node> {
     }
 }
 
-pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: &Frame) {
-    home_requests(app, mt);
-    library_requests(app, mt);
+pub(super) fn content_requests(app: &mut App, fr: &Frame) {
+    home_requests(app);
+    library_requests(app);
     search_requests(app);
+    // The player's four overlays are surfaces on its own stack, so what they decide reaches the
+    // loop the same way every other owned screen's decision does — as requests, drained here,
+    // after the dispatcher and before the frame's own arms (`playback::player_requests`).
+    let player_reqs = app.bridge.take_player_reqs();
+    if !player_reqs.is_empty() {
+        super::playback::player_requests(&mut app.player.session, 
+            &mut app.adapters.player,
+            player_reqs,
+            fr.now,
+            &mut app.route,
+            &app.play_from,
+            &mut app.refresh_hubs_at,
+            &mut app.trail,
+            &mut app.pages,
+            &mut app.ok_armed,
+            &mut app.input.press,
+        );
+    }
     for (source, request, ret) in app.bridge.take_content_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -168,15 +186,30 @@ pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: 
                 nav_req(app.route, Nav::Back { bar }, None, &mut app.nav_pending);
                 freeze_request(app, page_entry, ret);
             }
-            ContentReq::Play { resume_ns } => {
+            ContentReq::Play { play, resume_ns } => {
+                // The PAGE decided which item; the LOOP performs the request, because
+                // `route::request_play` takes the playback session's `&mut` and a screen is only
+                // ever shown the frame's publication (§2.2). A refusal (a PMS/native route
+                // transition still owns the reducer) leaves the page exactly where it was, which
+                // is what the page's own discarded `started` bool used to decide.
+                let started = match play {
+                    crate::screens::registry::PlayIntent::Item {
+                        sid, rk, part, vcodec, acodec, title, context,
+                    } => crate::route::request_play(
+                        &mut app.player.session, sid, &rk, &part, &vcodec, &acodec, &title, &context,
+                    ),
+                    crate::screens::registry::PlayIntent::Movie(m) =>
+                        crate::route::request_play_movie(&mut app.player.session, m),
+                };
+                if !started { continue; }
                 if let PageMemory::Detail(spot) = &ret.memory {
                     app.trail.set_top_spot(spot.spot.clone());
                 }
                 let origin = origin_here(app.route, &app.trail);
-                start_playback(mt, resume_ns, origin,
+                start_playback(&mut app.player.session, &mut app.adapters.player, resume_ns, origin,
                     if crate::dev::flag("detailplay") { HUD_HEADLESS_MS } else { HUD_LINGER_MS },
-                    &mut app.route, &mut app.play_from, &mut app.hud.nav);
-                if matches!(app.route, Route::Player { .. }) {
+                    &mut app.route, &mut app.play_from, &mut app.pages, &mut app.bridge);
+                if matches!(app.route, Route::Player) {
                     app.pages.request_with_return(source, NavOp::Push(bridge::AppArg::Legacy(app.route)), ret);
                 }
             }
@@ -192,12 +225,11 @@ pub(super) fn content_requests(app: &mut App, mt: &crate::task::MainThread, fr: 
             }
         }
     }
-    let _ = fr;
 }
 
 /// Home chooses an action and a stable item; only the application performs navigation,
 /// playback or legacy-modal work. Recheck the emitting entry before every queued action.
-fn home_requests(app: &mut App, mt: &crate::task::MainThread) {
+fn home_requests(app: &mut App) {
     for (source, request, ret) in app.bridge.take_home_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -232,9 +264,9 @@ fn home_requests(app: &mut App, mt: &crate::task::MainThread) {
                 freeze_request(app, Some(entry), ret);
             }
             HomeReq::Play { sid, rk, resume_ns } =>
-                activate_home_item(app, mt, source, entry, sid, &rk, Some(resume_ns), ret),
+                activate_home_item(app, source, entry, sid, &rk, Some(resume_ns), ret),
             HomeReq::Detail { sid, rk } =>
-                activate_home_item(app, mt, source, entry, sid, &rk, None, ret),
+                activate_home_item(app, source, entry, sid, &rk, None, ret),
             HomeReq::ItemMenu { sid, rk } => {
                 let snapshot = crate::pms::hubs_snapshot();
                 let Some(item) = home_item(snapshot.view(), sid, &rk)
@@ -356,7 +388,7 @@ mod search_action_tests {
     }
 }
 
-fn library_requests(app: &mut App, mt: &crate::task::MainThread) {
+fn library_requests(app: &mut App) {
     use crate::screens::registry::{LibraryReq, LibraryMenuArg};
     for (source, request, ret) in app.bridge.take_library_reqs() {
         let MachineId::Instance(instance) = source else { continue };
@@ -405,8 +437,8 @@ fn library_requests(app: &mut App, mt: &crate::task::MainThread) {
                 if item.sid != sid || &item.rk != rk { continue; }
                 let play = matches!(request, LibraryReq::Play { .. });
                 if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
-                unsafe { activate_card(mt, &item, play, HUD_LINGER_MS, &mut app.route, &mut app.play_from,
-                    &app.trail, &mut app.hud.nav, &mut app.nav_pending); }
+                unsafe { activate_card(&mut app.player.session, &mut app.adapters.player, &item, play, HUD_LINGER_MS, &mut app.route, &mut app.play_from,
+                    &app.trail, &mut app.pages, &mut app.bridge, &mut app.nav_pending); }
                 freeze_request(app, Some(entry), ret);
             }
         }
@@ -455,15 +487,15 @@ fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn activate_home_item(app: &mut App, mt: &crate::task::MainThread, source: MachineId, entry: EntryId,
+fn activate_home_item(app: &mut App, source: MachineId, entry: EntryId,
     sid: crate::plex::ServerId, rk: &str, resume_ns: Option<i64>, ret: ReturnState<u32, PageMemory>) {
     let snapshot = crate::pms::hubs_snapshot();
     let Some(mut item) = home_item(snapshot.view(), sid, rk).cloned() else { return };
     if let Some(resume_ns) = resume_ns { item.resume_ms = resume_ns.max(0) / 1_000_000; }
     app.trail.reset();
-    unsafe { activate_card(mt, &item, resume_ns.is_some(), HUD_LINGER_MS, &mut app.route,
-        &mut app.play_from, &app.trail, &mut app.hud.nav, &mut app.nav_pending); }
-    if matches!(app.route, Route::Player { .. }) {
+    unsafe { activate_card(&mut app.player.session, &mut app.adapters.player, &item, resume_ns.is_some(), HUD_LINGER_MS, &mut app.route,
+        &mut app.play_from, &app.trail, &mut app.pages, &mut app.bridge, &mut app.nav_pending); }
+    if matches!(app.route, Route::Player) {
         app.pages.request_with_return(source, NavOp::Push(bridge::AppArg::Legacy(app.route)), ret);
     } else {
         freeze_request(app, Some(entry), ret);
@@ -509,7 +541,7 @@ pub(super) fn restore_played_entry(app: &mut App) {
     let episode = crate::metadata::playing().filter(|p| p.sid == *sid)
         .and_then(|_| crate::metadata::now_playing())
         .filter(|n| n.is_episode && n.detail_rk == *rk)
-        .map(|n| { spot.season = Some(n.season); crate::route::cur_rk() });
+        .map(|n| { spot.season = Some(n.season); crate::route::cur_rk(&app.player.session) });
     if episode.is_some() {
         app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore { spot, episode }))));

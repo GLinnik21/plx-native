@@ -923,6 +923,14 @@ pub(crate) mod host {
     /// backdrop re-sources because the SCRIM over the page is still darkening, and the scrim is
     /// drawn live above this snapshot rather than into it. The page itself is not moving.
     pub(crate) fn begin_frame(page_moving: bool) {
+        // §9: there is no host to snapshot on a video-plane frame — what is behind these panels is
+        // a hardware plane GL cannot read back, so a capture is a photograph of the punch-through
+        // hole. The player path already did not call this (`app/run.rs`'s player branch says so);
+        // this is the same rule stated where it can be BROKEN rather than where it happens to be
+        // obeyed, and keyed on the plane being bound rather than on the route.
+        if crate::gfx::video_plane_refuses("popover::host::begin_frame") {
+            return;
+        }
         // Published for the renderer before anything draws: `gfx::page_wash_dither` reads it, so a
         // popover's own appear spring cannot strip the dither off the page snapshot under it. The
         // same OR `host_refresh` reads below: the scoped verdict app.rs threads in (Home, the

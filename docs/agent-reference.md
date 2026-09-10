@@ -460,8 +460,10 @@ which the linking section explains is load-bearing rather than tidy.
   token, `ratingKey` space and watch state. `docs/shared-servers.md` is the design note).
 - `rust-modules/src/ui/` — **the UI, as a shared design system**: `theme.rs` tokens, the retui core
   (`mod.rs` `Painter`/`View`), reusable components (`widgets.rs`/`table.rs`/`label.rs`/`icons.rs`),
-  and the remaining legacy screens (`player_hud.rs`/…); owned content screens live under `screens/`
-  (Home and Library among them since phase 8 — `ui/home.rs` and `ui/library.rs` are deleted). **`rust-modules/src/ui/CLAUDE.md` is the
+  and, since phase 9 (Player was the last), no legacy screens at all — every route mounts an owned
+  screen under `screens/`; `player_hud.rs`/`track_menu.rs`/`info_panel.rs`/`chapters_panel.rs`/
+  `up_next.rs`/`more_menu.rs` are drawing/state modules `screens::player` composes, the same
+  relationship `widgets.rs` has to other screens. **`rust-modules/src/ui/CLAUDE.md` is the
   contribution guide — read it before touching UI: use tokens + components, never inline colors,
   never raw font sizes (ALL text in the UI takes its size from the `theme::size` token scale — add
   a documented rung when a new role needs one), never hand-place text.** Full design/status:
@@ -996,8 +998,9 @@ batch that documented it. Three numbers have now rotted here, so do not add a fo
 count worth having is the one you take yourself, with
 `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
-— several were written when the module was a third its present size (`route.rs` is well past the
-number it carries, and the `ui/home.rs` bullet outlived the file itself). Read those bullets as **what each module covers**,
+— several were written when the module was a third its present size, and two bullets have now
+outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
+phase 9 into `route/plan.rs` + `route/decision.rs`, below). Read those bullets as **what each module covers**,
 which is stable and is why they are here, and never as a census. **Run it with the same toolchain
 the Makefile does.** A bare
 `cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
@@ -1026,8 +1029,8 @@ you get without waking a television. What it covers today, by module:
     conversion (keyframe detection, parameter-set prepending, truncation instead of panic), and the
     AVIO abort guards (a seek after teardown must not open a second connection — graded on an
     accept COUNT from a counting listener, not a return value).
-  - `route.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English over
-    the file's default, the flagged default, part-id parsing, mkv-only direct play.
+  - `route/plan.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English
+    over the file's default, the flagged default, part-id parsing, mkv-only direct play.
   - `screens/home/tests.rs` + `ui/card_row.rs` — **focus/geometry/spring math**: every strip
     element decoding to exactly one destination, row stepping staying inside the shelf array, the
     pointer hit column matching the drawn card at every snap phase, and the shelf heading's
@@ -1164,8 +1167,8 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player direct-plays exactly `{h264,hevc}` × `{aac,ac3,eac3}` in mkv/mp4/m4v (`route.rs`'s codec
-gate + `plex::DP_AUDIO_CODECS`) — 2 of the 19 video and 3 of the 19 audio codecs the television's
+the player direct-plays exactly `{h264,hevc}` × `{aac,ac3,eac3}` in mkv/mp4/m4v (`route/plan.rs`'s
+codec gate + `plex::DP_AUDIO_CODECS`) — 2 of the 19 video and 3 of the 19 audio codecs the television's
 own table (`/etc/umediaserver/device_codec_capability_config.json`, which `devcaps.rs` reads)
 claims to decode, everything else being a server transcode BY DESIGN since the Load payload has
 only `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`. All six of those payload combinations are covered
@@ -1270,9 +1273,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   only update on an ordinary present) and that is expected, not a hang; and **an fps floor taken on a static
   screen now grades nothing**, which is why `fps:home-grid` arms `plxnative-homeosc` and the still
   case is gated by `fps:home-idle`'s `fps_ceiling` instead. `/tmp/plxnative-noidle` turns the
-  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). The **player
-  route is deliberately excluded** — `system.rs` documents the video plane as *slaved* to our
-  surface, and playback already draws 0 draw calls with the HUD hidden.
+  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). **The exclusion
+  is the bound video plane, not the player route** — pre-bind (the Resolving/Loading spinner) and
+  post-unbind (the failure read-out, teardown) player frames are gated exactly like Home, which is
+  why `PlayerScreen::clock_fingerprint` exists: every clock-driven player animator reports motion
+  through it once the route no longer gets a free pass.
 - **The heartbeat fields were RENAMED 2026-08-01 and the old name was REUSED**, so a log or doc
   predating that reads as the opposite of what it says. Old `FPS=` is today's **`loop=`** (loop
   iterations); old `pres=` is today's **`fps=`** (frames presented). An old `FPS=60` says nothing
@@ -1352,7 +1357,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   one left**; this line said "three" long after the other two (`home-grid`, `library-scroll`) were
   given oscillators and real `fps_floor`s, which is the fix that note asks for. The other three
   `loop_floor`-only scenes are the player-tier overlays (`info-panel`, `track-menu`, `chapters-panel` — take the list from `./tests/run.py --list --server`, not from here) and need no note, because
-  the present gate excludes the player route. Every run also reports
+  the video plane stays bound for the whole scene, so `fps=` grades neither an animator nor an
+  idle screen. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"
@@ -1433,8 +1439,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
   Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
   recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
-  `targets` mode. Engine pages and the remaining `LegacyPage` routes alike replay on device by
-  target only). Both names are `dev::DIAG`, so neither moves the boot screen; both armed at once is
+  `targets` mode. Engine pages replay in `resolve` mode; the player is the one route left that
+  cannot, since it still answers `FocusSource::Legacy`/`HitSource::Legacy` (no route mounts a bare
+  `LegacyPage` any more) — it replays on device by target only). Both names are `dev::DIAG`, so
+  neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
   it; `make softfloat-probe` fetches it), `/tmp/plxnative-url` (override the streamed part

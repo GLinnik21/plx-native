@@ -327,7 +327,7 @@ static mut HEAD: [String; 2] = [String::new(), String::new()];
 static mut IDLE: bool = false;
 
 /// Re-sample if the hold has expired. Main-thread only (it is called from the frame loop).
-pub(crate) fn update(now: u32) {
+pub(crate) fn update(ps: &crate::route::PlaybackSession, now: u32) {
     if !enabled() {
         return;
     }
@@ -340,22 +340,22 @@ pub(crate) fn update(now: u32) {
         // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
         // "no frames" beside a position taken a moment later — a panel that tells a story that
         // never happened is worse than no panel.
-        let d = crate::player::diag();
+        let d = crate::player::diag(ps);
         let prev = addr_of_mut!(PREV_FED).read();
         // `.replace()`, NOT `.write()`. `<*mut T>::write` is `ptr::write` — it overwrites without
         // DROPPING what was there, and both own heap: a `Vec<Field>` and three `String`s plus
         // every row's value. At 2 Hz that orphaned ~1.4 KB and ~23 allocations every sample, on a
         // panel explicitly designed to be left up for the length of a film.
-        drop(addr_of_mut!(HEAD).replace(header(&d, now)));
+        drop(addr_of_mut!(HEAD).replace(header(ps, &d, now)));
         // ONE decision per sample, held with the rows it chose. Deciding this in `draw` instead
         // would let the panel measure one list and paint another on the frame the first Load lands.
-        let idle = never_played(&d, crate::player::state());
+        let idle = never_played(&d, crate::player::state(ps));
         addr_of_mut!(IDLE).write(idle);
         drop(addr_of_mut!(ROWS).replace(if idle { device_rows() } else { Vec::new() }));
         drop(addr_of_mut!(COLUMNS).replace(if idle {
             [Vec::new(), Vec::new()]
         } else {
-            columns(&d, prev, now)
+            columns(ps, &d, prev, now)
         }));
         addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
         let history = &mut *addr_of_mut!(HISTORY);
@@ -378,7 +378,7 @@ pub(crate) fn update(now: u32) {
 /// verdict's slot and drew in its bold face, so a photograph of a FAILED playback showed the
 /// firmware where the failure reason should have been. Two lines produced and two drawn, so the
 /// array's length is the contract rather than a comment.
-fn header(d: &crate::player::Diag, now: u32) -> [String; 2] {
+fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> [String; 2] {
     let w = crate::webos::info();
     let os = if w.major == 0 {
         "webOS unknown — os_info.json unreadable".to_string()
@@ -401,14 +401,14 @@ fn header(d: &crate::player::Diag, now: u32) -> [String; 2] {
                 "release"
             }
         ),
-        playback_line(d, now),
+        playback_line(ps, d, now),
     ]
 }
 
 /// The one-line verdict, in the largest type on the panel: what the pipeline thinks it is doing.
-fn playback_line(d: &crate::player::Diag, now: u32) -> String {
+fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> String {
     use crate::player::PlaybackState as S;
-    let s = match crate::player::state() {
+    let s = match crate::player::state(ps) {
         S::Idle => "Idle",
         S::Resolving => "Resolving",
         S::Connecting => "Connecting",
@@ -420,8 +420,8 @@ fn playback_line(d: &crate::player::Diag, now: u32) -> String {
     // The reason is part of every Error verdict — bare "Playback error" made the reviewer derive
     // "the server dropped the video track" from the server's own transcoder logs (issue #22);
     // this line is the photograph that should have said it.
-    if matches!(crate::player::state(), S::Error) {
-        return match crate::player::error_reason() {
+    if matches!(crate::player::state(ps), S::Error) {
+        return match crate::player::error_reason(ps) {
             "" => s.to_string(),
             why => format!("{s} — {why}"),
         };
@@ -433,7 +433,7 @@ fn playback_line(d: &crate::player::Diag, now: u32) -> String {
     // A stream that says "Playing" while nothing has moved for seconds is the failure with no
     // error at all: the app freezes on its last frame and every other row still reads healthy.
     let stuck = since(d.frame_at, now) / 1000;
-    if matches!(crate::player::state(), S::Playing) && d.seen_frame && stuck >= STALL_MS / 1000 {
+    if matches!(crate::player::state(ps), S::Playing) && d.seen_frame && stuck >= STALL_MS / 1000 {
         return format!("{s} (stalled {stuck} s)");
     }
     s.to_string()
@@ -546,38 +546,38 @@ fn device_rows() -> Vec<Field> {
 /// byte from the chosen PMS connection to the television plane.  The right column is the adaptive
 /// model.  Fixed playback keeps every right-hand row and says `inactive`; that stability is what
 /// makes a LAN/Original photograph directly comparable with a remote/HLS one.
-fn columns(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> [Vec<Field>; 2] {
-    [pipeline_rows(d, prev, now), model_rows(d)]
+fn columns(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> [Vec<Field>; 2] {
+    [pipeline_rows(ps, d, prev, now), model_rows(ps, d)]
 }
 
 /// Flattened only for host assertions that inspect the whole schema.  Production draws the two
 /// vectors independently and never clones them.
-fn rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
-    columns(d, prev, now).into_iter().flatten().collect()
+fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
+    columns(ps, d, prev, now).into_iter().flatten().collect()
 }
 
-fn pipeline_rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
+fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(LEFT_ROWS);
-    v.push(Field::new("Connection", connection_line()));
-    v.push(Field::new("Route", route_line(d)));
+    v.push(Field::new("Connection", connection_line(ps)));
+    v.push(Field::new("Route", route_line(ps, d)));
 
     let mut video = chain(
-        crate::route::source_vcodec(),
-        crate::route::stream_vcodec(),
+        crate::route::source_vcodec(ps),
+        crate::route::stream_vcodec(ps),
         d.load_v_str(),
     );
-    let dv = crate::route::stream_dovi();
+    let dv = crate::route::stream_dovi(ps);
     if dv.present {
         video.push_str(&format!(" · Dolby Vision P{}.{}", dv.profile, dv.bl_compat));
     }
     v.push(Field::new("Video", video));
 
     let mut audio = chain(
-        crate::route::source_acodec(),
-        crate::route::stream_acodec(),
+        crate::route::source_acodec(ps),
+        crate::route::stream_acodec(ps),
         d.load_a_str(),
     );
-    if crate::route::stream_immersive() {
+    if crate::route::stream_immersive(ps) {
         audio.push_str(" · Dolby Atmos");
     }
     v.push(Field::new("Audio", audio).fault(d.load_a == 0 && d.load_v != 0));
@@ -590,7 +590,7 @@ fn pipeline_rows(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Ve
     // route's value is what WE told it. Nothing in this process counts presented frames (the
     // position callback ticks at 5 Hz whatever the picture does), so an unlabelled number here is
     // the silent-instrument trap on a photographed surface.
-    let route_fps = crate::route::stream_fps();
+    let route_fps = crate::route::stream_fps(ps);
     let (fps_milli, fps_src) = if d.video_fps_milli > 0 {
         (d.video_fps_milli, "pipeline says")
     } else if route_fps > 0.0 {
@@ -701,8 +701,8 @@ fn fps_milli_str(fps_milli: i64) -> String {
     }
 }
 
-fn connection_line() -> String {
-    let sid = crate::route::cur_sid();
+fn connection_line(ps: &crate::route::PlaybackSession) -> String {
+    let sid = crate::route::cur_sid(ps);
     let Some(client) = crate::plex::client_for(sid) else {
         return "standalone · no PMS".to_string();
     };
@@ -721,14 +721,14 @@ fn connection_line() -> String {
     )
 }
 
-fn route_line(d: &crate::player::Diag) -> String {
-    let transport = if d.abr_mode == crate::player::ABR_MODE_HLS || crate::route::is_segmented_hls()
+fn route_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> String {
+    let transport = if d.abr_mode == crate::player::ABR_MODE_HLS || crate::route::is_segmented_hls(ps)
     {
         "HLS"
     } else {
         "progressive"
     };
-    let transform = match (crate::route::is_transcoding(), crate::route::is_remux()) {
+    let transform = match (crate::route::is_transcoding(ps), crate::route::is_remux(ps)) {
         (false, _) => "direct play",
         (true, true) => "remux (stream copy)",
         (true, false) => "transcode (re-encode)",
@@ -823,16 +823,16 @@ fn frames_str(d: &crate::player::Diag, now: u32) -> String {
 /// Build the fixed right-hand schema.  `inactive` is data: it says that a manual selection owns the
 /// playback and no Auto estimate should be inferred from the empty cells.  Deleting those cells
 /// made every mode a different panel and is the regression this shape prevents.
-fn model_rows(d: &crate::player::Diag) -> Vec<Field> {
+fn model_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> Vec<Field> {
     let mut v = Vec::with_capacity(RIGHT_ROWS);
     // One selection snapshot for the whole block.  A quality press must not leave Mode saying
     // Auto while the lower rows have already formatted the new manual state.
-    abr_rows(d, crate::route::quality(), &mut v);
+    abr_rows(ps, d, crate::route::quality(), &mut v);
     debug_assert_eq!(v.len(), RIGHT_ROWS);
     v
 }
 
-fn abr_rows(d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Vec<Field>) {
+fn abr_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Vec<Field>) {
     v.push(Field::new("Mode", abr_mode(d, selected)));
     v.push(Field::new("Quality", abr_quality(d, selected)));
     v.push(Field::new("Sample", abr_link(d, selected)));
@@ -842,7 +842,7 @@ fn abr_rows(d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Ve
         Field::new("Risk", abr_risk(d, selected))
             .fault(d.abr_why == crate::player::ABR_WHY_STARVATION),
     );
-    v.push(Field::new("Acquisition", abr_acquisition_cadence(d)));
+    v.push(Field::new("Acquisition", abr_acquisition_cadence(ps, d)));
     v.push(Field::new("Action", abr_action(d, selected)));
     v.push(Field::new("Reason", abr_reason(d, selected)));
 }
@@ -981,11 +981,11 @@ fn abr_risk(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
 ///
 /// `predicted` projects the same total-acquisition observation through the candidate's calibrated
 /// work class for diagnostics only. Neither number is charged as a second admission gate.
-fn abr_acquisition_cadence(d: &crate::player::Diag) -> String {
-    if !crate::route::is_transcoding() {
+fn abr_acquisition_cadence(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> String {
+    if !crate::route::is_transcoding(ps) {
         return "not sampled · direct play".to_string();
     }
-    if crate::route::is_remux() {
+    if crate::route::is_remux(ps) {
         return "not sampled · stream copy".to_string();
     }
     if d.abr_ratio_pm < 0 {
@@ -1856,6 +1856,7 @@ mod tests {
     /// The row budgets are the design: mode changes replace values, never geometry.
     #[test]
     fn the_read_out_never_outgrows_its_budget() {
+        let ps = crate::route::PlaybackSession::IDLE;
         // Every video-plane shape and every Auto shape: the exported path states more about the
         // plane than ACB does, and Auto trades the FFmpeg row for its five model rows — neither
         // may change the budget.
@@ -1874,7 +1875,7 @@ mod tests {
                     abr_mode,
                     ..Default::default()
                 };
-                let [left, right] = columns(&d, (0, 0, 0), 1_000);
+                let [left, right] = columns(&ps, &d, (0, 0, 0), 1_000);
                 assert_eq!(left.len(), LEFT_ROWS, "vp={vp} abr={abr_mode}: left");
                 assert_eq!(right.len(), RIGHT_ROWS, "vp={vp} abr={abr_mode}: right");
             }
@@ -1886,8 +1887,9 @@ mod tests {
     /// every pipeline fact to a different y between photographs.
     #[test]
     fn every_delivery_mode_keeps_the_same_schema() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let schema = |mode| {
-            rows(
+            rows(&ps, 
                 &crate::player::Diag {
                     abr_mode: mode,
                     ..Default::default()
@@ -1926,6 +1928,7 @@ mod tests {
     /// prediction the controller did not make.
     #[test]
     fn a_conservative_horizon_does_not_overrule_an_observed_filling_buffer() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let d = crate::player::Diag {
             abr_mode: crate::player::ABR_MODE_HLS,
             abr_kbps: 320,
@@ -1938,7 +1941,7 @@ mod tests {
             ..Default::default()
         };
         let mut fields = Vec::new();
-        abr_rows(&d, crate::route::Quality::Auto, &mut fields);
+        abr_rows(&ps, &d, crate::route::Quality::Auto, &mut fields);
         let buffer = fields
             .iter()
             .find(|f| f.key == "Buffer")
@@ -1992,6 +1995,7 @@ mod tests {
     /// composed lines are written to fit. Grade the composition, not just the count.
     #[test]
     fn every_composed_row_fits_one_line() {
+        let ps = crate::route::PlaybackSession::IDLE;
         // The widest realistic values: a three-stage codec chain, a 4K raster with a position and
         // a skew, and the full model line with every optional part present.
         let d = crate::player::Diag {
@@ -2031,7 +2035,7 @@ mod tests {
             load_completed: true,
             ..Default::default()
         };
-        for f in rows(&d, (4_400, 4_000, 500), 1_000) {
+        for f in rows(&ps, &d, (4_400, 4_000, 500), 1_000) {
             let Some(val) = f.val.as_deref() else {
                 continue;
             };
@@ -2161,6 +2165,7 @@ mod tests {
     /// not happen" must say it.
     #[test]
     fn a_dead_session_marks_its_faults() {
+        let ps = crate::route::PlaybackSession::IDLE;
         // `load_at` a full stall-window in the past: a Load that completed SECONDS ago with no
         // frame is the fault. The same session one tick after Load is NOT — see the test below.
         let d = crate::player::Diag {
@@ -2168,7 +2173,7 @@ mod tests {
             load_at: 1_000,
             ..Default::default()
         };
-        let v = rows(&d, (0, 0, 0), 1_000 + STALL_MS + 1);
+        let v = rows(&ps, &d, (0, 0, 0), 1_000 + STALL_MS + 1);
         let faults: Vec<_> = v
             .iter()
             .filter(|f| f.tone == crate::ui::widgets::Tone::Fault)
@@ -2215,6 +2220,7 @@ mod tests {
     /// `panel_rect` now; this grades that the reservation actually survives to the draw.
     #[test]
     fn the_chart_keeps_its_band_whatever_the_rows_do() {
+        let ps = crate::route::PlaybackSession::IDLE;
         for vp in [
             crate::player::VP_ACB,
             crate::player::VP_EXPORTED,
@@ -2230,7 +2236,7 @@ mod tests {
                     abr_mode,
                     ..Default::default()
                 };
-                let [left, right] = columns(&d, (0, 0, 0), 1_000);
+                let [left, right] = columns(&ps, &d, (0, 0, 0), 1_000);
                 let ll = FieldList::wrapped_line_count(&left).max(LEFT_ROWS);
                 let rl = FieldList::wrapped_line_count(&right).max(RIGHT_ROWS);
                 let h = HEAD_H + FieldList::height(ll.max(rl + CHART_ROWS)) + PAD;
@@ -2250,6 +2256,7 @@ mod tests {
     /// the last decision went the way it did.
     #[test]
     fn the_model_block_states_every_input_it_decides_on() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let val = |v: &[Field], key: &str| {
             v.iter()
                 .find(|f| f.key == key)
@@ -2259,7 +2266,7 @@ mod tests {
         };
         let build_with = |d: &crate::player::Diag, selected: crate::route::Quality| {
             let mut v = Vec::new();
-            abr_rows(d, selected, &mut v);
+            abr_rows(&ps, d, selected, &mut v);
             v
         };
         let build = |d: &crate::player::Diag| build_with(d, crate::route::Quality::Auto);
@@ -2527,6 +2534,7 @@ mod tests {
     /// healthy — and only the rate and the skew can see it.
     #[test]
     fn a_stalled_audio_lane_is_visible_even_though_its_total_is_large() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let d = crate::player::Diag {
             load_completed: true,
             pushed_any: true,
@@ -2536,7 +2544,7 @@ mod tests {
             fed_a_pts: 30_000_000_000, // 30 s behind
             ..Default::default()
         };
-        let v = rows(&d, (4_400, 4_000, 500), 1_000);
+        let v = rows(&ps, &d, (4_400, 4_000, 500), 1_000);
         let feed = v.iter().find(|f| f.key == "Feed").expect("Feed row");
         let val = feed.val.as_deref().unwrap_or_default();
         assert!(
@@ -2563,6 +2571,7 @@ mod tests {
     /// stall. Without this distinction the panel cries wolf on every single playback.
     #[test]
     fn a_freshly_completed_load_with_no_frames_yet_is_not_a_fault() {
+        let ps = crate::route::PlaybackSession::IDLE;
         // Serialized: `frames_str` reads the process-wide `player::TX.paused`, which the paused
         // test below toggles under this same lock — without it, this test can observe the paused
         // branch ("none yet") where it asserts the running clock ("none in 0 s") and flake.
@@ -2572,7 +2581,7 @@ mod tests {
             load_at: 1_000,
             ..Default::default()
         };
-        let fresh = rows(&d, (0, 0, 0), 1_100);
+        let fresh = rows(&ps, &d, (0, 0, 0), 1_100);
         let f = fresh.iter().find(|f| f.key == "Frames").unwrap();
         assert_ne!(
             f.tone,
@@ -2581,7 +2590,7 @@ mod tests {
         );
         assert!(f.val.as_deref().unwrap().starts_with("none in 0 s"));
 
-        let stalled = rows(&d, (0, 0, 0), 1_000 + STALL_MS + 4_000);
+        let stalled = rows(&ps, &d, (0, 0, 0), 1_000 + STALL_MS + 4_000);
         let f = stalled.iter().find(|f| f.key == "Frames").unwrap();
         assert_eq!(
             f.tone,
@@ -2596,6 +2605,7 @@ mod tests {
     /// its reader after a fault that is just the pause button. Reported from the wild on 0.2.1.
     #[test]
     fn a_paused_stream_does_not_report_its_frames_as_frozen() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         let d = crate::player::Diag {
             load_completed: true,
@@ -2607,9 +2617,9 @@ mod tests {
         let long_after = 1_000 + STALL_MS + 8_000;
 
         crate::player::TX.paused.store(true, Ordering::Relaxed);
-        let paused = rows(&d, (0, 0, 0), long_after);
+        let paused = rows(&ps, &d, (0, 0, 0), long_after);
         crate::player::TX.paused.store(false, Ordering::Relaxed);
-        let playing = rows(&d, (0, 0, 0), long_after);
+        let playing = rows(&ps, &d, (0, 0, 0), long_after);
 
         let f = |v: &Vec<Field>| {
             v.iter()
@@ -2631,8 +2641,9 @@ mod tests {
     /// a connection that was refused, and a connection that answered and delivered nothing.
     #[test]
     fn the_http_row_splits_the_open_failures() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let row = |d: &crate::player::Diag| {
-            rows(d, (0, 0, 0), 1_000)
+            rows(&ps, d, (0, 0, 0), 1_000)
                 .into_iter()
                 .find(|f| f.key == "Transfer")
                 .unwrap()
@@ -2689,6 +2700,7 @@ mod tests {
     /// "died after a long healthy run" are different readings.
     #[test]
     fn a_latched_pipeline_error_outranks_a_healthy_callback_count() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let d = crate::player::Diag {
             cb_count: 812,
             cb_err: 18,
@@ -2696,7 +2708,7 @@ mod tests {
             load_completed: true,
             ..Default::default()
         };
-        let row = rows(&d, (0, 0, 0), 1_000)
+        let row = rows(&ps, &d, (0, 0, 0), 1_000)
             .into_iter()
             .find(|f| f.key == "Load")
             .unwrap();
@@ -2801,9 +2813,10 @@ mod tests {
     /// tone is a property of the ROW, fixed at build time, so it is assertable regardless.)
     #[test]
     fn the_server_row_is_never_a_fault() {
+        let ps = crate::route::PlaybackSession::IDLE;
         // Topology and server capability are facts on the stable Connection row, never failures.
         let d = crate::player::Diag::default();
-        let row = rows(&d, (0, 0, 0), 1_000)
+        let row = rows(&ps, &d, (0, 0, 0), 1_000)
             .into_iter()
             .find(|f| f.key == "Connection")
             .expect("Connection row");
@@ -2823,6 +2836,7 @@ mod tests {
     /// itself is pinned in `webos.rs`; this pins the SENTENCE the panel prints.)
     #[test]
     fn an_unknown_firmware_is_named_as_unknown() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         // "No session" is a PRECONDITION on three crate globals, not a property of a default
         // `Diag`: `player::state()` derives from the pump's `pb_state` and the route's refusal
@@ -2830,8 +2844,8 @@ mod tests {
         // refused Load/Play — without restoring it. Establish the state this test asserts about,
         // and hand back whatever was there (see `[[test-suite-global-pollution]]`).
         let prev = crate::player::swap_state_for_test(crate::player::PlaybackState::Idle);
-        crate::route::clear_play_verdict_for_test();
-        let head = header(&crate::player::Diag::default(), 1_000);
+        crate::route::clear_play_verdict_for_test(&mut ps);
+        let head = header(&ps, &crate::player::Diag::default(), 1_000);
         crate::player::restore_state_for_test(prev);
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two
         // being one array is what stops the firmware taking the verdict's slot again.

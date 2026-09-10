@@ -47,12 +47,18 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 **The main-thread rule is compiler-enforced.** `ffi.rs`'s `extern "C"` declarations are private to
 that module, and every wrapper but one takes a `task::MainThread` — a `!Send` ZST `plex_run` mints
-once and threads down. So does `engine::engine()` and the three other `ENGINE` accessors. Moving any
-of it onto a thread stops compiling (the closure captures a `&MainThread`, which `task::spawn`
-rejects). Two intentional holes, both worth knowing: `sf_load` takes **no** token because
-`load_thread` runs it off-main by design, and `MainThread::assume()` is callable — so an `unsafe`
-block inside a worker still defeats this. The rule for new code: take the token **iff** you reach
-the seam or the Engine, so its presence in a signature keeps meaning something.
+once. Since phase 9 it mints exactly one and `boot` MOVES it into `player::adapter::PlayerAdapter`
+(`App.adapters.player`), which also owns the native session that was the `static mut ENGINE`: the
+seam is reached as `pa.mt()`, the session as `pa.engine()` / `pa.split()`, and a function that
+touches the session takes `pa: &mut PlayerAdapter` where it used to take `mt: &MainThread`. Moving
+any of it onto a thread stops compiling (the closure captures a `&MainThread`, which `task::spawn`
+rejects), and two live `&mut` to the session no longer needs a convention — it does not compile,
+which is what turned `pump`'s "reload REPLACES the ENGINE, so `eng` dangles" comment into a rule
+the borrow checker keeps. Two intentional holes, both worth knowing: `sf_load` takes **no** token
+because `load_thread` runs it off-main by design, and `MainThread::assume()` is callable — so an
+`unsafe` block inside a worker still defeats this. The rule for new code: take the token **iff**
+you reach the seam, the adapter **iff** you reach the session, so a signature keeps meaning
+something.
 
 ## Gotchas that bite (all verified in code)
 
@@ -170,7 +176,7 @@ the seam or the Engine, so its presence in a signature keeps meaning something.
 **Start with `make check`** — the host unit suite (`cargo test --lib`, ~0.3s) covers a real
 slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
 the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
-count), `stream.rs`'s socket lifecycle, `route.rs`'s direct-play-vs-transcode selection, and
+count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transcode selection, and
 `task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
 it before a deploy.
 

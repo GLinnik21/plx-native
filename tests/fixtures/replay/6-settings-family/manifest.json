@@ -3,7 +3,7 @@
  "blobs": false,
  "build": "0.7.0-dev",
  "clock": {
-  "start": 154
+  "start": 128
  },
  "features": [
   "devtools",
@@ -11,11 +11,50 @@
   "hostsim"
  ],
  "init": {
-  "hash": 6354188212192725625,
+  "data": {
+   "app": {
+    "consent_asked": 0,
+    "consent_errors": false,
+    "consent_usage": false,
+    "route": "home",
+    "seed": 0,
+    "servers": 1,
+    "session": false
+   },
+   "hubs": {
+    "catalog": {
+     "heroes": [],
+     "hubs": [],
+     "items": []
+    },
+    "catalog_generation": 1,
+    "generation": 2,
+    "next_request": 2,
+    "sections_generation": 1,
+    "seen": 8589934593,
+    "seen_facts": 1,
+    "sources": [
+     {
+      "client": 1,
+      "fetching": true,
+      "handle": "",
+      "last": null,
+      "retry_bits": 0,
+      "retry_n": 0,
+      "seq": 1,
+      "sid": 0,
+      "state": 0,
+      "token_gen": 1
+     }
+    ],
+    "version": 1
+   }
+  },
+  "hash": 13272641050745139175,
   "probe": "route=home session=0 servers=1 consent=0/0/0 seed=0"
  },
  "schema": 1,
- "state_fp": 12587891589461608,
+ "state_fp": 1154622538018414423,
  "triggers": [
   "plxnative-focus",
   "plxnative-noidle",

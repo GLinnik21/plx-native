@@ -684,8 +684,8 @@ pub(crate) fn mark_skipped(m: Marker) {
 /// is still 0 or frozen at a seek target, and an item whose intro starts at 0 would otherwise
 /// report a segment during every load. Segments already skipped are filtered out — see
 /// [`mark_skipped`].
-pub(crate) fn active_marker() -> Option<Marker> {
-    if !crate::player::is_playing() {
+pub(crate) fn active_marker(ps: &crate::route::PlaybackSession) -> Option<Marker> {
+    if !crate::player::is_playing(ps) {
         return None;
     }
     let m = marker_at(playing_markers(), crate::player::playpos_ns() / 1_000_000)?;
@@ -707,8 +707,8 @@ pub(crate) fn active_marker() -> Option<Marker> {
 /// when the item is long enough that its tail is clearly an ending (> 3x the window, so a short
 /// clip does not spend a third of its runtime offering the next one).
 pub(crate) const TAIL_WINDOW_MS: i64 = 30_000;
-pub(crate) fn synthesized_tail_marker(has_next: bool) -> Option<Marker> {
-    if !has_next || !crate::player::is_playing() {
+pub(crate) fn synthesized_tail_marker(ps: &crate::route::PlaybackSession, has_next: bool) -> Option<Marker> {
+    if !has_next || !crate::player::is_playing(ps) {
         return None;
     }
     if playing_markers()

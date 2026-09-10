@@ -70,8 +70,8 @@ harness refuses to grade it.
 ### What the synthetic cases actually cover
 
 The player direct-plays exactly `{h264, hevc}` × `{aac, ac3, eac3}` in `mkv`/`mp4`/`m4v` —
-`route.rs`'s codec gate and `plex::DP_AUDIO_CODECS`. That is **2 of the 19 video codecs and 3 of the
-19 audio codecs this television's own capability table
+`route/plan.rs`'s codec gate and `plex::DP_AUDIO_CODECS`. That is **2 of the 19 video codecs and 3
+of the 19 audio codecs this television's own capability table
 (`/etc/umediaserver/device_codec_capability_config.json`) claims to decode**; everything else the
 panel can decode — VP9, MPEG-2, WMV, DivX, DTS, FLAC, Opus, PCM… — reaches it as a server transcode
 by design, because the Starfish `Load` payload has only the strings `H264`/`H265` and
@@ -456,8 +456,9 @@ marks pacing invalid if a render-profiler trigger is armed.
     saying so. It is the only one left: this line said "three scenes" long after the other two
     (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
     the fix that note asks for. The remaining `loop_floor`-only scenes are `info-panel`, `chapters-panel` and
-    `track-menu`, and they need no such note — the present gate **excludes the player route**
-    (`ui/idle.rs:57`), so their `loop_floor` still grades a fill rate the way it always did.
+    `track-menu`, and they need no such note — the video plane stays **bound** throughout those
+    scenes, and the gate treats a bound plane as always-present (`ui/idle.rs`'s `VIDEO_PLANE`),
+    so their `loop_floor` still grades a fill rate the way it always did.
   - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".
     The median and not the 2nd-lowest, because a frame rate is now intermittent *by design*: on a
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the

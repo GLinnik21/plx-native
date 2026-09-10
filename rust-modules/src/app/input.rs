@@ -76,28 +76,32 @@ impl Pointer {
 /// `*.inprogress.*` shelf.
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn activate_card(
-    mt: &crate::task::MainThread,
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
     mm: &crate::pms::PmsMovie,
     want_play: bool,
     hud_ms: u32,
     route: &mut Route,
     play_from: &mut Node,
     trail: &Trail,
-    hud_nav: &mut HudNav,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
     nav: &mut Option<NavReq>,
 ) {
     let rk = mm.rk.clone();
     if want_play {
         match mm.kind {
             0 | 3 => play_item_now(
-                mt,
+                ps,
+                pa,
                 mm,
                 false,
                 origin_here(*route, trail),
                 hud_ms,
                 route,
                 play_from,
-                hud_nav,
+                pages,
+                bridge,
             ),
             _ => {
                 // show / season: open its page (blocking) and fire its Play — but only
@@ -120,15 +124,17 @@ pub(super) unsafe fn activate_card(
                 let loaded = crate::metadata::current()
                     .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
                     .unwrap_or(false);
-                if let Some(resume_ns) = loaded.then(request_loaded_hero).flatten() {
+                if let Some(resume_ns) = loaded.then(|| request_loaded_hero(ps)).flatten() {
                     start_playback(
-                        mt,
+                        ps,
+                        pa,
                         resume_ns,
                         origin_here(*route, trail),
                         hud_ms,
                         route,
                         play_from,
-                        hud_nav,
+                        pages,
+                        bridge,
                     );
                 } else {
                     // nothing playable / load failed — land on the page, through the
@@ -178,13 +184,15 @@ pub(super) unsafe fn activate_card(
 /// (`item_menu::item`) instead of being looked up in the hub catalog, which only Home's cards are
 /// ever in.
 pub(super) unsafe fn apply_item_action(
-    mt: &crate::task::MainThread,
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
     act: crate::ui::item_menu::Action,
     host: MenuHost,
     route: &mut Route,
     play_from: &mut Node,
     trail: &mut Trail,
-    hud_nav: &mut HudNav,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
     nav: &mut Option<NavReq>,
 ) {
     use crate::ui::item_menu::Action;
@@ -292,16 +300,18 @@ pub(super) unsafe fn apply_item_action(
             // lookup would miss and the press would do nothing — it takes the card-row arm below,
             // which plays the row the menu captured.
             if host.is_loaded_episode() {
-                if request_loaded_episode(&rk) {
+                if request_loaded_episode(ps, &rk) {
                     let resume = 0;
                     start_playback(
-                        mt,
+                        ps,
+                        pa,
                         resume,
                         origin_here(*route, trail),
                         HUD_LINGER_MS,
                         route,
                         play_from,
-                        hud_nav,
+                        pages,
+                        bridge,
                     );
                 }
                 return;
@@ -320,14 +330,16 @@ pub(super) unsafe fn apply_item_action(
             // with itself.
             if let Some(mm) = crate::ui::item_menu::item().filter(|m| m.rk == rk) {
                 play_item_now(
-                    mt,
+                    ps,
+                    pa,
                     mm,
                     true,
                     origin_here(*route, trail),
                     HUD_LINGER_MS,
                     route,
                     play_from,
-                    hud_nav,
+                    pages,
+                bridge,
                 );
             }
         }
@@ -357,13 +369,17 @@ pub(super) unsafe fn apply_item_action(
 /// both held-key slots, springs a deferred grid-card press back, and ends or debounces a scrub.
 ///
 /// `repause_at` is handed straight to [`commit_seek`] — see its doc for what it means.
+///
+/// `scrubber` is the player's own scrub, borrowed out of the mounted `PlayerScreen` and `None` on
+/// every other route — the same statement the `Route::Player` guard below used to make from the
+/// loop's side while a second copy of the state sat on `App`.
 pub(super) unsafe fn on_key_up(
     sym: c_uint,
     isnav: bool,
     route: Route,
     ok_armed: bool,
     held: &mut HeldKey,
-    scrubber: &mut Scrub,
+    scrubber: Option<&mut Scrub>,
     repause_at: &mut i64,
     press: &mut crate::ui::press::Press,
 ) {
@@ -378,20 +394,22 @@ pub(super) unsafe fn on_key_up(
         // activation commits from the per-frame loop once the bounce has shown.
         press.release(clock::now());
     }
-    if matches!(route, Route::Player { .. }) && scrubber.dir != 0 && isnav {
+    let Some(scrubber) = scrubber else { return };
+    if matches!(route, Route::Player) && scrubber.dir != 0 && isnav {
         if scrubber.reveal {
             // The press only raised the HUD (`Scrub::reveal`) and the preview never left the seed,
             // so there is nothing to commit. Tested BEFORE `hold`, not after: a hold that engaged
             // but has not travelled yet is still this case, and committing it would seek to where
             // playback already is. The advance is what retires the flag, on real travel.
-            set_scrub(-1);
+            scrubber.ns = -1;
             scrubber.disengage();
         } else if scrubber.hold {
             log(&format!(
                 "scrub: keyup commit (held) {}s",
-                scrub() / 1_000_000_000
+                scrubber.ns / 1_000_000_000
             ));
-            commit_seek(scrub(), repause_at); // a held scrub → commit on release
+            let target = scrubber.ns;
+            commit_seek(scrubber, target, repause_at); // a held scrub → commit on release
             scrubber.disengage();
         } else {
             // a tap → commit on a short debounce so quick taps accumulate first
@@ -422,7 +440,7 @@ pub(super) unsafe fn on_auto_repeat(
     ok_armed: bool,
     hud_nav: HudNav,
     held: &mut HeldKey,
-    scrubber: &mut Scrub,
+    scrubber: Option<&mut Scrub>,
     press: &mut crate::ui::press::Press,
 ) {
     let n = clock::now();
@@ -432,7 +450,8 @@ pub(super) unsafe fn on_auto_repeat(
     if ok_armed && is_ok(sym) {
         press.note_alive(n); // OK held: keep the dropped-key-up net honest
     }
-    if matches!(route, Route::Player { .. }) && hud_nav.focus == 0 && scrubber.dir != 0 && isnav {
+    let Some(scrubber) = scrubber else { return };
+    if matches!(route, Route::Player) && hud_nav.focus == 0 && scrubber.dir != 0 && isnav {
         scrubber.alive = n;
         scrubber.commit_at = 0; // holding → not a tap
         if !scrubber.hold {
@@ -486,18 +505,19 @@ pub(super) unsafe fn on_auto_repeat(
 /// stamp is a local read only by arms that run in the same iteration, so an unbound press cannot
 /// carry it anywhere.
 pub(super) unsafe fn begin_fresh_press(
+    ps: &crate::route::PlaybackSession,
     key: Key,
     sym: c_uint,
     wcode: c_uint,
     now: u32,
     held: &mut HeldKey,
-    hud: &mut HudState,
+    hud: Option<&mut HudState>,
     ptr: &mut Pointer,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
 ) {
     held.down_sym = sym;
-    note_global_press(sym, wcode, now, hud, ok_armed, press);
+    note_global_press(ps, sym, wcode, now, hud, ok_armed, press);
     if matches!(
         key,
         Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
@@ -520,10 +540,11 @@ pub(super) unsafe fn begin_fresh_press(
 /// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
 /// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
 pub(super) fn note_global_press(
+    ps: &crate::route::PlaybackSession,
     sym: c_uint,
     wcode: c_uint,
     now: u32,
-    hud: &mut HudState,
+    hud: Option<&mut HudState>,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
 ) {
@@ -534,7 +555,9 @@ pub(super) fn note_global_press(
     // load-bearing (`HudState::note_fresh_press`). Taken for every BOUND key on every screen: it is
     // one cheap predicate, and the alternative is each player arm remembering to ask first, which
     // is exactly the ordering the pointer path had to be fixed for once already.
-    hud.note_fresh_press(now);
+    if let Some(hud) = hud {
+        hud.note_fresh_press(ps, now, paused());
+    }
     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press — spring the
     // card back to rest WITHOUT activating (you "slid off" the control). A key the app does not
     // bind is not sliding off anything: nothing moved, so nothing is abandoned.
@@ -555,13 +578,13 @@ mod unsupported_key_tests {
     /// `(a click is still armed, the HUD is still dismissed)`. `press::*`, `hud_until()` and
     /// `hud_until()` and `paused()` are crate globals, so every caller holds `testlock::serial()`;
     /// the press is the test's own `Press`.
-    fn press(sym: c_uint, wcode: c_uint) -> (bool, bool) {
+    fn press(ps: &crate::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> (bool, bool) {
         let mut hud = HudState::IDLE;
         let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
         let mut p = crate::ui::press::Press::new();
         p.begin(1_000);
-        note_global_press(sym, wcode, 1_000, &mut hud, &mut ok_armed, &mut p);
+        note_global_press(ps, sym, wcode, 1_000, Some(&mut hud), &mut ok_armed, &mut p);
         let out = (p.is_active() && ok_armed, hud.dismissed);
         p.cancel();
         out
@@ -571,8 +594,9 @@ mod unsupported_key_tests {
     /// click it slid off. BACK is the case to use — it is not OK, so it takes the abort branch.
     #[test]
     fn a_bound_key_still_wakes_the_hud_and_aborts_the_click() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
-        let (armed, dismissed) = press(SDLK_ESCAPE, 0);
+        let (armed, dismissed) = press(&ps, SDLK_ESCAPE, 0);
         assert!(
             !armed,
             "BACK slides off the control — the press is cancelled"
@@ -586,13 +610,14 @@ mod unsupported_key_tests {
     /// scancode takes the same branch.
     #[test]
     fn an_unsupported_key_wakes_nothing_and_abandons_nothing() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
         for (sym, wcode, what) in [
             (0, 269, "HOME"),
             (0, 270, "AC_BACK"),
             (b'a' as c_uint, 4, "a letter"),
         ] {
-            let (armed, dismissed) = press(sym, wcode);
+            let (armed, dismissed) = press(&ps, sym, wcode);
             assert!(armed, "{what} must not cancel the armed click");
             assert!(dismissed, "{what} must not un-dismiss the HUD");
         }
@@ -603,8 +628,9 @@ mod unsupported_key_tests {
     /// Pinned so the trade-off stays a decision on record rather than something a reader finds.
     #[test]
     fn a_number_key_counts_as_bound_because_the_pin_keypad_types_from_it() {
+        let ps = crate::route::PlaybackSession::IDLE;
         let _g = crate::testlock::serial();
-        let (armed, dismissed) = press(b'5' as c_uint, 34);
+        let (armed, dismissed) = press(&ps, b'5' as c_uint, 34);
         assert!(!armed);
         assert!(!dismissed);
     }
@@ -924,7 +950,8 @@ pub(super) fn delete_all_local_data() -> Vec<String> {
 /// The press-and-hold item menu is modal too — rows nav, OK commits, BACK closes back to the shelf
 /// (or filmstrip) the card is still sitting on. `over` is the screen it is a popover on.
 pub(super) unsafe fn key_item_menu(
-    mt: &crate::task::MainThread,
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
     over: MenuHost,
     sym: c_uint,
     wcode: c_uint,
@@ -932,14 +959,15 @@ pub(super) unsafe fn key_item_menu(
     route: &mut Route,
     play_from: &mut Node,
     trail: &mut Trail,
-    hud_nav: &mut HudNav,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
     nav: &mut Option<NavReq>,
     held: &mut HeldKey,
 ) {
     if is_ok(sym) {
         let act = crate::ui::item_menu::on_ok();
         *route = over.route(); // the dispatch overrides this when it navigates/plays
-        apply_item_action(mt, act, over, route, play_from, trail, hud_nav, nav);
+        apply_item_action(ps, pa, act, over, route, play_from, trail, pages, bridge, nav);
         held.sym = 0; // an async route flip must not repeat a held key into the next screen
     } else if is_back(sym, wcode) {
         crate::ui::item_menu::close();
@@ -1004,60 +1032,66 @@ pub(super) fn chip_clicked(route: Route, ev: &[u8]) -> bool {
     crate::ui::widgets::profile_chip_at(mx, my)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn key_ok(
-    mt: &crate::task::MainThread,
+    ps: &crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
     now: u32,
     route: &mut Route,
-    hud: &mut HudState,
     _ptr: &mut Pointer,
     _trail: &mut Trail,
     _play_from: &mut Node,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     // The shared top bar's PROFILE CHIP used to be answered here, ahead of the per-route ladder
     // below, off `top_focus` — retired with that function (Home/Library/Search are all owned
     // screens now, so an OK on the chip is taken by `tree_owns_key` in `app/run.rs`'s ingest,
     // well above this chain, and never reaches here).
-    if matches!(*route, Route::Player { .. }) {
-        // the pre-press sample, like the other two player arms — `begin_fresh_press` has already
-        // cleared `dismissed`, so re-asking calls a hand-hidden transport visible and this arm
-        // would open a panel from behind it (`HudState::visible_at_press`)
-        let vis = hud.visible_at_press;
+    if matches!(*route, Route::Player) {
+        // The cursor and the pre-press visibility are the mounted screen's, read ONCE into copies
+        // so the arms below are free to present a panel on the same container (`open_player_overlay`
+        // takes it mutably). The pre-press sample is the one the other player arms take too:
+        // `begin_fresh_press` has already cleared `dismissed`, so re-asking calls a hand-hidden
+        // transport visible and this arm would open a panel from behind it
+        // (`HudState::visible_at_press`).
+        let Some((vis, focus, tab)) = super::bridge::player(pages)
+            .map(|player| (player.hud.visible_at_press, player.hud.nav.focus, player.hud.nav.tab))
+        else {
+            return;
+        };
         // Row 1 is the transport's CONTROL ROW — the Subtitles / Audio / ⋯ discs, or whichever
         // stand-in has taken their place (Skip, Up Next). Every occupant is a control FACE with a
         // pop of its own (`player_hud::ROW_POP`), so OK takes the tvOS press: dip now, act on the
         // spring-back, in `activate_player_row` from the per-frame loop. Both of its arms open
         // something OVER this HUD rather than leaving the route, which makes this the one control
         // row in the app where the whole dip → ring is on screen either side of the activation.
-        if vis && hud.nav.focus == 1 {
+        if vis && focus == 1 {
             press.begin_ctl(now);
             *ok_armed = true;
-        } else if vis && hud.nav.focus == 2 {
-            if hud.nav.tab == 0 {
-                crate::ui::info_panel::open(); // Info card
-                *route = Route::Player {
-                    overlay: Overlay::Info,
-                };
-            } else if hud.nav.tab == 1 {
-                crate::ui::chapters_panel::open(); // Chapters strip
-                *route = Route::Player {
-                    overlay: Overlay::Chapters,
-                };
+        } else if vis && focus == 2 {
+            if tab == 0 {
+                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Info);
+            } else if tab == 1 {
+                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Chapters);
             }
         } else {
             let np = !paused();
             if np {
-                if set_transport_paused(mt, true) {
+                if set_transport_paused(pa, true) {
                     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
                         feature: crate::diag::schema::Feature::Pause,
                     });
                 }
             } else {
-                set_transport_paused(mt, false);
+                set_transport_paused(pa, false);
             }
         }
-        extend_hud(now, HUD_LINGER_MS);
+        if let Some(player) = super::bridge::player_mut(pages) {
+            player.hud.extend(now, HUD_LINGER_MS);
+            player.publish();
+        }
     }
     // `Route::Search` is deliberately absent here (phase 7 Search cutover, mirroring
     // `Route::Library`'s own removal): Search is unconditionally an owned screen, so its OK key —
@@ -1082,16 +1116,18 @@ pub(super) unsafe fn key_ok(
 /// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is hand
 /// the screen back to the television — see [`back_at_root`].)
 pub(super) fn key_back(
-    mt: &crate::task::MainThread,
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
     route: &mut Route,
     nav: &mut Option<NavReq>,
     trail: &mut Trail,
     play_from: &Node,
     refresh_hubs_at: &mut u32,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if nav_cancel(*route, nav) {
-    } else if matches!(*route, Route::Player { .. }) {
-        exit_player(mt, route, play_from, refresh_hubs_at, trail);
+    } else if matches!(*route, Route::Player) {
+        exit_player(ps, pa, route, play_from, refresh_hubs_at, trail, pages);
     } else if matches!(*route, Route::Detail | Route::Person) {
         // The two stacking screens, through the page transition. All three
         // halves of the pop — the outgoing page's teardown, the trail move and

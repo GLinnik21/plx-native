@@ -74,6 +74,10 @@ pub(super) struct AppHost;
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum AppArg {
     LibraryMenu(crate::screens::registry::LibraryMenuArg),
+    /// One of the player's four panels, presented on the PLAYER PAGE's own `ModalStack` (§6.2).
+    /// It carries only which panel: the host is the page it is presented over, which the container
+    /// already knows, and the panel's own state is the instance's.
+    PlayerOverlay(crate::screens::player::overlay::PlayerOverlayArg),
     Legacy(Route),
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
@@ -83,12 +87,14 @@ pub(super) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player{overlay:Overlay{None,Menu,Info,Chapters,More}}},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]}}";
+pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
         match self {
             Self::LibraryMenu(arg) => { c.u32(4); arg.write(c); }
+            Self::PlayerOverlay(arg) => { c.u32(5); arg.write(c); }
             Self::Legacy(route) => {
                 c.u32(0);
                 match route {
@@ -102,7 +108,7 @@ impl LogicalState for AppArg {
                     Route::Detail => { c.u32(7); }
                     Route::Person => { c.u32(8); }
                     Route::Search => { c.u32(9); }
-                    Route::Player { overlay } => { c.u32(10).u32(*overlay as u32); }
+                    Route::Player => { c.u32(10); }
                 }
             }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
@@ -123,6 +129,10 @@ impl crate::ui::screen::ScreenArg for AppArg {
     fn id(&self) -> ScreenId {
         ScreenId(match self {
             AppArg::LibraryMenu(_) => 15,
+            // One id for all four panels, exactly as `Settings(_)` collapses its root payload:
+            // they are four kinds of ONE screen, and `same_instance` must never let the container
+            // think it is holding two of them.
+            AppArg::PlayerOverlay(_) => 16,
             AppArg::Legacy(Route::Login) => 1,
             AppArg::Legacy(Route::Profiles) => 2,
             AppArg::Legacy(Route::Onboard) => 3,
@@ -133,7 +143,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
             AppArg::Legacy(Route::Detail) => 8,
             AppArg::Legacy(Route::Person) => 9,
             AppArg::Legacy(Route::Search) => 10,
-            AppArg::Legacy(Route::Player { .. }) => 11,
+            AppArg::Legacy(Route::Player) => 11,
             // The ROOT payload is a boot address, not an identity: one Settings surface and one
             // consent question, whichever page each happens to have been rooted at.
             AppArg::Settings(_) => 12,
@@ -152,6 +162,15 @@ impl crate::ui::screen::ScreenArg for AppArg {
         }
         if matches!(self, Self::Content(_)) || matches!(other, Self::Content(_)) {
             return false;
+        }
+        // **A player overlay's identity is its KIND, never the playback under it** (§16.9): the
+        // panel is a surface on the player's own stack, so the page beneath it is not part of what
+        // "the same instance" means here — and, the other way round, the PLAYER's own argument
+        // carries no overlay at all any more, which is what makes a BACK out of the track menu
+        // dismiss a surface instead of remounting the page (the reuse-vs-remount risk this rule
+        // exists for).
+        if let (Self::PlayerOverlay(a), Self::PlayerOverlay(b)) = (self, other) {
+            return a.kind.slot() == b.kind.slot();
         }
         // …and the same reason `id` collapses the payload: `Settings(Root)` and
         // `Settings(Legal)` are the same SCREEN, so a container must never be able to think it
@@ -213,6 +232,12 @@ pub(super) struct AppViews<'a> {
     pub(super) directory: crate::stores::browse::DirectoryView<'a>,
     pub(super) section_hubs: crate::stores::browse::HubsView<'a>,
     pub(super) search: crate::search::view::SearchView<'a>,
+    /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
+    /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
+    /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
+    /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
+    /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
+    pub(super) session: &'a crate::route::PlaybackSession,
 }
 
 #[derive(Default)]
@@ -240,6 +265,10 @@ impl Host for AppHost {
 
 impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
+}
+
+impl crate::screens::registry::PlayerLike for AppHost {
+    fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views.session }
 }
 
 impl crate::screens::registry::SearchLike for AppHost {
@@ -335,7 +364,7 @@ impl Screen<AppHost> for LegacyPage {
     fn draw(&mut self, _f: &mut DrawFrame<'_, '_, AppHost>) {}
     fn render(&self) -> RenderStrategy {
         match self.route {
-            Route::Player { .. } => RenderStrategy::VideoPlane,
+            Route::Player => RenderStrategy::VideoPlane,
             _ => RenderStrategy::Page,
         }
     }
@@ -355,6 +384,13 @@ impl Screen<AppHost> for LegacyPage {
 struct AppMounter {
     seed: Option<super::Node>,
     library_kind: Option<crate::browse::SecKind>,
+    /// How long the NEXT player instance pins its transport for, in ms — `HUD_LINGER_MS` for an
+    /// ordinary start and `HUD_HEADLESS_MS` for a capture run. It is a seed rather than a constant
+    /// because `start_playback` is what knows which, and because the deadline must be stamped from
+    /// the instant the page MOUNTS: callers used to pass `last_input + HUD_LINGER_MS`, a timestamp
+    /// taken before a blocking resolve, so a load longer than the 4.5 s linger expired the HUD
+    /// before it was ever drawn and the user got a blank screen instead of a transport.
+    player_hud_ms: Option<u32>,
 }
 
 impl Mounter<AppHost> for AppMounter {
@@ -372,6 +408,9 @@ impl Mounter<AppHost> for AppMounter {
         };
         match arg {
             AppArg::LibraryMenu(arg) => Box::new(crate::screens::library::menu::LibraryMenu::new(entry, arg.clone())),
+            AppArg::PlayerOverlay(arg) => Box::new(
+                crate::screens::player::overlay::PlayerOverlayScreen::new(cx.views.session, entry, arg.kind),
+            ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
                 if let PageMemory::Detail(spot) = &ret.memory {
@@ -420,6 +459,17 @@ impl Mounter<AppHost> for AppMounter {
                 if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
+            // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
+            // gesture, the held-key timer, the control row's springs and the Up Next countdown,
+            // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
+            // instant it mounts (`AppMounter::player_hud_ms`), never from the keypress that asked
+            // for the playback.
+            AppArg::Legacy(Route::Player) => {
+                let mut page = crate::screens::player::PlayerScreen::new(entry);
+                page.hud.extend(cx.tick.ms, self.player_hud_ms.take().unwrap_or(super::HUD_LINGER_MS));
+                page.publish();
+                Box::new(page)
+            }
             AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
             AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
@@ -463,6 +513,16 @@ impl ConsentMachine {
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(super) struct Bridge {
     mounter: AppMounter,
+    /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
+    /// [`Bridge::publish_playback`] from the loop, once per iteration.
+    playback: crate::route::PlaybackSession,
+    /// Was the publication above refreshed on the last frame? The one bit that lets the retirement
+    /// of a stale publication be a single assignment rather than a per-frame one.
+    playback_live: bool,
+    /// **Is the hardware video plane bound?** `Player::video_plane_bound`, published here by the
+    /// loop on its edges — the rig's own copy of the one bit, for the privileged call at draw
+    /// entry (`clear_opaque_region`), which the `Rig` trait gives no argument.
+    video_plane: bool,
     /// **Erased, so the host suite can supply one that does not need a font.** The app's own
     /// measure is `text::TtfMeasure`, which reads the fonts `init_text` opened at boot and carries
     /// a deliberate `debug_assert!` when there are none ("no font is loaded") — loud on purpose,
@@ -489,6 +549,9 @@ pub(super) struct Bridge {
     home_reqs: Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)>,
     library_reqs: Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)>,
     search_reqs: Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)>,
+    /// What the player's overlay surfaces asked of the loop this frame (§14) — drained by
+    /// `playback::player_requests`, which holds the `MainThread` token they cannot.
+    player_reqs: Vec<crate::screens::registry::PlayerReq>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
@@ -524,6 +587,9 @@ impl Bridge {
         directory.capture();
         Self {
             mounter: AppMounter::default(),
+            playback: crate::route::PlaybackSession::IDLE,
+            playback_live: false,
+            video_plane: false,
             measure,
             hubs: crate::pms::hubs_snapshot(),
             listing: crate::stores::browse::listing_snapshot(),
@@ -541,6 +607,7 @@ impl Bridge {
             home_reqs: Vec::new(),
             library_reqs: Vec::new(),
             search_reqs: Vec::new(),
+            player_reqs: Vec::new(),
             #[cfg(test)]
             keyboard_calls: Vec::new(),
             #[cfg(test)]
@@ -568,6 +635,10 @@ impl Bridge {
         std::mem::take(&mut self.library_reqs)
     }
 
+    pub(super) fn take_player_reqs(&mut self) -> Vec<crate::screens::registry::PlayerReq> {
+        std::mem::take(&mut self.player_reqs)
+    }
+
     pub(super) fn take_search_reqs(&mut self) -> Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.search_reqs)
     }
@@ -578,7 +649,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view() }, self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -598,7 +669,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view() }, self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -651,7 +722,7 @@ impl Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
             }, self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -661,6 +732,12 @@ impl Bridge {
 
     pub(super) fn seed_node(&mut self, node: &super::Node) {
         self.mounter.seed = Some(node.clone());
+    }
+
+    /// How long the next player instance pins its transport for — see
+    /// [`AppMounter::player_hud_ms`]. Set by `start_playback` and consumed by the mount.
+    pub(super) fn seed_player_hud(&mut self, ms: u32) {
+        self.mounter.player_hud_ms = Some(ms);
     }
 
     fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {
@@ -679,7 +756,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, self.measure);
         Some(f(home, &cx, focus))
     }
@@ -791,7 +868,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -810,7 +887,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, self.measure);
         let host = if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
@@ -860,7 +937,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -966,6 +1043,31 @@ impl Bridge {
     }
 }
 
+impl Bridge {
+    /// **Publish this frame's playback session** (spec §2.3) — see `AppViews::session`.
+    ///
+    /// Called once per iteration by the loop, BEFORE the dispatcher frame and the tree draw, so
+    /// every screen in one frame reads one consistent picture of the playback. The copy is skipped
+    /// entirely when nothing that reads it is mounted: off the player route the publication is
+    /// `PlaybackSession::IDLE` and stays there, which is what keeps a still Home grid free of the
+    /// dozen small allocations this otherwise costs at the loop rate.
+    /// The video plane's EDGE, from `Player::set_video_plane_bound` and from nowhere else
+    /// (spec §16 risk 10). Reaches both the dispatcher's present gate and this rig's own copy.
+    pub(super) fn publish_video_plane(&mut self, bound: bool) {
+        self.video_plane = bound;
+    }
+
+    pub(super) fn publish_playback(&mut self, session: &crate::route::PlaybackSession, live: bool) {
+        if live {
+            self.playback = session.publication();
+            self.playback_live = true;
+        } else if self.playback_live {
+            self.playback = crate::route::PlaybackSession::IDLE;
+            self.playback_live = false;
+        }
+    }
+}
+
 impl Rig<AppHost> for Bridge {
     fn page_updates(&self) -> bool { self.legacy_host_live }
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>, nav: crate::ui::screen::NavPresentation) {
@@ -994,7 +1096,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
             },
             measure: self.measure,
         }
@@ -1021,7 +1123,7 @@ impl Rig<AppHost> for Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(),
+            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, self.measure);
         match msg {
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
@@ -1060,6 +1162,7 @@ impl Rig<AppHost> for Bridge {
             AppFx::Home(req) => self.home_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
+            AppFx::Player(req) => self.player_reqs.push(req),
         }
     }
     fn log(&mut self, line: &str) {
@@ -1079,8 +1182,23 @@ impl Rig<AppHost> for Bridge {
     }
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
     fn ls2_pump(&mut self) {}
-    fn opaque_route(&mut self, _video_plane_bound: bool) {}
-    fn clear_opaque_region(&mut self) {}
+    /// §3.3 step 9, every frame, presented or not. Real since phase 9: the argument is the
+    /// dispatcher's `Present::video_plane()`, i.e. the Player machine's own bit arriving as
+    /// `PresentEvent::VideoPlane`, and `system::opaque_route` only sends a wayland request when
+    /// the answer CHANGES — so the loop's own call beside it (`app/run.rs`, from the same bit) is
+    /// a `static` read and a return, not a second claim.
+    fn opaque_route(&mut self, video_plane_bound: bool) {
+        crate::system::opaque_route(video_plane_bound);
+    }
+    /// §3.3 step 10, at draw entry. Real since phase 9, and conditional on the same bit: NULLing
+    /// the opaque region on a frame with no plane under it would silently retract the claim
+    /// `opaque_route` had just made, on every route, for the rest of the process —
+    /// `G_OPAQUE_SENT` would still read `full` and never re-send.
+    fn clear_opaque_region(&mut self) {
+        if self.video_plane {
+            crate::system::clear_opaque_region();
+        }
+    }
     fn now_us(&self) -> u64 {
         (self.now_us)()
     }
@@ -1198,7 +1316,7 @@ fn sync_page(d: &mut Dispatcher<AppHost>, route: Route, trail: &super::Trail) {
     let route = super::page_of(route);
     let want = match route {
         Route::Detail | Route::Person => AppArg::from_node(trail.top()),
-        Route::Player { .. } => AppArg::Legacy(Route::Player { overlay: super::Overlay::None }),
+        Route::Player => AppArg::Legacy(Route::Player),
         _ => AppArg::Legacy(route),
     };
     if d.nav.top_page().map(|e| e.arg.same_instance(&want)).unwrap_or(false) {
@@ -1235,6 +1353,47 @@ pub(super) fn page_node(d: &Dispatcher<AppHost>) -> Option<super::Node> {
 pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     use std::fmt::Write;
     let Some(page) = d.nav.top_page() else { return String::new() };
+    // **The player's panels and its countdown** — `focusprobe::push_player`'s other half. Every
+    // one of these was a module global until restructure phase 9 and is a mounted instance's own
+    // state now, so it is read here, where the container is in scope, exactly as Home's, the
+    // Library's, Search's and the content pages' fields are.
+    //
+    // The panel fields keep the spellings the characterization line has always used
+    // (`menu=`/`msel=`/`taudio=`/`tsub=`/`info=`/`isel=`/`infolast=`/`chap=`/`csel=`/`more=`/
+    // `osel=`), because a recording taken before this phase and one taken after must be
+    // comparable. `haschap=` stays in `push_player`: it is a fact about the ITEM, not the panel.
+    if matches!(page.arg, AppArg::Legacy(Route::Player)) {
+        use crate::screens::player::overlay::{OverlayKind, Panel};
+        let player = page.inst.as_ref().and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::player::PlayerScreen>());
+        let surface = d.nav.modals.surfaces.iter().rev()
+            .filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
+            .find_map(|s| s.entry.inst.as_ref())
+            .and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<crate::screens::player::overlay::PlayerOverlayScreen>());
+        let kind = surface.map(|s| s.kind());
+        let is = |want: fn(&OverlayKind) -> bool| kind.as_ref().is_some_and(want);
+        let sel = surface.map_or(0, |s| s.sel());
+        let mut out = format!(" upnext={}", u8::from(player.is_some_and(|p| p.up_next.armed())));
+        let (taudio, tsub) = match surface.map(|s| s.panel()) {
+            Some(Panel::Tracks(t)) => (t.active_audio(), t.active_sub()),
+            _ => (0, -1),
+        };
+        let infolast = matches!(surface.map(|s| s.panel()), Some(Panel::Info(p)) if p.at_last());
+        let menu = is(|k| matches!(k, OverlayKind::Tracks { .. }));
+        let info = is(|k| matches!(k, OverlayKind::Info));
+        let chap = is(|k| matches!(k, OverlayKind::Chapters));
+        let more = is(|k| matches!(k, OverlayKind::More { .. }));
+        let _ = write!(
+            out,
+            " menu={} msel={} taudio={taudio} tsub={tsub} info={} isel={} infolast={} chap={} csel={} more={} osel={}",
+            u8::from(menu), if menu { sel } else { 0 },
+            u8::from(info), if info { sel } else { 0 }, u8::from(infolast),
+            u8::from(chap), if chap { sel } else { 0 },
+            u8::from(more), if more { sel } else { 0 },
+        );
+        return out;
+    }
     if matches!(page.arg, AppArg::Legacy(Route::Home)) {
         let Some(home) = page.inst.as_ref().and_then(|i| i.screen.as_any())
             .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return String::new() };
@@ -1245,7 +1404,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(), search: rig.search.view(),
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
         }, rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -1267,7 +1426,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback }, rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -1309,7 +1468,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(), search: rig.search.view(),
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
     }, rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
@@ -1368,6 +1527,90 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let _ = write!(out, " group={} elem={}", group.map(|g| g.0 as i64).unwrap_or(-1),
         focus.map(|f| f.elem as i64).unwrap_or(-1));
     out
+}
+
+/// **Open one of the player's four panels on the PLAYER PAGE's own `ModalStack`** (§6.2).
+///
+/// Idempotent per KIND while that kind is up, for `open_settings`'s reason: a second press on the
+/// disc that opened it must not stack a second copy. Opening a DIFFERENT kind over an open one is
+/// allowed and is what the transport's own tab row does — the container's `input_owner()` gives
+/// the topmost surface the keys, so the stack is the answer to "which panel owns the frame".
+///
+/// The style is `PlayerPanel { survives_failure }`, whose host policy is `(Live, Live)`: what is
+/// behind these panels is a hardware video plane GL cannot read back, so there is no host snapshot
+/// to take and nothing to freeze (`ui/popover.rs`'s `HostPolicy::Live` says exactly this about the
+/// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
+pub(super) fn open_player_overlay(
+    ps: &crate::route::PlaybackSession,
+    d: &mut Dispatcher<AppHost>,
+    kind: crate::screens::player::overlay::OverlayKind,
+) {
+    // Already up? Then this press is a re-ADDRESS of the entry that exists — the Audio disc
+    // pressed while the Subtitles tab is showing — and never a second surface of the same kind.
+    if player_overlay_kind(d).is_some_and(|up| up.slot() == kind.slot()) {
+        if let Some(surface) = player_overlay_mut(d) {
+            surface.retarget(ps, kind);
+        }
+        return;
+    }
+    d.nav.next_style = Style::PlayerPanel { survives_failure: kind.survives_failure() };
+    d.request(
+        MachineId::Nav,
+        NavOp::Present(AppArg::PlayerOverlay(
+            crate::screens::player::overlay::PlayerOverlayArg { kind },
+        )),
+    );
+}
+
+/// Which player panel owns input right now, if one does.
+pub(super) fn player_overlay_kind(
+    d: &Dispatcher<AppHost>,
+) -> Option<crate::screens::player::overlay::OverlayKind> {
+    let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
+    match &d.nav.entry(id)?.arg {
+        AppArg::PlayerOverlay(arg) => Some(arg.kind),
+        _ => None,
+    }
+}
+
+/// Is ANY player panel up (including one still fading out)? The successor of
+/// `matches!(route, Route::Player { overlay }) if overlay != Overlay::None`.
+pub(super) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
+    d.nav
+        .modals
+        .surfaces
+        .iter()
+        .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
+}
+
+/// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.
+pub(super) fn dismiss_player_overlays(d: &mut Dispatcher<AppHost>) {
+    let ids: Vec<EntryId> = d
+        .nav
+        .modals
+        .surfaces
+        .iter()
+        .filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
+        .map(|s| s.entry.id)
+        .collect();
+    for id in ids {
+        d.request(MachineId::Nav, NavOp::Dismiss(id));
+    }
+}
+
+/// A live panel's own state, for the dev triggers that drive one by hand
+/// (`plxnative-menupick`) and for the focus probe's `sel=`.
+pub(super) fn player_overlay_mut(
+    d: &mut Dispatcher<AppHost>,
+) -> Option<&mut crate::screens::player::overlay::PlayerOverlayScreen> {
+    let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
+    d.nav
+        .entry_mut(id)?
+        .inst
+        .as_mut()?
+        .screen
+        .as_any_mut()?
+        .downcast_mut::<crate::screens::player::overlay::PlayerOverlayScreen>()
 }
 
 /// Present the Settings surface at its root (idempotent while it is up) — the account menu's
@@ -1501,6 +1744,40 @@ pub(super) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
 /// has just asked for. Requiring the tree to AGREE with the committed route makes the disagreement
 /// resolve the safe way round: the loop draws its legacy page and the tree draws only surfaces,
 /// which is what it did on every frame before the migration.
+/// **The player instance, if one is mounted** — the one door to the state phase 9 moved off `App`.
+///
+/// It is an `Option` and every caller must treat `None` as "there is no playback on screen", which
+/// is exactly what it means: the page is mounted when `sync_page` follows the route onto
+/// `Route::Player` and unmounted when it leaves. The window between a route flip and the mount is
+/// ONE frame, and nothing in the ladders acts on the transport inside it (the flip itself happens
+/// in `start_playback`, which seeds the mount rather than writing through this).
+///
+/// The pair mirrors `Dispatcher::top_page`'s own shape rather than searching the whole tree: an
+/// overlay presented on the player's page-owned `ModalStack` is a SURFACE, so the player stays the
+/// top PAGE and this keeps answering with it while a panel is up.
+pub(super) fn player(d: &Dispatcher<AppHost>) -> Option<&crate::screens::player::PlayerScreen> {
+    d.nav
+        .top_page()?
+        .inst
+        .as_ref()?
+        .screen
+        .as_any()?
+        .downcast_ref::<crate::screens::player::PlayerScreen>()
+}
+
+pub(super) fn player_mut(
+    d: &mut Dispatcher<AppHost>,
+) -> Option<&mut crate::screens::player::PlayerScreen> {
+    let entry = d.nav.top_page()?.id;
+    d.nav
+        .entry_mut(entry)?
+        .inst
+        .as_mut()?
+        .screen
+        .as_any_mut()?
+        .downcast_mut::<crate::screens::player::PlayerScreen>()
+}
+
 pub(super) fn page_owned(d: &Dispatcher<AppHost>, route: Route) -> bool {
     d.nav.top_page().and_then(|e| e.arg.route()) == Some(super::page_of(route))
         && d.top_screen().map_or(false, |s| s.focus_source() == FocusSource::Engine)
@@ -1578,6 +1855,12 @@ pub(super) fn page_plan(host_replaced: bool, page_owned: bool) -> PagePlan {
 /// does make that name change without checking here.
 pub(super) fn overlay_word(d: &Dispatcher<AppHost>) -> Option<&'static str> {
     Some(match d.top_surface_name()? {
+        // The player's four panels — surfaces since phase 9, so their words come off the same
+        // `Screen::name` every other surface's does rather than off a `Route` field.
+        "menu" => " overlay=menu",
+        "info" => " overlay=info",
+        "chapters" => " overlay=chapters",
+        "more" => " overlay=more",
         "settings" => " overlay=settings",
         "privacy" => " overlay=privacy",
         "legal" => " overlay=legal",
@@ -2269,9 +2552,7 @@ mod tests {
         Route::Detail,
         Route::Person,
         Route::Search,
-        Route::Player {
-            overlay: super::super::nav::Overlay::None,
-        },
+        Route::Player,
     ];
 
     #[test]
@@ -2308,12 +2589,17 @@ mod tests {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         let _ = crate::stores::take_notices();
-        // Any still-legacy route exercises the generic `LegacyPage` notice counter (it counts
-        // every `StoreChanged`, whichever store); Search left that population with the live
-        // cutover (it is `SearchScreen` now, an owned page with its own `probe` shape), so this
-        // uses `Player` instead — the store commands under test stay `StoreId::Search`'s.
-        let route = Route::Player { overlay: super::super::nav::Overlay::None };
+        // **This used to also assert `LegacyPage`'s generic notice COUNTER, and cannot any more:
+        // no route mounts a `LegacyPage`.** Search left that population with the phase 7 cutover
+        // and `Player` with phase 9, and `Account`/`ItemMenu` never had a page of their own —
+        // `page_of` maps each to its host, which is an owned screen. So what this grades is the
+        // half that is still observable here: a store command emitted as an `Fx::App` is applied
+        // in the DRAIN, exactly once, and a direct `apply` is not applied a second time by it.
+        // The delivery of the resulting `StoreChanged` to a page is graded where the page can be
+        // seen — `ui::dispatch`'s own fixture pages, and each owned screen's store arm.
+        let route = Route::Player;
         frame(&mut d, &mut rig, route, tick(0), vec![]);
+        assert_eq!(d.top_screen().map(|s| s.name()), Some("player"));
         let before = crate::stores::gen(StoreId::Search);
         d.emit(
             MachineId::Nav,
@@ -2322,10 +2608,7 @@ mod tests {
         frame(&mut d, &mut rig, route, tick(1), vec![]);
         assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "the store was stepped in the drain");
         frame(&mut d, &mut rig, route, tick(2), vec![]);
-        assert!(notices(&d).ends_with("notices=1"), "{}", notices(&d));
-        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-        frame(&mut d, &mut rig, route, tick(3), vec![]);
-        assert!(notices(&d).ends_with("notices=2"), "{}", notices(&d));
+        assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "and exactly once");
         let g = crate::stores::gen(StoreId::Search);
         d.emit(
             MachineId::Nav,
@@ -2365,7 +2648,7 @@ mod tests {
         let detail = d.nav.top_page().map(|e| e.id);
         let body = d.top_page();
         assert_eq!(
-            frame(&mut d, &mut rig, Route::Player { overlay: super::super::nav::Overlay::None }, tick(3), vec![]).0,
+            frame(&mut d, &mut rig, Route::Player, tick(3), vec![]).0,
             "player"
         );
         assert_eq!(d.top_screen().map(|s| s.render()), Some(RenderStrategy::VideoPlane));
@@ -2414,6 +2697,103 @@ mod tests {
             "BACK at the surface's own root dismisses it"
         );
         assert_eq!(d.nav.tabs.stack.depth(), 1, "the app's page never moved");
+    }
+
+    /// **Phase 9: the player's four panels are entries on ITS page's own stack, not on the route.**
+    ///
+    /// Three claims, and each one is a bug the `Route::Player { overlay }` shape could produce.
+    /// (1) Presenting a panel makes it the INPUT OWNER, which is what replaces the ladder's four
+    /// `if …overlay… { continue }` arms. (2) It does NOT move the app's page stack — the player
+    /// stays the top page, so the video plane, the subtitle bitmaps and the transport's springs
+    /// are not torn down to open a menu over them. (3) Dismissing it gives input back to the
+    /// player, with the SAME instance underneath: a remount here would reset the HUD's timer and
+    /// the control row's springs, which is precisely what `same_instance` ignoring the overlay is
+    /// for (§16.9).
+    #[test]
+    fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_alone() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        let _g = crate::testlock::serial();
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Player, tick(0), vec![]);
+        let page = d.nav.top_page().expect("the player is a page").id;
+        let instance = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id);
+        assert!(instance.is_some(), "…with a live instance");
+        let depth = d.nav.tabs.stack.depth();
+        for kind in [
+            crate::screens::player::overlay::OverlayKind::Tracks { tab: 1 },
+            crate::screens::player::overlay::OverlayKind::Info,
+            crate::screens::player::overlay::OverlayKind::Chapters,
+            crate::screens::player::overlay::OverlayKind::More { quality: false },
+        ] {
+            open_player_overlay(&ps, &mut d, kind);
+            frame(&mut d, &mut rig, Route::Player, tick(1), vec![]);
+            assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
+            assert_eq!(
+                overlay_word(&d),
+                Some(match kind.word() {
+                    "menu" => " overlay=menu",
+                    "info" => " overlay=info",
+                    "chapters" => " overlay=chapters",
+                    _ => " overlay=more",
+                }),
+                "and the heartbeat says so from the surface, not from a second table",
+            );
+            assert_ne!(
+                d.nav.input_owner(),
+                Some(InputOwner::Entry(page)),
+                "{kind:?} owns input while it is up",
+            );
+            assert_eq!(d.nav.tabs.stack.depth(), depth, "the app's page stack never moved");
+            assert_eq!(d.nav.top_page().map(|e| e.id), Some(page), "…and the player is still it");
+
+            dismiss_player_overlays(&mut d);
+            frame(&mut d, &mut rig, Route::Player, tick(2), vec![]);
+            frame(&mut d, &mut rig, Route::Player, tick(3), vec![]);
+            assert_eq!(player_overlay_kind(&d), None, "{kind:?} dismissed");
+            assert_eq!(
+                d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id),
+                instance,
+                "{kind:?} closed onto the SAME player instance — no remount",
+            );
+        }
+    }
+
+    /// **`ScreenArg::same_instance` compares the PLAYBACK, never the panel** (§16.9), and the two
+    /// arguments are different KINDS: a panel is `AppArg::PlayerOverlay`, so it can never be
+    /// mistaken for the page it stands on. Two panels of different kinds are two instances —
+    /// which is what makes `sync_page`'s "is the top page already what I want" answer stable while
+    /// a menu is open, and what stops the track menu being reused as the Info card.
+    #[test]
+    fn same_instance_reads_the_playback_and_not_the_overlay() {
+        use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
+        use crate::ui::screen::ScreenArg;
+        let player = AppArg::Legacy(Route::Player);
+        assert!(player.same_instance(&AppArg::Legacy(Route::Player)));
+        for kind in [
+            OverlayKind::Tracks { tab: 0 },
+            OverlayKind::Info,
+            OverlayKind::Chapters,
+            OverlayKind::More { quality: false },
+        ] {
+            let panel = AppArg::PlayerOverlay(PlayerOverlayArg { kind });
+            assert!(
+                !player.same_instance(&panel) && !panel.same_instance(&player),
+                "{kind:?} is not the playback",
+            );
+            assert!(panel.same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg { kind })));
+        }
+        assert!(!AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info })
+            .same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg {
+                kind: OverlayKind::Chapters
+            })));
+        // The panel that carries a parameter is still ONE panel: reopening the track menu on the
+        // other tab reuses the entry rather than stacking a second one, exactly as
+        // `open_player_overlay`'s early return says.
+        assert!(AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } })
+            .same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg {
+                kind: OverlayKind::Tracks { tab: 1 }
+            })));
     }
 
     /// **THE FOURTH ROOT** (`app/input.rs`'s `back_at_root`, and the key ladder's dispatcher arm).

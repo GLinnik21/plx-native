@@ -19,6 +19,7 @@ mod geometry_tests;
 mod identity_tests;
 
 use crate::metadata::{Detail, Spot};
+use crate::screens::registry::PlayIntent;
 use crate::plex::ServerId;
 use crate::stores::metadata::{apply as apply_metadata, MetadataCmd};
 use crate::stores::viewstate::{apply as apply_viewstate, ViewStateCmd};
@@ -2232,25 +2233,21 @@ impl DetailScreen {
                 ),
             }
         } else {
-            let started = self.selected().map_or_else(
-                || {
-                    crate::route::request_play(
-                        crate::route::item_sid(d.sid),
-                        &d.rk,
-                        &d.part,
-                        &d.vcodec,
-                        &d.acodec,
-                        &d.title,
-                        "",
-                    )
+            let play = self.selected().map_or_else(
+                || PlayIntent::Item {
+                    sid: crate::route::item_sid(d.sid),
+                    rk: d.rk.clone(),
+                    part: d.part.clone(),
+                    vcodec: d.vcodec.clone(),
+                    acodec: d.acodec.clone(),
+                    title: d.title.clone(),
+                    context: String::new(),
                 },
-                crate::route::request_play_movie,
+                PlayIntent::Movie,
             );
-            if started {
-                let resume_ns = play_resume_ns(from_start, d.resume_ms, d.dur_ms);
-                self.content(fx, ContentReq::Play { resume_ns });
-            }
-            started
+            let resume_ns = play_resume_ns(from_start, d.resume_ms, d.dur_ms);
+            self.content(fx, ContentReq::Play { play, resume_ns });
+            true
         }
     }
 
@@ -2308,19 +2305,17 @@ impl DetailScreen {
             detail_rk: d.rk.clone(),
         };
         apply_metadata(MetadataCmd::SetNowPlaying(Some(now_playing)));
-        let started = crate::route::request_play(
-            crate::route::item_sid(sid),
-            &play_rk,
-            &part,
-            &vcodec,
-            &acodec,
-            &title,
-            &context,
-        );
-        if started {
-            self.content(fx, ContentReq::Play { resume_ns });
-        }
-        started
+        let play = PlayIntent::Item {
+            sid: crate::route::item_sid(sid),
+            rk: play_rk,
+            part,
+            vcodec,
+            acodec,
+            title,
+            context,
+        };
+        self.content(fx, ContentReq::Play { play, resume_ns });
+        true
     }
 
     fn content<H: ContentLike>(&self, fx: &mut Effects<'_, H>, req: ContentReq) {

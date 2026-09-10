@@ -169,59 +169,84 @@ fn overhangs(r: Rect) -> bool {
 /// frame by frame without re-uploading. Main-thread only (GL). This is the image counterpart to
 /// draw_subtitles — a selected track is either text or image, so at most one of the two draws a
 /// cue at a time.
-pub(crate) fn draw_subtitle_bitmap(hud_up: bool) {
-    use std::ptr::addr_of_mut;
-    static mut SET: Vec<(c_uint, Rect)> = Vec::new();
-    static mut KEY: i64 = i64::MIN;
-    // The cache key is (track, start_ns), not start_ns alone: two image tracks of the same file
-    // routinely start a display set on the SAME pts, so keying on the timestamp alone leaves the
-    // outgoing track's bitmap on screen after a switch between two image tracks.
-    static mut SEL: i32 = i32::MIN;
-    unsafe {
-        let set = &mut *addr_of_mut!(SET);
-        let sel = crate::player::desired_sub_idx();
-        if sel < 0 {
-            for (t, _) in set.drain(..) {
-                delete_tex(t);
-            }
-            KEY = i64::MIN;
-            SEL = i32::MIN; // reset BOTH halves of the key — neither should prop the other up
-            return;
+pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
+    let set = &mut cache.set;
+    let sel = crate::player::desired_sub_idx();
+    if sel < 0 {
+        for (t, _) in set.drain(..) {
+            delete_tex(t);
         }
-        match crate::player::active_bitmap_key(crate::player::playpos_ns()) {
-            None => KEY = i64::MIN, // gap between cues — draw nothing this frame
-            Some(k) => {
-                if k != KEY || sel != SEL {
-                    let (cw, ch, rects) = match crate::player::bitmap_by_key(k) {
-                        Some(v) => v,
-                        None => return, // cue evicted between key lookup and fetch
-                    };
-                    // retire the surplus first, then re-spec the ids we keep: upload_rgba reuses
-                    // a non-zero id, so a steady 1-rect stream never allocates a texture twice.
-                    for (t, _) in set.drain(rects.len().min(set.len())..) {
-                        delete_tex(t);
-                    }
-                    for (i, r) in rects.iter().enumerate() {
-                        let dst = sub_screen_rect((r.x, r.y, r.w, r.h), cw, ch);
-                        let prev = set.get(i).map_or(0, |(t, _)| *t);
-                        let tex = upload_rgba(prev, r.w, r.h, r.rgba.as_ptr());
-                        match set.get_mut(i) {
-                            Some(slot) => *slot = (tex, dst),
-                            None => set.push((tex, dst)),
-                        }
-                    }
-                    KEY = k;
-                    SEL = sel;
+        cache.key = i64::MIN;
+        cache.sel = i32::MIN; // reset BOTH halves of the key — neither should prop the other up
+        return;
+    }
+    match crate::player::active_bitmap_key(crate::player::playpos_ns()) {
+        None => cache.key = i64::MIN, // gap between cues — draw nothing this frame
+        Some(k) => {
+            if k != cache.key || sel != cache.sel {
+                let (cw, ch, rects) = match crate::player::bitmap_by_key(k) {
+                    Some(v) => v,
+                    None => return, // cue evicted between key lookup and fetch
+                };
+                // retire the surplus first, then re-spec the ids we keep: upload_rgba reuses
+                // a non-zero id, so a steady 1-rect stream never allocates a texture twice.
+                for (t, _) in set.drain(rects.len().min(set.len())..) {
+                    delete_tex(t);
                 }
-                let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up);
-                let white = [1.0f32, 1.0, 1.0, 1.0];
-                let p = Painter::root();
-                for (tex, r) in set.iter() {
-                    let dy = if overhangs(*r) { lift } else { 0.0 };
-                    p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, white);
+                for (i, r) in rects.iter().enumerate() {
+                    let dst = sub_screen_rect((r.x, r.y, r.w, r.h), cw, ch);
+                    let prev = set.get(i).map_or(0, |(t, _)| *t);
+                    let tex = upload_rgba(prev, r.w, r.h, r.rgba.as_ptr());
+                    match set.get_mut(i) {
+                        Some(slot) => *slot = (tex, dst),
+                        None => set.push((tex, dst)),
+                    }
                 }
+                cache.key = k;
+                cache.sel = sel;
+            }
+            let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up);
+            let white = [1.0f32, 1.0, 1.0, 1.0];
+            let p = Painter::root();
+            for (tex, r) in set.iter() {
+                let dy = if overhangs(*r) { lift } else { 0.0 };
+                p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, white);
             }
         }
+    }
+}
+
+/// **The image-subtitle display set on screen, and the two halves of its cache key** — a RENDER
+/// resource of the player's instance (`PlayerScreen::render`), not module state.
+///
+/// It was three `static mut`s inside [`draw_subtitle_bitmap`] until restructure phase 9. The key is
+/// `(track, start_ns)` and not `start_ns` alone: two image tracks of the same file routinely start
+/// a display set on the SAME pts, so keying on the timestamp alone leaves the outgoing track's
+/// bitmap on screen after a switch between two image tracks.
+///
+/// The GL names in `set` are OWNED: [`Self::release`] deletes them, and the player's instance calls
+/// it when the screen is unmounted — a static could never be told that a playback had ended.
+pub(crate) struct SubtitleBitmaps {
+    set: Vec<(c_uint, Rect)>,
+    key: i64,
+    sel: i32,
+}
+
+impl SubtitleBitmaps {
+    pub(crate) const fn new() -> Self {
+        Self {
+            set: Vec::new(),
+            key: i64::MIN,
+            sel: i32::MIN,
+        }
+    }
+    /// Retire every uploaded texture. Main thread only (GL), like every other call in this module.
+    pub(crate) fn release(&mut self) {
+        for (t, _) in self.set.drain(..) {
+            delete_tex(t);
+        }
+        self.key = i64::MIN;
+        self.sel = i32::MIN;
     }
 }
 
@@ -263,45 +288,125 @@ const BTN_N: i32 = 3;
 /// property of that row and not of whichever module happens to draw it this frame. `BTN_N` 3 is the
 /// widest occupant. `up_next` and `skip_pill` read theirs through [`row_pop`].
 ///
-/// A static because the HUD keeps no view struct: it is drawn entirely from the caller's arguments,
-/// which is right for everything else it does and leaves this the one piece of retained motion state
-/// on the route.
-static mut ROW_POP: crate::ui::widgets::CtlPop<{ BTN_N as usize }> =
-    crate::ui::widgets::CtlPop::new();
+/// A field of [`TransportRow`], which the player's instance owns: the HUD keeps no view struct
+/// — it is drawn entirely from the caller's arguments — so this and the resume clock beside it are
+/// the whole of the route's retained motion state, and phase 9 gave them the one owner the rest of
+/// the route already has.
+pub(crate) type RowPop = crate::ui::widgets::CtlPop<{ BTN_N as usize }>;
 
-/// Step the control row's focus pop — once per frame, from `app.rs`'s update phase.
+/// **Everything the transport row remembers between frames**: the control row's per-item focus pop
+/// and the paused→playing edge the state read-out's `Play` mark is timed from.
 ///
-/// **Not from [`draw_hud`]**, though that is where every other number this row draws comes from: a
-/// spring advanced inside a draw advances once per DRAW, and this row is not drawn on every frame of
-/// the route (a failure read-out owns the frame, the Info card and the Chapters strip take the
-/// transport away). The pop would then run at a rate that depended on which overlay was open.
-///
-/// `focus == 1` is the control column; anything else closes every pop. The index is bounded by the
-/// CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a control
-/// the narrower one does not have.
-///
-/// It also steps the state read-out's resume clock ([`note_transport`]) — the row's other piece of
-/// retained motion state, and one that is a raw CLOCK rather than a spring, so it needs this
-/// once-per-frame call for exactly the reason spelled out above.
-pub(crate) fn update(slot: ControlSlot, focus: i32, btn: i32, dt: f32, now: u32) {
-    note_transport(now);
-    let f = (focus == 1)
-        .then(|| usize::try_from(btn).ok())
-        .flatten()
-        .filter(|&i| i < slot.items().max(0) as usize);
-    unsafe { (*std::ptr::addr_of_mut!(ROW_POP)).step(f, dt) };
+/// Both were `static mut`s (`ROW_POP`, `PLAY_AT`, `PAUSE_SEEN`) until restructure phase 9. They are
+/// LOGICAL state, not a render cache — the pop is a spring whose position a viewer can see and the
+/// edge is a per-SESSION clock — so they live on `PlayerScreen` and are stepped from its `Tick`,
+/// exactly where [`step`](Self::step)'s doc says they must be.
+pub(crate) struct TransportRow {
+    pop: RowPop,
+    /// **The measured width of every control-row stand-in label seen so far** — a RENDER memo, the
+    /// one half of this struct that is not logical state.
+    ///
+    /// `text::text_width` is an uncached `TTF_SizeUTF8` and the labels are compile-time constants
+    /// whose width can never change, so re-measuring them 2-3x a frame is exactly the thrash
+    /// `text::elide`'s memo exists to avoid. It rides here rather than in a struct of its own
+    /// because `ctrl_slot` is reached from the same three places the springs are — `draw_hud`,
+    /// `up_next` and `skip_pill` — and one borrow through those paths is one borrow.
+    widths: Vec<(String, f32)>,
+    /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
+    /// [`TransportMark::Play`]. `None` until this session has been resumed at least once.
+    play_at: Option<u32>,
+    /// Last frame's `TX.paused`, for the edge above. `None` while there is no session, which is
+    /// what makes the edge per-SESSION: `TX::reset` clears both `started` and `paused` on stop, so
+    /// without this a session that ended paused would hand the next one a spurious resume edge on
+    /// its first frame and flash `Play` over a start nobody pressed play for.
+    pause_seen: Option<bool>,
 }
 
-/// Control `i`'s focus pop this frame — the read half of [`ROW_POP`], for the two stand-ins that
-/// draw into this row from their own modules (`up_next`, `skip_pill`).
-pub(crate) fn row_pop(i: c_int) -> f32 {
-    unsafe {
-        std::ptr::addr_of!(ROW_POP)
-            .as_ref()
-            .unwrap()
-            .scale(i.max(0) as usize)
+impl Default for TransportRow {
+    fn default() -> Self {
+        Self::new()
     }
 }
+
+impl TransportRow {
+    pub(crate) fn new() -> Self {
+        Self {
+            pop: RowPop::new(),
+            widths: Vec::new(),
+            play_at: None,
+            pause_seen: None,
+        }
+    }
+
+    /// Step the control row's focus pop AND the resume clock — once per FRAME, from the player
+    /// instance's `Tick`.
+    ///
+    /// **Not from [`draw_hud`]**, though that is where every other number this row draws comes
+    /// from: a spring advanced inside a draw advances once per DRAW, and this row is not drawn on
+    /// every frame of the route (a failure read-out owns the frame, the Info card and the Chapters
+    /// strip take the transport away). The pop would then run at a rate that depended on which
+    /// overlay was open, and a resume pressed with the Info card open would stamp its 2 s from the
+    /// moment the card CLOSED, or never.
+    ///
+    /// `focus == 1` is the control column; anything else closes every pop. The index is bounded by
+    /// the CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a
+    /// control the narrower one does not have.
+    pub(crate) fn step(&mut self, slot: ControlSlot, focus: i32, btn: i32, dt: f32, now: u32) {
+        self.note_transport(now);
+        let f = (focus == 1)
+            .then(|| usize::try_from(btn).ok())
+            .flatten()
+            .filter(|&i| i < slot.items().max(0) as usize);
+        self.pop.step(f, dt);
+    }
+
+    /// Control `i`'s focus pop this frame — the read half of the row's springs, for the two
+    /// stand-ins that draw into this row from their own modules (`up_next`, `skip_pill`).
+    pub(crate) fn scale(&self, i: c_int) -> f32 {
+        self.pop.scale(i.max(0) as usize)
+    }
+
+    /// Stamp the resume edge directly. `note_transport` derives it from `player::TX`, which is
+    /// process-wide and moved by every playback test in the crate; a test about THIS clock must
+    /// not be able to fail because another one flipped `started` between two of its lines.
+    #[cfg(test)]
+    pub(crate) fn force_play_at_for_test(&mut self, at: u32) {
+        self.play_at = Some(at);
+    }
+
+    pub(crate) fn note_transport(&mut self, now: u32) {
+        if !crate::player::is_started() {
+            self.play_at = None;
+            self.pause_seen = None;
+            return;
+        }
+        let paused = crate::player::TX.paused.load(Relaxed);
+        if self.pause_seen == Some(true) && !paused {
+            self.play_at = Some(now);
+        }
+        self.pause_seen = Some(paused);
+    }
+
+    /// ms since the last resume edge — the read half of [`Self::play_at`].
+    ///
+    /// **A report IS owed for this clock, and it is owed through
+    /// [`PlayerScreen::clock_fingerprint`](crate::screens::player::PlayerScreen::clock_fingerprint)**
+    /// (phase 9). This comment used to say the opposite, on a premise that was true and is now
+    /// gone: the gate was `idle::should_present(now) || player`, so the player ROUTE presented
+    /// unconditionally, and this was the one raw-time animation in the app that could not ship
+    /// frozen. The gate is keyed on the video plane being BOUND now, and the two-second `Play`
+    /// mark is very often still on screen after an unbind — where a frozen glyph is exactly the
+    /// failure `Xfade::tick` and `Spinner::draw` each shipped once.
+    ///
+    /// It reports through the fingerprint rather than with an `invalidate` of its own for the
+    /// reason the fingerprint exists: an unconditional report from a clock that is READ every
+    /// frame would present every frame, which is the gate turned off by another name. What is
+    /// owed is a frame when the ANSWER CHANGES, and `PLAY_MARK_MS` is one of that value's terms.
+    pub(crate) fn since_play_ms(&self, now: u32) -> Option<u32> {
+        self.play_at.map(|t| now.wrapping_sub(t))
+    }
+}
+
 /// Index of the `…` overflow disc within the row — the LAST one. Exported because `app.rs` routes
 /// its OK and its click, and a second literal `2` over there is exactly the drift `ControlSlot`
 /// was introduced to stop.
@@ -316,11 +421,9 @@ pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 /// The measured width is memoised per label: `text::text_width` is an uncached `TTF_SizeUTF8`, and
 /// the labels are compile-time constants whose width can never change — re-measuring them 2-3× a
 /// frame is exactly the thrash `text::elide`'s memo exists to avoid.
-pub(crate) fn ctrl_slot(label: &str) -> Rect {
-    use std::ptr::addr_of_mut;
+pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str) -> Rect {
     const PAD_X: f32 = 34.0;
-    static mut MEMO: Vec<(String, f32)> = Vec::new();
-    let memo = unsafe { &mut *addr_of_mut!(MEMO) };
+    let memo = &mut row.widths;
     let w = match memo.iter().find(|(l, _)| l == label) {
         Some((_, w)) => *w,
         None => {
@@ -398,10 +501,16 @@ impl ControlSlot {
     /// ITEM index rather than a bool because Up Next has two: the click has to park `hud_nav.btn`
     /// before dispatching, or the shared `activate_ctrl_row` would act on wherever the ring
     /// happened to be rather than on what was clicked.
-    pub(crate) fn hit(self, cx: f32, cy: f32) -> Option<c_int> {
+    ///
+    /// `row` is the transport's own measurement cache: both stand-ins lay out against the same
+    /// slot geometry the draw path measures, and that cache is a `PlayerScreen` field now rather
+    /// than a `static mut`, so the hit-test is handed it exactly as the draw is.
+    pub(crate) fn hit(self, row: &mut TransportRow, cx: f32, cy: f32) -> Option<c_int> {
         match self {
-            ControlSlot::UpNext(_) => crate::ui::up_next::hit(cx, cy),
-            ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(pr).contains(cx, cy).then_some(0),
+            ControlSlot::UpNext(_) => crate::ui::up_next::hit(row, cx, cy),
+            ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(row, pr)
+                .contains(cx, cy)
+                .then_some(0),
             ControlSlot::Discs => None,
         }
     }
@@ -430,12 +539,12 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) 
 /// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
-pub(crate) fn slot() -> ControlSlot {
-    let has_next = crate::route::up_next().is_some();
+pub(crate) fn slot(ps: &crate::route::PlaybackSession) -> ControlSlot {
+    let has_next = crate::route::up_next(ps).is_some();
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
-    let m = crate::metadata::active_marker()
-        .or_else(|| crate::metadata::synthesized_tail_marker(has_next));
+    let m = crate::metadata::active_marker(ps)
+        .or_else(|| crate::metadata::synthesized_tail_marker(ps, has_next));
     slot_for(m, has_next)
 }
 
@@ -496,12 +605,12 @@ pub(crate) enum Busy {
 /// it is both the cold-start tail AND the 1-3 frame tail of every seek (between prime→Play, where
 /// `engine` clears `seeking`, and the first presented frame). Keyed on the state alone, one of
 /// those two flashes the wrong surface every time.
-pub(crate) fn busy_surface(st: crate::player::PlaybackState, seen_frame: bool) -> Busy {
+pub(crate) fn busy_surface(ps: &crate::route::PlaybackSession, st: crate::player::PlaybackState, seen_frame: bool) -> Busy {
     use crate::player::PlaybackState;
     match st {
         // not `st.caption()`: the Error caption is shaped by WHY (an audio-only stream names the
         // server; see `player::error_shape`), which a method on the bare state cannot know.
-        PlaybackState::Error => Busy::Readout(StatusKind::Failed, crate::player::error_caption()),
+        PlaybackState::Error => Busy::Readout(StatusKind::Failed, crate::player::error_caption(ps)),
         s if s.is_busy() && !seen_frame => Busy::Readout(StatusKind::Working, st.caption()),
         s if s.is_busy() => Busy::Transport,
         _ => Busy::None,
@@ -532,24 +641,24 @@ fn readout_owns_frame(busy: Busy) -> bool {
 ///
 /// It resamples [`busy`] rather than taking one, because the event loop runs before the frame's
 /// single resolve exists; both reads are of the same main-thread state within one iteration.
-pub(crate) fn transport_hidden() -> bool {
-    readout_owns_frame(busy())
+pub(crate) fn transport_hidden(ps: &crate::route::PlaybackSession) -> bool {
+    readout_owns_frame(busy(ps))
 }
 
 /// Sample the live globals ONCE and resolve the owner. Call this once per frame and pass the result
 /// to both [`draw_hud`] and [`draw_readout`] — the same discipline [`slot`] keeps, and for the same
 /// reason: two independent derivations of one three-way choice is how the two indicators drifted
 /// apart in the first place.
-pub(crate) fn busy() -> Busy {
+pub(crate) fn busy(ps: &crate::route::PlaybackSession) -> Busy {
     // dev: `/tmp/plxnative-failtest` forces the failure read-out — the other half of
     // `player::failtest_arm`, which shapes WHICH failure. It is forced HERE, on the one impure
     // sampler, rather than in `player::state()`: the pump acts on that state, and a dev switch
     // that made the engine believe it had failed would be testing a different thing than the
     // screen. `busy_surface` stays pure and ungated, so what draws is still the real rule.
     if crate::dev::flag("failtest") {
-        return Busy::Readout(StatusKind::Failed, crate::player::error_caption());
+        return Busy::Readout(StatusKind::Failed, crate::player::error_caption(ps));
     }
-    busy_surface(crate::player::state(), crate::player::seen_frame())
+    busy_surface(ps, crate::player::state(ps), crate::player::seen_frame())
 }
 
 // ---- the transport STATE READ-OUT (the glyph slot just past the elapsed clock) ---------------
@@ -564,7 +673,7 @@ pub(crate) fn busy() -> Busy {
 /// How long [`TransportMark::Play`] stands after a resume — "a couple of seconds", per the owner:
 /// the mark answers *did that press land*, and a play glyph held for the whole film would be
 /// saying "playing" to someone who is watching a moving picture.
-const PLAY_MARK_MS: u32 = 2_000;
+pub(crate) const PLAY_MARK_MS: u32 = 2_000;
 
 /// What the state read-out shows this frame. See [`transport_mark`] for the rule.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -650,52 +759,6 @@ pub(crate) fn transport_mark(
     }
 }
 
-/// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind [`TransportMark::Play`].
-/// `None` until this session has been resumed at least once.
-///
-/// A module static for [`ROW_POP`]'s reason, and stepped from [`note_transport`] for the same one:
-/// the HUD keeps no view struct, and this is a CLOCK, which is the trap that doc warns about in its
-/// spring form. A stamp taken inside [`draw_hud`] would be taken once per DRAW, and this row is not
-/// drawn on every frame of the route (a failure read-out owns the frame; the Info card and the
-/// Chapters strip take the transport away) — so a resume pressed with the Info card open would
-/// stamp its 2 s from the moment the card CLOSED, or never.
-static mut PLAY_AT: Option<u32> = None;
-/// Last frame's `TX.paused`, for the edge above. `None` while there is no session, which is what
-/// makes the edge per-SESSION: `TX::reset` clears both `started` and `paused` on stop, so without
-/// this a session that ended paused would hand the next one a spurious resume edge on its first
-/// frame and flash `Play` over a start nobody pressed play for.
-static mut PAUSE_SEEN: Option<bool> = None;
-
-/// Step the resume clock — once per frame, from `app.rs`'s update phase, beside [`update`].
-fn note_transport(now: u32) {
-    let (at, seen) = unsafe {
-        (
-            &mut *std::ptr::addr_of_mut!(PLAY_AT),
-            &mut *std::ptr::addr_of_mut!(PAUSE_SEEN),
-        )
-    };
-    if !crate::player::is_started() {
-        *at = None;
-        *seen = None;
-        return;
-    }
-    let paused = crate::player::TX.paused.load(Relaxed);
-    if *seen == Some(true) && !paused {
-        *at = Some(now);
-    }
-    *seen = Some(paused);
-}
-
-/// ms since the last resume edge — the read half of [`PLAY_AT`].
-///
-/// **No `ui::idle` report is owed for this clock**, and that is a finding rather than an omission:
-/// `app.rs`'s present gate is `idle::should_present(now) || player`, so the player route presents
-/// unconditionally (`system.rs` documents the hardware video plane as slaved to our surface). This
-/// is the one place in the app where a raw-time animation cannot ship frozen — every other one
-/// (`Xfade::tick`, `Spinner::draw`) had to be taught to report, and both froze first.
-fn since_play_ms(now: u32) -> Option<u32> {
-    unsafe { *std::ptr::addr_of!(PLAY_AT) }.map(|t| now.wrapping_sub(t))
-}
 
 /// The read-out's frame: **the whole panel**, because the wait is about the whole picture.
 ///
@@ -720,7 +783,7 @@ fn readout_frame() -> Rect {
 /// `is_busy()`, hence not covered by `app.rs`'s `|| player::loading()` HUD pin — "Playback failed"
 /// disappeared 4.5 s in with the HUD linger, leaving exactly the silent black screen the read-out
 /// exists to prevent. A read-out is not transport chrome.
-pub(crate) fn draw_readout(busy: Busy, now: u32) {
+pub(crate) fn draw_readout(ps: &crate::route::PlaybackSession, busy: Busy, now: u32) {
     let Busy::Readout(kind, caption) = busy else {
         return;
     };
@@ -731,7 +794,7 @@ pub(crate) fn draw_readout(busy: Busy, now: u32) {
         // spinner overlay. The caption is not drawn here: the verdict line is constant by design
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
-        return draw_failed_readout(Painter::root());
+        return draw_failed_readout(ps, Painter::root());
     }
     StatusOverlay::new(readout_frame(), caption, kind)
         .phase(now)
@@ -793,8 +856,8 @@ fn fr_line(p: Painter, text: &std::ffi::CStr, top: f32, sz: i32, bold: i32, col:
     );
 }
 
-fn draw_failed_readout(p: Painter) {
-    let e = crate::player::error_now();
+fn draw_failed_readout(ps: &crate::route::PlaybackSession, p: Painter) {
+    let e = crate::player::error_now(ps);
     // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
     // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
     // video plane happened to be holding: `app.rs` clears the graphics plane to alpha 0 on the player
@@ -1057,6 +1120,9 @@ fn draw_clock(
 /// transport draws its inline spinner only when it is [`Busy::Transport`], and the centred read-out
 /// is [`draw_readout`]'s, drawn by the caller AFTER this.
 pub(crate) fn draw_hud(
+    ps: &crate::route::PlaybackSession,
+    row: &mut TransportRow,
+    up: &crate::ui::up_next::Countdown,
     slot: ControlSlot,
     busy: Busy,
     focus: i32,
@@ -1129,7 +1195,7 @@ pub(crate) fn draw_hud(
             }
         } else {
             p.text(
-                crate::route::ctxline_cptr(),
+                crate::route::ctxline_cptr(ps),
                 SB_X,
                 SCR_H - 312.0,
                 theme::size::CAPTION,
@@ -1138,7 +1204,7 @@ pub(crate) fn draw_hud(
                 0,
             );
             p.text(
-                crate::route::title_cptr(),
+                crate::route::title_cptr(ps),
                 SB_X,
                 SCR_H - 278.0,
                 HUD_TITLE_SZ,
@@ -1151,10 +1217,11 @@ pub(crate) fn draw_hud(
         // The right control row, from the slot the CALLER resolved — so what is drawn and what a
         // keypress activates are the same value, not two derivations of it.
         match slot {
-            ControlSlot::UpNext(_) => crate::ui::up_next::draw(p, focus == 1, btn, now),
-            ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(p, pr, focus == 1),
+            ControlSlot::UpNext(_) => crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now),
+            ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(row, p, pr, focus == 1),
             ControlSlot::Discs => {
                 for i in 0..BTN_N {
+                    let pop = row.scale(i);
                     TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
                         .focused(focus == 1 && btn == i)
                         // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
@@ -1162,7 +1229,7 @@ pub(crate) fn draw_hud(
                         // unkeyed face legal: the picture is unreadable, but the ground under these
                         // discs is known to be dark.
                         .ground(ControlGround::Unkeyed)
-                        .scale(row_pop(i))
+                        .scale(pop)
                         .draw(&e, p);
                 }
             }
@@ -1176,7 +1243,7 @@ pub(crate) fn draw_hud(
         let scrub = crate::player::TX.scrub_ns.load(Relaxed);
         // while a seek is loading, freeze the playhead at the target (no wobble through the reopen);
         // else follow the live scrub preview, else the real playhead.
-        let loading = crate::player::loading();
+        let loading = crate::player::loading(ps);
         // Hoisted so the display position and the PUBLISHED one are one sample: the state read-out
         // below takes its travel direction from the difference between them, and two loads of a live
         // atomic can straddle a tick.
@@ -1295,7 +1362,7 @@ pub(crate) fn draw_hud(
             scrub >= 0,
             dispos,
             livepos,
-            since_play_ms(now),
+            row.since_play_ms(now),
         );
         if mark != TransportMark::None {
             // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
@@ -1803,9 +1870,10 @@ mod tests {
     /// the coverage claim can't be satisfied by quietly narrowing it.
     #[test]
     fn exactly_one_surface_owns_the_busy_signal() {
+        let ps = crate::route::PlaybackSession::IDLE;
         for st in ALL_STATES {
             for seen in [false, true] {
-                let b = busy_surface(st, seen);
+                let b = busy_surface(&ps, st, seen);
                 if st.is_busy() || st == S::Error {
                     assert_ne!(b, Busy::None, "{st:?}/seen={seen} lost its indicator");
                 } else {
@@ -1825,8 +1893,9 @@ mod tests {
     /// live picture is the transport's alone.
     #[test]
     fn a_seek_over_a_live_picture_belongs_to_the_transport() {
-        assert_eq!(busy_surface(S::Seeking, true), Busy::Transport);
-        assert!(!matches!(busy_surface(S::Seeking, true), Busy::Readout(..)));
+        let ps = crate::route::PlaybackSession::IDLE;
+        assert_eq!(busy_surface(&ps, S::Seeking, true), Busy::Transport);
+        assert!(!matches!(busy_surface(&ps, S::Seeking, true), Busy::Readout(..)));
     }
 
     /// The 1-3 frame window between `engine`'s prime→Play clear of `seeking` and the first
@@ -1835,34 +1904,36 @@ mod tests {
     /// `seen_frame`, and without the assertion someone will "simplify" it back.
     #[test]
     fn the_post_seek_buffering_tail_does_not_flash_the_centre_readout() {
-        assert_eq!(busy_surface(S::Buffering, true), Busy::Transport);
+        let ps = crate::route::PlaybackSession::IDLE;
+        assert_eq!(busy_surface(&ps, S::Buffering, true), Busy::Transport);
         assert_eq!(
-            busy_surface(S::Resolving, true),
+            busy_surface(&ps, S::Resolving, true),
             Busy::Transport,
             "auto-advance over a live picture"
         );
-        assert_eq!(busy_surface(S::Connecting, true), Busy::Transport);
+        assert_eq!(busy_surface(&ps, S::Connecting, true), Busy::Transport);
     }
 
     /// No picture yet → the wait is about the whole panel. With the captions, which locks the
     /// kind↔caption pairing the enum carries (both are chosen once, by this function).
     #[test]
     fn a_cold_start_and_a_reload_both_own_the_whole_panel() {
+        let ps = crate::route::PlaybackSession::IDLE;
         assert_eq!(
-            busy_surface(S::Resolving, false),
+            busy_surface(&ps, S::Resolving, false),
             Busy::Readout(StatusKind::Working, c"Preparing\u{2026}")
         );
         assert_eq!(
-            busy_surface(S::Connecting, false),
+            busy_surface(&ps, S::Connecting, false),
             Busy::Readout(StatusKind::Working, c"Connecting\u{2026}")
         );
         assert_eq!(
-            busy_surface(S::Buffering, false),
+            busy_surface(&ps, S::Buffering, false),
             Busy::Readout(StatusKind::Working, c"Buffering\u{2026}")
         );
         // tapping RIGHT during pre-roll (or `/tmp/plxnative-autoseek`): no picture to mark up
         assert_eq!(
-            busy_surface(S::Seeking, false),
+            busy_surface(&ps, S::Seeking, false),
             Busy::Readout(StatusKind::Working, c"Seeking\u{2026}")
         );
     }
@@ -1872,9 +1943,10 @@ mod tests {
     /// treatment.
     #[test]
     fn a_dead_producer_reads_out_whether_or_not_a_picture_was_up() {
+        let ps = crate::route::PlaybackSession::IDLE;
         for seen in [false, true] {
             assert_eq!(
-                busy_surface(S::Error, seen),
+                busy_surface(&ps, S::Error, seen),
                 Busy::Readout(StatusKind::Failed, c"Playback failed")
             );
         }
@@ -1928,14 +2000,15 @@ mod tests {
 
     #[test]
     fn only_a_failure_takes_the_frame_away_from_the_transport() {
+        let ps = crate::route::PlaybackSession::IDLE;
         for seen in [false, true] {
             assert!(
-                readout_owns_frame(busy_surface(S::Error, seen)),
+                readout_owns_frame(busy_surface(&ps, S::Error, seen)),
                 "a failure hides the transport"
             );
         }
         for st in [S::Resolving, S::Connecting, S::Buffering, S::Seeking] {
-            let b = busy_surface(st, false);
+            let b = busy_surface(&ps, st, false);
             assert!(
                 matches!(b, Busy::Readout(StatusKind::Working, _)),
                 "{st:?} is a read-out"
@@ -1946,9 +2019,9 @@ mod tests {
             );
         }
         // and the two non-read-out surfaces are never a reason to blank the frame
-        assert!(!readout_owns_frame(busy_surface(S::Playing, true)));
+        assert!(!readout_owns_frame(busy_surface(&ps, S::Playing, true)));
         assert!(
-            !readout_owns_frame(busy_surface(S::Seeking, true)),
+            !readout_owns_frame(busy_surface(&ps, S::Seeking, true)),
             "a seek over a live picture"
         );
     }

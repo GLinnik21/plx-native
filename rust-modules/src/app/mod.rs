@@ -115,7 +115,7 @@ mod boot;
 pub(super) mod clock;
 mod recorder;
 mod events;
-mod lifecycle;
+pub(crate) mod lifecycle;
 mod playback;
 mod nav;
 mod input;
@@ -201,6 +201,13 @@ use crate::ui::trail::{Node, Trail};
 use crate::ui::widgets::Pill;
 
 
+/// The adapter tree (spec §2.2). An adapter owns OS/FFI resources and holds no logical state; the
+/// decisions live in the machines beside it.
+pub(crate) struct Adapters {
+    /// The Starfish/ACB session slot and the `MainThread` token — see [`crate::player::adapter`].
+    pub(crate) player: crate::player::adapter::PlayerAdapter,
+}
+
 /// The app core's state, gathered from `plex_run`'s loop-locals (UI restructure spec v4 §13,
 /// phase 1b-i: FIELDS ONLY — `plex_run` keeps its shape and reads `app.<field>` where it read a
 /// local). Phase 1b-ii extracts the coordinator's functions over `&mut App`; the machines of §2.2
@@ -241,11 +248,22 @@ struct App {
     #[cfg(feature = "devtools")]
     buffer_flip_count: u8,
     held_key: HeldKey,
-    scrubber: Scrub,
+    // `scrubber: Scrub` and `hud: HudState` stood here through phase 8 and are gone: both are
+    // `PlayerScreen`'s own fields now (§9), so the loop borrows them out of the mounted instance
+    // and there is no second copy to keep in step. `held_key` STAYS, and deliberately — it is the
+    // client-side hold-to-move timer for every discrete focus list, and its one remaining consumer
+    // is the ITEM MENU, which is not the player's (`run`'s hold-repeat arm).
     modal_repeat: RepeatGate,
-    hud: HudState,
     marker_tried: bool,
-    foreground: ForegroundLifecycle,
+    /// **The Player machine** (restructure spec §2.2, phase 9): the playback session that was
+    /// `route::decision::SESSION`, the app-switch lifecycle that was `App.foreground`, and this
+    /// frame's tick. Reached as a parameter from here down — `crate::player::machine`'s doc says
+    /// why the pipeline's own handles are a separate field.
+    player: crate::player::machine::Player,
+    /// **The ADAPTERS** (restructure spec §2.2, phase 9) — the OS/FFI resources the machines act
+    /// through. One so far: the Player's, which holds the native session that was
+    /// `player::engine::ENGINE` together with the main-thread token that confines it.
+    adapters: Adapters,
     repause_at: i64,
     ok_armed: bool,
     last_route_reported: &'static str,
@@ -276,6 +294,13 @@ struct App {
     play_tried: bool,
     menu_tried: bool,
     menupick_tried: bool,
+    /// dev: the row `/tmp/plxnative-menupick` still owes the track menu.
+    ///
+    /// The trigger opens the panel and then picks a row in it — two acts that used to be one
+    /// statement, because the panel was a `static mut` that `open_tab` filled in place. It is a
+    /// SURFACE now, so its body is mounted at the frame's NAV COMMIT: the pick is carried here
+    /// until the panel it names exists, and is spent on the first frame it does.
+    menupick_row: Option<c_int>,
     pause_tried: bool,
     pause_script: Option<(u32, Option<u32>)>,
     pause_resume_at: Option<u32>,
@@ -426,19 +451,20 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     if crate::dev::flag("stats") {
         crate::ui::stats::open();
     }
-    // THE main-thread token, minted once — this function IS the SDL main thread. Everything that
-    // touches the ACB/Starfish seam or the Engine slot takes it by reference, and `&MainThread` is
-    // !Send, so `task::spawn` rejects any closure that captured one. See `task::MainThread`.
+    // THE main-thread token, minted once — this function IS the SDL main thread. `boot` MOVES it
+    // into `App.adapters.player`, and from there a `&mut PlayerAdapter` is the proof: the ACB /
+    // Starfish seam still takes `&MainThread` (which is !Send, so `task::spawn` rejects any
+    // closure that captured one), and the native session slot takes the adapter itself. See
+    // `task::MainThread` and `player::adapter`.
     let main_thread = unsafe { crate::task::MainThread::assume() };
-    let mt = &main_thread;
-    let mut app = match unsafe { boot(pms_host, pms_port, mt) } {
+    let mut app = match unsafe { boot(pms_host, pms_port, main_thread) } {
         Ok(app) => app,
         Err(code) => return code,
     };
     unsafe {
-        run::run(&mut app, mt);
+        run::run(&mut app);
         std::mem::replace(&mut app.rec, recorder::Recplay::Off).finish();
-        run::shutdown(mt);
+        run::shutdown(&mut app.player.session, &mut app.adapters.player);
     }
     0
 }
@@ -599,9 +625,7 @@ mod route_tests {
             Route::Login,
             Route::Profiles,
             Route::Onboard,
-            Route::Player {
-                overlay: Overlay::None,
-            },
+            Route::Player,
             Route::ItemMenu {
                 over: MenuHost::Detail,
             },
@@ -908,7 +932,7 @@ fn route_word(route: Route) -> &'static str {
         Route::Detail => "detail",
         Route::Person => "person",
         Route::Search => "search",
-        Route::Player { .. } => "player",
+        Route::Player => "player",
         _ => "home",
     }
 }
@@ -932,21 +956,11 @@ fn overlay_word(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route:
         return w;
     }
     match route {
-        Route::Player {
-            overlay: Overlay::Info,
-        } => " overlay=info",
-        Route::Player {
-            overlay: Overlay::Chapters,
-        } => " overlay=chapters",
-        Route::Player {
-            overlay: Overlay::Menu,
-        } => " overlay=menu",
-        Route::Player {
-            overlay: Overlay::More,
-        } => " overlay=more",
-        Route::Player {
-            overlay: Overlay::None,
-        } => " overlay=none",
+        // Five arms stood here, one per `Route::Player { overlay }` value. The overlay is not a
+        // route component any more — it is an entry on the player page's own `ModalStack` — so
+        // `bridge::overlay_word` above has already answered for all four panels, and what is left
+        // is the one thing the container cannot say: the player with nothing over it.
+        Route::Player => " overlay=none",
         _ => "",
     }
 }
@@ -972,7 +986,7 @@ const OVERLAY_WORDS: [&str; 10] = [
 /// without the fps tier silently disarming.
 #[cfg(test)]
 mod heartbeat_word_tests {
-    use super::{overlay_word, route_word, Overlay, Route, OVERLAY_WORDS, ROUTE_WORDS};
+    use super::{overlay_word, route_word, Route, OVERLAY_WORDS, ROUTE_WORDS};
 
     const MANIFEST: &str = include_str!("../../../tests/manifest.json");
 
@@ -1015,9 +1029,7 @@ mod heartbeat_word_tests {
             Route::Person,
             Route::Search,
             Route::Home,
-            Route::Player {
-                overlay: Overlay::None,
-            },
+            Route::Player,
         ];
         let mut seen: Vec<&str> = routes.iter().map(|r| route_word(*r)).collect();
         seen.push("account");
@@ -1030,21 +1042,29 @@ mod heartbeat_word_tests {
         }
         // An EMPTY tree, so the player half of `overlay_word` is what answers: with no surface up
         // the function's first arm returns `None` and the route decides, which is exactly the
-        // state every playback frame is in.
+        // state every BARE playback frame is in.
         let empty = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
-        for (ov, word) in [
-            (Overlay::Info, " overlay=info"),
-            (Overlay::Chapters, " overlay=chapters"),
-            (Overlay::Menu, " overlay=menu"),
-            (Overlay::More, " overlay=more"),
-            (Overlay::None, " overlay=none"),
-        ] {
-            let got = overlay_word(&empty, Route::Player { overlay: ov });
-            assert_eq!(got, word);
-            let bare = word.trim_start_matches(" overlay=");
-            assert!(OVERLAY_WORDS.contains(&bare));
-        }
+        assert_eq!(overlay_word(&empty, Route::Player), " overlay=none");
         assert_eq!(overlay_word(&empty, Route::Home), "");
+        // …and the four PANEL words are the surfaces' own, since phase 9. There is no second
+        // table: `bridge::overlay_word` maps a mounted `PlayerOverlayScreen` through
+        // `Screen::name`, which is `OverlayKind::word`, so this is the table's side of that one
+        // coupling exactly as the Settings family's is below. A panel renamed without
+        // `OVERLAY_WORDS` following it is what fails here.
+        use crate::screens::player::overlay::OverlayKind;
+        for kind in [
+            OverlayKind::Tracks { tab: 0 },
+            OverlayKind::Info,
+            OverlayKind::Chapters,
+            OverlayKind::More { quality: false },
+        ] {
+            assert!(
+                OVERLAY_WORDS.contains(&kind.word()),
+                "{:?} prints {:?}, missing from OVERLAY_WORDS",
+                kind,
+                kind.word()
+            );
+        }
         // The Settings family's words come from `Screen::name` now (`bridge::overlay_word` maps
         // them one-for-one), so the alphabet the fps tier selects on is the screens' own.
         // `bridge`'s `the_settings_surface_owns_input_and_walks_its_own_stack` drives the mapping
@@ -1085,6 +1105,52 @@ mod heartbeat_word_tests {
         // is no ambiguity in the LOG itself, since `tests/run.py`'s `LOOP_RE` matches the `route=`
         // and ` overlay=` groups independently and a scene declares only the one field it needs.
         assert!(ROUTE_WORDS.contains(&crate::screens::registry::word::ONBOARD));
+    }
+
+    /// **Pins the focusprobe's player-overlay word to THIS module's `overlay_word`, not a second
+    /// hand-written copy.** `app/run.rs`'s `probe_screen` closure (the focus fingerprint's
+    /// `Route::Player` arm) used to carry its OWN `match overlay { Overlay::None => "none", … }`
+    /// table, with a comment claiming it printed "the same words the heartbeat's `overlay=`
+    /// uses" — a claim nothing checked, and exactly the shape that goes stale silently: a word
+    /// edited on one side (a rename, a typo, a new `Overlay` variant) would make the focus
+    /// fingerprint and the heartbeat disagree about the SAME frame's overlay, and nothing here
+    /// would fail. `probe_screen` is a closure local to `run()`, not a free function this test can
+    /// call, so — the same idiom `search_owned_tests.rs`'s chrome-guard pin uses for the same
+    /// reason — this reads `run.rs`'s own source and asserts the arm DELEGATES to `overlay_word`
+    /// rather than re-deriving the mapping inline.
+    ///
+    /// Observed RED before the unification: the arm read
+    /// `overlay: match overlay { Overlay::None => "none", Overlay::Menu => "menu", … }`, which
+    /// contains no `overlay_word(` call at all — this test failed as designed. A second manual
+    /// check confirmed the pin actually discriminates rather than merely checking for a
+    /// substring: with the delegating call in place, temporarily reintroducing a stray
+    /// `Overlay::None =>` arm beside it (simulating a partial revert to a hand-rolled table) also
+    /// turned this test red; reverted after observing it.
+    #[test]
+    fn focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        let start = src
+            .find("crate::focusprobe::Screen::Player {")
+            .expect("probe_screen must build a focusprobe::Screen::Player");
+        let end = src[start..]
+            .find("},")
+            .map(|i| start + i)
+            .expect("the Player arm must close with `},`");
+        let arm = &src[start..end];
+        assert!(
+            arm.contains("overlay_word("),
+            "the focusprobe's Route::Player arm must call the shared overlay_word(...) \
+             function (the same one the heartbeat uses) rather than re-deriving the mapping; \
+             found:\n{arm}"
+        );
+        assert!(
+            !arm.contains("Overlay::None =>") && !arm.contains("Overlay::Menu =>"),
+            "a hand-written Overlay match here means a SECOND overlay-word table exists \
+             alongside overlay_word; found:\n{arm}"
+        );
     }
 }
 
@@ -1260,9 +1326,7 @@ mod player_return_tests {
             Route::Login,
             Route::Profiles,
             Route::Onboard,
-            Route::Player {
-                overlay: Overlay::None,
-            },
+            Route::Player,
         ] {
             assert_eq!(page(r), Node::Home);
         }

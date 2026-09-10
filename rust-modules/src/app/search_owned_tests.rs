@@ -87,7 +87,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
         let parts = CxParts { tick: tick(0), press: Default::default(),
             focus: d.input.engine.read(InputOwner::Entry(field.entry)), owner: InputOwner::Entry(field.entry) };
         let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: crate::route::idle_session_for_test() }, rig.measure);
         d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
     };
     let before = field_y(&d, &rig);
@@ -518,7 +518,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
     let parts = CxParts { tick: tick(100), press: Default::default(), focus: d.input.engine.read(InputOwner::Entry(key.entry)), owner: InputOwner::Entry(key.entry) };
     let old_rect = {
         let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: crate::route::idle_session_for_test() }, rig.measure);
         d.top_screen().unwrap().place(&key.elem, &cx, At::Drawn).unwrap().rest_rect
     };
     assert!(old_rect.x < 1800.0, "the last card must have scrolled into view: {old_rect:?}");
@@ -529,7 +529,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
             rig.search = crate::stores::search::snapshot();
         }
         let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view() }, rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: crate::route::idle_session_for_test() }, rig.measure);
         let mut restored = crate::screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);
         let mut present = crate::ui::present::Present::new();
@@ -785,8 +785,8 @@ fn draw_chromes_guard_calls_the_named_predicate_and_names_no_route_literal() {
 /// `app::run::update`, so it stays green whether or not `update`'s `Route::Search` branch exists
 /// at all — which is exactly how this arm could vanish with every test still passing. And
 /// `app::run::update` cannot be driven end to end from a host test either: it is `unsafe fn
-/// update(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame)`, and `App`/`Frame` carry
-/// the live SDL/GL window state boot creates — there is no host constructor for either. So, like
+/// update(app: &mut App, fr: &mut Frame)`, and `App`/`Frame` carry the live SDL/GL window state
+/// boot creates — there is no host constructor for either. So, like
 /// `draw_chromes_guard_calls_the_named_predicate_and_names_no_route_literal` above (the same
 /// shape of gap, one function over), this reads the source text of the arm itself rather than
 /// running it.
@@ -802,7 +802,7 @@ fn update_still_steps_the_shared_strip_on_search_the_way_home_and_library_do() {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
     ).expect("read run.rs");
-    let fn_start = src.find("unsafe fn update(app: &mut App, mt: &crate::task::MainThread, fr: &mut Frame)")
+    let fn_start = src.find("unsafe fn update(app: &mut App, fr: &mut Frame)")
         .expect("app::run::update must exist with its documented signature");
     let needle = "matches!(page_of(app.route), Route::Search)";
     let arm_at = src[fn_start..].find(needle).map(|i| fn_start + i).expect(

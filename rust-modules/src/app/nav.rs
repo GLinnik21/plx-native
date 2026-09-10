@@ -1,22 +1,15 @@
-//! The legacy navigation model: `Route`, `Overlay`, `MenuHost`/`BarHost`, `Modal`, `Nav`/`NavReq`,
+//! The legacy navigation model: `Route`, `MenuHost`/`BarHost`, `Modal`, `Nav`/`NavReq`,
 //! the trail helpers and the page-open/menu-open functions. Retired by phase 12 of the UI
 //! restructure; moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(super)` widening
 //! only).
 
 use super::*;
 
-/// Exclusive route state machine (replaces 5 entangled bools). Overlays live INSIDE
-/// Player because they only mean anything during playback; Detail and Player are mutually
-/// exclusive. Deleting the old bools makes the compiler flag any un-migrated read.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Overlay {
-    None,
-    Menu,
-    Info,
-    Chapters,
-    /// the `…` disc's overflow popover (`ui/more_menu.rs`)
-    More,
-}
+// (`enum Overlay` stood here. The player's four panels are entries on the player page's own
+// `ModalStack` since restructure phase 9 — `screens::player::overlay::OverlayKind` is what names
+// them now, and the CONTAINER owns which one is up. A route field saying so as well was the second
+// owner the phase exists to remove: `route` and the stack could disagree, and while they did, the
+// key ladder, the pointer path and the draw each asked a different one of the two.)
 /// Which screen a [`Route::ItemMenu`] popover is sitting over.
 ///
 /// The menu is a popover on a LIVE screen, not a page of its own — the card and its row keep
@@ -195,9 +188,8 @@ pub(super) enum Route {
     /// page: it is reached from the strip's last pill and BACK from it returns to Home, so
     /// it needs no trail node of its own — what it OPENS stacks, but it does not.
     Search,
-    Player {
-        overlay: Overlay,
-    },
+    /// Playback. Its four panels are NOT here — see the note where `Overlay` used to be.
+    Player,
 }
 
 /// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s
@@ -220,7 +212,7 @@ pub(super) fn route_wears_tab_bar(r: Route) -> bool {
         | Route::Onboard
         | Route::Detail
         | Route::Person
-        | Route::Player { .. } => false,
+        | Route::Player => false,
     }
 }
 /// The PAGE a trail node names — the ONE Node→[`Route`] mapping in the app. Both things
@@ -337,7 +329,7 @@ pub(super) fn leave_of(r: Route) -> Option<fn()> {
         | Route::Profiles
         | Route::Onboard
         | Route::Search
-        | Route::Player { .. } => None,
+        | Route::Player => None,
         // Unreachable: `page_of` has already resolved a popover onto the screen it sits on,
         // so neither of these ever arrives here. Listed rather than swept into a `_` so the
         // exhaustiveness above is real.
@@ -378,7 +370,7 @@ pub(super) fn stays_on_trail(r: Route) -> bool {
         // Boot gates the app leaves once, and a player session torn down by its own exit path.
         // None of the four has a `leave_of` at all, so this answer is about being honest rather
         // than about having an effect.
-        Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => false,
+        Route::Login | Route::Profiles | Route::Onboard | Route::Player => false,
         // Unreachable: `page_of` resolves a popover onto the screen it sits on. Listed rather than
         // swept into a `_`, exactly as `leave_of` above.
         Route::Account { .. } | Route::ItemMenu { .. } => false,
@@ -420,27 +412,16 @@ pub(super) enum Modal {
     None,
     Account,
     ItemMenu,
-    Menu,
-    Info,
-    Chapters,
-    More,
 }
+/// **The player's four panels are absent from this answer since phase 9, and that is the point.**
+/// They are surfaces on the player page's own `ModalStack`, so "which panel owns the frame" is a
+/// question the CONTAINER answers (`Dispatcher::surface_up` / `top_surface_name`) — and every
+/// caller of this function already asks `bridge::owns_input` first, which consults the container.
+/// A second answer derived from the route is exactly the drift this phase removes.
 pub(super) fn modal_of(r: Route) -> Modal {
     match r {
         Route::Account { .. } => Modal::Account,
         Route::ItemMenu { .. } => Modal::ItemMenu,
-        Route::Player {
-            overlay: Overlay::Menu,
-        } => Modal::Menu,
-        Route::Player {
-            overlay: Overlay::Info,
-        } => Modal::Info,
-        Route::Player {
-            overlay: Overlay::Chapters,
-        } => Modal::Chapters,
-        Route::Player {
-            overlay: Overlay::More,
-        } => Modal::More,
         _ => Modal::None,
     }
 }
@@ -709,7 +690,7 @@ pub(super) fn return_page(r: Route, detail: Option<Node>, person: Option<Node>) 
         // Home is the root and the honest answer for the four boot gates as well. `Player` is
         // unreachable — every caller is a launch, which is off the player route by definition —
         // and lands here rather than being a variant the compiler makes anyone think about.
-        Route::Home | Route::Login | Route::Profiles | Route::Onboard | Route::Player { .. } => {
+        Route::Home | Route::Login | Route::Profiles | Route::Onboard | Route::Player => {
             Node::Home
         }
         // …and the two popovers cannot reach this arm at all: `page_of` above resolved them.
