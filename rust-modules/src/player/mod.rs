@@ -279,8 +279,9 @@ pub(crate) fn start_bufferfeed_tracked(mt: &MainThread) -> BufferfeedStartOutcom
 /// — and report `Failed`.
 fn refuse_missing_rtkmem() -> BufferfeedStartOutcome {
     log(
-        "start_bufferfeed: refusing — this jail is missing /dev/rtkmem on this chassis \
-         (community-tier finding, webosbrew/webos-homebrew-channel PR #202)",
+        "start_bufferfeed: refusing — this sandbox does not give the app /dev/rtkmem on this \
+         chassis (community-tier finding, webosbrew/webos-homebrew-channel PR #202; a \
+         Homebrew Channel reinstall does NOT fix this — see jail_error_shape)",
     );
     JAIL_LOAD_BLOCKED.store(true, Relaxed);
     if let Some(route_start) = crate::route::begin_route_start() {
@@ -768,15 +769,30 @@ fn runtime_failure(
 /// (see [`crate::webos::jail_blocks_native_video`]'s doc). Caption and readout are kept short for
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
 /// in `detail`.
+///
+/// **The remedy text was wrong from 2026-08 until this fix, and it was a real claim, not a
+/// hedge**: it told the reader that reinstalling through the Homebrew Channel "should carry the
+/// jailer fix that adds the missing device file" — citing PR #202
+/// (webosbrew/webos-homebrew-channel). PR #202 merged 2024-12-25, but PR #211 reverted it on
+/// 2025-02-26, and it never shipped in any tagged Homebrew Channel release (v0.7.2 predates the
+/// merge, v0.7.3 postdates the revert) — so nobody who reinstalled through the channel on this
+/// screen's advice ever actually got the fix. A k5lp reporter did exactly that, on channel v0.7.3,
+/// and still hit this refusal. PR #202 stays cited because it is still the community record of the
+/// *condition* — that the `native_devmode` jail on k5lp/k3lp omits `/dev/rtkmem` — which remains
+/// true; only the claimed remedy was false. The surviving community-tier remedy is LG's own signed
+/// `jail_app.conf`, installed by `mariotaku/kodi.addon.webos-jailer-fix`, which requires a full
+/// power-cycle (unplug ~10s) to take effect — named here as where the community has looked, not as
+/// something this app verifies or stands behind.
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,
-        caption: c"Playback failed — this TV's jail is missing a device file",
-        panel: "this install's jail is missing /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
-        readout: "This set's jail configuration is missing /dev/rtkmem",
+        caption: c"Playback failed — this TV's sandbox blocks native video",
+        panel: "this install's sandbox does not give the app /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
+        readout: "This set's sandbox does not give the app /dev/rtkmem",
         detail: std::borrow::Cow::Borrowed(
-            "Found, on this chassis, to crash native video apps (community report: webosbrew/webos-homebrew-channel PR #202). \
-             Reinstalling through the Homebrew Channel should carry the jailer fix that adds the missing device file.",
+            "Found, on this chassis, to crash native video apps (community record: webosbrew/webos-homebrew-channel PR #202). \
+             Reinstalling through the Homebrew Channel does NOT fix this — that jailer change was reverted before any release shipped it. \
+             The community's own workaround, unverified here, is the mariotaku/kodi.addon.webos-jailer-fix add-on, which needs a full power-cycle to take effect.",
         ),
         no_pass: false,
     }
