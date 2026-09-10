@@ -398,6 +398,14 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
     }
+    /// The PGS/VobSub display set is the only render this screen owns (§8.3 rule (c)): the picture
+    /// is the hardware video plane, the HUD is drawn immediate-mode, and its glyphs and icons come
+    /// from the shared caches. `SubtitleBitmaps` uploads one texture per rect of the active cue and
+    /// deletes them itself, so it is the one thing on this screen whose bytes belong to this
+    /// instance rather than to a pool.
+    fn render_report(&self) -> crate::ui::frame::RenderReport {
+        self.render.subs.render_report()
+    }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Legacy
     }
@@ -573,6 +581,34 @@ mod clock_animator_tests {
         crate::player::SHARED.pb_state.store(
             crate::player::PlaybackState::Idle as u8,
             std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+#[cfg(test)]
+mod render_residency_tests {
+    use super::*;
+    use crate::ui::frame::RenderReport;
+    use crate::ui::player_hud::SubtitleBitmaps;
+
+    /// **The player's own render is its image-subtitle display set, and only that** (§8.3 rule
+    /// (c)). The picture is the hardware video plane, which is not ours at all; the HUD is drawn
+    /// immediate-mode from the shared glyph and icon caches. A screen that owns a texture has to
+    /// SAY so, or the frame's byte term is a sum over an empty inventory — which is what
+    /// `Screen::render_bytes`'s single `{ 0 }` default and zero overrides made it until phase 11.
+    #[test]
+    fn the_player_reports_its_image_subtitle_set_and_nothing_else() {
+        let mut s = PlayerScreen::new(EntryId(1));
+        assert_eq!(
+            Screen::<crate::screens::player::overlay_tests::TestHost>::render_report(&s),
+            RenderReport::NONE,
+            "no image cue up: this screen holds no render of its own",
+        );
+        s.render.subs = SubtitleBitmaps::stub(&[(720, 120)]);
+        assert_eq!(
+            Screen::<crate::screens::player::overlay_tests::TestHost>::render_report(&s),
+            RenderReport::one(720, 120),
+            "the cue on screen is one texture and its pixels",
         );
     }
 }

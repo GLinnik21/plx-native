@@ -117,8 +117,8 @@ def cmd_info(d):
         header.get("schema"), header.get("state_fp"), header.get("build"), ",".join(header.get("features", []))))
     print("  frames=%d event_frames=%d presented=%d" % (len(frames), ev, pres))
     counts = Counter(kind for frame in frames for kind in frame["kinds"])
-    print("  inputs=%d effects=%d results=%d lifecycle=%d" % (
-        counts["in"], counts["eff"], counts["async"], counts["life"]))
+    print("  inputs=%d effects=%d results=%d landings=%d lifecycle=%d" % (
+        counts["in"], counts["eff"], counts["async"], counts["land"], counts["life"]))
     return 0
 
 

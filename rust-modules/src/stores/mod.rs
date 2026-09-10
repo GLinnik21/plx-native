@@ -15,9 +15,10 @@
 //! mutator has one caller and the notice is raised once.
 //!
 //! What lives here is the VOCABULARY and the machine; the data stays in the legacy modules until
-//! each screen's phase moves it (§14). This module names data crates and `ui::machine` only
-//! (spec §2.1's layer rule; `ci/check-deps.sh`'s `mutators` gate refuses the old spelling
-//! outside `stores/` and the data modules).
+//! each screen's phase moves it (§14). This module names data crates, `ui::machine` and — since
+//! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
+//! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
+//! modules).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -197,6 +198,31 @@ fn note(id: StoreId, changed: bool) -> bool {
     }
     changed
 }
+
+// ---------------------------------------------------------------------------------------------
+// the landing GATE: a pump's mailbox take, on the frame the recording delivered it (§3.3 step 3)
+// ---------------------------------------------------------------------------------------------
+//
+// Every store here lands OUTSIDE the dispatcher's drain — the legacy pumps poll their own
+// mailboxes once a frame — so which frame a worker's answer is observed on was, until phase 11,
+// whatever the network and the thread scheduler produced. `ui::landgate` is the schedule; these
+// two are the store vocabulary's spelling of it, so a data module wraps its take rather than
+// naming the library module and an ordinal by hand. They wrap the TAKE alone and never the pump:
+// the retry countdowns, `maybe_spawn` and the debounce must keep running, or the gate would
+// suppress the very spawn whose landing it is waiting for.
+//
+// Off a recording and off a replay each is one relaxed atomic load and the closure's own answer.
+
+/// A one-slot mailbox: `None` while the replay is still waiting for this store's recorded frame.
+pub(crate) fn take_landing<T>(id: StoreId, f: impl FnMut() -> Option<T>) -> Option<T> {
+    crate::ui::landgate::take(id.ord(), f)
+}
+
+/// A mailbox drained as a QUEUE: an empty answer is not a landing.
+pub(crate) fn take_landings<T>(id: StoreId, f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    crate::ui::landgate::take_all(id.ord(), f)
+}
+
 
 #[cfg(test)]
 mod tests {

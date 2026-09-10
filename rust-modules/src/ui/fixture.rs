@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 
 use super::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
-use super::frame::Budget;
+use super::frame::{Budget, RenderReport};
 use super::machine::{
     Addr, Canon, Chrome, Cx, Delivery, Effects, Fx, GroupId, Handled, Host, InputEvent, InputKind,
     Key, LogLine, LogicalState, Machine, MachineId, Measure, NavOp, PartId, PosterKey, RequestId,
@@ -512,6 +512,10 @@ pub struct FixtureModal {
     /// takes `&self`, exactly as every other query on that trait does.
     pub scrim_at: std::cell::Cell<usize>,
     pub draw_at: usize,
+    /// What this surface claims to hold of the frame's render residency (`Screen::render_report`).
+    /// [`RenderReport::NONE`] like every product surface today — a test SETS it, because a rule
+    /// nothing can breach is a rule nothing tests (`the_render_set_is_checked_over_the_whole_frame`).
+    pub render: RenderReport,
 }
 
 /// A monotonic tick the fixture screens stamp their draw-order observations with.
@@ -539,6 +543,7 @@ impl FixtureModal {
             scrim_alpha: 0.0,
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
+            render: RenderReport::NONE,
         }
     }
 
@@ -731,6 +736,9 @@ impl Screen<FixtureHost> for FixtureModal {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+    fn render_report(&self) -> RenderReport {
+        self.render
     }
 }
 

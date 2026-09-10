@@ -577,11 +577,17 @@ impl Uploader for GfxUploader {
     }
 }
 
-/// MAIN/GL thread, once per frame (§3.3 step 9): upload what the cache holds pending, under the
-/// frame budget's `Poster` class (3 per frame). A landed texture invalidates the present gate
-/// through the cache's own `Provenance::Resource` note — and, while `ui::idle` is still the
-/// product's gate, through `idle::invalidate` here: a texture lands on a screen that may have
-/// gone idle waiting for it, and no spring reports that.
+/// MAIN/GL thread, once per PRESENTING frame (§3.3 step 9): upload what the cache holds pending,
+/// under the frame budget — the `Poster` class for an ordinary poster, the solo `Residency` class
+/// for a backdrop or a hero logo (`ui::tex`'s `RESIDENCY_BYTES`).
+///
+/// **The frame this runs on has already been decided to present**, because the budget's
+/// queued-work term is the second half of that decision (`app/run.rs`, §3.3 step 8). So what
+/// `idle::invalidate` marks here is not this frame but the NEXT one, and it is still worth its
+/// frame: a landed texture is DISCRETE damage, which is exactly what `idle::present_dirty`'s
+/// readers — the glass hosts deciding whether to re-snapshot the page under them — are asking
+/// about, and no spring reports it. The cache's own `Provenance::Resource` note is the same
+/// statement to the phase-2 `Present` machine.
 pub(crate) fn prepare(
     b: &mut crate::ui::frame::Budget,
     present: &mut crate::ui::machine::PresentHandle<'_>,

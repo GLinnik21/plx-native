@@ -4830,6 +4830,60 @@ def parse_worst(lines, route, overlay):
     return out
 
 
+# `coldopen screen=<word> ms=<n> prepared=<bool>` — one line per screen MOUNT (restructure spec
+# §8.4). UNARMED: the app writes it in every build, with no trigger and no threshold. That is the
+# whole reason it exists as a separate instrument, and the reason `stall_ceiling_ms` could not be
+# re-pointed at it — see `grade_coldopen`.
+COLDOPEN_RE = re.compile(r"\bcoldopen screen=(\w+) ms=(\d+) prepared=(true|false)")
+
+
+def parse_coldopen(lines, screen):
+    """Every `coldopen` sample (ms, prepared) for one SCREEN word, in log order."""
+    reject_simulator(lines)
+    out = []
+    for ln in lines:
+        m = COLDOPEN_RE.search(ln)
+        if m and m.group(1) == screen:
+            out.append((int(m.group(2)), m.group(3) == "true"))
+    return out
+
+
+def grade_coldopen(scene, lines, route, overlay):
+    """`coldopen_ceiling_ms`: the SLOWEST cold open of this scene's screen must be <= the ceiling,
+    and there must be at least one.
+
+    **Why this is not `stall_ceiling_ms` pointed at a different number.** That gate reads
+    `FRAMEDROP` lines, and the frame-drop detector prints only ABOVE the threshold the harness
+    armed it with — `frame_ceiling_threshold`, the lower of the scene's two ceilings. So a cold
+    open FASTER than the ceiling leaves no line at all, `parse_framedrop` returns [], and
+    `grade_frame_ceilings` passes it as "no FRAMEDROP line". The instrument censors every sample
+    below its own gate, which is the half of the distribution a ceiling most needs to see: five
+    runs of the same scene read "no-line PASS, 208.5, no-line PASS, 191.4, 227.8" (TV session 5,
+    2026-09-10) and there is no way to tell a 30 ms cold open from a 159 ms one in that.
+
+    `coldopen` is written unconditionally, so every run contributes exactly one sample per mount
+    and an absent line means the screen never mounted — a FAILURE here rather than a silent pass.
+    Returns (ok, detail_suffix)."""
+    ceiling = scene.get("coldopen_ceiling_ms")
+    if ceiling is None:
+        return True, ""
+    screen = overlay or route
+    samples = parse_coldopen(lines, screen)
+    if not samples:
+        return False, (f" | no `coldopen screen={screen}` line — the screen never mounted, or this "
+                       f"build predates the instrument")
+    worst = max(ms for ms, _ in samples)
+    unprepared = sum(1 for _, ok in samples if not ok)
+    ok = worst <= ceiling
+    detail = (f" | coldopen worst={worst}ms over {len(samples)} mount(s) vs coldopen_ceiling_ms "
+              f"{ceiling}")
+    if unprepared:
+        # reported, never asserted: a refusal is the budget working, and whether it is acceptable
+        # is what the TV session decides, not this run
+        detail += f" ({unprepared} mount(s) drew with a refused resource)"
+    return ok, detail
+
+
 def parse_framedrop(lines, route):
     """Every FRAMEDROP `total=` (ms) logged on this route, in log order, warmup included: a stall
     is graded over the WHOLE run because the interesting one (a cold mount) is the first."""
@@ -5091,6 +5145,12 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok_f, detail_f = grade_frame_ceilings(scene, lines, route, overlay, warmup)
     ok = ok and ok_f
     detail += detail_f
+
+    # `coldopen_ceiling_ms`: the frame-plan instrument's own gate (see grade_coldopen for why it
+    # is not `stall_ceiling_ms` with a different number on it).
+    ok_o, detail_o = grade_coldopen(scene, lines, route, overlay)
+    ok = ok and ok_o
+    detail += detail_o
 
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
@@ -5546,6 +5606,8 @@ def main():
                 gates += f" worst_ceiling_ms={s['worst_ceiling_ms']}"
             if s.get("stall_ceiling_ms") is not None:
                 gates += f" stall_ceiling_ms={s['stall_ceiling_ms']}"
+            if s.get("coldopen_ceiling_ms") is not None:
+                gates += f" coldopen_ceiling_ms={s['coldopen_ceiling_ms']}"
             mark = "  [+2nd server]" if s.get("needs_shared_server") else ""
             mark += f"  [SKIP: {s['skip']}]" if s.get("skip") else ""
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")

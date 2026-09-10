@@ -4,8 +4,10 @@
 //! **Format.** A directory: `manifest.json` (the header) and `rec-NNNN.jsonl` segments, one JSON
 //! object per line, `{"f":<frame>,"t":"<kind>",…}`. Kinds per frame: `tick` (EVERY frame),
 //! `present` (the bit and WHY), `in` (an input, with its recorded resolution), `eff` (an effect,
-//! `from`/`e`/`addr`), `async` (an adapter result's address and payload or blob hash), `life`,
-//! `timer`, `st` (the logical-state hash, on every EVENT frame). The header carries `schema`,
+//! `from`/`e`/`addr`), `async` (an adapter result's address and payload or blob hash), `land`
+//! (schema 2: how many landings a STORE consumed on this frame — the schedule `ui::landgate`
+//! holds a replay to), `life`, `timer`, `st` (the logical-state hash, on every EVENT frame). The
+//! header carries `schema`,
 //! `state_fp`, the build, the features, the armed triggers, `init` (the application's initial
 //! conditions, `H::Init`) and the clock origin.
 //!
@@ -32,7 +34,14 @@ use serde_json::{json, Value};
 use super::machine::{Canon, LogicalState, Measure, Tick};
 
 /// The record format's version. A recording from another schema is REFUSED, both printed.
-pub const SCHEMA: u32 = 1;
+///
+/// **2 (phase 11): `land`.** A recording now carries the frame every STORE consumed a landing on
+/// — the schedule `ui::landgate` holds a replay's live landings to (§3.3 step 3). Schema 1 could
+/// not: the only per-frame arrival it recorded was the dispatcher's `async`, so every result the
+/// legacy pumps drain OUTSIDE that drain had no recorded frame at all, and a schema-1 recording
+/// replayed under the gate would silently grade nothing. Refusing it is the honest answer;
+/// `tools/plxnative-rec rerecord` is the verb (`tests/fixtures/replay/README.md`).
+pub const SCHEMA: u32 = 2;
 /// Segment rotation.
 pub const SEGMENT_BYTES: usize = 2 * 1024 * 1024;
 /// The hard cap on one recording (spec §5.3, settled on the tmpfs measurement).
@@ -335,6 +344,17 @@ impl Writer {
         self.line(json!({"f": f, "t": "async", "to": to, "req": req, "payload": payload}));
     }
 
+    /// One STORE's landings on this frame (schema 2): `n` is HOW MANY of its sites consumed a
+    /// mailbox, which is what `ui::landgate`'s cursor is stepped by, one unit per arrival. The
+    /// count and not a boolean, because a store with several sites (`person` has one per fetch)
+    /// can take two answers on one frame and one on the next, and collapsing that to "it landed"
+    /// lets a replay consume two arrivals for one cursor step — after which every later landing
+    /// of that store reads as late. `gen` is the store's notice generation after the frame:
+    /// evidence for a reader, never something the gate keys on.
+    pub fn land(&mut self, f: u64, ord: u32, gen: u32, n: u32) {
+        self.line(json!({"f": f, "t": "land", "ord": ord, "gen": gen, "n": n}));
+    }
+
     pub fn life(&mut self, f: u64, inst: u32, ev: &str) {
         self.line(json!({"f": f, "t": "life", "inst": inst, "ev": ev}));
     }
@@ -419,6 +439,8 @@ pub struct Frame {
     pub inputs: Vec<Value>,
     pub effects: Vec<Value>,
     pub results: Vec<Value>,
+    /// The stores that consumed a landing on this frame, `(ordinal, generation, count)` (schema 2).
+    pub lands: Vec<(u32, u32, u32)>,
     pub life: Vec<Value>,
     pub st: Option<u64>,
     /// The recorded focus after the drains: `Some(None)` is "recorded as none".
@@ -488,6 +510,11 @@ impl Recording {
                     "in" => fr.inputs.push(v.clone()),
                     "eff" => fr.effects.push(v.clone()),
                     "async" => fr.results.push(v.clone()),
+                    "land" => fr.lands.push((
+                        v["ord"].as_u64().ok_or_else(|| malformed(n, "ord"))? as u32,
+                        v["gen"].as_u64().unwrap_or(0) as u32,
+                        v["n"].as_u64().unwrap_or(1).max(1) as u32,
+                    )),
                     "life" | "timer" => fr.life.push(v.clone()),
                     "metrics" => {
                         metrics.insert(
@@ -536,6 +563,24 @@ impl Recording {
         segs.sort_by(|a, b| a.0.cmp(&b.0));
         let refs: Vec<&[u8]> = segs.iter().map(|(_, b)| b.as_slice()).collect();
         Self::parse(&manifest, &refs, state_fp)
+    }
+
+    /// The LANDING SCHEDULE (§3.3 step 3): for each store ordinal, the `(frame, count)` pairs it
+    /// was recorded consuming landings on, oldest first. This is what `ui::landgate::arm_replay`
+    /// holds a replay's live landings to; an empty inner list means "this store never landed",
+    /// which the gate reads as "deliver at once and grade it `extra`", never as "hold forever".
+    pub fn land_schedule(&self) -> Vec<Vec<(u64, u32)>> {
+        let mut out: Vec<Vec<(u64, u32)>> = Vec::new();
+        for frame in &self.frames {
+            for (ord, _, n) in &frame.lands {
+                let i = *ord as usize;
+                if out.len() <= i {
+                    out.resize(i + 1, Vec::new());
+                }
+                out[i].push((frame.f, *n));
+            }
+        }
+        out
     }
 
     /// The `st` stream: `(frame, hash)` for every event frame.

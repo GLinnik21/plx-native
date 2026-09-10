@@ -373,10 +373,23 @@ impl Popover {
     }
     /// (re)open: restart the fade+slide from 0.
     ///
-    /// Also starts this popover's glass lifetime. Cached glass takes one snapshot; dynamic glass
-    /// anchors its every-changed-present cadence here. Anything outside that policy which changes
-    /// the underlay still owes `gfx::blur_invalidate` a call of its own.
+    /// Also starts this popover's glass lifetime — the CACHED policy's one snapshot. A dynamic
+    /// popover anchors its every-changed-present cadence instead, and takes the frame plan's clock
+    /// to do it: [`open_on`](Self::open_on). Anything outside that policy which changes the
+    /// underlay still owes `gfx::blur_invalidate` a call of its own.
     pub(crate) fn open(&mut self) {
+        self.open_inner(None);
+    }
+
+    /// The same, for a DYNAMIC-glass popover: its cadence is the frame plan's shared clock (phase
+    /// 11), so opening one has to COVER this present on that clock rather than on a process-wide
+    /// one. Every popover in the product is `Glass::CACHED` — `Popover::new` is the only
+    /// constructor any of them use — so this form exists for the opt-in `with_glass` path.
+    pub(crate) fn open_on(&mut self, clock: &mut crate::ui::widgets::DynamicClock) {
+        self.open_inner(Some(clock));
+    }
+
+    fn open_inner(&mut self, clock: Option<&mut crate::ui::widgets::DynamicClock>) {
         self.appear = Spring::at(0.0);
         self.closing = false;
         // A re-open DURING the fade-out: the held user stops being a closing one.
@@ -391,7 +404,10 @@ impl Popover {
             self.hold_host();
         }
         self.open = true;
-        self.glass.activate(&mut self.glass_state);
+        match clock {
+            Some(c) => self.glass.activate_on(c, &mut self.glass_state),
+            None => self.glass.activate(&mut self.glass_state),
+        }
         // A re-open restarts the appear motion over a page that may have moved since, and the very
         // first frame of a first open has no snapshot at all. Both are "the cache does not describe
         // what is behind me", which is what this call means.
@@ -545,13 +561,35 @@ impl Popover {
     /// and every other panel did not; doing it here is what makes the second one impossible to
     /// forget.
     pub(crate) fn prepare_present(&mut self, underlay_changed: bool) {
+        self.prepare_present_inner(None, underlay_changed);
+    }
+
+    /// The same for a DYNAMIC-glass popover — the twin of [`open_on`](Self::open_on), and it has
+    /// to exist for the same reason: since phase 11 the recurring cadence is the frame plan's
+    /// clock, so a refreshing popover cannot resolve one without being handed it.
+    pub(crate) fn prepare_present_on(
+        &mut self,
+        clock: &mut crate::ui::widgets::DynamicClock,
+        underlay_changed: bool,
+    ) {
+        self.prepare_present_inner(Some(clock), underlay_changed);
+    }
+
+    fn prepare_present_inner(
+        &mut self,
+        clock: Option<&mut crate::ui::widgets::DynamicClock>,
+        underlay_changed: bool,
+    ) {
         if self.open {
             let refresh = glass_refresh(
                 underlay_changed,
                 self.appear_settled(),
                 host::own_damage_this_frame(),
             );
-            self.glass.prepare(&mut self.glass_state, refresh);
+            match clock {
+                Some(c) => self.glass.prepare_on(c, &mut self.glass_state, refresh),
+                None => self.glass.prepare(&mut self.glass_state, refresh),
+            }
         }
     }
 
@@ -1210,7 +1248,7 @@ mod tests {
         // popovers opening at once on different threads would otherwise race that counter.
         let _g = crate::testlock::serial();
         let mut pop = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
-        pop.open();
+        pop.open_on(&mut crate::ui::widgets::DynamicClock::new());
         assert!(!pop.appear_settled(), "a fresh open has not ramped in yet");
         for _ in 0..240 {
             pop.update(1.0 / 60.0);
@@ -1307,7 +1345,7 @@ mod tests {
         assert_eq!(cached.glass, Glass::CACHED);
         assert_eq!(dynamic.glass, Glass::DYNAMIC_BACKDROP);
         cached.prepare_present(false);
-        dynamic.prepare_present(false);
+        dynamic.prepare_present_on(&mut crate::ui::widgets::DynamicClock::new(), false);
         assert!(!cached.glass_state.is_active() && !dynamic.glass_state.is_active());
     }
 

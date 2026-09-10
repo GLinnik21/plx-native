@@ -2031,9 +2031,15 @@ fn fetch_full(sid: crate::plex::ServerId, rk: &str) -> Option<Detail> {
         }
     }
     d.related = fetch_related(sid, rk);
+    // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
+    // on every line in every build, but nothing in a line distinguishes a programme title from
+    // ordinary prose (`diag::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
+    // so the only mechanism for viewing content is that no call site writes it. This one did,
+    // from the day it was added until phase 11 — `'{}'` with `d.title` in it, on every detail
+    // open, in a log the maintainer routinely pastes into a public issue.
     crate::player::log(&format!(
-        "detail: rk={} '{}' show={} genres={} cast={} crew={} seasons={} eps={} related={} audio={} subs={} ms={}",
-        d.rk, d.title, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
+        "detail: sid={} rk={} show={} genres={} cast={} crew={} seasons={} eps={} related={} audio={} subs={} ms={}",
+        d.sid.raw(), d.rk, d.is_show, d.genres.len(), d.cast.len(), d.crew.len(), d.seasons.len(), d.episodes.len(),
         d.related.len(), d.audio.len(), d.subs.len(), t0.elapsed().as_millis()
     ));
     Some(d)
@@ -2199,17 +2205,23 @@ pub(crate) fn pump_detail() -> bool {
     use crate::ui::landing::Lane;
     use std::sync::atomic::Ordering;
     let want = DETAIL_WANT.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let mut out = Vec::new();
-    DETAIL_LANDING.take_for(
-        &|_| true,
-        &|k| match &want {
-            // the item the page awaits, by SERVER and key — a same-numbered item on another
-            // server is a different film (§5.2's identity rule)
-            Some((sid, rk)) => k.0 == *sid && k.1 == *rk,
-            None => true,
-        },
-        &mut out,
-    );
+    // Under a replay this drains on the frame the recording drained it on (§3.3 step 3,
+    // `ui::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
+    // supersede/install below, so a held frame leaves the record in the landing untouched.
+    let out = crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
+        let mut out = Vec::new();
+        DETAIL_LANDING.take_for(
+            &|_| true,
+            &|k| match &want {
+                // the item the page awaits, by SERVER and key — a same-numbered item on another
+                // server is a different film (§5.2's identity rule)
+                Some((sid, rk)) => k.0 == *sid && k.1 == *rk,
+                None => true,
+            },
+            &mut out,
+        );
+        out
+    });
     let mut fresh = false;
     for rec in out {
         let gen = rec.addr.req.0;
@@ -2639,7 +2651,12 @@ pub(crate) fn pump_alt_sources() -> bool {
         changed |= alt_restamp_owners();
     }
     changed |= alt_pump_stand_in();
-    let taken = ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame. The roster and
+    // facts re-stamps above are NOT gated — they follow other stores' landings, which are gated
+    // where those land.
+    let taken = crate::stores::take_landing(crate::stores::StoreId::Metadata, || {
+        ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
     let Some(r) = taken else { return changed };
     if r.gen != ALT_GEN.load(Ordering::SeqCst) || r.roster_gen != roster_gen {
         return changed; // superseded: the page moved on while this was in flight
@@ -2959,10 +2976,13 @@ pub(crate) fn season_loading() -> bool {
 /// changed — the detail page resets its episode focus/scroll on it.
 pub(crate) fn pump_season() -> bool {
     use std::sync::atomic::Ordering;
-    let res = SEASON_RESULT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take();
+    // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame
+    let res = crate::stores::take_landing(crate::stores::StoreId::Metadata, || {
+        SEASON_RESULT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    });
     let Some(r) = res else { return false };
     if r.gen != SEASON_GEN.load(Ordering::SeqCst) {
         return false; // superseded — the newer fetch will land after this

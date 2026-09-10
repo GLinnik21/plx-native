@@ -548,32 +548,86 @@ fn a_modal_scopes_focus_to_its_own_groups() {
     assert_eq!(d.nav.tabs.stack.depth(), 1, "and no page opened");
 }
 
-/// §8.3: the render set is checked over the WHOLE composition — a Cached host counts the one
-/// shared FrameCache, never a render of its own; a synthetic set over the ceiling fails.
+/// §8.3: the render set is checked over the WHOLE composition, with REAL numbers in all three
+/// rules — a Cached host counts the one shared FrameCache and holds no render of its own; a
+/// surface's own count is whatever that surface reports; the ceiling covers every byte term.
+///
+/// Rules (b) and (c) were both inert until phase 11: `draw_with` pushed a literal `1` per surface,
+/// so "more than one render per surface" could not be spelled, and `Screen::render_bytes` had one
+/// default `{ 0 }` and no override anywhere, so the byte sum was the FrameCache and nothing else.
 #[test]
 fn the_render_set_is_checked_over_the_whole_frame() {
-    use crate::ui::frame::{RenderBreach, RenderSet, FRAME_CACHE_BYTES, RENDER_BYTES_MAX};
+    use crate::ui::frame::{RenderBreach, RenderReport, RenderSet, FRAME_CACHE_BYTES, RENDER_BYTES_MAX};
     let (mut d, mut rig, _) = booted();
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
     d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
     let r = d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
     assert!(r.presented);
     assert_eq!(r.render_set.pages, 1);
-    assert_eq!(r.render_set.surfaces, vec![(id, 1)]);
+    assert_eq!(
+        r.render_set.surfaces,
+        vec![(id, 0)],
+        "the surface holds NO render of its own — it is a quad from the shared FrameCache"
+    );
+    assert_eq!(r.render_set.bytes, 0, "…and so owns no bytes either");
     assert_eq!(r.render_set.frame_cache_bytes, FRAME_CACHE_BYTES, "the Cached host is one FrameCache");
     assert!(r.render_set.check().is_ok());
+
+    // (b) with a real number: one texture of the surface's OWN reaches the set as one, and its
+    // bytes reach the sum. A literal cannot do this and a `{ 0 }` default cannot do the second.
+    let own = RenderReport::one(400, 400);
+    modal_mut(&mut d, id).render = own;
+    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    let r = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+    assert!(r.presented);
+    assert_eq!(r.render_set.surfaces, vec![(id, 1)], "one render of its own");
+    assert_eq!(r.render_set.bytes, own.bytes, "400x400 RGBA8 = 640,000 bytes");
+    assert!(r.render_set.check().is_ok(), "one render per surface is legal");
+
+    // (b) breached, on numbers the set can now hold. (Driven through the dispatcher by
+    // `a_surface_holding_two_renders_breaches_the_frames_render_set`, which is `should_panic`
+    // because the debug policy for a breach is an assertion.)
+    let two = RenderSet {
+        pages: 1,
+        surfaces: vec![(id, 2)],
+        ..Default::default()
+    };
+    assert_eq!(two.check(), Err(RenderBreach::Surface(id, 2)));
+
+    // (c) every byte term counts: the screens' own renders, the one FrameCache, and the shared
+    // pools `extra_bytes` carries for the loop.
     let over = RenderSet {
         pages: 1,
         surfaces: vec![(id, 1)],
-        bytes: RENDER_BYTES_MAX,
+        bytes: RENDER_BYTES_MAX - FRAME_CACHE_BYTES,
         frame_cache_bytes: FRAME_CACHE_BYTES,
+        extra_bytes: 0,
     };
-    assert!(matches!(over.check(), Err(RenderBreach::Bytes(_))));
+    assert!(over.check().is_ok(), "exactly at the ceiling is not over it");
+    let over = RenderSet { extra_bytes: 1, ..over };
+    assert_eq!(
+        over.check(),
+        Err(RenderBreach::Bytes(RENDER_BYTES_MAX + 1)),
+        "one byte of shared pool past the ceiling is a breach"
+    );
     let three = RenderSet {
         pages: 3,
         ..Default::default()
     };
     assert_eq!(three.check(), Err(RenderBreach::Pages(3)));
+}
+
+/// Rule (b) end to end: a surface reporting two backing renders breaches the frame's set, and the
+/// debug policy for a breach is an ASSERTION (§8.3) — so the frame that draws it dies here rather
+/// than shipping a leak to a television. `on_breach`'s own tests grade the release half.
+#[test]
+#[should_panic(expected = "render set breach")]
+fn a_surface_holding_two_renders_breaches_the_frames_render_set() {
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, id).render = crate::ui::frame::RenderReport { textures: 2, bytes: 0 };
+    d.present.note(crate::ui::present::PresentEvent::Damage(crate::ui::present::Provenance::Input));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
 }
 
 /// §4.4 `MotionScope`: a surface's foreground spring reports `Motion` (so the frame presents)

@@ -49,7 +49,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 24] = [
+const DIAG: [&str; 25] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -80,6 +80,12 @@ const DIAG: [&str; 24] = [
     "plxnative-overdraw",
     "plxnative-drawmask",
     "plxnative-heroground",
+    // The FRAME BUDGET's A/B control leg (`ui/frame/budget.rs`, spec §8.1): admission as it was
+    // before phase 11 — quota only, no time ceiling, no solo rule. DIAG for exactly the argument
+    // the three above make: its whole method is an A/B against an unmasked control leg, and a
+    // non-DIAG trigger would boot the two legs to DIFFERENT SCREENS, so what the numbers measured
+    // would be the screen and not the admission rule.
+    "plxnative-nobudget",
     // LG's own GStreamer logging ([`arm_gst_logging`]) and the file it writes. Both are DIAG for
     // the same reason `plxnative-profile` is: the whole point is to observe a playback that would
     // otherwise be unobservable, and a non-DIAG trigger would silently move the boot screen out

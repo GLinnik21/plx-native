@@ -95,7 +95,11 @@ pub(crate) unsafe fn run(app: &mut App) {
         let mut fr = Frame::begin(&app.player.session);
         let fr = &mut fr;
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
-        app.budget.begin_frame(crate::diag::heartbeat::now_us());
+        // The frame index the LANDING SCHEDULE stamps against (§3.3 step 3, `ui::landgate`),
+        // published at the TOP because a landing site is reachable from the dev scenarios below
+        // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
+        // unless `plxnative-rec` or `plxnative-recplay` is armed.
+        app.rec.begin_frame();
         // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
@@ -206,16 +210,21 @@ pub(crate) unsafe fn run(app: &mut App) {
         app.instr.mark(crate::diag::heartbeat::Phase::NavCommit); // navcommit
         update(app, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::TickDrain); // tick_drain
-        // The poster adapter's frame (spec §3.3 steps 3 and 9, on the legacy loop): a new frame
-        // for the slot LRU, every decoded image handed to the render cache, and the cache's
-        // upload step under the frame budget's Poster class. Kept before the present decision
-        // as `poster_pump(3)` was — a landed texture invalidates, so the frame presents.
+        // ---- the PREPARE WINDOW opens here (spec §3.3 steps 8-9, §8.1) -------------------
+        //
+        // **The budget's frame opens at the start of this window, not at the top of the
+        // iteration**, and that placement is the whole of its ceiling's meaning. `take` admits
+        // while `now - frame_start + worst_us <= PREPARE_MAX_US`; opened at the loop top, the
+        // elapsed term already contained ingest, the result landings, the nav commit and the
+        // tick drain, so on a cold-open frame (~62 ms) every upload was over the ceiling and
+        // only the forward-progress escape let ONE through. A quota of three that was really a
+        // quota of one, on exactly the frames with the most textures waiting.
+        app.pages.budget.begin_frame(crate::diag::heartbeat::now_us());
+        // The poster adapter's frame (spec §3.3 step 3's tail): a new frame for the slot LRU and
+        // every decoded image handed to the render cache as owned pixels. No GL here — the
+        // upload is below, on the presenting side of the decision.
         super::adapters::poster::begin_frame();
         super::adapters::poster::drain_decoded();
-        {
-            let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
-            super::adapters::poster::prepare(&mut app.budget, &mut ph, crate::diag::heartbeat::now_us);
-        }
 
         fr.player = matches!(app.route, Route::Player);
         // ---- the player page's CLOCK-DRIVEN motion report (spec §8.3, §9) ----
@@ -234,19 +243,6 @@ pub(crate) unsafe fn run(app: &mut App) {
                 }
             }
         }
-        // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
-        // is absent. Edge-triggered — see `system.rs`.
-        //
-        // Called on EVERY frame, from the BIT rather than from the route. The false edge after an
-        // unbind may land on a frame that would otherwise not present (spec §3.3 step 9), and
-        // there is nothing else in the loop that would carry it: a `return` above, or a term that
-        // only ran on player frames, would leave the compositor believing our surface is still
-        // opaque with an ordinary UI on it.
-        crate::system::opaque_route(app.player.video_plane_bound);
-        app.instr.mark(crate::diag::heartbeat::Phase::Prepare); // prepare
-        // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
-        // settled screen must never run untimed work at the loop rate (spec §8.3).
-        app.instr.note_prepare();
         // ---- whole-frame present gate (`ui::idle`) --------------------------------------
         // A screen with nothing moving on it does not need to be re-sent to the panel. This
         // skips `glViewport`…`SDL_GL_SwapWindow` WHOLESALE — it is not dirty-RECTANGLE
@@ -273,12 +269,55 @@ pub(crate) unsafe fn run(app: &mut App) {
         // player-side animator that advances from a clock has to report, or it freezes. Playback
         // itself still spends ~99% of its time with the HUD auto-hidden, where the frame is
         // already 0 draw calls.
-        fr.present = crate::ui::idle::should_present(fr.now);
+        //
+        // **The decision is taken ONCE and has TWO terms** (spec §3.3 step 8): the gate above,
+        // and whether the frame budget holds queued prepare work. The second term is what makes
+        // the upload step below legal on the presenting side of the decision — a texture waiting
+        // to be uploaded is itself a reason to present, so nothing sits in the queue behind a
+        // settled screen. It was inert before phase 11: nothing in the product ever published a
+        // queue to the budget, so `has_queued_work()` was permanently false and the upload had to
+        // run BEFORE the decision (and invalidate) to happen at all.
+        crate::ui::tex::note_queued(&mut app.pages.budget);
+        fr.present = crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work();
         app.rec.present(fr.present);
+        // ---- step 9's UPLOAD, on the presenting side of the decision ---------------------
+        //
+        // The render cache's upload step under the frame budget (§3.3 step 9, §10: "a frame that
+        // does not present uploads nothing"). Two placement rules, both load-bearing:
+        //
+        // * **Only on a presenting frame.** `GfxUploader::warm` is `gfx::warm_tex`, which DRAWS
+        //   a 1x1 quad to force residency; there is no GL scope to draw into on a frame that is
+        //   skipped wholesale.
+        // * **Before the draw, never after.** That quad goes into framebuffer 0, and the page's
+        //   own `frame_clear` overwrites the pixel. After the draw it would be a white pixel over
+        //   the finished picture — over FILM, on a player frame.
+        if fr.present {
+            let mut ph = crate::ui::machine::PresentHandle::of(&mut app.present);
+            super::adapters::poster::prepare(
+                &mut app.pages.budget,
+                &mut ph,
+                crate::diag::heartbeat::now_us,
+            );
+        }
+        // EXPERIMENT (`/tmp/plxnative-opaque`): one `static` read and a return when the trigger
+        // is absent. Edge-triggered — see `system.rs`.
+        //
+        // Called on EVERY frame, from the BIT rather than from the route. The false edge after an
+        // unbind may land on a frame that would otherwise not present (spec §3.3 step 9), and
+        // there is nothing else in the loop that would carry it: a `return` above, or a term that
+        // only ran on player frames, would leave the compositor believing our surface is still
+        // opaque with an ordinary UI on it.
+        crate::system::opaque_route(app.player.video_plane_bound);
+        app.instr.mark(crate::diag::heartbeat::Phase::Prepare); // prepare
+        // `worstprep=`: the prepare phase is timed on EVERY iteration, presented or not — a
+        // settled screen must never run untimed work at the loop rate (spec §8.3).
+        app.instr.note_prepare();
         // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
         // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
         app.instr.skip_present_phases();
         if fr.present {
+            // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
+            crate::text::begin_frame();
             let (_vx, _vy, _vw, _vh) = draw(app, fr);
             app.instr.mark(crate::diag::heartbeat::Phase::Draw); // draw
             // dev capture stream: grab this finished frame before the swap (after the last draw,
@@ -1718,7 +1757,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // the PANEL costs, and a page transition on the step boundary would put a cross-fade in
         // the middle of the leg being measured.
         if crate::ui::glassload::armed() {
-            let want = crate::ui::glassload::wants_account();
+            let want = app.glass.wants_account();
             if want && app.route == Route::Home {
                 super::bridge::open_account_menu(&mut app.pages);
             } else if !want && super::bridge::account_menu_up(&app.pages) {
@@ -2151,7 +2190,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // is counted in PRESENTS — a loop iteration the gate skipped drew no glass — and
             // because a step rollover invalidates the snapshot, which must precede every glass
             // surface in the frame exactly as `Glass::prepare` does.
-            crate::ui::glassload::prepare(fr.now);
+            app.glass.prepare_dial(fr.now);
             // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
             // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
             // is the entire logical->physical mapping — nothing else in the renderer knows the
@@ -2240,14 +2279,14 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             // `ui::widgets` legacy label cache this used to fall back to for
                             // every other bar-wearing route (Search, plus either MENU over one of
                             // them back when each was a route of its own) is gone with this call.
-                            app.bridge.prepare_home_chrome();
+                            app.bridge.prepare_home_chrome(app.glass.clock());
                         }
                         // The episode tiles' frosted label band — `/tmp/plxnative-tileglass`,
                         // the 2026-09-05 experiment. Self-gated on the trigger, so a default
                         // build resolves nothing here; unlike the two owners either side of it
                         // this one is not routed at all, because the shelves it rides appear on
                         // Home, the Library and Search and the trigger is the whole condition.
-                        crate::ui::widgets::tile_glass_prepare();
+                        app.glass.prepare_tile_band();
                         // **Every REFRESHING backdrop on the tree, resolved before anything on
                         // this route draws** — `Dispatcher::prepare_present`, which folds the
                         // caller's belief about the page together with each surface's own appear
@@ -2265,6 +2304,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // away, §14). The block states what it resolves rather than who owns it,
                         // so the next dynamic backdrop joins by being written.
                         app.pages.prepare_present(
+                            &mut app.glass,
                             fr.underlay_moving || crate::ui::idle::present_dirty(),
                         );
                         // THE PAGE, named once because it is drawn TWICE: the direct source path
@@ -2458,8 +2498,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // COMPLETE page — which is the honest source for a surface that sits on
                         // top of everything, and the one thing the tab track (drawn inside the
                         // page) cannot have.
-                        crate::ui::glassload::draw_nav_blur();
-                        crate::ui::glassload::draw();
+                        app.glass.draw_nav_blur();
+                        app.glass.draw_dial();
                         // The on-screen counter, off the player route (chrome over video). It draws
                         // the last completed `fps=` window — frames actually swapped, not loop
                         // iterations. It necessarily HOLDS its last painted value on a settled
@@ -2629,8 +2669,15 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 app.running = false;
             }
         }
-        // frame-drop detector: attribute slow frames to pump(uploads)/draw/swap(GPU). Drains the
-        // per-frame upload counters every frame (so the count is per-frame, not cumulative).
+        // `coldopen screen=<name> ms=<n> prepared=<bool>` — one line per screen MOUNT, on every
+        // build, no trigger (spec §8.4). The dispatcher owns both ends of the measurement (the
+        // mount at nav commit, the first prepared+drawn frame); this drains what it closed.
+        // Ungated by `fr.present` on purpose: a line closes on a frame that DID draw, so by the
+        // time it is here the presenting is already decided and done.
+        for line in app.pages.take_cold_open_lines() {
+            log(&line);
+        }
+        // frame-drop detector: attribute slow frames to pump(uploads)/draw/swap(GPU).
         // ONE tail for every route — this used to live only on the non-player path, which left
         // /tmp/plxnative-framedrop dead during playback (the timings were collected, then a
         // `continue` threw them away).
@@ -2638,11 +2685,23 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // would drag `worstframe` toward zero and read as a perf WIN. A skipped frame is not a
         // fast frame — it is an absent one, and `fps=` on the heartbeat is where it shows up.
         if fr.present {
+            // **The four upload/card counters are drained HERE, on every presented frame** — not
+            // inside the closure below, which the instrument calls only after the threshold
+            // check. That is what they used to be: a slow frame's `up=`/`px=`/`cards=`/`off=`
+            // covered every frame since the PREVIOUS slow one, and read as this frame's cost.
+            // Two atomic swaps a frame is what "per frame" costs; the comment here claimed it
+            // was already being paid.
+            let (uploads, upload_px) = super::adapters::poster::take_upload_stats();
+            let (cards, cards_off) = crate::gfx::take_card_stats();
+            app.instr.note_frame_counters(crate::diag::heartbeat::FrameCounters {
+                uploads,
+                upload_px,
+                cards,
+                cards_off,
+            });
             if let Some(line) = app.instr.frame_drop_line(&|| {
-                let (up, px) = super::adapters::poster::take_upload_stats();
-                let (cards, cards_off) = crate::gfx::take_card_stats();
                 format!(
-                    "up={up} px={px} cards={cards} off={cards_off} route={rn} load={} snapt={:.2}",
+                    "route={rn} load={} snapt={:.2}",
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages)
                 )
@@ -2751,8 +2810,31 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                 String::new()
             };
             // `worstframe=` stays LAST of the graded fields (both harness regexes anchor on it);
-            // `worstprep=` follows it, ungated by present. Both are empty unarmed.
-            let tail = app.instr.heartbeat_tail(app.rec.take_spent_us());
+            // `worstprep=` follows it, ungated by present. Both are empty unarmed. After them
+            // ride the frame plan's four (spec §8.4), which print in every build because none of
+            // them costs a measurement — every one is a counter its owner already keeps:
+            //
+            // * `carried=`/`dropped=` — the dispatcher's queue depth carried into the next frame,
+            //   and the deliveries dropped since the last heartbeat. `carried` had only ever
+            //   surfaced as the GROWTH-streak warning (`dispatch: carried=N growing`), which fires
+            //   at a slope and says nothing about the level; `dropped` had never surfaced at all.
+            // * `budget=<admitted>/<refused>[/solo:<class>]` — the frame budget's second, drained
+            //   here and nowhere else (`take_frame_stats` accumulates until its reader takes it,
+            //   which is why this is the once-a-second call and not a per-frame one).
+            // * `evicted_hot=` — glyphs evicted inside their hot window (`text.rs`, phase 11).
+            let budget = app.pages.budget.take_frame_stats();
+            let (carried, dropped) = app.pages.take_heartbeat_counters();
+            let tail = app.instr.heartbeat_tail(
+                crate::diag::heartbeat::HeartbeatFields {
+                    carried,
+                    dropped,
+                    admitted: budget.admitted,
+                    refused: budget.refused,
+                    solo: budget.solo.map(|c| c.name()),
+                    evicted_hot: crate::text::take_evicted_hot(),
+                },
+                app.rec.take_spent_us(),
+            );
             log(&format!(
                 "loop={} route={rn}{ov}{pos}{vp} fps={pres}{ld}{tail}{SIM_TAG}",
                 app.loop_shown

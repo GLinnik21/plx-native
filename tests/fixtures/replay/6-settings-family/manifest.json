@@ -3,7 +3,7 @@
  "blobs": false,
  "build": "0.7.0-dev",
  "clock": {
-  "start": 119
+  "start": 117
  },
  "features": [
   "devtools",
@@ -53,7 +53,7 @@
   "hash": 13272641050745139175,
   "probe": "route=home session=0 servers=1 consent=0/0/0 seed=0"
  },
- "schema": 1,
+ "schema": 2,
  "state_fp": 4731776064139080629,
  "triggers": [
   "plxnative-focus",

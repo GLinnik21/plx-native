@@ -29,6 +29,9 @@ CASES = [
     (BLOCK, "make -C /repo run RUN_SECS=30"),
     (BLOCK, "./tests/run.py --fps"),
     (BLOCK, "python3 tests/run.py --filter seek"),
+    # `--list-foo` is a different (unrecognised) flag, not `--list` — a substring match here would
+    # wrongly allow it.
+    (BLOCK, "tests/run.py --list-foo"),
     (BLOCK, "tools/tv-session.sh up --screen home"),
     (BLOCK, "tools/tv-session.sh key down ok"),
     (BLOCK, "tools/capture-screen.sh out.png DISPLAY"),
@@ -50,6 +53,16 @@ CASES = [
     (ALLOW, "tools/tv-lock.sh status"),
     (ALLOW, "tools/tv-session.sh log 'route='"),
     (ALLOW, "tools/tv-session.sh status"),
+    # `tests/run.py --list` never commits to driving the television — `main()` returns 0 for every
+    # `args.list` branch before the TV lock is ever acquired (see the pipeline-tier listing branch
+    # and the server-tier one right after it). argparse's `--list` is `action="store_true"`, so it
+    # takes effect wherever it sits on the line — leading, trailing, or beside `--server`/`--fps`/
+    # `--only` — and so does this allowance.
+    (ALLOW, "./tests/run.py --list"),
+    (ALLOW, "tests/run.py --list --server"),
+    (ALLOW, "python3 tests/run.py --list --fps"),
+    (ALLOW, "tests/run.py --list --only cold-open"),
+    (ALLOW, "tests/run.py --only x --list"),
     (ALLOW, "tools/crash-report.sh --flavor debug"),
     (ALLOW, ".agents/skills/wake-tv/wake-tv.sh"),
     (ALLOW, 'pgrep -fl "tests/run.py|capture-screen|make deploy"'),   # the pre-flight itself

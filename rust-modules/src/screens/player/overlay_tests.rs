@@ -22,7 +22,7 @@ use crate::ui::machine::{
 };
 use crate::ui::screen::ScreenEvent;
 
-struct TestHost;
+pub(super) struct TestHost;
 impl Host for TestHost {
     type Arg = crate::ui::fixture::FixtureArg;
     type Fx = AppFx;

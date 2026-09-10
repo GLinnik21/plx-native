@@ -2386,7 +2386,11 @@ fn land_directory<T>(
     mail: &'static Mutex<Option<DirectoryResult<T>>>,
     apply: impl FnOnce(&'static mut SecState, Vec<T>),
 ) {
-    if let Some(result) = mail.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
+    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        mail.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    if let Some(result) = taken {
         // a menu's value list arriving repopulates an open Sort/Filter popover (`ui::idle`)
         crate::ui::idle::invalidate();
         flag.store(false, Ordering::SeqCst);
@@ -2628,7 +2632,12 @@ fn discovery_spawn_refused(si: usize) {
 /// Apply a discovery landing. Gated on the table EPOCH, not on its shape generation: an append
 /// from one source must not throw away another's answer.
 fn land_discovery() {
-    let Some((epoch, si, landing)) = SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame.
+    // `maybe_discover`, which spawns the next one, is outside the gate at both call sites.
+    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        SRC_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    let Some((epoch, si, landing)) = taken
     else {
         return;
     };
@@ -2774,7 +2783,11 @@ pub(crate) fn pump() -> bool {
         }
     });
     // page landing
-    if let Some(r) = PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
+    let page = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        PAGE_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    if let Some(r) = page {
         // a page landing fills the grid under a screen that may have gone idle waiting for it;
         // the FAILED branch repaints too, since the retry back-off changes what the grid shows
         crate::ui::idle::invalidate();

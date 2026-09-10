@@ -176,6 +176,7 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
         for (t, _) in set.drain(..) {
             delete_tex(t);
         }
+        cache.bytes = 0;
         cache.key = i64::MIN;
         cache.sel = i32::MIN; // reset BOTH halves of the key — neither should prop the other up
         return;
@@ -202,6 +203,13 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
                         None => set.push((tex, dst)),
                     }
                 }
+                // The whole set is re-uploaded above, so its residency is the new set's, not a
+                // running total: `set.drain(rects.len()..)` already retired any surplus and every
+                // surviving id was re-spec'd to a rect of THIS display set.
+                cache.bytes = rects
+                    .iter()
+                    .map(|r| r.w.max(0) as usize * r.h.max(0) as usize * 4)
+                    .sum();
                 cache.key = k;
                 cache.sel = sel;
             }
@@ -228,6 +236,14 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
 /// it when the screen is unmounted — a static could never be told that a playback had ended.
 pub(crate) struct SubtitleBitmaps {
     set: Vec<(c_uint, Rect)>,
+    /// The SOURCE pixels behind `set`, in bytes — `sum(w * h * 4)` over the display set's rects as
+    /// they were uploaded, which the screen rects in `set` cannot answer (those are where each
+    /// bitmap LANDS, scaled into the video rect, not how large the texture is).
+    ///
+    /// It exists so `PlayerScreen` can state what it holds of the frame's render residency
+    /// (`Screen::render_report`, §8.3 rule (c)) instead of the frame plan guessing. It moves with
+    /// the textures in every path that uploads, retires or releases them.
+    bytes: usize,
     key: i64,
     sel: i32,
 }
@@ -236,8 +252,34 @@ impl SubtitleBitmaps {
     pub(crate) const fn new() -> Self {
         Self {
             set: Vec::new(),
+            bytes: 0,
             key: i64::MIN,
             sel: i32::MIN,
+        }
+    }
+    /// What this display set holds of the frame's render residency: one texture per rect of the
+    /// set, and the pixels behind them.
+    pub(crate) fn render_report(&self) -> crate::ui::frame::RenderReport {
+        crate::ui::frame::RenderReport {
+            textures: self.set.len() as u32,
+            bytes: self.bytes,
+        }
+    }
+    /// A display set of the given SOURCE pixel sizes, without GL — the seam the residency tests
+    /// use, since a host test uploads nothing (`gfx::delete_tex` no-ops under `cfg(test)`, so the
+    /// stand-in ids are safe to release). The ids are stand-ins; only the count and the bytes are
+    /// what anything reads off this.
+    #[cfg(test)]
+    pub(crate) fn stub(sizes: &[(i32, i32)]) -> Self {
+        Self {
+            set: sizes
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i as c_uint + 1, Rect::new(0.0, 0.0, 0.0, 0.0)))
+                .collect(),
+            bytes: sizes.iter().map(|(w, h)| *w as usize * *h as usize * 4).sum(),
+            key: 1,
+            sel: 0,
         }
     }
     /// Retire every uploaded texture. Main thread only (GL), like every other call in this module.
@@ -245,6 +287,7 @@ impl SubtitleBitmaps {
         for (t, _) in self.set.drain(..) {
             delete_tex(t);
         }
+        self.bytes = 0;
         self.key = i64::MIN;
         self.sel = i32::MIN;
     }
@@ -1478,6 +1521,24 @@ mod tests {
     use super::*;
     use crate::metadata::{Marker, MarkerKind};
     use crate::screens::player::skip_pill::SkipAction;
+
+    /// **The image-subtitle display set is a render, and it says how much of one** (§8.3 rule (c)):
+    /// one texture per rect, the SOURCE pixels behind them, and nothing left claimed once the set
+    /// is released. The bytes cannot be derived from the screen rects the cache keeps — those are
+    /// where each bitmap lands, scaled into the video rect — which is why the count is carried.
+    #[test]
+    fn the_image_subtitle_set_reports_its_own_textures_and_bytes() {
+        let mut subs = SubtitleBitmaps::stub(&[(720, 120), (300, 80)]);
+        let r = subs.render_report();
+        assert_eq!(r.textures, 2, "a two-rect display set is two textures");
+        assert_eq!(r.bytes, (720 * 120 + 300 * 80) * 4);
+        subs.release();
+        assert_eq!(
+            subs.render_report(),
+            crate::ui::frame::RenderReport::NONE,
+            "a released set holds nothing and must stop claiming bytes"
+        );
+    }
 
     fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
         Marker {

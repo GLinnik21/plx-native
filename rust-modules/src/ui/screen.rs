@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 
-use super::frame::Budget;
+use super::frame::{Budget, RenderReport};
 use super::machine::{
     Chrome, Cx, Effects, EntryId, FocusKey, GroupId, Host, InputEvent, InstanceId, Leave,
     LogicalState, Machine, PartId, PressId, PressRead, RequestId, ScreenId, StoreOrd, Tick,
@@ -182,7 +182,18 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// same process-wide flag.
     ///
     /// A screen with a CACHED ground, or none at all, wants nothing here and inherits this no-op.
-    fn prepare_present(&mut self, _underlay_changed: bool, _appear_settled: bool) {}
+    ///
+    /// `glass` is the frame plan's ONE shared refresh cadence (spec §8.3, phase 11): a refreshing
+    /// backdrop prepares against it rather than against a process-wide clock, which is what makes
+    /// two owners opened on different presents share one schedule instead of compounding into a
+    /// refresh every frame.
+    fn prepare_present(
+        &mut self,
+        _glass: &mut crate::ui::frame::glass::GlassPlan,
+        _underlay_changed: bool,
+        _appear_settled: bool,
+    ) {
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
@@ -200,9 +211,22 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
     }
-    /// The bytes of render this screen holds (its backing textures), for the `RenderSet` check.
-    fn render_bytes(&self) -> usize {
-        0
+    /// **The render this screen holds of its own** — how many backing textures, and their bytes —
+    /// for the frame's [`RenderSet`](crate::ui::frame::RenderSet) check (§8.3).
+    ///
+    /// The default is [`RenderReport::NONE`] and it is the truthful answer for almost every screen
+    /// here: they draw immediate-mode, and the textures they put on the panel come from shared
+    /// pools (`ui::tex`'s posters, `ui::icons`, the glyph cache, the ONE `popover::host`
+    /// `FrameCache` a covered host is served from, the blur chain) which are counted once, where
+    /// they live, and never per screen that samples them. Override this only where the screen's
+    /// own code called `upload_rgba` and its own code will call `delete_tex` — today that is
+    /// `screens::login` (the QR bitmap) and `screens::player` (the PGS/VobSub display set). The
+    /// inventory and the ceiling's derivation are in `ui/frame/render_set.rs`.
+    ///
+    /// Pure, like every other query on this trait: answering allocates nothing and uploads
+    /// nothing.
+    fn render_report(&self) -> RenderReport {
+        RenderReport::NONE
     }
     /// **The modal dim this SURFACE asks its host page for** — see [`Scrim`]. A page answers
     /// [`Scrim::NONE`] and so does every surface that draws its own ground; the container asks

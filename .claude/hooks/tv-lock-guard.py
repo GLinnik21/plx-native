@@ -181,6 +181,16 @@ def classify(seg):
             subs = [t for t in w[1:] if not t.startswith("-")]
             if subs and subs[0] in ("log", "status"):
                 return None
+        # `tests/run.py --list` never commits to driving the television: `main()` returns 0 from
+        # every `args.list` branch (the pipeline-tier listing and the server-tier one right after
+        # it) before the TV lock is acquired, before any trigger is armed and before `make deploy`/
+        # `run-stream` runs — see the `--list`-vs-drive split in `tests/run.py`'s `main()`. argparse
+        # makes `--list` an `action="store_true"`, so it takes effect wherever it sits on the
+        # command line, and so does this allowance: `--list --server`, `--only x --list`, `--list
+        # --fps` are all list-only. Match the flag as its own TOKEN, never a substring — `--list-
+        # foo` is a different, unrecognised flag and must still block.
+        if base == "run.py" and "--list" in w[1:]:
+            return None
         return f"{base} drives the television"
 
     if base == "make":

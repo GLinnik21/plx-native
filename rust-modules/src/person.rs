@@ -891,8 +891,12 @@ pub(crate) fn pump() -> bool {
             }
         }
         // the take releases the single-flight claim with the mail, whatever the landing turns out
-        // to be — `Fetch::take` is where that rule lives
-        if let Some(r) = FETCH[i].take() {
+        // to be — `Fetch::take` is where that rule lives. Under a replay it happens on the frame
+        // the recording took it on (§3.3 step 3, `ui::landgate`); `maybe_spawn` below is
+        // deliberately outside the gate, so the request that produces it still goes out on time.
+        if let Some(r) =
+            crate::stores::take_landing(crate::stores::StoreId::Person, || FETCH[i].take())
+        {
             // EVERY landing repaints, the failures included. `ui::idle` gates the whole frame
             // on a settled screen, so without this a shelf that arrives (or a spinner that should
             // stop) waits for the next keypress to become visible. This page had no such call at

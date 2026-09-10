@@ -790,7 +790,12 @@ pub(crate) fn pump(dt: f32) -> bool {
                 *cd -= 1;
             }
         }
-        let taken = SLOT[i].lock().unwrap_or_else(|e| e.into_inner()).take();
+        // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
+        // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
+        // are outside it, so the query still goes out when it went out.
+        let taken = crate::stores::take_landing(crate::stores::StoreId::Search, || {
+            SLOT[i].lock().unwrap_or_else(|e| e.into_inner()).take()
+        });
         if let Some(m) = taken {
             // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
             // be — dropping a stale one without this is how the flag latches forever

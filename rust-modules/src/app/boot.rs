@@ -669,8 +669,12 @@ pub(crate) unsafe fn boot(
     // count, size and refresh cadence that cycles its own steps inside one launch, so legs are
     // interleaved by construction. /tmp/plxnative-navblur is the blurred-route-transition
     // prototype. Both live in `ui::glassload`; both are absent from a release build.
-    crate::dev::scenarios::arm_glassload();
-    crate::dev::scenarios::arm_navblur();
+    // The plan is built HERE rather than in the `App` literal below so the dial is armed at the
+    // point in boot it always was: `configure` logs what it will run, and that line's position in
+    // the event log is what a sweep is read against.
+    let mut glass = crate::ui::frame::glass::GlassPlan::new();
+    crate::dev::scenarios::arm_glassload(&mut glass);
+    crate::dev::scenarios::arm_navblur(&mut glass);
     // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
     // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
     // quad area this app submits, per primitive family, per frame. It is not billed for the
@@ -695,6 +699,9 @@ pub(crate) unsafe fn boot(
     // its glass snapshot is cached for the whole open lifetime.  The knob remains for explicit
     // material profiling, not as part of an Account FPS scene.
     let glass_hz_armed = crate::dev::scenarios::arm_glasshz();
+    // dev: /tmp/plxnative-nobudget — the frame budget's A/B CONTROL leg (spec §8.1). Read here
+    // with the other boot triggers; applied to the one `Budget` below, once the tree exists.
+    let nobudget = crate::dev::scenarios::nobudget_armed();
     crate::dev::scenarios::arm_profile_hwcnt();
     // dev: /tmp/plxnative-cpuprof — the render thread's OWN time per phase, every phase at
     // once, no glFinish. The one mode that can see a frame the frame-drop detector reports as
@@ -1054,7 +1061,7 @@ pub(crate) unsafe fn boot(
         input: crate::ui::input::Input::new(),
         rec: super::recorder::Recplay::Off,
         present: crate::ui::present::Present::new(),
-        budget: crate::ui::frame::Budget::new(),
+        glass,
         pages: crate::ui::dispatch::Dispatcher::new(),
         inputs: Vec::new(),
         bridge: super::bridge::Bridge::new(crate::diag::heartbeat::now_us),
@@ -1104,6 +1111,7 @@ pub(crate) unsafe fn boot(
             detail_tried,
             content_boot: None,
             play_tried,
+            play_await: None,
             menu_tried,
             menupick_tried,
             menupick_row,
@@ -1129,9 +1137,17 @@ pub(crate) unsafe fn boot(
                 nav_osc,
                 nav_osc_rk,
                 glass_hz_armed,
+                nobudget,
             },
         },
     };
+    // dev: /tmp/plxnative-nobudget — put the ONE frame budget (the tree's, spec §2.2) into its
+    // pre-phase-11 shape for the A/B's control leg. The tree exists now, which is why this is
+    // here rather than beside the trigger read.
+    if app.scenarios.dev.nobudget {
+        app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
+        crate::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
+    }
     // …the deferred half of the `BootTo::Home` arm above: the tree exists now, so the question can
     // be presented. Idempotent and cheap (`should_show` is false once a decision is recorded and
     // on any automated boot), so the flag is the only thing carrying the decision forward.

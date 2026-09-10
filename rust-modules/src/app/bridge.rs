@@ -506,8 +506,8 @@ impl Bridge {
         self.chrome.members(selected, focus, &mut d.nav.tabs.strip);
     }
 
-    pub(crate) fn prepare_home_chrome(&self) {
-        crate::ui::widgets::tab_glass_prepare_with(self.chrome.labels());
+    pub(crate) fn prepare_home_chrome(&self, clock: &mut crate::ui::widgets::DynamicClock) {
+        crate::ui::widgets::tab_glass_prepare_with(self.chrome.labels(), clock);
     }
 
     pub(crate) fn home_command(&mut self, command: HomeCmd) -> bool {
@@ -866,6 +866,13 @@ impl Rig<AppHost> for Bridge {
         #[cfg(not(test))]
         crate::textinput::adopt();
     }
+    /// §3.3 step 9's application half — the render cache's upload step — and it is EMPTY on
+    /// purpose while the legacy loop owns the frame. The dispatcher's prepare pass runs from
+    /// inside `frame_with_tap`, which the loop calls before its own present decision; the upload
+    /// has to happen after that decision and before the draw (it draws, so it needs a presenting
+    /// frame's GL scope and the page's `frame_clear` behind it). So the loop calls
+    /// `adapters::poster::prepare` itself, in the right window, spending the same one `Budget`
+    /// this hook would have been handed. It becomes real when the dispatcher owns the frame.
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
     fn ls2_pump(&mut self) {}
     /// §3.3 step 9, every frame, presented or not. Real since phase 9: the argument is the
@@ -935,8 +942,13 @@ pub(crate) fn frame_with_tap(
 
 pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
 
-fn take_live_results() -> AppResults {
-    let mut results = crate::stores::hubs::take_results();
+/// Home's hubs — the one adapter result the dispatcher delivers, and a LANDING SITE exactly like
+/// the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the arrival
+/// waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one relaxed
+/// atomic load and the same call.
+pub(crate) fn take_live_results() -> AppResults {
+    let mut results =
+        crate::ui::landgate::take_all(StoreId::Hubs.ord(), crate::stores::hubs::take_results);
     results.sort_by_key(|result| result.request_id());
     results.into_iter().map(|result| (
         crate::ui::machine::Addr {

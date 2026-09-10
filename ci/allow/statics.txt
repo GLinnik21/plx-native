@@ -1,15 +1,7 @@
-# count: 14
+# count: 6
 rust-modules/src/ui/icons.rs	CACHE: rasterised icon masks keyed by (name, size) — a GL texture cache, never read as state
 rust-modules/src/ui/text_view.rs	WRAP_CACHE: wrapped-line layout memo keyed by (text, width, size) — recomputed from the same inputs
 rust-modules/src/ui/testpat.rs	CURRENT: the dev synthetic ground pattern (plxnative-testpat / pat: token), draw-only
 rust-modules/src/ui/anim.rs	ENTRIES: per-key animation clocks for draw-time ramps, render half only
 rust-modules/src/ui/popover.rs	CACHE: THE single full-viewport FrameCache (8.29 MB) a covered host is drawn from as a quad
 rust-modules/src/ui/popover.rs	HELD: whether that FrameCache is held or being recaptured — the cache's own bookkeeping
-rust-modules/src/ui/glassload.rs	CARD_TEX: glass source texture for the focused card — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	NAVBLUR: the nav blur texture — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	NAVBLUR_CADENCE: the blur source refresh cadence — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	NAVBLUR_PIN: which present pinned the blur source — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	PRESENTS: presented-frame counter the cadence divides — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	STEP: the sweep's step index — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	SWEEP: the glass sweep clock — owned by the frame plan from phase 11
-rust-modules/src/ui/glassload.rs	T0: the sweep's origin tick — owned by the frame plan from phase 11

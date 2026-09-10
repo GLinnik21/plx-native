@@ -16,9 +16,33 @@
 //! **Current replay driver**: `plxnative-recplay=<dir>` drives the loop on the recorded ticks (the
 //! `AppClock`), re-injects each frame's inputs through the same synthesis the remote FIFO uses,
 //! compares `st` frame by frame, logs every mismatch as its own `replay: diverge` line and
-//! CONTINUES, then logs one summary and ends the run. A landing arriving on a different frame than
-//! it did when recorded is the expected source of a divergence in this phase and is reported,
-//! never hidden.
+//! CONTINUES, then logs one summary and ends the run.
+//!
+//! **The landing SCHEDULE (phase 11, §3.3 step 3).** The stores still fetch live during a replay,
+//! but the frame a result is OBSERVED on is no longer whatever the network and the thread
+//! scheduler produced. Every landing SITE — Home's hubs through `bridge::take_live_results`, and
+//! each legacy pump's mailbox take (`metadata` detail/season/alt-sources, `person`, `viewstate`,
+//! `browse`'s four, `search`'s per-source slot) — consumes its mailbox through `ui::landgate`,
+//! which during a replay holds an EARLY arrival until the frame the recording consumed it on. A
+//! LATE arrival is delivered at once and counted, exactly as before: holding cannot manufacture a
+//! result that has not come. An arrival the recording never saw is `extra`; a recorded landing
+//! this run never produced is `missing`, reported when the replay ends. All three ride the
+//! verdict as `land_diffs`.
+//!
+//! Three things about the shape are deliberate, and each was a wrong turn first.
+//! **(1) The gate wraps the TAKE, never the pump.** A pump both lands and spawns, so gating the
+//! pump would have suppressed the request whose landing it was waiting for — turning every browse
+//! and search landing into a guaranteed late one.
+//! **(2) The schedule is per STORE and per FRAME, deduplicated on both sides** — one `land`
+//! record per (frame, store), one cursor step per (frame, store) — so a store with five landing
+//! sites needs no site identity of its own and the recording stays one line per frame per store.
+//! **(3) It is a SCHEMA change** (`ui::rec::SCHEMA` 1 → 2): a schema-1 recording carries no `land`
+//! records at all, so replaying one under the gate would grade nothing while looking as though it
+//! graded everything. It is refused instead, and `tools/plxnative-rec rerecord` is the verb.
+//!
+//! Measured on flow 12 (2026-09-10, three runs of three): the recording's single `async` record
+//! sat on frame 1, every replay observed it on frame 0, and because a spring started one frame
+//! earlier never re-converges bit for bit, 927 of 928 frames diverged.
 //!
 //! Arming is at boot only (`Writer::open` refuses any other frame). The directory is the runtime
 //! root's `plxnative-recordings/latest` (not `plxnative-rec/`, which is the trigger FILE's own
@@ -186,6 +210,9 @@ pub(crate) struct Replay {
     diverged: u64,
     present_diffs: u64,
     result_diffs: u64,
+    /// Landings observed on a frame other than the one the recording observed them on, plus the
+    /// recorded landings this run never produced (`ui::landgate`, §3.3 step 3).
+    land_diffs: u64,
     result_at: usize,
     started: bool,
 }
@@ -202,7 +229,7 @@ struct ResultEnvelope {
 
 impl Replay {
     fn same(&self) -> bool {
-        self.diverged == 0 && self.present_diffs == 0 && self.result_diffs == 0
+        self.diverged == 0 && self.present_diffs == 0 && self.result_diffs == 0 && self.land_diffs == 0
     }
 }
 
@@ -317,6 +344,9 @@ impl Recplay {
                 match Writer::open(Box::new(sink), &header, 0) {
                     Ok(w) => {
                         crate::log(&format!("rec: recording to {}", dir.display()));
+                        // From here every landing SITE stamps the frame it consumed its mailbox
+                        // on — the schedule a replay of this recording is held to (§3.3 step 3).
+                        crate::ui::landgate::arm_recording();
                         Recplay::Recording(Rec {
                             w,
                             f: 0,
@@ -344,6 +374,9 @@ impl Recplay {
                         if let Some(diff) = triggers_differ(&rec.header.triggers, &triggers) {
                             crate::log(&format!("replay: TRIGGERS DIFFER — {diff}"));
                         }
+                        // The landing SCHEDULE: from here a live arrival is held to the frame the
+                        // recording consumed it on (§3.3 step 3, `ui::landgate`).
+                        crate::ui::landgate::arm_replay(rec.land_schedule());
                         let mut probe = String::new();
                         init.probe(&mut probe);
                         if probe != rec.header.init_probe {
@@ -359,6 +392,7 @@ impl Recplay {
                             diverged: 0,
                             present_diffs: 0,
                             result_diffs: 0,
+                            land_diffs: 0,
                             result_at: 0,
                             started: false,
                         })
@@ -390,6 +424,18 @@ impl Recplay {
         match self {
             Recplay::Replaying(r) => Some(r.rec.header.clock_start_ms),
             _ => None,
+        }
+    }
+
+    /// The loop's frame index, published to `ui::landgate` before any landing site runs. One
+    /// relaxed atomic load when neither trigger is armed.
+    pub(crate) fn begin_frame(&self) {
+        match self {
+            Recplay::Recording(r) => crate::ui::landgate::begin_frame(r.f),
+            Recplay::Replaying(r) => crate::ui::landgate::begin_frame(
+                r.rec.frames.get(r.at).map_or(r.at as u64, |f| f.f),
+            ),
+            Recplay::Off => {}
         }
     }
 
@@ -481,6 +527,14 @@ impl Recplay {
             Recplay::Off => false,
             Recplay::Recording(r) => {
                 let t0 = std::time::Instant::now();
+                // The frame's LANDING SCHEDULE (§3.3 step 3): one record per store that consumed
+                // a mailbox this frame, whichever of its sites did it. Written before `st`, so a
+                // reader sees the arrival above the state it produced.
+                for (ord, n) in crate::ui::landgate::take_frame_lands() {
+                    let gen = crate::stores::StoreId::from_ord(ord).map_or(0, crate::stores::gen);
+                    r.w.land(r.f, ord.0, gen, n);
+                    r.events = true;
+                }
                 if r.events {
                     r.w.state(r.f, hash());
                 }
@@ -494,6 +548,13 @@ impl Recplay {
             }
             Recplay::Replaying(r) => {
                 r.started = true;
+                // Landings the gate could not place on their recorded frame. `late` means the
+                // worker was slower here than it was when recorded (holding cannot conjure a
+                // result); `extra` means the recording had none left for that store.
+                for (frame, ord, why) in crate::ui::landgate::take_diffs() {
+                    r.land_diffs += 1;
+                    crate::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
+                }
                 if let Some(fr) = r.rec.frames.get(r.at) {
                     for index in r.result_at..fr.results.len() {
                         r.result_diffs += 1;
@@ -515,13 +576,23 @@ impl Recplay {
                 r.result_at = 0;
                 r.at += 1;
                 if r.at >= r.rec.frames.len() {
+                    // Recorded landings this run never produced. They can only be known at the
+                    // end: until the recording is exhausted, "not yet" and "never" look alike.
+                    for (ord, frame) in crate::ui::landgate::unmatched() {
+                        r.land_diffs += 1;
+                        crate::log(&format!(
+                            "replay: land diverge f={frame} store={ord} reason={}",
+                            crate::ui::landgate::Diff::Missing.name()
+                        ));
+                    }
                     crate::log(&format!(
-                        "replay: done frames={} graded={} diverged={} present_diffs={} result_diffs={} verdict={}",
+                        "replay: done frames={} graded={} diverged={} present_diffs={} result_diffs={} land_diffs={} verdict={}",
                         r.rec.frames.len(),
                         r.graded,
                         r.diverged,
                         r.present_diffs,
                         r.result_diffs,
+                        r.land_diffs,
                         if r.same() { "SAME" } else { "DIVERGED" }
                     ));
                     return true;
@@ -544,6 +615,7 @@ impl Recplay {
     }
 
     pub(crate) fn finish(self) {
+        crate::ui::landgate::disarm();
         if let Recplay::Recording(r) = self {
             r.w.finish();
             crate::log("rec: finished");
@@ -693,7 +765,7 @@ mod tests {
                 rec: Recording { header: Header::new(state_fp(), &init),
                     frames: vec![crate::ui::rec::Frame { f: 0, results: expected, st: Some(7), ..Default::default() }],
                     metrics: Default::default(), stopped_at: None },
-                at: 0, graded: 0, diverged: 0, present_diffs: 0, result_diffs: 0,
+                at: 0, graded: 0, diverged: 0, present_diffs: 0, result_diffs: 0, land_diffs: 0,
                 result_at: 0, started: false,
             })
         };
@@ -794,7 +866,7 @@ mod tests {
             rec: Recording { header: Header::new(state_fp(), &init), frames: vec![crate::ui::rec::Frame {
                 f: 0, results: results.into_iter().cloned().collect(), ..Default::default()
             }], metrics: Default::default(), stopped_at: None },
-            at: 0, graded: 0, diverged: 0, present_diffs: 0, result_diffs: 0,
+            at: 0, graded: 0, diverged: 0, present_diffs: 0, result_diffs: 0, land_diffs: 0,
             result_at: 0, started: false,
         });
         let supplied = replay.replay_results(|_| None).unwrap().unwrap();
@@ -896,6 +968,57 @@ mod tests {
         // combined value (0x6a5c_ca67_6290_b770 at the moment of the split, unchanged by it —
         // the move preserved both the order and the strings).
         assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x79dc_9274_0550_1805);
+    }
+
+    /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
+    /// the worker produced before its recorded frame is not observed until that frame, and the
+    /// verdict says so. Without `ui::landgate` this is the flow-12 defect measured 2026-09-10 —
+    /// the recording's one `async` record on frame 1, every replay observing it on frame 0, and
+    /// 927 of 928 frames diverging because a spring started a frame early never re-converges.
+    #[test]
+    fn a_hubs_landing_is_delivered_on_its_recorded_frame_during_replay() {
+        let _guard = crate::testlock::serial();
+        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
+        let _ = crate::stores::hubs::take_results();
+        // a recording in which Hubs landed on FRAME 2 and nowhere else
+        let manifest = format!(r#"{{"schema": {}, "state_fp": {}}}"#, crate::ui::rec::SCHEMA, state_fp());
+        let seg = b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":16000}\n                    {\"f\":1,\"t\":\"tick\",\"ms\":16,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"tick\",\"ms\":32,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"land\",\"ord\":1,\"gen\":3,\"n\":1}\n";
+        let rec = Recording::parse(&manifest, &[seg.as_slice()], state_fp()).unwrap();
+        assert_eq!(rec.land_schedule(), vec![vec![], vec![(2, 1)]]);
+        let _armed = crate::ui::landgate::Armed;
+        crate::ui::landgate::arm_replay(rec.land_schedule());
+        // the worker's answer is in the mailbox from frame 0
+        crate::pms::queue_test_landing(Some(4));
+        let mut seen = Vec::new();
+        for f in 0..4u64 {
+            crate::ui::landgate::begin_frame(f);
+            if !super::super::bridge::take_live_results().is_empty() {
+                seen.push(f);
+            }
+        }
+        assert_eq!(seen, vec![2], "the live arrival waited for its recorded frame");
+        assert!(crate::ui::landgate::take_diffs().is_empty());
+        assert!(crate::ui::landgate::unmatched().is_empty());
+        crate::pms::reset();
+    }
+
+    /// …and a landing the recording never saw is delivered at once and counted, so the gate can
+    /// only ever DELAY an arrival — it can neither invent one nor hide one.
+    #[test]
+    fn a_hubs_landing_the_recording_never_saw_is_delivered_at_once_and_counted() {
+        let _guard = crate::testlock::serial();
+        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
+        let _ = crate::stores::hubs::take_results();
+        let _armed = crate::ui::landgate::Armed;
+        crate::ui::landgate::arm_replay(vec![]);
+        crate::pms::queue_test_landing(Some(4));
+        crate::ui::landgate::begin_frame(5);
+        assert_eq!(super::super::bridge::take_live_results().len(), 1);
+        assert_eq!(
+            crate::ui::landgate::take_diffs(),
+            vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
+        );
+        crate::pms::reset();
     }
 
     #[test]

@@ -689,16 +689,26 @@ mod tests {
             !src.contains("crate::system::opaque_route(fr.player)"),
             "the opaque region must not be keyed on the ROUTE — the plane's bit is the question",
         );
-        let call = src
-            .find("crate::system::opaque_route(app.player.video_plane_bound);")
-            .expect("the loop must hand `opaque_route` the Player machine's own bit");
-        let gate = src
-            .find("fr.present = crate::ui::idle::should_present(")
-            .expect("the loop's present decision");
-        assert!(
-            call < gate,
-            "`opaque_route` must be called BEFORE the present decision and outside it, or the              false edge is lost on exactly the frames it matters on — the ones that do not present",
+        // **UNCONDITIONAL, at the loop body's own depth.** The claim this pins is not where the
+        // call sits relative to the present decision — spec §3.3 step 9 puts it AFTER, and since
+        // phase 11 so does the loop, because the render cache's upload step now runs on the
+        // PRESENTING side of that decision and this call has to follow it. The claim is that the
+        // call is never nested inside an `if fr.present` block: the false edge after an unbind
+        // may land on a frame the gate does not present, and nothing else in the loop would
+        // carry it. This assertion used to be `call < gate`, which was a proxy for that and
+        // stopped being one when the upload moved.
+        const CALL: &str = "        crate::system::opaque_route(app.player.video_plane_bound);";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`opaque_route` must be called exactly once, at the loop body's own indentation — \
+             nested inside `if fr.present` it is lost on exactly the frames it matters on",
         );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let draw = src
+            .find("let (_vx, _vy, _vw, _vh) = draw(app, fr);")
+            .expect("the loop's draw");
+        assert!(call < draw, "the compositor is told before the frame is drawn");
     }
 
     /// The host cache's question — did the PAGE change — answered by count: damage raised inside

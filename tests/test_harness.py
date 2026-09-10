@@ -287,6 +287,37 @@ class ReplayFixtures(unittest.TestCase):
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
         self.assertGreaterEqual(checked, 0)
 
+    def test_every_committed_fixture_carries_the_trees_recording_schema(self):
+        """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
+        notice: a stale fixture's manifest only refuses to LOAD at replay time
+        (`Recording::parse`), which is too late to catch here on `make check`. Read SCHEMA out of
+        the tree the way `ci/flavor.py` reads other Rust constants agreed with a second language —
+        a plain regex over the source, no cargo invocation — and check every committed fixture's
+        manifest agrees with it, so a fixture left behind by a schema bump fails loudly beside the
+        alphabet check above instead of only at `tests/focusfp.sh --replay` time."""
+        rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "src", "ui", "rec.rs")
+        with open(rec_rs_path, encoding="utf-8") as f:
+            rec_rs = f.read()
+        m = re.search(r"(?m)^pub const SCHEMA: u32 = (\d+);", rec_rs)
+        self.assertIsNotNone(m, "ui/rec.rs SCHEMA constant found")
+        schema = int(m.group(1))
+        checked = 0
+        for name in sorted(os.listdir(self.FIXTURES)):
+            d = os.path.join(self.FIXTURES, name)
+            if not os.path.isdir(d):
+                continue
+            manifest_path = os.path.join(d, "manifest.json")
+            if not os.path.isfile(manifest_path):
+                continue
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+            checked += 1
+            self.assertEqual(manifest.get("schema"), schema,
+                              "%s/manifest.json: schema %r does not match ui/rec.rs SCHEMA=%d "
+                              "(tools/plxnative-rec rerecord it)"
+                              % (name, manifest.get("schema"), schema))
+        self.assertGreater(checked, 0)
+
     def _tool(self, *args):
         tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
         return subprocess.run([sys.executable, os.path.abspath(tool), *args],
@@ -303,7 +334,7 @@ class ReplayFixtures(unittest.TestCase):
                     f.write(json.dumps({"f": 1, "t": kind, "payload": "not-for-info-output"}) + "\n")
             result = self._tool("info", recording)
             self.assertEqual(result.returncode, 0)
-            self.assertIn("effects=2 results=1 lifecycle=1", result.stdout)
+            self.assertIn("effects=2 results=1 landings=0 lifecycle=1", result.stdout)
             self.assertNotIn("not-for-info-output", result.stdout)
 
     def _synthetic_recording(self, root, st=0x1234, anchor=False):
@@ -608,6 +639,98 @@ class FrameCeilings(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(detail, "")
 
+    def test_an_old_log_without_the_frame_plan_fields_still_parses(self):
+        """Phase 11 appended `carried=`/`dropped=`/`budget=`/`evicted_hot=` after `worstprep=`,
+        and `tests/run.py` anchors `fps=` and `worstframe=` with a lazy `.*?` in front of each.
+        A log from BEFORE that must keep parsing (these are logs the maintainer replays), and a
+        log from after must parse identically — the fields ride behind both anchors."""
+        old = "loop=60 route=home overlay=settings fps=12 worstframe=31.5ms worstprep=0.4ms"
+        new = (old + " carried=2 dropped=0 budget=7/1/solo:residency evicted_hot=3 sim_placeholder")
+        for label, ln in (("old", old), ("new", new.replace(" sim_placeholder", ""))):
+            with self.subTest(log=label):
+                self.assertEqual(run.parse_fps([ln], "home", "settings"), [12])
+                self.assertEqual(run.parse_worst([ln], "home", "settings"), [31.5])
+                self.assertEqual(run.parse_loop([ln], "home", "settings"), [60])
+
+    def test_the_frame_drop_line_still_parses_with_the_per_frame_counters(self):
+        """The four counters moved from the loop's `extra()` closure into the instrument, in the
+        same wire position. `FRAMEDROP_RE` reads `total=` and the trailing `route=`, so a line
+        with them still grades — and a `stall_ceiling_ms` gate still sees it."""
+        ln = ("FRAMEDROP total=148.2 ingest=0.0 results=133.0 tick_drain=0.0 navcommit=1.1 "
+              "prepare=0.2 draw=6.6 capture=0.0 swap=7.2 up=1 px=93750 cards=0 off=0 "
+              "route=detail load=-1 snapt=0.00")
+        self.assertEqual(run.parse_framedrop([ln], "detail"), [148.2])
+        self.assertEqual(run.parse_framedrop([ln], "home"), [])
+
+
+class ColdOpenGate(unittest.TestCase):
+    """`coldopen_ceiling_ms` (restructure spec §8.4), graded from the app's unarmed `coldopen`
+    line. Its whole reason for existing is what `stall_ceiling_ms` cannot do, so that is what the
+    first two tests are about."""
+
+    LINE = "coldopen screen={s} ms={ms} prepared={p}"
+
+    def _lines(self, samples, screen="detail"):
+        return [self.LINE.format(s=screen, ms=ms, p="true" if ok else "false")
+                for ms, ok in samples]
+
+    def test_the_slowest_mount_decides_and_a_faster_one_is_still_a_sample(self):
+        scene = {"coldopen_ceiling_ms": 160}
+        ok, detail = run.grade_coldopen(scene, self._lines([(31, True), (140, True)]),
+                                        "detail", None)
+        self.assertTrue(ok, detail)
+        self.assertIn("worst=140ms over 2 mount(s)", detail)
+        ok, _ = run.grade_coldopen(scene, self._lines([(31, True), (161, True)]), "detail", None)
+        self.assertFalse(ok)
+
+    def test_a_run_with_no_coldopen_line_FAILS_where_a_framedrop_gate_would_pass(self):
+        """The censoring `stall_ceiling_ms` fixes: a cold open under the armed threshold leaves no
+        FRAMEDROP line, and no line is a PASS there. An absent `coldopen` line is a failure."""
+        heartbeats = ["loop=60 route=detail fps=60 worstframe=20.0ms worstprep=0.1ms"] * 6
+        ok, _ = run.grade_frame_ceilings({"stall_ceiling_ms": 160}, heartbeats, "detail", None, 0)
+        self.assertTrue(ok, "the FRAMEDROP gate passes a run it has no samples from")
+        ok, detail = run.grade_coldopen({"coldopen_ceiling_ms": 160}, heartbeats, "detail", None)
+        self.assertFalse(ok)
+        self.assertIn("no `coldopen screen=detail` line", detail)
+
+    def test_the_screen_word_is_the_overlay_when_the_scene_pins_one(self):
+        scene = {"coldopen_ceiling_ms": 100}
+        lines = self._lines([(30, True)], screen="settings") + self._lines([(400, True)])
+        ok, detail = run.grade_coldopen(scene, lines, "home", "settings")
+        self.assertTrue(ok, detail)
+        self.assertIn("worst=30ms", detail, "the detail mount is another scene's")
+
+    def test_an_unprepared_mount_is_reported_and_never_asserted(self):
+        scene = {"coldopen_ceiling_ms": 160}
+        ok, detail = run.grade_coldopen(scene, self._lines([(20, False)]), "detail", None)
+        self.assertTrue(ok, "a refused resource is the budget working, not a gate failure")
+        self.assertIn("refused resource", detail)
+
+    def test_a_scene_without_the_gate_is_untouched(self):
+        ok, detail = run.grade_coldopen({"loop_floor": 30}, [], "detail", None)
+        self.assertTrue(ok)
+        self.assertEqual(detail, "")
+
+    def test_the_gate_does_not_arm_the_frame_drop_detector(self):
+        """`coldopen` is unarmed by construction; a scene declaring only this gate must not make
+        the harness arm `plxnative-framedrop`, which would perturb the pacing it did not ask for."""
+        self.assertIsNone(run.frame_ceiling_threshold({"coldopen_ceiling_ms": 160}))
+
+    def test_cold_open_gate_is_measured_not_provisional(self):
+        """TV session 7 leg 6 is the session that RESOLVES the provisional gate this test used to
+        guard (formerly `test_cold_open_carries_the_provisional_gate_and_says_it_is_provisional`):
+        five unarmed runs, panel off, `coldopen_ceiling_ms` set from the samples rather than
+        copied from `stall_ceiling_ms`. The note must now say so, not still claim PROVISIONAL."""
+        scene = {s["name"]: s for s in _manifest()["fps_scenes"]}["cold-open"]
+        self.assertIsNotNone(scene.get("coldopen_ceiling_ms"))
+        note = scene.get("_coldopen_note", "")
+        self.assertIn("MEASURED", note)
+        self.assertNotIn("PROVISIONAL", note, "the gate was resolved, not carried forward")
+        self.assertIn("TV session 7", note, "the note must name the session that sets the value")
+        self.assertIn("leg 6", note, "the note must name the leg the samples came from")
+
+
+class FrameCeilingsManifest(unittest.TestCase):
     def test_the_new_scenes_declare_a_ceiling_and_a_known_route_word(self):
         scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
         for name in ("modal-ramp", "legal-document", "page-panel", "decision-alert", "cold-open"):

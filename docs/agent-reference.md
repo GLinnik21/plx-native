@@ -958,7 +958,9 @@ you its own numbers are wrong.
 > it, and a **`PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) refuses any Bash command that
 > reaches the set without a lease — including a raw `ssh root@…`, an `scp` into the app directory
 > and a `sshpass` one-liner. Read-only diagnostics are deliberately not blocked:
-> `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`. With nobody holding the
+> `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`, and `tests/run.py --list`
+> (it returns before the lock, before any trigger is armed and before anything is deployed, so
+> the guard treats it as a status read — since UI-restructure phase 11). With nobody holding the
 > set a single command takes a short implicit lease rather than failing; **a SESSION should take a
 > real one**, because the gap between two of your own commands is exactly where another lane lands.
 >
@@ -1286,11 +1288,33 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   only update on an ordinary present) and that is expected, not a hang; and **an fps floor taken on a static
   screen now grades nothing**, which is why `fps:home-grid` arms `plxnative-homeosc` and the still
   case is gated by `fps:home-idle`'s `fps_ceiling` instead. `/tmp/plxnative-noidle` turns the
-  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to). **The exclusion
+  gate off (DIAG-exempt, so an A/B does not also change which screen you boot to), and
+  `/tmp/plxnative-nobudget` is its twin for the FRAME BUDGET (DIAG for the same reason):
+  admission as it was before phase 11 — the poster quota of three per frame, no time ceiling and
+  no solo frame — so an A/B leg prices the admission rule rather than two builds. **The exclusion
   is the bound video plane, not the player route** — pre-bind (the Resolving/Loading spinner) and
   post-unbind (the failure read-out, teardown) player frames are gated exactly like Home, which is
   why `PlayerScreen::clock_fingerprint` exists: every clock-driven player animator reports motion
   through it once the route no longer gets a free pass.
+- **The heartbeat's WIRE ORDER, since phase 11** (`diag/heartbeat.rs::heartbeat_tail` is the one
+  definition; anything here that disagrees with it is this file being stale):
+  `loop= route= [overlay=] [pos= play=] [vtick= vgap=] fps= [load= snap= period=] [worstframe=
+  worstprep=] carried= dropped= budget=<admitted>/<refused>[/solo:<class>] evicted_hot= [rec=]
+  [sim=1]`. **Nothing may be inserted ahead of `fps=` or `worstframe=`** — `tests/run.py`'s
+  `FPS_RE` and `WORST_RE` anchor on `loop=`/`route=`/`overlay=` and then reach forward with a lazy
+  `.*?`, so appending is free and inserting is not. The bracketed pairs are conditional;
+  `worstframe=`/`worstprep=` need `plxnative-framedrop`, and the four frame-plan fields do NOT —
+  they print in every build, because each is a counter its owner already keeps rather than a
+  measurement anybody pays for. `budget=`'s `/solo:<class>` third field appears only when a solo
+  take was admitted in that second, so its PRESENCE is the event. There is deliberately no
+  `allocs=`: the restructure spec names one for `hostsim`, this crate has no `GlobalAlloc`, and a
+  counting allocator was not invented to fill a field.
+  **Beside the heartbeat, and not on it: `coldopen screen=<name> ms=<n> prepared=<bool>`**, one
+  line per screen MOUNT, unarmed. `ms` is from the frame that mounted the body to the first frame
+  it both prepared and DREW — so a mount and a first draw in one iteration reads `ms=0`, which is
+  the honest answer and not a broken instrument; `prepared` is whether that frame's budget refused
+  nothing. One route does not produce it: the PLAYER, whose page still answers
+  `FocusSource::Legacy` and is therefore drawn by the loop rather than by the container.
 - **The heartbeat fields were RENAMED 2026-08-01 and the old name was REUSED**, so a log or doc
   predating that reads as the opposite of what it says. Old `FPS=` is today's **`loop=`** (loop
   iterations); old `pres=` is today's **`fps=`** (frames presented). An old `FPS=60` says nothing
@@ -1355,7 +1379,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   signal state" is itself a diagnostic that nothing is decoded on the video plane.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
-  heartbeat. **Five assertions in two families. Three RATE gates — and picking the wrong one is how a frozen
+  heartbeat. **Six assertions in three families. Three RATE gates — and picking the wrong one is how a frozen
   animation ships:**
   `loop_floor` grades `loop=`, which counts LOOP iterations — it proves the app is alive, and cannot
   see a stopped animation at all; `fps_floor` grades `fps=` and is what proves an animation still
@@ -1363,7 +1387,16 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   other side and proves a still screen stops (`home-idle`, `search-idle`). **And two FRAME-TIME gates (2026-09-06)** — `worst_ceiling_ms`
   (the 2nd-highest post-warmup `worstframe=`) and `stall_ceiling_ms` (the largest `FRAMEDROP`
   total on the route, warmup INCLUDED) — which arm `plxnative-framedrop` themselves and answer
-  what no rate can: one 80 ms frame under a healthy median. The Search pair is the
+  what no rate can: one 80 ms frame under a healthy median. **And, since phase 11, one MOUNT gate:**
+  `coldopen_ceiling_ms`, the slowest `coldopen screen=<word> ms=<n>` of the scene's screen. It
+  exists because `stall_ceiling_ms` CENSORS ITS OWN SAMPLES and could not simply be re-pointed:
+  the frame-drop detector prints only above the threshold `frame_ceiling_threshold` armed it with,
+  so a cold open FASTER than the ceiling leaves no line and `grade_frame_ceilings` passes it as
+  "no FRAMEDROP line" — five runs of `cold-open` in TV session 5 read "no-line PASS, 208.5,
+  no-line PASS, 191.4, 227.8", in which a 30 ms open and a 159 ms one are the same output. The
+  `coldopen` line is UNARMED and unconditional, so one mount is one sample and an absent line
+  fails. Its value on `cold-open` is PROVISIONAL until TV session 7 leg 6 measures it, and the
+  scene's `_coldopen_note` says so. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
@@ -1386,8 +1419,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   instruments and their structural blind spots are `docs/backdrop-blur-profiling.md`. **A third profiler mode, `/tmp/plxnative-cpuprof` (2026-09-02), times every `ui::profile::phase` on the RENDER THREAD** — inclusive wall time, every phase at once, no `glFinish`, a `~src` suffix for the blur source pass's copy of a phase — and it is the one that can read a frame the frame-drop detector reports as `draw=24ms swap=0.3ms`: on this driver the wait for the GPU lands in the frame's FIRST framebuffer-0 command, i.e. inside `hm.clear`, so a fat `draw=` is not CPU work until this mode says which phase holds it. That is how the Home hero regression was read (`docs/backdrop-blur-profiling.md`, the 2026-09-02 section): 26 ms in `hm.clear`, 2 ms in everything Home actually computes. For by-hand judder hunts: `/tmp/plxnative-framedrop` logs any frame over 22ms (or over
   N ms — the file's content) with an EIGHT-PHASE breakdown — `ingest results tick_drain navcommit
   prepare draw capture swap`, the frame algorithm's names, timed from the TOP of the iteration since
-  2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus the
-  upload counts, and adds `worstframe` (the whole iteration, presented frames only) and `worstprep`
+  2026-09-06 (it used to start after the input half, so a slow key handler was invisible) — plus
+  `up=`/`px=`/`cards=`/`off=`, **which are THAT FRAME's counts since phase 11 and were not before**:
+  their only drain was the closure the instrument calls after the threshold check, so a slow
+  frame's counts covered every frame since the previous slow one (the `up=9` in
+  `docs/measurements/tv-session-5-2026-09-10.md` is a reading of the old behaviour). It adds
+  `worstframe` (the whole iteration, presented frames only) and `worstprep`
   (the prepare phase, timed on EVERY iteration) to the heartbeat; `/tmp/plxnative-homeosc` sweeps the grid focus top↔bottom perpetually to reproduce
   scroll judder headlessly. For a reproducible three-layer account of one FPS scene use
   `./tests/run.py --fps --only <scene> --graphics-profile --profile-phase <phase>`: it preserves
@@ -1445,7 +1482,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   inputs through the remote FIFO's own synthesis, grades the state hash frame by frame — every
   mismatch is its own `replay: diverge` line and the run continues — and ends with one `replay:
   done … verdict=SAME|DIVERGED` line; `tests/focusfp.sh --replay` drives it over the committed
-  fixtures. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
+  fixtures. **The stores still fetch live under a replay, but since phase 11 the frame a result
+  is OBSERVED on is the recorded one** (`ui::landgate`, spec §3.3 step 3): every landing SITE —
+  Home's hubs and each legacy pump's mailbox take — consumes through a schedule of `(frame,
+  arrivals)` pairs per store, an early arrival WAITS for its frame, the due frame polls for a
+  bounded moment, and late/extra/missing ride the summary as `land_diffs`. Before it, flow 12's
+  one recorded landing sat on frame 1 and every replay observed it on frame 0, which — a spring
+  started a frame early never re-converging bit for bit — diverged 927 of 928 frames. Since 2026-09-07 the recorder also writes one `fo` FOCUS record per frame (entry,
   element, group), and the library replay has two MODES: targets — every input replayed with its
   recorded resolution, what `plxnative-recplay` runs — and resolve, which runs the focus engine
   and the hit map for real on every engine page, reports each focus mismatch as its own line and

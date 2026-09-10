@@ -49,6 +49,7 @@ pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner o
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
 pub mod label;
+pub(crate) mod landgate; // RESTRUCTURE (spec §3.3 step 3): a replay delivers a landing on its RECORDED frame
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
 pub(crate) mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/return/follow policy

@@ -13,14 +13,33 @@ hash is `AppFrame{route,overlay,focus,tree}`: the press machine, the route/overl
 focus fingerprint from phase 2, plus — since phase 5b — `tree`, which is `Dispatcher::state_hash`
 (every live container instance's `LogicalState`, the tree's shape and surface phases, saved entry
 arguments and return memory even after eviction, the engine's focus and the queue depth).
-The stores still fetch live, so a landing arriving on a different frame
-is the expected divergence and is reported.
+The stores still fetch live during a replay, but since phase 11 the frame a result is OBSERVED
+on is the RECORDED one (`rust-modules/src/ui/landgate.rs`, spec §3.3 step 3). Every landing
+SITE — Home's hubs and each legacy pump's mailbox take — consumes its mailbox through a schedule
+of `(frame, arrivals)` pairs per store, taken from the recording's `land` records: an arrival
+that is early WAITS for its frame, the frame a landing is due polls for a bounded moment, and one
+that is late, unrecorded (`extra`) or never produced (`missing`) is reported and rides the
+verdict as `land_diffs`.
 
 The **anchors** include `1-boot-home-chip-grid`, `6-settings-family` (Privacy toggle and Legal
 document navigation), and `12-filmography-detail-return` (the owned Filmography surface, a
 library-matched credit opened in Detail, and both BACK steps). Phase 7 rerecorded the existing anchors
-after an observed loader refusal and added the content-return anchor. Take the census from this
-directory's listing. An anchor refuses `--rebaseline` (below); when a
+after an observed loader refusal and added the content-return anchor. **Phase 11 rerecorded all
+three onto schema 2**, which carries the landing schedule above.
+
+Flow 12's own history is worth keeping, because it is what the schedule was built for. Its phase-7
+recording was taken while `plxnative-detail` loaded the page with a BLOCKING fetch on the SDL
+thread; phase 11 made that boot arm asynchronous, so the recording no longer described the build
+and the replay diverged on frames 31 and 32 — both recorded `0xd9d6d1334cf4d698`, both replayed
+`0xbb2179d70158cf9b` — before re-converging. A recording taken under the async arm could not be
+committed in its place: the landing then arrived ~5 ms after boot, the frame it landed on differed
+between the recording and every replay, and 927 of 928 frames diverged (three runs of three). The
+anchor could not be rebaselined and a stable re-recording needed the gate first. It also records
+with `/tmp/plxnative-nowan` armed, since its person-page arms dial `discover.provider.plex.tv` for
+real and the fixture's stability would otherwise depend on that 401 arriving promptly over the
+actual internet.
+
+Take the census from this directory's listing. An anchor refuses `--rebaseline` (below); when a
 change instead bumps the recorded state SHAPE (`schema` or `state_fp` — 5b's `tree:u64` term did
 exactly this), the old fixture cannot even be LOADED, so `tools/plxnative-rec rerecord <dir> <name>`
 is the verb: it verifies the shape actually moved and replaces the fixture, anchor flag preserved.

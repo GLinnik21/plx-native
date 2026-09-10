@@ -132,14 +132,14 @@ pub(crate) fn dynamic_period() -> u32 {
 /// or even every frame. `covered_present` also lets the first prepared owner mark a due capture as
 /// covering every other owner prepared before the underlay draw on that same present.
 #[derive(Clone, Copy)]
-struct DynamicClock {
+pub(crate) struct DynamicClock {
     last_refresh: u32,
     covered_present: u32,
     pending: bool,
 }
 
 impl DynamicClock {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             last_refresh: 0,
             covered_present: 0,
@@ -170,9 +170,6 @@ impl DynamicClock {
         }
     }
 }
-
-/// Main-render-thread state, like the renderer's snapshot cache it schedules.
-static mut DYNAMIC_CLOCK: DynamicClock = DynamicClock::new();
 
 /// Called exactly beside `idle::note_present`, after `SDL_GL_SwapWindow` returns.
 pub(crate) fn glass_presented() {
@@ -205,40 +202,79 @@ impl Glass {
         matches!(self.refresh, GlassRefresh::EveryChangedPresent)
     }
 
-    /// Start a new visible lifetime and make its first snapshot immediately eligible.
+    /// Start a new visible lifetime and make its first snapshot immediately eligible, for a CACHED
+    /// ground — the policy with no recurring cadence, and so no [`DynamicClock`] to consult.
     pub(crate) fn activate(self, state: &mut GlassState) {
+        debug_assert!(
+            !matches!(self.refresh, GlassRefresh::EveryChangedPresent),
+            "a refreshing backdrop activates against the frame plan's shared cadence"
+        );
+        self.activate_inner(None, state);
+    }
+
+    /// The same, against the frame plan's ONE shared cadence clock: a refreshing owner's first
+    /// snapshot must also COVER that present, or the next `prepare` refreshes a second time.
+    pub(crate) fn activate_on(self, clock: &mut DynamicClock, state: &mut GlassState) {
+        self.activate_inner(Some(clock), state);
+    }
+
+    fn activate_inner(self, clock: Option<&mut DynamicClock>, state: &mut GlassState) {
         let present = GLASS_PRESENT_SERIAL.load(Relaxed);
         state.last_seen = present;
         state.active = true;
-        if matches!(self.refresh, GlassRefresh::EveryChangedPresent) {
-            unsafe { (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).cover_now(present) };
+        if let Some(c) = clock {
+            c.cover_now(present);
         }
         crate::gfx::blur_invalidate();
         crate::ui::idle::wake();
     }
 
-    /// Resolve this frame before the host page is drawn. `underlay_changed` must describe that
-    /// host, not foreground widget motion. Every dynamic owner sharing a host must prepare before
-    /// any of them captures. Invalidation happens here, while capture remains deferred until
-    /// [`backdrop`](Self::backdrop), after the underlay has painted.
+    /// Resolve this frame before the host page is drawn, for a CACHED ground — the policy with no
+    /// recurring cadence, and so no [`DynamicClock`] to consult.
+    ///
+    /// `underlay_changed` is accepted and unused, exactly as before: it has only ever fed the
+    /// refreshing branch, and every caller here passes `false`. A refreshing policy must go through
+    /// [`prepare_on`](Self::prepare_on) — the frame plan owns the clock since phase 11
+    /// ([`crate::ui::frame::glass::GlassPlan`]), so the two forms differ by who hands it over.
     pub(crate) fn prepare(self, state: &mut GlassState, underlay_changed: bool) {
+        debug_assert!(
+            !matches!(self.refresh, GlassRefresh::EveryChangedPresent),
+            "a refreshing backdrop prepares through GlassPlan, which owns the shared cadence"
+        );
+        self.prepare_inner(None, state, underlay_changed);
+    }
+
+    /// Resolve this frame before the host page is drawn, against the frame plan's ONE shared
+    /// cadence clock. `underlay_changed` must describe that host, not foreground widget motion.
+    /// Every dynamic owner sharing a host must prepare before any of them captures. Invalidation
+    /// happens here, while capture remains deferred until [`backdrop`](Self::backdrop), after the
+    /// underlay has painted.
+    pub(crate) fn prepare_on(
+        self,
+        clock: &mut DynamicClock,
+        state: &mut GlassState,
+        underlay_changed: bool,
+    ) {
+        self.prepare_inner(Some(clock), state, underlay_changed);
+    }
+
+    fn prepare_inner(
+        self,
+        mut clock: Option<&mut DynamicClock>,
+        state: &mut GlassState,
+        underlay_changed: bool,
+    ) {
         let present = GLASS_PRESENT_SERIAL.load(Relaxed);
         // A widget not drawn for one or more successful presents crossed a route/surface lifetime.
-        // Its old snapshot may describe that other route, so returning is a fresh activation.
+        // Its old snapshot may describe that other route, so returning is a fresh activation:
+        // start a new visible lifetime and make its first snapshot immediately eligible.
         if state.needs_activation(present) {
-            self.activate(state);
+            self.activate_inner(clock.as_deref_mut(), state);
         }
         state.last_seen = present;
 
-        if matches!(self.refresh, GlassRefresh::EveryChangedPresent) {
-            let step = unsafe {
-                (*std::ptr::addr_of_mut!(DYNAMIC_CLOCK)).step(
-                    present,
-                    underlay_changed,
-                    dynamic_period(),
-                )
-            };
-            match step {
+        if let Some(c) = clock {
+            match c.step(present, underlay_changed, dynamic_period()) {
                 DynamicStep::Refresh => crate::gfx::blur_invalidate(),
                 DynamicStep::Wait => {
                     // A discrete landing may have bought only this one frame. Keep the gate alive
@@ -1881,27 +1917,14 @@ crate::dev::latched_flag!(
     /// **And the arithmetic has already been wrong here once, by a lot** (§11: predicted 45,
     /// measured 58), which is exactly why this is a trigger and not a rejection. Arm it, run the
     /// fps scenes with a control leg, and put the number in §12.
-    fn tile_glass_armed = "tileglass";
+    pub(crate) fn tile_glass_armed = "tileglass";
 );
 
-/// The shared cadence state for every tile band in a frame — ONE, because there is one blur cache
-/// and every glass surface in a frame converges on one grab. Per-tile state would buy nothing and
-/// would let two tiles disagree about whether this present's snapshot is stale.
-static mut TILE_GLASS: GlassState = GlassState::new();
-
-/// Resolve the tile bands' glass cadence BEFORE the page they sit on draws — `Glass::prepare`'s
-/// contract, exactly as the tab track and the person page's bio panel do. A no-op unless the
-/// experiment is armed.
-pub(crate) fn tile_glass_prepare() {
-    if !tile_glass_armed() || crate::gfx::blur_source_pass() {
-        return;
-    }
-    let state = unsafe { &mut *std::ptr::addr_of_mut!(TILE_GLASS) };
-    Glass::DYNAMIC_BACKDROP.prepare(
-        state,
-        crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
-    );
-}
+// The tile bands' one shared `GlassState` — and the `prepare` that resolves its cadence — belong
+// to the frame plan since phase 11: `crate::ui::frame::glass::GlassPlan::prepare_tile_band`. There
+// is one blur cache and every glass surface in a frame converges on one grab, so per-tile state
+// would buy nothing and would let two tiles disagree about whether this present's snapshot is
+// stale — which is exactly the kind of ownership the plan exists to hold.
 
 /// **The GROUND a still's state label is read against** — the black gradient by default, and the
 /// frosted band when [`tile_glass_armed`] is armed.
@@ -5639,9 +5662,9 @@ latched_flag!(
 );
 
 /// …and the fourth: **this page is being drawn as a blur SOURCE**, where the track never wears the
-/// material it is producing. `Glass::prepare` also mutates the one process-wide `DynamicClock`,
-/// which is keyed on presents rather than draws, so a second call in the same present would spend
-/// that present's refresh slot on a surface nobody sees.
+/// material it is producing. `Glass::prepare_on` also mutates the frame plan's one shared
+/// `DynamicClock`, which is keyed on presents rather than draws, so a second call in the same
+/// present would spend that present's refresh slot on a surface nobody sees.
 fn tab_glass_on(track_w: f32) -> bool {
     tab_glass_wanted(track_w) && !crate::gfx::blur_source_pass()
 }
@@ -5683,14 +5706,15 @@ pub(crate) fn bar_glass_wanted_with(data: TabLabels<'_>) -> bool {
 /// the divergence the legacy fallback had with the paint side (`Bridge::draw`'s own
 /// `draw_tab_row_with(self.chrome.labels(), …)`): the two used to read two different label
 /// sources on Search.
-pub(crate) fn tab_glass_prepare_with(data: TabLabels<'_>) {
+pub(crate) fn tab_glass_prepare_with(data: TabLabels<'_>, clock: &mut DynamicClock) {
     // The width rule is part of the answer, so the cadence has to measure the strip too — the same
     // cached metrics the draw walks, one frame's worth, keyed on `browse::tabs_gen()`.
     if !with_tab_metrics_for(data, |_, widths| tab_glass_on(tab_track_w(widths))) {
         return;
     }
     let state = unsafe { &mut *std::ptr::addr_of_mut!(TAB_GLASS_STATE) };
-    Glass::DYNAMIC_BACKDROP.prepare(
+    Glass::DYNAMIC_BACKDROP.prepare_on(
+        clock,
         state,
         crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
     );
@@ -6010,10 +6034,10 @@ pub(crate) fn draw_tab_row_with(data: TabLabels<'_>, p: Painter) {
         // middle of it, and the union of the two is most of the frame, which is the whole-screen
         // capture the region limit exists to avoid. While the modal owns focus, keeping only its
         // material is also the clearer hierarchy; the disabled bar falls back to its flat track.
-        // Never while this page is being drawn as a blur SOURCE: `Glass::prepare` mutates the one
-        // process-wide `DynamicClock`, which is keyed on presents rather than on draws, so a
-        // second call in the same present would consume that present's refresh slot on behalf of a
-        // surface nobody sees. The flat track is also the right source pixel — glass over glass is
+        // Never while this page is being drawn as a blur SOURCE: `Glass::prepare_on` mutates the
+        // frame plan's one shared `DynamicClock`, which is keyed on presents rather than on draws,
+        // so a second call in the same present would consume that present's refresh slot on behalf
+        // of a surface nobody sees. The flat track is also the right source pixel — glass over glass is
         // not what is behind the panel.
         // `/tmp/plxnative-glassboth` lifts the popover exclusion for measurement ONLY. The
         // exclusion exists because this bar sits at the top and a popover's panel in the middle,

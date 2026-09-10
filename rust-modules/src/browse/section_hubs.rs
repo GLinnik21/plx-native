@@ -678,7 +678,11 @@ fn spawn(sec: usize) {
 
 /// Take the mailbox and apply it. Called from [`super::pump`].
 pub(crate) fn land() -> bool {
-    let Some(r) = HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): a replay takes this on its recorded frame
+    let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        HUB_RESULT.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    let Some(r) = taken else {
         return false;
     };
     // the take ALWAYS releases the claim, whatever the landing turns out to be

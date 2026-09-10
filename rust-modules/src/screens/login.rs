@@ -333,6 +333,11 @@ pub(crate) struct LoginScreen {
     /// so a host test driving `step` alone never touches GL.
     qr_tex: u32,
     qr_tex_gen: u64,
+    /// The pixel size that texture was uploaded at, so [`Screen::render_report`] can state the
+    /// bytes this screen holds of the frame's render residency (§8.3) instead of guessing them:
+    /// the bitmap is whatever plex.tv's PNG decoded to, not a constant. `(0, 0)` while `qr_tex`
+    /// is 0, and the two are set and cleared together.
+    qr_px: (u32, u32),
     /// PNG bytes `tick` captured this frame, awaiting [`Screen::prepare`]'s decode+upload — the
     /// hand-off between "read `crate::auth` once" (step) and "touch GL" (prepare). `None` once
     /// consumed, or when nothing new has been published.
@@ -358,6 +363,7 @@ impl LoginScreen {
             wait: (Phase::Idle, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
+            qr_px: (0, 0),
             qr_png_pending: None,
             phase: Phase::Idle,
             qr_gen: 0,
@@ -731,6 +737,7 @@ impl LoginScreen {
         let px = crate::img::img_decode_rgba(png.as_ptr(), png.len() as c_int, &mut w, &mut h);
         if !px.is_null() {
             self.qr_tex = crate::img::img_upload_rgba(px, w, h);
+            self.qr_px = if self.qr_tex != 0 { (w.max(0) as u32, h.max(0) as u32) } else { (0, 0) };
             self.qr_tex_gen = gen;
             crate::img::img_free(px);
         }
@@ -742,6 +749,7 @@ impl LoginScreen {
         }
         crate::gfx::delete_tex(self.qr_tex);
         self.qr_tex = 0;
+        self.qr_px = (0, 0);
         self.qr_tex_gen = live;
     }
 }
@@ -836,6 +844,7 @@ impl<H: AppLike> Machine<H> for LoginScreen {
             ScreenEvent::Unmount => {
                 crate::gfx::delete_tex(self.qr_tex);
                 self.qr_tex = 0;
+                self.qr_px = (0, 0);
                 Handled::Yes
             }
             _ => Handled::No,
@@ -878,6 +887,16 @@ impl<H: AppLike> Screen<H> for LoginScreen {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+    /// The QR bitmap is the one render this screen owns (§8.3 rule (c)) — its own `upload_rgba` in
+    /// [`Self::prepare_qr_tex`], its own `delete_tex` on `Unmount`. Everything else here is drawn
+    /// immediate-mode or comes from a shared cache. The size is whatever plex.tv's PNG decoded to,
+    /// which is why it is recorded rather than assumed.
+    fn render_report(&self) -> crate::ui::frame::RenderReport {
+        if self.qr_tex == 0 {
+            return crate::ui::frame::RenderReport::NONE;
+        }
+        crate::ui::frame::RenderReport::one(self.qr_px.0, self.qr_px.1)
     }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
@@ -1072,6 +1091,7 @@ mod tests {
             wait: (phase, 0),
             qr_tex: 0,
             qr_tex_gen: 0,
+            qr_px: (0, 0),
             qr_png_pending: None,
             phase,
             qr_gen: 0,
@@ -1310,8 +1330,33 @@ mod tests {
     fn unmount_frees_the_qr_texture() {
         let mut s = bare_screen(Phase::Waiting, 0.0);
         s.qr_tex = 999;
+        s.qr_px = (400, 400);
         let (handled, _) = step_ev(&mut s, &ScreenEvent::Unmount);
         assert_eq!(handled, Handled::Yes);
         assert_eq!(s.qr_tex, 0, "an unmounting screen must not leak its GL texture id");
+        assert_eq!(s.qr_px, (0, 0), "…nor go on claiming its bytes in the frame's render set");
+    }
+
+    /// **The QR bitmap is a render this SCREEN owns** — its own `upload_rgba`, its own
+    /// `delete_tex` — so it is one of the two things in the tree that override
+    /// `Screen::render_report` (§8.3 rule (c)); everything else on screen here is drawn
+    /// immediate-mode or comes from a shared pool. `999` stands in for a real GL id for the same
+    /// reason `unmount_frees_the_qr_texture` uses it: a host test uploads nothing.
+    #[test]
+    fn the_qr_bitmap_is_reported_as_this_screens_own_render() {
+        use crate::ui::frame::RenderReport;
+        let mut s = bare_screen(Phase::Waiting, 0.0);
+        assert_eq!(
+            Screen::<InnerHost>::render_report(&s),
+            RenderReport::NONE,
+            "no code yet: this screen holds no render of its own"
+        );
+        s.qr_tex = 999;
+        s.qr_px = (400, 400);
+        assert_eq!(
+            Screen::<InnerHost>::render_report(&s),
+            RenderReport::one(400, 400),
+            "one texture, 400x400 RGBA8 = 640,000 bytes"
+        );
     }
 }

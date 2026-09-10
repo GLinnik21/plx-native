@@ -428,7 +428,12 @@ fn kick() {
 /// answer, and the refresh is owed either way.
 pub(crate) fn pump() {
     let due = retry_tick();
-    if let Some(done) = MAIL.lock().unwrap_or_else(|e| e.into_inner()).take() {
+    // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay the server's answer is taken
+    // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
+    let landed = crate::stores::take_landing(crate::stores::StoreId::ViewState, || {
+        MAIL.lock().unwrap_or_else(|e| e.into_inner()).take()
+    });
+    if let Some(done) = landed {
         if let Some(r) = unsafe { (*addr_of_mut!(SENT)).take() } {
             crate::log(&format!(
                 "viewstate: rk={} {} ok={} others={}",

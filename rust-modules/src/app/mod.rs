@@ -308,13 +308,21 @@ pub(crate) struct App {
     /// The present gate as a machine (spec §4.4). `ui::idle` is still the product's verdict on
     /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
     present: crate::ui::present::Present,
-    /// The frame budget (spec §8.1): the poster upload quota, spent by the render cache.
-    budget: crate::ui::frame::Budget,
+    /// The frame plan's GLASS half (spec §8.3): the one shared backdrop-refresh cadence, the tile
+    /// bands' visible lifetime, and the dev load dial's whole live state. Eight `static mut`s in
+    /// `ui/glassload.rs` and two in `ui/widgets.rs` until phase 11; fields of this since. (The
+    /// budget half lives on the `Dispatcher` — the frame scheduler owns admission, §2.2.)
+    pub(crate) glass: crate::ui::frame::glass::GlassPlan,
     /// **The container tree, and since phase 5b it is no longer only a shadow.** It still
     /// mirrors the committed route after every NAV COMMIT — an owned screen for each route the
     /// ladders still own — but the Settings family is REAL on it: the surfaces and the first-run
     /// Favourites page are owned screens the loop hands its input to and asks to draw
     /// (`app/bridge.rs`'s coexistence contract).
+    /// **It carries the ONE frame budget** (spec §2.2/§8.1): the frame scheduler owns admission,
+    /// and there is one scheduler. `App` held a second `Budget` of its own until phase 11 — the
+    /// poster upload spent that one while the dispatcher's step-8 present decision consulted the
+    /// other, whose queue flag had no writer at all, so the two halves of one mechanism could
+    /// never agree with each other.
     pub(crate) pages: crate::ui::dispatch::Dispatcher<bridge::AppHost>,
     /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
     pub(crate) inputs: Vec<crate::ui::machine::InputEvent<u32>>,

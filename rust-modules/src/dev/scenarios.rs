@@ -60,6 +60,9 @@ pub(crate) struct DevFlags {
     pub(crate) nav_osc: bool,
     pub(crate) nav_osc_rk: String,
     pub(crate) glass_hz_armed: bool,
+    /// `plxnative-nobudget`: read at boot, applied to the one `Budget` at boot, and kept here so
+    /// a log reader can tell an A leg from a B leg by the flags the boot recorded.
+    pub(crate) nobudget: bool,
 }
 
 /// Every dev-trigger arm's own retry counter, oscillator phase and one-shot latch — the state
@@ -113,6 +116,9 @@ pub(crate) struct Scenarios {
     /// The headless detail-page walk (`plxnative-detail`/`-play`), see [`ContentBoot`].
     pub(crate) content_boot: Option<ContentBoot>,
     pub(crate) play_tried: bool,
+    /// `/tmp/plxnative-play=<rk>` between its ASYNC request and the landing it plays from:
+    /// `(server, ratingKey, the frame clock at which the wait gives up)`. See [`play_arm`].
+    pub(crate) play_await: Option<(crate::plex::ServerId, String, u32)>,
     pub(crate) menu_tried: bool,
     pub(crate) menupick_tried: bool,
     /// dev: the row `/tmp/plxnative-menupick` still owes the track menu — see `App.menupick_row`'s
@@ -199,16 +205,16 @@ pub(crate) fn arm_anim() {
 }
 
 /// `/tmp/plxnative-glassload` — the backdrop-glass LOAD DIAL.
-pub(crate) fn arm_glassload() {
+pub(crate) fn arm_glassload(glass: &mut crate::ui::frame::glass::GlassPlan) {
     if let Some(v) = crate::dev::read("glassload") {
-        crate::ui::glassload::configure(&v);
+        glass.configure_dial(&v);
     }
 }
 
 /// `/tmp/plxnative-navblur` — the blurred-route-transition prototype.
-pub(crate) fn arm_navblur() {
+pub(crate) fn arm_navblur(glass: &mut crate::ui::frame::glass::GlassPlan) {
     if let Some(v) = crate::dev::read("navblur") {
-        crate::ui::glassload::configure_navblur(&v);
+        glass.configure_navblur(&v);
     }
 }
 
@@ -275,6 +281,18 @@ pub(crate) fn arm_noidle() {
         crate::ui::idle::set_enabled(false);
         crate::log("idle: present gate DISABLED by /tmp/plxnative-noidle");
     }
+}
+
+/// `/tmp/plxnative-nobudget` — the frame budget's A/B CONTROL LEG (spec §8.1, phase 11).
+///
+/// Present, admission is what it was before phase 11: the `Poster` quota of three per frame and
+/// nothing else — no time ceiling, no solo rule, and a `Residency` upload (a backdrop, a hero
+/// logo) spending one of those three exactly as it used to. It exists so a device A/B measures
+/// this CHANGE and not the difference between two builds, and it is DIAG for the reason
+/// `plxnative-drawmask` is: an A/B whose two legs boot to different screens has measured the
+/// screen.
+pub(crate) fn nobudget_armed() -> bool {
+    crate::dev::flag("nobudget")
 }
 
 /// `/tmp/plxnative-detailosc`.
@@ -665,7 +683,13 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
                 if let Some(pmm) = usize::try_from(pidx).ok().and_then(|i| crate::pms::hub_item(i / crate::app::COLS as usize, i % crate::app::COLS as usize)) {
                     let requested = crate::route::request_play_movie(&mut app.player.session, pmm);
                     if requested {
-                        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid: pmm.sid, rk: pmm.rk.to_string() });
+                        // ASYNC (phase 11): nothing here reads `metadata::current()` — the play
+                        // plan came from the catalog row itself. The detail is wanted only so the
+                        // player's Info card has a descriptor, and the landing's own
+                        // `install_landed_detail` calls the same `sync_now_playing` the blocking
+                        // load did. So there is nothing to wait for, and no reason to spend two
+                        // PMS round trips of the SDL thread on the frame that starts a playback.
+                        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid: pmm.sid, rk: pmm.rk.to_string() });
                     }
                     requested
                 } else {
@@ -800,6 +824,21 @@ fn itemmenu_arm(app: &mut App, fr: &mut Frame) {
     }
 }
 
+/// `/tmp/plxnative-detail=<rk>` — boot straight onto a detail page (`fps:cold-open`).
+///
+/// **The request is the ASYNC one, and that is the whole scene.** This arm ran
+/// `MetadataCmd::LoadDetailNow` until phase 11 — the deliberately BLOCKING load, two sequential
+/// PMS round trips plus the `Detail` build, on the SDL thread, from inside `each_frame`, i.e.
+/// inside the frame's `results` phase. `fps:cold-open` was therefore measuring a synchronous
+/// double GET that the PRODUCT does not perform: an OK on a card raises
+/// `MetadataCmd::RequestDetail` and mounts the page empty (`metadata::request_detail`,
+/// `pump_detail`). The measured cost of the difference was `results=50 ms` of a 62 ms frame,
+/// filed in TV session 5 as "async landings" — it was the one call in the frame that was not.
+///
+/// Nothing else about the arm changes: the page is still pushed in this frame, on the catalog
+/// row's art and title, exactly as a press does, and the content fills in a beat later through
+/// the same landing every other opener uses. The scene now measures the cold MOUNT of a detail
+/// page, which is what its name says and what a user experiences.
 fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
     if !app.scenarios.detail_tried && fr.now.wrapping_sub(app.t0) > 500 {
         app.scenarios.detail_tried = true;
@@ -813,7 +852,7 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid, rk: rk.to_string() });
+                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
                 crate::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
                 crate::app::nav::push_detail(&mut app.trail, &mut app.route, sid, rk);
                 app.bridge.seed_node(app.trail.top());
@@ -824,8 +863,28 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
     true
 }
 
+/// `/tmp/plxnative-play=<rk>` — fetch that item and play its leaf, headless. TWO frames at least,
+/// since phase 11: the request goes off-thread on the arming frame and the play is dispatched on
+/// the frame its landing arrives.
+///
+/// It used to be one frame, on `MetadataCmd::LoadDetailNow` — the deliberately BLOCKING load —
+/// because the very next statement reads `metadata::current()` to derive the leaf's part and
+/// codecs. Two sequential PMS round trips on the SDL thread, inside the frame's `results` phase.
+/// The wait is the same wait with the loop still running: `pump_detail` installs the landing
+/// route-unconditionally, and this arm re-checks each frame that the item now published IS the
+/// one it asked for — by SERVER and key, since two servers in one household both number from 1.
+///
+/// **The `start` line stays where it always was, at the DISPATCH**, not at the request. The
+/// harness's offline cases key on it (`tests/run.py`'s `resolve_pin`: the IPv6 re-point must
+/// PRECEDE `plxnative-play: … start`), and moving a line earlier is exactly the kind of change
+/// that turns an ordering assertion into a coin toss. The request gets its own `… request` line,
+/// which carries no `start` and so cannot be mistaken for one.
+///
+/// Two ways the wait ends without a play, both logged rather than silent: the request settles
+/// (`detail_request_status` answers `Some(false)`) with something other than this item published —
+/// a failed or refused fetch keeps the previous item — or 12 s pass, the same ceiling every other
+/// arm here uses for "this boot never got where it was going".
 fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
-    use crate::screens::player::input::HUD_LINGER_MS;
     if !app.scenarios.play_tried
         && !matches!(app.route, Route::Player | Route::Login | Route::Profiles)
         && fr.now.wrapping_sub(app.t0) > 500
@@ -841,38 +900,69 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
                         return false;
                     }
                 };
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadDetailNow { sid, rk: rk.to_string() });
-                let leaf = crate::metadata::current().map(|d| {
-                    if !d.part.is_empty() {
-                        (d.part.clone(), d.vcodec.clone(), d.acodec.clone(), d.title.clone(), d.resume_ms, d.dur_ms)
-                    } else if let Some(ep) = d.episodes.first() {
-                        (ep.part.clone(), ep.vcodec.clone(), ep.acodec.clone(), d.title.clone(), ep.resume_ms, ep.dur_ms)
-                    } else {
-                        (String::new(), String::new(), String::new(), d.title.clone(), 0, 0)
-                    }
-                });
-                if let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf {
-                    if !part.is_empty() {
-                        crate::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
-                        if crate::route::request_play(&mut app.player.session, sid, rk, &part, &vc, &ac, &title, "") {
-                            let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
-                            crate::app::playback::start_playback(&mut app.player.session,
-                                &mut app.adapters.player,
-                                resume,
-                                crate::app::nav::origin_here(app.route, &app.trail),
-                                HUD_LINGER_MS,
-                                &mut app.route,
-                                &mut app.play_from,
-                                &mut app.pages,
-                                &mut app.bridge,
-                            );
-                        }
-                    }
-                }
+                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                crate::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
+                app.scenarios.play_await = Some((sid, rk.to_string(), fr.now.wrapping_add(12_000)));
             }
         }
     }
+    play_await_tick(app, fr);
     true
+}
+
+/// The landing half of [`play_arm`], run every frame while a request is outstanding.
+fn play_await_tick(app: &mut App, fr: &mut Frame) {
+    use crate::screens::player::input::HUD_LINGER_MS;
+    let Some((sid, rk, deadline)) = app.scenarios.play_await.clone() else { return };
+    if matches!(app.route, Route::Player) {
+        app.scenarios.play_await = None;
+        return;
+    }
+    let leaf = crate::metadata::current()
+        .filter(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &rk)))
+        .map(|d| {
+            if !d.part.is_empty() {
+                (d.part.clone(), d.vcodec.clone(), d.acodec.clone(), d.title.clone(), d.resume_ms, d.dur_ms)
+            } else if let Some(ep) = d.episodes.first() {
+                (ep.part.clone(), ep.vcodec.clone(), ep.acodec.clone(), d.title.clone(), ep.resume_ms, ep.dur_ms)
+            } else {
+                (String::new(), String::new(), String::new(), d.title.clone(), 0, 0)
+            }
+        });
+    let Some((part, vc, ac, title, resume_ms, dur_ms)) = leaf else {
+        // nothing published for this item yet. Give up when the request itself has settled with
+        // something else in place (a failed fetch keeps the previous item), or on the ceiling.
+        let settled = crate::metadata::detail_request_status(sid, &rk) == Some(false);
+        let expired = fr.now.wrapping_sub(deadline) < u32::MAX / 2;
+        if settled || expired {
+            app.scenarios.play_await = None;
+            crate::log(&format!(
+                "plxnative-play: rk={rk} server={} — no detail landed ({})",
+                sid.raw(),
+                if settled { "the fetch settled without it" } else { "12s" }
+            ));
+        }
+        return;
+    };
+    app.scenarios.play_await = None;
+    if part.is_empty() {
+        crate::log(&format!("plxnative-play: rk={rk} server={} — nothing playable on it", sid.raw()));
+        return;
+    }
+    crate::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
+    if crate::route::request_play(&mut app.player.session, sid, &rk, &part, &vc, &ac, &title, "") {
+        let resume = crate::metadata::resume_ns(resume_ms, dur_ms);
+        crate::app::playback::start_playback(&mut app.player.session,
+            &mut app.adapters.player,
+            resume,
+            crate::app::nav::origin_here(app.route, &app.trail),
+            HUD_LINGER_MS,
+            &mut app.route,
+            &mut app.play_from,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+    }
 }
 
 fn autoseek_arm(app: &mut App, fr: &mut Frame) {

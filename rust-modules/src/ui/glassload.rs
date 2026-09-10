@@ -82,9 +82,13 @@
 //! the unpinned form is what proves the motion reads. Both are behind the trigger; neither changes
 //! a default build.
 //!
-//! Main-thread only, `static mut` with the screens' discipline. Every entry point is a no-op when
-//! the trigger is absent, and in a `--no-default-features` build `dev::read` is `None` at compile
-//! time, so nothing here can be reached at all.
+//! Main-thread only. The live state is [`Dial`], a field of the frame plan
+//! ([`crate::ui::frame::glass::GlassPlan`]) since phase 11 rather than the eight `static mut`s it
+//! was before; the two things instruments read with no borrow of the plan in hand — the live step
+//! index and whether anything is armed — are PUBLISHED snapshots the dial writes on change
+//! (spec §2.3). Every entry point is a no-op when the trigger is absent, and in a
+//! `--no-default-features` build `dev::read` is `None` at compile time, so nothing here can be
+//! reached at all.
 
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::theme;
@@ -269,78 +273,122 @@ pub(crate) fn layout(step: Step) -> Vec<Rect> {
 
 // ---- live state ------------------------------------------------------------------------------
 
-static mut SWEEP: Option<Sweep> = None;
-/// Which step is live, or -1 when the dial is disarmed. Read by the heartbeat and by every HWCNT
-/// phase record, which is the only thing that makes a cycled run splittable after the fact.
-static mut STEP: i32 = -1;
-/// Presented frames since the current step began — the cadence clock.
-static mut PRESENTS: u32 = 0;
-/// `SDL_GetTicks` at the first prepared frame, so step boundaries are wall-clock and independent
-/// of how many frames the set managed to draw.
-static mut T0: u32 = 0;
-/// The navblur prototype's mode: 0 = off, 1 = one shared snapshot, 2 = a private second snapshot.
-static mut NAVBLUR: u32 = 0;
-/// Presents between navblur snapshot refreshes.
-static mut NAVBLUR_CADENCE: u32 = 3;
-/// Hold the slab at full strength rather than riding the transition — see the module doc.
-static mut NAVBLUR_PIN: bool = false;
+/// **The dial's whole live state, as fields.** Eight `static mut`s until phase 11; owned by
+/// [`crate::ui::frame::glass::GlassPlan`] since, which is what `ci/allow/statics.txt` promised
+/// when it entered them with the reason "owned by the frame plan from phase 11".
+///
+/// Main render thread only, like the snapshot chain it schedules.
+const NCARD_TEX: usize = 4;
 
-/// Arm the dial from `/tmp/plxnative-glassload`'s content. Logs what it will actually run, because
-/// a sweep that silently dropped a step reports a curve with a hole in it.
-pub(crate) fn configure(spec: &str) {
-    match parse(spec) {
-        Some(s) => {
-            let list: Vec<String> = s
-                .steps
-                .iter()
-                .enumerate()
-                .map(|(i, st)| {
-                    if st.n == 0 {
-                        return format!("{i}:off");
-                    }
-                    let drawn = layout(*st).len();
-                    // The DRAWN count and the drawn AREA, never the requested ones: a step whose
-                    // panels did not fit would otherwise report a cost for a scene that never ran.
-                    let px = drawn as f64 * st.w as f64 * st.h as f64;
-                    if matches!(st.kind, Kind::Account) {
-                        return format!("{i}:acct (the real shipped popover)");
-                    }
-                    let sp = if st.spread { " spread" } else { "" };
-                    match st.kind {
-                        Kind::Account => unreachable!("handled above"),
-                        Kind::Glass => format!(
-                            "{i}:glass{sp} {}x{}x{}@{} drawn={drawn} px={px:.0}",
-                            st.n, st.w, st.h, st.cadence
-                        ),
-                        Kind::Card { focused } => format!(
-                            "{i}:card{}{sp} {}x{}x{} drawn={drawn} px={px:.0}",
-                            if focused { "-focused" } else { "" },
-                            st.n,
-                            st.w,
-                            st.h
-                        ),
-                        Kind::Image => {
-                            format!(
-                                "{i}:image{sp} {}x{}x{} drawn={drawn} px={px:.0}",
-                                st.n, st.w, st.h
-                            )
-                        }
-                    }
-                })
-                .collect();
-            crate::log(&format!(
-                "GLASSLOAD armed hold={}ms steps=[{}]",
-                s.hold_ms,
-                list.join(" ")
-            ));
-            unsafe {
-                SWEEP = Some(s);
-                STEP = 0;
-            }
+pub(crate) struct Dial {
+    sweep: Option<Sweep>,
+    /// Which step is live, or -1 when the dial is disarmed. Mirrored into [`STEP_PUB`] on every
+    /// change, because the heartbeat and every HWCNT phase record read it with no `&App` in hand.
+    step: i32,
+    /// Presented frames since the current step began — the cadence clock.
+    presents: u32,
+    /// `SDL_GetTicks` at the first prepared frame, so step boundaries are wall-clock and
+    /// independent of how many frames the set managed to draw.
+    t0: u32,
+    /// The navblur prototype's mode: 0 = off, 1 = one shared snapshot, 2 = a private second one.
+    navblur: u32,
+    /// Presents between navblur snapshot refreshes.
+    navblur_cadence: u32,
+    /// Hold the slab at full strength rather than riding the transition — see the module doc.
+    navblur_pin: bool,
+    /// The synthetic poster textures the card steps sample — see [`Dial::card_tex`].
+    card_tex: [u32; NCARD_TEX],
+}
+
+/// **The live step index, PUBLISHED** (spec §2.3): the dial owns the decision and writes this on
+/// every change; instruments read it freely. `ui/profile.rs` tags every HWCNT phase record with
+/// it from inside an arbitrary draw closure and has no borrow of the plan to ask through, and a
+/// cycled run that could not be split by step after the fact reports a mean over configurations
+/// that never occurred.
+static STEP_PUB: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+/// Whether anything in this module is armed, published for the same readers and the same reason.
+static ARMED_PUB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl Dial {
+    pub(crate) const fn new() -> Self {
+        Self {
+            sweep: None,
+            step: -1,
+            presents: 0,
+            t0: 0,
+            navblur: 0,
+            navblur_cadence: 3,
+            navblur_pin: false,
+            card_tex: [0; NCARD_TEX],
         }
-        None => crate::log(&format!(
-            "GLASSLOAD spec {spec:?} not understood — dial disarmed"
-        )),
+    }
+
+    /// Mirror the two decisions instruments read into their published snapshots. There is exactly
+    /// one `Dial` in the process (the one on `App`'s frame plan), so the last one to change owns
+    /// the publication — constructing a plan therefore publishes too, which is what keeps a host
+    /// test that arms one from leaving the instruments armed for every test after it.
+    pub(crate) fn publish(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        STEP_PUB.store(self.step, Relaxed);
+        ARMED_PUB.store(self.armed(), Relaxed);
+    }
+
+    /// Arm the dial from `/tmp/plxnative-glassload`'s content. Logs what it will actually run, because
+    /// a sweep that silently dropped a step reports a curve with a hole in it.
+    pub(crate) fn configure(&mut self, spec: &str) {
+        match parse(spec) {
+            Some(s) => {
+                let list: Vec<String> = s
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, st)| {
+                        if st.n == 0 {
+                            return format!("{i}:off");
+                        }
+                        let drawn = layout(*st).len();
+                        // The DRAWN count and the drawn AREA, never the requested ones: a step whose
+                        // panels did not fit would otherwise report a cost for a scene that never ran.
+                        let px = drawn as f64 * st.w as f64 * st.h as f64;
+                        if matches!(st.kind, Kind::Account) {
+                            return format!("{i}:acct (the real shipped popover)");
+                        }
+                        let sp = if st.spread { " spread" } else { "" };
+                        match st.kind {
+                            Kind::Account => unreachable!("handled above"),
+                            Kind::Glass => format!(
+                                "{i}:glass{sp} {}x{}x{}@{} drawn={drawn} px={px:.0}",
+                                st.n, st.w, st.h, st.cadence
+                            ),
+                            Kind::Card { focused } => format!(
+                                "{i}:card{}{sp} {}x{}x{} drawn={drawn} px={px:.0}",
+                                if focused { "-focused" } else { "" },
+                                st.n,
+                                st.w,
+                                st.h
+                            ),
+                            Kind::Image => {
+                                format!(
+                                    "{i}:image{sp} {}x{}x{} drawn={drawn} px={px:.0}",
+                                    st.n, st.w, st.h
+                                )
+                            }
+                        }
+                    })
+                    .collect();
+                crate::log(&format!(
+                    "GLASSLOAD armed hold={}ms steps=[{}]",
+                    s.hold_ms,
+                    list.join(" ")
+                ));
+                self.sweep = Some(s);
+                self.step = 0;
+                self.publish();
+            }
+            None => crate::log(&format!(
+                "GLASSLOAD spec {spec:?} not understood — dial disarmed"
+            )),
+        }
     }
 }
 
@@ -359,58 +407,62 @@ pub(crate) fn parse_navblur(spec: &str) -> Option<(u32, u32, bool)> {
     (1..=2).contains(&mode).then_some((mode, cad, pin))
 }
 
-pub(crate) fn configure_navblur(spec: &str) {
-    let Some((mode, cad, pin)) = parse_navblur(spec) else {
+impl Dial {
+    pub(crate) fn configure_navblur(&mut self, spec: &str) {
+        let Some((mode, cad, pin)) = parse_navblur(spec) else {
+            crate::log(&format!(
+                "NAVBLUR spec {spec:?} not understood — prototype off"
+            ));
+            return;
+        };
+        self.navblur = mode;
+        self.navblur_cadence = cad;
+        self.navblur_pin = pin;
+        self.publish();
+        // Pinned, the slab is not a transition at all, so the page must keep its own fade. Only the
+        // riding form replaces the dip.
+        crate::ui::nav::set_blur_dissolve(!pin);
         crate::log(&format!(
-            "NAVBLUR spec {spec:?} not understood — prototype off"
+            "NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"
         ));
-        return;
-    };
-    unsafe {
-        NAVBLUR = mode;
-        NAVBLUR_CADENCE = cad;
-        NAVBLUR_PIN = pin;
     }
-    // Pinned, the slab is not a transition at all, so the page must keep its own fade. Only the
-    // riding form replaces the dip.
-    crate::ui::nav::set_blur_dissolve(!pin);
-    crate::log(&format!(
-        "NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"
-    ));
+
+    /// Does the live step want the REAL Account popover open? Read by `app.rs`, which owns `Route`.
+    ///
+    /// A dev step that changes the ROUTE rather than drawing something is unusual, and it is the only
+    /// way to put the shipped surface and a synthetic one in the same interleaved launch — which is
+    /// exactly what was needed when two agents read the same nominal configuration 15 fps apart.
+    pub(crate) fn wants_account(&self) -> bool {
+        let Some(s) = self.sweep.as_ref() else {
+            return false;
+        };
+        self.step >= 0 && matches!(s.steps[self.step as usize].kind, Kind::Account)
+    }
+
+    #[inline]
+    fn navblur_on(&self) -> bool {
+        self.navblur > 0
+    }
+
+    /// Is anything in this module armed? Nothing below runs — and no heartbeat field appears —
+    /// unless this is true.
+    #[inline]
+    pub(crate) fn armed(&self) -> bool {
+        self.sweep.is_some() || self.navblur_on()
+    }
 }
 
-/// Does the live step want the REAL Account popover open? Read by `app.rs`, which owns `Route`.
-///
-/// A dev step that changes the ROUTE rather than drawing something is unusual, and it is the only
-/// way to put the shipped surface and a synthetic one in the same interleaved launch — which is
-/// exactly what was needed when two agents read the same nominal configuration 15 fps apart.
-pub(crate) fn wants_account() -> bool {
-    let Some(s) = sweep() else { return false };
-    let idx = unsafe { STEP };
-    idx >= 0 && matches!(s.steps[idx as usize].kind, Kind::Account)
-}
-
-/// The live step index, or -1. Rides the heartbeat and every profiler record.
+/// The live step index, or -1. Rides the heartbeat and every profiler record — read from the
+/// published snapshot, since neither caller holds the plan.
 #[inline]
 pub(crate) fn step_index() -> i32 {
-    unsafe { STEP }
+    STEP_PUB.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[inline]
-fn sweep() -> Option<&'static Sweep> {
-    unsafe { (*std::ptr::addr_of!(SWEEP)).as_ref() }
-}
-
-#[inline]
-fn navblur_on() -> bool {
-    unsafe { NAVBLUR > 0 }
-}
-
-/// Is anything in this module armed? Nothing below runs — and no heartbeat field appears — unless
-/// this is true.
+/// Is anything in this module armed? The published half of [`Dial::armed`], for the same readers.
 #[inline]
 pub(crate) fn armed() -> bool {
-    sweep().is_some() || navblur_on()
+    ARMED_PUB.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Advance the dial one presented frame, BEFORE the page draws.
@@ -419,112 +471,123 @@ pub(crate) fn armed() -> bool {
 /// roll over (which invalidates, so a configuration change is not measured against the last one's
 /// cached snapshot), and the cadence clock may invalidate. `Glass::prepare`'s contract, for the
 /// same reason.
-pub(crate) fn prepare(now_ms: u32) {
-    if !armed() {
-        return;
-    }
-    // A dial run is a perf measurement: it must keep presenting whatever the idle gate thinks.
-    // `wake` rather than `invalidate` — nothing here claims the PAGE's pixels changed.
-    crate::ui::idle::wake();
-    let Some(s) = sweep() else { return };
-    unsafe {
-        if T0 == 0 {
-            T0 = now_ms.max(1);
+impl Dial {
+    pub(crate) fn prepare(&mut self, now_ms: u32) {
+        if !self.armed() {
+            return;
         }
-        let idx = ((now_ms.saturating_sub(T0) / s.hold_ms) as usize % s.steps.len()) as i32;
-        if idx != STEP {
-            STEP = idx;
-            PRESENTS = 0;
+        // A dial run is a perf measurement: it must keep presenting whatever the idle gate thinks.
+        // `wake` rather than `invalidate` — nothing here claims the PAGE's pixels changed.
+        crate::ui::idle::wake();
+        let Some((hold_ms, len)) = self.sweep.as_ref().map(|s| (s.hold_ms, s.steps.len())) else {
+            return;
+        };
+        if self.t0 == 0 {
+            self.t0 = now_ms.max(1);
+        }
+        let idx = ((now_ms.saturating_sub(self.t0) / hold_ms) as usize % len) as i32;
+        if idx != self.step {
+            self.step = idx;
+            self.presents = 0;
+            self.publish();
             crate::gfx::blur_invalidate();
             crate::log(&format!("GLASSLOAD step={idx}"));
             return;
         }
-        PRESENTS = PRESENTS.wrapping_add(1);
-        let cad = s.steps[idx as usize].cadence;
-        if cad > 0 && PRESENTS % cad == 0 {
+        self.presents = self.presents.wrapping_add(1);
+        let cad = self
+            .sweep
+            .as_ref()
+            .map_or(0, |s| s.steps[idx as usize].cadence);
+        if cad > 0 && self.presents % cad == 0 {
             crate::gfx::blur_invalidate();
         }
     }
-}
 
-/// Draw the dial's glass surfaces over whatever screen is up. Called after the route's own draw,
-/// so the snapshot these take is of the COMPLETE page — which is the honest source for a surface
-/// that sits on top of everything.
-pub(crate) fn draw() {
-    let Some(s) = sweep() else { return };
-    // A surface met while the page is being drawn as a blur SOURCE must not draw, record a need or
-    // take a capture — `gfx::draw_blur_backdrop` refuses anyway, but the frost quad would still
-    // land in the source target. See `widgets::tab_glass_on`.
-    if crate::gfx::blur_source_pass() {
-        return;
-    }
-    let idx = unsafe { STEP };
-    if idx < 0 {
-        return;
-    }
-    let p = Painter::root();
-    let step = s.steps[idx as usize];
-    for (i, r) in layout(step).into_iter().enumerate() {
-        match step.kind {
-            Kind::Glass => {
-                if p.backdrop_blur(
-                    r,
-                    0.0,
-                    PANEL_RADIUS,
-                    [1.0, 1.0, 1.0, 1.0],
-                    crate::gfx::GlassRim::Bevelled,
-                    crate::gfx::GlassFace::NONE,
-                    theme::Material::Regular.deep(),
-                ) {
-                    crate::ui::profile::phase("glass.frost", || {
-                        p.rect(
-                            r,
-                            PANEL_RADIUS,
-                            theme::PANEL_FROST_TOP,
-                            theme::PANEL_FROST_BOT,
-                            0.0,
-                        );
-                    });
-                } else {
-                    p.rect(r, PANEL_RADIUS, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+    /// Draw the dial's glass surfaces over whatever screen is up. Called after the route's own draw,
+    /// so the snapshot these take is of the COMPLETE page — which is the honest source for a surface
+    /// that sits on top of everything.
+    pub(crate) fn draw(&mut self) {
+        if self.sweep.is_none() {
+            return;
+        }
+        // A surface met while the page is being drawn as a blur SOURCE must not draw, record a need
+        // or take a capture — `gfx::draw_blur_backdrop` refuses anyway, but the frost quad would
+        // still land in the source target. See `widgets::tab_glass_on`.
+        if crate::gfx::blur_source_pass() {
+            return;
+        }
+        let idx = self.step;
+        if idx < 0 {
+            return;
+        }
+        let p = Painter::root();
+        // Copied out before the loop: the surfaces are drawn from `&mut self` (the card textures
+        // are uploaded on first use), so the sweep may not stay borrowed across them.
+        let Some(step) = self
+            .sweep
+            .as_ref()
+            .and_then(|s| s.steps.get(idx as usize).copied())
+        else {
+            return;
+        };
+        for (i, r) in layout(step).into_iter().enumerate() {
+            match step.kind {
+                Kind::Glass => {
+                    if p.backdrop_blur(
+                        r,
+                        0.0,
+                        PANEL_RADIUS,
+                        [1.0, 1.0, 1.0, 1.0],
+                        crate::gfx::GlassRim::Bevelled,
+                        crate::gfx::GlassFace::NONE,
+                        theme::Material::Regular.deep(),
+                    ) {
+                        crate::ui::profile::phase("glass.frost", || {
+                            p.rect(
+                                r,
+                                PANEL_RADIUS,
+                                theme::PANEL_FROST_TOP,
+                                theme::PANEL_FROST_BOT,
+                                0.0,
+                            );
+                        });
+                    } else {
+                        p.rect(r, PANEL_RADIUS, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
+                    }
                 }
+                Kind::Card { focused } => {
+                    let f = if focused { 1.0 } else { 0.0 };
+                    p.tex_carded(
+                        self.card_tex(i),
+                        r,
+                        theme::CARD_RING_RAD,
+                        [1.0, 1.0, 1.0, 1.0],
+                        f,
+                    );
+                }
+                Kind::Image => p.tex(self.card_tex(i), r, 0.0, [1.0, 1.0, 1.0, 1.0]),
+                // The real popover is drawn by its own surface on the container tree; `layout` returns no
+                // rects for it, so this arm is unreachable and says so rather than drawing a stand-in.
+                Kind::Account => unreachable!("an Account step lays out no surfaces of its own"),
             }
-            Kind::Card { focused } => {
-                let f = if focused { 1.0 } else { 0.0 };
-                p.tex_carded(
-                    card_tex(i),
-                    r,
-                    theme::CARD_RING_RAD,
-                    [1.0, 1.0, 1.0, 1.0],
-                    f,
-                );
-            }
-            Kind::Image => p.tex(card_tex(i), r, 0.0, [1.0, 1.0, 1.0, 1.0]),
-            // The real popover is drawn by its own surface on the container tree; `layout` returns no
-            // rects for it, so this arm is unreachable and says so rather than drawing a stand-in.
-            Kind::Account => unreachable!("an Account step lays out no surfaces of its own"),
         }
     }
-}
 
-/// The synthetic poster textures the card steps sample, allocated once and reused for the process
-/// lifetime (never per frame — see the shared brief's constraint).
-///
-/// **Four of them, in rotation, and that is the load-bearing part.** A grid of N cards all reading
-/// ONE texture is a texture cache that stays warm and a memory system that never has to work, which
-/// would price a poster wall as cheaper than it is. Four 512x768 RGBA images are 6 MB, comfortably
-/// past any on-chip cache on this part, so consecutive cards miss the way real posters do. They are
-/// value noise rather than a flat fill for the same reason: a constant texture compresses in the
-/// framebuffer/L2 path and a photograph does not.
-static mut CARD_TEX: [u32; NCARD_TEX] = [0; NCARD_TEX];
-const NCARD_TEX: usize = 4;
-
-fn card_tex(i: usize) -> u32 {
-    const W: usize = 512;
-    const H: usize = 768;
-    unsafe {
+    /// The synthetic poster textures the card steps sample, allocated once and reused for the process
+    /// lifetime (never per frame — see the shared brief's constraint).
+    ///
+    /// **Four of them, in rotation, and that is the load-bearing part.** A grid of N cards all reading
+    /// ONE texture is a texture cache that stays warm and a memory system that never has to work, which
+    /// would price a poster wall as cheaper than it is. Four 512x768 RGBA images are 6 MB, comfortably
+    /// past any on-chip cache on this part, so consecutive cards miss the way real posters do. They are
+    /// value noise rather than a flat fill for the same reason: a constant texture compresses in the
+    /// framebuffer/L2 path and a photograph does not.
+    fn card_tex(&mut self, i: usize) -> u32 {
+        const W: usize = 512;
+        const H: usize = 768;
         let slot = i % NCARD_TEX;
-        let tex = (*std::ptr::addr_of!(CARD_TEX))[slot];
+        let tex = self.card_tex[slot];
         if tex != 0 {
             return tex;
         }
@@ -539,7 +602,7 @@ fn card_tex(i: usize) -> u32 {
             *byte = state as u8;
         }
         let id = crate::gfx::upload_rgba(0, W as i32, H as i32, px.as_ptr());
-        (*std::ptr::addr_of_mut!(CARD_TEX))[slot] = id;
+        self.card_tex[slot] = id;
         id
     }
 }
@@ -569,64 +632,68 @@ fn nav_capsule() -> Rect {
     )
 }
 
-/// Draw the blurred route transition, if one is in flight. Returns whether it drew.
-pub(crate) fn draw_nav_blur() -> bool {
-    if !navblur_on() || crate::gfx::blur_source_pass() {
-        return false;
-    }
-    let amount = if unsafe { NAVBLUR_PIN } {
-        1.0
-    } else {
-        crate::ui::nav::blur_amount()
-    };
-    if amount <= 0.002 {
-        return false;
-    }
-    // The cadence clock for this surface is the transition's own: a snapshot per `NAVBLUR_CADENCE`
-    // presented frames while the fade is running. Counted here rather than in `prepare` because
-    // the fade is the only thing that makes the backdrop stale.
-    unsafe {
-        PRESENTS = PRESENTS.wrapping_add(1);
-        if NAVBLUR_CADENCE > 0 && PRESENTS % NAVBLUR_CADENCE == 0 {
+impl Dial {
+    /// Draw the blurred route transition, if one is in flight. Returns whether it drew.
+    pub(crate) fn draw_nav_blur(&mut self) -> bool {
+        if !self.navblur_on() || crate::gfx::blur_source_pass() {
+            return false;
+        }
+        let amount = if self.navblur_pin {
+            1.0
+        } else {
+            crate::ui::nav::blur_amount()
+        };
+        if amount <= 0.002 {
+            return false;
+        }
+        // The cadence clock for this surface is the transition's own: a snapshot per `navblur_cadence`
+        // presented frames while the fade is running. Counted here rather than in `prepare` because
+        // the fade is the only thing that makes the backdrop stale.
+        self.presents = self.presents.wrapping_add(1);
+        if self.navblur_cadence > 0 && self.presents % self.navblur_cadence == 0 {
             crate::gfx::blur_invalidate();
         }
+        let p = Painter::root();
+        let full = Rect::new(
+            -NAV_BLEED,
+            -NAV_BLEED,
+            SCR_W + 2.0 * NAV_BLEED,
+            SCR_H + 2.0 * NAV_BLEED,
+        );
+        let drew = p.backdrop_blur(
+            full,
+            0.0,
+            0.0,
+            [1.0, 1.0, 1.0, amount],
+            crate::gfx::GlassRim::Bevelled,
+            crate::gfx::GlassFace::NONE,
+            theme::Material::Regular.deep(),
+        );
+        // Mode 2: a PRIVATE cache for the surface above. There is one snapshot chain in this renderer,
+        // so the only way to give the capsule a backdrop that includes the slab beneath it is to take
+        // the whole chain again — which is precisely the cost a second cache would have.
+        if self.navblur >= 2 {
+            crate::gfx::blur_invalidate();
+        }
+        let cap = nav_capsule();
+        if p.backdrop_blur(
+            cap,
+            0.0,
+            cap.h * 0.5,
+            [1.0, 1.0, 1.0, amount],
+            crate::gfx::GlassRim::Standing,
+            crate::gfx::GlassFace::NONE,
+            theme::Material::Regular.deep(),
+        ) {
+            p.alpha(amount).rect_sheened(
+                cap,
+                cap.h * 0.5,
+                theme::TAB_GLASS_TOP,
+                theme::TAB_GLASS_BOT,
+            );
+        }
+        drew
     }
-    let p = Painter::root();
-    let full = Rect::new(
-        -NAV_BLEED,
-        -NAV_BLEED,
-        SCR_W + 2.0 * NAV_BLEED,
-        SCR_H + 2.0 * NAV_BLEED,
-    );
-    let drew = p.backdrop_blur(
-        full,
-        0.0,
-        0.0,
-        [1.0, 1.0, 1.0, amount],
-        crate::gfx::GlassRim::Bevelled,
-        crate::gfx::GlassFace::NONE,
-        theme::Material::Regular.deep(),
-    );
-    // Mode 2: a PRIVATE cache for the surface above. There is one snapshot chain in this renderer,
-    // so the only way to give the capsule a backdrop that includes the slab beneath it is to take
-    // the whole chain again — which is precisely the cost a second cache would have.
-    if unsafe { NAVBLUR } >= 2 {
-        crate::gfx::blur_invalidate();
-    }
-    let cap = nav_capsule();
-    if p.backdrop_blur(
-        cap,
-        0.0,
-        cap.h * 0.5,
-        [1.0, 1.0, 1.0, amount],
-        crate::gfx::GlassRim::Standing,
-        crate::gfx::GlassFace::NONE,
-        theme::Material::Regular.deep(),
-    ) {
-        p.alpha(amount)
-            .rect_sheened(cap, cap.h * 0.5, theme::TAB_GLASS_TOP, theme::TAB_GLASS_BOT);
-    }
-    drew
 }
 
 // ---------------------------------------------------------------------------------------

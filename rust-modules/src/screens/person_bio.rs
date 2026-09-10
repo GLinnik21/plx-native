@@ -369,13 +369,18 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Pers
     /// `invalidate`, which `idle::present_dirty` cannot tell from the page changing), and forced
     /// while the appear ramp is still running, where a stale backdrop under a mid-fade scrim is
     /// the contrast bug the DYNAMIC policy exists to prevent.
-    fn prepare_present(&mut self, underlay_changed: bool, appear_settled: bool) {
+    fn prepare_present(
+        &mut self,
+        glass: &mut crate::ui::frame::glass::GlassPlan,
+        underlay_changed: bool,
+        appear_settled: bool,
+    ) {
         let refresh = crate::ui::popover::glass_refresh(
             underlay_changed,
             appear_settled,
             crate::ui::popover::host::own_damage_this_frame(),
         );
-        crate::ui::widgets::Glass::DYNAMIC_BACKDROP.prepare(&mut self.glass, refresh);
+        glass.prepare_dynamic(&mut self.glass, refresh);
     }
     /// The page dim. Heavier than a chip menu's 0.45 on purpose — see the module doc's point 1:
     /// this page draws the person's own name at `size::DISPLAY` directly behind this sheet's top

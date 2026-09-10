@@ -264,9 +264,15 @@ pub struct FrameReport {
     pub steps_post: u32,
     pub carried: usize,
     pub queue_hwm: usize,
-    pub mounted: Vec<InstanceId>,
+    /// Bodies mounted this frame, each with its `Screen::name()` — the cold-open clock's START
+    /// (`diag::heartbeat::ColdOpens`). The name rides along because by the time anything
+    /// downstream reads this the body is behind the tree, and asking the tree for it would be a
+    /// second lookup that can fail (the body may already be gone).
+    pub mounted: Vec<(InstanceId, &'static str)>,
     /// Bodies whose Unmount step completed and may now be pruned, not merely queued.
     pub unmounted: Vec<InstanceId>,
+    /// Bodies that DREW this frame, in draw order — the cold-open clock's STOP.
+    pub drawn: Vec<InstanceId>,
     pub dropped_deliveries: u32,
     /// The logical-state hash, on an event frame.
     pub state_hash: Option<u64>,
@@ -305,7 +311,12 @@ pub struct Dispatcher<H: Host> {
     frame: u64,
     carried_streak: u8,
     last_carried: usize,
+    /// Deliveries dropped since the heartbeat last read them (`take_heartbeat_counters`).
     dropped_deliveries: u32,
+    /// The cold-open instrument (spec §8.4). It lives here rather than beside the loop's other
+    /// instruments because both of its events are the dispatcher's — a mount at nav commit and a
+    /// draw in the page/surface pass — and neither is visible from outside one `FrameReport`.
+    cold: crate::diag::heartbeat::ColdOpens,
     render_breach_logged: bool,
     /// The input owner answered `Handled::No` to a BACK: resolve it over its stack at commit.
     pending_back: bool,
@@ -350,6 +361,7 @@ where
             carried_streak: 0,
             last_carried: 0,
             dropped_deliveries: 0,
+            cold: Default::default(),
             render_breach_logged: false,
             pending_back: false,
             last_tick: Tick::default(),
@@ -791,7 +803,6 @@ where
         // 3. adapter results, in the caller's composite-key order (the recorder's order)
         for (addr, msg) in results {
             if !self.nav.is_deliverable(&addr) {
-                self.dropped_deliveries += 1;
                 report.dropped_deliveries += 1;
                 continue;
             }
@@ -921,6 +932,18 @@ where
             self.carried_streak = 0;
         }
         self.last_carried = report.carried;
+        // …and the drops, for the heartbeat's `dropped=`. The field on `self` accumulates until
+        // the heartbeat drains it (`take_heartbeat_counters`), and it is folded HERE, from the
+        // report, rather than beside each `report.dropped_deliveries += 1`: there are eight of
+        // those sites and only one of them ever incremented both, so `Dispatcher::dropped_deliveries`
+        // was a count of undeliverable ADDRESSEES calling itself a count of dropped deliveries.
+        self.dropped_deliveries = self
+            .dropped_deliveries
+            .saturating_add(report.dropped_deliveries);
+        // a body unmounted without ever drawing owes no `coldopen` line (§8.4)
+        for id in &report.unmounted {
+            self.cold.unmounted(id.0);
+        }
         debug_assert!(
             self.carried_streak < CARRY_GROWTH_FRAMES,
             "the effect queue grew for {CARRY_GROWTH_FRAMES} consecutive frames"
@@ -969,7 +992,22 @@ where
     fn prepare_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick) {
         self.prepared = true;
         let (_, host_render) = self.nav.modals.host_policy();
+        // The budget's frame opens at the START of the prepare window and nowhere else (§8.1):
+        // the ceiling measures how long THIS window has run, so an origin taken any earlier
+        // charges the window for phases that are not its own.
+        //
+        // **While the legacy loop still owns the product's frame there are two such windows in
+        // one iteration**, sharing the one budget: this pass (the owned screens', which spends
+        // nothing today) and the loop's own around the render cache's upload step, opened later
+        // and therefore the origin the uploads are admitted against. Two openings cost the
+        // instruments nothing — `take_frame_stats` accumulates until its reader drains it, and
+        // `begin_frame` resets only the quotas and the solo latch — and they collapse to one
+        // when the dispatcher owns the whole frame.
         self.budget.begin_frame(rig.now_us());
+        // The cold-open line's `prepared=` term (§8.4): the budget's refusal count as this
+        // frame's prepare window opens, differenced at the draw. Taken here rather than from
+        // `take_frame_stats` because that drain belongs to the heartbeat, once a second.
+        self.cold.note_prepare(self.budget.refused());
         let parts = self.parts(tick);
         {
             let Dispatcher { nav, input, budget, .. } = self;
@@ -1015,9 +1053,13 @@ where
     /// `Route::Person` for a while, then self-gated) — the shape §14 is about: a rule stated in one
     /// module and enforced by a route test three modules away. A screen with a cached ground, or
     /// none, inherits the no-op.
-    pub fn prepare_present(&mut self, underlay_changed: bool) {
+    pub fn prepare_present(
+        &mut self,
+        glass: &mut crate::ui::frame::glass::GlassPlan,
+        underlay_changed: bool,
+    ) {
         if let Some(inst) = self.nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
-            inst.screen.prepare_present(underlay_changed, true);
+            inst.screen.prepare_present(glass, underlay_changed, true);
         }
         for s in &mut self.nav.modals.surfaces {
             if s.phase == crate::ui::containers::modal::Phase::Hidden {
@@ -1025,7 +1067,7 @@ where
             }
             let Some(inst) = s.entry.inst.as_mut() else { continue };
             let settled = s.motion.settled();
-            inst.screen.prepare_present(underlay_changed, settled);
+            inst.screen.prepare_present(glass, underlay_changed, settled);
         }
     }
 
@@ -1060,7 +1102,12 @@ where
         let parts = self.parts(tick);
         let Dispatcher { nav, input, .. } = self;
         let mut stops = Vec::new();
-        let mut set = RenderSet::default();
+        let mut set = RenderSet {
+            // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
+            // the screens' own renders and the FrameCache
+            extra_bytes: super::tex::resident_bytes(),
+            ..Default::default()
+        };
         // the page pass: the top page (and, under a push, the level beneath it), unless the
         // host fold REPLACED it
         if pages && host_render != HostRender::Replaced {
@@ -1080,9 +1127,10 @@ where
                     let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
                     f.page_alpha *= nav.tabs.stack.transition.page_alpha();
                     inst.screen.draw(&mut f);
+                    report.drawn.push(inst.id);
                     stops.extend(f.into_stops());
                     set.pages += 1;
-                    set.bytes += inst.screen.render_bytes();
+                    set.bytes += inst.screen.render_report().bytes;
                     if top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
                         && inst.screen.focus_source() == FocusSource::Engine {
                         let mut chrome_parts = parts.clone();
@@ -1140,9 +1188,15 @@ where
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
                 inst.screen.draw(&mut f);
+                report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
-                set.surfaces.push((s.entry.id, 1));
-                set.bytes += inst.screen.render_bytes();
+                // (b) is a count of THIS SURFACE's own backing renders, asked of the surface —
+                // not a literal `1`, which is what made "more than one render per surface"
+                // unspellable and the rule inert. A surface served from the shared FrameCache
+                // owns none and reports 0.
+                let render = inst.screen.render_report();
+                set.surfaces.push((s.entry.id, render.textures));
+                set.bytes += render.bytes;
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
                 s.ground_ready = inst.screen.ground_ready();
             }
@@ -1155,13 +1209,20 @@ where
             self.input.hit.swap();
         }
         if let Err(breach) = set.check() {
-            debug_assert!(false, "render set breach: {breach}");
-            if !self.render_breach_logged {
-                self.render_breach_logged = true;
-                rig.log(&format!("dispatch: render set breach: {breach}"));
+            // The policy itself is `frame::on_breach` — assert on the host, log once on a
+            // television — so that both halves are reachable from a test.
+            if let Some(line) = super::frame::on_breach(&breach, &mut self.render_breach_logged) {
+                rig.log(&line);
             }
         }
         report.render_set = set;
+        // §8.4: a mount's clock stops on the first frame the body both prepared and DREW. This
+        // frame prepared (`prepare_pass` ran above, or in the `frame_with` that preceded this
+        // `draw`), so every id in `drawn` that is still pending closes here.
+        let refused_now = self.budget.refused();
+        for id in &report.drawn {
+            self.cold.drawn(id.0, tick.ms, refused_now);
+        }
         if let Some(fault) = self.present.take_fault() {
             rig.log(&format!("dispatch: fault {fault:?}"));
         }
@@ -1795,6 +1856,8 @@ where
             let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
             mounter.mount(id, &entry.arg, &entry.ret, &cx, &mut fx)
         };
+        // read before the body moves into the tree — the cold-open clock's start (§8.4)
+        let name = screen.name();
         if let Some(entry) = self.nav.entry_mut(eid) {
             entry.inst = Some(Instance {
                 id,
@@ -1808,7 +1871,8 @@ where
             fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Mount)),
         });
         post.extend(out);
-        report.mounted.push(id);
+        report.mounted.push((id, name));
+        self.cold.mounted(id.0, name, parts.tick.ms);
     }
 
     /// Register a request as in flight for an instance (the app's registry calls this when it
@@ -1864,6 +1928,18 @@ where
         self.dropped_deliveries
     }
 
+    /// The heartbeat's `carried=`/`dropped=` (§8.4), once a second: the queue depth the LAST
+    /// frame of the second carried forward, and every delivery dropped since the previous read.
+    /// `carried` is a level and is not reset; `dropped` is a count and is.
+    pub fn take_heartbeat_counters(&mut self) -> (usize, u32) {
+        (self.last_carried, std::mem::take(&mut self.dropped_deliveries))
+    }
+
+    /// The `coldopen` lines this frame closed (§8.4), for the loop's report block to log.
+    pub fn take_cold_open_lines(&mut self) -> Vec<String> {
+        self.cold.take_lines()
+    }
+
     pub fn viewport() -> Rect {
         Rect::FULL
     }
@@ -1884,6 +1960,59 @@ where
 /// choose one) and one screen with a `Nav(Back)` rule on its LEFT edge, carrying an inner DEPTH
 /// it walks down exactly as `screens::settings::RouteSurface` walks its own stack: it HANDLES a
 /// BACK while it has depth and DECLINES one at its root.
+/// The cold-open instrument's dispatcher half (spec §8.4): the mount that starts the clock and
+/// the first prepared+drawn frame that stops it. The arithmetic and the line's shape are pinned in
+/// `diag::heartbeat`; what is pinned HERE is that the two events are wired to the right places and
+/// that the word on the line is the screen's own `Screen::name()`.
+#[cfg(test)]
+mod cold_open_tests {
+    use super::*;
+    use crate::ui::fixture::{tick, FixtureArg, FixtureHost, FixtureRig};
+    use crate::ui::machine::MachineId;
+
+    #[test]
+    fn one_mount_produces_exactly_one_cold_open_line_naming_that_screen() {
+        let _g = crate::testlock::serial();
+        let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+        let mut rig = FixtureRig::new();
+
+        // boot: Home is requested, mounts at nav commit and draws in the same frame
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        let r = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+        assert_eq!(r.mounted.len(), 1);
+        assert_eq!(r.mounted[0].1, "home", "the report carries the screen's own name");
+        assert!(r.drawn.contains(&r.mounted[0].0), "it drew in the frame it mounted in");
+        assert_eq!(
+            d.take_cold_open_lines(),
+            vec!["coldopen screen=home ms=0 prepared=true".to_string()],
+        );
+
+        // …and never again for that instance, however many frames it goes on drawing for
+        d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+        d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+        assert!(d.take_cold_open_lines().is_empty(), "one line per MOUNT, not per frame");
+
+        // A second screen mounted later reports its own word — and its own CLOCK, which is the
+        // half `ms=0` above cannot show. This mount lands on a frame the present gate refuses
+        // (a structural op that damaged nothing), so the body has not drawn yet and owes no line;
+        // the next frame that presents is the one it opens on, 16 ms later.
+        d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(1)));
+        let r2 = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+        assert_eq!(r2.mounted.len(), 1);
+        assert!(!r2.presented && r2.drawn.is_empty(), "the mount frame drew nothing");
+        assert!(d.take_cold_open_lines().is_empty(), "a mount that has not drawn owes no line");
+        d.present.note(crate::ui::present::PresentEvent::Damage(
+            crate::ui::present::Provenance::Input,
+        ));
+        let r3 = d.frame(&mut rig, tick(64), vec![], vec![], &mut NoTap);
+        assert!(r3.presented, "damage opened the gate");
+        assert_eq!(
+            d.take_cold_open_lines(),
+            vec!["coldopen screen=detail ms=16 prepared=true".to_string()],
+        );
+    }
+}
+
 #[cfg(test)]
 mod edge_back_tests {
     use std::borrow::Cow;
