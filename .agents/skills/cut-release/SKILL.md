@@ -233,6 +233,18 @@ gh workflow run release.yml -f version=X.Y.Z     # or -f bump=minor (trunk cuts 
 gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
 ```
 
+**A patch is dispatched from its maintenance line, and the dispatch has to name that line TWICE.**
+`-f line=release/vX.Y` tells `prepare` which branch to bump, tag and push; `--ref release/vX.Y`
+tells GitHub which copy of `release.yml` to validate the inputs against. Without the second,
+GitHub reads the workflow file on the DEFAULT branch, and if `main` does not yet carry an input
+the line added, the dispatch is refused with `Unexpected inputs provided: ["line"]` before
+anything runs — which is how v0.6.1's first dispatch died on 2026-09-10, with the `line` input
+still unpushed on `main`. The spelling that works from either state of `main`:
+
+```sh
+gh workflow run release.yml --ref release/vX.Y -f version=X.Y.Z -f line=release/vX.Y
+```
+
 **There is no flavour input here, and you do not want one.** `release.yml` pins `FLAVOR: stable` in
 the build job's `env`, which is the right place for it: CI is the one context where the Makefile's
 `FLAVOR ?= debug` default is always wrong, and a value nobody can forget to type beats one they
