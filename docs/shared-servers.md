@@ -11,7 +11,7 @@ device verification item rather than an unimplemented transport.
 **Anonymisation — read this before adding an example anywhere in the repo.** Addresses, ports,
 tokens, machine identifiers, the owner's username and their library names are deliberately **not**
 recorded here or in any fixture, doc comment, commit message or PR body — the same redaction rule
-`ui/stats.rs` applies to the diagnostics panel, and for a stronger reason: **this repository is
+`app/diagnostics.rs` applies to the diagnostics panel, and for a stronger reason: **this repository is
 public, and none of that data is ours.** It belongs to the person who shared their server.
 
 This paragraph stood here, in these words, while the repo published the friend's handle, their
@@ -593,7 +593,7 @@ per source, off the SDL thread).
   both servers in this household hold a `ratingKey` 4, so a fan-out matched on the key marks a
   different film watched on the other machine — confidently, and with a 200 back.
 - **No resume position is ever COPIED between servers. Only the watched flag travels.** This is the
-  subtle half, and it is the half `ui/alt_sources.rs` reasons out: an offset is about a file you are
+  subtle half, and it is the half `screens/alt_sources.rs` reasons out: an offset is about a file you are
   streaming from one host, which is also why that panel NAVIGATES to the other copy rather than
   swapping it under you. `unscrobble` is fanned out too — it is the other end of one control, and
   clearing the claim is still a claim about the title — but no `viewOffset` is read or pushed
@@ -892,9 +892,9 @@ Then, per cache:
   hold the item, so the copies are kept and only their `owner` is re-read. Two riders, both found
   the round after: `install` regrades the incoming list as well, because a resolve dispatched before
   the correction lands after it and no epoch downstream looks again; and an OPEN panel is rebuilt,
-  because `open` materialises `TABLE`/`DESTS` once and `draw` renders that snapshot — so the rows
+  because the surface materialises its `TableView` once and `draw` renders that snapshot — so the rows
   keep their old text *and their old order* otherwise, and the order is not cosmetic, `owner` is the
-  own-before-a-friend's tiebreak. The one place `AltCopy::owner` is decided is `alt_sources::regrade`,
+  own-before-a-friend's tiebreak. The one place `AltCopy::owner` is decided is `metadata::alt_regrade`,
   applied at both boundaries, and skipped whole while the `/tmp/plxnative-shared` stand-in owns the
   list (its entire purpose is to fabricate a borrowed copy on a slot the registry calls ours).
 

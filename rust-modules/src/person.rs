@@ -1671,7 +1671,7 @@ fn guid_tail(s: &str) -> &str {
 /// Takes the Discover `ratingKey` (a bare catalog ID) and matches it against the tail of each
 /// source's own guid index — see [`guid_tail`] for why neither side's string is compared whole.
 /// First match wins in registry order, which is the same "yours before a friend's" precedence
-/// `alt_sources` states explicitly.
+/// `screens::alt_sources` states explicitly.
 fn match_local(p: &Person, id: &str) -> Option<(ServerId, String)> {
     let id = guid_tail(id);
     if id.is_empty() {
@@ -2602,7 +2602,7 @@ mod tests {
     /// Empty the registry around a test that needs real slots in it, and hand it back empty — the
     /// discipline `plex::servers`' own tests document: a client left registered at a port that
     /// closed is one another module's pump will dial on a background thread.
-    struct FreshRegistry(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct FreshRegistry(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for FreshRegistry {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();

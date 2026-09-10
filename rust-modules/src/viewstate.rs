@@ -59,7 +59,7 @@
 //!   its rows with.
 //! * **No resume position is ever COPIED from one server to another — only the watched flag
 //!   travels.** This is the subtle half. A resume offset is about a file you are streaming from one
-//!   host, and `ui::alt_sources`' module doc reasons that out at length; that reasoning stands. So
+//!   host, and `screens::alt_sources`' module doc reasons that out at length; that reasoning stands. So
 //!   `unscrobble` IS repeated on the other copies (it is the "unwatched" end of one control, and
 //!   clearing the flag is the same statement about the title), but no `viewOffset` is read here and
 //!   none is pushed anywhere.

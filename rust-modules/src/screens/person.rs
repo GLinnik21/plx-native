@@ -4,11 +4,13 @@
 //! changes leave through `ContentReq` effects. Filmography is a separate modal `Screen`; this page
 //! presents it and never imports or stores a sibling screen.
 //!
-//! `crate::ui::person_bio` remains the one legacy seam allowed until phase 10. It is still owned by
-//! this page, so its input is intercepted here and it is hidden when this instance leaves for good.
+//! **The biography sheet left in phase 10** (`screens::person_bio`, `ContentPanel::Bio`): it is a
+//! `Style::Alert` surface on the container tree, so its input, its phase and its teardown are the
+//! container's and this page neither intercepts keys for it nor hides it. What stays here is the
+//! GATE — the panel is offered exactly when the `MORE` mark is drawn, and both read
+//! `bio_is_truncated` over this header's own column width.
 
 use std::ffi::CString;
-use std::os::raw::c_uint;
 
 use crate::person::{Person, NSHELF};
 use crate::plex::ServerId;
@@ -618,7 +620,6 @@ impl PersonScreen {
     /// Claim the legacy single-slot store for this identity. Restores call this only when another
     /// person actually displaced the slot; render springs and shell scroll deliberately survive.
     fn request_store(&mut self) {
-        crate::ui::person_bio::hide();
         crate::stores::person::apply(PersonCmd::Open {
             sid: self.sid,
             key: self.key.clone(),
@@ -947,8 +948,6 @@ impl PersonScreen {
         let want = scroll_target(&self.scroll, &live, &settled);
         self.scroll.scroll.step(want, K_SCROLL, dt);
 
-        crate::ui::person_bio::update(dt);
-
         let settling =
             (self.scroll.scroll.pos - want).abs() > 0.25 || self.scroll.scroll.vel.abs() > 0.5;
         if crate::person::facts_pending(p) || crate::person::loading() || settling {
@@ -965,9 +964,27 @@ impl PersonScreen {
             return;
         };
         if bio_is_truncated(p) {
-            crate::ui::person_bio::open();
+            // The GATE is the page's, and stays the page's: the panel exists exactly when the
+            // `MORE` mark is drawn, and both read `bio_is_truncated` — which depends on this
+            // header's own column width. A surface asked to re-derive it would be how the mark and
+            // the sheet came to disagree about whether there is more to read.
+            fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Panel(
+                crate::screens::registry::ContentPanel::Bio,
+            ))));
             fx.invalidate(Provenance::Input);
         }
+    }
+
+    /// **Can the biography sheet be offered at all?** The page's answer about the page's own
+    /// person, and the same predicate the `MORE` mark is drawn from — so the mark and the sheet
+    /// cannot disagree about whether there is more to read.
+    ///
+    /// `pub(crate)` for one caller, `dev::scenarios`' `/tmp/plxnative-bio`: a headless boot presents
+    /// the sheet through the same door the OK press uses, and asking the page first is what stops
+    /// the trigger opening a panel an interactive press would have refused. `DetailScreen::
+    /// tracks_available` is the precedent and the reason.
+    pub(crate) fn bio_available(&self) -> bool {
+        self.person().is_some_and(bio_is_truncated)
     }
 
     fn activate_entry<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
@@ -1596,7 +1613,6 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 kind:
                     InputKind::Key {
                         key,
-                        sym,
                         edge: Edge::Down,
                         ..
                     },
@@ -1604,15 +1620,6 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
             }) => {
                 if matches!(key, Key::Up | Key::Down | Key::Left | Key::Right) {
                     self.return_pending = false;
-                }
-                if crate::ui::person_bio::is_open() {
-                    match key {
-                        Key::Back => crate::ui::person_bio::close(),
-                        Key::Ok => {}
-                        _ => crate::ui::person_bio::move_focus(*sym as c_uint),
-                    }
-                    fx.invalidate(Provenance::Input);
-                    return Handled::Yes;
                 }
                 if *key == Key::Back {
                     fx.push(crate::ui::machine::Fx::App(AppFx::Content(
@@ -1627,18 +1634,12 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 ..
             }) => {
                 self.return_pending = false;
-                if crate::ui::person_bio::is_open() {
-                    return Handled::Yes;
-                }
                 Handled::No
             }
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Pointer { .. },
                 ..
             }) => {
-                if crate::ui::person_bio::is_open() {
-                    return Handled::Yes;
-                }
                 Handled::No
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Person.ord() => {
@@ -1648,7 +1649,6 @@ impl<H: ContentLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
-                crate::ui::person_bio::hide();
                 if self.person().is_some() {
                     crate::stores::person::apply(PersonCmd::Close);
                 }
@@ -1684,10 +1684,6 @@ impl<H: ContentLike> Screen<H> for PersonScreen {
         let live = self.live_flow(person, cur);
         col.draw(&live, &env, p);
         self.draw_shelf_state(p, &env, person);
-
-        // The biography panel remains this page's one legacy, screen-owned overlay until phase 10.
-        crate::ui::person_bio::scrim();
-        crate::ui::person_bio::draw();
 
         self.record_stops(f, person, cur);
     }

@@ -50,8 +50,9 @@ either is a place that still assumes cleartext**, which is what makes them the g
 work. The CONTROL plane no longer makes that assumption: `http.rs` sends an HTTPS origin through
 libcurl. Neither does playback: `StreamUrl` preserves the scheme and `ff.rs` selects `stream.rs`
 for plaintext or `curlio.rs` for HTTPS. One dev-only caller also still throws an origin away:
-`ui/alt_sources.rs`'s `stand_in_slot` registers a stand-in from `c.host()`/`c.port()` and must move
-to `register_origin` in that UI-owned lane.
+`metadata.rs`'s `alt_stand_in_slot` registers a stand-in from `c.host()`/`c.port()` and must move
+to `register_origin`. (It was `ui/alt_sources.rs`'s until restructure phase 10 moved the *Also
+available* store to the data layer beside the resolve that fills it.)
 
 **A `plex.direct` origin is dialled at the address plex.tv advertised beside it, with no DNS.**
 `origin::ResolvePin` (2026-09-05) is the offline-mode fix: the persisted origin for the household's

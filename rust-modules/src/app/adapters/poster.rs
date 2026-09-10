@@ -663,7 +663,7 @@ impl ArtFail {
 /// call site formats a URL into a log line in the first place. The server is named by its registry
 /// SLOT NUMBER, the handle `plex: server slot N registered at …` already prints, and by nothing
 /// else: not the address, not the machine identifier, not the friendly name (which defaults to the
-/// owner's hostname). `ui/stats.rs`'s module doc argues the whole rule for the on-screen read-out.
+/// owner's hostname). `app/diagnostics.rs`'s module doc argues the whole rule for the on-screen read-out.
 fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // One word per server slot, one BIT per cause. Indexing by the SERVER (clamped) is what keeps
     // the index in range by construction rather than by assumption: `ServerId::UNSET` is
@@ -911,7 +911,7 @@ mod tests {
     /// the load-bearing half: `browse::pump` adopts every registered slot as a source and spawns a
     /// discovery worker for it, so a server left behind here would have another module's tests
     /// dialling a dead loopback port on a background thread.
-    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();

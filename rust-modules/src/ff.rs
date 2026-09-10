@@ -8463,7 +8463,7 @@ mod tests {
     /// test — `curlio`'s one-source registry is a process-global these two contend on with
     /// `curlio`'s own suite, in another module, which is exactly what `testlock` is for. `None`
     /// on a host with no libcurl at all, where these two would be grading nothing.
-    fn curl_gate() -> Option<std::sync::MutexGuard<'static, ()>> {
+    fn curl_gate() -> Option<crate::testlock::Serial> {
         let g = crate::testlock::serial();
         if crate::net::global_init() && crate::curlio::available() {
             Some(g)

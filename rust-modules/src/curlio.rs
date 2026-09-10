@@ -1664,7 +1664,7 @@ mod tests {
     /// So: hold the crate-wide lock for the WHOLE test (`lib.rs`'s `testlock`, not a local mutex —
     /// `ff.rs`'s curl-backed AVIO tests contend on the same registry from another module).
     /// `None` on a host with no libcurl at all, where these tests are vacuous and skip.
-    fn curl_gate() -> Option<std::sync::MutexGuard<'static, ()>> {
+    fn curl_gate() -> Option<crate::testlock::Serial> {
         let g = crate::testlock::serial();
         if crate::net::global_init() && available() {
             Some(g)

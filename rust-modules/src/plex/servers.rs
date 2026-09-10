@@ -915,7 +915,7 @@ fn register_lazy(
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     activate(id);
-    // Address only — the machineIdentifier is a permanent household fingerprint (see `ui::stats`)
+    // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
     crate::log(&format!(
@@ -1072,6 +1072,7 @@ pub(crate) fn revoke_all() {
 /// to ask `client_opt()` gets `Some(a client whose port closed when that test returned)`.
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
+    crate::testlock::assert_held("the plex server registry (reset)");
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     for s in SLOTS.iter() {
         s.store(std::ptr::null_mut(), Ordering::Release);
@@ -1111,7 +1112,7 @@ mod tests {
     /// then spawns a discovery worker for it, so servers left behind here would have another
     /// module's tests dialling `10.0.0.1` on a background thread. The reset happens while the lock
     /// is still held (a struct's own `Drop` runs before its fields').
-    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             reset_for_test();

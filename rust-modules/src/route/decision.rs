@@ -8272,7 +8272,7 @@ mod tests {
     /// names a slot the next test is about to re-fill with a different server, and `machine_id` is
     /// a cache keyed on exactly that id — which `the_machine_id_cache_is_scoped_to_the_server_that_taught_it`
     /// then reads. `reset_session` is the whole-session write, and this is what it is for.
-    fn fresh_registry(ps: &mut PlaybackSession) -> std::sync::MutexGuard<'static, ()> {
+    fn fresh_registry(ps: &mut PlaybackSession) -> crate::testlock::Serial {
         let g = crate::testlock::serial();
         // These are process-global route transactions, not Session fields. A host test has no
         // Engine pump to spend them, so leaving either behind makes a later loopback server see a

@@ -82,8 +82,8 @@ about to establish. That fact is what decides §3 below.
    store's generation and marks it dirty; `stores::take_notices()` drains `(StoreId, gen)` once
    per frame at the loop's drain point (`bridge::frame`, right after NAV COMMIT) into the real
    dispatcher as `Dispatcher::store_changed(ord, gen)`, which delivers `ScreenEvent::StoreChanged`
-   to every live instance. A `LegacyPage` ignores it; a migrated screen (phase 5b) reconciles on
-   it (spec §7.3 step 6).
+   to every live instance. The blank route-word page the unmigrated routes mounted until phase 10
+   ignored it; a migrated screen (phase 5b on) reconciles on it (spec §7.3 step 6).
 3. **The dispatcher path is real.** `AppFx::Store(StoreId, StoreCmd)` is the application's first
    effect: `bridge::Bridge` (the `Rig<AppHost>` impl) turns it into
    `Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(cmd)))`, and `Rig::deliver`

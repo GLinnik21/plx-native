@@ -159,7 +159,11 @@ impl Rows {
         Rect::new(LANG_X - 26.0, top + COL_Y - 36.0, 560.0, h + 60.0)
     }
 
-    pub(crate) fn draw(&self, p: Painter, d: &Detail, top: f32, focused: Option<u32>) {
+    /// `tracks` is the PAGE's answer to "is there a file for the track sheet to describe"
+    /// (`DetailScreen::tracks_available`), passed in rather than asked of the sheet: it decides
+    /// whether the Languages column carries a MORE affordance, and it has to be the same bit
+    /// `about::locate` gates the element on or the column reads as pressable and is not.
+    pub(crate) fn draw(&self, p: Painter, d: &Detail, top: f32, focused: Option<u32>, tracks: bool) {
         let x = crate::ui::consts::MARGIN_X;
         p.text(
             c"About".as_ptr(),
@@ -226,7 +230,7 @@ impl Rows {
         );
 
         self.draw_information(p, x, top + COL_Y);
-        self.draw_languages(p, top + COL_Y, focused == Some(LANGUAGES_ELEM));
+        self.draw_languages(p, top + COL_Y, focused == Some(LANGUAGES_ELEM), tracks);
         self.draw_accessibility(p, 1360.0, top + COL_Y);
     }
 
@@ -246,7 +250,7 @@ impl Rows {
         }
     }
 
-    fn draw_languages(&self, p: Painter, y: f32, focused: bool) {
+    fn draw_languages(&self, p: Painter, y: f32, focused: bool, tracks: bool) {
         if focused {
             crate::ui::widgets::text_block_highlight(p, self.languages_rect(y - COL_Y));
         }
@@ -279,7 +283,7 @@ impl Rows {
                 .fade_last(90.0)
                 .draw(p, Rect::new(LANG_X, yy + 34.0, 500.0, 0.0));
         }
-        if crate::ui::tracks_panel::is_available() {
+        if tracks {
             p.text(
                 c"MORE".as_ptr(),
                 LANG_X + 500.0,

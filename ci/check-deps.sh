@@ -25,7 +25,9 @@
 #              `decision.rs`, the network/adapter half) and `player/` are scanned the same as
 #              `screens/`/`app/` (zero hits at the split, so green on day one; the `wall` rule below
 #              is the one that distinguishes the halves: it gates `route/plan.rs` and exempts
-#              `route/decision.rs`).
+#              `route/decision.rs`). Phase 10 adds `dev/`: the dev-trigger arms that used to live
+#              in `app/{boot,run,content,mod}.rs` moved to `dev/scenarios.rs`, and a mutator call
+#              that moved with them must not launder itself out of this gate's scan.
 #
 # Phase 8 rule (§14, §6.2):
 #   nav      — a screen under rust-modules/src/screens/ never calls `crate::ui::nav::` (any
@@ -35,6 +37,27 @@
 #              widgets.rs's chrome helpers, the loop's own app/nav.rs and app/run.rs) still call
 #              `ui::nav` directly — that is phase 7/12's boundary, not this one's; this gate
 #              scans only `screens/`, where the count is zero.
+# Phase 10 rules:
+#   layer    — a screen (`screens/`) never names `crate::app::`/`super::app::` (§2.1's table). The
+#              other half of that table has been gated since phase 2 (`ui/` names no application
+#              type); this half was prose until the argument and the mounter moved into
+#              `screens/registry.rs`, which is the boundary §0 criterion 5 stands on. Zero, no
+#              allowlist.
+#   legacypage — `LegacyPage` is spelled NOWHERE under rust-modules/src (§15.2). The type was a
+#              route WORD wearing the `Screen` trait, mounted by `AppArg::Legacy`'s fallback arm,
+#              and by phase 9 nothing constructed one — every route mounted an owned screen. A
+#              fallback nothing takes is not free: it is what stopped the mounter's match from
+#              being exhaustive, so a `Route` added without a screen compiled and mounted a blank
+#              page instead of failing to build. Zero, with no allowlist: there is no such thing as
+#              a legitimate second one.
+#   sibling  — a file under `screens/<a>/` or `screens/<a>.rs` never names `crate::screens::<b>`
+#              for a different `<b>` (§2.1, §0 criterion 2): a screen talks to the shared
+#              vocabulary (`crate::screens::registry`, which the gate allows by name) and to the
+#              container, never to its neighbours — reaching into a sibling is what makes a screen
+#              impossible to mount, test or delete on its own. Existing violations are
+#              ci/allow/sibling-migration.txt, one per FILE, and that list is empty when the
+#              criterion is met. The own-module name is not a violation, and `mod.rs`/a submodule
+#              of `screens/<a>/` counts as `<a>`.
 #   sessionwrite — a screen (screens/, ui/) never calls `plex::session::load(`. `load` is the
 #              BOOT/auth door: it mints a `client_id` when there is none and re-persists a
 #              plaintext session, so a read turns into `write_atomic` — a temp file, `sync_all`,
@@ -131,11 +154,58 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:\s*//' | grep -v 'stores::' || true)
-done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" -name '*.rs' | sort)
+done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" -name '*.rs' | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
 
 gate nav 'crate::ui::nav::' "$SRC/screens"
+
+# layer: a SCREEN never names the application. §2.1's table says `screens/` may name `ui/`,
+# `stores/`, `plex/` and `player/` and never `app/`, and until phase 10 that half of the rule was
+# prose alone — which is exactly how `screens/registry.rs` came to record, in its own module doc,
+# that it could not hold the concrete `ScreenArg` because the argument carried an `app`-private
+# `Route`. The type moved and the rule is now a grep, because the criterion that depends on it (§0
+# criterion 5: a new screen touches its own file, the registry, `dev/scenarios.rs` and the manifest
+# and nothing else) is only worth as much as the boundary underneath it. Count is zero, with no
+# allowlist: a screen that needs something of the loop's asks for it as an effect (`AppFx`,
+# `LoopReq`) — that is what the bundle in `registry.rs` is.
+if [ -n "$(grep_code '(crate|super)::app::' "$SRC/screens")" ]; then
+  grep_code '(crate|super)::app::' "$SRC/screens" | sed 's/^/    /'
+  fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
+else ok "layer"; fi
 gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui"
+
+# legacypage: the word itself, anywhere under src — a doc that still describes the type is as much
+# a hit as a declaration, which is the point (nothing compiles the prose either).
+legacy_hits=$(grep -rn --include='*.rs' 'LegacyPage' "$SRC" 2>/dev/null || true)
+if [ -z "$legacy_hits" ]; then ok "legacypage"; else
+  echo "$legacy_hits" | sed 's/^/    /'
+  fail "legacypage: $(echo "$legacy_hits" | wc -l | tr -d ' ') mention(s) — the type is retired (§15.2)"
+fi
+
+# sibling: one screen family per directory; `<a>` is the first path component under screens/.
+#
+# `screens/registry.rs` is EXEMPT, and by design rather than by allowlist: it holds the concrete
+# `ScreenArg` and the one `mount` match (§2.1), so naming every screen is the whole of its job —
+# that match is the single place the application says which argument mounts which screen, and a
+# gate that forbade it would forbid the structure the spec asks for. It was an allowlist entry
+# until phase 10 moved the mounter into it; an entry would have had to say "this file names all of
+# them, permanently", which is a rule and not a migration.
+sib_bad=0
+while IFS= read -r f; do
+  [ "$f" = "$SRC/screens/registry.rs" ] && continue
+  rel="${f#"$SRC"/screens/}"
+  own="${rel%%/*}"
+  own="${own%.rs}"
+  hits=$(grep_code 'crate::screens::[a-z_]+' "$f" | grep -oE 'crate::screens::[a-z_]+' | sort -u \
+    | grep -vE "^crate::screens::(registry|${own})$" || true)
+  [ -z "$hits" ] && continue
+  if ! allowed sibling-migration "$f"; then
+    echo "    $f: $(echo "$hits" | tr '\n' ' ')"
+    sib_bad=$((sib_bad+1))
+  fi
+done < <(find "$SRC/screens" -name '*.rs' | sort)
+if [ "$sib_bad" -eq 0 ]; then ok "sibling"
+else fail "sibling: $sib_bad file(s) name a sibling screen (use crate::screens::registry)"; fi
 
 # every allowlist's declared count equals its entries
 for f in ci/allow/*.txt; do

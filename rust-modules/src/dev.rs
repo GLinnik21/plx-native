@@ -29,6 +29,15 @@
 //! The four unconditional LOG sinks are deliberately NOT here and stay in every build: they are creates, not
 //! reads, they are how on-device crash triage works at all, and writing them is not a way for
 //! another process to steer this one.
+//!
+//! **Since UI restructure phase 10, [`scenarios`] is where a read gets ACTED on.** This module is
+//! still the one door onto `/tmp` itself (`flag`/`read`, below); `dev::scenarios` gathers every
+//! ARM — the app-core code that calls through this door and reacts — that used to be scattered
+//! across `app/boot.rs`, `app/run.rs`, `app/content.rs` and `app/mod.rs`, plus the per-arm state
+//! (oscillator phases, retry latches) those arms used to keep on `App` itself. Read that module's
+//! doc before adding a new trigger that `app/` consumes.
+
+pub(crate) mod scenarios;
 
 /// Files that are pure diagnostics rather than automation — see [`any_trigger_present`].
 ///

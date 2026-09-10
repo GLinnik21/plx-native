@@ -37,7 +37,8 @@ use crate::ui::screen::{
     Screen, ScreenEvent, Step,
 };
 
-use super::input::{RepeatGate, HUD_LINGER_MS, HUD_MENU_MS, PANEL_REPEAT_MS};
+use super::input::{HUD_LINGER_MS, HUD_MENU_MS};
+use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
 
 /// The fields [`PlayerOverlayScreen::write`] canonicalises, for the recorder's shape pin (§5.4).
 /// The selected ROW is in it deliberately: these panels' UP/DOWN changes nothing else in the app,
@@ -63,8 +64,11 @@ pub(crate) enum OverlayKind {
 
 impl OverlayKind {
     /// The heartbeat's `overlay=` word. These four spellings are the ones `tests/manifest.json`'s
-    /// fps scenes select by and the ones `app::overlay_word` printed before phase 9; changing one
-    /// silently disarms a scene rather than failing anything visible (§15.3).
+    /// fps scenes select by; changing one silently disarms a scene rather than failing anything
+    /// visible (§15.3). Since phase 10 item 4 they reach the heartbeat DIRECTLY — `app::overlay_word`
+    /// is the topmost surface's own `Screen::name`, so there is no mapping table between this
+    /// function and the printed line, and `app::heartbeat_word_tests` derives its alphabet by
+    /// presenting every surface argument and reading the word back.
     /// **WHICH of the four this is, with the parameter thrown away** — the identity
     /// `ScreenArg::same_instance` compares, and the reason it is not the whole `OverlayKind`.
     ///

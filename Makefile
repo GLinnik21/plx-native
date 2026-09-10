@@ -1089,6 +1089,19 @@ check: lint
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo +$(RUST_NIGHTLY) test --lib --features hostsim
+	@# ...and the THIRD feature set, `lab-diagnostics`, TYPE-CHECKED. It is not in the default set
+	@# at all (that is what makes it unshippable by forgetting a flag), so nothing above compiles a
+	@# line of `lab/` or of `ui/lab_toast.rs` — and until 2026-09-10 nothing anywhere did: not this
+	@# target, not .github/workflows/ci.yml, not the PostToolUse release hook. The configuration had
+	@# been BROKEN since phase 9 moved `player::diag` onto the session (`lab/snapshot.rs` still
+	@# called the old arity), and `ui/lab_toast.rs`'s two tests had never been compiled by anything,
+	@# which is why an orphaned `#[test]` attribute sat in `lab/snapshot.rs` unnoticed.
+	@# `--tests` rather than a bare `--lib` for exactly that second reason: a feature-gated module's
+	@# TEST code is the half no other gate here can see. `CARGO_INCREMENTAL=0` because a one-shot
+	@# gate has nothing to reuse a cache for. No `pkg/lab.json` is involved — that file is `make
+	@# LAB=1`'s requirement (a live session secret), not the compiler's.
+	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_NIGHTLY) check --lib --tests --features lab-diagnostics
 	@# The flavour transform, host-side and free. Its central assertion — that the STABLE transform
 	@# is the identity — is the mechanical guarantee that having a second app id cannot perturb the
 	@# released .ipk, whose sha256 every user's television verifies at install. That property is

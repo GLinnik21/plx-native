@@ -26,161 +26,38 @@
 //!   ([`overlay_word`]), so the fps tier's word table is unchanged (§15.3).
 //! - **The three privileged calls** stay the loop's; the rig's hooks are no-ops (3b's reason).
 
-use std::borrow::Cow;
 use std::ffi::CStr;
 
 use crate::screens::family::SettingsPage;
-use crate::screens::registry::{AppFx, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, LibraryReq, LoopReq, PageMemory};
-use crate::screens::settings::{Family, RouteSurface};
+use crate::screens::registry::{route_wears_tab_bar, AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
 use crate::ui::dispatch::{CxParts, Dispatcher, FrameReport, Rig, Split};
 #[cfg(test)]
+use crate::screens::registry::every_surface_arg;
+#[cfg(test)]
 use crate::ui::dispatch::NoTap;
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
-    Canon, Chrome, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host,
+    Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, Handled, Host,
     InputEvent, InputKind, InputOwner, InstanceId, Key, LogicalState, Machine, MachineId, Measure, NavOp,
-    ScreenId, Source, Tick, TimerId,
+    Source, Tick, TimerId,
 };
 use crate::ui::present::Present;
 use crate::ui::screen::{
-    At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Mounter, Placed,
-    RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
+    At, DrawFrame, FocusSource, Focusable, ReturnState, Screen, ScreenEvent,
 };
 
-use super::nav::route_wears_tab_bar;
 use super::{route_word, Route};
 
 // ---------------------------------------------------------------------------------------------
 // the bundle
 // ---------------------------------------------------------------------------------------------
 
-pub(super) struct AppHost;
-
-/// A screen argument: the legacy `Route` (§14: "`Route` survives only as its argument"), or an
-/// OWNED screen — the Settings surface and the first-run consent surface (both `RouteSurface`).
-///
-/// **Both owned variants carry the page their inner stack is ROOTED at**, which is there for the
-/// dev boot targets and for nothing else. `/tmp/plxnative-settings=privacy` has to put a headless
-/// run on a page that is normally two presses inside the surface, and the loop cannot press them:
-/// the Settings root's row indices are `RootPage`'s private business (the Favourites row is absent
-/// signed out), so a loop that reached the child by delivering `Activate(<row>)` would be encoding
-/// a table it does not own and would rot the first time a row is added. Rooting the stack at the
-/// target instead needs nothing from the page. The one thing it costs is that BACK at a
-/// dev-booted child DISMISSES the surface rather than revealing the root — a difference that
-/// exists only under a trigger, and that the fps scenes it serves (`legal-document`,
-/// `decision-alert`, `settings-*`) never press.
-#[derive(Clone, PartialEq, Eq)]
-pub(super) enum AppArg {
-    LibraryMenu(crate::screens::registry::LibraryMenuArg),
-    /// One of the player's four panels, presented on the PLAYER PAGE's own `ModalStack` (§6.2).
-    /// It carries only which panel: the host is the page it is presented over, which the container
-    /// already knows, and the panel's own state is the instance's.
-    PlayerOverlay(crate::screens::player::overlay::PlayerOverlayArg),
-    Legacy(Route),
-    Content(ContentArg),
-    /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
-    Settings(SettingsPage),
-    /// The first-run consent question, rooted at this stage byte (0 for every real opening;
-    /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).
-    FirstRunConsent(u8),
-}
-
-pub(super) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Account{over:BarHost{Home,Library,Search}},ItemMenu{over:MenuHost{Home,Detail,Related,Library,Search,Person}},Library,Detail,Person,Search,Player},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
-     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)}}";
-
-impl LogicalState for AppArg {
-    fn write(&self, c: &mut Canon) {
-        match self {
-            Self::LibraryMenu(arg) => { c.u32(4); arg.write(c); }
-            Self::PlayerOverlay(arg) => { c.u32(5); arg.write(c); }
-            Self::Legacy(route) => {
-                c.u32(0);
-                match route {
-                    Route::Login => { c.u32(0); }
-                    Route::Profiles => { c.u32(1); }
-                    Route::Onboard => { c.u32(2); }
-                    Route::Home => { c.u32(3); }
-                    Route::Account { over } => { c.u32(4).u32(*over as u32); }
-                    Route::ItemMenu { over } => { c.u32(5).u32(*over as u32); }
-                    Route::Library => { c.u32(6); }
-                    Route::Detail => { c.u32(7); }
-                    Route::Person => { c.u32(8); }
-                    Route::Search => { c.u32(9); }
-                    Route::Player => { c.u32(10); }
-                }
-            }
-            Self::Content(arg) => { c.u32(1); arg.write(c); }
-            Self::Settings(page) => { c.u32(2); page.write(c); }
-            Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
-        }
-    }
-    fn probe(&self, out: &mut String) { out.push_str("app_arg"); }
-}
-
-impl crate::ui::screen::ScreenArg for AppArg {
-    fn chrome(&self) -> Chrome {
-        match self {
-            AppArg::Legacy(r) if route_wears_tab_bar(*r) => Chrome::TabBar,
-            _ => Chrome::None,
-        }
-    }
-    fn id(&self) -> ScreenId {
-        ScreenId(match self {
-            AppArg::LibraryMenu(_) => 15,
-            // One id for all four panels, exactly as `Settings(_)` collapses its root payload:
-            // they are four kinds of ONE screen, and `same_instance` must never let the container
-            // think it is holding two of them.
-            AppArg::PlayerOverlay(_) => 16,
-            AppArg::Legacy(Route::Login) => 1,
-            AppArg::Legacy(Route::Profiles) => 2,
-            AppArg::Legacy(Route::Onboard) => 3,
-            AppArg::Legacy(Route::Home) => 4,
-            AppArg::Legacy(Route::Account { .. }) => 5,
-            AppArg::Legacy(Route::ItemMenu { .. }) => 6,
-            AppArg::Legacy(Route::Library) => 7,
-            AppArg::Legacy(Route::Detail) => 8,
-            AppArg::Legacy(Route::Person) => 9,
-            AppArg::Legacy(Route::Search) => 10,
-            AppArg::Legacy(Route::Player) => 11,
-            // The ROOT payload is a boot address, not an identity: one Settings surface and one
-            // consent question, whichever page each happens to have been rooted at.
-            AppArg::Settings(_) => 12,
-            AppArg::FirstRunConsent(_) => 13,
-            AppArg::Content(ContentArg::Detail { .. }) => 8,
-            AppArg::Content(ContentArg::Person { .. }) => 9,
-            AppArg::Content(ContentArg::Filmography { .. }) => 14,
-        })
-    }
-    fn title(&self) -> Option<&str> {
-        None
-    }
-    fn same_instance(&self, other: &Self) -> bool {
-        if let (Self::Content(a), Self::Content(b)) = (self, other) {
-            return a.same_item(b);
-        }
-        if matches!(self, Self::Content(_)) || matches!(other, Self::Content(_)) {
-            return false;
-        }
-        // **A player overlay's identity is its KIND, never the playback under it** (§16.9): the
-        // panel is a surface on the player's own stack, so the page beneath it is not part of what
-        // "the same instance" means here — and, the other way round, the PLAYER's own argument
-        // carries no overlay at all any more, which is what makes a BACK out of the track menu
-        // dismiss a surface instead of remounting the page (the reuse-vs-remount risk this rule
-        // exists for).
-        if let (Self::PlayerOverlay(a), Self::PlayerOverlay(b)) = (self, other) {
-            return a.kind.slot() == b.kind.slot();
-        }
-        // …and the same reason `id` collapses the payload: `Settings(Root)` and
-        // `Settings(Legal)` are the same SCREEN, so a container must never be able to think it
-        // is holding two of them.
-        <Self as crate::ui::screen::ScreenArg>::id(self) == <Self as crate::ui::screen::ScreenArg>::id(other)
-    }
-}
+pub(crate) struct AppHost;
 
 impl AppArg {
-    pub(super) fn from_node(node: &super::Node) -> Self {
+    pub(crate) fn from_node(node: &super::Node) -> Self {
         match node {
             super::Node::Detail { sid, rk, .. } => Self::Content(ContentArg::Detail { sid: *sid, rk: rk.clone() }),
             super::Node::Person { sid, key, guid, name, thumb } => Self::Content(ContentArg::Person {
@@ -190,16 +67,16 @@ impl AppArg {
         }
     }
 
-    pub(super) fn route(&self) -> Option<Route> {
+    pub(crate) fn route(&self) -> Option<Route> {
         match self {
-            Self::Legacy(r) => Some(super::page_of(*r)),
+            Self::Legacy(r) => Some(*r),
             Self::Content(ContentArg::Detail { .. }) => Some(Route::Detail),
             Self::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => Some(Route::Person),
             _ => None,
         }
     }
 
-    pub(super) fn node(&self, memory: &PageMemory) -> Option<super::Node> {
+    pub(crate) fn node(&self, memory: &PageMemory) -> Option<super::Node> {
         match self {
             Self::Content(ContentArg::Detail { sid, rk }) => Some(super::Node::Detail {
                 sid: *sid, rk: rk.clone(),
@@ -226,22 +103,22 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct AppViews<'a> {
-    pub(super) hubs: crate::pms::HubsView<'a>,
-    pub(super) listing: crate::stores::browse::ListingView<'a>,
-    pub(super) directory: crate::stores::browse::DirectoryView<'a>,
-    pub(super) section_hubs: crate::stores::browse::HubsView<'a>,
-    pub(super) search: crate::search::view::SearchView<'a>,
+pub(crate) struct AppViews<'a> {
+    pub(crate) hubs: crate::pms::HubsView<'a>,
+    pub(crate) listing: crate::stores::browse::ListingView<'a>,
+    pub(crate) directory: crate::stores::browse::DirectoryView<'a>,
+    pub(crate) section_hubs: crate::stores::browse::HubsView<'a>,
+    pub(crate) search: crate::search::view::SearchView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
-    pub(super) session: &'a crate::route::PlaybackSession,
+    pub(crate) session: &'a crate::route::PlaybackSession,
 }
 
 #[derive(Default)]
-pub(super) struct BridgeInit;
+pub(crate) struct BridgeInit;
 
 impl LogicalState for BridgeInit {
     fn write(&self, _w: &mut Canon) {}
@@ -282,214 +159,13 @@ impl crate::screens::registry::LibraryLike for AppHost {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the legacy page
-// ---------------------------------------------------------------------------------------------
-
-/// A legacy route as a `Screen` (§14): its logical state is the route WORD; the ladders answer
-/// everything, the engine and the map are inert for it.
-pub(super) struct LegacyPage {
-    route: Route,
-    state: LegacyState,
-}
-
-struct LegacyState {
-    word: &'static str,
-    notices: u32,
-}
-
-impl LogicalState for LegacyState {
-    fn write(&self, w: &mut Canon) {
-        w.str(self.word);
-    }
-    fn probe(&self, out: &mut String) {
-        out.push_str(&format!("{} notices={}", self.word, self.notices));
-    }
-}
-
-impl LegacyPage {
-    fn new(route: Route) -> Self {
-        Self {
-            route,
-            state: LegacyState {
-                word: route_word(route),
-                notices: 0,
-            },
-        }
-    }
-}
-
-impl Machine<AppHost> for LegacyPage {
-    type Ev = ScreenEvent<AppHost>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHost>) -> Handled {
-        if let ScreenEvent::StoreChanged(..) = ev {
-            self.state.notices += 1;
-        }
-        Handled::No
-    }
-}
-
-impl Focusable<AppHost> for LegacyPage {
-    fn groups(&self, _cx: &Cx<'_, AppHost>, _out: &mut Vec<GroupSpec>) {}
-    fn group_of(&self, _key: &u32, _cx: &Cx<'_, AppHost>) -> Option<GroupId> {
-        None
-    }
-    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, AppHost>) -> Step<u32> {
-        Step::Edge
-    }
-    fn place(&self, _key: &u32, _cx: &Cx<'_, AppHost>, _at: At) -> Option<Placed> {
-        None
-    }
-    fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, AppHost>) -> FocusKey<u32> {
-        want
-    }
-    fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, AppHost>) -> FocusKey<u32> {
-        FocusKey {
-            entry: EntryId(0),
-            elem: 0,
-        }
-    }
-}
-
-impl Screen<AppHost> for LegacyPage {
-    fn name(&self) -> &'static str {
-        self.state.word
-    }
-    fn state(&self) -> &dyn LogicalState {
-        &self.state
-    }
-    fn crumb(&self, _cx: &Cx<'_, AppHost>) -> Option<Cow<'_, str>> {
-        None
-    }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, AppHost>) {}
-    fn draw(&mut self, _f: &mut DrawFrame<'_, '_, AppHost>) {}
-    fn render(&self) -> RenderStrategy {
-        match self.route {
-            Route::Player => RenderStrategy::VideoPlane,
-            _ => RenderStrategy::Page,
-        }
-    }
-    fn focus_source(&self) -> FocusSource {
-        FocusSource::Legacy
-    }
-    fn hit_source(&self) -> HitSource {
-        HitSource::Legacy
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// the mounter: the one match
-// ---------------------------------------------------------------------------------------------
-
-#[derive(Default)]
-struct AppMounter {
-    seed: Option<super::Node>,
-    library_kind: Option<crate::browse::SecKind>,
-    /// How long the NEXT player instance pins its transport for, in ms — `HUD_LINGER_MS` for an
-    /// ordinary start and `HUD_HEADLESS_MS` for a capture run. It is a seed rather than a constant
-    /// because `start_playback` is what knows which, and because the deadline must be stamped from
-    /// the instant the page MOUNTS: callers used to pass `last_input + HUD_LINGER_MS`, a timestamp
-    /// taken before a blocking resolve, so a load longer than the 4.5 s linger expired the HUD
-    /// before it was ever drawn and the user got a blank screen instead of a transport.
-    player_hud_ms: Option<u32>,
-}
-
-impl Mounter<AppHost> for AppMounter {
-    fn mount(
-        &mut self,
-        id: InstanceId,
-        arg: &AppArg,
-        ret: &ReturnState<u32, PageMemory>,
-        cx: &Cx<'_, AppHost>,
-        _fx: &mut Effects<'_, AppHost>,
-    ) -> Box<dyn Screen<AppHost>> {
-        let entry = match cx.owner {
-            crate::ui::machine::InputOwner::Entry(e) => e,
-            _ => EntryId(0),
-        };
-        match arg {
-            AppArg::LibraryMenu(arg) => Box::new(crate::screens::library::menu::LibraryMenu::new(entry, arg.clone())),
-            AppArg::PlayerOverlay(arg) => Box::new(
-                crate::screens::player::overlay::PlayerOverlayScreen::new(cx.views.session, entry, arg.kind),
-            ),
-            AppArg::Content(ContentArg::Detail { sid, rk }) => {
-                let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
-                if let PageMemory::Detail(spot) = &ret.memory {
-                    page.restore_memory(spot);
-                } else if let Some(super::Node::Detail { sid: seed_sid, rk: seed_rk, spot }) = self.seed.take() {
-                    if seed_sid == *sid && seed_rk == *rk { page.restore(&spot); }
-                }
-                Box::new(page)
-            }
-            AppArg::Content(ContentArg::Person { sid, key, guid, name, thumb }) => {
-                let mut page = crate::screens::person::PersonScreen::new(entry, *sid, key.clone(), guid.clone(), name.clone(), thumb.clone());
-                if let PageMemory::Person(memory) = &ret.memory { page.restore(memory); }
-                Box::new(page)
-            }
-            AppArg::Content(ContentArg::Filmography { sid, key }) => {
-                let mut page = crate::screens::filmography::FilmographyScreen::new(entry, *sid, key.clone());
-                if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory); }
-                Box::new(page)
-            }
-            // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
-            // word stays the loop's while the loop still names the page
-            AppArg::Legacy(Route::Onboard) => Box::new(crate::screens::onboard::OnboardScreen::first_run(entry)),
-            // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
-            // exactly the same way — the route word is still the loop's (`route_word`), and
-            // naming the route is the whole of (re)mounting either: a fresh instance is built
-            // every time `bridge::frame` follows a `Replace` onto one of them, which is what lets
-            // every remaining `app::input`/`app::run` call site drop its own `enter()`-equivalent
-            // reset (see `input::enter_profiles_from_onboard`'s doc for the same argument made
-            // about `screens::onboard` in 5b).
-            AppArg::Legacy(Route::Login) => Box::new(crate::screens::login::LoginScreen::new(entry)),
-            AppArg::Legacy(Route::Profiles) => Box::new(crate::screens::profiles::ProfilesScreen::new(entry)),
-            AppArg::Legacy(Route::Home) => {
-                let mut page = crate::screens::home::HomeScreen::new(entry, id);
-                if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
-                Box::new(page)
-            }
-            AppArg::Legacy(Route::Library) => {
-                let kind = self.library_kind.or_else(|| cx.views.directory.current().map(|i| cx.views.directory.sections()[i].kind))
-                    .unwrap_or(crate::browse::SecKind::Movie);
-                let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
-                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
-                Box::new(page)
-            }
-            AppArg::Legacy(Route::Search) => {
-                let mut page = crate::screens::search::SearchScreen::new(entry, id);
-                if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
-                Box::new(page)
-            }
-            // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
-            // gesture, the held-key timer, the control row's springs and the Up Next countdown,
-            // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
-            // instant it mounts (`AppMounter::player_hud_ms`), never from the keypress that asked
-            // for the playback.
-            AppArg::Legacy(Route::Player) => {
-                let mut page = crate::screens::player::PlayerScreen::new(entry);
-                page.hud.extend(cx.tick.ms, self.player_hud_ms.take().unwrap_or(super::HUD_LINGER_MS));
-                page.publish();
-                Box::new(page)
-            }
-            AppArg::Legacy(r) => Box::new(LegacyPage::new(*r)),
-            AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
-            AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
-                entry,
-                id,
-                Family::FirstRunConsent,
-                SettingsPage::ConsentStage(*stage),
-            )),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // the rig
 // ---------------------------------------------------------------------------------------------
 
 /// The consent MACHINE (§2.2): the one owner of the two decisions. It applies an answer and
 /// PUBLISHES it (`telemetry::record` → `consent::install`), which is the snapshot every
 /// telemetry thread reads; nothing else writes it.
-pub(super) struct ConsentMachine;
+pub(crate) struct ConsentMachine;
 
 impl ConsentMachine {
     fn record(&mut self, errors: bool, usage: bool) {
@@ -511,7 +187,7 @@ impl ConsentMachine {
 }
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
-pub(super) struct Bridge {
+pub(crate) struct Bridge {
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
@@ -539,7 +215,6 @@ pub(super) struct Bridge {
     search: crate::stores::search::SearchSnapshot,
     chrome: super::chrome::ChromeSnapshot,
     chrome_selection: u32,
-    legacy_host_live: bool,
     home_commands: std::collections::VecDeque<HomeCmd>,
     library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
     consent: ConsentMachine,
@@ -552,19 +227,21 @@ pub(super) struct Bridge {
     /// What the player's overlay surfaces asked of the loop this frame (§14) — drained by
     /// `playback::player_requests`, which holds the `MainThread` token they cannot.
     player_reqs: Vec<crate::screens::registry::PlayerReq>,
+    /// …and what the item context menu asked, drained by `content::content_requests` — which holds
+    /// the route, the trail and the playback session's `&mut` that its dispatch needs.
+    item_menu_reqs: Vec<crate::screens::registry::ItemMenuReq>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
     keyboard_adoptions: usize,
     effect_return: ReturnState<u32, PageMemory>,
-    pub(super) menu_opener: Option<(EntryId, Option<FocusKey<u32>>)>,
     /// The surfaces whose host counters this bridge holds: (entry, cached, closing).
     held: Vec<(EntryId, bool, bool)>,
     now_us: fn() -> u64,
 }
 
 impl Bridge {
-    pub(super) fn new(now_us: fn() -> u64) -> Self {
+    pub(crate) fn new(now_us: fn() -> u64) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
@@ -577,7 +254,7 @@ impl Bridge {
     /// use. See [`Bridge::measure`] for what happens to a test that reaches for `new` instead: it
     /// dies inside `text.rs` on a `debug_assert!`, several frames away from anything it asserted.
     #[cfg(test)]
-    pub(super) fn for_test(now_us: fn() -> u64) -> Self {
+    pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
         Self::with_measure(&FIXTURE, now_us)
     }
@@ -598,7 +275,6 @@ impl Bridge {
             search: crate::stores::search::snapshot(),
             chrome: super::chrome::ChromeSnapshot::default(),
             chrome_selection: 0,
-            legacy_host_live: true,
             home_commands: std::collections::VecDeque::new(),
             library_commands: std::collections::VecDeque::new(),
             consent: ConsentMachine,
@@ -608,42 +284,46 @@ impl Bridge {
             library_reqs: Vec::new(),
             search_reqs: Vec::new(),
             player_reqs: Vec::new(),
+            item_menu_reqs: Vec::new(),
             #[cfg(test)]
             keyboard_calls: Vec::new(),
             #[cfg(test)]
             keyboard_adoptions: 0,
             effect_return: ReturnState::default(),
-            menu_opener: None,
             held: Vec::new(),
             now_us,
         }
     }
 
-    pub(super) fn take_reqs(&mut self) -> Vec<LoopReq> {
+    pub(crate) fn take_reqs(&mut self) -> Vec<LoopReq> {
         std::mem::take(&mut self.reqs)
     }
 
-    pub(super) fn take_content_reqs(&mut self) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_content_reqs(&mut self) -> Vec<(MachineId, ContentReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.content_reqs)
     }
 
-    pub(super) fn take_home_reqs(&mut self) -> Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_home_reqs(&mut self) -> Vec<(MachineId, HomeReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.home_reqs)
     }
 
-    pub(super) fn take_library_reqs(&mut self) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_library_reqs(&mut self) -> Vec<(MachineId, LibraryReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.library_reqs)
     }
 
-    pub(super) fn take_player_reqs(&mut self) -> Vec<crate::screens::registry::PlayerReq> {
+    pub(crate) fn take_player_reqs(&mut self) -> Vec<crate::screens::registry::PlayerReq> {
         std::mem::take(&mut self.player_reqs)
     }
 
-    pub(super) fn take_search_reqs(&mut self) -> Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
+    pub(crate) fn take_item_menu_reqs(&mut self) -> Vec<crate::screens::registry::ItemMenuReq> {
+        std::mem::take(&mut self.item_menu_reqs)
+    }
+
+    pub(crate) fn take_search_reqs(&mut self) -> Vec<(MachineId, crate::screens::registry::SearchReq, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.search_reqs)
     }
 
-    pub(super) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+    pub(crate) fn search_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(crate::search::Item, crate::ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
@@ -655,7 +335,7 @@ impl Bridge {
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
     }
 
-    pub(super) fn search_tab_available(&self, tab: HomeTab) -> bool {
+    pub(crate) fn search_tab_available(&self, tab: HomeTab) -> bool {
         match tab {
             HomeTab::Movies => self.directory.view().preferred(crate::browse::SecKind::Movie).is_some(),
             HomeTab::Shows => self.directory.view().preferred(crate::browse::SecKind::Show).is_some(),
@@ -663,7 +343,7 @@ impl Bridge {
         }
     }
 
-    pub(super) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
+    pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(crate::pms::PmsMovie, crate::ui::popover::Opener)> {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
@@ -675,7 +355,7 @@ impl Bridge {
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
     }
 
-    pub(super) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
+    pub(crate) fn library_command(d: &mut Dispatcher<AppHost>, command: crate::screens::registry::LibraryCmd) {
         if let crate::screens::registry::LibraryCmd::SwitchStep(_) = command {
             if let Some(InputOwner::Entry(owner)) = d.nav.input_owner() {
                 if let Some(entry) = d.nav.entry(owner).filter(|entry| matches!(entry.arg, AppArg::LibraryMenu(_))) {
@@ -694,14 +374,14 @@ impl Bridge {
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
     }
 
-    pub(super) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
+    pub(crate) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
             .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>()) else { return false };
         matches!(page.probe_viewport(d.input.engine.current(InputOwner::Entry(entry.id))).0, "grid" | "shelf")
     }
 
-    pub(super) fn enter_library(&mut self, kind: crate::browse::SecKind) {
+    pub(crate) fn enter_library(&mut self, kind: crate::browse::SecKind) {
         self.mounter.library_kind = Some(kind);
         self.library_commands.clear();
         self.library_commands.push_back(crate::screens::registry::LibraryCmd::Enter(kind));
@@ -712,7 +392,7 @@ impl Bridge {
         while let Some(command) = self.library_commands.pop_front() { Self::library_command(d, command); }
     }
 
-    pub(super) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
+    pub(crate) fn home_opener(&self, d: &Dispatcher<AppHost>, entry: EntryId,
         focus: Option<FocusKey<u32>>) -> crate::ui::popover::Opener {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
             let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
@@ -730,13 +410,13 @@ impl Bridge {
         crate::ui::popover::Opener { rect, ..crate::ui::popover::Opener::NONE }
     }
 
-    pub(super) fn seed_node(&mut self, node: &super::Node) {
+    pub(crate) fn seed_node(&mut self, node: &super::Node) {
         self.mounter.seed = Some(node.clone());
     }
 
     /// How long the next player instance pins its transport for — see
     /// [`AppMounter::player_hud_ms`]. Set by `start_playback` and consumed by the mount.
-    pub(super) fn seed_player_hud(&mut self, ms: u32) {
+    pub(crate) fn seed_player_hud(&mut self, ms: u32) {
         self.mounter.player_hud_ms = Some(ms);
     }
 
@@ -761,21 +441,20 @@ impl Bridge {
         Some(f(home, &cx, focus))
     }
 
-    pub(super) fn home_grid_focused(&self, d: &Dispatcher<AppHost>) -> bool {
+    pub(crate) fn home_grid_focused(&self, d: &Dispatcher<AppHost>) -> bool {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
     }
 
-    pub(super) fn home_snap_target(&self, d: &Dispatcher<AppHost>) -> f32 {
+    pub(crate) fn home_snap_target(&self, d: &Dispatcher<AppHost>) -> f32 {
         self.with_home(d, |home, _, _| home.snap_target()).unwrap_or(0.0)
     }
 
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>, route: Route) {
-        self.legacy_host_live = super::host_page_updates(route, false);
-        let search = super::page_of(route) == Route::Search;
-        if matches!(super::page_of(route), Route::Home | Route::Library) || search {
+        let search = route == Route::Search;
+        if matches!(route, Route::Home | Route::Library) || search {
             d.nav.tabs.strip_fallback = Some(if search { crate::ui::dispatch::STRIP_BASE + 3 } else { crate::screens::home::STRIP_HOME_ELEM });
             self.chrome.refresh(self.measure);
-            self.chrome_selection = if super::page_of(route) == Route::Library {
+            self.chrome_selection = if route == Route::Library {
                 self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
             } else if search { self.chrome.search_selection() } else { 0 };
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
@@ -820,18 +499,18 @@ impl Bridge {
         search_changed
     }
 
-    pub(super) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
+    pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
         let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
         crate::ui::widgets::tab_row_update_with(self.chrome.labels(), selected, self.chrome.focus(focus), dt);
         self.chrome.members(selected, focus, &mut d.nav.tabs.strip);
     }
 
-    pub(super) fn prepare_home_chrome(&self) {
+    pub(crate) fn prepare_home_chrome(&self) {
         crate::ui::widgets::tab_glass_prepare_with(self.chrome.labels());
     }
 
-    pub(super) fn home_command(&mut self, command: HomeCmd) -> bool {
+    pub(crate) fn home_command(&mut self, command: HomeCmd) -> bool {
         if self.home_commands.contains(&command) { return true; }
         if self.home_commands.len() >= 8 { return false; }
         self.home_commands.push_back(command);
@@ -857,7 +536,7 @@ impl Bridge {
         }
     }
 
-    pub(super) fn request_home_menu(&mut self, d: &Dispatcher<AppHost>) -> bool {
+    pub(crate) fn request_home_menu(&mut self, d: &Dispatcher<AppHost>) -> bool {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(home) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
             .and_then(|s| s.downcast_ref::<crate::screens::home::HomeScreen>()) else { return false };
@@ -874,7 +553,13 @@ impl Bridge {
         self.home_command(HomeCmd::ItemMenu)
     }
 
-    pub(super) fn open_content_menu(&mut self, d: &Dispatcher<AppHost>, entry: EntryId, ret: &ReturnState<u32, PageMemory>) -> Option<super::MenuHost> {
+    /// **What a CONTENT page's hold is a menu about** — the detail page's season tabs, its episode
+    /// filmstrip and its Related shelf, and a person page's filmography — as the argument that
+    /// presents it. It used to CALL the three `ui::item_menu::open*` entry points and answer with
+    /// a `MenuHost` for the loop to put on `app.route`; the surface's argument carries all of it
+    /// now, including the two bits that variant existed to say.
+    pub(crate) fn content_menu_arg(&self, d: &Dispatcher<AppHost>, entry: EntryId, ret: &ReturnState<u32, PageMemory>)
+        -> Option<crate::screens::registry::ItemMenuArg> {
         let e = d.nav.entry(entry)?;
         let screen = e.inst.as_ref()?.screen.as_any()?;
         let mut parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
@@ -889,39 +574,39 @@ impl Bridge {
             directory: self.directory.view(),
             section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
         }, self.measure);
-        let host = if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
+        if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
-            let opener = crate::ui::popover::Opener {
-                rect: page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn),
-                ..crate::ui::popover::Opener::NONE
-            };
+            let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             if let Some((rk, mark)) = page.focused_season(ret.focus) {
-                crate::ui::item_menu::open_season(sid, &rk, mark, opener);
-                super::MenuHost::Detail
+                Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect))
             } else if let Some((rk, mark)) = page.focused_episode(ret.focus) {
-                crate::ui::item_menu::open_episode(sid, &rk, mark, opener);
-                super::MenuHost::Detail
-            } else if let Some(item) = page.focused_related(ret.focus).filter(|m| crate::ui::item_menu::has_actions(m)) {
-                crate::ui::item_menu::open(item, false, opener);
-                super::MenuHost::Related
-            } else { return None; }
+                // the ONE entry point whose item is a leaf of the season this page has loaded
+                Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect))
+            } else {
+                // …a RELATED tile is a DIFFERENT item standing on the same page: an ordinary card
+                // row, which is exactly what `MenuHost::Related` existed to say.
+                let item = page.focused_related(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+                Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
+            }
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
-            let item = page.focused_item(ret.focus).filter(|m| crate::ui::item_menu::has_actions(m))?;
-            let opener = crate::ui::popover::Opener {
-                rect: page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn),
-                ..crate::ui::popover::Opener::NONE
-            };
-            crate::ui::item_menu::open(item, false, opener);
-            super::MenuHost::Person
-        } else { return None; };
-        self.menu_opener = Some((entry, ret.focus));
-        Some(host)
+            let item = page.focused_item(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+            let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
+            Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
+        } else { None }
     }
 
-    /// Render-only inspection of the captured opener. The entry, not a global screen, owns it.
-    pub(super) fn redraw_opener(&self, d: &Dispatcher<AppHost>) {
-        if !crate::ui::item_menu::visible() { return; }
-        let Some((entry, focus)) = self.menu_opener else { return };
+    /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the
+    /// pair it works from is the SURFACE's own argument (`ItemMenuScreen::opener`) — it was
+    /// `Bridge::menu_opener`, a second copy of the same `(entry, focus)` kept on the side and
+    /// written by four separate arms.
+    ///
+    /// It runs immediately after the container's page pass, which is where `ModalStack::draw_scrims`
+    /// laid the dim down: the tile is the panel's whole subject, and the design's stated point is
+    /// that the card stays visible behind it. The dim is the CONTAINER's now (`Screen::scrim`), so
+    /// what is left here is the half only the page that drew the element can answer — a `fn()` lift
+    /// has nothing to borrow a `&Dispatcher` through.
+    pub(crate) fn redraw_opener(&self, d: &Dispatcher<AppHost>) {
+        let Some((entry, focus)) = item_menu(d).map(|menu| menu.opener()) else { return };
         if d.nav.top_page().map(|e| e.id) != Some(entry) { return; }
         let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).and_then(|i| i.screen.as_any()) else { return };
         // The page pass may be submitting a cached host quad. Opener lifts are live paint
@@ -1037,7 +722,8 @@ impl Bridge {
     /// test, so a test cannot drive it end to end and must instead pin the exact decision it makes.
     /// `arg.route()` is already `page_of`-resolved (see [`AppArg::route`]), so a popover argument
     /// answers for the page it sits over, exactly as `route_wears_tab_bar` itself does for
-    /// `Route::Account`/`Route::ItemMenu`.
+    /// a popover route (both are gone since phase 10 — the two menus are surfaces, and the page under
+    /// a surface answers for itself).
     fn draws_chrome_for(arg: &AppArg) -> bool {
         arg.route().is_some_and(route_wears_tab_bar)
     }
@@ -1053,11 +739,11 @@ impl Bridge {
     /// dozen small allocations this otherwise costs at the loop rate.
     /// The video plane's EDGE, from `Player::set_video_plane_bound` and from nowhere else
     /// (spec §16 risk 10). Reaches both the dispatcher's present gate and this rig's own copy.
-    pub(super) fn publish_video_plane(&mut self, bound: bool) {
+    pub(crate) fn publish_video_plane(&mut self, bound: bool) {
         self.video_plane = bound;
     }
 
-    pub(super) fn publish_playback(&mut self, session: &crate::route::PlaybackSession, live: bool) {
+    pub(crate) fn publish_playback(&mut self, session: &crate::route::PlaybackSession, live: bool) {
         if live {
             self.playback = session.publication();
             self.playback_live = true;
@@ -1069,7 +755,6 @@ impl Bridge {
 }
 
 impl Rig<AppHost> for Bridge {
-    fn page_updates(&self) -> bool { self.legacy_host_live }
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>, nav: crate::ui::screen::NavPresentation) {
         if !Self::draws_chrome_for(arg) { return; }
         let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
@@ -1163,6 +848,7 @@ impl Rig<AppHost> for Bridge {
             AppFx::Library(req) => self.library_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Player(req) => self.player_reqs.push(req),
+            AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
         }
     }
     fn log(&mut self, line: &str) {
@@ -1228,14 +914,14 @@ fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost
 /// the ten steps WITHOUT the draw (the loop draws at its own slot, on its own gate). Returns the
 /// top page's heartbeat word.
 #[cfg(test)]
-pub(super) fn frame(
+pub(crate) fn frame(
     d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: Route, trail: &super::Trail,
     tick: Tick, inputs: Vec<InputEvent<u32>>,
 ) -> (&'static str, FrameReport) {
     frame_with_tap(d, rig, route, trail, tick, inputs, &mut NoTap)
 }
 
-pub(super) fn frame_with_tap(
+pub(crate) fn frame_with_tap(
     d: &mut Dispatcher<AppHost>,
     rig: &mut Bridge,
     route: Route,
@@ -1247,7 +933,7 @@ pub(super) fn frame_with_tap(
     frame_with_results(d, rig, route, trail, tick, inputs, take_live_results, tap)
 }
 
-pub(super) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
+pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
 
 fn take_live_results() -> AppResults {
     let mut results = crate::stores::hubs::take_results();
@@ -1264,8 +950,19 @@ fn take_live_results() -> AppResults {
 /// One dispatcher path for live or supplied adapter results. The supplier runs at ingest, after
 /// frame-view capture, and this function never additionally polls a live mailbox. Supplying
 /// results alone is not offline replay: boot restoration and request suppression are separate.
+///
+/// **The trunk every app frame passes through, so it is where the test-only lock rule is
+/// ENFORCED** — the rule stated in prose below
+/// `route_flips_preserve_content_and_player_origin_entries` and broken from another module
+/// anyway. A frame is not a walk of a nav tree: it drains `crate::stores::take_notices()`, a
+/// process-global dirty queue, and it pumps every store — and `browse`'s pump ends in
+/// `sync_roster`, which calls `browse::reset()` the moment the section table holds a source the
+/// live registry does not. Every `browse` fixture in the suite leaves it holding exactly that
+/// (`ServerId::UNSET` sources), so an unguarded frame ANYWHERE empties another module's seeded
+/// table, on another thread, and fails that module's test instead of this one. `app::mod`'s three
+/// heartbeat-word tests did it through `every_surface_word`, wanting nothing but a list of words.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn frame_with_results(
+pub(crate) fn frame_with_results(
     d: &mut Dispatcher<AppHost>,
     rig: &mut Bridge,
     route: Route,
@@ -1275,6 +972,8 @@ pub(super) fn frame_with_results(
     take: impl FnOnce() -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    #[cfg(test)]
+    crate::testlock::assert_held("the store pump behind an app::bridge frame");
     let search_changed = rig.capture_views(d);
     sync_page(d, route, trail);
     rig.capture_chrome(d, route);
@@ -1291,8 +990,14 @@ pub(super) fn frame_with_results(
         d.store_changed(StoreId::Search.ord(), crate::stores::gen(StoreId::Search));
     }
     let surface = d.surface_up();
-    // a surface's springs and inputs are the PANEL's damage, not the page's (`popover::own_motion`)
-    let _own = surface.then(crate::ui::popover::own_motion);
+    // A surface's INPUTS are the panel's own damage — the glass cadence's ledger, which asks
+    // "did the panel change" rather than "did the page". The MOTION half is no longer stated
+    // here: this used to wrap the WHOLE dispatcher frame in `popover::own_motion`, so a PAGE's
+    // springs stepped inside it were attributed to the panel and `idle::page_moving` read false
+    // for as long as any surface was up — including a DISMISSED one, where `host_refresh`'s
+    // `fading_only` term is the only thing that re-takes the snapshot for a page the user is
+    // driving again. `ModalStack::tick` and `Dispatcher`'s per-surface step and draw open one
+    // scope each (§4.4) now; the page's tick runs in none.
     if surface && !inputs.is_empty() {
         crate::ui::popover::note_own_damage();
     }
@@ -1301,11 +1006,15 @@ pub(super) fn frame_with_results(
     d.prune(&report.unmounted);
     rig.sync_host(d);
     if report.presented {
-        // the dispatcher's gate wants a frame: the loop's gate presents it
+        // The dispatcher's gate wants a frame: the loop's gate presents it. While a surface is up
+        // this bump is the PANEL's — `take_page_damage` subtracts the panel's claims BY COUNT, and
+        // a page's own landings reach `ui::idle` from the pumps outside this frame (the poster
+        // adapter, `pms::commit`), where nothing claims them.
+        let _own = surface.then(crate::ui::idle::OwnScope::open);
         crate::ui::idle::invalidate();
     }
     let word = d.top_screen().map_or("", |s| s.name());
-    debug_assert_eq!(word, route_word(super::page_of(route)), "the tree's top page names the committed route");
+    debug_assert_eq!(word, route_word(route), "the tree's top page names the committed route");
     (word, report)
 }
 
@@ -1324,7 +1033,6 @@ pub(super) fn frame_with_results(
 fn sync_page(d: &mut Dispatcher<AppHost>, route: Route, trail: &super::Trail) {
     use crate::ui::screen::ScreenArg;
     if d.has_pending_navigation() { return; }
-    let route = super::page_of(route);
     let want = match route {
         Route::Detail | Route::Person => AppArg::from_node(trail.top()),
         Route::Player => AppArg::Legacy(Route::Player),
@@ -1345,7 +1053,7 @@ fn sync_page(d: &mut Dispatcher<AppHost>, route: Route, trail: &super::Trail) {
     d.request(MachineId::Nav, op);
 }
 
-pub(super) fn page_node(d: &Dispatcher<AppHost>) -> Option<super::Node> {
+pub(crate) fn page_node(d: &Dispatcher<AppHost>) -> Option<super::Node> {
     let entry = d.nav.top_page()?;
     match &entry.arg {
         AppArg::Content(ContentArg::Detail { sid, rk }) => Some(super::Node::Detail {
@@ -1361,7 +1069,43 @@ pub(super) fn page_node(d: &Dispatcher<AppHost>) -> Option<super::Node> {
     }
 }
 
-pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
+pub(crate) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
+    let mut out = page_probe(d, rig);
+    // **The profile menu's own fields, from the SURFACE** (phase 10). They used to hang off
+    // `focusprobe::Screen::Account`, which named the host page and then recursed into its fields;
+    // the host is the top PAGE now and the line already names it as `route=`, so the panel's two
+    // fields simply ride on `content` — exactly as the player's four panels and the Library menu
+    // do. The spellings are unchanged (`acct=`/`asel=`) so a reader's grammar is, but their
+    // POSITION on the line moved (they follow the page's fields rather than being nested under an
+    // `over=`), which is one of the reasons the committed replay fixtures are re-recorded.
+    if let Some(menu) = account_menu(d) {
+        use std::fmt::Write;
+        let _ = write!(out, " acct=1 asel={}", menu.sel());
+    }
+    // …and the item context menu's, for the same reason and by the same route (phase 10). They
+    // used to hang off `focusprobe::Screen::ItemMenu`, which named the host with ` over=<word>`
+    // and then recursed into that screen's own fields — five hosts, five different `route=itemmenu`
+    // field sets. The host is the top PAGE now and the line names it as `route=`, so ` over=` is
+    // gone and the panel's three fields simply follow the page's, exactly as the player's four
+    // panels and the Library menu already do. The SPELLINGS are unchanged (`imenu=`/`isel=`/
+    // `imsid=`) so a reader's grammar is; their POSITION on the line moved, which is one of the
+    // reasons the committed replay fixtures are re-recorded.
+    if let Some(menu) = item_menu(d) {
+        use std::fmt::Write;
+        let sid = menu.sid();
+        let _ = write!(out, " imenu=1 isel={} imsid=", menu.sel());
+        // The same `-` for an unset server the probe's own `push_sid` writes, so a line taken
+        // before this phase and one taken after are comparable field for field.
+        if sid.is_set() {
+            let _ = write!(out, "{}", sid.raw());
+        } else {
+            out.push('-');
+        }
+    }
+    out
+}
+
+fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     use std::fmt::Write;
     let Some(page) = d.nav.top_page() else { return String::new() };
     // **The player's panels and its countdown** — `focusprobe::push_player`'s other half. Every
@@ -1506,7 +1250,19 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 let _ = write!(out, "{col}");
             }
             let show = crate::metadata::current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
-            let _ = write!(out, " card={} alt={} show={} sid={} rk=", card as u8, crate::ui::alt_sources::is_open() as u8, show as u8, sid.raw());
+            // `alt=` is now a question about the TREE — the *Also available* picker is a surface,
+            // so "is it up" is the container's answer and not a module flag's.
+            let alt = surface_up(d, |arg| matches!(arg, AppArg::AltSources(_)));
+            // **`tracks=`/`tpage=` are the DETAIL page's fields**, and they used to be written on
+            // the PLAYER line (`focusprobe::push_player`) beside the four playback overlays. No
+            // Detail panel can be up on the player route, so every player recording carried a
+            // constant `tracks=0 tpage=1` and the page that actually opens the sheet recorded
+            // nothing — a paging press, which moves that number and nothing else in the app, was
+            // invisible to the recorder (§5.3). `tpage` is the surface's own cursor, read off the
+            // instance the way `alt=` reads its phase: one producer, the container.
+            let (tracks, tpage) = tracks_probe(d);
+            let _ = write!(out, " tracks={} tpage={}", tracks as u8, tpage);
+            let _ = write!(out, " card={} alt={} show={} sid={} rk=", card as u8, alt as u8, show as u8, sid.raw());
             crate::focusprobe::push_rk(&mut out, rk);
             out.push_str(" ep=");
             let episode = instance.screen.as_any()
@@ -1551,7 +1307,7 @@ pub(super) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// behind these panels is a hardware video plane GL cannot read back, so there is no host snapshot
 /// to take and nothing to freeze (`ui/popover.rs`'s `HostPolicy::Live` says exactly this about the
 /// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
-pub(super) fn open_player_overlay(
+pub(crate) fn open_player_overlay(
     ps: &crate::route::PlaybackSession,
     d: &mut Dispatcher<AppHost>,
     kind: crate::screens::player::overlay::OverlayKind,
@@ -1574,7 +1330,7 @@ pub(super) fn open_player_overlay(
 }
 
 /// Which player panel owns input right now, if one does.
-pub(super) fn player_overlay_kind(
+pub(crate) fn player_overlay_kind(
     d: &Dispatcher<AppHost>,
 ) -> Option<crate::screens::player::overlay::OverlayKind> {
     let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
@@ -1586,7 +1342,7 @@ pub(super) fn player_overlay_kind(
 
 /// Is ANY player panel up (including one still fading out)? The successor of
 /// `matches!(route, Route::Player { overlay }) if overlay != Overlay::None`.
-pub(super) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
+pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
     d.nav
         .modals
         .surfaces
@@ -1595,7 +1351,7 @@ pub(super) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
 }
 
 /// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.
-pub(super) fn dismiss_player_overlays(d: &mut Dispatcher<AppHost>) {
+pub(crate) fn dismiss_player_overlays(d: &mut Dispatcher<AppHost>) {
     let ids: Vec<EntryId> = d
         .nav
         .modals
@@ -1611,7 +1367,7 @@ pub(super) fn dismiss_player_overlays(d: &mut Dispatcher<AppHost>) {
 
 /// A live panel's own state, for the dev triggers that drive one by hand
 /// (`plxnative-menupick`) and for the focus probe's `sel=`.
-pub(super) fn player_overlay_mut(
+pub(crate) fn player_overlay_mut(
     d: &mut Dispatcher<AppHost>,
 ) -> Option<&mut crate::screens::player::overlay::PlayerOverlayScreen> {
     let InputOwner::Entry(id) = d.nav.input_owner()? else { return None };
@@ -1624,15 +1380,178 @@ pub(super) fn player_overlay_mut(
         .downcast_mut::<crate::screens::player::overlay::PlayerOverlayScreen>()
 }
 
+/// **Open one of the Detail page's own panels on the container tree** (§6.2's page-owned panels).
+///
+/// Idempotent per PANEL while that panel is up, for `open_settings`'s reason: a second press on
+/// the control that opened it must not stack a second copy. `host` is the Detail instance the
+/// panel reports back to, and `sid`/`rk` the copy the page is standing on — the picker's tick, and
+/// the pair its addressed store is read with.
+///
+/// Each panel's STYLE is its own shape and not a preference, and it is declared beside the panel
+/// (`ContentPanel::surface`) rather than here: a read-only sheet with no control to miss answers a
+/// click beside it with nothing (`Style::Alert`), an anchored menu whose OK navigates is the
+/// Library's Sort/Filter chip (`Style::Compact`). All of them are `HostRender::Cached`, which is
+/// what the detail page under one has needed since the host snapshot landed (`fps:page-panel`).
+pub(crate) fn open_content_panel(
+    d: &mut Dispatcher<AppHost>,
+    host: InstanceId,
+    subject: Option<(crate::plex::ServerId, &str)>,
+    panel: crate::screens::registry::ContentPanel,
+) {
+    // WHICH surface a panel is — its style and its argument — is the registry's
+    // (`ContentPanel::surface`), so a new page-owned panel is declared where the screen is. What is
+    // this function's is the PRESENTING: refuse a second copy of one already up, hand the
+    // container the style through its one-shot handshake, and request the op.
+    let Some((style, arg)) = panel.surface(host, subject) else { return };
+    let id = crate::ui::screen::ScreenArg::id(&arg);
+    if surface_up(d, move |up| crate::ui::screen::ScreenArg::id(up) == id) {
+        return;
+    }
+    d.nav.next_style = style;
+    d.request(MachineId::Nav, NavOp::Present(arg));
+}
+
+/// A rect as the bit-preserving anchor an argument carries — `LibraryMenuArg::anchor`'s rule, so
+/// a canonical argument needs no float equality. `None` (a host with nothing focused, or the
+/// headless trigger) resolves to the panel's own centred fallback HERE, once, rather than every
+/// frame inside the screen.
+fn anchor_bits(rect: Option<crate::ui::Rect>) -> [u32; 4] {
+    let r = rect.unwrap_or_else(crate::screens::item_menu::fallback_anchor);
+    [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()]
+}
+
+/// The argument for a hold on a CARD — a home shelf, the Library grid, a Search result shelf, a
+/// person's filmography, the detail page's Related shelf. All five were `MenuHost` variants and
+/// all five are the same arm: the row rides in the argument instead of being looked up in the hub
+/// catalog, which only Home's cards are ever in.
+pub(crate) fn card_menu_arg(
+    item: &crate::pms::PmsMovie,
+    from_deck: bool,
+    from_home: bool,
+    host: EntryId,
+    focus: Option<FocusKey<u32>>,
+    rect: Option<crate::ui::Rect>,
+) -> crate::screens::registry::ItemMenuArg {
+    crate::screens::registry::ItemMenuArg {
+        sid: item.sid, // the ROW's server, not the current one
+        rk: item.rk.clone(),
+        kind: ItemMenuKind::Card { row: Box::new(item.clone()), from_deck },
+        host,
+        focus,
+        anchor: anchor_bits(rect),
+        loaded_episode: false,
+        from_home,
+    }
+}
+
+/// …and for the detail page's two strips, whose item is a child of the show the page has loaded
+/// rather than a catalog row: no row to carry, and `loaded_episode` set for the filmstrip so the
+/// dispatch routes Play from Start and the scrobble through that page's own episode path.
+fn strip_menu_arg(
+    sid: crate::plex::ServerId,
+    rk: &str,
+    kind: ItemMenuKind,
+    host: EntryId,
+    focus: Option<FocusKey<u32>>,
+    rect: Option<crate::ui::Rect>,
+) -> crate::screens::registry::ItemMenuArg {
+    crate::screens::registry::ItemMenuArg {
+        sid,
+        rk: rk.to_string(),
+        loaded_episode: matches!(kind, ItemMenuKind::Episode { .. }),
+        kind,
+        host,
+        focus,
+        anchor: anchor_bits(rect),
+        from_home: false,
+    }
+}
+
+/// **Present the item context menu** over the page the hold happened on (idempotent while one is
+/// up, for `open_settings`'s reason: a second hold must not stack a second panel).
+///
+/// The style is `Compact`, whose host policy is `(Frozen, Cached)`: the page under the panel is
+/// drawn once into the shared snapshot and served from it, and its focus springs do not advance
+/// while the menu owns input. That was `Popover::caching_host()` plus the loop's own
+/// `Route::ItemMenu` draw/update arms — one policy stated in three places — and it is the
+/// container's single answer now.
+pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: crate::screens::registry::ItemMenuArg) {
+    if surface_up(d, |a| matches!(a, AppArg::ItemMenu(_))) {
+        return;
+    }
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(AppArg::ItemMenu(arg)));
+}
+
+/// Is the item menu up (any phase)?
+pub(crate) fn item_menu_up(d: &Dispatcher<AppHost>) -> bool {
+    surface_up(d, |a| matches!(a, AppArg::ItemMenu(_)))
+}
+
+/// The item menu's own instance — its cursor and its captured opener, read where the container is
+/// in scope, exactly as the player's panels are.
+pub(crate) fn item_menu(d: &Dispatcher<AppHost>) -> Option<&crate::screens::item_menu::ItemMenuScreen> {
+    d.nav
+        .modals
+        .surfaces
+        .iter()
+        .find(|s| matches!(s.entry.arg, AppArg::ItemMenu(_)))?
+        .entry
+        .inst
+        .as_ref()?
+        .screen
+        .as_any()?
+        .downcast_ref::<crate::screens::item_menu::ItemMenuScreen>()
+}
+
+/// **Present the profile menu** over whichever bar-wearing page is on top (idempotent while it is
+/// up, for `open_settings`'s reason: a second press on the chip must not stack a second copy).
+///
+/// The style is `Sheet`, whose host policy is `(Frozen, Cached)`: the page under this panel is
+/// drawn once into the shared snapshot and served from it, and neither its focus springs nor its
+/// hero drift advance while the menu owns input. That was `host_page_updates`'s `Route::Account`
+/// arm and `Popover::caching_host()` — one policy stated in two places — and it is the container's
+/// single answer now.
+pub(crate) fn open_account_menu(d: &mut Dispatcher<AppHost>) {
+    if surface_up(d, |a| matches!(a, AppArg::AccountMenu)) {
+        return;
+    }
+    d.nav.next_style = Style::Sheet;
+    d.request(MachineId::Nav, NavOp::Present(AppArg::AccountMenu));
+}
+
+/// Is the profile menu up (any phase)?
+pub(crate) fn account_menu_up(d: &Dispatcher<AppHost>) -> bool {
+    surface_up(d, |a| matches!(a, AppArg::AccountMenu))
+}
+
+/// The profile menu's own cursor, for the focus probe — the surface's state, read where the
+/// container is in scope, exactly as the player's panels are.
+pub(crate) fn account_menu(
+    d: &Dispatcher<AppHost>,
+) -> Option<&crate::screens::account_menu::AccountMenuScreen> {
+    d.nav
+        .modals
+        .surfaces
+        .iter()
+        .find(|s| matches!(s.entry.arg, AppArg::AccountMenu))?
+        .entry
+        .inst
+        .as_ref()?
+        .screen
+        .as_any()?
+        .downcast_ref::<crate::screens::account_menu::AccountMenuScreen>()
+}
+
 /// Present the Settings surface at its root (idempotent while it is up) — the account menu's
 /// `Settings` row, by key and by click.
-pub(super) fn open_settings(d: &mut Dispatcher<AppHost>) {
+pub(crate) fn open_settings(d: &mut Dispatcher<AppHost>) {
     open_settings_at(d, SettingsPage::Root);
 }
 
 /// …and the DEV boot target's door: the same surface, rooted at `page` (see [`AppArg`] for why
 /// the target is a root rather than a push).
-pub(super) fn open_settings_at(d: &mut Dispatcher<AppHost>, page: SettingsPage) {
+pub(crate) fn open_settings_at(d: &mut Dispatcher<AppHost>, page: SettingsPage) {
     if surface_up(d, is_settings) {
         return;
     }
@@ -1641,12 +1560,12 @@ pub(super) fn open_settings_at(d: &mut Dispatcher<AppHost>, page: SettingsPage) 
 }
 
 /// Present the first-run consent question at its first stage (idempotent while it is up).
-pub(super) fn open_first_run_consent(d: &mut Dispatcher<AppHost>) {
+pub(crate) fn open_first_run_consent(d: &mut Dispatcher<AppHost>) {
     open_first_run_consent_at(d, 0);
 }
 
 /// …at `stage`, which only `/tmp/plxnative-consent=product` ever names.
-pub(super) fn open_first_run_consent_at(d: &mut Dispatcher<AppHost>, stage: u8) {
+pub(crate) fn open_first_run_consent_at(d: &mut Dispatcher<AppHost>, stage: u8) {
     if surface_up(d, is_first_run_consent) {
         return;
     }
@@ -1655,7 +1574,7 @@ pub(super) fn open_first_run_consent_at(d: &mut Dispatcher<AppHost>, stage: u8) 
 }
 
 /// Dismiss whichever surface is up (the loop's teardown paths: sign-out, a profile reset).
-pub(super) fn dismiss_surfaces(d: &mut Dispatcher<AppHost>) {
+pub(crate) fn dismiss_surfaces(d: &mut Dispatcher<AppHost>) {
     let ids: Vec<EntryId> = d
         .nav
         .modals
@@ -1692,7 +1611,7 @@ pub(super) fn dismiss_surfaces(d: &mut Dispatcher<AppHost>) {
 /// place. The surface's actual retirement (`WillLeave`/`Unmount`) still runs one frame later,
 /// through the ordinary `prune()` pass inside `bridge::frame` — harmless, since a `hide`d surface
 /// draws nothing between now and then.
-pub(super) fn dismiss_surfaces_now(d: &mut Dispatcher<AppHost>) {
+pub(crate) fn dismiss_surfaces_now(d: &mut Dispatcher<AppHost>) {
     let ids: Vec<EntryId> = d
         .nav
         .modals
@@ -1723,7 +1642,30 @@ pub(super) fn dismiss_surfaces_now(d: &mut Dispatcher<AppHost>) {
 /// behaviour is `Dispatcher::owns_input` (via `ModalStack::input_owner`), which excludes
 /// `Phase::Closing` exactly as legacy's `visible() = open || closing` handed input back to the
 /// page while the panel was still fading — that one genuinely is unchanged.
-fn surface_up(d: &Dispatcher<AppHost>, which: fn(&AppArg) -> bool) -> bool {
+/// Is the *Track information* sheet up, and at which 1-based page? — `content_probe`'s two Detail
+/// fields, taken from the surface itself rather than from a module flag.
+fn tracks_probe(d: &Dispatcher<AppHost>) -> (bool, i32) {
+    let Some(s) = d
+        .nav
+        .modals
+        .surfaces
+        .iter()
+        .find(|s| matches!(s.entry.arg, AppArg::TracksPanel(_)) && s.phase != Phase::Hidden)
+    else {
+        return (false, 0);
+    };
+    let page = s
+        .entry
+        .inst
+        .as_ref()
+        .and_then(|i| i.screen.as_any())
+        .and_then(|a| a.downcast_ref::<crate::screens::tracks_panel::TracksPanelScreen>())
+        .map(|p| p.page())
+        .unwrap_or(0);
+    (true, page)
+}
+
+fn surface_up(d: &Dispatcher<AppHost>, which: impl Fn(&AppArg) -> bool) -> bool {
     d.nav
         .modals
         .surfaces
@@ -1732,16 +1674,16 @@ fn surface_up(d: &Dispatcher<AppHost>, which: fn(&AppArg) -> bool) -> bool {
 }
 
 /// Is the Settings family up (any phase)? The loop's `settings::is_open()` twin.
-pub(super) fn settings_up(d: &Dispatcher<AppHost>) -> bool {
+pub(crate) fn settings_up(d: &Dispatcher<AppHost>) -> bool {
     surface_up(d, is_settings)
 }
 
 /// Is the first-run question up (any phase)?
-pub(super) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
+pub(crate) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
     surface_up(d, is_first_run_consent)
 }
 
-/// Is the tree's top PAGE an owned screen rather than a `LegacyPage` — i.e. does the DISPATCHER
+/// Is the tree's top PAGE engine-focused rather than ladder-focused — i.e. does the DISPATCHER
 /// draw it? The predicate is the screen's own `FocusSource`, not a list of routes, so a page
 /// migrated in a later phase joins this answer by being written, not by being enumerated here.
 /// Since phase 8 it is true for every content page (Home, Library, Search) as well as first-run
@@ -1766,7 +1708,7 @@ pub(super) fn consent_up(d: &Dispatcher<AppHost>) -> bool {
 /// The pair mirrors `Dispatcher::top_page`'s own shape rather than searching the whole tree: an
 /// overlay presented on the player's page-owned `ModalStack` is a SURFACE, so the player stays the
 /// top PAGE and this keeps answering with it while a panel is up.
-pub(super) fn player(d: &Dispatcher<AppHost>) -> Option<&crate::screens::player::PlayerScreen> {
+pub(crate) fn player(d: &Dispatcher<AppHost>) -> Option<&crate::screens::player::PlayerScreen> {
     d.nav
         .top_page()?
         .inst
@@ -1776,7 +1718,7 @@ pub(super) fn player(d: &Dispatcher<AppHost>) -> Option<&crate::screens::player:
         .downcast_ref::<crate::screens::player::PlayerScreen>()
 }
 
-pub(super) fn player_mut(
+pub(crate) fn player_mut(
     d: &mut Dispatcher<AppHost>,
 ) -> Option<&mut crate::screens::player::PlayerScreen> {
     let entry = d.nav.top_page()?.id;
@@ -1789,34 +1731,35 @@ pub(super) fn player_mut(
         .downcast_mut::<crate::screens::player::PlayerScreen>()
 }
 
-pub(super) fn page_owned(d: &Dispatcher<AppHost>, route: Route) -> bool {
-    d.nav.top_page().and_then(|e| e.arg.route()) == Some(super::page_of(route))
+pub(crate) fn page_owned(d: &Dispatcher<AppHost>, route: Route) -> bool {
+    d.nav.top_page().and_then(|e| e.arg.route()) == Some(route)
         && d.top_screen().map_or(false, |s| s.focus_source() == FocusSource::Engine)
 }
 
-pub(super) fn search_owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
+pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
     route == Route::Search && !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())
             .is_some_and(|screen| screen.is::<crate::screens::search::SearchScreen>())
 }
 
-pub(super) fn owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
-    d.surface_up() || (matches!(super::modal_of(route), super::Modal::None) && d.owns_input())
+pub(crate) fn owns_input(d: &Dispatcher<AppHost>, route: Route) -> bool {
+    let _ = route;
+    d.surface_up() || d.owns_input()
 }
 
 /// The topmost surface's heartbeat word, for the dev triggers that have to wait for a particular
 /// page of the family to be up (`plxnative-legaldoc`, `plxnative-alert`).
-pub(super) fn surface_word(d: &Dispatcher<AppHost>) -> Option<&'static str> {
+pub(crate) fn surface_word(d: &Dispatcher<AppHost>) -> Option<&'static str> {
     d.top_surface_name()
 }
 
 /// The host page under the surfaces is FROZEN (§8.3): the loop skips its update.
-pub(super) fn host_frozen(d: &Dispatcher<AppHost>) -> bool {
+pub(crate) fn host_frozen(d: &Dispatcher<AppHost>) -> bool {
     d.host_policy().0 == HostUpdate::Frozen
 }
 
 /// The host page is REPLACED: the loop skips drawing it.
-pub(super) fn host_replaced(d: &Dispatcher<AppHost>) -> bool {
+pub(crate) fn host_replaced(d: &Dispatcher<AppHost>) -> bool {
     d.host_policy().1 == HostRender::Replaced
 }
 
@@ -1833,7 +1776,7 @@ pub(super) fn host_replaced(d: &Dispatcher<AppHost>) -> bool {
 /// census priced that quad at the whole regression: `settings-root` 40 fps unmasked, 60 with
 /// either class masked (TV session 4, 2026-09-09). A Replaced host is drawn by nobody.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PagePlan {
+pub(crate) enum PagePlan {
     /// The closure draws the page and, through `Dispatcher::draw(.., true)`, the surfaces.
     Owned,
     /// The closure draws the legacy fallback; the loop draws the surfaces after it.
@@ -1842,7 +1785,7 @@ pub(super) enum PagePlan {
     SurfacesOnly,
 }
 
-pub(super) fn page_plan(host_replaced: bool, page_owned: bool) -> PagePlan {
+pub(crate) fn page_plan(host_replaced: bool, page_owned: bool) -> PagePlan {
     match (host_replaced, page_owned) {
         (true, _) => PagePlan::SurfacesOnly,
         (false, true) => PagePlan::Owned,
@@ -1850,40 +1793,65 @@ pub(super) fn page_plan(host_replaced: bool, page_owned: bool) -> PagePlan {
     }
 }
 
-/// The heartbeat's ` overlay=<word>` from the topmost surface, if one is up.
+/// **The heartbeat's ` overlay=` word IS the topmost surface's own `Screen::name`** — this
+/// function is the read, and there is nothing else to it.
 ///
-/// **`"onboard"` is the Home-sources editor mounted a second time, inside the family** (§6.2
+/// It was an eleven-arm `match` mapping each name to `" overlay=<the same name>"`, i.e. a second
+/// transcription of an alphabet the screens already own, with the prefix baked into every literal
+/// so it could stay `&'static str`. Two things were wrong with that and both had bitten: a screen
+/// renamed without its arm following silently stopped printing an overlay at all (the fps scene
+/// keyed on it then measures whatever else the route matched, which reads as a pass), and a NEW
+/// surface printed nothing until somebody remembered — which is why `library_menu`, a surface
+/// since phase 8, was invisible in the heartbeat for two phases. The prefix belongs to the
+/// heartbeat's own format string (`run`'s `route={rn}{ov}`), not to the word.
+///
+/// **`"onboard"` is worth knowing about**, because it is one screen wearing two hats (§6.2
 /// "Onboard ×2"): `SettingsPage::Favourites` mounts the very same `OnboardScreen` the first-run
-/// route does, and `RouteSurface::top_word` (`screens/settings.rs`) answers whatever the top
-/// INNER page's own `Screen::name` says without caring which stack put it there — so this arm is
-/// what turns that page's name into the family's `overlay=` word once `OnboardScreen::name`
-/// itself answers `word::ONBOARD` for the settings-mounted instance rather than `word::SETTINGS`
-/// (a `screens/onboard.rs` change; `app/mod.rs`'s `heartbeat_word_tests` has the full account of
-/// why the shared `settings` word was silently wrong). Until that companion change lands this arm
-/// is reachable from no live path — `top_surface_name()` never yields `"onboard"` today — but it
-/// costs nothing to carry ahead of it, and leaving it out is exactly the kind of gap that turns
-/// "the screen was renamed" into "the fps scene silently measures the wrong page" the day someone
-/// does make that name change without checking here.
-pub(super) fn overlay_word(d: &Dispatcher<AppHost>) -> Option<&'static str> {
-    Some(match d.top_surface_name()? {
-        // The player's four panels — surfaces since phase 9, so their words come off the same
-        // `Screen::name` every other surface's does rather than off a `Route` field.
-        "menu" => " overlay=menu",
-        "info" => " overlay=info",
-        "chapters" => " overlay=chapters",
-        "more" => " overlay=more",
-        "settings" => " overlay=settings",
-        "privacy" => " overlay=privacy",
-        "legal" => " overlay=legal",
-        "consent" => " overlay=consent",
-        "onboard" => " overlay=onboard",
-        _ => return None,
-    })
+/// ROUTE does, and `RouteSurface::top_word` (`screens/settings.rs`) answers whatever the top INNER
+/// page's own `Screen::name` says without caring which stack put it there. So the same word is an
+/// `overlay=` here and a `route=` there, which `tests/run.py` reads without ambiguity because a
+/// scene declares only the field it needs.
+pub(crate) fn overlay_word(d: &Dispatcher<AppHost>) -> Option<&'static str> {
+    d.top_surface_name()
+}
+
+/// …and the ` overlay=` word each one PRESENTS as, read back through [`overlay_word`].
+///
+/// Presented on a real tree rather than handed to `Mounter::mount` directly, and the Settings
+/// family is why: `RouteSurface::top_word` answers for whichever page of its own INNER stack is on
+/// top, and that stack has nothing on it until the surface has been mounted AND stepped — a bare
+/// `mount` call answers `settings` for the first-run consent question, which is precisely the
+/// "two screens print one word" failure the family's own word split exists to prevent. Going
+/// through `frame` also means this reads the same function the heartbeat does, on the same
+/// container, rather than a second path that could agree with nothing.
+///
+/// The player's four panels are presented over `Route::Player`, the rest over Home — a surface is
+/// presented over the TOP PAGE, and a panel needs its player there.
+#[cfg(test)]
+pub(crate) fn every_surface_word() -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for arg in every_surface_arg() {
+        let route = if matches!(arg, AppArg::PlayerOverlay(_)) { Route::Player } else { Route::Home };
+        let mut trail = super::Trail::new();
+        if route == Route::Player {
+            trail.push(super::Node::Home);
+        }
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, route, &trail, Tick { ms: 0, dt_us: 16_000 }, vec![]);
+        // The style is the application's to choose per surface (`Navigation::next_style`), and it
+        // does not change the word — `Compact` is enough for every one of them here.
+        d.nav.next_style = Style::Compact;
+        d.request(MachineId::Nav, NavOp::Present(arg));
+        frame(&mut d, &mut rig, route, &trail, Tick { ms: 16, dt_us: 16_000 }, vec![]);
+        out.push(overlay_word(&d).expect("a presented surface names a word"));
+    }
+    out
 }
 
 /// A key for the dispatcher: the raw SDL fields classified once (`ui::consts::classify`), the
 /// fork's packed state read as an edge.
-pub(super) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Source) -> InputEvent<u32> {
+pub(crate) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Source) -> InputEvent<u32> {
     use crate::ui::consts::{classify, Key as K};
     let key = match classify(sym, wcode) {
         K::Up => Key::Up,
@@ -1914,7 +1882,7 @@ pub(super) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Sou
     }
 }
 
-pub(super) fn pointer_input(x: f32, y: f32, now: Tick) -> InputEvent<u32> {
+pub(crate) fn pointer_input(x: f32, y: f32, now: Tick) -> InputEvent<u32> {
     InputEvent {
         at: now,
         source: Source::Sdl,
@@ -1922,7 +1890,7 @@ pub(super) fn pointer_input(x: f32, y: f32, now: Tick) -> InputEvent<u32> {
     }
 }
 
-pub(super) fn click_input(x: f32, y: f32, now: Tick) -> InputEvent<u32> {
+pub(crate) fn click_input(x: f32, y: f32, now: Tick) -> InputEvent<u32> {
     InputEvent {
         at: now,
         source: Source::Sdl,
@@ -1931,7 +1899,7 @@ pub(super) fn click_input(x: f32, y: f32, now: Tick) -> InputEvent<u32> {
 }
 
 /// A wheel tick as the key it stands for on a vertical flow (the family's `on_updown`).
-pub(super) fn wheel_input(dy: i32, now: Tick) -> Vec<InputEvent<u32>> {
+pub(crate) fn wheel_input(dy: i32, now: Tick) -> Vec<InputEvent<u32>> {
     let key = if dy < 0 { Key::Down } else { Key::Up };
     let (sym, wcode) = (0, 0);
     vec![
@@ -1955,7 +1923,7 @@ pub(super) fn wheel_input(dy: i32, now: Tick) -> Vec<InputEvent<u32>> {
 /// in the family matches `Edge::Down` (or `!= Edge::Up`) and the engine's own half skips `Up`
 /// outright. Without it a mouse press would sit dipped until `press::MAX_HOLD_MS` (1 s) committed
 /// it, which on the simulator reads as a UI that answers a click a second late.
-pub(super) fn release_input(now: Tick) -> InputEvent<u32> {
+pub(crate) fn release_input(now: Tick) -> InputEvent<u32> {
     InputEvent {
         at: now,
         source: Source::Sdl,
@@ -1970,7 +1938,7 @@ pub(super) fn release_input(now: Tick) -> InputEvent<u32> {
 }
 
 /// A scripted direction (the dev oscillators), both edges.
-pub(super) fn script_key(key: Key, now: Tick) -> Vec<InputEvent<u32>> {
+pub(crate) fn script_key(key: Key, now: Tick) -> Vec<InputEvent<u32>> {
     [Edge::Down, Edge::Up]
         .into_iter()
         .map(|edge| InputEvent {
@@ -1997,6 +1965,7 @@ mod tests {
     include!("library_shelf_action_tests.rs");
     include!("search_publication_tests.rs");
     include!("search_owned_tests.rs");
+    include!("detail_panel_tests.rs");
     #[test]
     fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
         use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};
@@ -2520,12 +2489,25 @@ mod tests {
     }
 
     use super::*;
+    use crate::ui::machine::Chrome;
     use crate::ui::screen::ScreenArg;
 
     fn frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: Route, tick: Tick, inputs: Vec<InputEvent<u32>>) -> (&'static str, FrameReport) {
         let mut trail = super::super::Trail::new();
+        // The two STACKING pages mount from the trail's top (`AppArg::from_node`), so a test that
+        // names either route has to give it a node — without one the tree mounts nothing and the
+        // top page is still Home, which `frame`'s own `debug_assert_eq!` catches.
         if matches!(route, Route::Detail) {
             trail.push(super::super::to_detail(crate::plex::ServerId::UNSET, "1001"));
+        }
+        if matches!(route, Route::Person) {
+            trail.push(super::super::Node::Person {
+                sid: crate::plex::ServerId::UNSET,
+                key: "9".into(),
+                guid: "tag://9".into(),
+                name: String::new(),
+                thumb: String::new(),
+            });
         }
         super::frame(d, rig, route, &trail, tick, inputs)
     }
@@ -2548,23 +2530,9 @@ mod tests {
         }
     }
 
-    const EVERY_ROUTE: [Route; 11] = [
-        Route::Login,
-        Route::Profiles,
-        Route::Onboard,
-        Route::Home,
-        Route::Account {
-            over: super::super::nav::BarHost::Library,
-        },
-        Route::ItemMenu {
-            over: super::super::nav::MenuHost::Home,
-        },
-        Route::Library,
-        Route::Detail,
-        Route::Person,
-        Route::Search,
-        Route::Player,
-    ];
+    // One list, in `app/mod.rs` beside `route_word` — it was a second copy of the same nine
+    // variants here, and phase 10 deleted a route from both.
+    use super::super::EVERY_ROUTE;
 
     #[test]
     fn a_legacy_arg_wears_the_chrome_the_route_table_says() {
@@ -2579,10 +2547,30 @@ mod tests {
         assert!(!AppArg::Settings(SettingsPage::Root).same_instance(&AppArg::FirstRunConsent(0)));
     }
 
+    /// **Every route mounts a screen that NAMES the heartbeat word** (§15.2).
+    ///
+    /// This was an assertion over the retired route-word page's `name()` — a claim about a type
+    /// nothing mounted, which by phase 10 graded the one screen impl that was never on screen.
+    /// The intent moves onto the screens that ARE mounted: the mounter is asked for each route's
+    /// argument and the instance it builds must answer with the word `route_word` gives that
+    /// route. It is graded against `route_word(r)` and not against `route_word(page_of(r))`
+    /// because `page_of` is gone with the two routes that made it more than the identity: since
+    /// phase 10 the profile and card menus are SURFACES, their words are the overlay alphabet's
+    /// (`overlay_word`), and `EVERY_ROUTE` is nine pages with nothing to fold.
     #[test]
-    fn every_legacy_page_names_the_heartbeat_word() {
+    fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
+        let _g = crate::testlock::serial();
         for r in EVERY_ROUTE {
-            assert_eq!(LegacyPage::new(r).name(), route_word(r));
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            let (word, _) = frame(&mut d, &mut rig, r, tick(0), vec![]);
+            assert_eq!(
+                word,
+                route_word(r),
+                "{} mounted {:?}",
+                route_word(r),
+                d.top_screen().map(|s| s.name())
+            );
         }
     }
 
@@ -2600,8 +2588,8 @@ mod tests {
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         let _ = crate::stores::take_notices();
-        // **This used to also assert `LegacyPage`'s generic notice COUNTER, and cannot any more:
-        // no route mounts a `LegacyPage`.** Search left that population with the phase 7 cutover
+        // **This used to also assert the retired route-word page's generic notice COUNTER, and
+        // cannot any more.** Search left that population with the phase 7 cutover
         // and `Player` with phase 9, and `Account`/`ItemMenu` never had a page of their own —
         // `page_of` maps each to its host, which is an owned screen. So what this grades is the
         // half that is still observable here: a store command emitted as an `Fx::App` is applied
@@ -2642,7 +2630,9 @@ mod tests {
     /// test, in the other direction, that reads exactly like an ordering bug in the bridge and is
     /// not one. Note that `Bridge`'s `Drop` is NOT the answer to this class (see its doc): a leaked
     /// counter outlives a guard, whereas a drained notice is a pure interleaving and the lock is
-    /// precisely what fixes it.
+    /// precisely what fixes it. **The rule is asserted now, not merely written here** — see
+    /// [`frame_with_results`], which every frame passes through; it was stated in this comment for
+    /// a month and broken from `app::mod` anyway, through `every_surface_word`.
     #[test]
     fn route_flips_preserve_content_and_player_origin_entries() {
         let _g = crate::testlock::serial();
@@ -2662,7 +2652,7 @@ mod tests {
             frame(&mut d, &mut rig, Route::Player, tick(3), vec![]).0,
             "player"
         );
-        assert_eq!(d.top_screen().map(|s| s.render()), Some(RenderStrategy::VideoPlane));
+        assert_eq!(d.top_screen().map(|s| s.render()), Some(crate::ui::screen::RenderStrategy::VideoPlane));
         assert_eq!(d.nav.tabs.stack.depth(), 3);
         frame(&mut d, &mut rig, Route::Detail, tick(4), vec![]);
         assert_eq!(d.nav.top_page().map(|e| e.id), detail);
@@ -2715,7 +2705,7 @@ mod tests {
         open_settings(&mut d);
         frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
         assert!(d.owns_input());
-        assert_eq!(overlay_word(&d), Some(" overlay=settings"));
+        assert_eq!(overlay_word(&d), Some("settings"));
         assert_ne!(d.nav.input_owner(), home_owner, "Settings takes input from its Home host");
         assert!(host_frozen(&d));
         // DOWN, DOWN to Legal notices (Favourites is absent signed out: Privacy, Legal, About)
@@ -2729,9 +2719,9 @@ mod tests {
         };
         press(&mut d, &mut rig, Key::Down);
         press(&mut d, &mut rig, Key::Ok);
-        assert_eq!(overlay_word(&d), Some(" overlay=legal"), "OK on Legal notices pushed the index");
+        assert_eq!(overlay_word(&d), Some("legal"), "OK on Legal notices pushed the index");
         press(&mut d, &mut rig, Key::Back);
-        assert_eq!(overlay_word(&d), Some(" overlay=settings"), "BACK popped the inner stack");
+        assert_eq!(overlay_word(&d), Some("settings"), "BACK popped the inner stack");
         assert!(settings_up(&d));
         press(&mut d, &mut rig, Key::Back);
         assert_eq!(
@@ -2740,6 +2730,275 @@ mod tests {
             "BACK at the surface's own root dismisses it"
         );
         assert_eq!(d.nav.tabs.stack.depth(), 1, "the app's page never moved");
+    }
+
+    /// **Phase 10: the profile menu is a SURFACE over the page whose chip was pressed.**
+    ///
+    /// `Route::Account { over: BarHost }` existed to answer three questions the container answers
+    /// for free, and this test is those three: the page under the panel does not change, the panel
+    /// owns input, and the heartbeat names the pair as `route=<host> overlay=account` rather than
+    /// as one route word for three different screens. Driven over all three bar-wearing hosts,
+    /// because the whole reason the route grew an `over` field was that a press on the Library's
+    /// chip used to cut the page underneath to Home.
+    #[test]
+    fn the_profile_menu_is_a_surface_over_the_page_whose_chip_was_pressed() {
+        let _g = crate::testlock::serial();
+        for (route, word) in [
+            (Route::Home, "home"),
+            (Route::Library, "library"),
+            (Route::Search, "search"),
+        ] {
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            frame(&mut d, &mut rig, route, tick(0), vec![]);
+            let host = d.nav.top_page().expect("a host page").id;
+            let host_owner = d.nav.input_owner();
+            open_account_menu(&mut d);
+            let (top, _) = frame(&mut d, &mut rig, route, tick(1), vec![]);
+
+            assert!(account_menu_up(&d), "{word}: the chip's press presented the menu");
+            assert_eq!(
+                d.nav.top_page().map(|e| e.id),
+                Some(host),
+                "{word}: a surface is presented OVER the top page and never replaces it"
+            );
+            assert_eq!(top, word, "{word}: the heartbeat's route= is still the HOST's word");
+            assert_eq!(overlay_word(&d), Some("account"));
+            assert_ne!(
+                d.nav.input_owner(),
+                host_owner,
+                "{word}: the menu takes input from its host"
+            );
+            // `Style::Sheet` — the page beneath is frozen AND cached, which is what
+            // `host_page_updates`'s deleted `Route::Account` arm and `Popover::caching_host()`
+            // used to say in two places.
+            assert_eq!(d.host_policy(), (HostUpdate::Frozen, HostRender::Cached), "{word}");
+
+            // …and BACK dismisses the surface without moving the page.
+            let ev = script_key(Key::Back, tick(2));
+            frame(&mut d, &mut rig, route, tick(2), ev);
+            assert_eq!(
+                d.nav.modals.top().map(|s| s.phase),
+                Some(Phase::Closing),
+                "{word}: BACK dismisses the menu"
+            );
+            assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "{word}: …and nothing else");
+        }
+    }
+
+    /// **The card menu is a surface over the page the hold happened on, and the page stays put.**
+    ///
+    /// `Route::ItemMenu { over: MenuHost }` is what this replaces, and every claim below is a bug
+    /// that shape could produce. The route was a UNIT variant meaning "Home, plus the panel" until
+    /// a second card surface existed; naming the host fixed the cut-to-Home but left the page's
+    /// identity, its chrome, its focus and its trail answers all derived through `page_of` from a
+    /// route that was not the page. A surface is presented OVER the top page and never replaces
+    /// it, so there is nothing to name, nothing to close back to, and no second answer to keep in
+    /// step.
+    ///
+    /// Driven on all five card surfaces' routes at once, because the six-variant enum's whole
+    /// failure mode was per-host and silent — a page falling through to Home's draw, a tab bar
+    /// disappearing mid-hold — and the assertion that catches it is the same one each time.
+    #[test]
+    fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
+        let _g = crate::testlock::serial();
+        for (route, word) in [
+            (Route::Home, "home"),
+            (Route::Library, "library"),
+            (Route::Search, "search"),
+            (Route::Detail, "detail"),
+            (Route::Person, "person"),
+        ] {
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            frame(&mut d, &mut rig, route, tick(0), vec![]);
+            let host = d.nav.top_page().expect("a host page").id;
+            let host_owner = d.nav.input_owner();
+            let mut row = crate::pms::PmsMovie::default();
+            row.rk = "42".into();
+            row.kind = 3;
+            row.show_rk = "7".into();
+            open_item_menu(&mut d, card_menu_arg(&row, false, matches!(route, Route::Home), host, None, None));
+            let (top, _) = frame(&mut d, &mut rig, route, tick(1), vec![]);
+
+            assert!(item_menu_up(&d), "{word}: the hold presented the menu");
+            assert_eq!(
+                d.nav.top_page().map(|e| e.id),
+                Some(host),
+                "{word}: a surface is presented OVER the top page and never replaces it"
+            );
+            assert_eq!(top, word, "{word}: the heartbeat's route= is still the HOST's word");
+            assert_eq!(overlay_word(&d), Some("itemmenu"));
+            assert_ne!(d.nav.input_owner(), host_owner, "{word}: the menu takes input from its host");
+            // `Style::Compact` — the page beneath is served from the shared snapshot while its
+            // own motion keeps running, which is exactly the pair the legacy code stated in two
+            // places: `Popover::caching_host()` for the render half, and `host_page_updates`
+            // answering TRUE for `Route::ItemMenu` for the update half ("an item menu keeps its
+            // anchored page live"). Deliberately not the profile menu's `(Frozen, Cached)`: this
+            // panel hangs BESIDE the card it is about and the shelf stays legible behind it.
+            assert_eq!(d.host_policy(), (HostUpdate::Live, HostRender::Cached), "{word}");
+            // …and the chrome question the `MenuHost` arm of `route_wears_tab_bar` answered by
+            // hand: the bar is drawn (or not) because the PAGE wears it, with nothing to derive.
+            assert_eq!(
+                d.nav.top_page().is_some_and(|e| e.arg.chrome() == Chrome::TabBar),
+                route_wears_tab_bar(route),
+                "{word}: the host page answers for its own chrome"
+            );
+
+            // BACK dismisses the surface without moving the page…
+            let ev = script_key(Key::Back, tick(2));
+            frame(&mut d, &mut rig, route, tick(2), ev);
+            assert_eq!(
+                d.nav.modals.top().map(|s| s.phase),
+                Some(Phase::Closing),
+                "{word}: BACK dismisses the menu"
+            );
+            assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "{word}: …and nothing else");
+            // …and it reported nothing: a dismissal is not a commit.
+            assert!(rig.take_item_menu_reqs().is_empty(), "{word}");
+        }
+    }
+
+    /// **OK on a row reports ONE request and dismisses in the same drain**, carrying the row and
+    /// the server the panel captured.
+    ///
+    /// It was two producers and a static: `key_item_menu` (and a second, drifting copy on the
+    /// pointer path) called `item_menu::on_ok`, which CLOSED the popover and returned the action,
+    /// and the dispatch then read `item_menu::ITEM`/`SID` — statics deliberately not cleared by
+    /// the close, because the drain read them a frame later. The request carries all three, so
+    /// nothing is read after the dismissal at all.
+    #[test]
+    fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
+        let _g = crate::testlock::serial();
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        let host = d.nav.top_page().unwrap().id;
+        let mut row = crate::pms::PmsMovie::default();
+        row.rk = "42".into();
+        row.kind = 0; // a movie: [Go to Movie, —, Mark as Watched, Play from Start]
+        row.unwatched = true;
+        row.part = "/library/parts/42/file.mkv".into();
+        open_item_menu(&mut d, card_menu_arg(&row, false, true, host, None, None));
+        frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+        let menu = d.nav.modals.top().unwrap().entry.id;
+
+        // A movie's rows are [Go to Movie, —, Mark as Watched, Play from Start], so the SEPARATOR
+        // is index 1 and the row this test commits is index 3. Two DOWNs reach it, and the first
+        // of them is what proves the separator is not a stop: it lands on 2, not on 1.
+        let mut t = 2;
+        let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
+            let ev = script_key(key, tick(t));
+            frame(d, rig, Route::Home, tick(t), ev);
+            t += 1;
+        };
+        press(&mut d, &mut rig, Key::Down);
+        assert_eq!(
+            d.focus().map(|k| (k.entry, k.elem)),
+            Some((menu, 2)),
+            "the engine steps OVER the separator at index 1, which carries no action"
+        );
+        press(&mut d, &mut rig, Key::Down);
+        assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, 3)));
+        press(&mut d, &mut rig, Key::Ok);
+
+        let reqs = rig.take_item_menu_reqs();
+        assert_eq!(reqs.len(), 1, "one commit, one request");
+        assert!(matches!(&reqs[0].act, crate::screens::item_menu::Action::PlayFromStart(rk) if rk == "42"));
+        assert!(reqs[0].from_home, "…and the trail reset the HOME root earns (`menu_leave`)");
+        assert!(!reqs[0].loaded_episode);
+        assert_eq!(
+            reqs[0].item.as_ref().map(|m| m.part.as_str()),
+            Some("/library/parts/42/file.mkv"),
+            "the WHOLE row rides on the request — a key alone cannot start playback"
+        );
+        assert_eq!(
+            d.nav.modals.surfaces.iter().find(|s| s.entry.id == menu).map(|s| s.phase),
+            Some(Phase::Closing),
+            "every commit dismisses, exactly as the legacy `on_ok` closed first"
+        );
+        assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "the page never moved");
+    }
+
+    /// **The Settings row hands one surface to another without ever un-freezing the host** (§16.5).
+    ///
+    /// The two ops are parked one frame apart — the screen's own `NavOp::Dismiss` commits on the
+    /// press frame, and `LoopReq::AccountSettings` is drained after `bridge::frame` returns, so
+    /// `open_settings`' `Present` commits on the next one. The window between them is the risk: if
+    /// the account sheet let go of the host on its press frame, the page would be re-rendered in
+    /// full for one frame and re-snapshotted for the next, under a panel nobody can see, on the
+    /// exact frame the Settings ground is being composed over it.
+    ///
+    /// It does not, and the reason is structural rather than lucky: a dismissed `Style::Sheet` is
+    /// `Phase::Closing`, whose policy is `(Live, Cached)` — the update half goes live, the RENDER
+    /// half keeps the snapshot for the length of the fade — and the incoming `Opaque { snapshot:
+    /// true }` is `(Frozen, Cached)` from its first frame. `HostRender` therefore never returns to
+    /// `Live` at all, so the fold never passes through `(Live, Live)`.
+    ///
+    /// **Pinned here rather than on the television** (§16.5): `fps:modal-ramp` would pass either
+    /// way — the measured difference between a cached host and a live one on that scene is 2.3 ms
+    /// against 75 — so a device gate could not see the regression this test exists for.
+    ///
+    /// Red first, simulated: with the screen's `Dismiss` removed from `activate`, the account
+    /// sheet stays `Open` `(Frozen, Cached)` under the Settings surface and this passes — so the
+    /// discriminating half is the `Closing` assertion below, which fails without it. With
+    /// `LoopReq::AccountSettings` mapped to `dismiss_surfaces` + `open_settings` in the WRONG
+    /// order (present first, then dismiss all) the fold reads `(Frozen, Cached)` throughout and
+    /// the Settings surface is dismissed with the sheet — caught by the `settings_up` assertion.
+    #[test]
+    fn account_to_settings_never_unfreezes_the_host() {
+        let _g = crate::testlock::serial();
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, Route::Home, tick(0), vec![]);
+        let host = d.nav.top_page().unwrap().id;
+        open_account_menu(&mut d);
+        frame(&mut d, &mut rig, Route::Home, tick(1), vec![]);
+        assert_eq!(d.host_policy(), (HostUpdate::Frozen, HostRender::Cached));
+
+        // Focus the Settings row and commit it. Signed out (a host test has no session file the
+        // fixture wrote), the rows are [Sign in, Settings], so one DOWN then OK.
+        let menu_entry = d.nav.modals.top().unwrap().entry.id;
+        let mut t = 2;
+        let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
+            let ev = script_key(key, tick(t));
+            frame(d, rig, Route::Home, tick(t), ev);
+            t += 1;
+        };
+        press(&mut d, &mut rig, Key::Down);
+        assert_eq!(
+            d.focus().map(|k| (k.entry, k.elem)),
+            Some((menu_entry, 1)),
+            "the engine walked the menu's own rows"
+        );
+        press(&mut d, &mut rig, Key::Ok);
+
+        // The commit frame: the sheet is dismissed and the host's RENDER half is still Cached.
+        assert_eq!(
+            d.nav.modals.surfaces.iter().find(|s| s.entry.id == menu_entry).map(|s| s.phase),
+            Some(Phase::Closing),
+            "the row's commit dismisses the sheet"
+        );
+        let mut renders = vec![d.host_policy().1];
+
+        // …and the loop's drain performs the request on the next frame.
+        let reqs = rig.take_reqs();
+        assert_eq!(reqs, vec![LoopReq::AccountSettings], "one request, and it is the Settings row's");
+        open_settings(&mut d);
+        for i in 0..12u32 {
+            frame(&mut d, &mut rig, Route::Home, tick(20 + i), vec![]);
+            renders.push(d.host_policy().1);
+        }
+        assert!(settings_up(&d), "the Settings surface is up");
+        assert_eq!(
+            d.nav.top_page().map(|e| e.id),
+            Some(host),
+            "the host page never moved under either surface"
+        );
+        assert!(
+            !renders.contains(&HostRender::Live),
+            "the host was re-rendered in full during the handover: {renders:?}"
+        );
     }
 
     /// **Phase 9: the player's four panels are entries on ITS page's own stack, not on the route.**
@@ -2774,12 +3033,7 @@ mod tests {
             assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
             assert_eq!(
                 overlay_word(&d),
-                Some(match kind.word() {
-                    "menu" => " overlay=menu",
-                    "info" => " overlay=info",
-                    "chapters" => " overlay=chapters",
-                    _ => " overlay=more",
-                }),
+                Some(kind.word()),
                 "and the heartbeat says so from the surface, not from a second table",
             );
             assert_ne!(
@@ -2857,7 +3111,7 @@ mod tests {
         open_first_run_consent(&mut d);
         frame(&mut d, &mut rig, Route::Profiles, tick(1), vec![]);
         assert!(consent_up(&d));
-        assert_eq!(overlay_word(&d), Some(" overlay=consent"));
+        assert_eq!(overlay_word(&d), Some("consent"));
         let _ = rig.take_reqs(); // the mount's own effects are not what this grades
         frame(&mut d, &mut rig, Route::Profiles, tick(2), script_key(Key::Back, tick(2)));
         assert_eq!(

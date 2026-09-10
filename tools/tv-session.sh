@@ -481,9 +481,19 @@ assert_install() {
   return 1
 }
 
+# The heartbeat carries TWO words since UI-restructure phase 10: the PAGE as `route=` and the top
+# `ModalStack` surface's own `Screen::name` as ` overlay=`. A surface that used to be a route of
+# its own — the account sheet, the press-and-hold card menu — therefore prints
+# `route=home overlay=account`, never the retired `route=account`.
+#
+# Reading only the page word is not merely imprecise here, it is unable to fail: every one of
+# those surfaces sits over Home, so `route=home` is already true the instant the app boots, and a
+# trigger the app REFUSED would be graded as having arrived. So a caller that names an overlay
+# gets both halves checked. ` overlay=none` (what the player prints with nothing up) normalises
+# to "no overlay" so a caller naming only a page still matches it.
 assert_route() {
-  local want="$1" seen
-  seen=$(tvq "grep -oE 'route=[a-z]+' $EVENTLOG 2>/dev/null | tail -1")
+  local want="$1" want_overlay="${2:-}" seen seen_route seen_overlay
+  seen=$(tvq "grep -oE 'route=[a-z]+( overlay=[a-z]+)?' $EVENTLOG 2>/dev/null | tail -1")
   if [ -z "$seen" ]; then
     bad "no route= heartbeat in $EVENTLOG yet (app booting, or it died)"
     info "if it died: tools/crash-report.sh --flavor $FLAVOR"
@@ -491,8 +501,25 @@ assert_route() {
   fi
   info "reached ${seen}"
   [ -z "$want" ] && return 0
-  [ "$seen" = "route=$want" ] && { ok "on the requested screen"; return 0; }
-  bad "wanted route=$want, got $seen"; return 1
+  seen_route="${seen%% *}"
+  case "$seen" in
+    *" overlay="*) seen_overlay="${seen##* overlay=}" ;;
+    *)             seen_overlay="" ;;
+  esac
+  [ "$seen_overlay" = none ] && seen_overlay=""
+  # A caller naming ONLY a page does not care what sits over it — `--screen detail=<rk>` with a
+  # panel trigger armed beside it is a boot that arrived, not a boot that missed. The overlay is
+  # compared only when it was asked for.
+  if [ "$seen_route" = "route=$want" ] \
+     && { [ -z "$want_overlay" ] || [ "$seen_overlay" = "$want_overlay" ]; }; then
+    ok "on the requested screen"; return 0
+  fi
+  if [ -n "$want_overlay" ]; then
+    bad "wanted route=$want overlay=$want_overlay, got $seen"
+  else
+    bad "wanted route=$want, got $seen"
+  fi
+  return 1
 }
 
 # Resolve everything implied by `--server` in one testable place. Bash's dynamic local scope is
@@ -640,7 +667,7 @@ cmd_up() {
   # television is touched at all, so identity resolution (next) and --dry-run (after that) can
   # both see the final, fully-resolved no_token — including the two screens that force it
   # themselves (profiles, and --server via configure_direct_screen above).
-  local files=() want_route=""
+  local files=() want_route="" want_overlay=""
   case "$screen" in
     home)      want_route=home ;;
     # The picker is what an ORDINARY boot shows: it needs the stored session and NO
@@ -653,10 +680,16 @@ cmd_up() {
     # the design — two installs are two devices to the account — not a broken picker.
     profiles)  no_token=1; want_route=profiles ;;
     login)     files+=("plxnative-login="); want_route=login ;;
-    account)   files+=("plxnative-acct="); want_route=account ;;
+    # The account sheet and the card menu are SURFACES on the shared ModalStack since
+    # UI-restructure phase 10, not routes: the heartbeat prints the host page as `route=` and
+    # the surface's own `Screen::name` as ` overlay=`. Both halves are named, because the host
+    # page alone is Home — true from the first heartbeat of any boot — so naming only it would
+    # grade a refused trigger as a success. `tests/manifest.json` re-keyed its `home-acct-glass`
+    # and `item-menu` scenes the same way and for the same reason.
+    account)   files+=("plxnative-acct="); want_route=home; want_overlay=account ;;
     # the press-and-hold card menu: the trigger snaps into the grid and holds the focused
     # card for us, because a real hold is a live gesture no boot trigger can express
-    itemmenu)  files+=("plxnative-itemmenu="); want_route=itemmenu ;;
+    itemmenu)  files+=("plxnative-itemmenu="); want_route=home; want_overlay=itemmenu ;;
     library)   files+=("plxnative-library="); want_route=library ;;
     library=*) files+=("plxnative-library=${screen#*=}"); want_route=library ;;
     detail=*)  files+=("plxnative-detail=${screen#*=}"); want_route=detail ;;
@@ -712,7 +745,7 @@ cmd_up() {
     fi
     echo "  would run: make -C $REPO FLAVOR=$FLAVOR kill"
     echo "  would run: ssh root@$HOST luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$APPID\"}'"
-    echo "  would then require: route=${want_route:-<any>}"
+    echo "  would then require: route=${want_route:-<any>}${want_overlay:+ overlay=$want_overlay}"
     echo "== dry run complete — identity: $identity_desc"
     return 0
   fi
@@ -764,7 +797,7 @@ cmd_up() {
   if [ "$server_set" = 1 ]; then
     await_direct_screen "$direct_marker" "$want_route" || exit 1
   else
-    assert_route "$want_route" || true
+    assert_route "$want_route" "$want_overlay" || true
   fi
 
   if [ -n "$stream" ]; then

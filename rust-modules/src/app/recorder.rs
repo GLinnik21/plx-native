@@ -35,7 +35,7 @@ use crate::ui::rec::{DirSink, Header, RecError, Recording, Writer};
 /// contents; other machines still need to join it. This probe contains only protocol constants
 /// and numbers (tests/fixtures/replay/ALPHABET.json carries its pattern).
 #[derive(serde::Serialize)]
-pub(super) struct AppInit {
+pub(crate) struct AppInit {
     pub route: &'static str,
     pub session: bool,
     pub servers: u32,
@@ -100,6 +100,27 @@ fn initial_header(app: &AppInit) -> Header {
     header
 }
 
+/// **The LOOP's own half of the shape census.** Every SCREEN's shape — and the argument and page
+/// memory that mount one — is `screens::registry::SCREEN_SHAPES`, declared in the module a new
+/// screen is added to (§0 criterion 5: a conversion touches `screens/<name>.rs`, the registry,
+/// `dev/scenarios.rs` and `tests/manifest.json` and nothing else, and this file used to be a
+/// fifth). These are what is left: the press machine, the input state, the frame line, the
+/// container tree, the return state, the recorded PMS fixtures and the app's own init.
+///
+/// Pinned by `the_app_shape_census_is_pinned` below, which does NOT move when a screen lands —
+/// the registry's own pin does that, beside the entry that caused it.
+const APP_SHAPES: &[&str] = &[
+    crate::ui::press::Press::SHAPE,
+    crate::ui::input::STATE_SHAPE,
+    "TextInputWire{kind:text,text:str,panel:bool,ms:u32,dt_us:u32,source:{Sdl,RemoteFifo,Script,Replay}}",
+    "AppFrame{route:str,overlay:str,focus:str,tree:u64}",
+    crate::ui::containers::STATE_SHAPE,
+    crate::ui::screen::RETURN_STATE_SHAPE,
+    crate::pms::record::SHAPE,
+    crate::pms::initial::SHAPE,
+    AppInit::SHAPE,
+];
+
 /// The state SHAPE of what phase 2 hashes: bump by changing a `SHAPE` string, never silently.
 ///
 /// **`tree:u64` joined it in phase 5b** and the bump was deliberate: the Settings family's state
@@ -114,38 +135,22 @@ fn initial_header(app: &AppInit) -> Header {
 /// and scrub gesture were `static mut`s and `TX` atomics that no `LogicalState` could see, so a
 /// recording that diverged by leaving the transport up, or by scrubbing to a different second,
 /// came back `SAME`.
-pub(super) fn state_fp() -> u64 {
-    crate::ui::rec::state_fp(&[
-        crate::ui::press::Press::SHAPE,
-        crate::ui::input::STATE_SHAPE,
-        "TextInputWire{kind:text,text:str,panel:bool,ms:u32,dt_us:u32,source:{Sdl,RemoteFifo,Script,Replay}}",
-        "AppFrame{route:str,overlay:str,focus:str,tree:u64}",
-        crate::ui::containers::STATE_SHAPE,
-        super::bridge::ARG_SHAPE,
-        crate::ui::screen::RETURN_STATE_SHAPE,
-        crate::screens::registry::PAGE_MEMORY_SHAPE,
-        crate::screens::search::Memory::SHAPE,
-        crate::screens::search::SHAPE,
-        crate::screens::home::SHAPE,
-        crate::screens::library::SHAPE[0],
-        crate::screens::library::SHAPE[1],
-        crate::screens::library::SHAPE[2],
-        crate::screens::library::SHAPE[3],
-        crate::screens::library::SHAPE[4],
-        crate::screens::library::SHAPE[5],
-        crate::screens::library::SHAPE[6],
-        crate::screens::library::SHAPE[7],
-        crate::screens::library::menu::SHAPE[0],
-        crate::screens::library::menu::SHAPE[1],
-        crate::pms::record::SHAPE,
-        crate::pms::initial::SHAPE,
-        crate::screens::detail::SHAPE,
-        crate::screens::person::PersonScreen::SHAPE,
-        crate::screens::filmography::FilmographyScreen::SHAPE,
-        crate::screens::player::SHAPE,
-        crate::screens::player::overlay::SHAPE,
-        AppInit::SHAPE,
-    ])
+///
+/// **Phase 10 bumps it once per page panel converted.** The Detail page's *Also available* picker
+/// contributes `screens::alt_sources::SHAPE` and `ARG_SHAPE` gains its `AltSources` variant; the
+/// page's own `screens::detail::SHAPE` narrows its `panel:u8` at the same time, because which panel
+/// is up is the CONTAINER's record now (`Navigation::write` writes every surface's argument, phase
+/// and instance hash) and a second copy on the page would be two producers of one fact. The
+/// *Track information* sheet is the second bump: `screens::tracks_panel::SHAPE` joins the
+/// inventory and `ARG_SHAPE` gains `TracksPanel{page:i32}`. Its PAGE is in the shape deliberately
+/// — that cursor moves nothing else in the app, so without it a replay grades the sheet opening
+/// and closing and nothing between. Every committed fixture is invalidated by each bump, which is
+/// the cost this pin exists to make visible rather than silent — `tools/plxnative-rec rerecord` is
+/// the verb (`tests/fixtures/replay/README.md`).
+pub(crate) fn state_fp() -> u64 {
+    let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
+    shapes.extend_from_slice(crate::screens::registry::SCREEN_SHAPES);
+    crate::ui::rec::state_fp(&shapes)
 }
 
 /// The hash of the frame's logical state (spec §5.4), as phase 2 defines it.
@@ -154,7 +159,7 @@ pub(super) fn state_fp() -> u64 {
 /// surface phases, the engine's focus, queue depth and queued press identities. It is folded in WHOLE rather than
 /// sampled, because that function is already the spec's own definition of "the state of the
 /// machines" (§5.4) and re-deriving a summary here would be a second definition to keep in step.
-pub(super) fn state_hash(
+pub(crate) fn state_hash(
     press: &crate::ui::press::Press,
     route: &str,
     overlay: &str,
@@ -167,14 +172,14 @@ pub(super) fn state_hash(
     c.finish()
 }
 
-pub(super) struct Rec {
+pub(crate) struct Rec {
     w: Writer,
     f: u64,
     events: bool,
     spent_ns: u64,
 }
 
-pub(super) struct Replay {
+pub(crate) struct Replay {
     rec: Recording,
     at: usize,
     graded: u64,
@@ -201,7 +206,7 @@ impl Replay {
     }
 }
 
-pub(super) enum Recplay {
+pub(crate) enum Recplay {
     Off,
     Recording(Rec),
     Replaying(Replay),
@@ -283,9 +288,9 @@ fn machine_name(id: crate::ui::machine::MachineId) -> String {
 impl Recplay {
     /// Read the two triggers ONCE at boot. Both armed is refused (a run cannot record its own
     /// replay); a recording is refused on a boot that is not frame 0 by `Writer::open` itself.
-    pub(super) fn arm(init: &AppInit, triggers: Vec<String>) -> Recplay {
-        let rec = crate::dev::read("rec");
-        let play = crate::dev::read("recplay");
+    pub(crate) fn arm(init: &AppInit, triggers: Vec<String>) -> Recplay {
+        let rec = crate::dev::scenarios::rec_trigger();
+        let play = crate::dev::scenarios::recplay_trigger();
         match (rec, play) {
             (Some(_), Some(_)) => {
                 crate::log("rec: REFUSED — plxnative-rec and plxnative-recplay are both armed");
@@ -381,7 +386,7 @@ impl Recplay {
     /// Replay: the recording boot's clock at arming — what the replaying boot's own origin
     /// (`App.t0`, the dev-script and heartbeat origin) is re-seated to, so a delay measured from
     /// boot means the same thing on both sides.
-    pub(super) fn clock_start(&self) -> Option<u32> {
+    pub(crate) fn clock_start(&self) -> Option<u32> {
         match self {
             Recplay::Replaying(r) => Some(r.rec.header.clock_start_ms),
             _ => None,
@@ -389,7 +394,7 @@ impl Recplay {
     }
 
     /// Replay: the recorded tick of the NEXT frame, or `None` when the recording is exhausted.
-    pub(super) fn replay_tick(&self) -> Option<Tick> {
+    pub(crate) fn replay_tick(&self) -> Option<Tick> {
         match self {
             Recplay::Replaying(r) => r.rec.frames.get(r.at).and_then(|f| f.tick),
             _ => None,
@@ -397,7 +402,7 @@ impl Recplay {
     }
 
     /// Replay: the inputs recorded for the current frame, to be re-injected before ingest.
-    pub(super) fn replay_inputs(&self) -> Vec<Value> {
+    pub(crate) fn replay_inputs(&self) -> Vec<Value> {
         match self {
             Recplay::Replaying(r) => r.rec.frames.get(r.at).map(|f| f.inputs.clone()).unwrap_or_default(),
             _ => Vec::new(),
@@ -409,7 +414,7 @@ impl Recplay {
     /// The caller must supply the bootstrap's recorded-client bindings; there is no registry
     /// lookup or best-effort rebinding here. Product boot restoration still needs to wire this.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn replay_results(
+    pub(crate) fn replay_results(
         &self,
         mut client: impl FnMut(u32) -> Option<&'static crate::plex::Client>,
     ) -> Result<Option<super::bridge::AppResults>, &'static str> {
@@ -431,7 +436,7 @@ impl Recplay {
         Ok(Some(out))
     }
 
-    pub(super) fn tick(&mut self, now: u32, dt: f32) {
+    pub(crate) fn tick(&mut self, now: u32, dt: f32) {
         if let Recplay::Recording(r) = self {
             let t0 = std::time::Instant::now();
             r.w.tick(r.f, Tick { ms: now, dt_us: (dt * 1_000_000.0) as u32 });
@@ -439,7 +444,7 @@ impl Recplay {
         }
     }
 
-    pub(super) fn input(&mut self, encoded: Value) {
+    pub(crate) fn input(&mut self, encoded: Value) {
         if let Recplay::Recording(r) = self {
             let t0 = std::time::Instant::now();
             r.w.input(r.f, encoded);
@@ -448,7 +453,7 @@ impl Recplay {
         }
     }
 
-    pub(super) fn present(&mut self, bit: bool) {
+    pub(crate) fn present(&mut self, bit: bool) {
         match self {
             Recplay::Recording(r) => {
                 let t0 = std::time::Instant::now();
@@ -471,7 +476,7 @@ impl Recplay {
 
     /// The frame's tail. `hash` is computed only when a state record is due (an event frame while
     /// recording; a graded frame while replaying). Returns `true` when a replay has just ended.
-    pub(super) fn end_frame(&mut self, hash: &dyn Fn() -> u64) -> bool {
+    pub(crate) fn end_frame(&mut self, hash: &dyn Fn() -> u64) -> bool {
         match self {
             Recplay::Off => false,
             Recplay::Recording(r) => {
@@ -527,7 +532,7 @@ impl Recplay {
     }
 
     /// Microseconds the recorder spent this second — the heartbeat's `rec=`; resets.
-    pub(super) fn take_spent_us(&mut self) -> Option<u64> {
+    pub(crate) fn take_spent_us(&mut self) -> Option<u64> {
         match self {
             Recplay::Recording(r) => {
                 let us = r.spent_ns / 1000;
@@ -538,7 +543,7 @@ impl Recplay {
         }
     }
 
-    pub(super) fn finish(self) {
+    pub(crate) fn finish(self) {
         if let Recplay::Recording(r) = self {
             r.w.finish();
             crate::log("rec: finished");
@@ -551,7 +556,7 @@ impl Recplay {
 /// the expected difference and are not reported). `None` when the sets agree. Dev flags reach
 /// the loop from the filesystem until phase 4 turns them into recorded `Sys` results, so this is
 /// phase 2's assertion that a replay boot was armed the way the recording boot was.
-pub(super) fn triggers_differ(recorded: &[String], now: &[String]) -> Option<String> {
+pub(crate) fn triggers_differ(recorded: &[String], now: &[String]) -> Option<String> {
     let skip = |n: &str| n == "plxnative-rec" || n == "plxnative-recplay";
     let missing: Vec<&str> = recorded
         .iter()
@@ -588,21 +593,21 @@ fn features() -> Vec<String> {
 
 /// Input encodings — the application's half of the codec (spec §5.5); `replay_inputs` hands
 /// these back to the loop, which re-injects them by kind.
-pub(super) fn enc_key(sym: u32, wcode: u32, down: bool, repeat: bool) -> Value {
+pub(crate) fn enc_key(sym: u32, wcode: u32, down: bool, repeat: bool) -> Value {
     json!({"kind": "key", "sym": sym, "wcode": wcode, "down": down, "repeat": repeat})
 }
 
-pub(super) fn enc_token(tok: &str) -> Value {
+pub(crate) fn enc_token(tok: &str) -> Value {
     json!({"kind": "token", "tok": tok})
 }
 
-pub(super) fn enc_text(text: &str, panel: bool, at: crate::ui::machine::Tick, source: crate::ui::machine::Source) -> Value {
+pub(crate) fn enc_text(text: &str, panel: bool, at: crate::ui::machine::Tick, source: crate::ui::machine::Source) -> Value {
     use crate::ui::machine::Source;
     let source = match source { Source::Sdl => 0, Source::RemoteFifo => 1, Source::Script => 2, Source::Replay => 3 };
     json!({"kind":"text", "text":text, "panel":panel, "ms":at.ms, "dt_us":at.dt_us, "source":source})
 }
 
-pub(super) fn dec_text(v: &Value) -> Option<Vec<crate::ui::machine::InputEvent<u32>>> {
+pub(crate) fn dec_text(v: &Value) -> Option<Vec<crate::ui::machine::InputEvent<u32>>> {
     use crate::ui::machine::{Source, Tick};
     if v["kind"].as_str()? != "text" { return None; }
     let source = match v["source"].as_u64()? { 0 => Source::Sdl, 1 => Source::RemoteFifo,
@@ -611,11 +616,11 @@ pub(super) fn dec_text(v: &Value) -> Option<Vec<crate::ui::machine::InputEvent<u
     Some(super::events::text_inputs(v["text"].as_str()?, v["panel"].as_bool()?, at, source))
 }
 
-pub(super) fn enc_pointer(kind: &str, x: i32, y: i32) -> Value {
+pub(crate) fn enc_pointer(kind: &str, x: i32, y: i32) -> Value {
     json!({"kind": kind, "x": x, "y": y})
 }
 
-pub(super) fn enc_lifecycle(code: u32) -> Value {
+pub(crate) fn enc_lifecycle(code: u32) -> Value {
     json!({"kind": "lifecycle", "code": code})
 }
 
@@ -845,7 +850,52 @@ mod tests {
         // (`PlayerScreen` + `PlayerOverlayScreen`). A schema transition, not a rebaseline: every
         // fixture recorded against 0xd1f5_9fcf_db3a_98fc must be refused and rerecorded, because a
         // recording taken before this could not hash the transport's timer, cursor or scrub at all.
-        assert_eq!(state_fp(), 0x1006_0b14_b43f_5f57);
+        // Phase 10, the Detail page's *Also available* picker: `ARG_SHAPE` gains `AltSources{…}`,
+        // `AltSourcesScreen` joins the inventory, and `screens::detail::SHAPE`'s `panel:u8` narrows
+        // to `about_panel_open:u8` because which SURFACE is up is `Navigation::write`'s record and
+        // a second copy on the page would be two producers of one fact. A schema transition, not a
+        // rebaseline: a fixture recorded against 0x1006_0b14_b43f_5f57 must be refused and
+        // rerecorded, because a recording taken before this hashed the picker's cursor nowhere at
+        // all — its UP/DOWN moved a `static mut TABLE` no `LogicalState` could see.
+        // Phase 10, the Detail page's *Track information* sheet: `ARG_SHAPE` gains
+        // `TracksPanel{page:i32}` and `TracksPanelScreen` joins the inventory. The same transition
+        // for the same reason — a fixture recorded against 0xb4a9_96a9_e8f6_0b37 hashed that
+        // sheet's PAGE nowhere, and paging it moves nothing else in the app, so a replay of one
+        // graded the sheet appearing and disappearing with a hole between.
+        // Phase 10: the PROFILE MENU is an owned surface. `ARG_SHAPE` loses
+        // `Account{over:BarHost{…}}` (the route it rode on is deleted) and gains `AccountMenu`,
+        // and the menu's own state — its header, its row set and its cursor — joins the inventory
+        // for the first time (`screens::account_menu::SHAPE`). Another schema transition rather
+        // than a rebaseline: the rows and the selection were `static mut ROWS`/`TABLE`, which no
+        // `LogicalState` could see, so a recording taken before this came back `SAME` for a replay
+        // that landed on a DIFFERENT row of the menu.
+        // Phase 10 again: the ITEM CONTEXT MENU is an owned surface too. `ARG_SHAPE` loses
+        // `ItemMenu{over:MenuHost{…}}` and gains `ItemMenu{sid,rk,kind,host,focus,anchor,…}` —
+        // which is the six `static mut`s the popover carried, promoted to the entry's argument —
+        // and the panel's own rows, actions and cursor join the inventory
+        // (`screens::item_menu::SHAPE`). `PlayerScreen` also SHRINKS in the same commit: its
+        // `held: HeldKey` had had no producer since phase 9 and went with the loop's client-side
+        // repeat timer, so `player::SHAPE` loses `held:{sym,down_sym}`. A schema transition on all
+        // three counts, so the recordings are refused and rerecorded rather than rebaselined.
+        // **The MERGE of those two lanes is itself a third shape, and neither lane's own pin
+        // describes it.** The page-panel lane pinned 0xcbf9_7184_91da_329c over an `ARG_SHAPE`
+        // that still carried `Account{over:BarHost{…}}`/`ItemMenu{over:MenuHost{…}}` in its
+        // `Route` alphabet; the shared-modal lane pinned 0x732f_34cd_7c07_6197 over one with no
+        // `AltSources`/`TracksPanel` in it. The union has all four surfaces, one `Route` alphabet
+        // with neither menu in it, and canon tags 6/7 for the two Detail panels against 8/9 for
+        // the two menus — so BOTH of those values must be refused here, exactly as the values
+        // before them are.
+        //
+        // **Phase 10, lane A: the pin SPLITS, and this half stops moving when a screen lands.**
+        // `state_fp()` is [`APP_SHAPES`] folded in front of `screens::registry::SCREEN_SHAPES`,
+        // and the screen half carries its own pin in that module
+        // (`the_screen_shape_inventory_is_pinned`) — because the criterion this phase proves is
+        // that a new screen touches the registry and not this file. What is asserted here is the
+        // LOOP's own list. The values above are the history of the COMBINED one and are kept: every
+        // recording ever refused was refused against one of them, and `state_fp()` still reports a
+        // combined value (0x6a5c_ca67_6290_b770 at the moment of the split, unchanged by it —
+        // the move preserved both the order and the strings).
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x79dc_9274_0550_1805);
     }
 
     #[test]
@@ -866,7 +916,8 @@ mod tests {
     fn the_pre_content_navigation_recording_shape_is_refused() {
         for old in [0x8446_64d2_3399_0e72, 0x002c_b89e_e6a9_3668, 0x51ac_a85c_c16b_4b59,
             0x8af1_d09e_bbb1_1d47, 0x76d4_1ddb_e172_6b88, 0x702b_f9f7_e7c8_fe57,
-            0x7252_4cf7_ed8d_97a3, 0x5ba4_34ad_d5db_5bdf, 0xe61b_6d55_f442_8637] {
+            0x7252_4cf7_ed8d_97a3, 0x5ba4_34ad_d5db_5bdf, 0xe61b_6d55_f442_8637,
+            0x1006_0b14_b43f_5f57, 0x19e7_c63b_e018_e61f] {
             let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, crate::ui::rec::SCHEMA);
             assert_eq!(crate::ui::rec::Recording::parse(&manifest, &[], state_fp()).err(),
                 Some(crate::ui::rec::RecError::StateShape { theirs: old, ours: state_fp() }));

@@ -14,6 +14,22 @@
 //! the numbers that do are the same numbers the FILE and VIDEO columns are made of. Separated,
 //! neither half answers the question.
 //!
+//! **A `Style::Alert` surface on the container tree** since restructure phase 10 (§6.2): the shape
+//! it always had, stated to the container instead of implied. It is read-only — no control, no
+//! hover, one cursor that is a PAGE — so a click beside it does nothing at all, which is exactly
+//! what `modal::on_miss(Style::Alert)` answers; BACK and OK dismiss it. The container owns its
+//! phase and its appear spring, and its four `static mut`s (`POP`, `PAGE`, `SCROLL`, `CONTENT_H`)
+//! are fields of the instance.
+//!
+//! **Whether the sheet can be offered at all is the PAGE's answer, not this module's.** It used to
+//! be `tracks_panel::is_available()`, read seven times by the Detail page's own layout and focus
+//! ladder to decide the About footer's column count — a screen asking a POPOVER how many columns
+//! its own footer has. The split now is: [`describes`] is the RULE (this sheet can describe an item
+//! that has a file of its own), and `DetailScreen::tracks_available` is the ANSWER, applying it
+//! through `DetailScreen::detail()`. That is the same `Detail::part` predicate with one difference
+//! that matters — `metadata::current()` is whatever item last landed, `DetailScreen::detail()` is
+//! THIS page's item, and on a page whose own fetch has not landed those are different items.
+//!
 //! ## Three things here are not obvious
 //!
 //! **1. The feather is per-RUN, not per-pixel.** The design masks the scrolling body with an 88px
@@ -56,7 +72,6 @@ use crate::ui::widgets;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
-use std::ptr::{addr_of, addr_of_mut};
 
 // ---- geometry (the design's numbers, `Alert Views.dc.html` §1B) --------------------------------
 
@@ -592,145 +607,100 @@ pub(crate) fn feather_alpha(y: f32, top: f32, bottom: f32, edges: (bool, bool)) 
     a
 }
 
-// ---- state --------------------------------------------------------------------------------------
+// ---- the surface --------------------------------------------------------------------------------
 
-/// The page under this panel is standing still, so it is served from the shared host snapshot
-/// while the panel is up — `caching_host`. Measured on the television: without it, every presented
-/// frame of a page turn cost `draw≈75 ms` and the loop ran at 30.
-static mut POP: Popover = Popover::new().caching_host();
-/// 1-based page. The panel's whole cursor: it has no focusable control, so there is nothing else
-/// a key press can move.
-static mut PAGE: c_int = 1;
-/// The body's scroll offset in px, sprung toward [`scroll_for`]. A `Spring` and not a raw value
-/// because that is what reports the motion to `ui::idle` — `gfx::spring` is one of the two
-/// integrators the frame gate watches, so a scroll animated any other way would freeze mid-glide
-/// on a settled screen (the trap that shipped `Xfade` and `Spinner` frozen).
-static mut SCROLL: Spring = Spring::at(0.0);
-/// The content height measured at the last draw, so `update` can spring toward a target and
-/// `move_focus` can clamp the page without re-measuring text off the draw path (`text_width`
-/// reaches SDL_ttf, which the host suite cannot link).
-static mut CONTENT_H: f32 = 0.0;
+/// The fields [`TracksPanelScreen::write`] canonicalises, for the recorder's shape pin (§5.4). The
+/// PAGE is in it deliberately: this panel's UP/DOWN moves nothing else in the app, so without it a
+/// replay grades the sheet opening and closing and nothing between.
+pub(crate) const SHAPE: &str = "TracksPanelScreen{page:i32,scroll:Spring{pos:f32,vel:f32},content_h:f32}";
 
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
-}
-
-pub(crate) fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
-}
-
-/// The current page, for the focus probe (`crate::focusprobe`) — this panel's only cursor, and the
-/// UP/DOWN arm moves it and nothing else, so nothing in the log would show it otherwise.
-pub(crate) fn sel() -> c_int {
-    unsafe { addr_of!(PAGE).read() }
-}
-
-/// Is there a file for this panel to describe?
+/// What the container is asked to present.
 ///
-/// **The gate for the Languages column's press**, and it is `part` rather than `is_show` on
-/// purpose. A SHOW
-/// container carries no `Media` of its own — `parse_streams` backfills its audio/subtitle lists
-/// from episode 1 for the About footer — so on a show page this panel would print episode 1's
-/// path, size and bitrate under the show's name. That is not a truncation of the truth, it is a
-/// different file, and `Detail::part` is exactly the field that is empty when the item has no file
-/// of its own (`metadata.rs`: "Media[0].Part[0].key for a leaf (movie/episode); empty for a show").
-///
-/// It is also false during the whole mount fetch, which costs nothing: the About footer is drawn
-/// from a loaded item, so there is no frame on which the Languages column is on screen and this is
-/// still false. Unlike the hero disc it replaced, the column does not appear or vanish with the
-/// answer — it is always the third of four — so a press that arrives early is refused rather than
-/// landing on a control that has moved.
-pub(crate) fn is_available() -> bool {
-    metadata::current()
-        .map(|d| !d.part.is_empty())
-        .unwrap_or(false)
+/// `page` is a boot ADDRESS, not an identity — `/tmp/plxnative-tracks=<n>` opens the sheet already
+/// scrolled, which is the only way a headless capture reaches page 2, and every interactive opening
+/// passes 1. It is the same distinction `AppArg::Settings`'s root page draws, and it is why
+/// `ScreenArg::same_instance` compares the SCREEN and not the payload.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct TracksPanelArg {
+    pub(crate) page: c_int,
 }
 
-pub(crate) fn open() {
-    unsafe {
-        addr_of_mut!(PAGE).write(1);
-        addr_of_mut!(SCROLL).write(Spring::at(0.0));
+impl crate::ui::machine::LogicalState for TracksPanelArg {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        c.u32(self.page as u32);
     }
-    pop().open();
-    // a panel appearing is a discrete change no spring reports on the frame it happens
-    crate::ui::idle::invalidate();
-}
-
-pub(crate) fn close() {
-    pop().dismiss();
-    crate::ui::idle::invalidate();
-}
-/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
-/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
-/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
-/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
-/// spring ran out (Codex review, 2026-09-02).
-pub(crate) fn hide() {
-    if pop().visible() {
-        pop().close();
-        crate::ui::idle::invalidate();
+    fn probe(&self, out: &mut String) {
+        out.push_str("tracks_panel_arg");
     }
 }
 
-/// Jump straight to 1-based `page` — the headless door, for `/tmp/plxnative-tracks=<n>`.
-///
-/// Deliberately does NOT jump the scroll spring: the page is the state and `update` springs the
-/// body toward it, which is the same path a key press takes. A capture taken a frame after this
-/// would show the glide; every recipe that uses it lets the panel settle first.
-pub(crate) fn set_page(n: c_int) {
-    unsafe { addr_of_mut!(PAGE).write(n.max(1)) };
-    crate::ui::idle::invalidate();
+pub(crate) struct TracksPanelScreen {
+    entry: crate::ui::machine::EntryId,
+    /// 1-based page. The panel's whole cursor: it has no focusable control, so there is nothing else
+    /// a key press can move.
+    page: c_int,
+    /// The body's scroll offset in px, sprung toward [`scroll_for`]. A `Spring` and not a raw value
+    /// because it is what the present gate watches — a scroll animated any other way would freeze
+    /// mid-glide on a settled screen (the trap that shipped `Xfade` and `Spinner` frozen).
+    scroll: Spring,
+    /// The content height measured at the last draw, so the tick can spring toward a target and a
+    /// page turn can clamp without re-measuring text off the draw path (`text_width` reaches
+    /// SDL_ttf, which the host suite cannot link).
+    content_h: f32,
+    glass: crate::ui::widgets::GlassState,
 }
 
-/// UP/DOWN page the body. Returns nothing: there is no action to report, and BACK is the only
-/// other key this panel answers.
-pub(crate) fn move_focus(sym: c_int) {
-    let sym = sym as u32;
-    let content = unsafe { addr_of!(CONTENT_H).read() };
-    let pages = pages_for(content, body_rect().h);
-    let p = unsafe { addr_of!(PAGE).read() };
-    let np = if sym == SDLK_UP {
-        (p - 1).max(1)
-    } else if sym == SDLK_DOWN {
-        (p + 1).min(pages)
-    } else {
-        p
-    };
-    if np != p {
-        unsafe { addr_of_mut!(PAGE).write(np) };
-        // A page turn is this panel's own damage, not the page's behind it — without this the
-        // shared ledger reads every keypress as the host moving and re-renders it.
-        crate::ui::popover::note_own_damage();
-        crate::ui::idle::invalidate();
+impl TracksPanelScreen {
+    pub(crate) fn new(entry: crate::ui::machine::EntryId, arg: TracksPanelArg) -> Self {
+        Self {
+            entry,
+            page: arg.page.max(1),
+            scroll: Spring::at(0.0),
+            content_h: 0.0,
+            glass: crate::ui::widgets::GlassState::new(),
+        }
     }
-}
 
-pub(crate) fn update(dt: f32) {
-    if !pop().visible() {
-        return;
+    /// The current page — the panel's only cursor, and what the characterization line reports
+    /// (`bridge::content_probe`'s `tpage=`). The UP/DOWN arm moves this and nothing else, so
+    /// without it a paging press is invisible in a recording.
+    pub(crate) fn page(&self) -> c_int {
+        self.page
     }
-    // The appear spring and the body's scroll glide are this panel's motion, not the page's behind
-    // it — see `popover::own_motion`.
-    let _own = crate::ui::popover::own_motion();
-    pop().update(dt);
-    let view = body_rect().h;
-    let content = unsafe { addr_of!(CONTENT_H).read() };
-    // Re-clamp: the item can be replaced under an open panel (a refresh landing), and a page past
-    // the new end would spring toward a scroll offset that shows nothing.
-    //
-    // Guarded on having MEASURED something, because `update` runs before the first `draw` and
-    // `CONTENT_H` is 0 until one has: clamping against an unmeasured body would say "one page"
-    // and silently undo a page set before the first frame — which is exactly what
-    // `/tmp/plxnative-tracks=<n>` does.
-    let mut page = unsafe { addr_of!(PAGE).read() };
-    if content > 0.0 {
-        page = page.clamp(1, pages_for(content, view));
-        unsafe { addr_of_mut!(PAGE).write(page) };
+
+    /// UP/DOWN page the body. Answers whether the page actually moved, which is what decides
+    /// whether the frame is repainted.
+    fn step_page(&mut self, sym: c_int) -> bool {
+        let sym = sym as u32;
+        let pages = pages_for(self.content_h, body_rect().h);
+        let next = if sym == SDLK_UP {
+            (self.page - 1).max(1)
+        } else if sym == SDLK_DOWN {
+            (self.page + 1).min(pages)
+        } else {
+            self.page
+        };
+        let moved = next != self.page;
+        self.page = next;
+        moved
     }
-    let target = scroll_for(page, content, view);
-    let sc = unsafe { &mut *addr_of_mut!(SCROLL) };
-    sc.step(target, K_SCROLL, dt);
-    crate::ui::anim::probe("tracks.scroll", sc.pos, sc.vel, target, dt);
+
+    fn tick(&mut self, dt: f32) {
+        let view = body_rect().h;
+        // Re-clamp: the item can be replaced under an open panel (a refresh landing), and a page
+        // past the new end would spring toward a scroll offset that shows nothing.
+        //
+        // Guarded on having MEASURED something, because the first tick runs before the first
+        // `draw` and `content_h` is 0 until one has: clamping against an unmeasured body would say
+        // "one page" and silently undo a page set before the first frame — which is exactly what
+        // `/tmp/plxnative-tracks=<n>` does.
+        if self.content_h > 0.0 {
+            self.page = self.page.clamp(1, pages_for(self.content_h, view));
+        }
+        let target = scroll_for(self.page, self.content_h, view);
+        self.scroll.step(target, K_SCROLL, dt);
+        crate::ui::anim::probe("tracks.scroll", self.scroll.pos, self.scroll.vel, target, dt);
+    }
 }
 
 // ---- draw ---------------------------------------------------------------------------------------
@@ -996,124 +966,284 @@ fn body_flow(
     f.h
 }
 
-pub(crate) fn draw() {
-    if !pop().visible() {
-        return;
-    }
-    // Everything this function draws is LIVE over the frozen host page, and constructing the guard
-    // is what takes the snapshot on the panel's first frame — see `popover::host::live`.
-    let _live = crate::ui::popover::host::live();
-    let Some(d) = metadata::current() else { return };
-    let r = panel_rect();
-    // CACHED glass over a page that is standing still, so the scrim rides `painter` and lands in
-    // the snapshot with it — the pairing `Popover::scrim`'s doc reserves for a DYNAMIC backdrop is
-    // not this panel's. `alt_sources` is the worked example on this same page.
-    let p = pop().painter(SCRIM_A, Popover::RISE);
-    pop().panel(p, r, theme::ALERT_PANEL_RAD);
+impl TracksPanelScreen {
+    /// The sheet, at `appear` (the container's own spring, `DrawFrame::page_alpha`).
+    ///
+    /// `&mut self` because the walk MEASURES: the body is laid out twice, once silently to produce the
+    /// content height the page count and the rail describe and once for real, and that height is the
+    /// panel's state.
+    fn paint(&mut self, d: &Detail, appear: f32) {
+        let r = panel_rect();
+        let slide = RISE * (1.0 - appear);
+        let p = Painter::root().alpha(appear).translate(0.0, slide);
+        crate::ui::widgets::Glass::CACHED.panel(p, r, slide, theme::ALERT_PANEL_RAD);
 
-    // ---- header ------------------------------------------------------------------------------
-    let cx = r.x + PAD;
-    let cw = PANEL_W - 2.0 * PAD;
-    let mut y = r.y + PAD;
-    let eyebrow = c"TRACK INFORMATION";
-    Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .bold()
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
-    y += theme::alert::EYEBROW_LEAD + GAP_EYEBROW_TITLE;
-    if let Ok(cs) = CString::new(crate::text::elide(
-        &d.title,
-        cw,
-        theme::size::TITLE,
-        1,
-        false,
-    )) {
-        Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+        // ---- header ------------------------------------------------------------------------------
+        let cx = r.x + PAD;
+        let cw = PANEL_W - 2.0 * PAD;
+        let mut y = r.y + PAD;
+        let eyebrow = c"TRACK INFORMATION";
+        Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
             .bold()
             .v(VAlign::CapTop)
-            .draw(p, Rect::new(cx, y, cw, TITLE_H));
-    }
-    y += TITLE_H + theme::alert::GAP_TITLE_SUB;
-    // the server's own path for the part. One line, ellipsised, micro, tertiary — it is the
-    // panel's subject, not its content, and it can be arbitrarily long.
-    if !d.file.is_empty() {
+            .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
+        y += theme::alert::EYEBROW_LEAD + GAP_EYEBROW_TITLE;
         if let Ok(cs) = CString::new(crate::text::elide(
-            &d.file,
+            &d.title,
             cw,
-            theme::size::MICRO,
-            0,
+            theme::size::TITLE,
+            1,
             false,
         )) {
-            Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY)
+            Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+                .bold()
                 .v(VAlign::CapTop)
-                .draw(p, Rect::new(cx, y, cw, PATH_H));
+                .draw(p, Rect::new(cx, y, cw, TITLE_H));
+        }
+        y += TITLE_H + theme::alert::GAP_TITLE_SUB;
+        // the server's own path for the part. One line, ellipsised, micro, tertiary — it is the
+        // panel's subject, not its content, and it can be arbitrarily long.
+        if !d.file.is_empty() {
+            if let Ok(cs) = CString::new(crate::text::elide(
+                &d.file,
+                cw,
+                theme::size::MICRO,
+                0,
+                false,
+            )) {
+                Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY)
+                    .v(VAlign::CapTop)
+                    .draw(p, Rect::new(cx, y, cw, PATH_H));
+            }
+        }
+        y += PATH_H + GAP_PATH_RULE;
+        rule(p, cx, y, cw);
+
+        // ---- body --------------------------------------------------------------------------------
+        let band = body_rect();
+        let model = content_of(d);
+        // measure first, off the same walk the draw uses, so the page count and the rail describe the
+        // content actually about to be drawn rather than the previous item's
+        let content = body_flow(&model, band, 0.0, (false, false), p, true);
+        self.content_h = content;
+        let pages = pages_for(content, band.h);
+        let page = self.page.clamp(1, pages);
+        let edges = mask_edges(page, pages);
+        let scroll = self.scroll.pos;
+        // the hard bound. The feather dissolves runs approaching the edge; this is what guarantees
+        // nothing is painted outside the band at all, including a run the ramp has not reached yet.
+        p.clip(band);
+        body_flow(&model, band, scroll, edges, p, false);
+        p.clip_clear();
+
+        // ---- the rail ----------------------------------------------------------------------------
+        // Drawn whatever the page count: a single-page body gets a full-height fill, which states
+        // "this is all of it" rather than leaving the reader to infer it from an absent control.
+        let rx = r.x + PANEL_W - PAD - RAIL_W;
+        let track = Rect::new(rx, band.y, RAIL_W, band.h);
+        let rad = RAIL_W * 0.5; // --radius-pill: half the short side, which is how this SDF spells it
+        p.rrect(track, rad, rad, theme::RAIL_TRACK);
+        let (ft, fh) = rail_fill(page, pages);
+        p.rrect(
+            Rect::new(rx, band.y + band.h * ft, RAIL_W, band.h * fh),
+            rad,
+            rad,
+            theme::RAIL_FILL,
+        );
+
+        // ---- footer ------------------------------------------------------------------------------
+        let fy = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H;
+        rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
+        let cy = fy + FOOTER_H * 0.5;
+        // left: the two chevrons + "to scroll". Marks, not controls — there is nothing to focus, so
+        // they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
+        const GLYPH: f32 = 22.0;
+        let mut gx = cx;
+        for icon in [Icon::ChevronUp, Icon::ChevronDown] {
+            crate::ui::icons::draw(
+                p,
+                icon,
+                Rect::new(gx, cy - GLYPH * 0.5, GLYPH, GLYPH),
+                theme::TEXT_TERTIARY,
+            );
+            gx += GLYPH + theme::space::XS + 4.0;
+        }
+        // The design's `gap:12` applies between EVERY item in this run, the label included — the loop
+        // above already advances by 12, so the label takes the pen where it is rather than adding a
+        // second nudge of its own (which is what made this one gap 16 while its neighbour was 12).
+        let hint = c"to scroll";
+        Label::new(hint.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+            .draw(p, Rect::new(gx, fy, cw, FOOTER_H));
+        // right: Press [BACK] to return, RIGHT-aligned on the padding edge. The shared
+        // `widgets::KeyHint` places by x and each caller solves its own alignment, so a right edge is
+        // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
+        // — which HUGS its label's cap band, where the design's KeyCap is a fixed 82x36 with a MICRO
+        // bold label. The shared cap is the fixed band, so the panels all draw one object.)
+        let back_hint = crate::ui::widgets::KeyHint::new(c"Press", c"BACK", c"to return");
+        back_hint.draw(p, cx + cw - back_hint.width(), cy);
+    }
+}
+
+// ---- the Screen contract --------------------------------------------------------------------
+
+impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for TracksPanelScreen {
+    type Ev = crate::ui::screen::ScreenEvent<H>;
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+        fx: &mut crate::ui::machine::Effects<'_, H>,
+    ) -> crate::ui::machine::Handled {
+        use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
+        use crate::ui::screen::ScreenEvent;
+        match ev {
+            ScreenEvent::Tick(t) => {
+                self.tick(t.dt());
+                Handled::Yes
+            }
+            ScreenEvent::Input(input) => match input.kind {
+                // BACK and OK both close: there is nothing here to commit, so OK can only mean
+                // "done reading". A CLICK is swallowed and does nothing — `Style::Alert`'s own
+                // `on_miss`, stated here because a `HitSource::Legacy` surface is handed the
+                // pointer whatever the container's miss policy says.
+                InputKind::Key {
+                    key: Key::Back | Key::Ok,
+                    edge: Edge::Down,
+                    ..
+                } => {
+                    fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+                    Handled::Yes
+                }
+                InputKind::Key {
+                    sym,
+                    edge: Edge::Down | Edge::Repeat,
+                    ..
+                } => {
+                    if self.step_page(sym as c_int) {
+                        fx.invalidate(crate::ui::present::Provenance::Input);
+                    }
+                    Handled::Yes
+                }
+                InputKind::Click { .. } | InputKind::Pointer { .. } => Handled::Yes,
+                _ => Handled::No,
+            },
+            _ => Handled::No,
         }
     }
-    y += PATH_H + GAP_PATH_RULE;
-    rule(p, cx, y, cw);
+}
 
-    // ---- body --------------------------------------------------------------------------------
-    let band = body_rect();
-    let model = content_of(d);
-    // measure first, off the same walk the draw uses, so the page count and the rail describe the
-    // content actually about to be drawn rather than the previous item's
-    let content = body_flow(&model, band, 0.0, (false, false), p, true);
-    unsafe { addr_of_mut!(CONTENT_H).write(content) };
-    let pages = pages_for(content, band.h);
-    let page = unsafe { addr_of!(PAGE).read() }.clamp(1, pages);
-    let edges = mask_edges(page, pages);
-    let scroll = unsafe { addr_of!(SCROLL).read() }.pos;
-    // the hard bound. The feather dissolves runs approaching the edge; this is what guarantees
-    // nothing is painted outside the band at all, including a run the ramp has not reached yet.
-    p.clip(band);
-    body_flow(&model, band, scroll, edges, p, false);
-    p.clip_clear();
-
-    // ---- the rail ----------------------------------------------------------------------------
-    // Drawn whatever the page count: a single-page body gets a full-height fill, which states
-    // "this is all of it" rather than leaving the reader to infer it from an absent control.
-    let rx = r.x + PANEL_W - PAD - RAIL_W;
-    let track = Rect::new(rx, band.y, RAIL_W, band.h);
-    let rad = RAIL_W * 0.5; // --radius-pill: half the short side, which is how this SDF spells it
-    p.rrect(track, rad, rad, theme::RAIL_TRACK);
-    let (ft, fh) = rail_fill(page, pages);
-    p.rrect(
-        Rect::new(rx, band.y + band.h * ft, RAIL_W, band.h * fh),
-        rad,
-        rad,
-        theme::RAIL_FILL,
-    );
-
-    // ---- footer ------------------------------------------------------------------------------
-    let fy = r.y + PANEL_H - crate::ui::widgets::KeyHint::pad_below() - FOOTER_H;
-    rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
-    let cy = fy + FOOTER_H * 0.5;
-    // left: the two chevrons + "to scroll". Marks, not controls — there is nothing to focus, so
-    // they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
-    const GLYPH: f32 = 22.0;
-    let mut gx = cx;
-    for icon in [Icon::ChevronUp, Icon::ChevronDown] {
-        crate::ui::icons::draw(
-            p,
-            icon,
-            Rect::new(gx, cy - GLYPH * 0.5, GLYPH, GLYPH),
-            theme::TEXT_TERTIARY,
-        );
-        gx += GLYPH + theme::space::XS + 4.0;
+/// This panel has no focusable element at all — its one cursor is a PAGE — so the engine and the
+/// hit map are inert for it and `FocusSource::Legacy`/`HitSource::Legacy` is the honest answer,
+/// exactly as it is for the player's four overlays.
+impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for TracksPanelScreen {
+    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
+        None
     }
-    // The design's `gap:12` applies between EVERY item in this run, the label included — the loop
-    // above already advances by 12, so the label takes the pen where it is rather than adding a
-    // second nudge of its own (which is what made this one gap 16 while its neighbour was 12).
-    let hint = c"to scroll";
-    Label::new(hint.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .draw(p, Rect::new(gx, fy, cw, FOOTER_H));
-    // right: Press [BACK] to return, RIGHT-aligned on the padding edge. The shared
-    // `widgets::KeyHint` places by x and each caller solves its own alignment, so a right edge is
-    // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
-    // — which HUGS its label's cap band, where the design's KeyCap is a fixed 82x36 with a MICRO
-    // bold label. The shared cap is the fixed band, so the panels all draw one object.)
-    let back_hint = crate::ui::widgets::KeyHint::new(c"Press", c"BACK", c"to return");
-    back_hint.draw(p, cx + cw - back_hint.width(), cy);
+    fn neighbour(
+        &self,
+        _key: crate::ui::machine::FocusKey<u32>,
+        _dir: crate::ui::screen::Dir,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::screen::Step<u32> {
+        crate::ui::screen::Step::Edge
+    }
+    fn place(
+        &self,
+        _key: &u32,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+        _at: crate::ui::screen::At,
+    ) -> Option<crate::ui::screen::Placed> {
+        None
+    }
+    fn reconcile(
+        &self,
+        want: crate::ui::machine::FocusKey<u32>,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        want
+    }
+    fn seat(
+        &self,
+        _g: crate::ui::machine::GroupId,
+        _from: crate::ui::screen::Placed,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        crate::ui::machine::FocusKey {
+            entry: self.entry,
+            elem: 0,
+        }
+    }
+}
+
+impl crate::ui::machine::LogicalState for TracksPanelScreen {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        c.u32(self.page as u32)
+            .f32(self.scroll.pos)
+            .f32(self.scroll.vel)
+            .f32(self.content_h);
+    }
+    fn probe(&self, out: &mut String) {
+        out.push_str("tracks");
+    }
+}
+
+impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for TracksPanelScreen {
+    fn name(&self) -> &'static str {
+        "tracks"
+    }
+    fn state(&self) -> &dyn crate::ui::machine::LogicalState {
+        self
+    }
+    fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+        None
+    }
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {
+        crate::ui::widgets::Glass::CACHED.prepare(&mut self.glass, false);
+    }
+    /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at
+    /// [`SCRIM_A`]. Nothing is lifted: this sheet replaces the middle of the frame and holds no
+    /// control, so there is no element under it the dim must spare.
+    ///
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
+    /// `Glass::CACHED` ground samples the framebuffer as it stands, so the dim has to be down
+    /// before the sheet's backdrop is taken or the frosted ground reads brighter than the dimmed
+    /// screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
+    /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
+    /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
+    /// the in-`draw` version could reach.
+    fn scrim(&self) -> crate::ui::screen::Scrim {
+        crate::ui::screen::Scrim::dim(SCRIM_A)
+    }
+    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+        // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
+        // one page and dismissed with it, so in practice they are the same item; reading
+        // `metadata::current()` keeps this module's own dependency at the store it always had
+        // rather than adding a copy of the page's identity to the argument for a string it draws.
+        let Some(d) = metadata::current() else { return };
+        // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
+        // for a surface, which is what this panel's own `Popover` used to hold.
+        let appear = f.page_alpha;
+        // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
+        // this sheet is up can be read as the PANEL or as the host under it rather than as one
+        // `main.ui` total. It is the scene `fps:page-panel` grades.
+        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear));
+    }
+    fn render(&self) -> crate::ui::screen::RenderStrategy {
+        crate::ui::screen::RenderStrategy::Page
+    }
+    fn focus_source(&self) -> crate::ui::screen::FocusSource {
+        crate::ui::screen::FocusSource::Legacy
+    }
+    fn hit_source(&self) -> crate::ui::screen::HitSource {
+        crate::ui::screen::HitSource::Legacy
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// The panel's one-pixel divider — `widgets::hairline`, which carries the rule this file wrote
@@ -1124,6 +1254,11 @@ fn rule(p: Painter, x: f32, y: f32, w: f32) {
 
 /// The modal dim, from the design's `scrimStill: 0.46`.
 const SCRIM_A: f32 = theme::alert::SCRIM_A;
+
+/// How far the sheet rises as it appears, in px — `Popover::RISE`, the one number the whole panel
+/// family shares so that two surfaces leaving together read as one movement. The container owns the
+/// spring; this is only the distance it drives.
+const RISE: f32 = Popover::RISE;
 
 #[cfg(test)]
 mod tests {
@@ -1605,20 +1740,20 @@ mod tests {
     /// The Languages column's gate. A SHOW borrows its streams from episode 1, so a panel on a show page
     /// would print another item's path and size under the show's name — `part` is the field that
     /// is empty exactly then.
+    ///
+    /// Graded on the RULE (`describes`) over an item handed straight in. It used to be graded on
+    /// `is_available()` over `metadata::install_for_test`, which is the same assertion with the
+    /// bug's own mechanism in the middle of it: which item that answered about was whatever had
+    /// landed last, and never which page was asking.
     #[test]
     fn the_panel_is_offered_only_for_an_item_with_a_file_of_its_own() {
-        let _g = crate::testlock::serial();
-        metadata::install_for_test(None);
-        assert!(!is_available(), "nothing loaded yet: no disc");
-
         let show = Detail {
             is_show: true,
             part: String::new(),
             ..Default::default()
         };
-        metadata::install_for_test(Some(show));
         assert!(
-            !is_available(),
+            !show.has_own_file(),
             "a show has no file of its own — its streams are episode 1's"
         );
 
@@ -1626,11 +1761,9 @@ mod tests {
             part: "/library/parts/751/1745595530/file.mp4".into(),
             ..Default::default()
         };
-        metadata::install_for_test(Some(movie));
         assert!(
-            is_available(),
+            movie.has_own_file(),
             "a leaf has a part, so there is a file to describe"
         );
-        metadata::install_for_test(None);
     }
 }

@@ -78,14 +78,12 @@
 use crate::person::Person;
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::label::{Label, VAlign};
-use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets;
 use crate::ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_uint;
-use std::ptr::{addr_of, addr_of_mut};
 
 // ---- geometry (the design's numbers, and everything else derived from them) --------------------
 
@@ -148,135 +146,271 @@ const HINT_POST: &std::ffi::CStr = c"to return";
 /// spends the same, and the two lines are the same idiom.
 const META_SEP_PAD: f32 = 10.0;
 
-// ---- state -------------------------------------------------------------------------------------
+// ---- the surface ---------------------------------------------------------------------------------
 
-/// **A DYNAMIC backdrop, not the default cached one, and the reason is measurable.**
-///
-/// `Glass::CACHED` takes its one snapshot at the panel's FIRST draw — the frame [`open`] was pressed
-/// on, when the appear spring is still ~0 and [`scrim`] is therefore drawing at ~0 alpha too. The
-/// frost then spends the whole session sampling an **undimmed** page, which on this page is the
-/// exact failure the design's contrast note describes. Measured in the simulator before this line
-/// went in: the panel's ground ran a mean luminance of **56.9 under the identity line** against
-/// **34.0 under the prose** four inches below it — a 23-level lift, and it is the blurred ghost of
-/// the page's own name sitting behind the panel's fine print. That reading was taken while the name
-/// was `size::HERO`; it is `size::DISPLAY` today, so the 23 is a bound (module doc).
-///
-/// A refreshing policy re-sources the backdrop on its own cadence, so once the scrim has ramped in
-/// the frost is sampling the page the user can actually see. It is also what makes the
-/// scrim-belongs-to-the-page rule mandatory rather than stylistic here: `Glass::needs_page_scrim`
-/// is true for this policy, and `Popover::painter` `debug_assert`s against a panel that tries to
-/// draw its own dim.
-static mut POP: Popover =
-    Popover::with_glass(crate::ui::widgets::Glass::DYNAMIC_BACKDROP).caching_host();
-/// The current page, 1-based. The scroll spring chases [`scroll_for_page`] of it, rather than the
-/// page being derived from the scroll: paging is the input, and a spring that is still travelling
-/// must not be read back as a different page half way there.
-static mut PAGE: usize = 1;
-static mut SCROLL: Spring = Spring::at(0.0);
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
+/// The fields [`PersonBioScreen`] canonicalises, for the recorder's shape pin (§5.4). The PAGE is in
+/// it deliberately: this panel's UP/DOWN moves nothing else in the app, so without it a replay
+/// grades the sheet opening and closing and nothing between — `tracks_panel::SHAPE`'s rule, and the
+/// reason `focusprobe` used to carry a reader for this number.
+pub(crate) const SHAPE: &str = "PersonBioScreen{page:usize,scroll:Spring{pos:f32,vel:f32}}";
+
+/// **How far the sheet rises as it appears, in px** — `Popover::RISE`, the one number the whole
+/// panel family shares. The container owns the spring; this is only the distance it drives.
+const RISE: f32 = crate::ui::popover::Popover::RISE;
+
+/// The person page's biography, in full. Presented on that page's own `ModalStack`
+/// (`registry::ContentPanel::Bio`), dismissed by BACK; UP/DOWN page the prose.
+pub(crate) struct PersonBioScreen {
+    entry: crate::ui::machine::EntryId,
+    /// The current page, 1-based. The scroll spring chases [`scroll_for_page`] of it, rather than
+    /// the page being derived from the scroll: paging is the input, and a spring still travelling
+    /// must not be read back as a different page half way there.
+    page: usize,
+    scroll: Spring,
+    /// The frosted ground's render state — a resource, never logical state, which is why it is not
+    /// in [`SHAPE`].
+    glass: crate::ui::widgets::GlassState,
 }
 
-pub(crate) fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
-}
-
-/// The focused page, for the focus probe (`crate::focusprobe`) — this panel's UP/DOWN moves this
-/// and nothing else, so the fingerprint is blind to it without a reader. Same reason
-/// `chapters_panel::sel` and `info_panel::sel` exist.
-pub(crate) fn page() -> usize {
-    unsafe { addr_of!(PAGE).read() }
-}
-
-/// Open the panel at the top of the biography.
-///
-/// The caller owns the GATE, not this function — `person::on_ok` opens it only when the bio is
-/// actually truncated. Kept that way round because the predicate is the *page's* (it depends on
-/// `person::BIO_W`, the header's column width), and duplicating it here is how the mark and the
-/// panel would come to disagree about whether there is more to read.
-pub(crate) fn open() {
-    unsafe {
-        addr_of_mut!(PAGE).write(1);
-        addr_of_mut!(SCROLL).write(Spring::at(0.0));
+impl PersonBioScreen {
+    pub(crate) fn new(entry: crate::ui::machine::EntryId) -> Self {
+        Self {
+            entry,
+            page: 1,
+            scroll: Spring::at(0.0),
+            glass: crate::ui::widgets::GlassState::new(),
+        }
     }
-    pop().open();
-    crate::ui::idle::invalidate();
+
+    /// UP/DOWN page the viewport; LEFT/RIGHT are inert (there is one column of prose, and nothing
+    /// beside it to move to).
+    ///
+    /// **It does not clamp against the page COUNT, and that is load-bearing rather than lazy.**
+    /// [`Self::tick`] already re-clamps every frame — it has to, since the store can land a longer
+    /// (or empty) biography while the panel is open — so a second clamp here would be a duplicate.
+    /// It would also be an expensive one: knowing `pages` means measuring the wrapped prose, which
+    /// reaches `TextView` → `crate::text` → `TTF_SizeUTF8`.
+    ///
+    /// **Doing that from a key handler does not fail as a skipped test. It fails as a LINK ERROR.**
+    /// This screen's `step` is called by the host suite, `cargo test --lib` builds without
+    /// `--features hostsim`, and nothing then supplies SDL_ttf or GL — so one `.min(pages)` on this
+    /// line once stopped the whole suite from BUILDING, with an undefined `_TTF_SizeUTF8` naming
+    /// `crate::text` and nothing about this panel. It cost a bisect to find. Anything reachable
+    /// from a key handler here has to stay clear of text measurement.
+    ///
+    /// So the index may run one past the end for a single frame and is pulled back before anything
+    /// reads it: the tick clamps, then computes the scroll target, and `draw` reads the page after
+    /// both. Nothing on screen can observe the overshoot.
+    fn step_page(&mut self, sym: c_uint) -> bool {
+        let next = match sym {
+            SDLK_UP => self.page.saturating_sub(1).max(1),
+            SDLK_DOWN => self.page + 1,
+            _ => self.page,
+        };
+        let moved = next != self.page;
+        self.page = next;
+        moved
+    }
+
+    fn tick(&mut self, dt: f32) {
+        // Re-clamp before springing: the store can land a longer (or empty) biography while the
+        // panel is up — `person::pump` applies a profile whenever it arrives — and a page index
+        // past the end would otherwise park the spring beyond the content.
+        let (_, pages) = page_state();
+        self.page = self.page.clamp(1, pages);
+        let want = scroll_for_page(self.page);
+        self.scroll.step(want, crate::ui::consts::K_SCROLL, dt);
+        crate::ui::anim::probe("personbio.scroll", self.scroll.pos, self.scroll.vel, want, dt);
+        // No per-frame `note_own_damage` here: the container's own-motion scope attributes this
+        // spring AND every invalidate this step raises to the panel, and a claim made per frame
+        // with no invalidate behind it over-counts — on a frame where a poster landed on the page
+        // behind, that claim masked the landing and the frozen host kept the un-landed page (Codex
+        // review, 2026-09-04). A claim belongs beside the one invalidate it names, in a key
+        // handler.
+    }
+
+    /// The whole panel, at this frame's appear fraction.
+    fn paint(&mut self, person: &Person, appear: f32) {
+        let slide = RISE * (1.0 - appear);
+        let p = Painter::root().alpha(appear).translate(0.0, slide);
+        let panel = panel_rect();
+        crate::ui::widgets::Glass::DYNAMIC_BACKDROP.panel(p, panel, slide, theme::ALERT_PANEL_RAD);
+
+        let c = content_rect();
+        draw_head(p, person, c);
+
+        let view = viewport();
+        let (max_scroll, pages) = paging(content_h(person), view.h, STEP);
+        let scroll = self.scroll.pos.clamp(0.0, max_scroll);
+
+        // the two hairlines that bracket the reading block
+        let rule = |y: f32| widgets::hairline(p, c.x, y, c.w);
+        rule(view.y - theme::space::MD - 1.0);
+        rule(view.y + view.h + theme::space::MD);
+
+        draw_bio(p, person, view, scroll, max_scroll);
+        widgets::scroll_rail(
+            p,
+            Rect::new(c.x + c.w - widgets::RAIL_W, view.y, widgets::RAIL_W, view.h),
+            self.page,
+            pages,
+        );
+
+        draw_foot(p, person, c);
+    }
 }
 
-pub(crate) fn close() {
-    if is_open() {
-        crate::ui::idle::invalidate();
+impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for PersonBioScreen {
+    type Ev = crate::ui::screen::ScreenEvent<H>;
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+        fx: &mut crate::ui::machine::Effects<'_, H>,
+    ) -> crate::ui::machine::Handled {
+        use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
+        use crate::ui::screen::ScreenEvent;
+        match ev {
+            ScreenEvent::Tick(t) => {
+                self.tick(t.dt());
+                Handled::Yes
+            }
+            ScreenEvent::Input(input) => match input.kind {
+                // **BACK closes and OK does NOT.** The design gives the read-only panels BACK
+                // (§1E), and this one is entered by OK on the header — a press that both opens and
+                // closes on the same key is how a viewer holding OK down leaves a sheet they were
+                // opening. The legacy wiring said the same thing by handing `Key::Ok` an empty
+                // arm; here it is a swallow, so the page beneath still cannot see it.
+                InputKind::Key { key: Key::Back, edge: Edge::Down, .. } => {
+                    fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+                    Handled::Yes
+                }
+                InputKind::Key { sym, edge: Edge::Down | Edge::Repeat, .. } => {
+                    if self.step_page(sym as c_uint) {
+                        fx.invalidate(crate::ui::present::Provenance::Input);
+                    }
+                    Handled::Yes
+                }
+                // Swallowed, never forwarded: the sheet is modal, and a click that fell through to
+                // the person page focused a shelf tile UNDER it — the 2026-09-06 report this
+                // panel's own pointer arms were added for.
+                InputKind::Click { .. } | InputKind::Pointer { .. } => Handled::Yes,
+                _ => Handled::No,
+            },
+            _ => Handled::No,
+        }
     }
-    pop().dismiss();
-}
-/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
-/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
-/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
-/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
-/// spring ran out (Codex review, 2026-09-02).
-pub(crate) fn hide() {
-    if pop().visible() {
-        crate::ui::idle::invalidate();
-    }
-    pop().close();
 }
 
-pub(crate) fn update(dt: f32) {
-    if !pop().visible() {
-        return;
+/// No focusable element at all — the panel's one cursor is a PAGE — so the engine and the hit map
+/// are inert for it and `FocusSource::Legacy`/`HitSource::Legacy` is the honest answer, exactly as
+/// it is for `tracks_panel`, `about_panel` and the player's four overlays.
+impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for PersonBioScreen {
+    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
+        None
     }
-    // This panel's appear and scroll springs are ITS motion, not the person page's — the shared
-    // ledger the module doc's point 4 is about, now `popover::own_motion`.
-    let _own = crate::ui::popover::own_motion();
-    pop().update(dt);
-    // Re-clamp before springing: the store can land a longer (or empty) biography while the panel
-    // is up — `person::pump` applies a profile whenever it arrives — and a page index past the end
-    // would otherwise park the spring beyond the content.
-    let (_, pages) = page_state();
-    let pg = page().clamp(1, pages);
-    unsafe { addr_of_mut!(PAGE).write(pg) };
-    let want = scroll_for_page(pg);
-    let sc = unsafe { &mut *addr_of_mut!(SCROLL) };
-    sc.step(want, crate::ui::consts::K_SCROLL, dt);
-    crate::ui::anim::probe("personbio.scroll", sc.pos, sc.vel, want, dt);
-    // No per-frame `note_own_damage` here: `own_motion` above attributes the spring AND every
-    // invalidate this update raises to the panel (`idle::OwnScope`), and a claim made per frame
-    // with no invalidate behind it over-counts — on a frame where a poster landed on the page
-    // behind, that claim masked the landing and the frozen host kept the un-landed page (Codex
-    // review, 2026-09-04). A claim belongs beside the one invalidate it names, in a key handler.
+    fn neighbour(
+        &self,
+        _key: crate::ui::machine::FocusKey<u32>,
+        _dir: crate::ui::screen::Dir,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::screen::Step<u32> {
+        crate::ui::screen::Step::Edge
+    }
+    fn place(
+        &self,
+        _key: &u32,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+        _at: crate::ui::screen::At,
+    ) -> Option<crate::ui::screen::Placed> {
+        None
+    }
+    fn reconcile(
+        &self,
+        want: crate::ui::machine::FocusKey<u32>,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        want
+    }
+    fn seat(
+        &self,
+        _g: crate::ui::machine::GroupId,
+        _from: crate::ui::screen::Placed,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        crate::ui::machine::FocusKey { entry: self.entry, elem: 0 }
+    }
 }
 
-/// UP/DOWN page the viewport; LEFT/RIGHT are inert (there is one column of prose, and nothing
-/// beside it to move to). Focus is TRAPPED here while the panel is up — `person::move_focus`
-/// forwards to this and returns, so the page behind cannot walk its shelves under the sheet.
-///
-/// **It does not clamp against the page COUNT, and that is load-bearing rather than lazy.**
-/// [`update`] already re-clamps every frame — it has to, since the store can land a longer (or
-/// empty) biography while the panel is open — so a second clamp here would be a duplicate. It would
-/// also be an expensive one: knowing `pages` means measuring the wrapped prose, which reaches
-/// `TextView` → `crate::text` → `TTF_SizeUTF8`.
-///
-/// **Doing that from a key handler does not fail as a skipped test. It fails as a LINK ERROR.**
-/// `person::move_focus` is called by the host suite, `cargo test --lib` builds without
-/// `--features hostsim`, and nothing then supplies SDL_ttf or GL — so one `.min(pages)` on this
-/// line stopped the whole 880-test suite from BUILDING, with an undefined `_TTF_SizeUTF8` naming
-/// `crate::text` and nothing about this panel. It cost a bisect to find. Anything reachable from a
-/// key handler on this page has to stay clear of text measurement.
-///
-/// So the index may run one past the end for a single frame and is pulled back before anything
-/// reads it: `update` clamps, then computes the scroll target, and `draw` reads [`page`] after
-/// both. Nothing on screen can observe the overshoot.
-pub(crate) fn move_focus(sym: c_uint) {
-    let pg = page();
-    let next = match sym {
-        SDLK_UP => pg.saturating_sub(1).max(1),
-        SDLK_DOWN => pg + 1,
-        _ => pg,
-    };
-    if next != pg {
-        unsafe { addr_of_mut!(PAGE).write(next) };
-        crate::ui::popover::note_own_damage();
-        crate::ui::idle::invalidate();
+impl crate::ui::machine::LogicalState for PersonBioScreen {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        c.u64(self.page as u64).f32(self.scroll.pos).f32(self.scroll.vel);
+    }
+    fn probe(&self, out: &mut String) {
+        out.push_str("bio");
+    }
+}
+
+impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for PersonBioScreen {
+    fn name(&self) -> &'static str {
+        "bio"
+    }
+    fn state(&self) -> &dyn crate::ui::machine::LogicalState {
+        self
+    }
+    fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+        None
+    }
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
+    /// **The refreshing backdrop's cadence** — the reason this hook exists at all, and the module
+    /// doc's point 4 is the argument. The decision is the shared `popover::glass_refresh`: the
+    /// caller's belief about the page, minus this panel's own damage (a page turn raises an
+    /// `invalidate`, which `idle::present_dirty` cannot tell from the page changing), and forced
+    /// while the appear ramp is still running, where a stale backdrop under a mid-fade scrim is
+    /// the contrast bug the DYNAMIC policy exists to prevent.
+    fn prepare_present(&mut self, underlay_changed: bool, appear_settled: bool) {
+        let refresh = crate::ui::popover::glass_refresh(
+            underlay_changed,
+            appear_settled,
+            crate::ui::popover::host::own_damage_this_frame(),
+        );
+        crate::ui::widgets::Glass::DYNAMIC_BACKDROP.prepare(&mut self.glass, refresh);
+    }
+    /// The page dim. Heavier than a chip menu's 0.45 on purpose — see the module doc's point 1:
+    /// this page draws the person's own name at `size::DISPLAY` directly behind this sheet's top
+    /// corner, and a large name read through a 72% frost lifts the ground under the fine print past
+    /// its graded contrast. `theme::SCRIM_TEXT_A` is the measured text-legibility floor.
+    ///
+    /// Nothing is lifted: the sheet replaces the middle of the frame and holds no control.
+    fn scrim(&self) -> crate::ui::screen::Scrim {
+        crate::ui::screen::Scrim::dim(SCRIM_A)
+    }
+    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+        // **A surface may not appear in its own backdrop.** The direct blur-source path re-renders
+        // the host page into a small target; the SCRIM deliberately does not take this branch,
+        // being page content whose whole job is to be in what the frost samples.
+        if crate::gfx::blur_source_pass() {
+            return;
+        }
+        let Some(person) = crate::person::current() else { return };
+        let appear = f.page_alpha;
+        crate::ui::profile::phase("dt.bio", || self.paint(person, appear));
+    }
+    fn render(&self) -> crate::ui::screen::RenderStrategy {
+        crate::ui::screen::RenderStrategy::Page
+    }
+    fn focus_source(&self) -> crate::ui::screen::FocusSource {
+        crate::ui::screen::FocusSource::Legacy
+    }
+    fn hit_source(&self) -> crate::ui::screen::HitSource {
+        crate::ui::screen::HitSource::Legacy
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -488,82 +622,6 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 }
 
 // ---- draw ----------------------------------------------------------------------------------------
-
-/// The page's half of the modal: the full-screen dim, drawn by `person::draw` BEFORE the panel.
-///
-/// See the module doc for both halves of why it lives here rather than inside [`draw`] — the
-/// `Popover::scrim` contract, and the contrast argument that makes a heavy scrim load-bearing on
-/// this particular page.
-pub(crate) fn scrim() {
-    // `visible()`, not `is_open()`: a dismissed panel is still fading, and the dim must go with
-    // it rather than vanish on the press frame under a nearly opaque sheet.
-    if pop().visible() {
-        // First lift of the frame on this page: the host snapshot is taken here, BEFORE the dim,
-        // which is what makes it a snapshot of the undimmed page — see `popover::host::live`.
-        let _live = crate::ui::popover::host::live();
-        pop().scrim(SCRIM_A);
-    }
-}
-
-/// Resolve the glass cadence before the host page draws — every popover's route arm calls this
-/// unconditionally; a closed one prepares nothing.
-///
-/// **A plain forward now.** `underlay_changed` is still not passed straight through — see the
-/// module doc's point 4 — but the folding is `Popover::prepare_present`'s, through the shared
-/// `popover::glass_refresh` and the shared own-damage ledger. This module kept both privately until
-/// 2026-09-02, which meant the panels that were not this one silently had the bug.
-pub(crate) fn prepare_present(underlay_changed: bool) {
-    pop().prepare_present(underlay_changed);
-}
-
-pub(crate) fn draw() {
-    if !pop().visible() {
-        return;
-    }
-    // **A surface may not appear in its own backdrop.** The direct blur-source path re-renders the
-    // host page into a small target, and this panel is drawn from inside `person::draw` — so
-    // without this the frost would be sampling a quarter-scale copy of itself, one refresh stale.
-    // The SCRIM deliberately does not take this branch: it is page content, and its whole job is to
-    // be in what the frost samples.
-    if crate::gfx::blur_source_pass() {
-        return;
-    }
-    // Live over the frozen host — see `popover::host::live`. (The `scrim` above normally takes the
-    // snapshot; this guard is what lifts the freeze for the panel itself.)
-    let _live = crate::ui::popover::host::live();
-    let Some(person) = crate::person::current() else {
-        return;
-    };
-    // `content_painter`, not `painter` — the scrim was already drawn by the page (see `scrim`), and
-    // calling `painter` here as well would dim the screen twice.
-    let p = pop().content_painter(Popover::RISE);
-    let panel = panel_rect();
-    pop().panel(p, panel, theme::ALERT_PANEL_RAD);
-
-    let c = content_rect();
-    draw_head(p, person, c);
-
-    let view = viewport();
-    let (max_scroll, pages) = paging(content_h(person), view.h, STEP);
-    let scroll = unsafe { addr_of!(SCROLL).read() }
-        .pos
-        .clamp(0.0, max_scroll);
-
-    // the two hairlines that bracket the reading block
-    let rule = |y: f32| widgets::hairline(p, c.x, y, c.w);
-    rule(view.y - theme::space::MD - 1.0);
-    rule(view.y + view.h + theme::space::MD);
-
-    draw_bio(p, person, view, scroll, max_scroll);
-    widgets::scroll_rail(
-        p,
-        Rect::new(c.x + c.w - widgets::RAIL_W, view.y, widgets::RAIL_W, view.h),
-        page(),
-        pages,
-    );
-
-    draw_foot(p, person, c);
-}
 
 /// Eyebrow, name, identity line — stacked from the content box's top edge on the alert family's
 /// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
@@ -873,4 +931,162 @@ mod tests {
         assert!(paragraphs("").is_empty());
         assert!(paragraphs("   \n\n  \n\n ").is_empty());
     }
+
+    // ---- the surface, driven with no SDL (§15.1 `a_new_screen_is_unit_tested_with_no_sdl`) -----
+    //
+    // A host of its own, three lines of it, rather than the application's: this panel is generic
+    // over `AppLike` exactly so it can be stepped without one, and borrowing a sibling's test host
+    // is the sibling dependency the layer gate exists to refuse.
+
+    use crate::screens::registry::{AppFx, AppMsg};
+    use crate::ui::machine::{
+        Canon, Chrome, Cx, Edge, Effects, EntryId, FocusRead, Fx, Handled, Host, InputEvent,
+        InputKind, InputOwner, Key, LogicalState, Machine, NavOp, PressRead, ScreenId,
+        Source, Stamped, Tick,
+    };
+    use crate::ui::present::Present;
+    use crate::ui::screen::{ScreenArg, ScreenEvent};
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct TestArg;
+    impl LogicalState for TestArg {
+        fn write(&self, c: &mut Canon) {
+            c.u32(0);
+        }
+        fn probe(&self, _: &mut String) {}
+    }
+    impl ScreenArg for TestArg {
+        fn chrome(&self) -> Chrome {
+            Chrome::None
+        }
+        fn id(&self) -> ScreenId {
+            ScreenId(702)
+        }
+        fn title(&self) -> Option<&str> {
+            None
+        }
+        fn same_instance(&self, other: &Self) -> bool {
+            self == other
+        }
+    }
+
+    #[derive(Clone, Default, Debug)]
+    struct TestInit;
+    impl LogicalState for TestInit {
+        fn write(&self, _: &mut Canon) {}
+        fn probe(&self, _: &mut String) {}
+    }
+
+    struct TestHost;
+    impl Host for TestHost {
+        type Arg = TestArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = TestInit;
+        type Memory = TestInit;
+    }
+
+    const ENTRY: EntryId = EntryId(7);
+
+    fn cx(measure: &crate::ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
+        Cx {
+            views: (),
+            tick: Tick::default(),
+            measure,
+            press: PressRead::default(),
+            focus: FocusRead::default(),
+            owner: InputOwner::Entry(ENTRY),
+        }
+    }
+
+    /// What one input does to a fresh panel: the effects it emitted, and whether it was consumed.
+    fn press(kind: InputKind<u32>) -> (Vec<Stamped<TestHost>>, Handled) {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        let (mut out, mut present) = (Vec::new(), Present::new());
+        let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Nav, &mut present);
+        let mut panel = PersonBioScreen::new(ENTRY);
+        let handled = panel.step(
+            &ScreenEvent::Input(InputEvent {
+                kind,
+                at: Tick::default(),
+                source: Source::Sdl,
+            }),
+            &cx,
+            &mut fx,
+        );
+        (out, handled)
+    }
+
+    fn key(k: Key) -> InputKind<u32> {
+        InputKind::Key {
+            key: k,
+            sym: 0,
+            wcode: 0,
+            edge: Edge::Down,
+            at_edge: false,
+        }
+    }
+
+    fn dismissed(out: &[Stamped<TestHost>]) -> bool {
+        out.iter()
+            .any(|s| matches!(&s.fx, Fx::Nav(NavOp::Dismiss(id)) if *id == ENTRY))
+    }
+
+    /// **BACK leaves; OK does not; every other key is EATEN, and the page turns.**
+    ///
+    /// The last clause is the one with a bug's worth of wiring behind it: while this was a
+    /// `Popover`, `PersonScreen::step` had to test `person_bio::is_open()` before its own key
+    /// ladder ran — and its POINTER arms had to as well, whose absence was the whole of the
+    /// 2026-09-06 report that "clicking jumps to the Actor pill" (a click fell past the open panel
+    /// onto the page, which focused a shelf tile and redrew the route). Those guards are deleted
+    /// with the popover: the container gives input to the topmost surface and the page is never
+    /// asked, so what stops the ladder is this screen answering `Handled::Yes`, and nothing else.
+    ///
+    /// The paging assertion is on the CURSOR rather than on an effect, because that is all UP and
+    /// DOWN do here: the scroll is a spring chasing the page, stepped on the tick.
+    #[test]
+    fn back_leaves_ok_does_not_and_every_other_key_is_the_panels_own() {
+        let (out, handled) = press(key(Key::Back));
+        assert_eq!(handled, Handled::Yes);
+        assert!(dismissed(&out), "BACK dismisses this entry");
+
+        let (out, handled) = press(key(Key::Ok));
+        assert_eq!(handled, Handled::Yes, "OK is swallowed rather than passed down");
+        assert!(!dismissed(&out), "…and OK is NOT an exit: the design gives these sheets BACK");
+
+        for k in [Key::Up, Key::Down, Key::Left, Key::Right] {
+            let (out, handled) = press(key(k));
+            assert_eq!(handled, Handled::Yes, "{k:?} must not reach the page under the sheet");
+            assert!(!dismissed(&out), "{k:?} is not an exit");
+        }
+    }
+
+    /// DOWN pages forward and UP pages back, and page 1 is the floor. **No clamp against the page
+    /// COUNT here** — that is the tick's, and knowing the count means measuring wrapped prose,
+    /// which from a key handler is a LINK error in the host suite rather than a failing test (see
+    /// `step_page`'s doc).
+    #[test]
+    fn up_and_down_move_the_page_and_one_is_the_floor() {
+        let mut panel = PersonBioScreen::new(ENTRY);
+        assert_eq!(panel.page, 1);
+        assert!(panel.step_page(SDLK_DOWN), "DOWN moved");
+        assert_eq!(panel.page, 2);
+        assert!(panel.step_page(SDLK_UP));
+        assert_eq!(panel.page, 1);
+        assert!(!panel.step_page(SDLK_UP), "…and page 1 is the floor, reported as no movement");
+        assert_eq!(panel.page, 1);
+    }
+
+    /// A click is SWALLOWED and moves nothing — the page under the sheet may not be reached by a
+    /// pointer any more than by a key.
+    #[test]
+    fn a_click_does_not_reach_the_page_under_the_sheet() {
+        let (out, handled) = press(InputKind::Click { x: 10.0, y: 10.0, hit: None });
+        assert_eq!(handled, Handled::Yes);
+        assert!(out.is_empty(), "a click on a read-only sheet does nothing at all");
+    }
+
 }

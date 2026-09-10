@@ -5,7 +5,7 @@
 //! package, either in this module or beside the factored helper it exercises.
 
 use super::*;
-use crate::ui::machine::{Chrome, Host, PressRead, ScreenId};
+use crate::ui::machine::{Chrome, Host, InputEvent, PressRead, ScreenId};
 use crate::ui::screen::ScreenArg;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -60,7 +60,7 @@ fn cx<'a>(measure: &'a crate::ui::fixture::FixtureMeasure, elem: Option<u32>) ->
 
 // Synchronizing the identity registry and querying/hash-writing a screen read shared stores
 // and legacy panels. Require the caller's guard; acquiring one here would deadlock install().
-fn bare(_guard: &std::sync::MutexGuard<'_, ()>, sid: ServerId, rk: &str) -> DetailScreen {
+fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
         entry: EntryId(7),
         sid,
@@ -123,7 +123,7 @@ fn detail(sid: ServerId, rk: &str) -> Detail {
     }
 }
 
-fn install(d: Detail) -> std::sync::MutexGuard<'static, ()> {
+fn install(d: Detail) -> crate::testlock::Serial {
     let guard = crate::testlock::serial();
     crate::metadata::set_current_for_test(Some(d));
     guard
@@ -131,6 +131,10 @@ fn install(d: Detail) -> std::sync::MutexGuard<'static, ()> {
 
 fn clear() {
     crate::metadata::set_current_for_test(None);
+    // The *Also available* store outlives a page, so a test that seeded it hands the next one an
+    // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
+    // test happens to reuse the pair of.
+    crate::metadata::alt_install(crate::plex::ServerId::UNSET, "", Vec::new());
 }
 
 fn step(
@@ -444,6 +448,61 @@ fn the_episode_text_highlight_fits_the_block_the_flow_already_reserves() {
     }
 }
 
+/// **The Languages column is the PAGE's answer about the PAGE's item, and no surface is involved.**
+///
+/// Red-first, and SIMULATED rather than historical: the old spelling was
+/// `ui::tracks_panel::is_available()`, a function of a module this commit deletes. Narrow
+/// `DetailScreen::tracks_available` to `crate::metadata::current().is_some_and(describes)` — which
+/// is exactly what that function did — and this fails on the first leg: a Detail page mounted on an
+/// item whose own fetch has not landed answers from whatever landed LAST, which after a step
+/// through a Person page is another film. The About footer would then draw a MORE affordance and
+/// publish a fourth pressable element for a column describing a file this page has never seen.
+///
+/// The panel is never presented in either leg, which is the other half of the claim: the
+/// availability question is settled entirely on the page's own state.
+#[test]
+fn tracks_availability_is_detail_state_not_surface_state() {
+    // A leaf with a file — the item some OTHER page loaded, still standing in the store.
+    let elsewhere = Detail {
+        sid: ServerId::UNSET,
+        rk: "elsewhere".into(),
+        part: "/library/parts/751/1745595530/file.mp4".into(),
+        ..Default::default()
+    };
+    let _guard = install(elsewhere);
+
+    // This page is standing on a different item and its own fetch has not landed.
+    let screen = DetailScreen::new(EntryId(7), ServerId::UNSET, "here".into());
+    assert!(
+        !screen.tracks_available(),
+        "the page has no item of its own yet, so there is no file it can describe"
+    );
+    assert!(
+        screen.locate(about::LANGUAGES_ELEM).is_none(),
+        "…and the About footer publishes no Languages element to press"
+    );
+
+    // The page's OWN item lands, and it is a show: its streams are episode 1's, so still no file.
+    crate::metadata::set_current_for_test(Some(detail(ServerId::UNSET, "here")));
+    assert!(!screen.tracks_available(), "a show has no file of its own");
+    assert!(screen.locate(about::LANGUAGES_ELEM).is_none());
+
+    // A leaf with a part, on this page's own key: now the column is pressable.
+    crate::metadata::set_current_for_test(Some(Detail {
+        sid: ServerId::UNSET,
+        rk: "here".into(),
+        part: "/library/parts/751/1745595530/file.mp4".into(),
+        ..Default::default()
+    }));
+    assert!(screen.tracks_available());
+    assert!(
+        matches!(screen.locate(about::LANGUAGES_ELEM), Some(Located::About(1))),
+        "the page's own leaf has a file, so the column is the About footer's second element"
+    );
+    clear();
+    apply_metadata(MetadataCmd::Clear);
+}
+
 #[test]
 fn opening_a_catalog_row_mounts_on_it_without_blocking_on_the_fetch() {
     let _guard = crate::testlock::serial();
@@ -732,13 +791,17 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
                     ..Default::default()
                 }));
-                crate::ui::alt_sources::reset(sid, "hero-hit");
-                if alt {
-                    crate::ui::alt_sources::install(sid, "hero-hit", vec![
-                        crate::ui::alt_sources::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
-                        crate::ui::alt_sources::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
-                    ]);
-                }
+                // The *Also available* control's gate is the STORE, addressed by the page's own
+                // pair — seeded here the way a landed cross-source resolve seeds it, never by
+                // opening the panel.
+                crate::metadata::alt_install(sid, "hero-hit", if alt {
+                    vec![
+                        crate::metadata::AltCopy { sid, rk: "hero-hit".into(), ..Default::default() },
+                        crate::metadata::AltCopy { sid: other, rk: "hero-copy".into(), ..Default::default() },
+                    ]
+                } else {
+                    Vec::new()
+                });
                 let mut screen = bare(&_guard, sid, "hero-hit");
                 let set = screen.hero_set();
                 assert_eq!((set.restart, set.alt), (restart, alt));
@@ -791,7 +854,6 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
     }
     assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
     assert_eq!(cases, 64);
-    crate::ui::alt_sources::reset(ServerId::UNSET, "");
     clear();
     crate::plex::reset_servers_for_test();
 }
@@ -872,24 +934,75 @@ fn a_long_synopsis_keeps_the_first_section_one_region_gap_below_the_buttons() {
     clear();
 }
 
+/// The *Also available* surface, mounted for the copy `(sid, rk)` names, with `copies` in the
+/// store — the seeding route a landed cross-source resolve takes, never `open_for`.
+fn alt_panel(
+    sid: ServerId,
+    rk: &str,
+    copies: Vec<crate::metadata::AltCopy>,
+) -> crate::screens::alt_sources::AltSourcesScreen {
+    crate::metadata::alt_install(sid, rk, copies);
+    crate::screens::alt_sources::AltSourcesScreen::new(
+        EntryId(9),
+        crate::screens::alt_sources::AltSourcesArg {
+            host: crate::ui::machine::InstanceId(1),
+            sid,
+            rk: rk.to_string(),
+            anchor: [300.0f32, 800.0, 300.0, 60.0].map(f32::to_bits),
+        },
+    )
+}
+
+fn key_down(sym: u32, key: crate::ui::machine::Key) -> ScreenEvent<TestHost> {
+    ScreenEvent::Input(crate::ui::machine::InputEvent {
+        at: Default::default(),
+        source: crate::ui::machine::Source::Script,
+        kind: crate::ui::machine::InputKind::Key {
+            key,
+            sym,
+            wcode: 0,
+            edge: crate::ui::machine::Edge::Down,
+            at_edge: false,
+        },
+    })
+}
+
+fn drive(
+    panel: &mut crate::screens::alt_sources::AltSourcesScreen,
+    event: &ScreenEvent<TestHost>,
+) -> Vec<crate::ui::machine::Stamped<TestHost>> {
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let mut effects = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    {
+        let mut sink = Effects::new(
+            &mut effects,
+            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(9)),
+            &mut present,
+        );
+        Machine::<TestHost>::step(panel, event, &context, &mut sink);
+    }
+    effects
+}
+
 #[test]
 fn ok_on_another_copy_asks_for_that_servers_page_and_leaves_this_one_alone() {
     let _guard = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
     let here = crate::plex::register_for_test("here", "127.0.0.1", 1, "t", "c1");
     let other = crate::plex::register_for_test("other", "127.0.0.2", 2, "t", "c2");
-    crate::ui::alt_sources::reset(here, "m1");
-    crate::ui::alt_sources::install(
+    let mut panel = alt_panel(
         here,
         "m1",
         vec![
-            crate::ui::alt_sources::AltCopy {
+            crate::metadata::AltCopy {
                 sid: here,
                 rk: "m1".into(),
                 library: "Movies".into(),
                 ..Default::default()
             },
-            crate::ui::alt_sources::AltCopy {
+            crate::metadata::AltCopy {
                 sid: other,
                 rk: "copy".into(),
                 library: "Shared Movies".into(),
@@ -897,17 +1010,41 @@ fn ok_on_another_copy_asks_for_that_servers_page_and_leaves_this_one_alone() {
             },
         ],
     );
-    crate::ui::alt_sources::open_for(here, "m1", Rect::new(300.0, 800.0, 300.0, 60.0));
-    crate::ui::alt_sources::move_focus(crate::ui::consts::SDLK_DOWN as i32);
-    assert_eq!(
-        crate::ui::alt_sources::on_ok(),
-        crate::ui::alt_sources::Action::Open {
-            sid: other,
-            rk: "copy".into(),
-        }
+    drive(
+        &mut panel,
+        &key_down(crate::ui::consts::SDLK_DOWN, crate::ui::machine::Key::Other),
     );
-    assert!(!crate::ui::alt_sources::is_open());
-    crate::ui::alt_sources::reset(ServerId::UNSET, "");
+    let effects = drive(
+        &mut panel,
+        &key_down(crate::ui::consts::SDLK_RETURN, crate::ui::machine::Key::Ok),
+    );
+    // the surface DISMISSES itself and NAMES the destination; the page performs the navigation
+    assert!(
+        effects.iter().any(|e| matches!(
+            &e.fx,
+            Fx::Nav(crate::ui::machine::NavOp::Dismiss(id)) if *id == EntryId(9)
+        )),
+        "the picker closes on the press"
+    );
+    let asked = effects.iter().find_map(|e| match &e.fx {
+        Fx::Deliver(
+            crate::ui::machine::MachineId::Instance(host),
+            crate::ui::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(arg))),
+        ) => Some((*host, arg.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        asked,
+        Some((
+            crate::ui::machine::InstanceId(1),
+            ContentArg::Detail {
+                sid: other,
+                rk: "copy".into()
+            }
+        )),
+        "the page it reports to is the one on its argument"
+    );
+    clear();
     crate::plex::reset_servers_for_test();
 }
 
@@ -916,24 +1053,35 @@ fn ok_on_the_copy_you_are_on_dismisses_and_navigates_nowhere() {
     let _guard = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
     let here = crate::plex::register_for_test("here", "127.0.0.1", 1, "t", "c1");
-    crate::ui::alt_sources::reset(here, "m1");
-    crate::ui::alt_sources::install(
+    let mut panel = alt_panel(
         here,
         "m1",
-        vec![crate::ui::alt_sources::AltCopy {
+        vec![crate::metadata::AltCopy {
             sid: here,
             rk: "m1".into(),
             library: "Movies".into(),
             ..Default::default()
         }],
     );
-    crate::ui::alt_sources::open_for(here, "m1", Rect::new(300.0, 800.0, 300.0, 60.0));
-    assert_eq!(
-        crate::ui::alt_sources::on_ok(),
-        crate::ui::alt_sources::Action::None
+    let effects = drive(
+        &mut panel,
+        &key_down(crate::ui::consts::SDLK_RETURN, crate::ui::machine::Key::Ok),
     );
-    assert!(!crate::ui::alt_sources::is_open());
-    crate::ui::alt_sources::reset(ServerId::UNSET, "");
+    assert!(
+        effects.iter().any(|e| matches!(
+            &e.fx,
+            Fx::Nav(crate::ui::machine::NavOp::Dismiss(id)) if *id == EntryId(9)
+        )),
+        "it still closes"
+    );
+    assert!(
+        !effects.iter().any(|e| matches!(
+            &e.fx,
+            Fx::Deliver(_, crate::ui::machine::Delivery::Screen(ScreenEvent::App(AppMsg::AltSourceOpen(_))))
+        )),
+        "…and asks for no page at all"
+    );
+    clear();
     crate::plex::reset_servers_for_test();
 }
 

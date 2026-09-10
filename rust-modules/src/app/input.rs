@@ -1,6 +1,6 @@
 //! The key ladders of the non-player routes and the pointer state: OK/BACK/direction handling per
 //! screen, the card activation, the onboarding and account arms, the press-and-hold path. Moved
-//! out of `app.rs` verbatim in phase 1a (a pure move; `pub(super)` widening only).
+//! out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
 //!
 //! **Phase 5b (2026-09-07) took the consent and settings arms out of this file.** The Settings
 //! family — Settings root, Legal, first-run/Settings consent, the Home-sources editor — is now
@@ -30,19 +30,19 @@ use super::*;
 /// type: the first D-pad press hides the cursor and switches modes, and motion only switches
 /// back once it has accumulated past the gate (see `remote_synth_ptr`, which has to defeat
 /// that gate to click at all).
-pub(super) struct Pointer {
-    pub(super) dpad_mode: bool,  // D-pad input owns focus; pointer motion below the gate is ignored
-    pub(super) cur_hidden: bool, // the LG cursor is hidden right now
-    pub(super) mot_accum: f32,   // motion accumulated since D-pad mode was entered, in logical px
-    pub(super) prev_mx: f32,     // last motion's position, for that accumulation (-1 = none yet)
-    pub(super) prev_my: f32,
-    pub(super) last_motion: u32, // last motion tick — playback hides an idle cursor off this
-    pub(super) drag: bool,       // a click is dragging the HUD scrub band
-    pub(super) last_wheel: u32,  // last wheel tick, for the wheel's own debounce
+pub(crate) struct Pointer {
+    pub(crate) dpad_mode: bool,  // D-pad input owns focus; pointer motion below the gate is ignored
+    pub(crate) cur_hidden: bool, // the LG cursor is hidden right now
+    pub(crate) mot_accum: f32,   // motion accumulated since D-pad mode was entered, in logical px
+    pub(crate) prev_mx: f32,     // last motion's position, for that accumulation (-1 = none yet)
+    pub(crate) prev_my: f32,
+    pub(crate) last_motion: u32, // last motion tick — playback hides an idle cursor off this
+    pub(crate) drag: bool,       // a click is dragging the HUD scrub band
+    pub(crate) last_wheel: u32,  // last wheel tick, for the wheel's own debounce
 }
 impl Pointer {
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
-    pub(super) const IDLE: Pointer = Pointer {
+    pub(crate) const IDLE: Pointer = Pointer {
         dpad_mode: false,
         cur_hidden: false,
         mot_accum: 0.0,
@@ -75,7 +75,7 @@ impl Pointer {
 /// button, a deck row, or an episode tile; on the Library it is a tile on that library's own
 /// `*.inprogress.*` shelf.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn activate_card(
+pub(crate) unsafe fn activate_card(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     mm: &crate::pms::PmsMovie,
@@ -154,14 +154,14 @@ pub(super) unsafe fn activate_card(
             nav,
         );
     } else if mm.kind == 3 {
-        // **An episode opens its OWN page**, which is the same page `item_menu`'s "Go to Episode"
+        // **An episode opens its OWN page**, which is the same page the card menu's "Go to Episode"
         // opens (`Action::GoToItem`) — `detail.rs` serves leaves. It used to open the SHOW's page
         // with the episode's season selected, on the reasoning that the item the tile advertised
         // should be in view; but a season tab is not the episode, and the tile the user pressed
         // named one episode. With a press on a discovery shelf now MEANING "show me this", the
         // most specific page that answers is the episode's.
         //
-        // The show is still one press away: it is `item_menu`'s second navigation row, and the
+        // The show is still one press away: it is the card menu's second navigation row, and the
         // episode page's own BACK returns to the shelf.
         nav_open(*route, to_detail(mm.sid, &rk), None, nav);
     } else {
@@ -169,25 +169,28 @@ pub(super) unsafe fn activate_card(
     }
 }
 
-/// Perform an item-menu [`Action`](crate::ui::item_menu::Action) — the ONE dispatch shared by
-/// the OK key and the pointer click, exactly like `home_activate` and `activate_ctrl_row`
-/// (the two paths for the profile menu had already drifted before those were unified).
-/// The menu itself only reports the choice; every route flip, server call and refresh is here.
+/// Perform an item-menu [`Action`](crate::screens::item_menu::Action) — the ONE dispatch, drained
+/// from `AppFx::ItemMenu` after every dispatcher frame (`content::content_requests`). The menu
+/// itself only reports the choice; every route flip, server call and refresh is here.
 ///
-/// `host` is the screen the popover was over, and it still changes what ONE action means — but the
-/// question is [`MenuHost::is_loaded_episode`], not "is this the detail page". Only
-/// [`MenuHost::Detail`], the episode filmstrip, holds an item that is a leaf of the loaded season:
-/// its Play from Start goes through that page's own episode path and its scrobble makes the page
-/// re-read itself. Every other host — Home, the Library grid, a Search shelf, a person's
-/// filmography, and the detail page's own RELATED shelf, which stands on that page while its tiles
-/// are OTHER items — is a card row, and they are all the same arm: the row rides in the menu
-/// (`item_menu::item`) instead of being looked up in the hub catalog, which only Home's cards are
-/// ever in.
-pub(super) unsafe fn apply_item_action(
+/// It was reached from TWO call sites, the OK key's ladder arm and the pointer click's — the exact
+/// shape `home_activate` and `activate_ctrl_row` were unified out of, and it had the same latent
+/// drift. The surface owns both edges now (`Activate::Immediate` over the container's stop
+/// registry), so there is one producer and one drain.
+///
+/// **`req` carries what `MenuHost` used to say, and it is two bits rather than six variants.**
+/// `loaded_episode` is the only one that changes what an action MEANS: only the detail page's
+/// episode filmstrip holds an item that is a leaf of the loaded season, so its Play from Start goes
+/// through that page's own episode path and its scrobble makes the page re-read itself. Every other
+/// entry point — Home, the Library grid, a Search shelf, a person's filmography, and the detail
+/// page's own RELATED shelf, which stands on that page while its tiles are OTHER items — is a card
+/// row, and they are all the same arm: the row rides on the request instead of being looked up in
+/// the hub catalog, which only Home's cards are ever in. `from_home` is the other, and it decides
+/// one thing ([`menu_leave`]).
+pub(crate) unsafe fn apply_item_action(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-    act: crate::ui::item_menu::Action,
-    host: MenuHost,
+    req: crate::screens::registry::ItemMenuReq,
     route: &mut Route,
     play_from: &mut Node,
     trail: &mut Trail,
@@ -195,36 +198,24 @@ pub(super) unsafe fn apply_item_action(
     bridge: &mut super::bridge::Bridge,
     nav: &mut Option<NavReq>,
 ) {
-    use crate::ui::item_menu::Action;
-    // WHICH SERVER this menu's rows are about — captured when the popover opened, from the
-    // row it was opened on (`item_menu::SID`). Every arm below turns an rk into a fetch, a
-    // scrobble or a play, and resolving one against `plex::current_server()` is the reported
-    // bug itself: on a merged Continue Watching shelf, Play from Start on a friend's episode
-    // found OUR row with the same key and played a different film under the friend's title.
-    let sid = crate::ui::item_menu::item_sid();
-    // Every arm below turns an rk into a blocking fetch or a play; an empty one would fetch
-    // nothing and land on a blank page. `build` already refuses to offer such a row — this
-    // is the belt to that braces, since the menu is data-driven off the hub rows.
-    let rk_of = |a: &Action| match a {
-        Action::GoToItem(rk)
-        | Action::MarkWatched(rk)
-        | Action::MarkUnwatched(rk)
-        | Action::PlayFromStart(rk)
-        | Action::RemoveFromDeck(rk) => rk.clone(),
-        Action::GoToShow(rk, _) => rk.clone(),
-        Action::None => String::new(),
-    };
-    if !matches!(act, Action::None) && rk_of(&act).is_empty() {
-        return;
-    }
+    use crate::screens::item_menu::Action;
+    let crate::screens::registry::ItemMenuReq { act, sid, item, loaded_episode, from_home } = req;
+    // `sid` is WHICH SERVER this menu's rows are about, captured when the panel was presented.
+    // Every arm below turns an rk into a fetch, a scrobble or a play, and resolving one against
+    // `plex::current_server()` is the reported bug itself: on a merged Continue Watching shelf,
+    // Play from Start on a friend's episode found OUR row with the same key and played a different
+    // film under the friend's title.
+    //
+    // The empty-rk guard the head of this function used to carry is the SURFACE's now
+    // (`ItemMenuScreen::activate`): a row with no target never becomes a request at all.
     match act {
         Action::None => {}
         Action::GoToItem(rk) => {
-            menu_leave(trail, host);
+            menu_leave(trail, from_home);
             nav_open(*route, to_detail(sid, &rk), None, nav);
         }
         Action::GoToShow(show_rk, season) => {
-            menu_leave(trail, host);
+            menu_leave(trail, from_home);
             // the season arm is BLOCKING (it indexes the loaded show's seasons) — the same
             // trade `home_activate` makes for a season tile, now paid at the fade floor
             // where the stall is behind a screen that is already at alpha 0
@@ -266,7 +257,7 @@ pub(super) unsafe fn apply_item_action(
             // asking for a refetch here would re-read the mounted show for a write that never
             // touched it. The tile's own tick is flipped by `metadata::set_watched_local` instead,
             // which walks the Related shelf for exactly this case.
-            let detail = host.is_loaded_episode().then(|| rk.clone());
+            let detail = loaded_episode.then(|| rk.clone());
             // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
@@ -299,7 +290,7 @@ pub(super) unsafe fn apply_item_action(
             // …the FILMSTRIP's host only. A Related tile is not among the loaded episodes, so this
             // lookup would miss and the press would do nothing — it takes the card-row arm below,
             // which plays the row the menu captured.
-            if host.is_loaded_episode() {
+            if loaded_episode {
                 if request_loaded_episode(ps, &rk) {
                     let resume = 0;
                     start_playback(
@@ -320,15 +311,15 @@ pub(super) unsafe fn apply_item_action(
             // HOME hub catalog (`pms::index_of_rk`), which is a lookup that only ever answers for a
             // card that is on a Home shelf — so on the Library grid, a Search result or a person's
             // filmography the arm found nothing and the press did nothing at all, silently. The
-            // popover is about ONE item and captured it at `open`; `item_menu::ITEM` is that
-            // capture, which is both the fix and the smaller claim (it also cannot be re-pointed by
-            // a hub refetch rebuilding the catalog under an open panel — the reason the old lookup
-            // deferred in the first place).
+            // panel is about ONE item and captured it when it was presented; `ItemMenuArg`'s row is
+            // that capture, which is both the fix and the smaller claim (it also cannot be
+            // re-pointed by a hub refetch rebuilding the catalog under an open panel — the reason
+            // the old lookup deferred in the first place).
             //
             // The `rk` guard is what keeps the two in step: every other arm acts on the action's
             // own key, so playing a row that does not carry it would be this dispatch disagreeing
             // with itself.
-            if let Some(mm) = crate::ui::item_menu::item().filter(|m| m.rk == rk) {
+            if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
                 play_item_now(
                     ps,
                     pa,
@@ -365,29 +356,31 @@ pub(super) unsafe fn apply_item_action(
 // `tools/keytable.py`, which drives the simulator through (screen x key) and diffs the focus
 // fingerprint each press produces against a recorded table.
 
-/// A key-up: the reliable release (this remote sends exactly one per press). Clears this sym out of
-/// both held-key slots, springs a deferred grid-card press back, and ends or debounces a scrub.
+/// A key-up: the reliable release (this remote sends exactly one per press). Retires this sym from
+/// the physically-down slot, springs a deferred grid-card press back, and ends or debounces a
+/// scrub.
+///
+/// It cleared a second slot — `HeldKey::sym`, the client-side hold-repeat's own — until phase 10
+/// deleted that timer with its last consumer (the item menu). What is left is `down_sym`, which is
+/// a fact about the PHYSICAL key rather than about whoever read it.
 ///
 /// `repause_at` is handed straight to [`commit_seek`] — see its doc for what it means.
 ///
 /// `scrubber` is the player's own scrub, borrowed out of the mounted `PlayerScreen` and `None` on
 /// every other route — the same statement the `Route::Player` guard below used to make from the
 /// loop's side while a second copy of the state sat on `App`.
-pub(super) unsafe fn on_key_up(
+pub(crate) unsafe fn on_key_up(
     sym: c_uint,
     isnav: bool,
     route: Route,
     ok_armed: bool,
-    held: &mut HeldKey,
+    down_sym: &mut u32,
     scrubber: Option<&mut Scrub>,
     repause_at: &mut i64,
     press: &mut crate::ui::press::Press,
 ) {
-    if sym == held.sym {
-        held.sym = 0;
-    }
-    if sym == held.down_sym {
-        held.down_sym = 0;
+    if sym == *down_sym {
+        *down_sym = 0;
     }
     if is_ok(sym) && ok_armed {
         // OK released over a grid card: start the spring-back; the deferred
@@ -418,35 +411,28 @@ pub(super) unsafe fn on_key_up(
     }
 }
 
-/// A hardware AUTO-REPEAT (held key). Over playback the ONLY thing it drives directly is the
-/// player's continuous accelerating scrub (a ramp, not a discrete move); every OTHER discrete focus
-/// list — home grid, detail, track menu, info, chapters — repeats through the unified client-side
-/// held-key timer in the loop, so hold-to-move feels identical everywhere and doesn't depend on the
-/// remote's hardware repeat delay.
+/// A hardware AUTO-REPEAT (held key). **The only thing left that it drives directly is the
+/// player's continuous accelerating scrub** — a ramp, not a discrete move, and the one thing that
+/// was never routed through the loop's client-side held-key timer.
 ///
-/// **The Settings family used to be the one exception here and no longer is** (phase 5b). Those
-/// three screens were `Popover`s layered over a `Route`, so their fresh-press arms never called
-/// `HeldKey::arm` the way an owned page's own directional press does, and a held key's hardware
-/// repeat had to be forwarded from here straight to their `on_updown`/`on_left_right` in the
-/// ladder's own priority order. They are owned screens on the dispatcher now: a repeat reaching
-/// them is an `InputEvent` carrying `Edge::Repeat`, handed over in the loop before this function is
-/// reached, and `RepeatGate` is applied there instead — to the DIRECTIONS only, for the reason the
-/// call site gives. So what is left here is the player's continuous scrub, which is a ramp rather
-/// than a discrete move and is the one thing that was never routed through the client-side timer.
-pub(super) unsafe fn on_auto_repeat(
+/// That timer is gone (phase 10). Every discrete focus list in the app — the home grid, detail,
+/// the Settings family, the player's four panels and, last of them, the item context menu — is an
+/// owned screen or a surface on the dispatcher now: a repeat reaching one is an `InputEvent`
+/// carrying `Edge::Repeat`, handed over in the loop before this function is reached, and the
+/// cadence is applied THERE, by the screen that receives it (`RepeatGate`, to the DIRECTIONS only,
+/// for the reason each call site gives). With no consumer left, the timer, `HeldKey::arm` and the
+/// `sym`/`since`/`last_rep`/`alive` liveness net it read went with it — which is also why this
+/// function no longer takes a `HeldKey` at all.
+pub(crate) unsafe fn on_auto_repeat(
     sym: c_uint,
     isnav: bool,
     route: Route,
     ok_armed: bool,
     hud_nav: HudNav,
-    held: &mut HeldKey,
     scrubber: Option<&mut Scrub>,
     press: &mut crate::ui::press::Press,
 ) {
     let n = clock::now();
-    if held.sym != 0 && sym == held.sym {
-        held.alive = n; // heartbeat: this held key's hardware repeats are still arriving
-    }
     if ok_armed && is_ok(sym) {
         press.note_alive(n); // OK held: keep the dropped-key-up net honest
     }
@@ -497,26 +483,26 @@ pub(super) unsafe fn on_auto_repeat(
 /// variant inert would break all of them. `is_bound` is the superset that answers the actual
 /// question.
 ///
-/// Three things stay UNCONDITIONAL and each for its own reason. `held.down_sym` is bookkeeping
+/// Three things stay UNCONDITIONAL and each for its own reason. `down_sym` is bookkeeping
 /// about the physical key, not a side effect: without it a held unsupported key's auto-repeats
-/// would each arrive as a fresh press (`state & 0x100 != 0 && sym == held.down_sym` in the
+/// would each arrive as a fresh press (`state & 0x100 != 0 && sym == app.down_sym` in the
 /// caller). The D-pad cursor gate is already narrower than `is_bound` — it takes the four plain
 /// direction syms and nothing else — so it needs no second guard. And the caller's `last_input`
 /// stamp is a local read only by arms that run in the same iteration, so an unbound press cannot
 /// carry it anywhere.
-pub(super) unsafe fn begin_fresh_press(
+pub(crate) unsafe fn begin_fresh_press(
     ps: &crate::route::PlaybackSession,
     key: Key,
     sym: c_uint,
     wcode: c_uint,
     now: u32,
-    held: &mut HeldKey,
+    down_sym: &mut u32,
     hud: Option<&mut HudState>,
     ptr: &mut Pointer,
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
 ) {
-    held.down_sym = sym;
+    *down_sym = sym;
     note_global_press(ps, sym, wcode, now, hud, ok_armed, press);
     if matches!(
         key,
@@ -539,7 +525,7 @@ pub(super) unsafe fn begin_fresh_press(
 /// (the boundary the testing section of `docs/agent-reference.md` describes — the crate links today only
 /// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
 /// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
-pub(super) fn note_global_press(
+pub(crate) fn note_global_press(
     ps: &crate::route::PlaybackSession,
     sym: c_uint,
     wcode: c_uint,
@@ -647,7 +633,7 @@ mod unsupported_key_tests {
 /// still running and a restart here would DISCARD it — a fresh code over a poll the user's phone may
 /// already have answered. Retired 2026-09-04 on Codex's integrated review.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum AfterCancel {
+pub(crate) enum AfterCancel {
     /// There was somewhere to go inside the app; the main loop's phase→route follower takes it
     /// from here. Nothing to ask the platform for.
     BackedOut,
@@ -658,7 +644,7 @@ pub(super) enum AfterCancel {
 /// The whole of the rule, pure so the pairing with the log line is gradeable: a `cancel` that
 /// backed out is not a root press after all; one that refused leaves everything as it was and hands
 /// the screen to the television.
-pub(super) fn after_cancel(backed_out: bool) -> AfterCancel {
+pub(crate) fn after_cancel(backed_out: bool) -> AfterCancel {
     if backed_out {
         AfterCancel::BackedOut
     } else {
@@ -697,7 +683,7 @@ pub(super) fn after_cancel(backed_out: bool) -> AfterCancel {
 ///
 /// `route` is read only for the one word the log line prints; the decision itself does not depend
 /// on which of the two screens asked; that is `LoopReq::AuthBackAtRoot`'s whole point.
-pub(super) fn login_or_profiles_root_back(route: Route) {
+pub(crate) fn login_or_profiles_root_back(route: Route) {
     if crate::webos::take_root_press() {
         let backed_out = crate::auth::cancel();
         let phase = crate::auth::phase();
@@ -735,7 +721,7 @@ pub(super) fn login_or_profiles_root_back(route: Route) {
 /// **No `ui::profiles::enter()`** (phase 6, mirroring first-run Favourites' own removal in 5b):
 /// the picker is an OWNED screen now, and naming the route is the whole of mounting a fresh one —
 /// `AppMounter::mount` constructs a new `ProfilesScreen` the moment the tree follows this route.
-pub(super) fn enter_profiles_from_onboard() -> Route {
+pub(crate) fn enter_profiles_from_onboard() -> Route {
     crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
     Route::Profiles
 }
@@ -764,14 +750,14 @@ pub(super) fn enter_profiles_from_onboard() -> Route {
 /// Phase 5b: the screen is the tree's, so this presents rather than opens. `bridge::open_*` is
 /// itself idempotent while the surface is up (any phase), which is what lets the three per-frame
 /// routing call sites go on simply asking.
-pub(super) fn maybe_ask_consent(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn maybe_ask_consent(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     let c = crate::telemetry::consent::current().unwrap_or_default();
     // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
     // automated boot. This screen is suppressed BY the presence of any trigger, so without an
     // override it cannot be reached headlessly at all. Selecting Product changes display state
     // only; no answer is stored by a harness boot — the stage byte is where the surface STARTS,
     // and reaching stage 1 that way skips the crash question rather than answering it.
-    if let Some(target) = crate::dev::read("consent") {
+    if let Some(target) = crate::dev::scenarios::consent_override() {
         // `screens::consent`'s `STAGE_PRODUCT`, spelled here because it is that module's private
         // encoding of `SettingsPage::ConsentStage` and this is its only outside caller. The
         // companion bit (`ERRORS_SHARED`, 0x10) is deliberately NOT set: a dev boot has answered
@@ -800,7 +786,7 @@ pub(super) fn maybe_ask_consent(pages: &mut crate::ui::dispatch::Dispatcher<supe
 /// Done/Cancel is one `NavOp::Pop` inside the surface and the host route never moved — so there is
 /// no parked route to restore and no second exit to tell apart from this one. The screen's two
 /// exits are therefore two different `LoopReq`s rather than one `Action` with four variants.
-pub(super) fn enter_home_from_onboard(trail: &mut Trail) -> Route {
+pub(crate) fn enter_home_from_onboard(trail: &mut Trail) -> Route {
     trail.reset();
     // The consent pair is NOT asked here any more: it is the sign-in's decision, shared by every
     // profile on the account, and is put before the profile picker, which is upstream of this whole step. See `maybe_ask_consent`.
@@ -811,69 +797,14 @@ pub(super) fn enter_home_from_onboard(trail: &mut Trail) -> Route {
     Route::Home
 }
 
-/// The profile menu is modal — rows nav, OK commits, BACK closes back to `over`: the page the chip
-/// was pressed on, which is any of the three that wear the shared top bar.
-pub(super) fn key_account(
-    over: BarHost,
-    sym: c_uint,
-    wcode: c_uint,
-    route: &mut Route,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
-) {
-    if is_ok(sym) {
-        // No `enter()` on any of these three (phase 6): naming the route is the whole of
-        // mounting the owned screen it lands on — see `enter_profiles_from_onboard`'s doc.
-        match crate::ui::account_menu::on_ok() {
-            crate::ui::account_menu::Action::ChangeProfile => {
-                crate::auth::start_switch(crate::auth::Picker::ChangeProfile);
-                *route = Route::Profiles;
-            }
-            crate::ui::account_menu::Action::SignIn => {
-                crate::auth::start_login();
-                *route = Route::Login;
-            }
-            crate::ui::account_menu::Action::SignOut => {
-                crate::auth::sign_out();
-                *route = Route::Login;
-            }
-            // PRESENTS the Settings surface over the same page, so the ROUTE does not move — and
-            // has not moved since phase 5b for a second reason as well: its Privacy, Legal and
-            // Favourite-libraries children are pages of the SURFACE's own stack, where they used
-            // to be popovers taking the key ladder (and, in the Home editor's case, a whole route
-            // borrowed from the app). Reachable signed OUT as well: a person who cannot sign in
-            // has still received a copy of this software, and LG requires the privacy notice to be
-            // readable in the app rather than only on the store listing.
-            crate::ui::account_menu::Action::Settings => {
-                super::bridge::open_settings(pages);
-                *route = over.route();
-            }
-            // Lab builds only, and it changes no route: the tester stays where they were, and the
-            // toast says what happened. Returning to the page the popover stood on is the same
-            // dismissal `Action::None` does.
-            crate::ui::account_menu::Action::SendDiagnostics => {
-                crate::lab::request_upload("menu");
-                *route = over.route();
-            }
-            // …and a dismissal returns to the PAGE the popover is standing on, not to Home. It
-            // said Home outright while Home was the only screen whose chip could be pressed.
-            crate::ui::account_menu::Action::None => *route = over.route(),
-        }
-    } else if is_back(sym, wcode) {
-        crate::ui::account_menu::close();
-        *route = over.route();
-    } else {
-        crate::ui::account_menu::move_focus(sym as c_int);
-    }
-}
-
 /// What a confirmed **Delete all local data** does next, given how many files could not be
 /// unlinked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct DeleteOutcome {
+pub(crate) struct DeleteOutcome {
     /// Leave for the sign-in screen.
-    pub(super) to_sign_in: bool,
+    pub(crate) to_sign_in: bool,
     /// Write the leftovers to the event log.
-    pub(super) report_leftovers: bool,
+    pub(crate) report_leftovers: bool,
 }
 
 /// **Two independent facts, and conflating them was the bug.**
@@ -888,7 +819,7 @@ pub(super) struct DeleteOutcome {
 ///
 /// It is a function rather than a branch because the branch lives inside the SDL key loop, where
 /// no host test can reach it.
-pub(super) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
+pub(crate) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
     DeleteOutcome {
         to_sign_in: true,
         report_leftovers: leftovers > 0,
@@ -899,7 +830,7 @@ pub(super) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
 ///
 /// Returns the paths it could NOT unlink — a report, never a verdict. The irreversible half
 /// (`auth::erase_local_state`) runs whatever the file sweep managed; see [`delete_outcome`].
-pub(super) fn delete_all_local_data() -> Vec<String> {
+pub(crate) fn delete_all_local_data() -> Vec<String> {
     let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -947,40 +878,13 @@ pub(super) fn delete_all_local_data() -> Vec<String> {
     failures
 }
 
-/// The press-and-hold item menu is modal too — rows nav, OK commits, BACK closes back to the shelf
-/// (or filmstrip) the card is still sitting on. `over` is the screen it is a popover on.
-pub(super) unsafe fn key_item_menu(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
-    over: MenuHost,
-    sym: c_uint,
-    wcode: c_uint,
-    now: u32,
-    route: &mut Route,
-    play_from: &mut Node,
-    trail: &mut Trail,
-    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    bridge: &mut super::bridge::Bridge,
-    nav: &mut Option<NavReq>,
-    held: &mut HeldKey,
-) {
-    if is_ok(sym) {
-        let act = crate::ui::item_menu::on_ok();
-        *route = over.route(); // the dispatch overrides this when it navigates/plays
-        apply_item_action(ps, pa, act, over, route, play_from, trail, pages, bridge, nav);
-        held.sym = 0; // an async route flip must not repeat a held key into the next screen
-    } else if is_back(sym, wcode) {
-        crate::ui::item_menu::close();
-        *route = over.route();
-    } else if sym == SDLK_UP || sym == SDLK_DOWN {
-        // move once on the fresh press; holding repeats via the shared
-        // client-side timer. Armed ONLY for the two keys the menu acts on, so a
-        // held key it ignores can't sit in `HeldKey::sym` driving a per-frame
-        // no-op.
-        crate::ui::item_menu::move_focus(sym as c_int);
-        held.arm(sym, now);
-    }
-}
+// (`key_item_menu` stood here — the item menu's own arm of the loop's key ladder: OK committed
+// and flipped `app.route` back to the host, BACK closed, UP/DOWN moved the cursor and armed the
+// client-side hold-repeat timer. The menu is a `ModalStack` surface since phase 10, so every one
+// of those is the container's: the dispatcher hands it the key, `ItemMenuScreen::step` answers
+// BACK with `NavOp::Dismiss` and paces the repeats itself (`RepeatGate`/`PANEL_REPEAT_MS`), the
+// focus engine walks the rows, and `Activate::Immediate` commits. It was the LAST caller of
+// `HeldKey::arm`, which is why `App::held_key` went with it.)
 
 // `key_move_focus` and `top_focus` (the D-pad-direction and shared-top-bar-focus dispatch for
 // Home/Library/Search) are retired: since the phase 8 Search cutover, every non-player route
@@ -997,14 +901,19 @@ pub(super) unsafe fn key_item_menu(
 /// the reset was a no-op anyway — arriving at Home is itself the trail's reset, so the stack there
 /// is already just the root.)
 ///
-/// The popover therefore records the page it OPENED ON ([`BarHost`]), which is what keeps that
-/// sentence true: `Route::Account` used to be a unit variant meaning "Home, plus the panel", so a
-/// press on the Library's chip swapped the page underneath to Home on the press frame and dropped
-/// the user there when they dismissed it. A route with no chip on it opens nothing.
-pub(super) fn chip_activate(route: &mut Route) {
-    let Some(over) = BarHost::of(*route) else {
+/// **The popover is a SURFACE since phase 10, which is what finally makes that sentence
+/// structural.** `Route::Account` was a unit variant meaning "Home, plus the panel", so a press on
+/// the Library's chip swapped the page underneath to Home on the press frame and dropped the user
+/// there when they dismissed it; `Route::Account { over: BarHost }` fixed that by NAMING the host,
+/// and a `ModalStack` surface needs no name at all — the page it was presented over stays the top
+/// page and is never replaced. A route with no chip on it opens nothing.
+pub(crate) fn chip_activate(
+    route: Route,
+    pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+) {
+    if !wears_the_chip(route) {
         return;
-    };
+    }
     // Search USED to need an explicit keyboard-dismissal nudge here (`BarHost::Search =>` the
     // retired legacy screen's own `end_editing()`) for the one path that could still reach this
     // function with the television's own keyboard up — a pointer click on the chip from inside
@@ -1016,16 +925,24 @@ pub(super) fn chip_activate(route: &mut Route) {
     // `end_editing` here a second time on an instance that already dismissed it would be the
     // stale-request problem `an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard`
     // guards against.
-    crate::ui::account_menu::open();
-    *route = Route::Account { over };
+    super::bridge::open_account_menu(pages);
+}
+
+/// The bar-wearing pages, i.e. the ones with a profile chip on them at all — `BarHost::of`'s
+/// successor, and the whole of what that type was still doing once the menu became a surface.
+/// DERIVED from [`route_wears_tab_bar`] rather than listing Home/Library/Search a second time: the
+/// chip is a control ON the shared bar, so "is there a chip to press" is "does this page wear the
+/// bar", and the two cannot drift.
+pub(crate) fn wears_the_chip(route: Route) -> bool {
+    route_wears_tab_bar(route)
 }
 
 /// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer
 /// twin of [`chip_activate`]'s key path, and the route test is the whole of what makes it safe:
 /// `widgets::CHIP_FRAME` is a constant (the chip never moves), so nothing else bounds it to the
 /// screens that actually draw one.
-pub(super) fn chip_clicked(route: Route, ev: &[u8]) -> bool {
-    if BarHost::of(route).is_none() {
+pub(crate) fn chip_clicked(route: Route, ev: &[u8]) -> bool {
+    if !wears_the_chip(route) {
         return false;
     }
     let (mx, my) = ptr_xy(ev);
@@ -1033,7 +950,7 @@ pub(super) fn chip_clicked(route: Route, ev: &[u8]) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn key_ok(
+pub(crate) unsafe fn key_ok(
     ps: &crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     now: u32,
@@ -1115,7 +1032,7 @@ pub(super) unsafe fn key_ok(
 /// is an ordinary BACK on the NEW screen — the press is never dropped, only ever spent on exactly
 /// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is hand
 /// the screen back to the television — see [`back_at_root`].)
-pub(super) fn key_back(
+pub(crate) fn key_back(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     route: &mut Route,
@@ -1171,7 +1088,7 @@ pub(super) fn key_back(
 /// SAM's `closeByAppId` exactly as `make kill`, `tests/run.py` and `tools/tv-session.sh` already do.
 /// That is why the old `/tmp/plxnative-noexitconfirm` bypass went with the alert: it existed to let
 /// a headless caller quit by pressing BACK, and BACK is no longer a quit for anybody.
-pub(super) fn back_at_root() {
+pub(crate) fn back_at_root() {
     if crate::webos::take_root_press() {
         crate::webos::go_home();
     }
@@ -1188,7 +1105,7 @@ pub(super) fn back_at_root() {
 ///
 /// The SURFACE is dismissed by the caller, not here: the screen under it is going, and there is no
 /// host left for a fade to run over (what `settings::hide()` used to say).
-pub(super) fn delete_all_local_data_and_sign_out(route: &mut Route, trail: &mut crate::ui::trail::Trail) {
+pub(crate) fn delete_all_local_data_and_sign_out(route: &mut Route, trail: &mut crate::ui::trail::Trail) {
     let leftovers = delete_all_local_data();
     let outcome = delete_outcome(leftovers.len());
     if outcome.report_leftovers {

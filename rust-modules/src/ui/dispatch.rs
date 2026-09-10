@@ -358,9 +358,10 @@ where
     }
 
     /// Does the dispatcher OWN the input right now (phase 5b, the coexistence seam): the input
-    /// owner is a surface, or a page whose focus comes from the engine — i.e. anything that is
-    /// not a `LegacyPage`. The legacy loop hands its keys and pointer to `frame_with` while this
-    /// answers `true` and keeps them for its own ladders otherwise.
+    /// owner is a surface, or a page whose focus comes from the engine — i.e. anything but a
+    /// screen that still declares `FocusSource::Legacy` (the player, until phase 12). The legacy
+    /// loop hands its keys and pointer to `frame_with` while this answers `true` and keeps them
+    /// for its own ladders otherwise.
     pub fn owns_input(&self) -> bool {
         self.engine_page()
     }
@@ -996,6 +997,38 @@ where
         rig.prepare(budget, present);
     }
 
+    /// **Resolve every visible surface's REFRESHING backdrop, before the host page draws.**
+    ///
+    /// A second, narrower prepare, called from the loop's glass-owner block rather than from the
+    /// dispatcher's own frame, because the slot is load-bearing at both ends and neither boundary
+    /// exists inside `prepare_pass`: `popover::host::begin_frame` above it latches the own-damage
+    /// ledger this fold reads, and `gfx::blur_direct_region()` is sampled below it, so an
+    /// invalidation raised here reaches this frame's own blur source instead of the next one's.
+    ///
+    /// The TOP PAGE and every visible surface are asked, in that order. What the container
+    /// contributes is the half a screen cannot know: whether its own appear spring has SETTLED,
+    /// which it owns (`Surface::motion`) — a page, having no such spring, is asked with `true`.
+    /// The decision itself stays one function, `popover::glass_refresh`, in the screen that owns
+    /// the glass policy.
+    ///
+    /// It replaces a call that NAMED one screen (`ui::person_bio::prepare_present`, routed on
+    /// `Route::Person` for a while, then self-gated) — the shape §14 is about: a rule stated in one
+    /// module and enforced by a route test three modules away. A screen with a cached ground, or
+    /// none, inherits the no-op.
+    pub fn prepare_present(&mut self, underlay_changed: bool) {
+        if let Some(inst) = self.nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
+            inst.screen.prepare_present(underlay_changed, true);
+        }
+        for s in &mut self.nav.modals.surfaces {
+            if s.phase == crate::ui::containers::modal::Phase::Hidden {
+                continue;
+            }
+            let Some(inst) = s.entry.inst.as_mut() else { continue };
+            let settled = s.motion.settled();
+            inst.screen.prepare_present(underlay_changed, settled);
+        }
+    }
+
     /// Step 10 on a frame the CALLER presents (the legacy loop's own gate, phase 5b): the
     /// prepare pass first if this frame's steps did not run it, then the draw. The surfaces
     /// alone or the whole tree — `pages` says whether the page pass is drawn here too (the
@@ -1076,6 +1109,17 @@ where
                     }));
                 }
             }
+            // **The surfaces' modal dim, last thing in the page pass** (§6.2, §8.3). It is here
+            // and not with each panel because the dim has to be on the framebuffer BEFORE the
+            // host snapshot is taken — see `ModalStack::draw_scrims`, which owns the rule and the
+            // one style it does not apply to. `surface_scope` is the freeze lift the paint needs:
+            // a page served from its cached quad refuses every fill, and this is the frame's first
+            // `popover::host::live()`, which is also what defines the snapshot as the UNDIMMED
+            // page.
+            {
+                let _scope = rig.surface_scope();
+                nav.modals.draw_scrims(navigation.page_alpha);
+            }
         }
         if host_render == HostRender::Cached {
             set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
@@ -1084,6 +1128,11 @@ where
         for s in &mut nav.modals.surfaces {
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
+                // §4.4: a spring stepped while a SURFACE draws is the panel's, and an
+                // `idle::invalidate` it raises is the panel's damage — the same attribution the
+                // step above gets. The page pass runs in NO scope, so the page's own motion and
+                // damage stay the page's and `popover::host_refresh` can still see them.
+                let _own = crate::ui::popover::own_motion();
                 let Split { views, measure, .. } = rig.split();
                 let mut surface_cx = parts.cx::<H>(views, measure);
                 surface_cx.owner = InputOwner::Entry(s.entry.id);
@@ -1375,6 +1424,11 @@ where
                 } else {
                     super::present::Scope::Page
                 });
+                // …and the `ui::idle` half of the same attribution, which is the one a screen's
+                // OWN springs reach: an owned screen animates through `gfx::spring`, which reports
+                // to `ui::idle` and not to this gate (the Library notes no `Motion` at all). Held
+                // for the body — a guard, so the early return below cannot leak the scope.
+                let _own = is_surface.then(crate::ui::popover::own_motion);
                 let Some(inst) = nav.instance_mut(id) else {
                     present.set_scope(super::present::Scope::Page);
                     report.dropped_deliveries += 1;

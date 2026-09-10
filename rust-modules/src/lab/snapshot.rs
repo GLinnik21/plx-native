@@ -9,7 +9,7 @@
 //!
 //! The envelope is assembled from [`crate::player::Diag`], [`crate::webos`] and
 //! [`crate::devcaps`], whose fields are numbers, bools, enums and short platform strings.
-//! `ui::stats`'s module doc states the rule those types already live under and the reasoning
+//! `app::diagnostics`'s module doc states the rule those types already live under and the reasoning
 //! behind each clause; it applies here unchanged and for a stronger reason, since an upload
 //! crosses the public internet rather than a room:
 //!
@@ -189,10 +189,16 @@ fn features() -> Vec<&'static str> {
     v
 }
 
-/// Build the whole body. **Main thread**: `player::diag()` is main-thread by contract, and the
+/// Build the whole body. **Main thread**: `player::diag` is main-thread by contract, and the
 /// ring clone is a memcpy of at most [`crate::diag::ring::MAX_BYTES`].
-pub(crate) fn build(seq: u32, reason: &str, session: &str, route: &'static str) -> String {
-    let d = crate::player::diag();
+pub(crate) fn build(
+    seq: u32,
+    reason: &str,
+    session: &str,
+    route: &'static str,
+    ps: &crate::route::PlaybackSession,
+) -> String {
+    let d = crate::player::diag(ps);
     let (recs, dropped) = crate::diag::ring::take();
     body(seq, reason, session, route, &d, recs, dropped)
 }
@@ -299,7 +305,8 @@ mod tests {
     /// carries the twin proving the LOCAL exit keeps the same line.
     ///
     /// **The REMOTE exit only.** Gated with its function: the local exit is contractually forbidden
-    /// from dropping, and the test directly below this one is the assertion that it does not.
+    /// from dropping, and the test directly below this one is the assertion that it does not. The
+    /// exact shape the log's own backstop was written for still cannot survive this one.
     #[test]
     fn an_unanticipated_credential_shape_is_refused_outright() {
         assert!(matches!(
@@ -330,9 +337,6 @@ mod tests {
         assert_eq!(env["refused"], 1);
         assert_eq!(env["records"], 1);
     }
-
-    /// The exact shape the log's own backstop was written for still cannot survive this one.
-    #[test]
 
     /// The document's SHAPE: line 1 is the envelope, one line per kept record, and the counts in
     /// the envelope describe the lines that follow it.

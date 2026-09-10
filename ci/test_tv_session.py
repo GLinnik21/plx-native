@@ -470,5 +470,81 @@ class GuestIdentity(unittest.TestCase):
         self.assertIn("cannot be combined", out)
 
 
+class HeartbeatWords(unittest.TestCase):
+    """`assert_route` reads the heartbeat's TWO words, not just the page's.
+
+    UI-restructure phase 10 put the account sheet and the press-and-hold card menu on the
+    shared `ModalStack`, so each prints the HOST page as `route=` and its own `Screen::name`
+    as ` overlay=`: `route=home overlay=account`, never the retired `route=account`. This
+    script kept naming the retired words, and because the assertion is `|| true` at its call
+    site the result was not a refusal but something worse -- every `up --screen account`
+    printed a red `wanted route=account, got route=home` over a boot that had in fact
+    landed exactly where it was asked to.
+
+    `tvq` is the one thing here that would touch a television, and a sourced Bash function
+    definition is global, so stubbing it makes the whole comparison host-testable.
+    """
+
+    def _assert_route(self, heartbeat, args):
+        # `tvq` runs its argument as a shell command ON THE TELEVISION, against $EVENTLOG.
+        # The stub runs that SAME command string locally against a real file, so the grep
+        # under test is the script's own -- a stub that just echoed the heartbeat back would
+        # bypass the very expression this is about and pass for the wrong reason.
+        with tempfile.TemporaryDirectory() as directory:
+            log = pathlib.Path(directory) / "plxnative-events.log"
+            log.write_text(f"loop=60 {heartbeat} fps=0\n", encoding="utf-8")
+            body = textwrap.dedent(
+                f"""\
+                EVENTLOG={log}
+                tvq() {{ sh -c "$1"; }}
+                assert_route {args}
+                echo "RC:$?"
+                """
+            )
+            harness = 'source "$1" selftest\n' + body
+            result = subprocess.run(
+                ["bash", "-c", harness, "heartbeat-words", str(SCRIPT)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                check=False, timeout=10,
+            )
+            return result.stdout
+
+    def test_account_sheet_is_accepted_as_host_page_plus_overlay(self):
+        out = self._assert_route("route=home overlay=account", "home account")
+        self.assertIn("RC:0", out)
+
+    def test_card_menu_is_accepted_as_host_page_plus_overlay(self):
+        out = self._assert_route("route=home overlay=itemmenu", "home itemmenu")
+        self.assertIn("RC:0", out)
+
+    def test_a_bare_host_page_is_not_the_sheet_that_was_asked_for(self):
+        # The surface never opened: the page word alone must NOT satisfy a caller who named
+        # an overlay, or this assertion stops being able to see a refused trigger at all.
+        out = self._assert_route("route=home", "home account")
+        self.assertIn("RC:1", out)
+
+    def test_the_wrong_overlay_is_refused(self):
+        out = self._assert_route("route=home overlay=itemmenu", "home account")
+        self.assertIn("RC:1", out)
+
+    def test_overlay_none_reads_as_no_overlay(self):
+        # The player prints ` overlay=none` when nothing is up; a caller naming no overlay
+        # must still match it, or `--screen player=` starts failing its own route check.
+        out = self._assert_route("route=player overlay=none", "player")
+        self.assertIn("RC:0", out)
+
+    def test_a_page_with_no_overlay_word_still_matches(self):
+        out = self._assert_route("route=home", "home")
+        self.assertIn("RC:0", out)
+
+    def test_a_caller_naming_only_a_page_tolerates_a_surface_over_it(self):
+        # `--screen detail=<rk>` with a panel trigger armed beside it (plxnative-tracks,
+        # plxnative-about) lands on the detail page with that panel up. The caller asked for
+        # the page and got it; comparing an overlay it never named would turn the ordinary way
+        # of reaching a page-owned panel into a permanent red line.
+        out = self._assert_route("route=detail overlay=tracks", "detail")
+        self.assertIn("RC:0", out)
+
+
 if __name__ == "__main__":
     unittest.main()

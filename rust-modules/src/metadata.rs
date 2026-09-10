@@ -126,7 +126,7 @@ pub(crate) struct Dovi {
     pub(crate) el_present: bool,
     // ---- DESCRIPTIVE ONLY, below. The four fields above answer the PLAYBACK question this struct
     // exists for ("is the base layer a correct picture"); these three are read by
-    // `ui::tracks_panel` and by nothing else. They live here rather than on `Detail` so there is
+    // `screens::tracks_panel` and by nothing else. They live here rather than on `Detail` so there is
     // one home for "what the server said about Dolby Vision" — but do not reach for them in a
     // decision without the live sweep `plex::Stream`'s DOVI comment records.
     /// `DOVILevel` — the DV level (a bitrate/resolution tier); 0 = the server did not say.
@@ -448,7 +448,7 @@ pub(crate) struct Stream {
     pub(crate) channels: i64,
     pub(crate) layout: String, // audioChannelLayout, e.g. "5.1(side)"
     /// Per-STREAM bitrate in kbps (0 = the server did not say) — NOT the file's. It is what tells
-    /// seven same-language AC3 tracks apart in `ui::tracks_panel`, where language and codec alone
+    /// seven same-language AC3 tracks apart in `screens::tracks_panel`, where language and codec alone
     /// cannot.
     pub(crate) bitrate: i64,
     /// The codec profile, lower-case as PMS sends it. **On an audio track this is where Atmos
@@ -947,7 +947,7 @@ pub(crate) struct Detail {
     /// The marketing one-liner (`tagline`) — *"Everyone deserves the chance to fly."*
     ///
     /// **Atmosphere, never content**, which is why it is drawn only in the About alert
-    /// ([`crate::ui::about_panel`]) under the synopsis and nowhere on the page itself: it says
+    /// ([`crate::screens::about_panel`]) under the synopsis and nowhere on the page itself: it says
     /// nothing a viewer needs in order to decide, so it earns a line only where there is room to
     /// read the whole record. Empty for most items and for every episode — absence is the ordinary
     /// case, and the panel drops the line AND its gap rather than reserving a hole.
@@ -974,7 +974,7 @@ pub(crate) struct Detail {
     pub(crate) width: i64,               // stored frame size, not the resolution class (1918x802
     pub(crate) height: i64,              // is a 1080p scope movie) — badge off video_resolution
     pub(crate) bitrate: i64,             // kbps, whole-stream
-    // ---- the rest of the primary version's technical record, added for `ui::tracks_panel` — and
+    // ---- the rest of the primary version's technical record, added for `screens::tracks_panel` — and
     // since 2026-08-23 ON THE ROUTING PATH too: `route::source_kbps` takes `video`'s own bitrate
     // from here to judge a source against the user's quality ceiling, preferring it over the
     // whole-file `bitrate` above precisely so a rung does not bite one AC-3 track early. So this
@@ -1046,6 +1046,24 @@ pub(crate) struct Detail {
 }
 
 impl Detail {
+    /// **Does this item have a FILE of its own?** — the rule behind the *Track information* sheet
+    /// (`screens::tracks_panel`) and the Languages column's press gate on the detail page.
+    ///
+    /// It is `part` rather than `is_show` on purpose. A SHOW container carries no `Media` of its
+    /// own — `parse_streams` backfills its audio/subtitle lists from episode 1 for the About footer
+    /// — so on a show page a track sheet would print episode 1's path, size and bitrate under the
+    /// show's name. That is not a truncation of the truth, it is a different file, and `part` is
+    /// exactly the field that is empty when the item has no file of its own ("Media[0].Part[0].key
+    /// for a leaf (movie/episode); empty for a show").
+    ///
+    /// The rule lives on the DATA so both the page and the sheet read one answer: phase 10's
+    /// `sibling` gate forbids a screen naming another screen, and the predicate used to be the
+    /// panel's `is_available()`, a module function reading `metadata::current()` unfiltered, which
+    /// Detail's seven layout reads asked before the page's own item had landed.
+    pub(crate) fn has_own_file(&self) -> bool {
+        !self.part.is_empty()
+    }
+
     /// **WHOSE copy this is** — the credit for the server this item came from, or empty when there
     /// is nobody to credit. `plex::servers::owner_credit` decides it, `ServerFacts::handle` holds
     /// the answer, and `ui::fmt::shared_by` turns it into the words; this is only where the detail
@@ -1204,6 +1222,11 @@ pub(crate) fn set_watched_local(sid: crate::plex::ServerId, rk: &str, on: bool) 
 pub(crate) fn clear() {
     supersede_detail();
     unsafe { *addr_of_mut!(CURRENT) = None }
+    // The *Also available* copies describe the item that is going, so they go with it. Nothing
+    // reads them afterwards — the store is addressed and no page's pair can match an empty one —
+    // but a departing page should not leave another item's list in memory for the next one to be
+    // handed if it ever happened to share both halves of the address.
+    alt_clear();
 }
 
 /// TEST ONLY — install `d` as the loaded item, bypassing the fetch and its mailbox. The screens'
@@ -1298,7 +1321,7 @@ fn dev_source() -> Option<&'static str> {
 }
 /// The host suite must not depend on what this dev Mac happens to have under `/tmp`: an armed
 /// `plxnative-shared` would outrank the registry and make every credit assertion here read the
-/// trigger's handle instead. `ui::alt_sources::dev_stand_in` states the same rule the same way.
+/// trigger's handle instead. [`alt_dev_stand_in`] states the same rule the same way.
 #[cfg(test)]
 fn dev_source() -> Option<&'static str> {
     None
@@ -1534,7 +1557,7 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
                 }
                 // The video track ITSELF, kept rather than reduced to `fps`/`hdr`/`dovi`. It is the
                 // only place the stream's own bitrate, profile, bit depth and chroma survive, and
-                // `ui::tracks_panel`'s VIDEO column is built from all four. Guarded like the DV
+                // `screens::tracks_panel`'s VIDEO column is built from all four. Guarded like the DV
                 // record and for the same reason — a second `streamType: 1` stream (embedded cover
                 // art is the shape to expect) must not overwrite the real picture's technicals.
                 if video.is_none() {
@@ -2063,7 +2086,7 @@ static DETAIL_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 /// [`pump_detail`] asks only for the item the page is awaiting ([`DETAIL_WANT`]). A landing for
 /// another server's item of the same number is skipped and counted, never installed. The data
 /// lane holds two (the awaited landing and one it superseded); the addressee is the store
-/// itself while the page is a `LegacyPage`. A worker that panicked lands `None`.
+/// itself while the page's own focus is still the loop's. A worker that panicked lands `None`.
 static DETAIL_LANDING: crate::ui::landing::Landing<DetailKey, Option<Detail>> =
     crate::ui::landing::Landing::with_inflight(2, 4);
 type DetailKey = (crate::plex::ServerId, String);
@@ -2229,7 +2252,13 @@ fn install_landed_detail(d: Option<Detail>) -> bool {
 
 // ---- "Also available": the same film on the OTHER sources ------------------------------------
 //
-// The cross-source resolve, in the mailbox shape the detail fetch uses and for the same reason: it
+// **The whole chain lives here**: the copy record, the ADDRESSED store, the cross-source resolve
+// that fills it, the per-frame landing and the headless stand-in. Until restructure phase 10 the
+// store half sat in `ui/alt_sources.rs` beside the panel that drew it, which put a page's DATA
+// inside a screen — so the panel's conversion to a `ModalStack` surface had nowhere to leave it,
+// and the Detail page had to ask a POPOVER whether one of its own buttons should be drawn.
+//
+// The cross-source resolve is in the mailbox shape the detail fetch uses and for the same reason: it
 // is one round trip PER REGISTERED SOURCE, and doing it on the SDL loop would park the frame for a
 // `connect(2)` timeout per unreachable share.
 //
@@ -2254,12 +2283,235 @@ struct AltResult {
     /// would then list the other machine's copies, and OK on one would open a different film.
     sid: crate::plex::ServerId,
     /// The rk the resolve was asked FOR, carried so the landing can be matched against the page
-    /// that is mounted now — `alt_sources::install` refuses any other pair, and this is what lets
-    /// it.
+    /// that is mounted now — the ADDRESSED store files it under that pair and a reader on another page
+    /// sees nothing.
     rk: String,
-    list: Vec<crate::ui::alt_sources::AltCopy>,
+    list: Vec<AltCopy>,
 }
 static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(None);
+
+/// One copy of the item on ONE source — everything an *Also available* row needs, and nothing
+/// about layout.
+///
+/// Built by [`resolve_alt_sources`], which asks every registered source for the item's `guid`;
+/// `screens::alt_sources` only orders, marks and draws them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AltCopy {
+    /// The registry slot the copy lives on ([`crate::plex::servers`]). It is the row's IDENTITY —
+    /// the gate counts distinct values of it, and OK resolves the destination client through it —
+    /// so a copy whose source is not registered carries [`crate::plex::ServerId::UNSET`] and can be
+    /// listed but never navigated to.
+    pub(crate) sid: crate::plex::ServerId,
+    /// The LIBRARY this copy is in, on that server ("Movies", "Film Club") — the row's label.
+    /// Libraries are what a person browses; the machine name (`nas-home`) belongs to the Sources
+    /// list and to a failure read-out, and appears nowhere else in the product.
+    pub(crate) library: String,
+    /// **The CREDIT for that server** — `plex::servers::owner_credit`'s answer, the same one the
+    /// shelf headings and the Sources list draw, and NOT the raw `sourceTitle` it used to be.
+    /// `Some(handle)` for a person outside this household; `None` when there is nobody to credit,
+    /// which is our own server, the household's own server whichever Plex Home profile is watching,
+    /// and a share plex.tv never named.
+    ///
+    /// `None` is the ABSENCE of an owner, not an empty one: it is what the row spells
+    /// "This account", and it is the ordering's own-before-a-friend's tiebreak. That read-out is
+    /// exactly right for the first two cases and a slight over-claim for the third — see
+    /// `docs/shared-servers.md` §13, which records why an unnamed external share is not
+    /// distinguishable here today.
+    ///
+    /// Stamped when the resolve lands and RE-stamped by [`alt_restamp_owners`] whenever the
+    /// registry re-describes a source, because this is a copy of a fact that can be corrected under
+    /// an open page.
+    pub(crate) owner: Option<String>,
+    /// That server's ratingKey for the item — per-server, and the whole reason the identity above
+    /// it is a guid. Where OK navigates.
+    pub(crate) rk: String,
+    /// Runtime in ms, for the row's sub-line. 0 = unknown, and then the sub-line is the owner
+    /// alone rather than "0 min".
+    pub(crate) dur_ms: i64,
+    /// `Media.videoResolution` ("4k" / "1080" / "sd"), plus the stored frame size as its fallback —
+    /// exactly the trio `ui::fmt::resolution` takes, so the badge in the panel and the hero's media
+    /// chip are one function and cannot spell the same file two ways.
+    pub(crate) res: String,
+    pub(crate) width: i64,
+    pub(crate) height: i64,
+}
+
+/// **The copies resolved for ONE item, held ADDRESSED.**
+///
+/// The pair `(sid, rk)` is stored WITH the list and every read supplies its own — so a reader gets
+/// the copies for the item it asked about, or nothing at all. That is the whole design, and it
+/// replaces a MAILBOX KEY (`FOR_SID`/`FOR_RK`) that a page had to stamp on every mount before a
+/// landing could be accepted.
+///
+/// **That mailbox had stopped being stamped, and nothing said so.** `ui::detail::mount_rk` called
+/// `alt_sources::reset(sid, rk)` from every mount; the phase-7 owned `DetailScreen` that replaced
+/// it kept only the teardown call (`reset(UNSET, "")`), so from that commit the key was empty for
+/// the whole life of every page, `install`'s `same_item` guard refused every real landing, and the
+/// *Also available* control could not appear on a device however many sources held the film. A
+/// landing that is correctly refused writes no log line, and the panel's own tests stamped the key
+/// themselves, so both halves of the evidence agreed with a broken product. An addressed store
+/// cannot fail that way: there is no stamp to forget, and the guard the mailbox existed for — a
+/// resolve outliving the page that asked for it, which matters because a `ratingKey` is a
+/// server-local integer dense from 1 and both servers in a household have a film 4
+/// (`docs/shared-servers.md` §1) — is enforced by the READER, which always knows which page it is.
+struct AltStore {
+    sid: crate::plex::ServerId,
+    rk: String,
+    copies: Vec<AltCopy>,
+    /// Does the headless stand-in own `copies`? Set where [`alt_dev_stand_in`] writes them, cleared
+    /// by a real landing. Always `false` in a release build, where the stand-in is compiled out.
+    stand_in: bool,
+    /// Which item the stand-in has already had its one chance at, so it is built ONCE per item
+    /// rather than on every frame.
+    stand_in_rk: String,
+}
+
+static mut ALT: AltStore = AltStore {
+    sid: crate::plex::ServerId::UNSET,
+    rk: String::new(),
+    copies: Vec::new(),
+    stand_in: false,
+    stand_in_rk: String::new(),
+};
+
+fn alt() -> &'static mut AltStore {
+    unsafe { &mut *addr_of_mut!(ALT) }
+}
+
+/// The copies held for `(sid, rk)` — EMPTY for any other item, and for an item nothing has landed
+/// for yet.
+pub(crate) fn alt_copies(sid: crate::plex::ServerId, rk: &str) -> &'static [AltCopy] {
+    let held = unsafe { &*addr_of!(ALT) };
+    if crate::plex::same_item((held.sid, held.rk.as_str()), (sid, rk)) {
+        &held.copies
+    } else {
+        &[]
+    }
+}
+
+/// How many distinct SOURCES hold this item. The gate is stated in sources rather than in copies
+/// because that is the design's own wording — two copies in two libraries of ONE server is not
+/// "also available *elsewhere*", and the row that would name the other one has nowhere to send you
+/// that you are not already.
+pub(crate) fn alt_source_count(list: &[AltCopy]) -> usize {
+    let mut n = 0;
+    for (i, c) in list.iter().enumerate() {
+        if !list[..i].iter().any(|p| p.sid == c.sid) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// **The gate**: is a second pinned source holding `(sid, rk)`? The Detail page's actions row asks
+/// before it draws the control, so with one source there is no button, no layout for it and no
+/// draw call.
+pub(crate) fn alt_available(sid: crate::plex::ServerId, rk: &str) -> bool {
+    alt_source_count(alt_copies(sid, rk)) >= 2
+}
+
+/// Install the copies resolved for `(item_sid, item_rk)`. Answers whether anything a reader can
+/// see changed, which is what raises the Metadata store's notice.
+pub(crate) fn alt_install(
+    item_sid: crate::plex::ServerId,
+    item_rk: &str,
+    list: Vec<AltCopy>,
+) -> bool {
+    let mut list = list;
+    // **The worker's stamp is not trusted.** `resolve_alt_sources` reads the credit on a background
+    // thread, and a resolve dispatched before a roster refresh re-grades that credit lands after
+    // it — past `pump_alt_sources`' facts epoch, which it has already consumed. Regrading here is
+    // the only point that sees both the list and the current answer.
+    alt_regrade(&mut list, false);
+    let held = alt();
+    let same = crate::plex::same_item((held.sid, held.rk.as_str()), (item_sid, item_rk))
+        && held.copies == list
+        && !held.stand_in;
+    held.sid = item_sid;
+    held.rk = item_rk.to_string();
+    held.copies = list;
+    // A real resolve replaces whatever was there, the stand-in's list included.
+    held.stand_in = false;
+    !same
+}
+
+/// **Re-read every retained copy's CREDIT from the registry.** Called when the facts epoch moves —
+/// `plex::servers::facts_gen`, i.e. a source has been re-described — which is a different event
+/// from the roster changing and must not be answered the same way.
+///
+/// The copies themselves are still correct: a re-grade of who is credited for a server does not
+/// change which servers hold the item, so discarding the list (or the resolve in flight for it)
+/// would throw away good work and leave the panel's control absent until the page was remounted.
+/// What IS stale is [`AltCopy::owner`], taken at resolve time — and it is the sixth and last
+/// surface that draws the "Shared by …" decision, so leaving it saying the old thing puts the
+/// account holder's name back on the household's own library after every other surface has dropped
+/// it.
+///
+/// **MAIN THREAD**, like every other reader and writer of this store — [`pump_alt_sources`] is its
+/// only caller and runs on the SDL loop. The workers in this chain touch the mutex-protected
+/// result slot and never the store.
+pub(crate) fn alt_restamp_owners() -> bool {
+    let held = alt();
+    let stand_in = held.stand_in;
+    alt_regrade(&mut held.copies, stand_in)
+}
+
+/// **Re-read a copy list's CREDITS from the registry**, `true` when any of them moved.
+///
+/// The ONE place [`AltCopy::owner`] is decided, applied at both boundaries where a list can be
+/// wrong: on the way IN ([`alt_install`], because a resolve dispatched before a correction lands
+/// after it and no epoch downstream can see that) and on an already-installed list
+/// ([`alt_restamp_owners`], because a roster refresh re-grades the credit under a mounted page).
+/// Stamping it on the worker as well would be a third opinion; the worker's value is simply
+/// overwritten here.
+///
+/// **Skipped entirely while the headless stand-in owns the list** — see [`alt_dev_stand_in`], whose
+/// whole purpose is to FABRICATE a borrowed copy on a slot the registry describes as ours. The
+/// trigger outranks the real answer everywhere else in this app for the same reason.
+///
+/// The guard is "the current copies came from the stand-in", not "the trigger is armed" — which is
+/// what it was for one round, and is a different statement. A real resolve can land over a stand-in
+/// list, and an armed-but-EMPTY trigger builds no stand-in at all; on both, "armed" would have gone
+/// on suppressing the regrade for a list the stand-in does not own.
+fn alt_regrade(list: &mut [AltCopy], stand_in_owns: bool) -> bool {
+    if stand_in_owns {
+        return false;
+    }
+    let mut moved = false;
+    for c in list.iter_mut() {
+        let credit = crate::plex::server_facts(c.sid)
+            .map(|f| f.handle.clone())
+            .unwrap_or_default();
+        // `None` is the absence of an owner and must not become `Some("")` — the same guard
+        // `resolve_alt_sources` applies when it stamps this field in the first place.
+        let next = (!credit.is_empty()).then_some(credit);
+        if c.owner != next {
+            c.owner = next;
+            moved = true;
+        }
+    }
+    moved
+}
+
+/// Drop copies whose grant left the live registry while the page holding them stayed mounted.
+/// Called only when the registry generation moves, so the ordinary per-frame path pays nothing.
+pub(crate) fn alt_prune_inactive() -> bool {
+    let held = alt();
+    let before = held.copies.len();
+    held.copies
+        .retain(|c| crate::plex::client_for(c.sid).is_some());
+    held.copies.len() != before
+}
+
+/// Forget the whole store — paired with [`clear`], whose caller is a page being torn down.
+fn alt_clear() {
+    let held = alt();
+    held.sid = crate::plex::ServerId::UNSET;
+    held.rk = String::new();
+    held.copies = Vec::new();
+    held.stand_in = false;
+    held.stand_in_rk = String::new();
+}
 
 /// MAIN THREAD. Ask EVERY registered source whether it holds this guid — the item's own included.
 ///
@@ -2276,8 +2528,8 @@ static ALT_SLOT: std::sync::Mutex<Option<AltResult>> = std::sync::Mutex::new(Non
 /// through `client_for` and never asks what is current.
 ///
 /// `sid` is the ITEM's own server, captured with `rk` at the call site because the two are one
-/// identity: it rides through [`AltResult`] to `alt_sources::install`, which refuses a landing for
-/// any other pair. Without it a resolve parked on a dead share's `connect(2)` timeout lands on
+/// identity: it rides through [`AltResult`] to [`alt_install`], which files the landing under it rather than
+/// under the rk alone. Without it a resolve parked on a dead share's `connect(2)` timeout lands on
 /// whatever page holds the same ratingKey when it finally answers, which across two servers is the
 /// ordinary case rather than an exotic one.
 fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
@@ -2323,7 +2575,7 @@ fn request_alt_sources(sid: crate::plex::ServerId, rk: &str, guid: &str) {
 fn resolve_alt_sources(
     others: &[crate::plex::ServerId],
     guid: &str,
-) -> Vec<crate::ui::alt_sources::AltCopy> {
+) -> Vec<AltCopy> {
     let mut out = Vec::new();
     for &id in others {
         let Some(c) = crate::plex::client_for(id) else {
@@ -2340,7 +2592,7 @@ fn resolve_alt_sources(
             .unwrap_or_default();
         for m in mc.metadata.iter() {
             let media0 = m.media.first();
-            out.push(crate::ui::alt_sources::AltCopy {
+            out.push(AltCopy {
                 sid: id,
                 library: m.library_section_title.clone(),
                 // `None` is the ABSENCE of an owner, which is what the row spells "This account";
@@ -2359,14 +2611,23 @@ fn resolve_alt_sources(
     out
 }
 
-/// MAIN THREAD, once a frame. Hands a landed cross-source resolve to the panel's store.
-pub(crate) fn pump_alt_sources() {
+/// MAIN THREAD, once a frame. Runs the store's whole per-frame half — the two registry epochs, the
+/// headless stand-in, and a landed cross-source resolve — and answers whether a reader can see any
+/// difference, which is what raises the Metadata store's notice (`stores::metadata`).
+///
+/// It answers a bool rather than invalidating the frame gate itself because it is a STORE pump:
+/// `stores::metadata::pump_alt_sources` folds it through `note(StoreId::Metadata, …)` exactly as
+/// `pump_detail` and `pump_season` are folded, so the Detail page hears one `StoreChanged` and
+/// repaints from its own arm. `alt_sources::install` used to call `idle::invalidate()` from inside
+/// the data layer instead, which is the shape phase 4 replaced.
+pub(crate) fn pump_alt_sources() -> bool {
     use std::sync::atomic::Ordering;
+    let mut changed = false;
     let roster_gen = crate::plex::server_roster_gen();
     if ALT_ROSTER_GEN.swap(roster_gen, Ordering::SeqCst) != roster_gen {
         ALT_GEN.fetch_add(1, Ordering::SeqCst);
         *ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        crate::ui::alt_sources::prune_inactive();
+        changed |= alt_prune_inactive();
     }
     // A source being RE-DESCRIBED is not the server set changing, and answering it the same way
     // would be wrong twice: the copies are still the right copies (a re-graded "Shared by …" credit
@@ -2375,17 +2636,182 @@ pub(crate) fn pump_alt_sources() {
     // two epochs are read separately and this one only re-stamps what the rows SAY.
     let facts_gen = crate::plex::server_facts_gen();
     if ALT_FACTS_GEN.swap(facts_gen, Ordering::SeqCst) != facts_gen {
-        crate::ui::alt_sources::restamp_owners();
+        changed |= alt_restamp_owners();
     }
+    changed |= alt_pump_stand_in();
     let taken = ALT_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let Some(r) = taken else { return };
+    let Some(r) = taken else { return changed };
     if r.gen != ALT_GEN.load(Ordering::SeqCst) || r.roster_gen != roster_gen {
-        return; // superseded: the page moved on while this was in flight
+        return changed; // superseded: the page moved on while this was in flight
     }
-    // `install` re-checks the (server, rk) PAIR against the page actually mounted — this generation
-    // test alone cannot see a page that was opened, left and re-opened between spawn and landing,
-    // and the rk alone cannot see the two servers' keys colliding, which they do by default.
-    crate::ui::alt_sources::install(r.sid, &r.rk, r.list);
+    // The store is ADDRESSED, so this landing is filed under the PAIR it was asked for and a reader
+    // on another page sees nothing — the generation test alone cannot see a page that was opened,
+    // left and re-opened between spawn and landing, and the rk alone cannot see the two servers'
+    // keys colliding, which they do by default.
+    changed | alt_install(r.sid, &r.rk, r.list)
+}
+
+// ---- the headless stand-in ---------------------------------------------------------------------
+//
+// Reached through `dev::read`, so the whole of it is absent from a `RELEASE=1` build at compile
+// time along with the rest of the `/tmp` surface. The trigger literal is
+// `/tmp/plxnative-shared`, spelled here for the catalog grep in `docs/agent-reference.md`.
+
+/// Build the headless stand-in once the item has LANDED — called every frame by
+/// [`pump_alt_sources`], and doing nothing at all in the ordinary case (two string compares, no
+/// allocation).
+///
+/// It cannot be built when the fetch is dispatched: a mount deliberately clears [`current`] for the
+/// whole 2-5 round-trip window, so at that moment there is no runtime, no resolution class and no
+/// title to build a copy of the item FROM.
+fn alt_pump_stand_in() -> bool {
+    let Some(d) = current() else { return false };
+    if d.rk == alt().stand_in_rk {
+        return false; // this item has already had its chance — one string compare
+    }
+    // Marked whatever the outcome, so the ordinary build — where the trigger is not armed at all —
+    // opens the `/tmp` file ONCE per item rather than on every frame of it.
+    alt().stand_in_rk = d.rk.clone();
+    let Some(list) = alt_dev_stand_in(d) else { return false };
+    let held = alt();
+    held.sid = d.sid;
+    held.rk = d.rk.clone();
+    held.copies = list;
+    held.stand_in = true;
+    true
+}
+
+/// A DRAW-ONLY copy list for `/tmp/plxnative-shared=<handle>`, so the *Also available* panel and
+/// the control that opens it can be judged on a television before the multi-server data layer
+/// exists.
+///
+/// **It reuses the trigger the hero's own "Shared by …" run is judged through** rather than adding
+/// a second one for the same deliverable: that trigger already means "pretend this item came from
+/// `<handle>`", and a second copy of the film on `<handle>`'s source is the other half of the same
+/// pretence.
+///
+/// What it stands in for, exactly:
+///
+/// * **your copy** is the real one — the page's own ratingKey, on the current server, with the
+///   loaded item's own runtime and resolution class, in the library the browse store says you are
+///   in. Nothing about it is invented, which is what makes the TICK meaningful.
+/// * **their copy** is that same film on a SECOND REGISTRY SLOT ([`alt_stand_in_slot`]). It is a
+///   real slot with a real client, so OK on it performs the real source switch and opens a real
+///   page — the one behaviour of the panel that cannot be judged from a still.
+/// * its resolution is **one class better than yours**, and that is the stand-in's ONE invention.
+///   It exists because the ordering rule is otherwise unobservable: the design's own example is a
+///   1080p copy you are standing on sorting above a friend's 4K one, which is the case that
+///   separates "the copy that plays" from "the best copy". With two equal badges the panel cannot
+///   show that it got the rule right.
+///
+/// `None` (and no stand-in) when the trigger is not armed.
+///
+/// NB this is **not** one of the two "WINS WHEN ARMED" precedence sites ([`fetch_detail`],
+/// `screens::home`'s `dev_source`), which pick between the trigger and a real answer. There is no
+/// real answer here to outrank: an unarmed trigger means no panel content at all, and an
+/// armed-but-EMPTY file means the same, because a copy list has to be attributed to somebody.
+#[cfg(not(test))]
+fn alt_dev_stand_in(d: &Detail) -> Option<Vec<AltCopy>> {
+    let handle = crate::dev::read("shared").filter(|h| !h.is_empty())?;
+    let library = crate::browse::section_title(crate::browse::cur()).to_string();
+    let here = crate::plex::current_server();
+    let theirs = alt_stand_in_slot()?;
+    let v = alt_stand_in(
+        &handle,
+        &library,
+        &d.rk,
+        &d.video_resolution,
+        d.dur_ms,
+        here,
+        theirs,
+    );
+    crate::log(&format!(
+        "altsources: stand-in for rk={} on slot {} (dev)",
+        d.rk,
+        theirs.raw()
+    ));
+    Some(v)
+}
+#[cfg(test)]
+fn alt_dev_stand_in(_d: &Detail) -> Option<Vec<AltCopy>> {
+    None // the host suite must not depend on what this dev Mac happens to have under /tmp
+}
+
+/// The registry slot the stand-in's borrowed copy lives on — a REAL one, because the point of the
+/// stand-in is to exercise the switch.
+///
+/// A genuinely different server if one is registered. Otherwise the current server registered a
+/// SECOND time under a synthetic machine id: from everything this feature does — counting sources,
+/// resolving a client, switching, refetching — that is a second source, and because it is the same
+/// machine the ratingKey it carries is honestly the same film. What it cannot stand in for is a
+/// server going offline, or a library and a resolution that differ for real.
+///
+/// The token comes from the harness's own `/tmp/plxnative-token`, which is the only place a session
+/// token is available to a dev path; with no token there is nothing to build a working client from,
+/// so there is no stand-in at all rather than one that 401s.
+#[cfg(not(test))]
+fn alt_stand_in_slot() -> Option<crate::plex::ServerId> {
+    let here = crate::plex::current_server();
+    // `server_ids`, never `0..server_count()`: slot numbers are permanent and a sign-out retires
+    // the ones below the registry's floor, so the live roster is a window and not a prefix.
+    let other =
+        crate::plex::server_ids().find(|&id| id != here && crate::plex::client_for(id).is_some());
+    if let Some(id) = other {
+        return Some(id); // a real second server is already registered — use it
+    }
+    let c = crate::plex::client_opt()?;
+    let token = crate::dev::read("token").filter(|t| !t.is_empty())?;
+    // …and a registry with no room left answers `UNSET`, which is no stand-in at all rather than
+    // one that resolves to whatever happens to be current.
+    Some(crate::plex::register(
+        &format!("standin-{}", c.machine_id()),
+        c.host(),
+        c.port(),
+        &token,
+    ))
+    .filter(|id| id.is_set())
+}
+
+/// [`alt_dev_stand_in`]'s pure half — the two copies it describes, so the shape of what a device
+/// capture is looking at is itself host-graded.
+pub(crate) fn alt_stand_in(
+    handle: &str,
+    library: &str,
+    rk: &str,
+    res: &str,
+    dur_ms: i64,
+    here: crate::plex::ServerId,
+    theirs: crate::plex::ServerId,
+) -> Vec<AltCopy> {
+    let mine = AltCopy {
+        sid: here,
+        library: library.to_string(),
+        owner: None,
+        rk: rk.to_string(),
+        dur_ms,
+        res: res.to_string(),
+        width: 0,
+        height: 0,
+    };
+    let borrowed = AltCopy {
+        sid: theirs,
+        owner: Some(handle.to_string()),
+        res: alt_one_class_better(res),
+        ..mine.clone()
+    };
+    vec![mine, borrowed]
+}
+
+/// The resolution class one rung above `res`, in `screens::alt_sources`' `scan_lines` vocabulary —
+/// the stand-in's single invention (see [`alt_dev_stand_in`]). Anything already at the top, or
+/// unrecognised, is returned unchanged rather than promoted into a class that does not exist.
+fn alt_one_class_better(res: &str) -> String {
+    match res.trim().to_ascii_lowercase().as_str() {
+        "sd" | "480" | "576" => "720".into(),
+        "720" => "1080".into(),
+        "1080" | "1440" => "4k".into(),
+        other => other.to_string(),
+    }
 }
 
 /// True while a detail fetch is in flight — drives the detail page's loading spinner.
@@ -3263,13 +3689,18 @@ mod tests {
     /// other machine's copies and OK on one opened a different film.
     ///
     /// Drives the real `pump_alt_sources` (the mailbox is filled directly, as the detail test does
-    /// for its failure case — there is no `land_alt` for a test to reach) and grades the panel's
-    /// own gate, which is the thing a user would see appear or not appear.
+    /// for its failure case — there is no `land_alt` for a test to reach) and grades the GATE the
+    /// Detail page asks, which is the thing a user would see appear or not appear.
+    ///
+    /// **The store is ADDRESSED since restructure phase 10, so this reads as a refusal on the way
+    /// OUT rather than on the way in** — the landing is filed under the pair it was resolved for,
+    /// and the page that is mounted asks about its own. The assertion is unchanged and is the one
+    /// that matters: our copies are not news about the share's film 4.
     #[test]
     fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused() {
         let _serial = crate::testlock::serial();
-        use crate::ui::alt_sources::AltCopy;
-        // two copies on two sources — enough for `is_available`, which counts distinct SOURCES
+        alt_clear();
+        // two copies on two sources — enough for the gate, which counts distinct SOURCES
         let copies = || {
             vec![
                 AltCopy {
@@ -3296,39 +3727,30 @@ mod tests {
         };
 
         // our film 4 is the mounted page and its resolve is out…
-        crate::ui::alt_sources::reset(SRV_A, "4");
         let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         // …and while it is out the user lands on the SHARE's film 4
-        crate::ui::alt_sources::reset(SRV_B, "4");
         land(gen, SRV_A, "4");
         pump_alt_sources();
         assert!(
-            !crate::ui::alt_sources::is_available(),
+            !alt_available(SRV_B, "4"),
             "our copies are not news about the share's film"
         );
 
-        // the control: the very same landing DOES reach the panel while the page is still ours
-        crate::ui::alt_sources::reset(SRV_A, "4");
-        let gen = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        land(gen, SRV_A, "4");
-        pump_alt_sources();
-        assert!(
-            crate::ui::alt_sources::is_available(),
-            "the awaited landing installs"
-        );
+        // the control: the very same landing DOES reach the page that asked for it
+        assert!(alt_available(SRV_A, "4"), "the awaited landing installs");
 
-        // …and a SUPERSEDED landing is still dropped one layer earlier, by the generation
+        // …and a SUPERSEDED landing is dropped one layer earlier, by the generation
+        alt_clear();
         let stale = ALT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         ALT_GEN.fetch_add(1, Ordering::SeqCst);
-        crate::ui::alt_sources::reset(SRV_A, "4");
         land(stale, SRV_A, "4");
         pump_alt_sources();
         assert!(
-            !crate::ui::alt_sources::is_available(),
+            !alt_available(SRV_A, "4"),
             "a landing from a superseded resolve is dropped"
         );
 
-        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
+        alt_clear();
     }
 
     #[test]
@@ -3338,20 +3760,20 @@ mod tests {
         let a = crate::plex::register_for_test("alt-a", "127.0.0.1", 1, "a", "cid");
         let b = crate::plex::register_for_test("alt-b", "127.0.0.1", 2, "b", "cid");
         let copies = vec![
-            crate::ui::alt_sources::AltCopy {
+            AltCopy {
                 sid: a,
                 rk: "4".into(),
                 ..Default::default()
             },
-            crate::ui::alt_sources::AltCopy {
+            AltCopy {
                 sid: b,
                 rk: "9".into(),
                 ..Default::default()
             },
         ];
-        crate::ui::alt_sources::reset(a, "4");
-        crate::ui::alt_sources::install(a, "4", copies.clone());
-        assert!(crate::ui::alt_sources::is_available());
+        alt_clear();
+        alt_install(a, "4", copies.clone());
+        assert!(alt_available(a, "4"));
 
         let old_roster = crate::plex::server_roster_gen();
         ALT_ROSTER_GEN.store(old_roster, Ordering::SeqCst);
@@ -3368,11 +3790,11 @@ mod tests {
 
         pump_alt_sources();
         assert!(
-            !crate::ui::alt_sources::is_available(),
+            !alt_available(a, "4"),
             "the removed source neither stays cached nor re-lands"
         );
 
-        crate::ui::alt_sources::reset(crate::plex::ServerId::UNSET, "");
+        alt_clear();
         crate::plex::reset_servers_for_test();
     }
 

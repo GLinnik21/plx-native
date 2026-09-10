@@ -766,8 +766,9 @@ fn keyboard_request_payload_and_owner_binding_are_part_of_the_state_hash() {
     assert_ne!(first, d.state_hash(), "the binding changes which later close request is accepted");
 }
 
-/// §7.6: a `LegacyPage` declares `FocusSource::Legacy`/`HitSource::Legacy` — the engine, the
-/// map and `on_miss` are INERT for it; its own ladders stay the single writer.
+/// §7.6: a screen that declares `FocusSource::Legacy`/`HitSource::Legacy` — the player, and
+/// `FixtureArg::Legacy` here — leaves the engine, the map and `on_miss` INERT; its own ladders
+/// stay the single writer.
 #[test]
 fn a_legacy_page_never_consults_the_map_or_the_engine() {
     let (mut d, mut rig) = boot(FixtureArg::Legacy);

@@ -471,7 +471,7 @@ pub(super) unsafe fn vp_create_window() -> *const c_char {
         std::ptr::null()
     }
 }
-/// Never NUL — contracted to return a valid string even when no window exists, and `ui::stats`
+/// Never NUL — contracted to return a valid string even when no window exists, and `app::diagnostics`
 /// reads it unconditionally.
 pub(super) unsafe fn vp_window_id() -> *const c_char {
     if enabled() {
@@ -514,7 +514,7 @@ mod tests {
     /// The seam state is process-global and the engine's hostsim tests drive the same atomics.
     /// Use the crate-wide lock rather than a module-local mutex: two different locks made both
     /// suites individually serial while still allowing them to overwrite `FED_MAX_NS` together.
-    fn lock() -> std::sync::MutexGuard<'static, ()> {
+    fn lock() -> crate::testlock::Serial {
         crate::testlock::serial()
     }
 

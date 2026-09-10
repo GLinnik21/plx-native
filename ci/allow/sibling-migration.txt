@@ -1,0 +1,17 @@
+# count: 6
+# The `sibling` gate's MIGRATION list (spec §2.1, §0 criterion 2): one entry per FILE that still
+# names a sibling under `crate::screens::`, matched by path alone, shrinking with each phase and
+# EMPTY when the criterion is met. `crate::screens::registry` is the shared vocabulary and is
+# allowed by the gate itself, so it never appears here.
+#
+# Four of the seven name `screens::family`, which is shared vocabulary too (the Settings family's
+# `SettingsPage`, `NoInit`, the ground palette) rather than a screen. The honest fix is to move
+# what they use into `registry` — or to say in the gate that `family` is a second shared module —
+# and either way the decision belongs to the phase that owns those screens, not to the gate. They
+# are listed rather than exempted so the question stays visible.
+rust-modules/src/screens/consent.rs	phase 10: a test reads `screens::legal::privacy_policy()`, the document the consent stage shows
+rust-modules/src/screens/detail/geometry_tests.rs	phase 10: `screens::family::NoInit`, shared vocabulary living beside the Settings family
+rust-modules/src/screens/detail/identity_tests.rs	phase 10: `screens::family::NoInit`
+rust-modules/src/screens/detail/tests.rs	phase 10: `screens::family::NoInit`
+rust-modules/src/screens/onboard.rs	phase 10: `screens::profiles::TITLE`, the crumb of the page onboarding returns to
+rust-modules/src/screens/settings.rs	phase 10: `screens::family::set_palette`, the family's shared ground

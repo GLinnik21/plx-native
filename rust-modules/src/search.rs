@@ -1225,7 +1225,7 @@ mod tests {
     /// raised, and the next module to register a server without resetting first would find its own
     /// slot numbering shifted under it. The reset runs while the lock is still held (a struct's own
     /// `Drop` runs before its fields').
-    struct Fresh(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
     impl Drop for Fresh {
         fn drop(&mut self) {
             crate::plex::reset_servers_for_test();

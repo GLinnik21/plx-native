@@ -27,7 +27,7 @@
 //! leaving. A
 //! caller that tears its OWN host down synchronously under the alert (as that same confirm arm
 //! still does, to the Settings screen behind it) may keep doing so; the alert's fade then simply
-//! runs over whatever the app shows next, exactly like a dismissed `account_menu`/`item_menu`
+//! runs over whatever the app shows next, exactly like a dismissed profile / card menu
 //! fading over the host it returned to.
 
 use crate::ui::label::{HAlign, Label};

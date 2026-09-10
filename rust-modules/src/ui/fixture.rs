@@ -301,10 +301,22 @@ impl LogicalState for FixtureState {
     }
 }
 
+/// The page argument whose body steps a REAL spring on every Tick — `gfx::spring`, the integrator
+/// the product's owned screens animate through, so `ui::idle` hears it exactly as it hears the
+/// Library's scroll. One page rather than all of them: a spring in flight keeps the present gate
+/// awake, and every other test in this bundle grades quiet frames.
+pub const ANIMATED_PAGE: u32 = 950;
+
 pub struct FixtureScreen {
     pub arg: FixtureArg,
     pub state: FixtureState,
     row: FixtureRow,
+    /// See [`ANIMATED_PAGE`]. Inert for every other argument.
+    spring: crate::ui::Spring,
+    /// The [`draw_order`] tick this page last drew at. Deliberately NOT part of [`FixtureState`],
+    /// which is the screen's LOGICAL state and feeds the tree's hash: when a page happened to be
+    /// drawn is render bookkeeping and must not move a state hash.
+    pub draw_at: usize,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -399,6 +411,14 @@ impl Machine<FixtureHost> for FixtureScreen {
                 }
                 Handled::Yes
             }
+            // The PAGE's own spring, through `gfx::spring` — the integrator every owned screen
+            // animates through, and the only one `ui::idle` can see. It reports no `Motion` to the
+            // container's gate on purpose: `screens::library` does not either, which is why
+            // `idle::page_moving` is the only witness that a page under a panel is moving.
+            ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(ANIMATED_PAGE) => {
+                self.spring.step(1.0, 300.0, t.dt());
+                Handled::Yes
+            }
             ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {
                 // a structural op emitted from a FRESH Enter: parked for the NEXT frame's commit
                 // (§3.3); a Restored Enter (a pop back onto this page) pushes nothing, or a BACK
@@ -452,6 +472,7 @@ impl Screen<FixtureHost> for FixtureScreen {
         composed_prepare(self, b, cx);
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.draw_at = draw_order();
         composed_draw(self, f);
     }
     fn render(&self) -> RenderStrategy {
@@ -475,8 +496,31 @@ pub struct FixtureModal {
     entry: super::machine::EntryId,
     /// A foreground spring of the surface's own (the appear pop), reported as motion on Tick.
     pub pop: f32,
+    /// The same pop through `gfx::spring`, so `ui::idle` hears the surface's own motion the way it
+    /// hears a page's — the two halves of the §4.4 attribution have to be gradeable against each
+    /// other, and `ui::motion`'s integrator (the appear spring's) never reaches `ui::idle` at all.
+    /// Held to the `pop` window so a settled surface still makes quiet frames.
+    spring: crate::ui::Spring,
     pub last_draw_alpha: f32,
     pub last_navigation: super::screen::NavPresentation,
+    /// The peak alpha this surface asks its host page to dim to (`Screen::scrim`). 0 = none.
+    pub scrim_alpha: f32,
+    /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
+    /// this surface's own `draw` ran. The two together are how a host test observes that the
+    /// scrim landed inside the PAGE PASS rather than with the panel — see
+    /// `a_cached_hosts_snapshot_carries_the_surfaces_scrim`. A `Cell` because `Screen::scrim`
+    /// takes `&self`, exactly as every other query on that trait does.
+    pub scrim_at: std::cell::Cell<usize>,
+    pub draw_at: usize,
+}
+
+/// A monotonic tick the fixture screens stamp their draw-order observations with.
+///
+/// Process-wide and never reset: a test compares two stamps it took itself, so only their ORDER
+/// is meaningful and a previous test's stamps cannot be mistaken for this one's.
+pub fn draw_order() -> usize {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl FixtureModal {
@@ -489,8 +533,12 @@ impl FixtureModal {
             state: FixtureState::default(),
             entry,
             pop: 0.0,
+            spring: crate::ui::Spring::at(0.0),
             last_draw_alpha: 0.0,
             last_navigation: Default::default(),
+            scrim_alpha: 0.0,
+            scrim_at: std::cell::Cell::new(0),
+            draw_at: 0,
         }
     }
 
@@ -506,6 +554,7 @@ impl FixtureModal {
                             screen: Box::new(FixtureScreen {
                                 arg: e.arg.clone(),
                                 state: FixtureState::default(),
+                                spring: crate::ui::Spring::at(0.0),
                                 row: FixtureRow {
                                     len: 1,
                                     group: GroupId(7),
@@ -514,6 +563,7 @@ impl FixtureModal {
                                     drawn: 0,
                                     kind: ElemKind::Card,
                                 },
+                                draw_at: 0,
                             }),
                             inflight: Vec::new(),
                         });
@@ -627,10 +677,11 @@ impl Machine<FixtureHost> for FixtureModal {
                     Handled::No // depth 0 of its own stack: the container dismisses it
                 }
             }
-            ScreenEvent::Tick(_) => {
+            ScreenEvent::Tick(t) => {
                 // the surface's own foreground spring: reports motion while it settles
                 if self.pop < 1.0 {
                     self.pop = (self.pop + 0.25).min(1.0);
+                    self.spring.step(1.0, 300.0, t.dt());
                     fx.note(super::present::PresentEvent::Motion);
                 }
                 Handled::Yes
@@ -642,6 +693,7 @@ impl Machine<FixtureHost> for FixtureModal {
 
 impl Screen<FixtureHost> for FixtureModal {
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
     fn name(&self) -> &'static str {
         "settings"
     }
@@ -652,7 +704,12 @@ impl Screen<FixtureHost> for FixtureModal {
         Some(Cow::Borrowed("Settings"))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+    fn scrim(&self) -> super::screen::Scrim {
+        self.scrim_at.set(draw_order());
+        super::screen::Scrim::dim(self.scrim_alpha)
+    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.draw_at = draw_order();
         self.last_draw_alpha = f.page_alpha;
         self.last_navigation = super::screen::NavPresentation {
             page_alpha: f.page_alpha, chrome_alpha: f.chrome_alpha,
@@ -744,6 +801,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
         Box::new(FixtureScreen {
             arg: arg.clone(),
             state: FixtureState::default(),
+            spring: crate::ui::Spring::at(0.0),
             row: FixtureRow {
                 len: cx.views.store.items.len().max(3),
                 group: GroupId(1),
@@ -752,6 +810,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 drawn: 0,
                 kind,
             },
+            draw_at: 0,
         })
     }
 }

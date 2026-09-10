@@ -532,10 +532,10 @@ mod tests {
         probe("player_hud", &crate::ui::player_hud::overscan_rects);
 
         // ---- the panels, each at the widest/tallest state its own clamp admits ---------------
-        probe("account_menu", &crate::ui::account_menu::overscan_rects);
+        probe("account_menu", &crate::screens::account_menu::overscan_rects);
         probe("track_menu", &crate::ui::track_menu::overscan_rects);
         probe("more_menu", &crate::ui::more_menu::overscan_rects);
-        probe("stats", &crate::ui::stats::overscan_rects);
+        probe("stats", &crate::app::diagnostics::overscan_rects);
         drop(probe);
 
         // ---- the screens whose outermost geometry is already public here --------------------

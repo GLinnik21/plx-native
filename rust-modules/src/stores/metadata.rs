@@ -211,8 +211,8 @@ pub(crate) fn pump_detail() -> bool {
 pub(crate) fn pump_season() -> bool {
     note(StoreId::Metadata, crate::metadata::pump_season())
 }
-pub(crate) fn pump_alt_sources() {
-    crate::metadata::pump_alt_sources();
+pub(crate) fn pump_alt_sources() -> bool {
+    note(StoreId::Metadata, crate::metadata::pump_alt_sources())
 }
 
 impl<H: Host> Machine<H> for MetadataStore {

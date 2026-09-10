@@ -10,6 +10,10 @@
 > `rust-modules/src/ui/CLAUDE.md` is the current description. Only
 > the explicitly optional 7b (unified FocusPath) remains unbuilt, by design. This file is kept
 > for the design rationale (token values, carve-outs, player-as-reference stance).
+>
+> **§(E) at the foot of this file is the exception and is CURRENT** (2026-09-10): what adding a
+> screen touches today, proven by the two `git diff --name-only` outputs of restructure phase 10's
+> criterion-5 conversions. Read that one; the rest is history.
 
 Extract a shared UI system from the **player screen** (the one screen with a coherent
 design language: `widgets.rs` / `table.rs` / `label.rs` / `icons.rs` / `mod.rs`) and
@@ -440,3 +444,108 @@ about a specific contract, NOT about "it's only a throwaway" — that is never t
   `*const c_char`; migrated home/detail call sites (which build Rust `String`s) must keep the
   `CString` in scope for the draw frame — no new hazard, but a per-site cost, already the
   `table.rs` pattern.
+
+---
+
+## (E) WHAT A NEW SCREEN COSTS — restructure phase 10, done-criterion 5
+
+> **Added 2026-09-10, and it is the one section of this file written in the present tense.** The
+> rest is the 2026-07 migration's own record; this is the current answer to "I am adding a screen,
+> what do I have to touch", proven rather than asserted.
+
+The restructure spec's §0 criterion 5 reads: *a new screen touches its own `screens/<name>.rs`,
+`screens/registry.rs`, `dev/scenarios.rs` and `tests/manifest.json` and nothing else.* Two
+conversions were run to prove it — the Detail page's **About** sheet and the Person page's
+**biography** sheet — and this is what `git diff --name-only` said, verbatim.
+
+**About** (`2e5572b8`):
+
+```
+ci/allow/statics-migration.txt
+rust-modules/src/dev/scenarios.rs
+rust-modules/src/screens/about_panel.rs
+rust-modules/src/screens/detail/mod.rs
+rust-modules/src/screens/detail/tests.rs
+rust-modules/src/screens/mod.rs
+rust-modules/src/screens/registry.rs
+rust-modules/src/ui/mod.rs
+tests/manifest.json
+```
+
+**The person's biography** (`1a7c9a46`):
+
+```
+ci/allow/statics-migration.txt
+rust-modules/src/dev/scenarios.rs
+rust-modules/src/screens/mod.rs
+rust-modules/src/screens/person.rs
+rust-modules/src/screens/person_bio.rs
+rust-modules/src/screens/registry.rs
+rust-modules/src/ui/mod.rs
+tests/manifest.json
+```
+
+### The four the criterion names
+
+| file | what it gains |
+|---|---|
+| `screens/<name>.rs` | the screen: its `Screen`/`Machine`/`Focusable`/`LogicalState` impls, its `SHAPE`, its own tests (§15.1 `a_new_screen_is_unit_tested_with_no_sdl` — a host of its own, three lines of it, never a sibling's) |
+| `screens/registry.rs` | the `AppArg` variant, its `ScreenId`, its canon tag, `ARG_SHAPE`, the one `mount` arm, `every_surface_arg`, `SCREEN_SHAPES` + the pin, and — for a page-owned panel — the `ContentPanel` variant and its `surface()` arm |
+| `dev/scenarios.rs` | the headless trigger that reaches it (`/tmp/plxnative-<name>`), which is what makes a capture and an fps scene possible at all |
+| `tests/manifest.json` | the fps scene, keyed on the `overlay=` word the screen's own `Screen::name` prints |
+
+### The four the criterion does not, and why each is honest
+
+* **`screens/mod.rs`** — one `pub(crate) mod` line. A module that is not declared does not exist.
+* **`ui/mod.rs`** and the moved file itself — the RETIREMENT pair, present only for a conversion.
+  A screen written from scratch touches neither.
+* **`ci/allow/statics-migration.txt`** — a conversion RETIRES an entry (9 → 3 over phase 10). It
+  only ever shrinks, and a new screen adds nothing to it.
+* **the HOST page** — `screens/detail/mod.rs`, `screens/person.rs`. This is the one the criterion's
+  wording does not name and the one that cannot be removed: a panel is opened from somewhere, and
+  the page that opens it is the page that stops calling the module it used to draw. Both
+  conversions kept it minimal — the host loses its call sites and its share of the panel's state
+  and gains a `ContentReq::Panel(…)`. (About's diff has a second file of the same screen,
+  `detail/tests.rs`, for one word of an import line: production code stopped naming `InputEvent`
+  when `panel_input` was deleted.)
+
+### What made the list that short — three mechanisms, landed first
+
+The criterion is a claim about STRUCTURE, and it was false before phase 10 for reasons that had
+nothing to do with any screen. Each was fixed in its own commit, before the conversion that
+needed it:
+
+1. **`AppArg`, `ARG_SHAPE`, `ScreenId`, `same_instance`, `every_surface_arg` and the one `mount`
+   match moved from `app/bridge.rs` into `screens/registry.rs`** (`111282ec`), where §2.1 always
+   put them. The blocker was written in `registry.rs`'s own module doc: the argument carries the
+   legacy `Route`, `Route` was `app`-private, and a screen may not name `app::`. So `Route` moved
+   too (`app/nav.rs` re-exports it; the loop's own uses retire in phase 12), and the mounter became
+   generic over the host — the screens were generic already, and the views its arms read arrive
+   through the `*Like` accessors.
+2. **`state_fp`'s shape inventory SPLIT** (same commit). Every screen's `SHAPE` is
+   `registry::SCREEN_SHAPES`, pinned in that module; `app/recorder.rs` keeps `APP_SHAPES` — the
+   press machine, the input state, the frame line, the container tree, the PMS fixtures — pinned
+   separately and unmoved by any screen. Without this, every conversion edited `app/recorder.rs`
+   twice: once for the entry and once for the pin.
+3. **The panel→surface map moved to the registry** (`39d51ae8`, `ContentPanel::surface`), and the
+   loop's glass-owner block stopped naming a screen (`3032dbc9`, `Screen::prepare_present` +
+   `Dispatcher::prepare_present`). Both were `app/` files a page-owned panel would otherwise have
+   had to edit for a fact that is not the loop's.
+
+A fourth thing is a GATE rather than a mechanism: `ci/check-deps.sh`'s `layer` rule, added with the
+first of those commits, makes "`screens/` never names `crate::app::`" a grep instead of prose.
+The criterion is only worth as much as the boundary underneath it.
+
+### The recipe, for the next one
+
+1. Write `screens/<name>.rs`: the screen, its `SHAPE`, its tests over a local test host.
+2. In `screens/registry.rs`: add the `AppArg` variant with a FORWARD-allocated `ScreenId` and canon
+   tag (never a vacated one — a retired identity handed to a new screen is a container reusing the
+   wrong instance), extend `ARG_SHAPE`, add the `mount` arm, add it to `every_surface_arg` and to
+   `SCREEN_SHAPES`, and bump `SCREEN_SHAPES_PIN` with a sentence saying what moved.
+3. Declare the module in `screens/mod.rs`.
+4. Add the headless trigger in `dev/scenarios.rs`, presenting through the same door the
+   interactive press uses, and gate it on the host page's own predicate so the trigger cannot open
+   what a press would refuse.
+5. Add the fps scene to `tests/manifest.json`.
+6. Re-record the replay fixtures (`tools/plxnative-rec rerecord`), because the pin moved.

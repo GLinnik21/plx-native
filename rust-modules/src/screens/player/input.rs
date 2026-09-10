@@ -11,8 +11,11 @@
 //! after every step, and is the only writer.
 //!
 //! The predicates are pure and take `now` rather than calling `SDL_GetTicks`, so the host suite
-//! can grade them: `hud_visibility_tests` and `repeat_gate_tests` moved here under their own names
-//! from `app/playback.rs` (§11's test-module homes).
+//! can grade them: `hud_visibility_tests` moved here under its own name from `app/playback.rs`
+//! (§11's test-module homes). `repeat_gate_tests` came the same way and has since moved ON, to
+//! `screens::registry` beside the `RepeatGate` it grades — the item context menu became a surface
+//! in phase 10 and needs the same cadence, and a screen may not name a sibling family for a shared
+//! word (§2.1).
 
 use std::os::raw::c_int;
 
@@ -36,158 +39,20 @@ pub(crate) fn hud_visible(ps: &crate::route::PlaybackSession, now: u32, until: u
     ((now < until || is_paused) && !dismissed) || crate::player::loading(ps)
 }
 
-/// WHICH key the remote is holding down, as one value: the sym the client-side repeat timer
-/// is driving, the two instants that timer reads, the hardware heartbeat that catches a
-/// dropped key-up, and the sym we watched go physically down.
-///
-/// They are bundled because the two per-frame rules at the bottom of the loop each read
-/// three of the five together — the lost-keyup net tests `sym`, `since` and `alive`, and the
-/// repeat itself tests `sym`, `since` and `last_rep` — while every arm that arms a hold
-/// writes the same three fields in the same order.
-pub(crate) struct HeldKey {
-    pub(crate) sym: u32,      // the key the client-side repeat is driving; 0 = nothing held
-    pub(crate) since: u32,    // when it was armed — the repeat's initial delay is measured from here
-    pub(crate) last_rep: u32, // when that repeat last fired
-    pub(crate) alive: u32,    // last hardware 0x101 for the held key — a lost-keyup liveness net
-    /// The sym we believe is PHYSICALLY DOWN right now — set by a fresh key-down, cleared by
-    /// its key-up. It exists to tell a real hardware auto-repeat from a PHANTOM one, which
-    /// this TV emits routinely and which the repeat guard below would otherwise swallow.
-    ///
-    /// Device-measured 2026-08-15, over the system keyboard: the panel does not deliver a
-    /// key-up for the press that raised it (`RETURN` down at t=326491 with no up until the
-    /// panel's own session ends), so LG's key driver still believes OK is held and stamps
-    /// the NEXT press with `state & 0x100`. The guard read that as a repeat and dropped it,
-    /// so the first OK after every keyboard session did nothing and the user pressed twice —
-    /// reported as "I have to click the search field twice for the keyboard to appear" and
-    /// "Enter twice dismisses it". Both are this one field. A repeat for a key we never saw
-    /// pressed is not a repeat.
-    pub(crate) down_sym: u32,
-}
-impl HeldKey {
-    /// Nothing held, no hold-repeat pending — where the loop starts.
-    pub(crate) const IDLE: HeldKey = HeldKey {
-        sym: 0,
-        since: 0,
-        last_rep: 0,
-        alive: 0,
-        down_sym: 0,
-    };
-    /// Arm the client-side hold-repeat for `sym` at `now` — the trio every fresh-press arm
-    /// writes together. `alive` and `down_sym` are the hardware's own bookkeeping and are
-    /// deliberately untouched here: `alive` is stamped by the 0x101 repeat arm, `down_sym`
-    /// by the key-down and key-up edges.
-    pub(crate) fn arm(&mut self, sym: u32, now: u32) {
-        self.sym = sym;
-        self.since = now;
-        self.last_rep = now;
-    }
-}
+// (`struct HeldKey` stood here — WHICH key the remote is holding, as one value: the sym the
+// CLIENT-SIDE repeat timer was driving, the two instants that timer read, the hardware heartbeat
+// that caught a dropped key-up, and the sym we watched go physically down. Deleted with the timer
+// in restructure phase 10, whose last consumer was the item context menu; every discrete focus
+// list in the app is an owned screen or a surface now and paces its own `Edge::Repeat` through
+// `registry::RepeatGate` at `registry::PANEL_REPEAT_MS`.
+//
+// The one field that was never about that timer — `down_sym`, the PHANTOM-repeat discriminator
+// (this television's key driver stamps `state & 0x100` on the first press after a system-keyboard
+// session, because the panel ate the key-up; device-measured 2026-08-15) — survives as
+// `app::App::down_sym`, a bare `u32`. `PlayerScreen::held` went with the struct: nothing had
+// armed it since phase 9 moved the panels onto the dispatcher, so it wrote two constant zeros
+// into the canonical state and was a field the shape pin paid for.)
 
-/// Rate-limits a REPEAT-DRIVEN discrete step — a forwarded hardware auto-repeat, or one tick of a
-/// scroll-wheel gesture — to a couch-comfortable cadence, independent of the SOURCE's own cadence.
-/// A held hardware key repeats roughly every 50ms; a wheel gesture can deliver several ticks in one
-/// pass. Settings, Consent and Legal move a whole table row — or, inside a document, a full page of
-/// reading text — per step, so letting either source drive `on_updown` at its own rate reads as a
-/// blur rather than a scroll: item 13's whole ask.
-///
-/// Pure and host-testable — no `SDL_GetTicks` inside; `now` is threaded in by the caller, the same
-/// shape `HeldKey`'s own `wrapping_sub` timing takes, so it survives the tick wrap the same way.
-pub(crate) struct RepeatGate {
-    /// The tick of the last step this gate admitted; `None` before the first one.
-    pub(crate) last: Option<u32>,
-}
-impl RepeatGate {
-    /// Minimum time between two repeat-driven steps this gate allows. Slower than the discrete
-    /// focus-list repeat (110ms, [`PANEL_REPEAT_MS`]) on purpose — a home-grid card is a glance, a
-    /// settings row or a line of reading text is not.
-    pub(crate) const STEP_MS: u32 = 160;
-    pub(crate) const IDLE: RepeatGate = RepeatGate { last: None };
-    /// True at most once per [`Self::STEP_MS`]; always true the first call, or after a gap at
-    /// least that long (which is also what makes a long-idle gate behave like a fresh one).
-    pub(crate) fn ready(&mut self, now: u32) -> bool {
-        self.ready_every(now, Self::STEP_MS)
-    }
-    /// The same gate at a caller-chosen cadence. The player's four overlay surfaces take
-    /// [`PANEL_REPEAT_MS`] through this, which is what preserves the exact hold-to-move feel the
-    /// loop's own client-side repeat timer gave them before phase 9 moved their input onto the
-    /// dispatcher: the remote streams `Edge::Repeat` at roughly 50 ms, and a list walked at that
-    /// rate reads as a blur (see [`PANEL_REPEAT_MS`]).
-    pub(crate) fn ready_every(&mut self, now: u32, step_ms: u32) -> bool {
-        let due = match self.last {
-            None => true,
-            Some(last) => now.wrapping_sub(last) >= step_ms,
-        };
-        if due {
-            self.last = Some(now);
-        }
-        due
-    }
-    /// **A fresh press restarts the cadence from itself.** The press is acted on unconditionally
-    /// by its own arm — a fresh press is never swallowed by the cadence of the press before it —
-    /// and this records it as the step it is, so the FIRST hardware repeat of the new hold waits a
-    /// full [`PANEL_REPEAT_MS`] rather than landing on top of it.
-    ///
-    /// It cleared `last` instead until the surface tests were written, which was wrong in exactly
-    /// the direction that is invisible on a fresh gate: the remote streams `Edge::Repeat` at ~50 ms
-    /// and the first of them arrives with `last: None`, so a held key stepped TWICE before the
-    /// cadence engaged, once for the press and once for the repeat behind it.
-    pub(crate) fn rearm(&mut self, now: u32) {
-        self.last = Some(now);
-    }
-}
-
-/// **The cadence a held direction walks a player panel's list at**, in ms.
-///
-/// 110 ms, which is the number `app/run.rs`'s client-side repeat timer used for exactly these four
-/// panels (the track menu, the `…` popover, the Info card and the Chapters strip) while their keys
-/// went through the loop's own ladder. That timer existed because the Magic Remote streams
-/// hardware auto-repeat at ~50 ms and a list walked at that rate is unusable; phase 9 put the
-/// panels' input on the dispatcher, where `Edge::Repeat` arrives at the hardware's rate, so the
-/// cadence has to be applied by the surface that receives it. Same number, same feel, one owner.
-pub(crate) const PANEL_REPEAT_MS: u32 = 110;
-
-#[cfg(test)]
-mod repeat_gate_tests {
-    use super::{RepeatGate, PANEL_REPEAT_MS};
-
-    #[test]
-    fn a_gate_admits_the_first_step_then_holds_the_cadence() {
-        let mut gate = RepeatGate::IDLE;
-        assert!(gate.ready(1_000), "nothing has fired yet");
-        assert!(!gate.ready(1_050), "too soon");
-        assert!(!gate.ready(1_159), "still short of the step");
-        assert!(gate.ready(1_160), "exactly one step later");
-        assert!(!gate.ready(1_161));
-    }
-
-    /// SDL ticks wrap at 2^32ms; the same arithmetic `HeldKey`'s lost-keyup net and client-side
-    /// repeat already rely on, so this gate must survive it the same way.
-    #[test]
-    fn the_gate_survives_the_tick_wrap() {
-        let mut gate = RepeatGate::IDLE;
-        let at = u32::MAX - 50;
-        assert!(gate.ready(at));
-        assert!(!gate.ready(at.wrapping_add(100)));
-        assert!(gate.ready(at.wrapping_add(160)));
-    }
-
-    /// The player panels' own cadence, and the reason `ready_every` exists: the remote's ~50 ms
-    /// hardware repeat is admitted at 110 ms, not at 160 (a settings row) and not at 50.
-    #[test]
-    fn a_player_panel_walks_a_held_direction_at_its_own_cadence() {
-        let mut gate = RepeatGate::IDLE;
-        assert!(gate.ready_every(1_000, PANEL_REPEAT_MS));
-        assert!(!gate.ready_every(1_050, PANEL_REPEAT_MS), "the hardware's own rate is too fast");
-        assert!(gate.ready_every(1_110, PANEL_REPEAT_MS));
-        // …and a FRESH press restarts the cadence FROM ITSELF. The press is acted on by its own
-        // arm without consulting the gate, so it is never swallowed; what this pins is the other
-        // half, which was wrong until the surface tests caught it — the first hardware repeat of
-        // the new hold must wait a full cadence rather than landing on top of the press.
-        gate.rearm(1_115);
-        assert!(!gate.ready_every(1_165, PANEL_REPEAT_MS), "the repeat behind a fresh press waits");
-        assert!(gate.ready_every(1_225, PANEL_REPEAT_MS));
-    }
-}
 
 /// Scrub-seek gesture state. This Magic Remote emits a HELD key as auto-repeat keydowns
 /// (state 0x101, ~50ms apart) followed by ONE keyup on release; a TAP is a lone

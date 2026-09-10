@@ -124,7 +124,7 @@ fn fixture(sid: ServerId) -> Detail {
     }
 }
 
-fn install(d: Detail) -> std::sync::MutexGuard<'static, ()> {
+fn install(d: Detail) -> crate::testlock::Serial {
     let guard = crate::testlock::serial();
     crate::metadata::set_current_for_test(Some(d));
     guard

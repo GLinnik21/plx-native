@@ -89,6 +89,116 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
     assert_eq!(users(), 0, "and gave the page back to the live path");
 }
 
+/// **A page that MOVES under an open panel is the HOST moving** (spec §4.4, §15.1) — the sibling
+/// of `a_modal_foreground_spring_does_not_invalidate_the_host_snapshot`, which grades the other
+/// direction and passed for the wrong reason while this one failed.
+///
+/// The reproduction, measured against the broken build (14 consecutive frames):
+/// `moving=true page_moving=false` — the Library's own scroll spring in flight while the Sort menu
+/// fades out, with `idle::page_moving()` reading FALSE for every one of them.
+/// `frame_with_results` wrapped the WHOLE dispatcher frame in `popover::own_motion` while any
+/// surface was up, so every spring an owned page stepped inside that frame was attributed to the
+/// panel. `surface_up()` counts a `Closing` surface, and a `Closing` surface has already handed
+/// input back to the page — which is exactly the state `popover::host_refresh`'s `fading_only`
+/// term exists for. So the one signal that re-takes the frozen snapshot for a page the user is
+/// driving again was suppressed by construction, and the panel's fade showed a stale picture of a
+/// scrolling page.
+///
+/// **It has to be the LIBRARY, and it has to be `idle`.** The dispatcher keeps a motion ledger of
+/// its own (`Present::page_moving`, reported as `FrameReport::underlay_moving`), but a screen only
+/// reaches it by calling `fx.note(PresentEvent::Motion)` — which `screens::library` never does. It
+/// animates through `crate::ui::Spring`, i.e. `gfx::spring`, which reports to `ui::idle` and
+/// nowhere else; `report.underlay_moving` is false on every frame below. `idle::page_moving()` is
+/// the only witness there is.
+#[test]
+fn a_host_page_spring_under_an_open_panel_is_host_motion() {
+    let _guard = crate::testlock::serial();
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    let _cleanup = Cleanup;
+    let session = crate::plex::session::TempSession::new("library-host-motion");
+    session.watching("u-library-host-motion");
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test("motion-own", "127.0.0.1", 9, "synthetic", "fixture");
+    crate::plex::set_current(sid);
+    crate::browse::seed_registered_table_for_test([sid, sid]);
+    let mut directory = crate::stores::browse::DirectorySnapshot::default();
+    directory.capture();
+    crate::stores::browse::apply(crate::stores::browse::BrowseCmd::SetCur(0));
+    crate::browse::seed_items_for_test(120);
+
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, Route::Library, tick(0), vec![]);
+    d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::Immediate);
+    // park the grid focus deep, and let every boot spring settle
+    Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 8, col: 4 });
+    for i in 1..80 {
+        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+    }
+    let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+    let listing = rig.listing.view().id().unwrap();
+    d.nav.next_style = crate::ui::containers::modal::Style::Compact;
+    d.request(
+        MachineId::Nav,
+        NavOp::Present(AppArg::LibraryMenu(crate::screens::registry::LibraryMenuArg {
+            host,
+            kind: crate::screens::registry::LibraryMenuKind::Sort,
+            anchor: [0; 4],
+            target: crate::stores::browse::SectionAddress {
+                epoch: listing.epoch,
+                sid: listing.sid,
+                section: listing.section,
+            },
+        })),
+    );
+    for i in 80..120u32 {
+        frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+    }
+    let menu = d.nav.modals.surfaces.first().expect("the menu is up").entry.id;
+
+    // a settled panel over a settled page: nothing moves, and in particular the panel's own
+    // appear spring (`ModalStack::tick`, now in a scope of its own) is not the page's motion
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    frame(&mut d, &mut rig, Route::Library, tick(120), vec![]);
+    assert!(!crate::ui::idle::page_moving(), "a settled host does not move");
+
+    // dismiss: input returns to the page while the panel is still visible, and the page is driven
+    d.request(MachineId::Nav, NavOp::Dismiss(menu));
+    frame(&mut d, &mut rig, Route::Library, tick(121), vec![]);
+    Bridge::library_command(&mut d, crate::screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
+    let mut moved = 0;
+    for i in 122..136u32 {
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        let (_, report) = frame(&mut d, &mut rig, Route::Library, tick(i), vec![]);
+        if !crate::ui::idle::present_moving() {
+            continue;
+        }
+        moved += 1;
+        assert!(
+            d.surface_up(),
+            "frame {i}: the reproduction needs the panel still up (fading) while the page moves"
+        );
+        assert!(
+            crate::ui::idle::page_moving(),
+            "frame {i}: the page's own scroll spring is in flight and nothing else is — \
+             it is the HOST that is moving (report.underlay_moving={})",
+            report.underlay_moving
+        );
+        assert!(
+            crate::ui::popover::host_refresh(true, false, crate::ui::idle::page_moving()),
+            "frame {i}: …so the fading panel's frozen snapshot is re-taken"
+        );
+    }
+    assert!(moved >= 5, "the scroll spring travelled for {moved} frames — not a reproduction");
+}
+
 /// The other half, at the seam the bug was actually in: the bridge's counter answer is DERIVED
 /// from the container's own policy table, so the two cannot state different things again.
 #[test]

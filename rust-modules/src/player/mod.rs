@@ -508,7 +508,7 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
 ///
 /// Pure. Every part is a product identity or a closed vocabulary: the version every surface shares
 /// (`plex::identity`), the firmware release, the set (model · board · hw — the rule
-/// `ui::stats::device_rows` states: shared by every unit LG built, saying nothing about a
+/// `app::diagnostics::device_rows` states: shared by every unit LG built, saying nothing about a
 /// household) and [`FailureKind::code`], the same string the telemetry channel sends. It never
 /// carries `ErrorShape::detail`, the server's free text, which is the one thing here that could
 /// name a file.
@@ -904,7 +904,7 @@ pub(crate) use engine::aq_caps;
 pub(crate) use engine::feed_leads_ms;
 pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
 
-/// One consistent read of everything the on-screen diagnostics overlay shows (`ui::stats`).
+/// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
 ///
 /// A struct rather than twenty accessors for one reason: the panel must not tell a story that
 /// never happened. Sampled field-by-field across a frame it could report "no frames" beside a
@@ -1565,7 +1565,7 @@ pub(crate) fn vplane_take() -> (u32, u32) {
 /// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
 /// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
 /// TICKS, not frames — which is what `pump`'s `frames >= 2` gate really means (≈400 ms of
-/// playback, not two pictures) and what `ui::stats` really shows.
+/// playback, not two pictures) and what `app::diagnostics` really shows.
 ///
 /// The consequence for diagnosis: this callback can say the pipeline still believes it is
 /// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
@@ -2457,7 +2457,7 @@ mod tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         use crate::plex::serverinfo::{store_for_test, Subscription as Sub};
         struct Fresh {
-            _g: std::sync::MutexGuard<'static, ()>,
+            _g: crate::testlock::Serial,
         }
         impl Drop for Fresh {
             fn drop(&mut self) {

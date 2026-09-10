@@ -50,7 +50,7 @@ impl Prompt {
 }
 
 /// PURE: the offer a given segment makes. Takes the marker rather than reading the playhead, so
-/// the precedence it feeds ([`super::player_hud::slot_for`]) is host-testable and the whole frame
+/// the precedence it feeds ([`crate::ui::player_hud::slot_for`]) is host-testable and the whole frame
 /// decides from ONE playhead sample — `playpos_ns` is written by LG's media thread, and re-reading
 /// it per call site let the input path and the draw path disagree within a single frame.
 ///
@@ -76,7 +76,7 @@ pub(crate) fn prompt_for(m: metadata::Marker) -> Prompt {
 /// 9): it carries both the label-width memo this measurement is cached in and the control row's
 /// focus springs. It was a module `static mut` on the other side of `ctrl_slot` until then.
 pub(crate) fn rect(row: &mut crate::ui::player_hud::TransportRow, pr: Prompt) -> Rect {
-    super::player_hud::ctrl_slot(row, pr.label())
+    crate::ui::player_hud::ctrl_slot(row, pr.label())
 }
 
 /// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.

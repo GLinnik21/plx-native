@@ -1,6 +1,6 @@
 //! Playback orchestration from the app core's side: the scrub/seek/position accessors, the
 //! start/exit/finish of a playback and the player-route key handlers. Moved out of `app.rs`
-//! verbatim in phase 1a (a pure move; `pub(super)` widening only).
+//! verbatim in phase 1a (a pure move; `pub(crate)` widening only).
 //!
 //! **The HUD's timer, its cursor, the scrub gesture and the repeat gates are no longer here.**
 //! Restructure phase 9 moved them into the player's own `Screen` instance
@@ -11,28 +11,32 @@
 //! wrote are fields of a screen now (§2.3), and every arm that touches them takes that screen.
 
 use super::*;
-pub(super) use crate::screens::player::input::{
-    failed_key_action, scrub_press, FailedKeyAction, HeldKey, HudNav, HudState,
-    RepeatGate, Scrub, ScrubPress, HUD_HEADLESS_MS, HUD_LINGER_MS, SCRUB_ACCEL,
+pub(crate) use crate::screens::player::input::{
+    failed_key_action, scrub_press, FailedKeyAction, HudNav, HudState,
+    Scrub, ScrubPress, HUD_HEADLESS_MS, HUD_LINGER_MS, SCRUB_ACCEL,
     SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, SCRUB_STEP_NS, TAP_COMMIT_MS,
 };
-pub(super) use crate::screens::player::PlayerScreen;
+// The modal repeat cadence is `screens::registry`'s (phase 10 merge): the item context menu is a
+// surface of its own family and needs the same gate, so it is shared vocabulary rather than the
+// player's. `App::modal_repeat` still reaches it through this re-export.
+pub(crate) use crate::screens::registry::RepeatGate;
+pub(crate) use crate::screens::player::PlayerScreen;
 
 
 #[inline]
-pub(super) fn resume_pend() -> bool {
+pub(crate) fn resume_pend() -> bool {
     crate::player::TX.resume_pend.load(Relaxed)
 }
 #[inline]
-pub(super) fn set_resume_pend(v: bool) {
+pub(crate) fn set_resume_pend(v: bool) {
     crate::player::TX.resume_pend.store(v, Relaxed)
 }
 #[inline]
-pub(super) fn dur() -> i64 {
+pub(crate) fn dur() -> i64 {
     crate::player::duration_ns()
 }
 #[inline]
-pub(super) fn playpos() -> i64 {
+pub(crate) fn playpos() -> i64 {
     crate::player::playpos_ns()
 }
 /// The playhead the user INTENDED, which is not always the one being published. While a seek is
@@ -47,26 +51,26 @@ pub(super) fn playpos() -> i64 {
 /// PUBLISHED position is the point (the re-pause gate, which is already behind `seek_pending() < 0`,
 /// and the heartbeat's `pos=`, which the harness grades real playback progress from).
 #[inline]
-pub(super) fn intended_pos(ps: &crate::route::PlaybackSession) -> i64 {
+pub(crate) fn intended_pos(ps: &crate::route::PlaybackSession) -> i64 {
     crate::player::intended_pos_ns(ps)
 }
 #[inline]
-pub(super) fn frames() -> i32 {
+pub(crate) fn frames() -> i32 {
     crate::player::frames()
 }
 #[inline]
-pub(super) fn seek_pending() -> i64 {
+pub(crate) fn seek_pending() -> i64 {
     crate::player::seek_pending()
 }
 #[inline]
-pub(super) fn request_seek(x: i64) {
+pub(crate) fn request_seek(x: i64) {
     crate::player::request_seek(x)
 }
 /// Commit a scrub to `target` and clear the preview. If we were PAUSED, STAY logically paused: a
 /// dedicated seek-preroll feed override lets the synchronized native clock decode one landed frame
 /// without publishing a false viewer Resume. `resume_pend` asks the per-frame loop to close that
 /// bounded override. `repause_at` is the landed-frame wait target.
-pub(super) fn commit_seek(scrubber: &mut Scrub, target: i64, repause_at: &mut i64) {
+pub(crate) fn commit_seek(scrubber: &mut Scrub, target: i64, repause_at: &mut i64) {
     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
         feature: crate::diag::schema::Feature::Seek,
     });
@@ -79,7 +83,7 @@ pub(super) fn commit_seek(scrubber: &mut Scrub, target: i64, repause_at: &mut i6
     }
 }
 #[inline]
-pub(super) fn is_started() -> bool {
+pub(crate) fn is_started() -> bool {
     crate::player::is_started()
 }
 
@@ -93,9 +97,9 @@ pub(super) fn is_started() -> bool {
 
 /// Perform what the `…` popover reported. Shared by the OK key and the pointer click, so
 /// the two paths can never come to disagree about what a row does.
-pub(super) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, a: crate::ui::more_menu::Action) {
+pub(crate) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter, a: crate::ui::more_menu::Action) {
     match a {
-        crate::ui::more_menu::Action::ToggleStats => crate::ui::stats::toggle(),
+        crate::ui::more_menu::Action::ToggleStats => crate::app::diagnostics::toggle(),
         // A rung of the playback-quality ladder — a routing POLICY, not a number handed to a
         // running stream. Not deferred either: `route::set_quality` re-asks the routing question
         // for the playback on screen and reloads only when the answer changed.
@@ -114,7 +118,7 @@ pub(super) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
         }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
-        crate::ui::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu"),
+        crate::ui::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
         crate::ui::more_menu::Action::None => {}
     }
 }
@@ -125,7 +129,7 @@ pub(super) fn apply_more_action(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// refusal which never created an Engine, retires a failed server transcode when there was one,
 /// and gives telemetry two honest attempts.  The descriptor lives in `route`; the app owns only
 /// the current playhead and the Engine lifecycle.
-pub(super) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter) -> bool {
+pub(crate) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter) -> bool {
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
     // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
     // read-out with an idle black frame.
@@ -155,7 +159,7 @@ pub(super) fn retry_failed_playback(ps: &mut crate::route::PlaybackSession, pa: 
 /// Load (direct-play av_seek / transcode &offset restart), start the engine, record the
 /// Stop/BACK/EOS return target, reset the HUD focus cursor, and show the HUD. A missed step
 /// here used to silently fork behavior between the interactive and headless paths.
-pub(super) fn start_playback(
+pub(crate) fn start_playback(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     resume_ns: i64,
@@ -232,14 +236,14 @@ pub(super) fn start_playback(
 
 /// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
 /// stay-paused variant. Written out four separate times in this file before it had a name.
-pub(super) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
+pub(crate) fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
     if paused() {
         set_transport_paused(pa, false);
     }
 }
 
 /// Legacy card launches resolve media data without creating an invisible Detail screen.
-pub(super) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession) -> Option<i64> {
+pub(crate) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession) -> Option<i64> {
     let d = crate::metadata::current()?;
     if d.kind == "show" || !d.seasons.is_empty() {
         let started = d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0)
@@ -254,7 +258,7 @@ pub(super) fn request_loaded_hero(ps: &mut crate::route::PlaybackSession) -> Opt
     }
 }
 
-pub(super) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, rk: &str) -> bool {
+pub(crate) fn request_loaded_episode(ps: &mut crate::route::PlaybackSession, rk: &str) -> bool {
     let Some(d) = crate::metadata::current() else { return false };
     d.episodes.iter().find(|e| e.rk == rk).is_some_and(|ep| request_episode(ps, d, ep))
 }
@@ -282,9 +286,9 @@ fn request_episode(ps: &mut crate::route::PlaybackSession, d: &crate::metadata::
 /// left is the one panel that is NOT the player's — the diagnostics read-out (phase 10) — and the
 /// stack dismissal, which is here rather than left to the page's unmount because a FAILED playback
 /// keeps its `…` popover up over the read-out and BACK must take that panel down first.
-pub(super) fn close_player_overlays(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+pub(crate) fn close_player_overlays(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::dismiss_player_overlays(pages);
-    crate::ui::stats::close(); // a diagnostics panel must not survive into the next session
+    crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
 }
 
 /// **The Info card's tvOS press, committed on the spring-back.** The card's own OK arm cannot
@@ -292,7 +296,7 @@ pub(super) fn close_player_overlays(pages: &mut crate::ui::dispatch::Dispatcher<
 /// the player adapter, and — the reason it is DEFERRED at all — the dip has to be on screen
 /// before the card goes away. So the surface arms `PlayerReq::ArmInfoPress`, the loop's press
 /// machine holds the frame, and this reads the decision back out of the panel that is still up.
-pub(super) unsafe fn commit_info_press(
+pub(crate) unsafe fn commit_info_press(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     route: &mut Route,
@@ -320,7 +324,7 @@ pub(super) unsafe fn commit_info_press(
 /// which no screen has (§2.2) — the panel returns a
 /// [`TrackCommit`](crate::ui::track_menu::TrackCommit) and this is where it lands, from the
 /// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike.
-pub(super) fn commit_track(
+pub(crate) fn commit_track(
     ps: &mut crate::route::PlaybackSession,
     commit: crate::ui::track_menu::TrackCommit,
 ) {
@@ -333,7 +337,7 @@ pub(super) fn commit_track(
     }
 }
 
-pub(super) fn player_requests(
+pub(crate) fn player_requests(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     reqs: Vec<crate::screens::registry::PlayerReq>,
@@ -403,7 +407,7 @@ pub(super) fn player_requests(
 /// express: a *Play from Start* on a Related tile is an item the page says nothing about, and if
 /// it happens to be an episode then revealing its show here would navigate the user to a page they
 /// never asked for instead of back to the one they were standing on.
-pub(super) fn reveal_played_episode(from: &Node) -> bool {
+pub(crate) fn reveal_played_episode(from: &Node) -> bool {
     let Node::Detail { sid, rk, .. } = from else {
         return false;
     };
@@ -434,7 +438,7 @@ pub(super) fn reveal_played_episode(from: &Node) -> bool {
 /// `from` is [`Origin`]'s payload — the page that was mounted when playback started. Re-entry is
 /// [`enter_node`], the same ritual every BACK pop and every forward `Nav::Open` uses, so a player
 /// exit cannot mount a page in a way nothing else does.
-pub(super) fn exit_player(
+pub(crate) fn exit_player(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     route: &mut Route,
@@ -468,7 +472,7 @@ pub(super) fn exit_player(
 /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
 /// Starts the queued episode when the show has one, else leaves the player exactly as
 /// `exit_player` would. There is no interstitial: "always the next episode".
-pub(super) fn finish_playback(
+pub(crate) fn finish_playback(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     route: &mut Route,
@@ -491,7 +495,7 @@ pub(super) fn finish_playback(
 /// drifted (the key path cleared the held key, the pointer path did not). Returns true when
 /// the route flipped, which is the only thing the two callers still handle differently.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn activate_ctrl_row(
+pub(crate) fn activate_ctrl_row(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     slot: crate::ui::player_hud::ControlSlot,
@@ -504,7 +508,7 @@ pub(super) fn activate_ctrl_row(
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
     use crate::ui::player_hud::ControlSlot;
-    use crate::ui::skip_pill::SkipAction;
+    use crate::screens::player::skip_pill::SkipAction;
     match slot {
         // The row's two items, off the cursor the caller already parked (a click sets it
         // from the hit-test, a key press moved it). *Next Episode* starts the successor;
@@ -562,7 +566,7 @@ pub(super) fn activate_ctrl_row(
 /// also what posts the `state=stopped` timeline that commits the watched state, and it
 /// must happen BEFORE `request_play_up_next`: teardown reads the outgoing item's session
 /// ids and clears the URL, both of which the new plan is about to overwrite.
-pub(super) fn play_up_next(
+pub(crate) fn play_up_next(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     hud_ms: u32,
@@ -619,7 +623,7 @@ pub(super) fn play_up_next(
 /// the ONLY difference between restarting a Continue Watching tile and resuming it. Taking it
 /// as a flag (rather than a resume_ns the caller computes) keeps Plex's resume rule
 /// (`metadata::resume_ns`, which also refuses to resume the last few percent) in one place.
-pub(super) unsafe fn play_item_now(
+pub(crate) unsafe fn play_item_now(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     mm: &crate::pms::PmsMovie,
@@ -681,7 +685,7 @@ pub(super) unsafe fn play_item_now(
 /// This arm's guard still swallows Menu / Info / Chapters while the transport is absent.  It
 /// explicitly exempts the More route it opened, so only that visible recovery panel reaches the
 /// ordinary modal key arm beneath it.
-pub(super) fn key_player_failed(
+pub(crate) fn key_player_failed(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     sym: c_uint,
@@ -771,7 +775,7 @@ fn apply_info_action(
 /// Playing: UP/DOWN move the HUD focus (scrubber ↔ buttons ↔ tabs). The first press on a hidden HUD
 /// just reveals it (focused on the scrubber); pressing UP with nothing focusable above (the buttons
 /// row) hides the HUD again.
-pub(super) fn key_player_updown(key: Key, now: u32, hud: &mut HudState, scrubber: &mut Scrub) {
+pub(crate) fn key_player_updown(key: Key, now: u32, hud: &mut HudState, scrubber: &mut Scrub) {
     // the pre-press sample, not a fresh one: `begin_fresh_press` has already cleared `dismissed`,
     // so re-asking would call a hand-hidden transport visible (`HudState::visible_at_press`)
     let vis = hud.visible_at_press;
@@ -819,13 +823,12 @@ pub(super) fn key_player_updown(key: Key, now: u32, hud: &mut HudState, scrubber
 /// update and draw alike (see the `let ctrl` at the top of the loop), and an offer that arrived
 /// mid-press has already changed what the user is looking at.
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn activate_player_row(
+pub(crate) unsafe fn activate_player_row(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     ctrl: crate::ui::player_hud::ControlSlot,
     now: u32,
     route: &mut Route,
-    held: &mut HeldKey,
     trail: &mut Trail,
     play_from: &mut Node,
     refresh_hubs_at: &mut u32,
@@ -836,8 +839,12 @@ pub(super) unsafe fn activate_player_row(
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
     if !ctrl.is_discs() {
-        // A stand-in owns row 1 — activate it. Same value the draw used.
-        if activate_ctrl_row(
+        // A stand-in owns row 1 — activate it. Same value the draw used. (Its `true` answer used
+        // to clear the loop's client-side hold-repeat sym as well, so an async route flip could
+        // not repeat a held key into the next screen. That timer is gone with phase 10 — see
+        // `App::down_sym` — and the discrete lists it drove pace their own `Edge::Repeat`, which
+        // a route change ends by retiring the surface that was receiving them.)
+        activate_ctrl_row(
             ps,
             pa,
             ctrl,
@@ -848,9 +855,7 @@ pub(super) unsafe fn activate_player_row(
             trail,
             pages,
             bridge,
-        ) {
-            held.sym = 0; // async route flip: don't repeat a held key into the next screen
-        }
+        );
     } else if btn == crate::ui::player_hud::BTN_MORE {
         // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
         // other occupant. OK on a control disc PRESENTS its panel on this page's own stack.
@@ -869,7 +874,7 @@ pub(super) unsafe fn activate_player_row(
 }
 
 /// PAUSE — the dedicated transport key, which only ever pauses (PLAY is its other half).
-pub(super) fn key_pause(
+pub(crate) fn key_pause(
     pa: &mut crate::player::adapter::PlayerAdapter,
     route: Route,
     now: u32,
@@ -889,7 +894,7 @@ pub(super) fn key_pause(
 }
 
 /// PLAY — off the player route it starts the buffer-feed and enters the player; on it, it un-pauses.
-pub(super) unsafe fn key_play(
+pub(crate) unsafe fn key_play(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     now: u32,
@@ -962,7 +967,7 @@ pub(super) unsafe fn key_play(
 /// discrete 10 s hop waits for a second press, which is what `Scrub::reveal` marks: without it the
 /// tap release would commit a seek to the seed, i.e. a full reopen+prime to the spot we are
 /// already sitting on.
-pub(super) unsafe fn key_scrub(
+pub(crate) unsafe fn key_scrub(
     ps: &crate::route::PlaybackSession,
     key: Key,
     now: u32,
@@ -1039,7 +1044,7 @@ pub(super) unsafe fn key_scrub(
 /// landing, `playpos()` is stale (it still reports the pre-seek spot), so a quick re-press would
 /// jump back to where we started and resume there — interrupting the scrub. The divergence IS "a
 /// seek is in flight", so log it when the two disagree rather than re-deriving the condition here.
-pub(super) unsafe fn seed_scrub(ps: &crate::route::PlaybackSession, scrubber: &mut Scrub) {
+pub(crate) unsafe fn seed_scrub(ps: &crate::route::PlaybackSession, scrubber: &mut Scrub) {
     let seed = intended_pos(ps);
     let live = playpos();
     if seed != live {
@@ -1055,7 +1060,7 @@ pub(super) unsafe fn seed_scrub(ps: &crate::route::PlaybackSession, scrubber: &m
 /// Run a play-plan landing and then observe the derived player state in the same frame. This tiny
 /// seam is explicit because a refused `/decision` publishes `Error` inside the landing, after the
 /// loop's ordinary report tick; BACK on the next frame can otherwise erase the only observation.
-pub(super) fn land_play_then_observe<S: ?Sized>(
+pub(crate) fn land_play_then_observe<S: ?Sized>(
     state: &mut S,
     land: impl FnOnce(&mut S),
     observe: impl FnOnce(&S),

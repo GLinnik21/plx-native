@@ -87,7 +87,7 @@ use crate::ui::consts::{
 // The window we ASK SDL for. `surface::probe` then reads back what we actually got.
 const SCR_W: c_int = crate::surface::LOGICAL_W as c_int;
 const SCR_H: c_int = crate::surface::LOGICAL_H as c_int;
-const COLS: c_int = 10;
+pub(crate) const COLS: c_int = 10;
 const RESUME_REWIND_NS: i64 = 5_000_000_000;
 
 // `SDL_webOSCursorVisibility` is declared apart from the rest because it exists ONLY in LG's
@@ -108,21 +108,25 @@ extern "C" {
 }
 
 // Phase 1a of the UI restructure split this file: everything above `plex_run` moved into the
-// submodules below as a PURE move (`pub(super)` widening only), glob-imported here so the
+// submodules below as a PURE move (`pub(crate)` widening only), glob-imported here so the
 // loop body reads exactly as before. `plex_run` itself is phase 1b.
 pub(crate) mod adapters;
-mod boot;
-pub(super) mod clock;
+pub(crate) mod boot;
+/// **"Stats for nerds"** — the diagnostics read-out (phase 10, was `ui/stats.rs`). Here rather
+/// than in `ui/` because it is written from `player::Diag`, `route`, `plex::identity`, `webos`
+/// and `devcaps` — application facts — and because its state is now an `App` field.
+pub(crate) mod diagnostics;
+pub(crate) mod clock;
 mod recorder;
-mod events;
+pub(crate) mod events;
 pub(crate) mod lifecycle;
-mod playback;
-mod nav;
-mod input;
-mod bridge;
+pub(crate) mod playback;
+pub(crate) mod nav;
+pub(crate) mod input;
+pub(crate) mod bridge;
 mod chrome;
-mod content;
-mod run;
+pub(crate) mod content;
+pub(crate) mod run;
 use self::boot::*;
 use self::events::*;
 use self::lifecycle::*;
@@ -194,6 +198,11 @@ use crate::log;
 /// The BACK trail's vocabulary — `Trail` is a run-loop local, `Node` its pages, `Spot` the place a
 /// detail page is restored to. See `ui/trail.rs`.
 use crate::metadata::Spot;
+// **The screen ARGUMENT is `screens::registry`'s** since restructure phase 10 (§2.1): the
+// registry owns the concrete `ScreenArg` and the one `mount` match, so `app/` reads it here
+// rather than declaring it. Imported at the tree's root because every module under `app/`
+// that requests a navigation names it.
+use crate::screens::registry::AppArg;
 use crate::ui::trail::{Node, Trail};
 /// The shared top strip's vocabulary: what a pill INDEX means. Every site that turns a pill into a
 /// destination `match`es on this, so a pill the app has not been taught about is a compile error
@@ -213,30 +222,13 @@ pub(crate) struct Adapters {
 /// local). Phase 1b-ii extracts the coordinator's functions over `&mut App`; the machines of §2.2
 /// replace these fields one phase at a time. Every field was a `let mut` before the `while
 /// running` loop; the immutable boot-time values (dev flags, closures, the window) stay locals.
-struct App {
-    pick_user: Option<usize>,
-    home_osc_last: u32,
-    hero_osc_last: u32,
-    home_fold_osc_last: u32,
-    home_fold_down: bool,
-    lib_osc_last: u32,
-    lib_switch_last: u32,
-    lib_switch_step: u32,
-    search_osc_last: u32,
-    settings_osc_last: u32,
-    settings_osc_down: bool,
-    modal_osc_last: u32,
-    legal_doc_tried: bool,
-    alert_tried: bool,
-    /// dev: how many DOWN presses `plxnative-alert` has spent walking to the delete row.
-    alert_step: u8,
-    account_osc_last: u32,
-    account_osc_down: bool,
-    consent_osc_last: u32,
-    consent_osc_down: bool,
-    onboard_osc_last: u32,
-    onboard_osc_right: bool,
-    nav_osc_last: u32,
+///
+/// **`pub(crate)`, and every field with it (phase 10, `dev/scenarios.rs`'s prologue):** the dev-
+/// trigger arms that used to live inline in `boot`/`run`/`content`/`mod` now live in
+/// `crate::dev::scenarios`, a sibling of `app` rather than a descendant of it, so the fields and
+/// helpers they still reach through `&mut App` need to be visible outside this module's subtree.
+/// Nothing here becomes `pub` — only as wide as the crate.
+pub(crate) struct App {
     last_input: u32,
     loop_t: u32,
     iters_ct: i32,
@@ -247,121 +239,88 @@ struct App {
     running: bool,
     #[cfg(feature = "devtools")]
     buffer_flip_count: u8,
-    held_key: HeldKey,
-    // `scrubber: Scrub` and `hud: HudState` stood here through phase 8 and are gone: both are
-    // `PlayerScreen`'s own fields now (§9), so the loop borrows them out of the mounted instance
-    // and there is no second copy to keep in step. `held_key` STAYS, and deliberately — it is the
-    // client-side hold-to-move timer for every discrete focus list, and its one remaining consumer
-    // is the ITEM MENU, which is not the player's (`run`'s hold-repeat arm).
+    /// The sym we believe is PHYSICALLY DOWN right now — set by a fresh key-down, cleared by its
+    /// key-up. It tells a real hardware auto-repeat from a PHANTOM one, which this television emits
+    /// routinely: over the system keyboard the panel does not deliver a key-up for the press that
+    /// raised it, so LG's key driver still believes OK is held and stamps the NEXT press with
+    /// `state & 0x100`. Without this the repeat guard reads that as a repeat and drops it, so the
+    /// first OK after every keyboard session does nothing — reported as "I have to click the search
+    /// field twice for the keyboard to appear" (device-measured 2026-08-15). A repeat for a key we
+    /// never saw pressed is not a repeat.
+    ///
+    /// **It is all that is left of `App::held_key`** (phase 10). The other five fields of `HeldKey`
+    /// were the CLIENT-SIDE hold-to-move timer for every discrete focus list; the last list it
+    /// still drove was the item context menu, and that is a `ModalStack` surface now which paces
+    /// its own `Edge::Repeat` (`screens::registry::PANEL_REPEAT_MS`). This one is a fact about
+    /// the physical key rather than about that timer, so it outlives it — as a bare `u32`, since a
+    /// struct with one field is a name for a name. (`HeldKey` itself is gone with the timer:
+    /// `PlayerScreen::held` had had no producer since phase 9 and wrote two constant zeros into
+    /// the canonical state, which is exactly why it was safe to delete.)
+    ///
+    /// `scrubber: Scrub` and `hud: HudState` stood beside it through phase 8 and are gone: both are
+    /// `PlayerScreen`'s own fields now (§9), so the loop borrows them out of the mounted instance
+    /// and there is no second copy to keep in step.
+    down_sym: u32,
     modal_repeat: RepeatGate,
-    marker_tried: bool,
+    /// **The diagnostics read-out's own state** (phase 10, spec §0 done-criterion 1): what was
+    /// nine `static mut`s in `ui/stats.rs`. Not a `ModalStack` surface, and `diagnostics.rs`'s
+    /// `Diagnostics` doc says why — the panel takes no keys and draws at two different z-positions.
+    pub(crate) diagnostics: diagnostics::Diagnostics,
     /// **The Player machine** (restructure spec §2.2, phase 9): the playback session that was
     /// `route::decision::SESSION`, the app-switch lifecycle that was `App.foreground`, and this
     /// frame's tick. Reached as a parameter from here down — `crate::player::machine`'s doc says
     /// why the pipeline's own handles are a separate field.
-    player: crate::player::machine::Player,
+    pub(crate) player: crate::player::machine::Player,
     /// **The ADAPTERS** (restructure spec §2.2, phase 9) — the OS/FFI resources the machines act
     /// through. One so far: the Player's, which holds the native session that was
     /// `player::engine::ENGINE` together with the main-thread token that confines it.
-    adapters: Adapters,
+    pub(crate) adapters: Adapters,
     repause_at: i64,
-    ok_armed: bool,
+    pub(crate) ok_armed: bool,
     last_route_reported: &'static str,
-    press_tried: bool,
-    press_release_at: u32,
-    itemmenu_tried: bool,
-    ptr: Pointer,
-    route: Route,
-    play_from: Node,
-    trail: crate::ui::trail::Trail,
-    nav_pending: Option<NavReq>,
-    auto_tried: bool,
-    replay_left: u32,
-    grid_tried: bool,
-    settings_tried: bool,
-    seek_tried: bool,
-    seek_script: Vec<String>,
-    seek_script_at: u32,
-    seek_gap_ms: u32,
-    seek_script_last: i64,
-    quality_script: Vec<crate::plex::session::PlaybackQuality>,
-    quality_script_at: u32,
-    quality_gap_ms: u32,
-    quality_tried: bool,
-    quality_playing_since: Option<u32>,
-    detail_tried: bool,
-    content_boot: Option<ContentBoot>,
-    play_tried: bool,
-    menu_tried: bool,
-    menupick_tried: bool,
-    /// dev: the row `/tmp/plxnative-menupick` still owes the track menu.
-    ///
-    /// The trigger opens the panel and then picks a row in it — two acts that used to be one
-    /// statement, because the panel was a `static mut` that `open_tab` filled in place. It is a
-    /// SURFACE now, so its body is mounted at the frame's NAV COMMIT: the pick is carried here
-    /// until the panel it names exists, and is spent on the first frame it does.
-    menupick_row: Option<c_int>,
-    pause_tried: bool,
-    pause_script: Option<(u32, Option<u32>)>,
-    pause_resume_at: Option<u32>,
-    prev: u32,
-    refresh_hubs_at: u32,
+    pub(crate) ptr: Pointer,
+    pub(crate) route: Route,
+    pub(crate) play_from: Node,
+    pub(crate) trail: crate::ui::trail::Trail,
+    pub(crate) nav_pending: Option<NavReq>,
+    pub(crate) prev: u32,
+    pub(crate) refresh_hubs_at: u32,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.
     win: *mut c_void,
-    /// Boot time (`SDL_GetTicks` at the end of boot): the origin of every dev-script delay.
-    t0: u32,
+    /// Boot time (`SDL_GetTicks` at the end of boot): the origin of every dev-script delay AND
+    /// the clock a replay re-seats (`recorder::Recplay::arm`'s `clock_start`) — a field BOTH sides
+    /// write, so it stays here rather than on `dev::scenarios::Scenarios`.
+    pub(crate) t0: u32,
     /// The frame's instruments: the eight phase stamps, FRAMEDROP, the per-second peaks
     /// (`diag::heartbeat`), armed by `plxnative-framedrop`.
     instr: crate::diag::heartbeat::Instruments,
-    /// The boot-time dev trigger flags the loop consults.
-    dev: DevFlags,
+    /// Every dev-trigger arm's own state — oscillator phases, retry latches, boot-time flags
+    /// (formerly `DevFlags`) — gathered on ONE struct (spec: `dev/scenarios.rs`'s module doc).
+    pub(crate) scenarios: crate::dev::scenarios::Scenarios,
     /// The Input machine: owner of the press (restructure spec §2.2); the ladders borrow it.
-    input: crate::ui::input::Input,
+    pub(crate) input: crate::ui::input::Input,
     /// `text::take_measure_fault` has been reported once (the report is once per process).
     measure_fault_logged: bool,
     /// The recorder / replay driver (`plxnative-rec` / `plxnative-recplay`, spec §5.3/§5.5).
-    rec: recorder::Recplay,
+    pub(crate) rec: recorder::Recplay,
     /// The present gate as a machine (spec §4.4). `ui::idle` is still the product's verdict on
     /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
     present: crate::ui::present::Present,
     /// The frame budget (spec §8.1): the poster upload quota, spent by the render cache.
     budget: crate::ui::frame::Budget,
     /// **The container tree, and since phase 5b it is no longer only a shadow.** It still
-    /// mirrors the committed route after every NAV COMMIT — a `LegacyPage` for each route the
+    /// mirrors the committed route after every NAV COMMIT — an owned screen for each route the
     /// ladders still own — but the Settings family is REAL on it: the surfaces and the first-run
     /// Favourites page are owned screens the loop hands its input to and asks to draw
     /// (`app/bridge.rs`'s coexistence contract).
-    pages: crate::ui::dispatch::Dispatcher<bridge::AppHost>,
+    pub(crate) pages: crate::ui::dispatch::Dispatcher<bridge::AppHost>,
     /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
-    inputs: Vec<crate::ui::machine::InputEvent<u32>>,
+    pub(crate) inputs: Vec<crate::ui::machine::InputEvent<u32>>,
     /// What that dispatcher borrows: the mounter, the real `TtfMeasure`, the store deliveries,
     /// the consent machine and the queue of requests an owned screen makes of this loop.
-    bridge: bridge::Bridge,
-}
-
-/// The dev triggers read ONCE at boot and consulted by the loop (each is documented where it
-/// is read in `boot`). Phase 2 turns them into recorded `Sys` results (spec §5.3).
-struct DevFlags {
-    detail_osc: bool,
-    home_osc: bool,
-    hero_osc: bool,
-    home_fold_osc: bool,
-    lib_osc: bool,
-    lib_switch: bool,
-    search_osc: bool,
-    settings_boot: Option<String>,
-    settings_osc: bool,
-    modal_osc: bool,
-    legal_doc: bool,
-    alert_boot: bool,
-    account_osc: bool,
-    consent_osc: bool,
-    onboard_osc: bool,
-    nav_osc: bool,
-    nav_osc_rk: String,
-    glass_hz_armed: bool,
+    pub(crate) bridge: bridge::Bridge,
 }
 
 
@@ -448,9 +407,7 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // Playback tests photograph the television as well as grading its log. This keeps the same
     // ABR/pipeline evidence visible for every automated playback, rather than depending on the
     // previous manual toggle surviving into a new session.
-    if crate::dev::flag("stats") {
-        crate::ui::stats::open();
-    }
+    crate::dev::scenarios::pre_boot();
     // THE main-thread token, minted once — this function IS the SDL main thread. `boot` MOVES it
     // into `App.adapters.player`, and from there a `&mut PlayerAdapter` is the proof: the ACB /
     // Starfish seam still takes `&MainThread` (which is !Send, so `task::spawn` rejects any
@@ -559,66 +516,35 @@ mod route_tests {
         );
     }
 
-    /// A popover is not a page: `page_of` resolves both of them onto the screen underneath, so a
-    /// navigation out of the item menu over a detail page must behave exactly like one off that
-    /// detail page — otherwise opening a card's menu would change what BACK finds behind it.
-    #[test]
-    fn a_popover_answers_for_the_screen_it_sits_on() {
-        let menu = Route::ItemMenu {
-            over: MenuHost::Detail,
-        };
-        assert!(stays_on_trail(menu));
-        assert!(
-            forward_leave(menu).is_none(),
-            "the detail page under the menu stays mounted"
-        );
-        assert!(
-            leave_of(menu).is_none(),
-            "the owned host is retired by Navigation, not a legacy callback"
-        );
-        assert!(
-            forward_leave(Route::Account {
-                over: BarHost::Home
-            })
-            .is_none(),
-            "the Home under the profile menu stays mounted too"
-        );
-    }
+    // (`a_popover_answers_for_the_screen_it_sits_on` stood here. It graded `page_of` over
+    // `Route::ItemMenu { over: MenuHost::Detail }` — a navigation out of the card menu on a detail
+    // page had to behave exactly like one off that detail page, or opening a card's menu would
+    // change what BACK found behind it. Neither menu is a route since phase 10, so `page_of` is
+    // deleted and there is no second route left for the trail questions to resolve: the answer is
+    // the page's own, by construction. `app::bridge`'s
+    // `a_compact_surface_over_a_live_page_leaves_its_host_the_top_page` is what says so on a real
+    // tree.)
 
-    /// **The profile popover stands on the page it was opened from — on all three, not on Home.**
+    /// **The profile chip is offered on exactly the pages that wear the shared top bar.**
     ///
-    /// The chip is a stop on every screen that wears the shared top bar, so `Route::Account` carries
-    /// the page underneath exactly as `ItemMenu` does. It was a UNIT variant while Home was the only
-    /// screen that could press it, and the dozen places that read it therefore said Home outright:
-    /// the page drawn under the panel, the arm that keeps that page's springs stepping, and where a
-    /// dismissal lands. Left that way, pressing the Library's chip would have cut to Home under the
-    /// popover and then stranded the user there.
+    /// This test used to be `the_profile_popover_stands_on_the_page_it_was_opened_from`, and it
+    /// graded `Route::Account { over: BarHost }` through `page_of`: the chip is a stop on all
+    /// three bar screens, so the route had to CARRY the page underneath or a press on the
+    /// Library's chip would cut to Home under the panel and strand the user there on dismissal.
     ///
-    /// Graded through [`page_of`], because that is the one answer all three of those readers take —
-    /// the draw dispatch, the update arm and [`leave_of`]/[`stays_on_trail`].
+    /// The menu is a `ModalStack` surface since phase 10, so that whole class of bug is gone by
+    /// construction — a surface is presented OVER the top page and never replaces it, which is
+    /// why `Route::Account` and `BarHost` are both deleted. What survives of the old rule is the
+    /// half `BarHost::of` answered: WHICH pages have a chip to press at all. It is derived from
+    /// `route_wears_tab_bar` now (the chip is a control on that bar), so the two cannot drift —
+    /// which is exactly what `BarHost::of`'s own hand-written three-route list could do.
+    /// `app::bridge`'s `the_profile_menu_is_a_surface_over_the_page_whose_chip_was_pressed`
+    /// grades the other half, on a real tree.
     #[test]
-    fn the_profile_popover_stands_on_the_page_it_was_opened_from() {
-        for over in [BarHost::Home, BarHost::Library, BarHost::Search] {
-            let pop = Route::Account { over };
-            assert!(
-                page_of(pop) == over.route(),
-                "the page under the panel is the one it opened on"
-            );
-            assert!(
-                route_wears_tab_bar(pop),
-                "every host of this popover wears the bar"
-            );
-            // it answers for that page in both halves of the teardown rule, exactly as the item
-            // menu answers for the screen its card is on
-            assert_eq!(stays_on_trail(pop), stays_on_trail(over.route()));
-            assert_eq!(
-                forward_leave(pop).is_some(),
-                forward_leave(over.route()).is_some()
-            );
-            // and the page it opens ON is the page it closes BACK to
-            assert!(BarHost::of(over.route()) == Some(over));
+    fn the_profile_chip_is_offered_on_exactly_the_bar_wearing_pages() {
+        for r in [Route::Home, Route::Library, Route::Search] {
+            assert!(input::wears_the_chip(r), "a bar-wearing page carries the chip");
         }
-        // a route with no chip on it opens no popover at all — the guard in `chip_activate`
         for r in [
             Route::Detail,
             Route::Person,
@@ -626,64 +552,22 @@ mod route_tests {
             Route::Profiles,
             Route::Onboard,
             Route::Player,
-            Route::ItemMenu {
-                over: MenuHost::Detail,
-            },
         ] {
             assert!(
-                BarHost::of(r).is_none(),
-                "only the three bar screens carry the profile chip"
+                !input::wears_the_chip(r),
+                "only the bar-wearing screens carry the profile chip"
             );
         }
     }
 
-    /// **Every menu host answers as its own screen, on all four route questions.**
-    ///
-    /// The menu had two hosts and now has six, and the way that goes wrong is silent: each of
-    /// these questions used to name `MenuHost::Detail` (or `Home`) in a `matches!`, so a new host
-    /// simply fell into the default arm — Search's popover would have drawn HOME behind it, and
-    /// the Library's would have lost its tab bar mid-hold. Each one is `page_of` now, and this is
-    /// what says so for every host at once rather than for the one a reviewer thought of.
-    ///
-    /// [`MenuHost::Related`] is the case that shows why the list is worth keeping exhaustive: it is
-    /// the SECOND host whose page is the detail page, so it is the first one for which "which
-    /// screen is underneath" and "which host is this" stopped being the same question.
-    #[test]
-    fn every_menu_host_answers_exactly_as_the_screen_underneath_it() {
-        for host in [
-            MenuHost::Home,
-            MenuHost::Detail,
-            MenuHost::Related,
-            MenuHost::Library,
-            MenuHost::Search,
-            MenuHost::Person,
-        ] {
-            let page = host.route();
-            let menu = Route::ItemMenu { over: host };
-            assert!(
-                !matches!(page, Route::ItemMenu { .. }),
-                "a host is a live PAGE, never another popover"
-            );
-            // `==`, not `assert_eq!`: `Route` has no `Debug` (it is a run-loop vocabulary, not a
-            // logged value — the heartbeat's `route=` word is built by its own `match`)
-            assert!(
-                page_of(menu) == page,
-                "the popover draws and updates the screen it sits on"
-            );
-            // the chrome question: a menu over the Library wears the tab bar because the Library
-            // does, and one over the detail page does not because that page does not
-            assert_eq!(
-                route_wears_tab_bar(menu),
-                route_wears_tab_bar(page),
-                "the popover must wear exactly the chrome of the page under it"
-            );
-            // …and the trail questions, which decide whether a navigation OUT of the menu empties
-            // the page a BACK is about to return to
-            assert_eq!(stays_on_trail(menu), stays_on_trail(page));
-            assert_eq!(forward_leave(menu).is_some(), forward_leave(page).is_some());
-            assert_eq!(leave_of(menu).is_some(), leave_of(page).is_some());
-        }
-    }
+    // (`every_menu_host_answers_exactly_as_the_screen_underneath_it` stood here — six `MenuHost`
+    // variants x four route questions (which page draws, which chrome it wears, and the two trail
+    // questions), each answered through `page_of` so a new host could not silently fall into a
+    // default arm and draw HOME behind a Search popover. The enum, the route that carried it and
+    // `page_of` are all deleted in phase 10: a surface is presented OVER the top page, so every
+    // one of those four questions is the page's own answer and there is no second route to relate
+    // it to. What the enum still decided by then — whether the item is a leaf of the loaded season,
+    // and whether the hold happened on Home's root — is two bools on `ItemMenuArg`.)
 
     /// The coupling that keeps [`stays_on_trail`] honest. It claims to be exactly the set of pages
     /// a `Node` names, and `node_route` is where that set is written down — so a new `Node` whose
@@ -715,85 +599,6 @@ mod route_tests {
                 "a page the trail holds must survive a forward navigation off it"
             );
         }
-    }
-}
-
-/// Is the next step of a dev script (`plxnative-autoseek`, `plxnative-qualityswitch`) due?
-///
-/// `at` is the origin the gap is measured from. Both scripts fire their first step by backing the
-/// origin off by one gap; the seek script additionally pushes it out by `delay=<ms>`.
-///
-/// **The difference is read as SIGNED, and that is the whole function.** `at` is deliberately set
-/// into the FUTURE when a delay is armed (`now - gap + delay`), so `now - at` is negative until
-/// the delay elapses. Compared as `u32` that negative value wraps to about 4.29 billion, clears
-/// any gap, and fires the step immediately — the exact inverse of what `delay=` asks for. Casting
-/// the difference to `i32` reads it as the small negative number it is. Safe for any tick spacing
-/// under ~24 days, and it keeps working across the 2^32 ms tick wrap because the SUBTRACTION still
-/// wraps; only its interpretation changes.
-fn script_step_due(now: u32, at: u32, gap_ms: u32) -> bool {
-    (now.wrapping_sub(at) as i32) >= gap_ms as i32
-}
-
-#[cfg(test)]
-mod script_schedule_tests {
-    use super::script_step_due;
-
-    /// **`delay=<ms>` must actually delay.** `plxnative-autoseek` arms the first step with
-    /// `at = now - gap + delay`, so at the moment of arming `now - at` is `gap - delay`. That is
-    /// NEGATIVE whenever the delay exceeds the gap, and in `u32` it wraps to about 4.29 billion —
-    /// which clears any gap, so the step fires AT ONCE instead of after the delay.
-    ///
-    /// It shipped that way, and it silently invalidated every case built on it: a manifest seek
-    /// declaring `delay_ms: 95000` (gap 300) ran before the quality switch it was written to
-    /// follow, while `op_seek_transcode` still passed because a quality switch emits the same
-    /// `reload_transcode: fresh Load at offset` line a seek does. `auto_seek_after_switch` has
-    /// carried it since it was written and never showed it, because that case skips without a
-    /// conditioned link.
-    #[test]
-    fn a_delay_longer_than_the_gap_does_not_fire_at_once() {
-        let (now, gap, delay) = (1_000_000u32, 300u32, 95_000u32);
-        let at = now.wrapping_sub(gap).wrapping_add(delay);
-        assert!(
-            !script_step_due(now, at, gap),
-            "the delayed step fired immediately"
-        );
-        assert!(
-            !script_step_due(now.wrapping_add(delay - 1), at, gap),
-            "fired one ms early"
-        );
-        assert!(
-            script_step_due(now.wrapping_add(delay), at, gap),
-            "never fired at the delay"
-        );
-    }
-
-    /// The ordinary arming — no delay — still fires the first step immediately, and the next one
-    /// exactly one gap later. This is what every existing script depends on.
-    #[test]
-    fn an_undelayed_script_still_fires_at_once_then_one_gap_apart() {
-        let (now, gap) = (1_000_000u32, 300u32);
-        let at = now.wrapping_sub(gap);
-        assert!(
-            script_step_due(now, at, gap),
-            "the first step must fire on arming"
-        );
-        assert!(
-            !script_step_due(now.wrapping_add(gap - 1), now, gap),
-            "second step fired early"
-        );
-        assert!(
-            script_step_due(now.wrapping_add(gap), now, gap),
-            "second step never fired"
-        );
-    }
-
-    /// SDL ticks wrap at 2^32 ms (~49 days). The predicate must survive the origin sitting just
-    /// below the wrap and `now` just above it.
-    #[test]
-    fn the_predicate_survives_the_tick_wrap() {
-        let (gap, at) = (300u32, u32::MAX - 100);
-        assert!(!script_step_due(at.wrapping_add(299), at, gap));
-        assert!(script_step_due(at.wrapping_add(300), at, gap));
     }
 }
 
@@ -926,57 +731,92 @@ fn route_word(route: Route) -> &'static str {
         Route::Login => "login",
         Route::Profiles => "profiles",
         Route::Onboard => "onboard",
-        Route::Account { .. } => "account",
-        Route::ItemMenu { .. } => "itemmenu",
         Route::Library => "library",
         Route::Detail => "detail",
         Route::Person => "person",
         Route::Search => "search",
         Route::Player => "player",
-        _ => "home",
+        Route::Home => "home",
     }
 }
 
-/// The heartbeat's ` overlay=<word>` suffix (leading space included, empty when there is none).
+/// **Every `Route`, exactly once** — the domain [`route_word`] is applied over to DERIVE the
+/// heartbeat's `route=` alphabet, and the list `app::bridge`'s own argument tests walk.
 ///
-/// **The Settings family's half is now the TREE's, and it is asked FIRST** (phase 5b): the word is
-/// the topmost surface's own `Screen::name`, so `settings`/`privacy`/`legal`/`consent` come from
-/// the screen that is actually on top rather than from four `is_open()` flags a ladder had to
-/// order by hand. It still outranks the player's overlays for the same reason it always did — the
-/// family can only be up over a bar page, where no player overlay exists. **The alphabet gained a
-/// fifth family word, `onboard`, after phase 5b shipped WITHOUT it**: the Home-sources editor
-/// mounted inside the family (`SettingsPage::Favourites`) used to answer `Screen::name` with the
-/// same `settings` word the family ROOT does, so the `fps:settings-home` scene could not be told
-/// apart from `settings-root`/`settings-idle` by anything the heartbeat prints — see
-/// `heartbeat_word_tests` below for the full account and why fixing it needed a matching change
-/// in `screens/onboard.rs`, outside this module. Every other word here still keeps every
-/// `overlay:` fps scene armed (§15.3).
-fn overlay_word(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route: Route) -> &'static str {
-    if let Some(w) = bridge::overlay_word(pages) {
-        return w;
-    }
-    match route {
-        // Five arms stood here, one per `Route::Player { overlay }` value. The overlay is not a
-        // route component any more — it is an entry on the player page's own `ModalStack` — so
-        // `bridge::overlay_word` above has already answered for all four panels, and what is left
-        // is the one thing the container cannot say: the player with nothing over it.
-        Route::Player => " overlay=none",
-        _ => "",
-    }
+/// The compiler is what keeps it complete: the array's length is written out, so an added variant
+/// with no entry here fails the exhaustiveness `match` in `heartbeat_word_tests` rather than
+/// quietly missing from the table the fps tier selects on. That is the failure this exists for —
+/// a word the app cannot print makes a scene fail on the television as "only 0 post-warmup
+/// samples", which is indistinguishable from a real regression.
+///
+/// `#[cfg(test)]`, because nothing in the SHIPPED app ever wants every route at once: the loop
+/// holds one and asks about it. Its two readers are this module's word derivation and
+/// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
+#[cfg(test)]
+pub(crate) const EVERY_ROUTE: [Route; 9] = [
+    Route::Login,
+    Route::Profiles,
+    Route::Onboard,
+    Route::Home,
+    Route::Library,
+    Route::Detail,
+    Route::Person,
+    Route::Search,
+    Route::Player,
+];
+
+/// The heartbeat's ` overlay=` WORD, or `None` when nothing is over the page.
+///
+/// **It is the topmost surface's own `Screen::name`, asked FIRST**, and since phase 10's item 4
+/// that is the whole of it — `bridge::overlay_word` is a one-line read of the container with no
+/// mapping table under it, so the alphabet the fps tier selects on IS the set of names the mounted
+/// screens answer. See that function for the two failures the eleven-arm `match` it replaced had
+/// already produced.
+///
+/// [`NO_OVERLAY`] is the one word here that no screen owns, and the reason this function exists at
+/// all beside the bridge's: the player with nothing over it prints ` overlay=none`, which is a
+/// statement about the ROUTE that the container cannot make. (Five arms stood here, one per
+/// `Route::Player { overlay }` value, until phase 9 made the panels surfaces.)
+fn overlay_word(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route: Route) -> Option<&'static str> {
+    bridge::overlay_word(pages).or(matches!(route, Route::Player).then_some(NO_OVERLAY))
 }
 
-/// Every `route=` word [`route_word`] can print, and every ` overlay=` word [`overlay_word`] can —
-/// the heartbeat WORD TABLE. Read by `heartbeat_word_tests` only; the functions above are the
-/// source, and the arrays exist so the manifest can be graded against a finite alphabet.
+/// The bare player, whose ` overlay=` word belongs to no screen — see [`overlay_word`].
+pub(crate) const NO_OVERLAY: &str = "none";
+
+/// The heartbeat's ` overlay=<word>` suffix, prefix and all, empty when there is none. The prefix
+/// is built HERE rather than baked into every word because the words are the SCREENS' own and a
+/// screen has no business knowing what the heartbeat's grammar looks like.
+fn overlay_suffix(pages: &crate::ui::dispatch::Dispatcher<bridge::AppHost>, route: Route) -> String {
+    overlay_word(pages, route).map_or(String::new(), |w| format!(" overlay={w}"))
+}
+
+/// **Every `route=` word [`route_word`] can print, and every ` overlay=` word [`overlay_word`]
+/// can — DERIVED, not transcribed** (restructure phase 10, item 4).
+///
+/// Both were hand-written arrays, and both had already rotted in the one direction nothing fails
+/// on: a word in the table that no function prints keeps a manifest scene looking armed while it
+/// selects on a string the app never emits, which on the television reads as "only 0 post-warmup
+/// samples — scene never entered this screen", i.e. exactly like a total regression. Phase 10
+/// moved TWO words between the tables (`account`, `itemmenu`), which is the transition where a
+/// transcription is least likely to survive.
+///
+/// So the routes come from [`route_word`] applied over [`EVERY_ROUTE`], and the overlays from the
+/// MOUNTER: `bridge::every_surface_word()` mounts one instance of every surface `AppArg` variant
+/// through the real `Mounter` and reads its `Screen::name`, so the alphabet is what the screens
+/// say it is. Neither list can carry a word its source does not produce, and neither can miss one
+/// — the exhaustiveness of `EVERY_ROUTE` and of the mounter's own `match` is the compiler's.
 #[cfg(test)]
-const ROUTE_WORDS: [&str; 11] = [
-    "login", "profiles", "onboard", "account", "itemmenu", "library", "detail", "person",
-    "search", "player", "home",
-];
+fn route_words() -> Vec<&'static str> {
+    EVERY_ROUTE.iter().copied().map(route_word).collect()
+}
+
 #[cfg(test)]
-const OVERLAY_WORDS: [&str; 10] = [
-    "legal", "privacy", "settings", "consent", "onboard", "info", "chapters", "menu", "more", "none",
-];
+fn overlay_words() -> Vec<&'static str> {
+    let mut words = bridge::every_surface_word();
+    words.push(NO_OVERLAY);
+    words
+}
 
 /// The heartbeat word table versus `tests/manifest.json`. Every fps scene selects its samples by
 /// a `route` word and an optional `overlay` word; a word the app cannot print makes that scene
@@ -986,7 +826,7 @@ const OVERLAY_WORDS: [&str; 10] = [
 /// without the fps tier silently disarming.
 #[cfg(test)]
 mod heartbeat_word_tests {
-    use super::{overlay_word, route_word, Route, OVERLAY_WORDS, ROUTE_WORDS};
+    use super::{overlay_word, overlay_words, route_words, Route, EVERY_ROUTE, NO_OVERLAY};
 
     const MANIFEST: &str = include_str!("../../../tests/manifest.json");
 
@@ -998,59 +838,127 @@ mod heartbeat_word_tests {
             .clone()
     }
 
+    /// The Settings family's INNER pages, which are not `AppArg` variants and so cannot come off
+    /// the mounter: `RouteSurface::top_word` answers with whichever page of the family's own stack
+    /// is on top, and the family is presented rooted at `Root` (or, for the dev boot targets, at
+    /// one of these). They are the registry's own constants rather than string literals, so a
+    /// screen renamed there renames the alphabet entry with it.
+    ///
+    /// **`ONBOARD` is one screen wearing two hats** (§6.2 "Onboard ×2"): the SAME `Screen` impl is
+    /// mounted once as a page of the app's outer stack (first run, so `route=onboard`) and once as
+    /// a page of the family's INNER stack (`SettingsPage::Favourites`, so ` overlay=onboard`).
+    /// Before it had its own word, the settings-mounted instance answered `word::SETTINGS` and the
+    /// `fps:settings-home` scene printed a heartbeat BYTE-IDENTICAL to `settings-root` — the
+    /// harness could not tell "opened the Home-sources editor" from "opened Settings and did
+    /// nothing", so a trigger that silently failed to reach Favourites still produced a scene that
+    /// passed, measuring the wrong screen.
+    const FAMILY_INNER: [&str; 3] = [
+        crate::screens::registry::word::PRIVACY,
+        crate::screens::registry::word::LEGAL,
+        crate::screens::registry::word::ONBOARD,
+    ];
+
+    /// **Every caller holds `crate::testlock::serial()` for its whole body**, because deriving
+    /// this alphabet is not a read: [`overlay_words`] goes through
+    /// `bridge::every_surface_word`, which mounts each surface by running real
+    /// `bridge::frame`s — and a frame pumps every store. `browse`'s pump ends in `sync_roster`,
+    /// which calls `browse::reset()` whenever the section table holds a source the live registry
+    /// does not; every `browse` fixture in the suite (`seed_two_source_table_for_test` and its
+    /// kin) seeds exactly such a table, with `ServerId::UNSET` sources. Unguarded, these three
+    /// tests therefore EMPTIED another module's seeded table from a second thread, and the
+    /// failure surfaced over there — `app::chrome`'s
+    /// `four_libraries_on_two_servers_publish_two_type_destinations` losing both library
+    /// destinations, `app::bridge`'s shelf-hold case seeing zero shelves — at a rate low enough
+    /// to read as flakiness. The frame trunk (`bridge::frame_with_results`) asserts the lock now
+    /// rather than merely documenting it.
+    fn overlay_alphabet() -> Vec<&'static str> {
+        let mut words = overlay_words();
+        words.extend(FAMILY_INNER);
+        words
+    }
+
     #[test]
     fn every_manifest_route_word_is_one_the_heartbeat_prints() {
+        let _guard = crate::testlock::serial();
+        let routes = route_words();
+        let overlays = overlay_alphabet();
         for s in scenes() {
             let name = s["name"].as_str().unwrap_or("?");
             let route = s["route"].as_str().expect("scene has a route word");
             assert!(
-                ROUTE_WORDS.contains(&route),
-                "scene {name}: route word {route:?} is not in the heartbeat table {ROUTE_WORDS:?}"
+                routes.contains(&route),
+                "scene {name}: route word {route:?} is not in the heartbeat table {routes:?}"
             );
             if let Some(ov) = s.get("overlay").and_then(|o| o.as_str()) {
                 assert!(
-                    OVERLAY_WORDS.contains(&ov),
-                    "scene {name}: overlay word {ov:?} is not in the table {OVERLAY_WORDS:?}"
+                    overlays.contains(&ov),
+                    "scene {name}: overlay word {ov:?} is not in the table {overlays:?}"
                 );
             }
         }
     }
 
+    /// **The two tables are DERIVED from the two sources, and this is what says the derivation is
+    /// the whole of them** (restructure phase 10 item 4).
+    ///
+    /// It used to compare two hand-written arrays against two hand-written lists of routes and
+    /// screen kinds — four transcriptions of two alphabets, each able to rot in the direction
+    /// nothing fails on. What is left to assert is what a derivation cannot state about itself:
+    /// that the two alphabets are DISJOINT bar the one word that is deliberately in both, that
+    /// every word is a plausible heartbeat token, and that `overlay_word`'s one non-screen answer
+    /// is the player's.
     #[test]
-    fn the_table_is_exactly_what_the_functions_print() {
-        // Every arm of `route_word` lands in ROUTE_WORDS, and every word in ROUTE_WORDS has an
-        // arm — a word added to one side only is what this catches.
-        let routes = [
-            Route::Login,
-            Route::Profiles,
-            Route::Onboard,
-            Route::Library,
-            Route::Detail,
-            Route::Person,
-            Route::Search,
-            Route::Home,
-            Route::Player,
-        ];
-        let mut seen: Vec<&str> = routes.iter().map(|r| route_word(*r)).collect();
-        seen.push("account");
-        seen.push("itemmenu");
-        for w in ROUTE_WORDS {
-            assert!(seen.contains(&w), "ROUTE_WORDS has {w:?} but no route prints it");
+    fn the_tables_are_derived_and_the_two_alphabets_stay_apart() {
+        let _guard = crate::testlock::serial();
+        let routes = route_words();
+        let overlays = overlay_alphabet();
+        assert_eq!(
+            routes.len(),
+            EVERY_ROUTE.len(),
+            "one word per route, derived: {routes:?}"
+        );
+        // Nothing empty, nothing with a space in it: every one of these is a `\w+` token the
+        // harness's `LOOP_RE`/`FPS_RE` capture groups have to match, and a word carrying the
+        // heartbeat's own ` overlay=` prefix (which is how the mapping table this replaced spelled
+        // them) would match nothing at all.
+        for w in routes.iter().chain(overlays.iter()) {
+            assert!(
+                !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{w:?} is not a heartbeat token"
+            );
         }
-        for w in &seen {
-            assert!(ROUTE_WORDS.contains(w), "route_word prints {w:?}, missing from ROUTE_WORDS");
+        // ONE word is in both alphabets, and it names one screen mounted on two stacks. Any other
+        // overlap is a route and a surface that would be indistinguishable in a `route=` field.
+        let both: Vec<&str> = overlays.iter().copied().filter(|w| routes.contains(w)).collect();
+        assert_eq!(both, [crate::screens::registry::word::ONBOARD]);
+        // …and the two menus that became surfaces in phase 10 are on the overlay side ONLY. Both
+        // MOVED between the tables in the commits that deleted their routes, and each moved with
+        // its `manifest.json` scene's re-key (`home-acct-glass`, `item-menu`); a word left behind
+        // in the route alphabet would have let a scene keep selecting on a `route=` the app can no
+        // longer print, which fails on the television as "never entered this screen".
+        for w in [
+            crate::screens::registry::word::ACCOUNT,
+            crate::screens::registry::word::ITEM_MENU,
+        ] {
+            assert!(overlays.contains(&w), "{w:?} is a surface's own name");
+            assert!(!routes.contains(&w), "{w:?} has no `route_word` arm any more");
         }
-        // An EMPTY tree, so the player half of `overlay_word` is what answers: with no surface up
-        // the function's first arm returns `None` and the route decides, which is exactly the
-        // state every BARE playback frame is in.
+
+        // An EMPTY tree, so `overlay_word`'s second half is what answers: with no surface up the
+        // container says nothing and the ROUTE decides, which is exactly the state every BARE
+        // playback frame is in. It is the one word no screen owns, which is why it is added by
+        // `overlay_words` rather than derived.
         let empty = crate::ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
-        assert_eq!(overlay_word(&empty, Route::Player), " overlay=none");
-        assert_eq!(overlay_word(&empty, Route::Home), "");
-        // …and the four PANEL words are the surfaces' own, since phase 9. There is no second
-        // table: `bridge::overlay_word` maps a mounted `PlayerOverlayScreen` through
-        // `Screen::name`, which is `OverlayKind::word`, so this is the table's side of that one
-        // coupling exactly as the Settings family's is below. A panel renamed without
-        // `OVERLAY_WORDS` following it is what fails here.
+        assert_eq!(overlay_word(&empty, Route::Player), Some(NO_OVERLAY));
+        assert_eq!(overlay_word(&empty, Route::Home), None);
+        assert_eq!(super::overlay_suffix(&empty, Route::Player), " overlay=none");
+        assert_eq!(super::overlay_suffix(&empty, Route::Home), "");
+        assert!(overlays.contains(&NO_OVERLAY));
+        assert!(!routes.contains(&NO_OVERLAY));
+
+        // The player's four panels are `OverlayKind::word` through `Screen::name`, so they arrive
+        // in the derived alphabet with everything else — asserted here because it is the one place
+        // a reader can see that the panel words and the family words come from ONE source now.
         use crate::screens::player::overlay::OverlayKind;
         for kind in [
             OverlayKind::Tracks { tab: 0 },
@@ -1059,52 +967,73 @@ mod heartbeat_word_tests {
             OverlayKind::More { quality: false },
         ] {
             assert!(
-                OVERLAY_WORDS.contains(&kind.word()),
-                "{:?} prints {:?}, missing from OVERLAY_WORDS",
-                kind,
+                overlays.contains(&kind.word()),
+                "{kind:?} prints {:?}, which the mounter's own alphabet must carry",
                 kind.word()
             );
         }
-        // The Settings family's words come from `Screen::name` now (`bridge::overlay_word` maps
-        // them one-for-one), so the alphabet the fps tier selects on is the screens' own.
-        // `bridge`'s `the_settings_surface_owns_input_and_walks_its_own_stack` drives the mapping
-        // for real; this half is the table's side of the same coupling, and it is what fails if a
-        // screen is renamed without `OVERLAY_WORDS` following it. `ONBOARD` belongs in this list
-        // too, and not only in `ROUTE_WORDS` below: the Home-sources editor is "Onboard ×2"
-        // (`screens/onboard.rs`'s own module doc) — the SAME `Screen` impl is mounted once as a
-        // page of the app's own outer stack (first run) and once as a page of the Settings
-        // family's INNER stack (`SettingsPage::Favourites`), and `RouteSurface::top_word` reads
-        // whichever page is on top through the identical `Screen::name` call regardless of which
-        // stack it sits in. Before this word was added here, both mountings answered
-        // `word::SETTINGS` while inside the family, so the `fps:settings-home` scene printed a
-        // heartbeat BYTE-IDENTICAL to `settings-root`/`settings-idle` — the harness could not
-        // tell "opened the Home-sources editor" from "opened Settings and did nothing", and a
-        // route that silently failed to reach `SettingsPage::Favourites` (a typo'd trigger, or a
-        // future regression in the boot-target match below) still produced a scene that passed,
-        // measuring the wrong screen. Giving the editor its own overlay word here is only half
-        // the fix — `overlay_word` below has the matching arm — and even that pair is not the
-        // WHOLE fix: `Screen::name` for `OnboardScreen` (not a file this lane owns) still has to
-        // answer `word::ONBOARD` rather than `word::SETTINGS` when `self.settings` is true, or
-        // this alphabet entry stays a word nothing ever actually prints.
-        for w in [
-            crate::screens::registry::word::SETTINGS,
-            crate::screens::registry::word::PRIVACY,
-            crate::screens::registry::word::LEGAL,
-            crate::screens::registry::word::CONSENT,
-            crate::screens::registry::word::ONBOARD,
-        ] {
-            assert!(
-                OVERLAY_WORDS.contains(&w),
-                "a family screen names {w:?}, missing from OVERLAY_WORDS"
-            );
+    }
+
+    /// **A word the app can print but no scene uses is fine; the reverse is not** — and the
+    /// derivation is what makes the reverse impossible to write by accident.
+    ///
+    /// The one thing a derived table cannot catch on its own is a manifest scene keyed on a word
+    /// that IS in the alphabet but names a surface the scene's triggers never open. That is a
+    /// device question, not a host one. What this pins instead is the direction a host CAN see:
+    /// every scene naming an overlay names one the mounter produces, and every scene's route is a
+    /// route that exists.
+    #[test]
+    fn the_manifest_uses_a_subset_of_the_derived_alphabets() {
+        let _guard = crate::testlock::serial();
+        let routes = route_words();
+        let overlays = overlay_alphabet();
+        let mut used_overlays = 0;
+        for s in scenes() {
+            assert!(routes.contains(&s["route"].as_str().expect("a route word")));
+            if let Some(ov) = s.get("overlay").and_then(|o| o.as_str()) {
+                assert!(overlays.contains(&ov));
+                used_overlays += 1;
+            }
         }
-        // …and the SAME constant is also a ROUTE word: the first-run mounting of this screen sits
-        // directly on the app's own outer stack rather than inside a surface, so `route_word`
-        // (not `overlay_word`) is what a `fps` scene selects it with — `route=onboard`, no
-        // overlay. One string, two positions, because it names one screen wearing two hats; there
-        // is no ambiguity in the LOG itself, since `tests/run.py`'s `LOOP_RE` matches the `route=`
-        // and ` overlay=` groups independently and a scene declares only the one field it needs.
-        assert!(ROUTE_WORDS.contains(&crate::screens::registry::word::ONBOARD));
+        assert!(
+            used_overlays >= 2,
+            "the two menus' scenes select by `overlay=` since phase 10 — if this reaches zero, \
+             the re-keys were reverted and every surface scene is measuring its host page"
+        );
+    }
+
+    /// **The pollution these three tests used to cause, stated as a fact instead of a comment.**
+    ///
+    /// Deriving the alphabet is a DESTRUCTIVE operation on `browse`: `every_surface_word` mounts
+    /// each surface by running real `bridge::frame`s, a frame pumps every store, and `browse`'s
+    /// pump reaches `sync_roster`, which treats a source the live registry does not hold as an
+    /// identity boundary and calls `browse::reset()`. Every `browse` fixture in the suite seeds
+    /// exactly such a table (`ServerId::UNSET` sources), so this wipes it.
+    ///
+    /// That is correct behaviour for `sync_roster` and it is why the derivation may only run
+    /// under `testlock::serial()`. Watched red before the fix in the only way this class can be:
+    /// the wipe landed on ANOTHER thread's test — `app::chrome`'s
+    /// `four_libraries_on_two_servers_publish_two_type_destinations` came back with only Home and
+    /// Search in the strip, about one full-suite run in six. Here the same chain is on one
+    /// thread, under the guard, and is therefore deterministic.
+    #[test]
+    fn deriving_the_surface_alphabet_empties_a_seeded_browse_table() {
+        let _guard = crate::testlock::serial();
+        crate::browse::reset();
+        crate::browse::seed_two_source_table_for_test();
+        assert_eq!(
+            crate::browse::section_count(),
+            4,
+            "the fixture the browse-backed tests across the suite seed"
+        );
+        let _ = overlay_alphabet();
+        assert_eq!(
+            crate::browse::section_count(),
+            0,
+            "deriving the alphabet runs real frames and empties the section table — so it must \
+             never run on a thread that does not hold testlock::serial()"
+        );
+        crate::browse::reset();
     }
 
     /// **Pins the focusprobe's player-overlay word to THIS module's `overlay_word`, not a second
@@ -1332,66 +1261,13 @@ mod player_return_tests {
         }
     }
 
-    /// **The reported bug.** A long press on a RELATED tile opens the card menu over the detail
-    /// page, and its *Play from Start* is dispatched with the route already flipped back to the
-    /// host — so both detail-page hosts must answer with that page, and not with Home.
-    ///
-    /// Both, because the two menus stand on ONE page: the filmstrip's Play returned to it and the
-    /// Related shelf's did not, which is a single detail page with two Play rows that go to
-    /// different screens.
-    #[test]
-    fn a_card_menu_returns_to_the_page_it_was_opened_over() {
-        for over in [MenuHost::Detail, MenuHost::Related] {
-            assert_eq!(
-                page(Route::ItemMenu { over }),
-                det(A, "7"),
-                "both hosts stand on the page"
-            );
-        }
-        assert_eq!(
-            page(Route::ItemMenu {
-                over: MenuHost::Home
-            }),
-            Node::Home
-        );
-        assert_eq!(
-            page(Route::ItemMenu {
-                over: MenuHost::Library
-            }),
-            Node::Library
-        );
-        assert_eq!(
-            page(Route::ItemMenu {
-                over: MenuHost::Search
-            }),
-            Node::Search
-        );
-        assert_eq!(
-            page(Route::ItemMenu {
-                over: MenuHost::Person
-            }),
-            person("9")
-        );
-        // …and the account popover resolves the same way, through `page_of`.
-        assert_eq!(
-            page(Route::Account {
-                over: BarHost::Library
-            }),
-            Node::Library
-        );
-        assert_eq!(
-            page(Route::Account {
-                over: BarHost::Search
-            }),
-            Node::Search
-        );
-        assert_eq!(
-            page(Route::Account {
-                over: BarHost::Home
-            }),
-            Node::Home
-        );
-    }
+    // (`a_card_menu_returns_to_the_page_it_was_opened_over` stood here — the reported bug, that a
+    // *Play from Start* on the detail page's RELATED shelf returned to Home instead of to the page
+    // the menu was opened over. It graded `origin_here` through `page_of` for all six `MenuHost`
+    // variants. The menu is a surface since phase 10 and never moves `app.route` at all, so
+    // `origin_here` is asked about the HOST page directly and there is nothing left to resolve —
+    // the same removal, and for the same reason, as the three `Route::Account { over: BarHost }`
+    // cases that stood beside them until item 2 of this phase.)
 
     /// A detail return names the SAME ITEM that was mounted — the whole reason the origin is a
     /// `Node` and not a `Route`. `Route::Detail` cannot say which page, and by the time BACK is
@@ -1428,16 +1304,6 @@ mod player_return_tests {
     fn a_screen_with_nothing_mounted_falls_back_to_home() {
         assert_eq!(return_page(Route::Detail, None, None), Node::Home);
         assert_eq!(return_page(Route::Person, None, None), Node::Home);
-        assert_eq!(
-            return_page(
-                Route::ItemMenu {
-                    over: MenuHost::Related
-                },
-                None,
-                None
-            ),
-            Node::Home
-        );
     }
 
     /// **Up Next must not rewrite the return route.** An auto-advance starts a NEW item while the

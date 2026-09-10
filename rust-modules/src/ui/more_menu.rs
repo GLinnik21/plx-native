@@ -1,10 +1,11 @@
 //! The player transport's **overflow menu** — the popover behind the third control disc (`…`), on
 //! the same animated [`TableView`] as the subtitle/audio and profile menus. It only REPORTS the
-//! chosen [`Action`]; `app.rs` performs it, exactly as [`crate::ui::account_menu`] does.
+//! chosen [`Action`]; `app.rs` performs it, exactly as the profile menu did before it became
+//! an owned surface ([`crate::screens::account_menu`], restructure phase 10).
 //!
 //! # Why an overflow menu exists at all
 //!
-//! **Stats for nerds**, the diagnostics overlay ([`crate::ui::stats`]), needs a home a stranger can
+//! **Stats for nerds**, the diagnostics overlay ([`crate::app::diagnostics`]), needs a home a stranger can
 //! find, because it is how this app gets bug reports off televisions nobody here owns — every other
 //! diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the remote FIFO, the
 //! capture stream) is compiled out of RELEASE builds by the `devtriggers` feature, which is what a
@@ -65,7 +66,7 @@ use std::os::raw::c_int;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     None,
-    /// flip [`crate::ui::stats`]'s overlay on/off
+    /// flip [`crate::app::diagnostics`]'s overlay on/off
     ToggleStats,
     /// select a rung of the playback-quality ladder ([`crate::route::set_quality`])
     SetQuality(crate::route::Quality),
@@ -250,7 +251,7 @@ fn label(a: Action) -> &'static str {
 /// promise of the leading mark an Options row deliberately does not draw.)
 fn is_on(a: Action) -> bool {
     match a {
-        Action::ToggleStats => crate::ui::stats::enabled(),
+        Action::ToggleStats => crate::app::diagnostics::enabled(),
         // a rung is not a switch — see `row_for`, which gives it the leading mark instead
         Action::SetQuality(_) | Action::SendDiagnostics | Action::None => false,
     }

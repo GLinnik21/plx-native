@@ -453,7 +453,7 @@ pub(crate) enum ControlSlot {
     /// the ordinary Subtitles + Audio pair
     Discs,
     /// a marker segment is under the playhead
-    Skip(crate::ui::skip_pill::Prompt),
+    Skip(crate::screens::player::skip_pill::Prompt),
     /// …and the show has another episode queued, which outranks skipping the credits. Carries the
     /// segment for the same reason `Skip` does — so the row has a stable IDENTITY.
     UpNext(crate::metadata::Marker),
@@ -508,7 +508,7 @@ impl ControlSlot {
     pub(crate) fn hit(self, row: &mut TransportRow, cx: f32, cy: f32) -> Option<c_int> {
         match self {
             ControlSlot::UpNext(_) => crate::ui::up_next::hit(row, cx, cy),
-            ControlSlot::Skip(pr) => crate::ui::skip_pill::rect(row, pr)
+            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::rect(row, pr)
                 .contains(cx, cy)
                 .then_some(0),
             ControlSlot::Discs => None,
@@ -524,7 +524,7 @@ impl ControlSlot {
 pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) -> ControlSlot {
     match marker {
         Some(m) => {
-            let pr = crate::ui::skip_pill::prompt_for(m);
+            let pr = crate::screens::player::skip_pill::prompt_for(m);
             if has_next && m.kind == crate::metadata::MarkerKind::Credits {
                 ControlSlot::UpNext(m)
             } else {
@@ -1074,7 +1074,7 @@ pub(crate) fn scrub_frac_x(mx: f32) -> f32 {
 //     floating near the right end of an otherwise empty rail. Reviewed cold on a screenshot it
 //     read as a RENDERING ARTIFACT, not as information, which is a complete failure of the thing.
 //
-// Neither loses anything: the Skip Intro / Skip Credits pill (`ui/skip_pill.rs`) is driven from
+// Neither loses anything: the Skip Intro / Skip Credits pill (`screens/player/skip_pill.rs`) is driven from
 // the very same `metadata::playing_markers()` and appears exactly when a marker is reachable, so
 // the band was decoration duplicating a control that already announces itself. Do not re-add
 // either as a "cheap win" — the marker data is already in memory, which is precisely what makes
@@ -1218,7 +1218,7 @@ pub(crate) fn draw_hud(
         // keypress activates are the same value, not two derivations of it.
         match slot {
             ControlSlot::UpNext(_) => crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now),
-            ControlSlot::Skip(pr) => crate::ui::skip_pill::draw(row, p, pr, focus == 1),
+            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::draw(row, p, pr, focus == 1),
             ControlSlot::Discs => {
                 for i in 0..BTN_N {
                     let pop = row.scale(i);
@@ -1477,7 +1477,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use crate::metadata::{Marker, MarkerKind};
-    use crate::ui::skip_pill::SkipAction;
+    use crate::screens::player::skip_pill::SkipAction;
 
     fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
         Marker {

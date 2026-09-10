@@ -1023,7 +1023,7 @@ mod tests {
         }
     }
 
-    fn screen(entry: u32, _serial: &std::sync::MutexGuard<'_, ()>) -> FilmographyScreen {
+    fn screen(entry: u32, _serial: &crate::testlock::Serial) -> FilmographyScreen {
         let mut s =
             FilmographyScreen::new(EntryId(entry), ServerId::UNSET, format!("person-{entry}"));
         s.name = format!("Person {entry}");

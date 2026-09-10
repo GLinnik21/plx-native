@@ -29,7 +29,7 @@ use crate::ui::frame::Budget;
 use crate::ui::hero_logo::{HeroLogo, LogoRung};
 use crate::ui::label::HAlign;
 use crate::ui::machine::{
-    Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, Key,
+    Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     Leave, LogicalState, Machine,
 };
 use crate::ui::present::{PresentEvent, Provenance};
@@ -44,7 +44,7 @@ use crate::ui::widgets::{
 use crate::ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 
-use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory};
+use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel};
 
 const FIRST_ITEM_ELEM: u32 = 2048;
 
@@ -55,7 +55,7 @@ const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
-pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>,panel:u8}";
+pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;6],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
 const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
@@ -446,10 +446,12 @@ impl DetailScreen {
         } else {
             return None;
         };
-        Self::locate_local(local)
+        Self::locate_local(local, self.tracks_available())
     }
 
-    fn locate_local(elem: u32) -> Option<Located> {
+    /// `tracks` is [`Self::tracks_available`] — the page's own answer, threaded in because this is
+    /// an associated fn and because the About footer's element range is exactly what it decides.
+    fn locate_local(elem: u32, tracks: bool) -> Option<Located> {
         if let Some(c) = hero::HeroCtl::of_elem(elem) {
             return Some(Located::Hero(c));
         }
@@ -465,7 +467,7 @@ impl DetailScreen {
         if let Some(i) = cast::locate(elem) {
             return Some(Located::Cast(i));
         }
-        about::locate(elem, crate::ui::tracks_panel::is_available()).map(Located::About)
+        about::locate(elem, tracks).map(Located::About)
     }
 
     fn focused_index(&self, focus: Option<FocusKey<u32>>, group: GroupId) -> Option<usize> {
@@ -529,7 +531,7 @@ impl DetailScreen {
             3 if !d.related.is_empty() => related::elem(clamp(intent.spot.col, d.related.len())),
             4 if d.credits_len() > 0 => cast::elem(clamp(intent.spot.col, d.credits_len())),
             5 => Some(
-                if intent.spot.col > 0 && crate::ui::tracks_panel::is_available() {
+                if intent.spot.col > 0 && self.tracks_available() {
                     about::LANGUAGES_ELEM
                 } else {
                     about::CARD_ELEM
@@ -644,7 +646,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                     elem: ElemKind::Card,
                 }),
                 5 => {
-                    let tracks = crate::ui::tracks_panel::is_available();
+                    let tracks = self.tracks_available();
                     out.push(GroupSpec {
                         id: about::ABOUT_GROUP,
                         kind: GroupKind::Column,
@@ -714,7 +716,7 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
                 row_move(i, self.detail().map(|d| d.credits_len()).unwrap_or(0), dir)
                     .and_then(cast::elem)
             }
-            Located::About(i) => match (i, dir, crate::ui::tracks_panel::is_available()) {
+            Located::About(i) => match (i, dir, self.tracks_available()) {
                 (0, Dir::Down, true) => Some(about::LANGUAGES_ELEM),
                 (1, Dir::Up, _) => Some(about::CARD_ELEM),
                 _ => None,
@@ -936,7 +938,9 @@ impl<H: ContentLike> Focusable<H> for DetailScreen {
         };
         FocusKey {
             entry: self.entry,
-            elem: Self::locate_local(elem).and_then(|located| self.key_of(located)).unwrap_or(hero::ELEM_PLAY),
+            elem: Self::locate_local(elem, self.tracks_available())
+                .and_then(|located| self.key_of(located))
+                .unwrap_or(hero::ELEM_PLAY),
         }
     }
 }
@@ -953,7 +957,7 @@ impl DetailScreen {
             Located::Related(i) => d.is_some_and(|d| i < d.related.len().min(512)),
             Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
             Located::About(0) => d.is_some(),
-            Located::About(1) => d.is_some() && crate::ui::tracks_panel::is_available(),
+            Located::About(1) => d.is_some() && self.tracks_available(),
             Located::About(_) => false,
         }
     }
@@ -1086,9 +1090,6 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                     self.restore_intent = None;
                     self.return_pending = false;
                 }
-                if let Some(handled) = self.panel_input(input, fx) {
-                    return handled;
-                }
                 if matches!(
                     input.kind,
                     InputKind::Key {
@@ -1133,14 +1134,17 @@ impl<H: ContentLike> Machine<H> for DetailScreen {
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
+            // The *Also available* surface committed a row. It names the destination; this page
+            // performs the navigation, exactly as it did while the panel reported an `Action`.
+            ScreenEvent::App(AppMsg::AltSourceOpen(arg)) => {
+                self.content(fx, ContentReq::Present(arg.clone()));
+                Handled::Yes
+            }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
                 self.pending_season = None;
                 self.season_settle = 0.0;
                 self.restore_intent = None;
                 self.return_pending = false;
-                crate::ui::alt_sources::reset(ServerId::UNSET, "");
-                crate::ui::about_panel::hide();
-                crate::ui::tracks_panel::hide();
                 if self.detail().is_some() {
                     apply_metadata(MetadataCmd::Clear);
                 }
@@ -1251,9 +1255,13 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
                             _ => None,
                         },
                     ),
-                    5 => self
-                        .about_rows
-                        .draw(p, d, top, f.focus.current.map(|k| k.elem)),
+                    5 => self.about_rows.draw(
+                        p,
+                        d,
+                        top,
+                        f.focus.current.map(|k| k.elem),
+                        self.tracks_available(),
+                    ),
                     _ => {}
                 }
             }
@@ -1269,10 +1277,9 @@ impl<H: ContentLike> Screen<H> for DetailScreen {
         }
 
         self.record_stops(f);
-        crate::ui::alt_sources::draw();
-        crate::ui::about_panel::draw_scrim();
-        crate::ui::about_panel::draw();
-        crate::ui::tracks_panel::draw();
+        // **This page draws no panel at all any more.** All three of its own — *Also available*,
+        // *Track information* and *About* — are `ModalStack` surfaces since phase 10, so the
+        // container draws each after this page, with its scrim, on its own appear spring.
     }
 
     fn render(&self) -> RenderStrategy {
@@ -1626,7 +1633,7 @@ impl DetailScreen {
                     .filter_map(|i| cast::elem(i).map(|e| (e, Activate::Press))),
             );
             elems.push((about::CARD_ELEM, Activate::Press));
-            if crate::ui::tracks_panel::is_available() {
+            if self.tracks_available() {
                 elems.push((about::LANGUAGES_ELEM, Activate::Press));
             }
         }
@@ -1859,38 +1866,28 @@ impl LogicalState for DetailScreen {
                 w.bool(false);
             }
         }
-        w.u8(if crate::ui::alt_sources::is_open() {
-            1
-        } else if crate::ui::about_panel::is_open() {
-            2
-        } else if crate::ui::tracks_panel::is_open() {
-            3
-        } else {
-            0
-        });
+        // **No panel byte at all any more.** All three of this page's panels are `ModalStack`
+        // surfaces since phase 10, so which one is up — its argument, its `Phase` and its own
+        // instance's hash — is written by `Navigation::write` for the whole tree, and a second
+        // record here would be two producers of one fact (§16.2). The `about_panel_open:u8` this
+        // line held was the last of them, kept explicitly so its retirement would be one deletion.
     }
 
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={} panel={}",
+            "detail sid={} pending_season={} settle_us={} restore={} restore_season_sent={}",
             self.sid.raw(),
             self.pending_season
                 .map(|index| index.to_string())
                 .unwrap_or_else(|| "-".into()),
             (self.season_settle * 1_000_000.0).round() as u64,
             self.restore_intent.is_some(),
+            // No `panel=` field: every surface names itself through `Screen::name` (the
+            // heartbeat's `overlay=` and `Dispatcher::top_surface_name`), and this page owns the
+            // phase of none of them.
             self.restore_intent
                 .as_ref()
                 .is_some_and(|intent| intent.season_requested),
-            if crate::ui::alt_sources::is_open() {
-                "alt"
-            } else if crate::ui::about_panel::is_open() {
-                "about"
-            } else if crate::ui::tracks_panel::is_open() {
-                "tracks"
-            } else {
-                "none"
-            }
         ));
     }
 }
@@ -2049,10 +2046,6 @@ impl DetailScreen {
         }
 
         self.scroll.step(self.scroll_target, K_SCROLL, dt);
-        crate::ui::alt_sources::pump();
-        crate::ui::alt_sources::update(dt);
-        crate::ui::about_panel::update(dt);
-        crate::ui::tracks_panel::update(dt);
 
         if self.pending_season.is_some() {
             self.season_settle += dt;
@@ -2096,9 +2089,41 @@ impl DetailScreen {
             .unwrap_or((false, PosterMark::None));
         hero::HeroSet {
             restart,
-            alt: crate::ui::alt_sources::is_available(),
+            alt: self.alt_available(),
             mark,
         }
+    }
+
+    /// **Is a second pinned source holding THIS page's item?** — the *Also available* pill's gate,
+    /// answered by the page from the store, never by asking whether the panel exists.
+    ///
+    /// It is a derived read rather than a cached field on purpose: one owner. The addressed store
+    /// (`metadata::alt_available`) is where the answer lives, a landing raises `StoreChanged` and
+    /// the next layout pass simply asks again — where a copy of the bit here would be a second
+    /// thing to keep in step with the same landing, and the failure mode of that (a hero row with
+    /// four controls' worth of geometry and three drawn) is exactly the class of bug this
+    /// publication exists to remove.
+    pub(crate) fn alt_available(&self) -> bool {
+        crate::metadata::alt_available(self.sid, &self.rk)
+    }
+
+    /// **Is there a file for the *Track information* sheet to describe?** — the Languages column's
+    /// press gate, and the page's own answer about the page's own item.
+    ///
+    /// The RULE is the data's ([`crate::metadata::Detail::has_own_file`], which explains why it is
+    /// `part` and not `is_show`); what this adds is WHOSE item it is applied to. [`Self::detail`] FILTERS the
+    /// store landing by this page's `(sid, rk)`, where the panel's own `is_available()` read
+    /// `metadata::current()` unfiltered — so a Detail page whose fetch had not landed yet answered
+    /// from whatever item was loaded last, which on the way back from a Person page is a different
+    /// film, and which decided the About footer's column count and the element ladder under it.
+    ///
+    /// It is false for the whole mount fetch, which costs nothing: the About footer is drawn from a
+    /// loaded item, so there is no frame on which the Languages column is on screen and this is
+    /// still false. The column does not appear or vanish with the answer — it is always the third
+    /// of four — so a press that arrives early is refused rather than landing on a control that has
+    /// moved.
+    pub(crate) fn tracks_available(&self) -> bool {
+        self.detail().is_some_and(crate::metadata::Detail::has_own_file)
     }
 
     fn named_show(&self) -> bool {
@@ -2162,8 +2187,10 @@ impl DetailScreen {
                     );
                 }
             }
-            Some(Located::About(0)) => crate::ui::about_panel::open(),
-            Some(Located::About(1)) => crate::ui::tracks_panel::open(),
+            Some(Located::About(0)) => self.content(fx, ContentReq::Panel(ContentPanel::About)),
+            Some(Located::About(1)) => {
+                self.content(fx, ContentReq::Panel(ContentPanel::Tracks { page: 1 }))
+            }
             _ => {}
         }
         fx.invalidate(Provenance::Input);
@@ -2194,7 +2221,14 @@ impl DetailScreen {
                     );
                     let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain().btn_y, widths);
                     rect.y -= self.scroll.pos;
-                    crate::ui::alt_sources::open_for(self.sid, &self.rk, rect);
+                    // The ANCHOR travels on the argument, bit for bit, so the surface places
+                    // itself off the pill without the page or a static holding a `Rect` for it.
+                    self.content(
+                        fx,
+                        ContentReq::Panel(ContentPanel::AltSources {
+                            anchor: [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits),
+                        }),
+                    );
                 }
             }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
@@ -2322,82 +2356,4 @@ impl DetailScreen {
         fx.push(Fx::App(AppFx::Content(req)));
     }
 
-    fn panel_input<H: ContentLike>(
-        &mut self,
-        event: &InputEvent<u32>,
-        fx: &mut Effects<'_, H>,
-    ) -> Option<Handled> {
-        if crate::ui::alt_sources::is_open() {
-            match event.kind {
-                InputKind::Key {
-                    key: Key::Back,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::alt_sources::close(),
-                InputKind::Key {
-                    key: Key::Ok,
-                    edge: Edge::Down,
-                    ..
-                } => {
-                    if let crate::ui::alt_sources::Action::Open { sid, rk } =
-                        crate::ui::alt_sources::on_ok()
-                    {
-                        self.content(fx, ContentReq::Present(ContentArg::Detail { sid, rk }));
-                    }
-                }
-                InputKind::Key {
-                    sym,
-                    edge: Edge::Down | Edge::Repeat,
-                    ..
-                } => crate::ui::alt_sources::move_focus(sym as i32),
-                InputKind::Pointer { x, y, .. } => crate::ui::alt_sources::pointer_focus(x, y),
-                InputKind::Click { x, y, .. } => {
-                    if let crate::ui::alt_sources::Action::Open { sid, rk } =
-                        crate::ui::alt_sources::click(x, y)
-                    {
-                        self.content(fx, ContentReq::Present(ContentArg::Detail { sid, rk }));
-                    }
-                }
-                _ => {}
-            }
-            fx.invalidate(Provenance::Input);
-            return Some(Handled::Yes);
-        }
-        if crate::ui::about_panel::is_open() {
-            match event.kind {
-                InputKind::Key {
-                    key: Key::Back,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::about_panel::close(),
-                InputKind::Key {
-                    key: Key::Ok,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::about_panel::on_ok(),
-                InputKind::Click { x, y, .. } => crate::ui::about_panel::click(x, y),
-                _ => {}
-            }
-            fx.invalidate(Provenance::Input);
-            return Some(Handled::Yes);
-        }
-        if crate::ui::tracks_panel::is_open() {
-            match event.kind {
-                InputKind::Key {
-                    key: Key::Back,
-                    edge: Edge::Down,
-                    ..
-                } => crate::ui::tracks_panel::close(),
-                InputKind::Key {
-                    sym,
-                    edge: Edge::Down | Edge::Repeat,
-                    ..
-                } => crate::ui::tracks_panel::move_focus(sym as i32),
-                _ => {}
-            }
-            fx.invalidate(Provenance::Input);
-            return Some(Handled::Yes);
-        }
-        None
-    }
 }

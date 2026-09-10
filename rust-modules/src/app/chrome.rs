@@ -7,7 +7,7 @@ use crate::ui::machine::{FocusKey, Measure};
 use crate::ui::widgets::{self, ProfileChipRead, TabLabels, TopFocus};
 
 #[derive(Default)]
-pub(super) struct ChromeSnapshot {
+pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
     profile_generation: Option<u32>,
     labels: Vec<String>,
@@ -19,7 +19,7 @@ pub(super) struct ChromeSnapshot {
 }
 
 impl ChromeSnapshot {
-    pub(super) fn refresh(&mut self, measure: &dyn Measure) {
+    pub(crate) fn refresh(&mut self, measure: &dyn Measure) {
         let generation = crate::browse::tabs_gen();
         if self.tabs_generation != Some(generation) {
             self.labels.clear();
@@ -44,32 +44,32 @@ impl ChromeSnapshot {
             let current = crate::plex::session::current();
             let account = crate::plex::session::peek().account(current.as_ref());
             self.thumb = current.map(|user| user.thumb).unwrap_or_default();
-            self.label = crate::ui::account_menu::chip_label(&account);
+            self.label = crate::screens::account_menu::chip_label(&account);
             self.initial = account.name.as_deref().and_then(|name| name.chars().next())
                 .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
             self.profile_generation = Some(generation);
         }
     }
 
-    pub(super) fn labels(&self) -> TabLabels<'_> {
+    pub(crate) fn labels(&self) -> TabLabels<'_> {
         TabLabels { generation: self.tabs_generation.unwrap_or(0), labels: &self.labels }
     }
 
-    pub(super) fn library_selection(&self, kind: crate::browse::SecKind) -> u32 {
+    pub(crate) fn library_selection(&self, kind: crate::browse::SecKind) -> u32 {
         let elem = STRIP_BASE + match kind { crate::browse::SecKind::Movie => 1, crate::browse::SecKind::Show => 2 };
         self.keys.iter().position(|key| *key == elem).unwrap_or(0) as u32
     }
 
-    pub(super) fn search_selection(&self) -> u32 {
+    pub(crate) fn search_selection(&self) -> u32 {
         self.keys.iter().position(|key| *key == STRIP_BASE + 3).unwrap_or(0) as u32
     }
 
-    pub(super) fn profile(&self) -> ProfileChipRead<'_> {
+    pub(crate) fn profile(&self) -> ProfileChipRead<'_> {
         ProfileChipRead { generation: self.profile_generation.unwrap_or(0), thumb: &self.thumb,
             label: &self.label, initial: &self.initial }
     }
 
-    pub(super) fn focus(&self, focus: Option<FocusKey<u32>>) -> TopFocus {
+    pub(crate) fn focus(&self, focus: Option<FocusKey<u32>>) -> TopFocus {
         match focus.map(|focus| focus.elem) {
             Some(key) if key == STRIP_BASE + 4 => TopFocus::Chip,
             Some(key) => self.keys.iter().position(|&id| id == key).map(TopFocus::Pill).unwrap_or(TopFocus::Away),
@@ -77,7 +77,7 @@ impl ChromeSnapshot {
         }
     }
 
-    pub(super) fn members(&self, selected: i32, focus: Option<FocusKey<u32>>, out: &mut Vec<StripMember<u32>>) {
+    pub(crate) fn members(&self, selected: i32, focus: Option<FocusKey<u32>>, out: &mut Vec<StripMember<u32>>) {
         out.clear();
         out.push(StripMember::new(STRIP_BASE + 4, widgets::CHIP_FRAME));
         widgets::tab_members(&self.widths, &self.keys, selected, self.focus(focus), out);

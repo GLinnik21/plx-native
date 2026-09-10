@@ -111,12 +111,15 @@ class ContentFocusFlows(unittest.TestCase):
         self.assertIn("never opened", focusfp_check.check(8, log))
 
     def test_the_menu_must_open_over_detail_and_return_to_the_same_card(self):
+        # The menu line is the HOST's since UI-restructure phase 10 — `route=detail` with the
+        # surface's own `imenu=`/`isel=`/`imsid=` fields on it — because a ModalStack surface is
+        # presented over the top page and never replaces it.
         log = ["focus route=detail sec=3 col=2 card=1 sid=0 rk=1001",
-               "focus route=itemmenu over=detail",
+               "focus route=detail sec=3 col=2 card=1 sid=0 rk=1001 imenu=1 isel=0 imsid=0",
                "focus route=detail sec=3 col=2 card=1 sid=0 rk=1001"]
         self.assertIsNone(focusfp_check.check(8, log))
         self.assertIsNotNone(focusfp_check.check(8, log[:-1]))
-        self.assertIsNotNone(focusfp_check.check(8, [log[0], log[1].replace("detail", "home"), log[2]]))
+        self.assertIsNotNone(focusfp_check.check(8, [log[0], log[1].replace("route=detail", "route=home"), log[2]]))
         self.assertIsNotNone(focusfp_check.check(8, [*log[:-1], log[-1].replace("col=2", "col=0")]))
 
     def test_detail_back_restores_the_home_card_identity_and_position(self):
@@ -457,7 +460,10 @@ class ItemResolution(unittest.TestCase):
 class FpsIdentity(unittest.TestCase):
     def test_every_route_except_login_gets_the_temporary_test_identity(self):
         """FPS evidence must not depend on this debug install having been signed in by hand."""
-        for route in ("home", "detail", "itemmenu", "person", "library", "search", "account", "player"):
+        # `itemmenu`/`account` left this list in UI-restructure phase 10: both menus are
+        # ModalStack surfaces now, so a scene naming one keys on `overlay`, and its `route` is the
+        # host page's word — which is already in the list.
+        for route in ("home", "detail", "person", "library", "search", "player"):
             scene = {"route": route, "tier": "player" if route == "player" else "ui"}
             self.assertTrue(run.fps_scene_needs_token(scene), route)
         self.assertFalse(run.fps_scene_needs_token({"route": "login", "tier": "ui"}))

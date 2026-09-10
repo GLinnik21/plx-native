@@ -689,7 +689,7 @@ pub struct SourceRef {
 
 impl SourceRef {
     /// Everything about this source except the token, for the event log. The machine id is left
-    /// out entirely — it is a permanent household fingerprint (`ui::stats`), and the event log is
+    /// out entirely — it is a permanent household fingerprint (`app::diagnostics`), and the event log is
     /// the file we ask users to send us.
     pub fn describe(&self) -> String {
         // Three states, not two: `owned` is plex.tv's flag about this ACCOUNT, and a source that is
@@ -1233,7 +1233,7 @@ pub fn current_profile_key() -> String {
 ///
 /// It is held across the whole write, [`write_atomic`]'s `sync_all` included, so a reader that
 /// takes it can be parked for as long as the flash takes. That is affordable because of who the
-/// readers are — a keypress (`ui::account_menu::open`), a boot, and one read-out that was already
+/// readers are — a keypress (`screens::account_menu`'s mount), a boot, and one read-out that was already
 /// doing an `fs::read` per frame (the legacy Library's failed-source labels; the owned screen now
 /// uses retained views). **Do not add a per-frame
 /// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
@@ -1739,9 +1739,9 @@ fn new_client_id() -> String {
 /// path enters Home without ever writing one. Reading that emptiness as "signed out" is how a
 /// signed-in owner ends up being offered "Sign in".
 ///
-/// Converted: `ui/account_menu.rs`, and — since 2026-08-23 — the shared top bar's profile chip
+/// Converted: `screens/account_menu.rs`, and — since 2026-08-23 — the shared top bar's profile chip
 /// (`ui/widgets.rs` `profile_chip`), which was the remaining half of the bug. Both now word
-/// themselves through ONE resolver, `ui::account_menu::chip_label`, so the chip and the menu it
+/// themselves through ONE resolver, `screens::account_menu::chip_label`, so the chip and the menu it
 /// opens cannot disagree about the same account again.
 pub struct Account {
     /// **This device** holds a session: a plex.tv account token, or at least a server + PMS token

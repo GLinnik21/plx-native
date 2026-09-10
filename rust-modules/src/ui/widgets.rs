@@ -952,7 +952,7 @@ pub(crate) fn poster_mark<T: crate::ui::tile::Tile + ?Sized>(m: &T) -> PosterMar
 
 /// The same three states asked as the **write-verb** question: which ends of the watch range can
 /// this row still be sent to — i.e. whether a menu offers *Mark as Watched*, *Mark as Unwatched*, or
-/// BOTH ([`crate::ui::item_menu`]'s state group).
+/// BOTH ([`crate::screens::item_menu`]'s state group).
 ///
 /// It is [`poster_mark`] plus one rule, and the split is the same one the detail hero draws
 /// ([`crate::ui::detail`]'s `hero_watch_state`): **a mark DESCRIBES, a control PROMISES.** A poster
@@ -982,7 +982,7 @@ pub(crate) fn row_watch_state<T: crate::ui::tile::Tile + ?Sized>(m: &T) -> Poste
 /// The app's **two watch-state verbs**, written down once.
 ///
 /// Two surfaces offer this pair of writes — the press-and-hold card menu's state group
-/// ([`crate::ui::item_menu`]) and the detail hero's discs, which unfurl the verb on focus
+/// ([`crate::screens::item_menu`]) and the detail hero's discs, which unfurl the verb on focus
 /// ([`crate::ui::detail`]'s `watch_label`) — and they are the same two actions on the same item.
 /// A menu row reading *Mark as Watched* beside a control reading *Watched* would read as two
 /// different writes, so both take the words from here. They sit beside [`row_watch_state`] because
@@ -1643,7 +1643,7 @@ pub(crate) const HAIRLINE_H: f32 = 1.0;
 /// One full-width HAIRLINE divider — the alert family's rule, in one place.
 ///
 /// **A `theme::HAIRLINE` rect, never a 1px `rrect` with a radius nobody can see.** That sentence
-/// was already written down, in `tracks_panel`'s private copy of this function, while a third
+/// was already written down, in `screens::tracks_panel`'s private copy of this function, while a third
 /// panel drew exactly the `rrect` it forbids — which is what three private drawers of one line
 /// buy you. The height is 1.0 and is not a parameter: a divider that is two pixels somewhere is a
 /// different object, and both files that made it a named constant gave it the same value.
@@ -2505,16 +2505,17 @@ pub(crate) struct ProfileChipRead<'a> {
 pub(crate) fn profile_chip(p: Painter) {
     // NOT a migration-pending compatibility path — the owned Home/Library/Search paths all
     // supply their own published profile DTO straight to `profile_chip_with`, bypassing this
-    // entirely. This standalone re-derivation stays live for `account_menu`'s popover lift
-    // (`Opener::redraw`, a bare `fn()` with nothing to borrow a `&Bridge` through): see
-    // `with_legacy_tab_labels`'s doc for the matching reason on the label side.
+    // entirely. This standalone re-derivation stays live for the profile menu's SCRIM LIFT
+    // (`screens::account_menu`'s `Screen::scrim`, whose `Scrim::lift` is a bare `fn()` with
+    // nothing to borrow a `&Bridge` through): see `with_legacy_tab_labels`'s doc for the matching
+    // reason on the label side.
     static mut SOURCE: Option<(u32, String, String, String)> = None;
     let generation = crate::plex::session::current_gen();
     let source = unsafe { &mut *std::ptr::addr_of_mut!(SOURCE) };
     if source.as_ref().is_none_or(|s| s.0 != generation) {
         let current = crate::plex::session::current();
         let account = crate::plex::session::peek().account(current.as_ref());
-        let label = crate::ui::account_menu::chip_label(&account);
+        let label = crate::screens::account_menu::chip_label(&account);
         let initial = account.name.as_deref().and_then(|s| s.chars().next())
             .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
         *source = Some((generation, current.map(|u| u.thumb).unwrap_or_default(), label, initial));
@@ -2656,12 +2657,13 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, glass_wan
     }
 }
 
-/// [`profile_chip`], re-drawn over the account menu's scrim — [`Opener`]'s contract, for the one
-/// popover in the app that hangs off a piece of shared CHROME rather than off a card.
+/// [`profile_chip`], re-drawn over the account menu's scrim — the `Scrim::lift` contract
+/// (`ui::screen::Scrim`, drawn by `ModalStack::draw_scrims`), for the one surface in the app that
+/// hangs off a piece of shared CHROME rather than off a card.
 ///
 /// It lives HERE, beside the chip itself, for the reason the chip does: the control is drawn
-/// verbatim by Home, the Library and Search, and the menu can now be opened from any of the three
-/// ([`crate::app`]'s `BarHost`). It was Home's own `redraw_profile_chip` while Home was the only screen
+/// verbatim by Home, the Library and Search, and the menu can be opened from any of the three.
+/// It was Home's own `redraw_profile_chip` while Home was the only screen
 /// whose chip could be pressed, which would have lifted the HOME chip's spring over whichever page
 /// the user was actually on — and there is only one chip, so there is only one lift.
 ///
@@ -3765,7 +3767,7 @@ impl View for TransportButton {
 
 // ---- FieldList: a NON-INTERACTIVE key/value read-out ---------------------------------------
 //
-// The diagnostics overlay's list primitive (`ui/stats.rs`), and the reason it is not a
+// The diagnostics overlay's list primitive (`app/diagnostics.rs`), and the reason it is not a
 // `TableView`: that is a SELECTION widget. It paints an accent pill under row `sel` on every draw
 // with no "nothing selected" mode, its rows are 60px so ~25 of them measure 1540 against a 1080
 // panel and SCROLL behind a scissor, and a row is `label` + optional sub-line + badges — there is
@@ -3829,7 +3831,7 @@ impl Field {
 }
 
 /// Row pitch. Values are [`FIELD_VAL_SZ`]; this is that plus air, and it is what bounds how many
-/// fields the overlay may carry — see `stats::{LEFT_ROWS, RIGHT_ROWS}`.
+/// fields the overlay may carry — see `app::diagnostics`'s `LEFT_ROWS`/`RIGHT_ROWS`.
 pub const FIELD_ROW_H: f32 = 26.0;
 /// The diagnostics instrument's dense type.  It is intentionally smaller than product copy: a
 /// fixed two-column schema is more useful than one large sentence wrapping under another, and the
@@ -6692,7 +6694,7 @@ pub struct Button {
     pub sz: c_int,
     pub icon: Option<crate::ui::icons::Icon>,
     /// The TRAILING accessory glyph — a chevron saying the press opens a list rather than acting
-    /// ([`crate::ui::alt_sources`]'s *Also available*). Deliberately its own slot rather than a
+    /// ([`crate::screens::alt_sources`]'s *Also available*). Deliberately its own slot rather than a
     /// second use of [`Button::icon`]: the leading icon is part of the label's own statement (the
     /// Play triangle IS "play"), while this one is a disclosure mark about what the control DOES,
     /// and the two are read in opposite directions. It is the same `›`-family mark
@@ -9992,7 +9994,7 @@ mod tests {
     /// `Spring::jump` reports to `ui::idle`'s process-global dirty flag. So they are serial by
     /// obligation, not precaution (`xfade.rs`'s rule): under parallel libtest they intermittently
     /// failed OTHER modules' "a settled screen asks for nothing" assertions.
-    fn serial_for_motion() -> std::sync::MutexGuard<'static, ()> {
+    fn serial_for_motion() -> crate::testlock::Serial {
         crate::testlock::serial()
     }
 

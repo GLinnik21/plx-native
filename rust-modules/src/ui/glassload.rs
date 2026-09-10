@@ -41,7 +41,8 @@
 //!   shipped dynamic policy, `@0` captures once and caches forever,
 //! * `c<count>x<width>x<height>` (or `cf…` for the FOCUSED penumbra) — that many CARD composites,
 //!   the `draw_tex_carded` path every art tile takes,
-//! * `acct` — the REAL shipped Account popover, opened through `account_menu` on the real route, so
+//! * `acct` — the REAL shipped Account popover, presented as its own `ModalStack` surface
+//!   (`bridge::open_account_menu`) over the real Home page, so
 //!   a synthetic surface and the thing it stands for can be interleaved in ONE launch. This step
 //!   exists because a dial panel and the shipped panel were read as the same configuration by two
 //!   different agents and disagreed by 15 fps; §"the reconciliation" in
@@ -499,7 +500,7 @@ pub(crate) fn draw() {
                 );
             }
             Kind::Image => p.tex(card_tex(i), r, 0.0, [1.0, 1.0, 1.0, 1.0]),
-            // The real popover is drawn by `account_menu` on its own route; `layout` returns no
+            // The real popover is drawn by its own surface on the container tree; `layout` returns no
             // rects for it, so this arm is unreachable and says so rather than drawing a stand-in.
             Kind::Account => unreachable!("an Account step lays out no surfaces of its own"),
         }

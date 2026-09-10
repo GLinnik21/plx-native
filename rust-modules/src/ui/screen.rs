@@ -104,6 +104,57 @@ pub enum RenderStrategy {
     VideoPlane,
 }
 
+/// The [`Scrim::lift`] of a surface with nothing to lift — a named `fn` rather than a closure, so
+/// [`Scrim::NONE`] can be a `const`. (`popover::Opener::NONE` carries its own twin of this for the
+/// legacy popovers; the two disappear together when the last of those becomes a surface.)
+fn no_lift() {}
+
+/// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3), and the one element it
+/// lifts back out of that dim.
+///
+/// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
+/// sits between the page and the surface's own glass, so it is part of what that glass looks
+/// through — which means it has to be on the framebuffer *before* the host snapshot is taken, i.e.
+/// inside the page pass, several call frames away from the surface that owns it. The surface
+/// therefore states its weight here and the container
+/// ([`ModalStack::draw_scrims`](crate::ui::containers::modal::ModalStack::draw_scrims)) draws it,
+/// in one place, for every surface, in phase order.
+///
+/// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].
+#[derive(Clone, Copy)]
+pub struct Scrim {
+    /// Peak ink alpha at full appear. The container multiplies it by the surface's own appear
+    /// spring and by `nav::page_alpha`, so the dim ramps with the panel and dips with a route
+    /// change exactly as `Popover::scrim` did.
+    pub alpha: f32,
+    /// Re-draw the element this surface was opened FROM, ABOVE the dim — the profile chip, a
+    /// focused card. A SECOND draw rather than a cut-out (`popover::Popover::scrim_lifting` has
+    /// the visual argument), and a bare `fn()` because only the element's own screen knows where
+    /// it landed and how to paint it.
+    pub lift: fn(),
+}
+
+impl Scrim {
+    /// No dim and nothing to lift — every page, and every surface that draws its own ground.
+    pub const NONE: Scrim = Scrim {
+        alpha: 0.0,
+        lift: no_lift,
+    };
+
+    /// A dim of `alpha` with nothing lifted out of it.
+    pub const fn dim(alpha: f32) -> Scrim {
+        Scrim {
+            alpha,
+            lift: no_lift,
+        }
+    }
+
+    /// A dim of `alpha` with `lift` re-drawn above it.
+    pub const fn lifting(alpha: f32, lift: fn()) -> Scrim {
+        Scrim { alpha, lift }
+    }
+}
+
 /// The screen (§6.1). `step` is the only entrance that mutates logical state after construction.
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
@@ -112,6 +163,26 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
+    /// **A REFRESHING backdrop's cadence, resolved before the host page draws** — the second
+    /// prepare, and the only one that cannot happen in [`Screen::prepare`].
+    ///
+    /// A surface whose glass re-sources its backdrop (`Glass::DYNAMIC_BACKDROP`) has to decide
+    /// whether to do so at a slot with a boundary on each side: after the host-user latch that
+    /// tells "the page changed" from "I changed", and before the frame's blur SOURCE pass is
+    /// sampled, so an invalidation raised here reaches this frame's own source rather than the
+    /// next one's. `prepare` runs at the dispatcher's step 9, inside the frame, which is neither.
+    ///
+    /// Two facts, because neither is the screen's to know. `underlay_changed` is what the CALLER
+    /// believes about the page (`app/run.rs` hands the dispatcher
+    /// `underlay_moving || idle::present_dirty()`), and `appear_settled` is the CONTAINER's answer
+    /// about this surface's own appear spring, which it owns — a page, having no such spring, is
+    /// asked with `true`. The decision itself is one shared function, `popover::glass_refresh`,
+    /// which subtracts the own-damage ledger from the caller's belief: it cannot tell "the page
+    /// under me changed" from "the key I just swallowed raised an invalidate", and both set the
+    /// same process-wide flag.
+    ///
+    /// A screen with a CACHED ground, or none at all, wants nothing here and inherits this no-op.
+    fn prepare_present(&mut self, _underlay_changed: bool, _appear_settled: bool) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
@@ -132,6 +203,12 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The bytes of render this screen holds (its backing textures), for the `RenderSet` check.
     fn render_bytes(&self) -> usize {
         0
+    }
+    /// **The modal dim this SURFACE asks its host page for** — see [`Scrim`]. A page answers
+    /// [`Scrim::NONE`] and so does every surface that draws its own ground; the container asks
+    /// only surfaces, and only ones whose host is cached rather than replaced.
+    fn scrim(&self) -> Scrim {
+        Scrim::NONE
     }
     /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
     /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after
@@ -310,7 +387,8 @@ pub struct Link {
 }
 
 /// Who answers a direction for this screen (§7.6): the engine, or the legacy ladders — for a
-/// `LegacyPage` the engine and the hit map are INERT.
+/// screen that answers `Legacy` the engine and the hit map are INERT. The player is the last
+/// one that does (phase 12); the blank route-word page that used to be the other went in 10.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FocusSource {
     Engine,

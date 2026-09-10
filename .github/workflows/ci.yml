@@ -102,6 +102,20 @@ jobs:
           cargo "+$RUST_NIGHTLY" check --lib --features hostsim
           cargo "+$RUST_NIGHTLY" check --lib --no-default-features --features hostsim
 
+      - name: Type-check the Cloud Lab feature set
+        # `lab-diagnostics` is the one feature that is NOT in the default set (which is what makes
+        # it unshippable by forgetting a flag), so no step above compiles a line of `lab/` or of
+        # `ui/lab_toast.rs`. Until 2026-09-10 nothing anywhere did, and the configuration had been
+        # broken since restructure phase 9 moved `player::diag` onto the playback session — found
+        # by writing this gate, not by a lab hour, which is where it would otherwise have surfaced:
+        # rented, remote, with no console and no way to rebuild.
+        #
+        # `--tests` and not a bare `--lib`: a feature-gated module's TEST code is the half nothing
+        # else here can see, and an orphaned `#[test]` attribute had been sitting in
+        # `lab/snapshot.rs` for exactly that reason. It needs no `pkg/lab.json` — that file is
+        # `make LAB=1`'s requirement (a live session secret), not the compiler's.
+        run: cd rust-modules && cargo "+$RUST_NIGHTLY" check --lib --tests --features lab-diagnostics
+
       - name: Report suite size
         # CLAUDE.md's stated test count has gone stale twice. Print the real number rather than
         # trusting a doc: the count is a fact the suite can produce about itself.

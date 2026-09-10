@@ -6,127 +6,6 @@ use crate::screens::registry::{AppMsg, ContentArg, ContentReq, HomeHubIdentity, 
 use crate::ui::machine::{Delivery, EntryId, Fx, InputOwner, MachineId, NavOp};
 use crate::ui::screen::{ReturnState, ScreenEvent};
 
-pub(super) struct ContentBoot {
-    target: Node,
-    down: u32,
-    right: u32,
-    activate: bool,
-    filmography: bool,
-    waiting_person: bool,
-    ready_seen: bool,
-}
-
-impl ContentBoot {
-    pub(super) fn new(target: Node) -> Self {
-        Self {
-            target,
-            down: crate::dev::read("detailsec").and_then(|s| s.parse().ok()).unwrap_or(0),
-            right: crate::dev::read("detailcol").and_then(|s| s.parse().ok()).unwrap_or(0),
-            activate: crate::dev::flag("detailok") || crate::dev::flag("detailplay"),
-            filmography: crate::dev::flag("filmography"),
-            waiting_person: false,
-            ready_seen: false,
-        }
-    }
-
-    fn admit_landing(&mut self, ready: bool) -> bool {
-        let admitted = ready && self.ready_seen;
-        self.ready_seen = ready;
-        admitted
-    }
-}
-
-pub(super) fn advance_content_boot(app: &mut App, fr: &Frame) {
-    let Some(mut boot) = app.content_boot.take() else { return };
-    let ready = if boot.waiting_person {
-        app.pages.nav.top_page().is_some_and(|entry| {
-            let bridge::AppArg::Content(ContentArg::Person { sid, key, .. }) = &entry.arg else { return false };
-            crate::person::current().is_some_and(|p| p.sid == *sid && p.key == *key && p.credited && p.landed)
-        })
-    } else {
-        let loaded = crate::metadata::current().map(|d|
-            (d.sid, d.rk.as_str(), d.seasons.get(d.cur_season).map(|s| s.index)));
-        bridge::page_node(&app.pages).is_some_and(|n| n.same_page(&boot.target))
-            && detail_boot_ready(&boot.target, loaded, crate::metadata::detail_loading(), crate::metadata::season_loading())
-    };
-    // A complete landing must have passed through the screen's StoreChanged step first.
-    if !boot.admit_landing(ready) {
-        app.content_boot = Some(boot);
-        return;
-    }
-    if boot.waiting_person {
-        let person = app.pages.nav.top_page().map(|e| e.arg.clone());
-        if let Some(bridge::AppArg::Content(ContentArg::Person { sid, key, .. })) = person {
-            app.pages.nav.next_style = crate::ui::containers::modal::Style::Opaque { snapshot: true };
-            app.pages.request(MachineId::Nav, NavOp::Present(bridge::AppArg::Content(
-                ContentArg::Filmography { sid, key })));
-            return;
-        }
-    } else if bridge::page_node(&app.pages).is_some_and(|n| n.same_page(&boot.target)) {
-        let key = if boot.down > 0 {
-            boot.down -= 1;
-            Some(crate::ui::machine::Key::Down)
-        } else if boot.right > 0 {
-            boot.right -= 1;
-            Some(crate::ui::machine::Key::Right)
-        } else { None };
-        if let Some(key) = key {
-            app.inputs.extend(bridge::script_key(key, crate::ui::machine::Tick { ms: fr.now, dt_us: 0 }));
-        } else {
-            if let Some(pg) = crate::dev::read("tracks") {
-                if crate::ui::tracks_panel::is_available() {
-                    crate::ui::tracks_panel::open();
-                    crate::ui::tracks_panel::set_page(pg.trim().parse().unwrap_or(1));
-                }
-            }
-            if boot.activate {
-                if let (Some(instance), Some(focus)) = (app.pages.top_page(), app.pages.focus()) {
-                    app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-                        Delivery::Screen(ScreenEvent::Activate(focus.elem))));
-                }
-            }
-            if !boot.filmography { return; }
-            boot.waiting_person = true;
-            boot.ready_seen = false;
-        }
-    }
-    app.content_boot = Some(boot);
-}
-
-fn detail_boot_ready(target: &Node, loaded: Option<(crate::plex::ServerId, &str, Option<i64>)>, detail_loading: bool, season_loading: bool) -> bool {
-    let Node::Detail { sid, rk, spot } = target else { return false };
-    !detail_loading && !season_loading && loaded.is_some_and(|(server, key, season)|
-        server == *sid && key == rk && spot.season.is_none_or(|wanted| season == Some(wanted)))
-}
-
-#[cfg(test)]
-mod boot_tests {
-    use super::*;
-
-    #[test]
-    fn delayed_detail_and_season_landings_do_not_consume_headless_directions() {
-        let target = Node::Detail { sid: crate::plex::ServerId::UNSET, rk: "1001".into(),
-            spot: Spot { season: Some(2), ..Default::default() } };
-        let mut boot = ContentBoot { target: target.clone(), down: 2, right: 1,
-            activate: true, filmography: false, waiting_person: false, ready_seen: false };
-        let loaded = Some((crate::plex::ServerId::UNSET, "1001", Some(2)));
-        for ready in [
-            detail_boot_ready(&target, None, true, false),
-            detail_boot_ready(&target, loaded, true, false),
-            detail_boot_ready(&target, Some((crate::plex::ServerId::UNSET, "1001", Some(1))), false, false),
-            detail_boot_ready(&target, loaded, false, true),
-        ] {
-            assert!(!boot.admit_landing(ready));
-            assert_eq!((boot.down, boot.right), (2, 1));
-        }
-        assert!(!boot.admit_landing(detail_boot_ready(&target, loaded, false, false)),
-            "the landing frame is left for the screen to publish its sections");
-        assert!(boot.admit_landing(detail_boot_ready(&target, loaded, false, false)));
-        assert_eq!((boot.down, boot.right), (2, 1));
-        assert!(!detail_boot_ready(&target, Some((crate::plex::ServerId::UNSET, "1002", Some(2))), false, false));
-    }
-}
-
 fn node(arg: ContentArg) -> Option<Node> {
     match arg {
         ContentArg::Detail { sid, rk } => Some(to_detail(sid, &rk)),
@@ -136,7 +15,7 @@ fn node(arg: ContentArg) -> Option<Node> {
     }
 }
 
-pub(super) fn content_requests(app: &mut App, fr: &Frame) {
+pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     home_requests(app);
     library_requests(app);
     search_requests(app);
@@ -158,6 +37,17 @@ pub(super) fn content_requests(app: &mut App, fr: &Frame) {
             &mut app.input.press,
         );
     }
+    // …and the item context menu's committed row, for the same reason and at the same moment: it
+    // is a surface on the shared stack, so what it decides reaches the loop as a request. The
+    // dispatch flips `app.route`, takes the playback session's `&mut` and writes the trail, none of
+    // which a screen may name (§2.1).
+    for req in app.bridge.take_item_menu_reqs() {
+        unsafe {
+            apply_item_action(&mut app.player.session, &mut app.adapters.player, req,
+                &mut app.route, &mut app.play_from, &mut app.trail, &mut app.pages,
+                &mut app.bridge, &mut app.nav_pending);
+        }
+    }
     for (source, request, ret) in app.bridge.take_content_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
@@ -173,7 +63,7 @@ pub(super) fn content_requests(app: &mut App, fr: &Frame) {
             }
             ContentReq::Present(arg) => {
                 app.pages.nav.next_style = crate::ui::containers::modal::Style::Opaque { snapshot: true };
-                app.pages.request_with_return(source, NavOp::Present(bridge::AppArg::Content(arg)), ret);
+                app.pages.request_with_return(source, NavOp::Present(AppArg::Content(arg)), ret);
             }
             ContentReq::Back if cancel_content_navigation(app) => {}
             ContentReq::Back if app.pages.nav.is_surface(entry) =>
@@ -207,18 +97,35 @@ pub(super) fn content_requests(app: &mut App, fr: &Frame) {
                 }
                 let origin = origin_here(app.route, &app.trail);
                 start_playback(&mut app.player.session, &mut app.adapters.player, resume_ns, origin,
-                    if crate::dev::flag("detailplay") { HUD_HEADLESS_MS } else { HUD_LINGER_MS },
+                    if crate::dev::scenarios::detailplay_forces_headless_hud() { HUD_HEADLESS_MS } else { HUD_LINGER_MS },
                     &mut app.route, &mut app.play_from, &mut app.pages, &mut app.bridge);
                 if matches!(app.route, Route::Player) {
-                    app.pages.request_with_return(source, NavOp::Push(bridge::AppArg::Legacy(app.route)), ret);
+                    app.pages.request_with_return(source, NavOp::Push(AppArg::Legacy(app.route)), ret);
                 }
+            }
+            ContentReq::Panel(panel) => {
+                // **The SUBJECT is the page's item, and a page need not have one.** A panel that
+                // needs `(sid, rk)` — *Also available*, whose store is addressed by it — is
+                // refused rather than presented against whatever item happened to land last; a
+                // panel that describes the person, or the item the store already holds, is
+                // presented from a page with no item at all. `ContentPanel::surface` decides
+                // which is which, and answers `None` for the pairing this page cannot offer.
+                let subject = match app.pages.nav.entry(entry).map(|e| &e.arg) {
+                    Some(AppArg::Content(ContentArg::Detail { sid, rk })) => Some((*sid, rk.clone())),
+                    _ => None,
+                };
+                let subject = subject.as_ref().map(|(sid, rk)| (*sid, rk.as_str()));
+                bridge::open_content_panel(&mut app.pages, instance, subject, panel);
             }
             ContentReq::ItemMenu => {
                 if let PageMemory::Detail(spot) = &ret.memory {
                     app.trail.set_top_spot(spot.spot.clone());
                 }
-                if let Some(host) = app.bridge.open_content_menu(&app.pages, entry, &ret) {
-                    app.route = Route::ItemMenu { over: host };
+                // The ROUTE does not move: a surface is presented over the top page and never
+                // replaces it, which is the whole of what `Route::ItemMenu { over: MenuHost }`
+                // was arranging by hand.
+                if let Some(arg) = app.bridge.content_menu_arg(&app.pages, entry, &ret) {
+                    bridge::open_item_menu(&mut app.pages, arg);
                     app.input.press.cancel();
                     app.ok_armed = false;
                 }
@@ -247,7 +154,7 @@ fn home_requests(app: &mut App) {
                 app.pages.emit(MachineId::Nav, Fx::Deliver(source,
                     Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh { focus }))));
             }
-            HomeReq::Account => chip_activate(&mut app.route),
+            HomeReq::Account => chip_activate(app.route, &mut app.pages),
             HomeReq::Tab(tab) => {
                 // A pointer may name the last presented map after favourites changed. The
                 // stable key must not resurrect a destination the current strip withdrew.
@@ -270,12 +177,13 @@ fn home_requests(app: &mut App) {
             HomeReq::ItemMenu { sid, rk } => {
                 let snapshot = crate::pms::hubs_snapshot();
                 let Some(item) = home_item(snapshot.view(), sid, &rk)
-                    .filter(|item| crate::ui::item_menu::has_actions(item)) else { continue };
+                    .filter(|item| crate::screens::item_menu::has_actions(item)) else { continue };
                 let from_deck = home_menu_from_deck(&ret);
                 let opener = app.bridge.home_opener(&app.pages, entry, ret.focus);
-                crate::ui::item_menu::open(item, from_deck, opener);
-                app.bridge.menu_opener = Some((entry, ret.focus));
-                app.route = Route::ItemMenu { over: MenuHost::Home };
+                // `from_home: true` is the ONE thing `MenuHost::Home` still decided by phase 10:
+                // a navigation out of a menu opened on the root resets the trail (`menu_leave`).
+                let arg = bridge::card_menu_arg(item, from_deck, true, entry, ret.focus, opener.rect);
+                bridge::open_item_menu(&mut app.pages, arg);
                 app.input.press.cancel();
                 app.ok_armed = false;
             }
@@ -329,8 +237,7 @@ fn search_requests(app: &mut App) {
             SearchReq::Account => {
                 // The owned screen releases its keyboard before emitting this request. Do not
                 // call chip_activate's legacy Search editing-state teardown a second time.
-                crate::ui::account_menu::open();
-                app.route = Route::Account { over: BarHost::Search };
+                bridge::open_account_menu(&mut app.pages);
             }
             SearchReq::Detail { .. } | SearchReq::Person { .. } => {
                 let Some((item, _)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
@@ -340,10 +247,9 @@ fn search_requests(app: &mut App) {
             }
             SearchReq::ItemMenu { sid, rk } => {
                 let Some((crate::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != *sid || item.rk != *rk || !crate::ui::item_menu::has_actions(&item) { continue; }
-                crate::ui::item_menu::open(&item, false, opener);
-                app.bridge.menu_opener = Some((entry, ret.focus));
-                app.route = Route::ItemMenu { over: MenuHost::Search };
+                if item.sid != *sid || item.rk != *rk || !crate::screens::item_menu::has_actions(&item) { continue; }
+                let arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
+                bridge::open_item_menu(&mut app.pages, arg);
                 app.input.press.cancel();
                 app.ok_armed = false;
             }
@@ -394,7 +300,7 @@ fn library_requests(app: &mut App) {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
         if let LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
-            if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && page_of(app.route) == Route::Library {
+            if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && app.route == Route::Library {
                 // Apply through the store vocabulary at this boundary. The press check and commit
                 // are adjacent; no queued boolean can outlive an input arm created later.
                 crate::stores::browse::apply(library_publication_command(&app.pages, target, hidden_page, at_head));
@@ -406,9 +312,9 @@ fn library_requests(app: &mut App) {
             LibraryReq::PublishShelves { .. } => unreachable!(),
             LibraryReq::Menu { kind, anchor, target } => {
                 app.pages.nav.next_style = crate::ui::containers::modal::Style::Compact;
-                app.pages.request(source, NavOp::Present(bridge::AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
+                app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
             }
-            LibraryReq::Account => chip_activate(&mut app.route),
+            LibraryReq::Account => chip_activate(app.route, &mut app.pages),
             LibraryReq::BackToHome { kind } => {
                 nav_to(app.route, Nav::Home { focus_pill: Some(crate::ui::widgets::Pill::Section(kind)) }, &mut app.nav_pending);
                 freeze_request(app, Some(entry), ret);
@@ -425,10 +331,9 @@ fn library_requests(app: &mut App) {
             }
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != sid || item.rk != rk || !crate::ui::item_menu::has_actions(&item) { continue; }
-                crate::ui::item_menu::open(&item, from_deck, opener);
-                app.bridge.menu_opener = Some((entry, ret.focus));
-                app.route = Route::ItemMenu { over: MenuHost::Library };
+                if item.sid != sid || item.rk != rk || !crate::screens::item_menu::has_actions(&item) { continue; }
+                let arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+                bridge::open_item_menu(&mut app.pages, arg);
                 app.input.press.cancel();
                 app.ok_armed = false;
             }
@@ -496,7 +401,7 @@ fn activate_home_item(app: &mut App, source: MachineId, entry: EntryId,
     unsafe { activate_card(&mut app.player.session, &mut app.adapters.player, &item, resume_ns.is_some(), HUD_LINGER_MS, &mut app.route,
         &mut app.play_from, &app.trail, &mut app.pages, &mut app.bridge, &mut app.nav_pending); }
     if matches!(app.route, Route::Player) {
-        app.pages.request_with_return(source, NavOp::Push(bridge::AppArg::Legacy(app.route)), ret);
+        app.pages.request_with_return(source, NavOp::Push(AppArg::Legacy(app.route)), ret);
     } else {
         freeze_request(app, Some(entry), ret);
     }
@@ -518,7 +423,7 @@ fn freeze_request(app: &mut App, entry: Option<EntryId>, ret: ReturnState<u32, P
 }
 
 /// A legacy context-menu request still leaves an owned page. Capture before its fade advances.
-pub(super) fn capture_content_request(app: &mut App) {
+pub(crate) fn capture_content_request(app: &mut App) {
     if let Some(request) = &mut app.nav_pending {
         if request.ret.is_none() {
             let ret = app.pages.return_state();
@@ -531,9 +436,9 @@ pub(super) fn capture_content_request(app: &mut App) {
 }
 
 /// Playback restores the retained origin, then asks that instance to reveal the played episode.
-pub(super) fn restore_played_entry(app: &mut App) {
+pub(crate) fn restore_played_entry(app: &mut App) {
     let Some(entry) = app.pages.nav.top_page() else { return };
-    let bridge::AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
+    let AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
     let Node::Detail { sid: origin_sid, rk: origin_rk, spot } = &app.play_from else { return };
     if sid != origin_sid || rk != origin_rk { return; }
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
@@ -548,15 +453,15 @@ pub(super) fn restore_played_entry(app: &mut App) {
     }
 }
 
-pub(super) fn refresh_content(app: &mut App, keep: String) {
+pub(crate) fn refresh_content(app: &mut App, keep: String) {
     let Some(loaded) = crate::metadata::current() else { return };
     // A write may finish after Person has covered its Detail origin. That origin still
     // owns the metadata and must hear the reconciliation before Back uncovers it.
     let Some(entry) = app.pages.nav.tabs.stack.entries.iter().rev().find(|e| {
-        matches!(&e.arg, bridge::AppArg::Content(ContentArg::Detail { sid, rk })
+        matches!(&e.arg, AppArg::Content(ContentArg::Detail { sid, rk })
             if *sid == loaded.sid && *rk == loaded.rk)
     }) else { return };
-    let bridge::AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
+    let AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return };
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
     let memory = if app.pages.nav.top_page().is_some_and(|top| top.id == entry.id) {
         app.pages.return_state().memory

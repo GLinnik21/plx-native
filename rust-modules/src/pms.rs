@@ -159,7 +159,7 @@ pub(crate) fn movie(i: usize) -> Option<&'static PmsMovie> {
 /// "off-catalog".
 ///
 /// The item menu's Play-from-Start was the other caller and is not one any more: it carries the row
-/// it was opened on (`ui::item_menu::ITEM`), because a Library, Search or person-page tile is in no
+/// it was opened on (`screens::registry::ItemMenuArg`'s row), because a Library, Search or person-page tile is in no
 /// hub at all and this answered -1 for every one of them.
 pub(crate) fn index_of_rk(sid: ServerId, rk: &str) -> c_int {
     catalog()

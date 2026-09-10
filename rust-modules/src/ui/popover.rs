@@ -16,9 +16,9 @@
 //! The profile menu had solved this for itself in 2026-08 with a private `gfx::FrameCache`, and no
 //! other popover could reach it. [`host`] is that mechanism generalised, and the generalisation is
 //! what makes it apply to panels the profile menu's shape could not: a popover drawn from INSIDE
-//! its page (`tracks_panel`, `about_panel`, `alt_sources`, `person_bio` all draw at the tail of
-//! `detail::draw` / `person::draw`) cannot be served by "skip the page and draw the panel after
-//! it". So the freeze is a REFUSAL at the renderer's one shared gate rather than a skipped call
+//! its page (`about_panel` and `person_bio` did, at the tail of `detail::draw` / `person::draw`,
+//! until phase 10 made both surfaces; `decision_alert` still does) cannot be served by "skip the
+//! page and draw the panel after it". So the freeze is a REFUSAL at the renderer's one shared gate rather than a skipped call
 //! tree: the page's draw still runs and still records its layout and hit rects, the fill is what
 //! goes away, and each popover lifts the freeze around its own drawing with [`host::live`].
 //!
@@ -33,7 +33,7 @@
 //!   glass changes: `Glass::CACHED` grabs framebuffer 0 after the page scrim is on it, and the page
 //!   scrim is drawn live over the cached quad, so the composite it samples is identical.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
-//!   was `person_bio`'s private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
+//!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
 //!   [`host::input_scope`] / [`host::page_pass`] for the host cache (and [`note_own_damage`] for
 //!   the glass ledger), shared — attributed at the source and counted
 //!   (`idle::take_page_damage`), with [`host_refresh`] as the host cache's decision and
@@ -54,7 +54,8 @@ static mut OPEN_COUNT: u32 = 0;
 /// Is ANY modal panel up? The one question a screen's CHROME has to ask, and the reason it is a
 /// counter here rather than a bool threaded through three `draw_tab_row` call sites: the panels
 /// that cover the top bar belong to four different modules and two of them are ROUTES
-/// (`account_menu`, `item_menu`), so no screen can enumerate the ones drawn over it. Every panel in
+/// (the two menus, both `ModalStack` surfaces since phase 10), so no screen can enumerate the ones
+/// drawn over it. Every panel in
 /// the app goes through [`Popover::open`]/[`Popover::close`], so registering there is exact, costs
 /// nothing, and a panel added tomorrow is counted without touching this.
 ///
@@ -147,7 +148,7 @@ static mut HOST_CLOSING: u32 = 0;
 /// through `note_spring` exactly like the page's would. So the panels keep this ledger of the
 /// damage they are themselves the reason for, and [`glass_refresh`] subtracts it.
 ///
-/// It was `person_bio`'s private static and is shared for one blunt reason: the bug it fixes is a
+/// It was the bio panel's private static and is shared for one blunt reason: the bug it fixes is a
 /// property of every popover with a scroll or a selection in it, and that module had it only
 /// because it was the first one whose FPS was measured. Set through [`note_own_damage`] /
 /// [`own_motion`], taken once a frame by [`host::begin_frame`].
@@ -207,8 +208,11 @@ impl Drop for OwnMotion {
 /// dynamic glass cadence. (The host snapshot's lifetime used to be resolved from it too; that is
 /// [`host_refresh`] over `idle::take_page_damage` now.)
 ///
-/// Lifted verbatim out of `person_bio`, where it was written after a measured FPS regression and
-/// two review passes; the reasoning that produced it is general and the file it lived in was not.
+/// Lifted verbatim out of the bio panel (`screens::person_bio` since phase 10), where it was
+/// written after a measured FPS regression and two review passes; the reasoning that produced it is
+/// general and the file it lived in was not. Its callers are `Popover::prepare_present` for the one
+/// legacy panel left, and `Screen::prepare_present` for a surface — the container hands the latter
+/// its own appear state, which is the one term a surface cannot answer for itself.
 ///
 /// - `underlay_changed` is what the caller believes about the page. It cannot be trusted alone:
 ///   `app.rs` folds `idle::present_dirty()` into it, and every key press sets that — including the
@@ -569,7 +573,7 @@ impl Popover {
     /// of object. `rise` stays a parameter rather than becoming this constant outright, because a
     /// panel anchored to the BOTTOM of the frame passes it negative to drop down instead.
     ///
-    /// 20 is what `alt_sources` has always drawn. It is written down because the four alert panels
+    /// 20 is what *Also available* has always drawn. It is written down because the four alert panels
     /// arrived with 24 / 20 / 20 / 18 — each documented in its own file as "the shared entry
     /// distance", "matching every other popover in the app", "the shape every panel in the app
     /// appears with". Four files claiming to match each other, and no two of them agreeing, is the
@@ -752,9 +756,9 @@ impl Drop for Popover {
 /// 3. [`live`] — an RAII guard at the top of each popover's `draw` and `draw_scrim`.
 /// 4. [`ground_drawn`] — `Popover::panel`/`sheet`, the moment the popover's own GROUND is down.
 ///
-/// A popover drawn from inside its page (`tracks_panel`, `about_panel`, `alt_sources`,
-/// `person_bio`) and one drawn after it (`item_menu`, `account_menu`) both work, and neither the
-/// page nor `app.rs` has to know which is which.
+/// A popover drawn from inside its page (`decision_alert`; `about_panel` and `person_bio` were the
+/// other two until phase 10) and one drawn after it (the container's surfaces) both work, and
+/// neither the page nor `app.rs` has to know which is which.
 ///
 /// ## The snapshot has TWO stages, and the second one is where the frames are
 ///
@@ -1014,7 +1018,7 @@ pub(crate) mod host {
         /// frozen picture with no crash, no log line and no way back.
         fn drop(&mut self) {
             crate::gfx::set_page_frozen(self.was_frozen);
-            // Nobody lifted: this page's popovers draw AFTER the closure (`item_menu`,
+            // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
             if CAPTURE_OWED.swap(false, Relaxed) {
@@ -1452,97 +1456,24 @@ mod tests {
         assert!(!host_refresh(true, false, false));
     }
 
-    /// **A popover drawn on `visible()` must be updated on `visible()` too.** Reported off a
-    /// television on 2026-09-03 as "popover menus do not hide and may stack up".
-    ///
-    /// [`Popover::dismiss`] ends the OPEN state on the press frame and leaves `closing` set, and
-    /// [`Popover::update`] is the only place `closing` is ever cleared. So a panel that stops being
-    /// updated the moment it stops being OPEN never finishes its fade: `visible()` stays true for
-    /// the rest of the session, the draw site keeps drawing it at full opacity, and every panel
-    /// opened afterwards piles on top of it.
-    ///
-    /// `account_menu` and `item_menu` are the two popovers that are also ROUTES, so dismissing one
-    /// flips `route` back to its host page on the same frame — and `app.rs` guarded their `update`
-    /// with `matches!(route, …)` while drawing them self-gated. The draw site already carried the
-    /// rule in a comment ("Both self-gated on `Popover::visible`, not on the route: a dismissed
-    /// menu's route flips back to its host on the press frame while the panel is still fading out
-    /// over it"); the update site did not obey it. Both modules already return early unless
-    /// `visible()`, so the route guard bought nothing and cost the fade.
-    ///
-    /// **The player's four overlays are deliberately not in this list.** They gate DRAW and UPDATE
-    /// on the same `Route::Player { overlay }` term, which is coherent: a stuck one could never be
-    /// drawn off its own overlay route, so it can neither linger nor stack. The defect is the
-    /// MISMATCH between the two gates, not a route gate as such — which is why this test lists the
-    /// popovers whose draw is self-gated rather than every popover in the app.
-    ///
-    /// Asserted by reading `app/run.rs` (the frame loop), because the frame loop is reachable from no unit test — the
-    /// same reason `diag::scrub` pins its call-site property by grepping the tree.
-    #[test]
-    fn a_self_gated_popover_is_not_route_gated_on_update() {
-        let _g = crate::testlock::serial();
-        let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs");
-        let text = std::fs::read_to_string(&app).expect("app/run.rs is readable");
-        let lines: Vec<&str> = text.lines().collect();
-        assert!(
-            lines.len() > 1000,
-            "read only {} lines of app/run.rs — not reading the frame loop",
-            lines.len()
-        );
-
-        // The popovers `app/run.rs` draws WITHOUT a route term, gated only on `Popover::visible`.
-        //
-        // **This list was five and is two, because restructure phase 5b took `settings`, `legal`
-        // and `consent` off the frame loop entirely.** They are no longer popovers the loop
-        // updates: they are owned screens mounted as `ModalStack` entries and stepped by
-        // `app/bridge.rs`'s `frame()`, so `app/run.rs` contains no `ui::settings::update(` for
-        // this scan to find and the assertion below counted 2 of 5. Shrinking the list is
-        // therefore recording where the property MOVED, not weakening it — the defect this test
-        // exists for (a draw gated on `visible` while the matching update is gated on a route, so
-        // a dismissed panel's fade never runs and it never hides) cannot be spelled at all in the
-        // container world, where `ModalStack` advances every live entry's motion each frame with
-        // no route term anywhere in reach. Do not "restore" the three names: with the legacy
-        // modules retired there is nothing behind them, and the scan would fail forever.
-        const SELF_GATED: &[&str] = &["account_menu", "item_menu"];
-
-        let mut offences: Vec<String> = Vec::new();
-        let mut seen = 0usize;
-        for (n, line) in lines.iter().enumerate() {
-            let Some(m) = SELF_GATED
-                .iter()
-                .find(|m| line.contains(&format!("ui::{m}::update(")))
-            else {
-                continue;
-            };
-            seen += 1;
-            // Join the preceding non-comment lines so a `matches!` split across several of them —
-            // which is how the player's overlay guards are written — is still seen as one guard.
-            let preceding: String = lines[..n]
-                .iter()
-                .rev()
-                .take(8)
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with("//"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if preceding.contains("matches!(") && preceding.contains("route") {
-                offences.push(format!(
-                    "app.rs:{}: {m}::update is gated on a route, but {m}::draw is not\n    {}",
-                    n + 1,
-                    line.trim()
-                ));
-            }
-        }
-        assert!(
-            seen >= SELF_GATED.len(),
-            "found only {seen} of {} self-gated popover update call sites — the scan is not \
-             finding them",
-            SELF_GATED.len()
-        );
-        assert!(
-            offences.is_empty(),
-            "a dismissed popover stops being updated when its route flips, so its fade never \
-             finishes and it never hides:\n{}",
-            offences.join("\n")
-        );
-    }
+    // (`a_self_gated_popover_is_not_route_gated_on_update` stood here. Reported off a television
+    // on 2026-09-03 as "popover menus do not hide and may stack up": `Popover::dismiss` ends the
+    // OPEN state on the press frame and `Popover::update` is the only place `closing` is ever
+    // cleared, so a panel drawn on `visible()` but UPDATED behind `matches!(route, …)` never
+    // finished its fade once the dismissal flipped the route back to its host — it stayed visible
+    // at full opacity for the rest of the session and every later panel piled on top of it. The
+    // test read `app/run.rs` and refused any `ui::<m>::update(` whose preceding guard named a
+    // route.
+    //
+    // Its subject list was five, then two, then one, and each shrink recorded a module leaving the
+    // frame loop rather than the property weakening: 5b took `settings`, `legal` and `consent`,
+    // phase 10's item 2 took `account_menu` and item 3 took `item_menu`, the last of them. There
+    // is no `ui::<m>::update(` call in `app/run.rs` for the scan to find, and its own doc said
+    // what to do about that — "do not restore the retired names: with the legacy modules gone
+    // there is nothing behind them, and the scan would fail forever."
+    //
+    // The DEFECT cannot be spelled in the container world at all, which is why nothing replaces
+    // it: `ModalStack` advances every live entry's motion each frame with no route term anywhere
+    // in reach, and a surface's dismissal is a phase on the entry rather than a flag a second
+    // gate has to agree with.
 }

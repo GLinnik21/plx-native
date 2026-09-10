@@ -1,6 +1,6 @@
 //! Boot-time helpers of the app core: the desktop window size, the panic logger, the replay
 //! budget, the direct-server trigger, the cursor and the loop-rate tick. Moved out of `app.rs`
-//! verbatim in phase 1a of the UI restructure (a pure move; `pub(super)` widening only).
+//! verbatim in phase 1a of the UI restructure (a pure move; `pub(crate)` widening only).
 
 use super::*;
 
@@ -19,7 +19,7 @@ use super::*;
 ///
 /// Falls back to the canvas size if SDL cannot answer, which is the behaviour this replaced.
 #[cfg(feature = "hostsim")]
-pub(super) fn desktop_window_size() -> (c_int, c_int) {
+pub(crate) fn desktop_window_size() -> (c_int, c_int) {
     // `PLXNATIVE_WIN=<w>x<h>` overrides the fit entirely — `make sim-shot SIM_W=1920 SIM_H=1080`.
     // It exists because the fit below is chosen for a HUMAN looking at a window, and a screenshot
     // is not that: on a 1x display the divisor lands on 2 and every shot comes back 960x540, which
@@ -66,7 +66,7 @@ pub(super) fn desktop_window_size() -> (c_int, c_int) {
 ///
 /// The line this hook writes is also the crash channel's PANIC input: `telemetry::crashreport`
 /// reads the log on the next launch, hashes the message and sends the location only.
-pub(super) fn install_panic_logger() {
+pub(crate) fn install_panic_logger() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let loc = info
@@ -101,7 +101,7 @@ pub(super) fn install_panic_logger() {
 /// One door rather than a branch at each of the five call sites, so the platform question is
 /// asked once and the call sites read the same on both.
 #[inline]
-pub(super) unsafe fn hide_cursor() {
+pub(crate) unsafe fn hide_cursor() {
     #[cfg(not(feature = "hostsim"))]
     {
         SDL_webOSCursorVisibility(0);
@@ -115,7 +115,7 @@ pub(super) unsafe fn hide_cursor() {
 /// are different numbers, and conflating them is the single most reliable way to misread this app:
 /// a settled screen runs the loop at the `IDLE_POLL_MS` rate while swapping nothing. The frame
 /// count lives beside it in the heartbeat as `fps=`, from `ui::idle::take_presents`.
-pub(super) fn loop_tick(iters_ct: &mut i32, loop_t: &mut u32, loop_shown: &mut i32, now: u32) -> bool {
+pub(crate) fn loop_tick(iters_ct: &mut i32, loop_t: &mut u32, loop_shown: &mut i32, now: u32) -> bool {
     *iters_ct += 1;
     if now.wrapping_sub(*loop_t) < 1000 {
         return false;
@@ -140,7 +140,7 @@ pub(super) fn loop_tick(iters_ct: &mut i32, loop_t: &mut u32, loop_shown: &mut i
 /// An explicit `0` is honoured, so a script can arm the file and turn it off without deleting it.
 /// Anything unparseable is 1 rather than 0: this file is armed by hand, and answering a typo with
 /// "silently do nothing" is how a green run comes to mean the opposite of what it says.
-pub(super) fn replay_budget(raw: Option<&str>) -> u32 {
+pub(crate) fn replay_budget(raw: Option<&str>) -> u32 {
     match raw {
         None => 0,
         Some(s) => match s.trim() {
@@ -187,7 +187,7 @@ mod replay_budget_tests {
 /// An absent trigger preserves the historical `plxnative-play=<rk>` contract and uses the current
 /// server. Once an explicit slot was written, however, failure is terminal: rating keys are local
 /// to one PMS, so falling back could open a different item on another server.
-pub(super) fn resolve_direct_server(
+pub(crate) fn resolve_direct_server(
     requested: Option<Result<u16, String>>,
     current: crate::plex::ServerId,
     registered: impl Fn(crate::plex::ServerId) -> bool,
@@ -202,7 +202,7 @@ pub(super) fn resolve_direct_server(
         .ok_or_else(|| format!("server slot {raw} is not registered"))
 }
 
-pub(super) fn direct_trigger_server() -> Result<crate::plex::ServerId, String> {
+pub(crate) fn direct_trigger_server() -> Result<crate::plex::ServerId, String> {
     resolve_direct_server(
         crate::dev::server_slot(),
         crate::plex::current_server(),
@@ -213,7 +213,7 @@ pub(super) fn direct_trigger_server() -> Result<crate::plex::ServerId, String> {
 // ---- boot, and the loop's own between-frame state ---------------------------------------------
 /// Which screen the boot gate landed on — see the gate itself in `plex_run`, which is where the
 /// order of its four cases is argued.
-pub(super) enum BootTo {
+pub(crate) enum BootTo {
     Home,
     Login,
     Profiles,
@@ -224,7 +224,7 @@ pub(super) enum BootTo {
     // EVERY store below is keyed to whichever server was current when it was filled, and none
     // of them carries a server in its keys, so leaving one behind means server A's ratingKeys
     // being fetched from server B: the same catalog index opening a different film.
-pub(super) fn activate_server() {
+pub(crate) fn activate_server() {
         // the browse store must never carry the previous user's (or server's) cached grid,
         // watched-state angles, or section tabs forward
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
@@ -254,7 +254,7 @@ pub(super) fn activate_server() {
     // a certificate is issued for is the `plex.direct` NAME rather than the address behind it
     // (`plex::origin`). Discovery and persisted sessions may supply either scheme; the client
     // routes control and media requests through the matching transport.
-pub(super) fn install_pms(
+pub(crate) fn install_pms(
     origin: &crate::plex::Origin,
     token: &str,
     tier: Option<crate::plex::probe::Location>,
@@ -311,7 +311,7 @@ pub(super) fn install_pms(
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
 /// exit is the process exit code `plex_run` returns.
-pub(super) unsafe fn boot(
+pub(crate) unsafe fn boot(
     pms_host: *const c_char,
     pms_port: c_int,
     mt: crate::task::MainThread,
@@ -408,7 +408,7 @@ pub(super) unsafe fn boot(
     // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so the
     // FPS counter reports the TRUE GPU render rate (a diagnostic: if fps then jumps well past the
     // vsynced number, we were panel/refresh-bound, not GPU-bound).
-    SDL_GL_SetSwapInterval(if crate::dev::flag("novsync") { 0 } else { 1 });
+    SDL_GL_SetSwapInterval(if crate::dev::scenarios::novsync_armed() { 0 } else { 1 });
     {
         let r = glGetString(GL_RENDERER);
         let v = glGetString(GL_VERSION);
@@ -483,13 +483,7 @@ pub(super) unsafe fn boot(
     // NO token is compiled into this binary. PMS access comes from the signed-in session,
     // or — for automated runs only (the regression harness, headless captures) — from the
     // /tmp/plxnative-token dev trigger. The value is NEVER logged (only that one is in effect).
-    let dev_token = match crate::dev::read("token") {
-        Some(s) if !s.is_empty() => {
-            log("token: using /tmp/plxnative-token (test identity)");
-            s
-        }
-        _ => String::new(),
-    };
+    let dev_token = crate::dev::scenarios::dev_token();
     // dev: /tmp/plxnative-servers — credentials for a SECOND (third, …) server, so an automated
     // run can reach a friend's SHARED server beside the one above. A shared server is its own
     // authority: its own machineIdentifier, its own per-(user,server) access token, and a 401
@@ -573,8 +567,7 @@ pub(super) unsafe fn boot(
     //
     // dev: /tmp/plxnative-pickuser=<index> — force the boot picker even on an automated boot and
     // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
-    let pick_user: Option<usize> =
-        crate::dev::read("pickuser").and_then(|s| s.parse().ok());
+    let pick_user: Option<usize> = crate::dev::scenarios::pickuser_index();
     let session = crate::plex::session::load();
     // Install-wide playback preference, restored before any route can resolve a stream.
     // A legacy file with no value resolves to Original; a new file can choose Auto only
@@ -582,7 +575,7 @@ pub(super) unsafe fn boot(
     crate::route::restore_quality(
         crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()),
     );
-    let boot_to = if crate::dev::flag("login") {
+    let boot_to = if crate::dev::scenarios::login_forced() {
         crate::auth::start_login();
         log("boot: /tmp/plxnative-login — starting QR login");
         BootTo::Login
@@ -665,26 +658,10 @@ pub(super) unsafe fn boot(
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
                        // public pin id + code length + that authToken is still null (never a token/secret).
-    if crate::dev::flag("logintest") {
-        let _ = crate::task::spawn_small("logintest", || {
-            let sess = crate::plex::session::load();
-            let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
-            match ac.create_pin() {
-                Some(p) => log(&format!(
-                    "logintest: create_pin ok id={} code_len={} authToken_null={}",
-                    p.id,
-                    p.code.len(),
-                    p.auth_token.is_none()
-                )),
-                None => log("logintest: create_pin FAILED (transport/TLS/link/deser)"),
-            }
-        });
-    }
+    crate::dev::scenarios::arm_logintest();
     // dev: the animation-diagnostic overlay is OFF by default; /tmp/plxnative-anim enables it (its
     // trace goes to /tmp/plxnative-anim.log, a separate stream from the main event log)
-    if crate::dev::flag("anim") {
-        crate::ui::anim::set_enabled(true);
-    }
+    crate::dev::scenarios::arm_anim();
     // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
     // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
     // Combining them would perturb the timer result, so fail closed when both are present.
@@ -692,12 +669,8 @@ pub(super) unsafe fn boot(
     // count, size and refresh cadence that cycles its own steps inside one launch, so legs are
     // interleaved by construction. /tmp/plxnative-navblur is the blurred-route-transition
     // prototype. Both live in `ui::glassload`; both are absent from a release build.
-    if let Some(v) = crate::dev::read("glassload") {
-        crate::ui::glassload::configure(&v);
-    }
-    if let Some(v) = crate::dev::read("navblur") {
-        crate::ui::glassload::configure_navblur(&v);
-    }
+    crate::dev::scenarios::arm_glassload();
+    crate::dev::scenarios::arm_navblur();
     // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
     // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
     // quad area this app submits, per primitive family, per frame. It is not billed for the
@@ -706,19 +679,12 @@ pub(super) unsafe fn boot(
     // the named classes, so a whole-frame `frame.ui` A/B against the unmasked control prices
     // that class as the frame sees it; `all` draws nothing and is therefore the compositor
     // floor. A masked leg is a broken picture on purpose.
-    if crate::dev::flag("overdraw") {
-        crate::ui::overdraw::set_ledger(true);
-    }
-    if let Some(spec) = crate::dev::read("drawmask") {
-        crate::ui::overdraw::set_mask(&spec);
-    }
+    crate::dev::scenarios::arm_overdraw();
+    crate::dev::scenarios::arm_drawmask();
     // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
     // in one pass instead of the art plus four blended gradient quads over it. Absent, the
     // shipped four-quad path draws, which is what makes this an A/B on one binary.
-    if crate::dev::flag("heroground") {
-        crate::ui::widgets::set_hero_ground(true);
-        log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
-    }
+    crate::dev::scenarios::arm_heroground();
     // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
     // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
     // present (60 Hz while the UI presents at 60), 3 is ~20 Hz, 4 is 15 Hz.
@@ -728,30 +694,12 @@ pub(super) unsafe fn boot(
     // The production Account menu no longer arms or consumes this path: its host is frozen and
     // its glass snapshot is cached for the whole open lifetime.  The knob remains for explicit
     // material profiling, not as part of an Account FPS scene.
-    let glass_hz_armed = if let Some(v) = crate::dev::read("glasshz") {
-        let asked: u32 = v.parse().unwrap_or(0);
-        let got = crate::ui::widgets::set_dynamic_period(asked);
-        log(&format!(
-            "blur: dynamic cadence asked={asked} presents-per-refresh={got}"
-        ));
-        true
-    } else {
-        false
-    };
-    match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
-        (Some(_), Some(_)) => {
-            log("PROFILE disabled: remove either /tmp/plxnative-profile or /tmp/plxnative-hwcnt");
-        }
-        (Some(filter), None) => crate::ui::profile::set_enabled(&filter),
-        (None, Some(filter)) => crate::ui::profile::set_hwcnt_enabled(&filter),
-        (None, None) => {}
-    }
+    let glass_hz_armed = crate::dev::scenarios::arm_glasshz();
+    crate::dev::scenarios::arm_profile_hwcnt();
     // dev: /tmp/plxnative-cpuprof — the render thread's OWN time per phase, every phase at
     // once, no glFinish. The one mode that can see a frame the frame-drop detector reports as
     // all `draw=` and no `swap=`; the two GPU modes above are blind to it by construction.
-    if crate::dev::flag("cpuprof") {
-        crate::ui::profile::set_cpu_enabled();
-    }
+    crate::dev::scenarios::arm_cpuprof();
     // dev: /tmp/plxnative-noidle turns the whole-frame present gate (ui::idle) OFF, so a still
     // screen goes back to repainting at panel rate. It is a DIAG trigger (see the list above)
     // precisely so an A/B costs one file and does not also change which screen you boot to —
@@ -759,42 +707,39 @@ pub(super) unsafe fn boot(
     // `rm` rather than a redeploy.
     crate::ui::testpat::boot();
     crate::player::seed_dev_track_names();
-    if crate::dev::flag("noidle") {
-        crate::ui::idle::set_enabled(false);
-        log("idle: present gate DISABLED by /tmp/plxnative-noidle");
-    }
+    crate::dev::scenarios::arm_noidle();
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
-    let detail_osc = crate::dev::flag("detailosc");
+    let detail_osc = crate::dev::scenarios::detailosc_armed();
     // dev: /tmp/plxnative-homeosc — perpetually sweep the home grid focus DOWN to the bottom then
     // UP to the top (~3s each way, one row per 350ms), so a headless run reproduces the top↔bottom
     // vertical-scroll judder for the frame-drop detector / retui profiler.
-    let home_osc = crate::dev::flag("homeosc");
+    let home_osc = crate::dev::scenarios::homeosc_armed();
     let home_osc_last = 0u32;
     // dev: the two Home transition scenes the old home-hero/home-grid pair could not see.
     // `heroosc` continuously pages the real carousel; `homefoldosc` alternates the real
     // hero↔first-shelf snap. Their intervals overlap the spring lifetime so the FPS heartbeat
     // samples motion rather than the efficient idle gaps at either end.
-    let hero_osc = crate::dev::flag("heroosc");
+    let hero_osc = crate::dev::scenarios::heroosc_armed();
     let hero_osc_last = 0u32;
-    let home_fold_osc = crate::dev::flag("homefoldosc");
+    let home_fold_osc = crate::dev::scenarios::homefoldosc_armed();
     let home_fold_osc_last = 0u32;
     let home_fold_down = true;
     // dev: /tmp/plxnative-libosc — the Library twin of homeosc: sweep the browse grid focus
     // down↔up perpetually for the library_scroll FPS scene.
-    let lib_osc = crate::dev::flag("libosc");
+    let lib_osc = crate::dev::scenarios::libosc_armed();
     let lib_osc_last = 0u32;
     // dev: /tmp/plxnative-libswitch — exercise EVERY Library switch on a timer (tab switch,
     // sort menu open/move/close, unwatched on/off, filter open/close) for the library_switch
     // FPS scene, so the re-query + popover paths are perf-gated, not just the scroll.
-    let lib_switch = crate::dev::flag("libswitch");
+    let lib_switch = crate::dev::scenarios::libswitch_armed();
     let lib_switch_last = 0u32;
     let lib_switch_step = 0u32;
     // dev: /tmp/plxnative-searchosc — the Search twin of homeosc/libosc: sweep the result
     // shelves' focus down↔up perpetually for the `fps:search-type` scene. It does NOT reach the
     // screen on its own — pair it with `/tmp/plxnative-search=<query>`, and with a query the
     // library actually matches, or there are no shelves to sweep and the scene grades nothing.
-    let search_osc = crate::dev::flag("searchosc");
+    let search_osc = crate::dev::scenarios::searchosc_armed();
     let search_osc_last = 0u32;
     // dev: /tmp/plxnative-settings=<root|home|privacy|legal> opens the Settings modal (and,
     // optionally, one of its real child panels) once Home is available. `settingsosc` turns
@@ -803,8 +748,8 @@ pub(super) unsafe fn boot(
     // completely healthy modal intentionally reports ~0 fps after its springs settle, which
     // cannot grade the screen's fill cost. The paired settings-idle scene omits the oscillator
     // and guards the inverse contract.
-    let settings_boot = crate::dev::read("settings");
-    let settings_osc = crate::dev::flag("settingsosc");
+    let settings_boot = crate::dev::scenarios::settings_boot_value();
+    let settings_osc = crate::dev::scenarios::settingsosc_armed();
     let settings_osc_last = 0u32;
     let settings_osc_down = true;
     // dev: /tmp/plxnative-modalosc — with `plxnative-settings=root`, OPEN and DISMISS the
@@ -812,18 +757,18 @@ pub(super) unsafe fn boot(
     // `fps:modal-ramp` grades the appear/disappear RAMP (host snapshot, scrim, ground) under
     // `worst_ceiling_ms` rather than a settled modal. It reverses on a clock because the ramp
     // itself has no end the app reports.
-    let modal_osc = crate::dev::flag("modalosc");
+    let modal_osc = crate::dev::scenarios::modalosc_armed();
     let modal_osc_last = 0u32;
     // dev: /tmp/plxnative-legaldoc — with `plxnative-settings=legal`, press OK on the Legal
     // index ONCE so the boot lands on a pushed DOCUMENT (the reader over the frozen ground),
     // which no boot trigger reached before: `fps:legal-document`.
-    let legal_doc = crate::dev::flag("legaldoc");
+    let legal_doc = crate::dev::scenarios::legaldoc_armed();
     let legal_doc_tried = false;
     // dev: /tmp/plxnative-alert — with `plxnative-settings=privacy`, open the "Delete all local
     // data?" DECISION ALERT once the privacy panel is up. It is the one shared yes/no alert in
     // the app and nothing headless could reach it: `fps:decision-alert`. Opening it is all this
     // does — nothing is deleted, and Cancel is what a BACK would press.
-    let alert_boot = crate::dev::flag("alert");
+    let alert_boot = crate::dev::scenarios::alert_armed();
     let alert_tried = false;
     // …and the DOWN presses that walk to the delete row before the OK that opens it. A count
     // rather than an index: the row is the LAST of the privacy table, whose length is that
@@ -836,15 +781,15 @@ pub(super) unsafe fn boot(
     // The profile menu freezes its host and uses one cached backdrop. Drive the menu's own
     // TableView for a strict FPS scene; reusing `homeosc` would now correctly move nothing and
     // would grade the idle keepalive rather than the popover.
-    let account_osc = crate::dev::flag("acctosc");
+    let account_osc = crate::dev::scenarios::acctosc_armed();
     let account_osc_last = 0u32;
     let account_osc_down = true;
     // First-run route oscillators keep their real focus models moving so the device FPS suite
     // grades the composition rather than a settled screen that correctly stops presenting.
-    let consent_osc = crate::dev::flag("consentosc");
+    let consent_osc = crate::dev::scenarios::consentosc_armed();
     let consent_osc_last = 0u32;
     let consent_osc_down = true;
-    let onboard_osc = crate::dev::flag("onboardosc");
+    let onboard_osc = crate::dev::scenarios::onboardosc_armed();
     let onboard_osc_last = 0u32;
     let onboard_osc_right = true;
     // dev: /tmp/plxnative-navosc — bounce the ROUTE on a timer, so the page cross-fade
@@ -859,7 +804,7 @@ pub(super) unsafe fn boot(
     // chrome, a hero backdrop and an ambient wash on the far side, and a real teardown at the
     // floor. Both bounce through the SAME `nav_open`/`nav_back` the interactive presses use, so
     // the scene measures the transition rather than an imitation of it.
-    let nav_osc_rk = crate::dev::read("navosc");
+    let nav_osc_rk = crate::dev::scenarios::navosc_value();
     let nav_osc = nav_osc_rk.is_some();
     let nav_osc_rk = nav_osc_rk.unwrap_or_default();
     let nav_osc_last = 0u32;
@@ -869,7 +814,7 @@ pub(super) unsafe fn boot(
     // and any frame whose total exceeds a threshold (ms; file content overrides the 22ms default) is
     // logged with its phase breakdown + GL texture-upload count — so a scroll judder shows *what* stalled
     // (high `pump`+`up` ⇒ synchronous poster uploads; high `swap` with low pump/draw ⇒ GPU fill).
-    let framedrop = crate::dev::read("framedrop");
+    let framedrop = crate::dev::scenarios::framedrop_value();
     let framedrop_on = framedrop.is_some();
     let framedrop_thresh: f64 = framedrop
         .and_then(|s| s.parse().ok())
@@ -901,7 +846,8 @@ pub(super) unsafe fn boot(
     #[cfg(feature = "devtools")]
     let buffer_flip_count = 0u8;
 
-    let held_key = HeldKey::IDLE;
+    // All that is left of `HeldKey` on the loop's side (phase 10) — see `App::down_sym`.
+    let down_sym = 0u32;
     // Item 13: rate-limits a hardware auto-repeat forwarded into the Settings family, which is
     // owned by the dispatcher since phase 5b — so the gate is applied at the loop's hand-over,
     // to the DIRECTIONS only. See `run`'s auto-repeat arm for why the OK edges go through
@@ -927,6 +873,7 @@ pub(super) unsafe fn boot(
     let press_tried = false; // dev: /tmp/plxnative-press fires one simulated grid-card press
     let press_release_at = 0u32; // …and the tick at which that simulated press releases
     let itemmenu_tried = false; // dev: /tmp/plxnative-itemmenu opens the card context menu once
+    let acct_tried = false; // dev: /tmp/plxnative-acct opens the profile menu once
     let ptr = Pointer::IDLE;
 
     // Initial route from the boot gate: Login when we have no usable creds, Profiles for the
@@ -946,14 +893,14 @@ pub(super) unsafe fn boot(
     // needs comes from `/tmp/plxnative-servers`, which marks the boot automated. Both halves
     // are why looking at this screen headlessly requires a trigger of its own.
     let ask_first_run =
-        || crate::dev::flag("firstrun") || (!automated_boot() && crate::screens::onboard::asks());
+        || crate::dev::scenarios::firstrun_armed() || (!automated_boot() && crate::screens::onboard::asks());
     // The sign-in's telemetry question is PRESENTED on the container tree, and the tree lives on
     // the `App` this function is still assembling — so this boot arm records that it owes the
     // question and `maybe_ask_consent` is called once the struct exists, a few dozen lines down.
     // Deferring it changes nothing about when it is ASKED: the surface would not have drawn until
     // the loop's first frame either way, and the route below is a page underneath it.
     let mut owes_consent_question = false;
-    let mut route = match boot_to {
+    let route = match boot_to {
         // **Both Home arms ask, and the shared call is the point.** This is the one boot that
         // has no earlier hook — an install already signed in, either never asked or asked
         // against an older policy — and the sign-in's question has to come before every
@@ -977,13 +924,10 @@ pub(super) unsafe fn boot(
         BootTo::Login => Route::Login,
         BootTo::Profiles => Route::Profiles,
     };
-    // dev: /tmp/plxnative-acct auto-opens the profile menu (headless capture of the popover).
-    if crate::dev::flag("acct") && matches!(route, Route::Home) {
-        crate::ui::account_menu::open();
-        route = Route::Account {
-            over: BarHost::Home,
-        };
-    }
+    // (dev: /tmp/plxnative-acct used to open the profile menu HERE, beside a
+    // `route = Route::Account { over: BarHost::Home }`. The menu is a `ModalStack` surface since
+    // phase 10 and the container does not exist yet at this point in the boot, so the trigger is
+    // an ordinary per-frame arm — `dev::scenarios::acct_arm`, beside `itemmenu_arm`.)
     // Home is the product landing after the credential gates; its Hero / Continue Watching
     // rows own resume. Never override this route from an old last-page bookmark. The cleanup is
     // intentionally unconditional so automated and ordinary upgrades retire the same state.
@@ -1030,7 +974,7 @@ pub(super) unsafe fn boot(
     // player. Everything else was already in place — `teardown` clears the URL and `ended` on a
     // real stop, and `engine::start_bufferfeed` re-reads `dev::playurl()` whenever
     // `route::url()` is empty — so a replay is a second trip through the entry below.
-    let replay_left: u32 = replay_budget(crate::dev::read("replay").as_deref());
+    let replay_left: u32 = replay_budget(crate::dev::scenarios::replay_trigger_value().as_deref());
     let grid_tried = false;
     let settings_tried = settings_boot.is_none();
     let seek_tried = false;
@@ -1076,28 +1020,6 @@ pub(super) unsafe fn boot(
     // ready to dispatch a delivered command within one frame. Compile-time no-op otherwise.
     crate::lab::start_control();
     let mut app = App {
-        pick_user,
-        home_osc_last,
-        hero_osc_last,
-        home_fold_osc_last,
-        home_fold_down,
-        lib_osc_last,
-        lib_switch_last,
-        lib_switch_step,
-        search_osc_last,
-        settings_osc_last,
-        settings_osc_down,
-        modal_osc_last,
-        legal_doc_tried,
-        alert_tried,
-        alert_step,
-        account_osc_last,
-        account_osc_down,
-        consent_osc_last,
-        consent_osc_down,
-        onboard_osc_last,
-        onboard_osc_right,
-        nav_osc_last,
         last_input,
         loop_t,
         iters_ct,
@@ -1108,45 +1030,19 @@ pub(super) unsafe fn boot(
         running,
         #[cfg(feature = "devtools")]
         buffer_flip_count,
-        held_key,
+        down_sym,
         modal_repeat,
-        marker_tried,
+        diagnostics: crate::app::diagnostics::Diagnostics::default(),
         player,
         adapters,
         repause_at,
         ok_armed,
         last_route_reported,
-        press_tried,
-        press_release_at,
-        itemmenu_tried,
         ptr,
         route,
         play_from,
         trail,
         nav_pending,
-        auto_tried,
-        replay_left,
-        grid_tried,
-        settings_tried,
-        seek_tried,
-        seek_script,
-        seek_script_at,
-        seek_gap_ms,
-        seek_script_last,
-        quality_script,
-        quality_script_at,
-        quality_gap_ms,
-        quality_tried,
-        quality_playing_since,
-        detail_tried,
-        content_boot: None,
-        play_tried,
-        menu_tried,
-        menupick_tried,
-        menupick_row,
-        pause_tried,
-        pause_script,
-        pause_resume_at,
         prev,
         refresh_hubs_at,
         ev,
@@ -1162,25 +1058,78 @@ pub(super) unsafe fn boot(
         pages: crate::ui::dispatch::Dispatcher::new(),
         inputs: Vec::new(),
         bridge: super::bridge::Bridge::new(crate::diag::heartbeat::now_us),
-        dev: DevFlags {
-            detail_osc,
-            home_osc,
-            hero_osc,
-            home_fold_osc,
-            lib_osc,
-            lib_switch,
-            search_osc,
-            settings_boot,
-            settings_osc,
-            modal_osc,
-            legal_doc,
-            alert_boot,
-            account_osc,
-            consent_osc,
-            onboard_osc,
-            nav_osc,
-            nav_osc_rk,
-            glass_hz_armed,
+        // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
+        scenarios: crate::dev::scenarios::Scenarios {
+            pick_user,
+            home_osc_last,
+            hero_osc_last,
+            home_fold_osc_last,
+            home_fold_down,
+            lib_osc_last,
+            lib_switch_last,
+            lib_switch_step,
+            search_osc_last,
+            settings_osc_last,
+            settings_osc_down,
+            modal_osc_last,
+            legal_doc_tried,
+            alert_tried,
+            alert_step,
+            account_osc_last,
+            account_osc_down,
+            consent_osc_last,
+            consent_osc_down,
+            onboard_osc_last,
+            onboard_osc_right,
+            nav_osc_last,
+            marker_tried,
+            press_tried,
+            press_release_at,
+            itemmenu_tried,
+            acct_tried,
+            auto_tried,
+            replay_left,
+            grid_tried,
+            settings_tried,
+            seek_tried,
+            seek_script,
+            seek_script_at,
+            seek_gap_ms,
+            seek_script_last,
+            quality_script,
+            quality_script_at,
+            quality_gap_ms,
+            quality_tried,
+            quality_playing_since,
+            detail_tried,
+            content_boot: None,
+            play_tried,
+            menu_tried,
+            menupick_tried,
+            menupick_row,
+            pause_tried,
+            pause_script,
+            pause_resume_at,
+            dev: crate::dev::scenarios::DevFlags {
+                detail_osc,
+                home_osc,
+                hero_osc,
+                home_fold_osc,
+                lib_osc,
+                lib_switch,
+                search_osc,
+                settings_boot,
+                settings_osc,
+                modal_osc,
+                legal_doc,
+                alert_boot,
+                account_osc,
+                consent_osc,
+                onboard_osc,
+                nav_osc,
+                nav_osc_rk,
+                glass_hz_armed,
+            },
         },
     };
     // …the deferred half of the `BootTo::Home` arm above: the tree exists now, so the question can

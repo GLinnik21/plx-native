@@ -32,7 +32,7 @@ thread_local! {
 }
 
 /// Milliseconds since SDL init — or, under a replay, the recorded tick of the frame in flight.
-pub(super) fn now() -> u32 {
+pub(crate) fn now() -> u32 {
     if let Some(ms) = REPLAY.with(|c| c.get()) {
         return ms;
     }
@@ -42,7 +42,7 @@ pub(super) fn now() -> u32 {
 }
 
 /// The replay driver sets the frame's time before the frame reads it.
-pub(super) fn set_replay(ms: u32) {
+pub(crate) fn set_replay(ms: u32) {
     REPLAY.with(|c| c.set(Some(ms)));
 }
 

@@ -24,6 +24,9 @@
 
 pub(crate) mod input;
 pub(crate) mod overlay;
+/// The Skip Intro / Skip Credits pill — a `ControlSlot` occupant of this screen's HUD, not a
+/// screen of its own (phase 10: `ui/skip_pill.rs` moved here, where its one consumer lives).
+pub(crate) mod skip_pill;
 #[cfg(test)]
 mod overlay_tests;
 
@@ -41,7 +44,7 @@ use crate::ui::screen::{
 };
 use crate::ui::up_next::Countdown;
 
-use input::{HeldKey, HudState, Scrub};
+use input::{HudState, Scrub};
 
 /// The player's heartbeat word — byte-identical to `app::route_word(Route::Player)`, which
 /// `bridge::frame`'s `debug_assert_eq!` compares against on every frame and which `tests/run.py`
@@ -52,7 +55,7 @@ pub(crate) const WORD: &str = "player";
 pub(crate) const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,ns:i64,\
-     commit_at:u32},held:{sym:u32,down_sym:u32},origin:Option<u32>}";
+     commit_at:u32},origin:Option<u32>}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -87,9 +90,12 @@ pub(crate) struct PlayerScreen {
     pub(crate) hud: HudState,
     /// The scrub-seek gesture, including its preview position.
     pub(crate) scrub: Scrub,
-    /// The client-side hold-repeat for the bare transport's directions.
-    pub(crate) held: HeldKey,
-    // (`repeat: RepeatGate` is NOT here, and spec §9's target shape lists it: the paced
+    // (`held: HeldKey` stood here — "the client-side hold-repeat for the bare transport's
+    // directions". Nothing armed it after phase 9 put the panels' input on the dispatcher, so it
+    // wrote two constant zeros into this screen's canonical state; the type is deleted with the
+    // loop's timer in phase 10 and this field with it.
+    //
+    // `repeat: RepeatGate` is NOT here either, and spec §9's target shape lists it: the paced
     // 110 ms admission is the OVERLAY's — `PlayerOverlayScreen` is what has a list to walk under
     // a held key. The bare transport's own directions run the continuous scrub instead, which is
     // a ramp rather than a discrete move and was never gated.)
@@ -123,7 +129,6 @@ impl PlayerScreen {
             entry,
             hud: HudState::IDLE,
             scrub: Scrub::IDLE,
-            held: HeldKey::IDLE,
             row: TransportRow::new(),
             up_next: Countdown::default(),
             slot: ControlSlot::Discs,
@@ -349,7 +354,6 @@ impl LogicalState for PlayerScreen {
             .bool(self.scrub.reveal)
             .u64(self.scrub.ns as u64)
             .u32(self.scrub.commit_at);
-        c.u32(self.held.sym).u32(self.held.down_sym);
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
         });

@@ -1,12 +1,12 @@
 //! SDL event decoding and the remote-FIFO token synthesis — the raw-offset reads of LG's shifted
 //! `SDL_KeyboardEvent`, the synthetic key/pointer/wheel events, and `dispatch_remote_token`.
-//! Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(super)` widening only).
+//! Moved out of `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
 
 use super::*;
 
 /// Preserve one IME commit and its place among key events. Desktop text does not imply an
 /// on-screen panel; the owning field decides whether it is editing when delivery reaches it.
-pub(super) fn text_inputs(text: &str, panel: bool, at: crate::ui::machine::Tick,
+pub(crate) fn text_inputs(text: &str, panel: bool, at: crate::ui::machine::Tick,
     source: crate::ui::machine::Source) -> Vec<crate::ui::machine::InputEvent<u32>> {
     use crate::ui::machine::{InputEvent, InputKind, TextEdit};
     if text.is_empty() { return Vec::new(); }
@@ -17,7 +17,7 @@ pub(super) fn text_inputs(text: &str, panel: bool, at: crate::ui::machine::Tick,
 }
 
 #[inline]
-pub(super) fn rd_u32(ev: &[u8], off: usize) -> u32 {
+pub(crate) fn rd_u32(ev: &[u8], off: usize) -> u32 {
     u32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 
@@ -74,7 +74,7 @@ pub(super) fn rd_u32(ev: &[u8], off: usize) -> u32 {
 /// Clobbering `windowID` is safe here and nowhere else: this arm is `hostsim`-only, the simulator
 /// has one window, and nothing in the event loop reads that field.
 #[inline]
-pub(super) fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
+pub(crate) fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
     if cfg!(feature = "hostsim") {
         let pressed = *ev.get(12).unwrap_or(&0) as u32;
         let repeat = *ev.get(13).unwrap_or(&0) as u32;
@@ -107,7 +107,7 @@ pub(super) fn decode_key(ev: &[u8]) -> (u32, u32, u32) {
 /// Defined unconditionally, like both halves of [`decode_key`]: the arm that uses it is behind
 /// `cfg!` rather than `#[cfg]`, precisely so the configuration nobody is currently building cannot
 /// rot.
-pub(super) const SYNTH_WINDOW: u32 = 0x504c_584b; // "PLXK"
+pub(crate) const SYNTH_WINDOW: u32 = 0x504c_584b; // "PLXK"
 
 /// The Magic Remote button a desktop keyboard stands in for, or 0.
 ///
@@ -115,7 +115,7 @@ pub(super) const SYNTH_WINDOW: u32 = 0x504c_584b; // "PLXK"
 /// keyboard through `is_ok`/`is_back`, which accept RETURN/ESCAPE/'q' — those predicates were
 /// always keyboard-capable, which is why the simulator needs no remapping layer for them.
 #[inline]
-pub(super) fn host_wcode(sym: u32) -> u32 {
+pub(crate) fn host_wcode(sym: u32) -> u32 {
     // ASCII literals spelled numerically: `b'p' as u32` is an expression, not a pattern.
     match sym {
         32 => crate::ui::consts::WCODE_PAUSE, // space
@@ -135,7 +135,7 @@ pub(super) fn host_wcode(sym: u32) -> u32 {
 ///
 /// Pure, and separate from the `SDL_PushEvent` that consumes it, precisely so that test can run on
 /// the host — `make check` links no SDL.
-pub(super) fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
+pub(crate) fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
     let mut ev = [0u8; 128];
     ev[0..4].copy_from_slice(&if down { SDL_KEYDOWN } else { SDL_KEYUP }.to_ne_bytes());
     if cfg!(feature = "hostsim") {
@@ -164,7 +164,7 @@ pub(super) fn encode_key(sym: c_uint, wcode: c_uint, down: bool) -> [u8; 128] {
 /// rather than a third argument threaded through the first — item 13's `holdrep:<name>` FIFO token
 /// is the only caller, and it exists so a script can exercise `on_auto_repeat`'s
 /// Settings/Consent/Legal forwarding without a real remote's own repeat cadence.
-pub(super) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
+pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
     let mut ev = encode_key(sym, wcode, true);
     if cfg!(feature = "hostsim") {
         ev[13] = 1; // the `repeat` byte `decode_key`'s hostsim arm folds into `state & 0x100`
@@ -182,15 +182,15 @@ pub(super) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
 /// call site — there are nine, and patching them individually is how the tenth ends up wrong.
 /// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is on every
 /// television seen so far.
-pub(super) fn ptr_xy(ev: &[u8]) -> (f32, f32) {
+pub(crate) fn ptr_xy(ev: &[u8]) -> (f32, f32) {
     crate::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
 }
 
-pub(super) fn rd_i32(ev: &[u8], off: usize) -> i32 {
+pub(crate) fn rd_i32(ev: &[u8], off: usize) -> i32 {
     i32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 
-pub(super) fn rd_f32(ev: &[u8], off: usize) -> f32 {
+pub(crate) fn rd_f32(ev: &[u8], off: usize) -> f32 {
     f32::from_ne_bytes([ev[off], ev[off + 1], ev[off + 2], ev[off + 3]])
 }
 
@@ -208,7 +208,7 @@ pub(super) fn rd_f32(ev: &[u8], off: usize) -> f32 {
 /// Both fields are DECIMAL and both are required, because a pair with one field guessed is the
 /// bug class `decode_key` exists to prevent. `tools/keytable.py` drives its unsupported-key and
 /// pager rows through this.
-pub(super) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
+pub(crate) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
     if let Some(rest) = tok.strip_prefix("k:") {
         let (s, w) = rest.split_once(',')?;
         return Some((s.parse().ok()?, w.parse().ok()?));
@@ -258,7 +258,7 @@ pub(super) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
 /// Click only, deliberately: forwarding hover moved app focus on every pass of the
 /// mouse over the streamed picture (parking it on a top-band tab pill, so the next
 /// ENTER opened the library). The host page draws its own local crosshair instead.
-pub(super) fn remote_synth_ptr(x: i32, y: i32) {
+pub(crate) fn remote_synth_ptr(x: i32, y: i32) {
     let mut ev = [0u8; 128];
     let mut push = |et: u32, px: i32, py: i32| {
         // Authored coords go onto SDL's queue as WINDOW pixels, because that is what a real
@@ -282,7 +282,7 @@ pub(super) fn remote_synth_ptr(x: i32, y: i32) {
 /// ONE pointer event in authored coordinates — the replay driver's re-injection of a recorded
 /// motion (`SDL_MOUSEMOTION`), press or release, without `remote_synth_ptr`'s jitter prelude
 /// (the recording already holds whatever motion defeated the D-pad gate).
-pub(super) fn remote_synth_pointer(et: u32, x: i32, y: i32) {
+pub(crate) fn remote_synth_pointer(et: u32, x: i32, y: i32) {
     let mut ev = [0u8; 128];
     let (px, py) = crate::surface::to_physical(x as f32, y as f32);
     let (px, py) = (px.round() as i32, py.round() as i32);
@@ -294,7 +294,7 @@ pub(super) fn remote_synth_pointer(et: u32, x: i32, y: i32) {
 
 /// One app lifecycle event (`0x103`–`0x106`), as the compositor would send it — the replay
 /// driver's re-injection of a recorded background/foreground edge.
-pub(super) fn remote_synth_lifecycle(code: u32) {
+pub(crate) fn remote_synth_lifecycle(code: u32) {
     let mut ev = [0u8; 128];
     ev[0..4].copy_from_slice(&code.to_ne_bytes());
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
@@ -304,7 +304,7 @@ pub(super) fn remote_synth_lifecycle(code: u32) {
 /// these as `token` records (the SDL kinds are recorded where they are polled), and the replay
 /// driver re-dispatches them. `txt:` is here because its payload never becomes an SDL event on
 /// this host (`dispatch_remote_token`'s arm says why).
-pub(super) fn token_is_direct(tok: &str) -> bool {
+pub(crate) fn token_is_direct(tok: &str) -> bool {
     tok == "shot"
         || tok == "diag"
         || tok == "diagnostics"
@@ -318,7 +318,7 @@ pub(super) fn token_is_direct(tok: &str) -> bool {
 /// wcode@20 / sym@24 (native-endian; the TV is LE), and the handler reads press vs
 /// release from `state & 0xff` — so the down carries state=1, the up state=0. Both
 /// are required: a grid-card OK arms on down and *commits on release*.
-pub(super) fn remote_synth_key(sym: c_uint, wcode: c_uint) {
+pub(crate) fn remote_synth_key(sym: c_uint, wcode: c_uint) {
     remote_synth_key_edge(sym, wcode, true);
     remote_synth_key_edge(sym, wcode, false);
 }
@@ -327,7 +327,7 @@ pub(super) fn remote_synth_key(sym: c_uint, wcode: c_uint) {
 /// **press-and-hold** is only expressible as two tokens with real time between them: the item menu
 /// opens on `press::is_long`, which measures the interval between the down and the up. The paired
 /// `remote_synth_key` above is this called twice back to back (a tap).
-pub(super) fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
+pub(crate) fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
     let ev = encode_key(sym, wcode, down);
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
@@ -335,10 +335,10 @@ pub(super) fn remote_synth_key_edge(sym: c_uint, wcode: c_uint, down: bool) {
 /// ONE hardware auto-repeat edge — item 13's `holdrep:<name>` FIFO token, which lets a script
 /// exercise `on_auto_repeat`'s Settings/Consent/Legal forwarding (and the player scrubber's
 /// existing continuous-scrub path) without a real remote's own repeat cadence. Only recognised as a
-/// repeat by `on_auto_repeat`'s caller when `held_key.down_sym` already equals `sym` — i.e. after a
+/// repeat by `on_auto_repeat`'s caller when `App::down_sym` already equals `sym` — i.e. after a
 /// `holddown:<name>` and before its matching `holdup:<name>`, the same split `okdown`/`okup`
 /// already uses for a press-and-hold.
-pub(super) fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
+pub(crate) fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
     let ev = encode_key_repeat(sym, wcode);
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
@@ -348,7 +348,7 @@ pub(super) fn remote_synth_key_repeat(sym: c_uint, wcode: c_uint) {
 /// (`Sint32 y` at `+20`) unconditionally: it is the READING side that has to branch by platform
 /// now, not this one — see the wheel arm's own comment on why `+20` decodes to 0 on this host and
 /// where the value actually lands after `SDL_PushEvent` round-trips it.
-pub(super) fn remote_synth_wheel(dy: i32) {
+pub(crate) fn remote_synth_wheel(dy: i32) {
     let mut ev = [0u8; 128];
     ev[0..4].copy_from_slice(&SDL_MOUSEWHEEL.to_ne_bytes());
     ev[20..24].copy_from_slice(&dy.to_ne_bytes());
@@ -358,7 +358,7 @@ pub(super) fn remote_synth_wheel(dy: i32) {
 /// Is this SDL event type INPUT — a key, text, pointer or wheel event — as opposed to a lifecycle,
 /// window or quit event? The one classification `popover::host::input_scope` rests on: input under
 /// an open modal is the modal's, a lifecycle event is the app's and may change the page beneath.
-pub(super) fn is_input_event(et: u32) -> bool {
+pub(crate) fn is_input_event(et: u32) -> bool {
     matches!(
         et,
         SDL_KEYDOWN
@@ -404,7 +404,7 @@ mod input_event_tests {
 ///
 /// `true` means the token was accepted and injected/requested, not that the screen necessarily
 /// changed — pressing DOWN at the bottom of a list is still a successfully delivered command.
-pub(super) fn dispatch_remote_token(tok: &str) -> bool {
+pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSession) -> bool {
     // As the SDL loop: a modal's input is its own. NOT for `pat:`, which is not input at all — it
     // changes the PAGE's ground directly, and a frozen host must be retaken to show it.
     let _own_input = if tok.starts_with("pat:") {
@@ -450,7 +450,7 @@ pub(super) fn dispatch_remote_token(tok: &str) -> bool {
     } else if let Some(name) = tok.strip_prefix("holddown:") {
         // Item 13's press-and-hold triple, generalising `okdown`/`okup` to any named key so a
         // script can drive a genuine long-press and its hardware auto-repeats with no device:
-        // `holddown:<name>` (physical press, arms `held_key.down_sym`), `holdrep:<name>` (one
+        // `holddown:<name>` (physical press, arms `App::down_sym`), `holdrep:<name>` (one
         // 0x101 repeat edge, as many times as the script wants), `holdup:<name>` (release).
         match remote_token_key(name) {
             Some((sym, wcode)) => {
@@ -477,7 +477,7 @@ pub(super) fn dispatch_remote_token(tok: &str) -> bool {
         }
     } else if tok == "diag" || tok == "diagnostics" {
         if crate::lab::menu_row_enabled() {
-            crate::lab::request_upload("command");
+            crate::lab::request_upload("command", ps);
             true
         } else {
             false

@@ -1,6 +1,21 @@
 //! **Stats for nerds** — the on-screen diagnostics read-out, toggled from the player's `…` overflow
 //! popover ([`crate::ui::more_menu`]) and, since 2026-08-29, from the account menu
-//! ([`crate::ui::account_menu`]) on every other route.
+//! ([`crate::screens::account_menu`]) on every other route.
+//!
+//! # Where this lives, and why it is not a screen (restructure phase 10)
+//!
+//! It was `ui/stats.rs` and nine `static mut`s. It is `app/` because of what it is WRITTEN FROM —
+//! `player::Diag`, `route`, `plex::identity`, `webos`, `devcaps`, `surface`: application facts, not
+//! a design-system vocabulary — and its state is now one `App` field, [`Diagnostics`]. `ui/` keeps
+//! what it always drew with (`widgets::FieldList` is still the list primitive).
+//!
+//! **Spec §13 files it as "a `ModalStack` instance" and that is the wrong shape**, decided in phase
+//! 10 rather than deferred again. Two properties rule it out and both are stated at their own call
+//! sites below: the panel takes NO KEYS AT ALL (see [`ON`]), so it can never be an input owner,
+//! which is the whole of what a surface IS; and it draws at TWO z-positions — genuinely last on the
+//! player route, and over the page but UNDER the account/item menus everywhere else, because on
+//! that path the menu carrying its own off-switch sits in its corner. One entry in a z-ordered
+//! stack cannot express "sometimes above and sometimes below the other entries".
 //!
 //! It was PLAYER-ONLY until then, and this doc said so: `app.rs` drew it inside the player branch,
 //! so a toggle offered anywhere else would have ticked a box and shown nothing. The gap that
@@ -89,9 +104,69 @@
 use crate::ui::label::Label;
 use crate::ui::widgets::{Field, FieldList, FIELD_COL_W};
 use crate::ui::{theme, Env, Painter, Rect, View};
+use std::cell::Cell;
 use std::ffi::CString;
-use std::ptr::addr_of_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// **The read-out's own state, as ONE `App` field** (`app.diagnostics`; spec §0 done-criterion 1).
+///
+/// It was nine `static mut`s. It is deliberately NOT a `ModalStack` surface, which is what §13
+/// files it under: the panel takes no keys at all (see [`ON`]), and it draws at TWO z-positions —
+/// above the player's own panels on the player route and below the account/item menus everywhere
+/// else — so it is neither an input owner nor a single entry in a stack that orders by z. What it
+/// is, is a component with state, and the state belongs to the application that samples it.
+///
+/// Everything here is main-thread: [`update`](Self::update) is called from the frame loop's update
+/// block and [`draw`](Self::draw) from the draw phase. The one bit that crosses a module boundary
+/// without an instance is [`ON`], which stays an atomic and says why.
+pub(crate) struct Diagnostics {
+    /// The previous sample's fed totals and the tick they were taken at — what turns two totals
+    /// into a RATE. `(video, audio, at)`; `at == 0` means there is no previous sample yet.
+    prev_fed: (i64, i64, u32),
+    history: SweepHistory,
+    /// Formatted only at the 2 Hz sampling boundary, never in the render loop, so the whole-string
+    /// glyph cache sees the same held values the ordinary rows do.
+    chart_values: [String; 3],
+    /// SDL_ttf measurement of [`CHART_LABELS`] plus their sibling gap, measured once rather than
+    /// three times on every presented playback frame. A `Cell` because it is a cache filled during
+    /// a `&self` draw — main-thread draw state, like `Popover::rise`.
+    chart_key_w: Cell<f32>,
+    /// `SDL_GetTicks` at which the next sample is due.
+    next_sample: u32,
+    /// Was the panel on at the last [`update`](Self::update)? The re-sample "kick" a toggle used to
+    /// perform by reaching into a static: the instance watches the published bit's RISING EDGE
+    /// itself, so `toggle`/`open`/`close` need no handle on it (one of their callers,
+    /// `dev::scenarios::pre_boot`, runs before an `App` exists at all).
+    was_on: bool,
+    columns: [Vec<Field>; 2],
+    /// The compact pre-playback device read-out. Playback itself uses [`columns`](Self::columns).
+    /// Keeping the two snapshots separate lets the panel change width without ever measuring one
+    /// schema and drawing the other on the transition frame.
+    rows: Vec<Field>,
+    head: [String; 2],
+    /// Which list [`rows`](Self::rows) currently holds: the device block ([`device_rows`]) rather
+    /// than the pipeline one. Sampled WITH the rows so the layout cannot disagree with the content
+    /// — both [`panel_rect`](Self::panel_rect) and [`draw`](Self::draw) read it, and the card is
+    /// shorter and chartless in this state.
+    idle: bool,
+}
+
+impl Default for Diagnostics {
+    fn default() -> Self {
+        Self {
+            prev_fed: (0, 0, 0),
+            history: SweepHistory::new(),
+            chart_values: [String::new(), String::new(), String::new()],
+            chart_key_w: Cell::new(0.0),
+            next_sample: 0,
+            was_on: false,
+            columns: [Vec::new(), Vec::new()],
+            rows: Vec::new(),
+            head: [String::new(), String::new()],
+            idle: false,
+        }
+    }
+}
 
 /// Is the read-out on screen?
 ///
@@ -131,10 +206,13 @@ pub(crate) fn close() {
     kick();
 }
 
+/// A discrete change: the whole-frame present gate has no spring to watch here, so without this
+/// the panel would not appear until something else happened to repaint (see `ui::idle`).
+///
+/// It used to also force the next sample by writing a static. It does not need to: `Diagnostics`
+/// watches [`ON`]'s rising edge itself, which is the same behaviour without a handle the three
+/// callers of `toggle`/`open`/`close` do not all have.
 fn kick() {
-    // Discrete change: the whole-frame present gate has no spring to watch here, so without this
-    // the panel would not appear until something else happened to repaint. See `ui::idle`.
-    unsafe { addr_of_mut!(NEXT_SAMPLE).write(0) };
     crate::ui::idle::invalidate();
 }
 
@@ -155,17 +233,15 @@ const LEFT_ROWS: usize = 13;
 const RIGHT_ROWS: usize = 9;
 /// Compatibility name for the support-panel budget and its existing host assertions. Playback
 /// uses [`LEFT_ROWS`] as the taller of the two fixed columns; the pre-playback device card uses
-/// only the rows it actually has.
+/// only the rows it actually has. **Test-only, and stated as such since this module left `ui/`**:
+/// `ui/mod.rs` carries a blanket `#![allow(dead_code)]` for widgets that land before their first
+/// caller, and it was covering these two.
+#[cfg(test)]
 const PANEL_ROWS: usize = LEFT_ROWS;
 /// The chart occupies the right column's remaining four row pitches.  Naming the budget makes the
 /// two columns exactly the same height without a guessed pixel remainder.
 const CHART_ROWS: usize = LEFT_ROWS - RIGHT_ROWS;
 
-/// The previous sample's fed totals and the tick they were taken at — what turns two totals into
-/// a RATE. Without it the panel can only say "1180 AUs have been fed", which stays true and stays
-/// large for as long as the app runs, including for the whole of a lane that stopped feeding
-/// thirty seconds ago. `(video, audio, at)`; `at == 0` means there is no previous sample yet.
-static mut PREV_FED: (i64, i64, u32) = (0, 0, 0);
 /// The sweep plot is 32 fixed physical cells. A new sample overwrites the cell under the cursor;
 /// the already-drawn shape does not shift left. That is the useful property of YouTube's Stats for
 /// Nerds plot: two phone photographs retain a stable x-coordinate system, and the bright cursor
@@ -307,68 +383,49 @@ fn link_state(budget_kbps: i64, demand_kbps: i64) -> LinkState {
     }
 }
 
-static mut HISTORY: SweepHistory = SweepHistory::new();
-/// Formatted only at the 2 Hz sampling boundary, never in the render loop. The whole-string glyph
-/// cache therefore sees the same held values as the ordinary rows.
-static mut CHART_VALUES: [String; 3] = [String::new(), String::new(), String::new()];
-/// SDL_ttf measurement of [`CHART_LABELS`] plus their sibling gap. `text_width` is uncached, so the
-/// fixed labels are measured once rather than three times on every presented playback frame.
-static mut CHART_KEY_W: f32 = 0.0;
-static mut NEXT_SAMPLE: u32 = 0;
-static mut COLUMNS: [Vec<Field>; 2] = [Vec::new(), Vec::new()];
-/// The compact pre-playback device read-out. Playback itself uses [`COLUMNS`]. Keeping the two
-/// snapshots separate lets the panel change width without ever measuring one schema and drawing
-/// the other on the transition frame.
-static mut ROWS: Vec<Field> = Vec::new();
-static mut HEAD: [String; 2] = [String::new(), String::new()];
-/// Which list [`ROWS`] currently holds: the device block ([`device_rows`]) rather than the
-/// pipeline one. Sampled with the rows so the layout cannot disagree with the content — both
-/// [`panel_rect`] and [`draw`] read it, and the card is shorter and chartless in this state.
-static mut IDLE: bool = false;
-
-/// Re-sample if the hold has expired. Main-thread only (it is called from the frame loop).
-pub(crate) fn update(ps: &crate::route::PlaybackSession, now: u32) {
-    if !enabled() {
-        return;
-    }
-    let due = unsafe { addr_of_mut!(NEXT_SAMPLE).read() };
-    if now < due {
-        return;
-    }
-    unsafe {
-        addr_of_mut!(NEXT_SAMPLE).write(now.wrapping_add(SAMPLE_MS));
+impl Diagnostics {
+    /// Re-sample if the hold has expired. Main-thread only (it is called from the frame loop).
+    ///
+    /// The panel being switched ON is its own re-sample: the rising edge of [`ON`] is what the
+    /// static-era `kick()` expressed by zeroing the deadline from three modules away.
+    pub(crate) fn update(&mut self, ps: &crate::route::PlaybackSession, now: u32) {
+        let on = enabled();
+        let woke = on && !self.was_on;
+        self.was_on = on;
+        if !on {
+            return;
+        }
+        if !woke && now < self.next_sample {
+            return;
+        }
+        self.next_sample = now.wrapping_add(SAMPLE_MS);
         // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
         // "no frames" beside a position taken a moment later — a panel that tells a story that
         // never happened is worse than no panel.
         let d = crate::player::diag(ps);
-        let prev = addr_of_mut!(PREV_FED).read();
-        // `.replace()`, NOT `.write()`. `<*mut T>::write` is `ptr::write` — it overwrites without
-        // DROPPING what was there, and both own heap: a `Vec<Field>` and three `String`s plus
-        // every row's value. At 2 Hz that orphaned ~1.4 KB and ~23 allocations every sample, on a
-        // panel explicitly designed to be left up for the length of a film.
-        drop(addr_of_mut!(HEAD).replace(header(ps, &d, now)));
+        let prev = self.prev_fed;
+        self.head = header(ps, &d, now);
         // ONE decision per sample, held with the rows it chose. Deciding this in `draw` instead
         // would let the panel measure one list and paint another on the frame the first Load lands.
         let idle = never_played(&d, crate::player::state(ps));
-        addr_of_mut!(IDLE).write(idle);
-        drop(addr_of_mut!(ROWS).replace(if idle { device_rows() } else { Vec::new() }));
-        drop(addr_of_mut!(COLUMNS).replace(if idle {
+        self.idle = idle;
+        self.rows = if idle { device_rows() } else { Vec::new() };
+        self.columns = if idle {
             [Vec::new(), Vec::new()]
         } else {
             columns(ps, &d, prev, now)
-        }));
-        addr_of_mut!(PREV_FED).write((d.fed_v, d.fed_a, now));
-        let history = &mut *addr_of_mut!(HISTORY);
-        history.record(
+        };
+        self.prev_fed = (d.fed_v, d.fed_a, now);
+        self.history.record(
             crate::route::playback_trace_generation(),
             &d,
             crate::route::quality(),
             now,
         );
-        drop(addr_of_mut!(CHART_VALUES).replace(chart_values(history)));
+        self.chart_values = chart_values(&self.history);
+        // a re-sample changes what is on screen, and no spring is involved — see `ui::idle`
+        crate::ui::idle::invalidate();
     }
-    // a re-sample changes what is on screen, and no spring is involved — see `ui::idle`
-    crate::ui::idle::invalidate();
 }
 
 /// The two head lines: **who this build is** and **what the pipeline thinks it is doing**.
@@ -551,7 +608,9 @@ fn columns(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i
 }
 
 /// Flattened only for host assertions that inspect the whole schema.  Production draws the two
-/// vectors independently and never clones them.
+/// vectors independently and never clones them — so this is `cfg(test)`, which `ui/mod.rs`'s
+/// blanket `#![allow(dead_code)]` had been standing in for.
+#[cfg(test)]
 fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     columns(ps, d, prev, now).into_iter().flatten().collect()
 }
@@ -1126,8 +1185,9 @@ fn chart_key_width_for(widest_label_px: f32) -> f32 {
 /// Width of the chart's left label gutter. [`Label`] deliberately lets glyph ink overflow its
 /// frame, so the plot cannot use a guessed frame width as its origin: measure the actual ink and
 /// then add the design system's ordinary sibling gap.
-fn chart_key_width() -> f32 {
-    let cached = unsafe { addr_of_mut!(CHART_KEY_W).read() };
+impl Diagnostics {
+fn chart_key_width(&self) -> f32 {
+    let cached = self.chart_key_w.get();
     if cached > 0.0 {
         return cached;
     }
@@ -1140,9 +1200,10 @@ fn chart_key_width() -> f32 {
     // `text_width` is zero before text initialisation. Use the conservative width for this frame,
     // but retry rather than permanently caching an absence that existed only during boot.
     if measured > 0.0 {
-        unsafe { addr_of_mut!(CHART_KEY_W).write(width) };
+        self.chart_key_w.set(width);
     }
     width
+}
 }
 
 fn decoded_raster(d: &crate::player::Diag) -> String {
@@ -1466,13 +1527,13 @@ const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
 /// And it sits entirely ABOVE the transport (`player_hud::CTRL_Y`), so a pointer click can never
 /// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
 /// needed a close-on-click arm at all.
-pub(crate) fn panel_rect() -> Rect {
-    let idle = unsafe { addr_of_mut!(IDLE).read() };
+impl Diagnostics {
+pub(crate) fn panel_rect(&self) -> Rect {
+    let idle = self.idle;
     let (w, h) = if idle {
         // Before playback there is no delivery history to chart. Keep the support card compact and
         // price exactly the device rows sampled for this frame.
-        let rows = unsafe { &*addr_of_mut!(ROWS) };
-        let lines = FieldList::wrapped_line_count(rows);
+        let lines = FieldList::wrapped_line_count(&self.rows);
         (
             FIELD_COL_W + 2.0 * PAD,
             HEAD_H + FieldList::height(lines) + PAD,
@@ -1480,7 +1541,7 @@ pub(crate) fn panel_rect() -> Rect {
     } else {
         // Playback keeps fixed comparable columns. The chart is four row pitches under the
         // shorter model column, so both sides share one measured height without clipping.
-        let cols = unsafe { &*addr_of_mut!(COLUMNS) };
+        let cols = &self.columns;
         let left = FieldList::wrapped_line_count(&cols[0]).max(LEFT_ROWS);
         let right = FieldList::wrapped_line_count(&cols[1]).max(RIGHT_ROWS) + CHART_ROWS;
         (PANEL_W, HEAD_H + FieldList::height(left.max(right)) + PAD)
@@ -1491,26 +1552,26 @@ pub(crate) fn panel_rect() -> Rect {
     Rect::new(crate::ui::consts::MARGIN_X, MARGIN, w, h)
 }
 
-/// The read-out's frame, for the overscan audit ([`crate::ui::consts::SAFE`]). Fixed at the row
-/// budget by [`panel_rect`], so this is the whole state space.
-#[cfg(test)]
-pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    out.push(("stats read-out panel", panel_rect()));
+/// The panel's frame WHEN IT IS ON SCREEN — the only question another module asks of this one
+/// (`lab_toast` sits immediately below it, and neither may cover the other). `None` when the
+/// read-out is off, so the caller cannot forget to ask [`enabled`] first.
+pub(crate) fn frame_if_shown(&self) -> Option<Rect> {
+    enabled().then(|| self.panel_rect())
 }
 
-pub(crate) fn draw() {
+pub(crate) fn draw(&self) {
     if !enabled() {
         return;
     }
     let p = Painter::root();
     let e = Env::inert();
-    let frame = panel_rect();
+    let frame = self.panel_rect();
     // Its own opaque ground. On the player route the UI plane is cleared fully TRANSPARENT, so a
     // scrim would leave the picture showing through the text — the one condition a photograph of
     // this has to survive.
     p.rect(frame, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
-    let head = unsafe { &*addr_of_mut!(HEAD) };
+    let head = &self.head;
     let inner = frame.x + PAD;
     let iw = frame.w - 2.0 * PAD;
     if let Ok(cs) = CString::new("Diagnostics") {
@@ -1536,15 +1597,14 @@ pub(crate) fn draw() {
     }
 
     let top = frame.y + HEAD_H;
-    if unsafe { addr_of_mut!(IDLE).read() } {
+    if self.idle {
         if let Ok(cs) = CString::new("DEVICE / SERVER") {
             Label::new(cs.as_ptr(), theme::size::DIAGNOSTIC, theme::TEXT_SECONDARY)
                 .bold()
                 .draw(p, Rect::new(inner, frame.y + 90.0, FIELD_COL_W, 24.0));
         }
-        let rows = unsafe { &*addr_of_mut!(ROWS) };
         FieldList::new(
-            rows,
+            &self.rows,
             Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD),
         )
         .draw(&e, p);
@@ -1560,7 +1620,7 @@ pub(crate) fn draw() {
         }
     }
 
-    let cols = unsafe { &*addr_of_mut!(COLUMNS) };
+    let cols = &self.columns;
     FieldList::new(
         &cols[0],
         Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD),
@@ -1573,7 +1633,7 @@ pub(crate) fn draw() {
     .draw(&e, p);
 
     let cy = top + FieldList::height(FieldList::wrapped_line_count(&cols[1]).max(RIGHT_ROWS));
-    draw_chart(
+    self.draw_chart(
         p,
         Rect::new(
             right_x,
@@ -1593,12 +1653,12 @@ pub(crate) fn draw() {
 /// Deliberately LOCAL rather than a `ui::widgets` component. It is a debug read-out, not a design
 /// system piece: it has no focus, no state and no springs, and
 /// promoting it would put a diagnostic-only shape in the shared vocabulary for one caller.
-fn draw_chart(p: Painter, r: Rect) {
+fn draw_chart(&self, p: Painter, r: Rect) {
     if r.h < 60.0 {
         return;
     }
-    let history = unsafe { addr_of_mut!(HISTORY).read() };
-    let values = unsafe { &*addr_of_mut!(CHART_VALUES) };
+    let history = &self.history;
+    let values = &self.chart_values;
     let peak = |pick: fn(SweepSample) -> i64| {
         history
             .slots
@@ -1626,7 +1686,7 @@ fn draw_chart(p: Painter, r: Rect) {
     const CHART_VALUE_W: f32 = 280.0;
     const CHART_GAP: f32 = 8.0;
     let lane_h = r.h / 3.0;
-    let key_w = chart_key_width();
+    let key_w = self.chart_key_width();
     let bx = r.x + key_w;
     let bars_w = (r.w - key_w - CHART_VALUE_W - CHART_GAP).max(1.0);
     let value_x = bx + bars_w + CHART_GAP;
@@ -1731,6 +1791,19 @@ fn draw_chart(p: Painter, r: Rect) {
         theme::DIAG_SWEEP_CURSOR,
         0.0,
     );
+}
+}
+
+/// The read-out's frame, for the overscan audit ([`crate::ui::consts::SAFE`]). Fixed at the row
+/// budget by [`Diagnostics::panel_rect`], so a default instance is the whole state space: the
+/// playback branch is the row FLOOR (`LEFT_ROWS`/`RIGHT_ROWS` + `CHART_ROWS`), which no sample can
+/// shrink, and the device branch is strictly shorter (`the_device_card_drops_the_row_floor_and_the_chart`).
+#[cfg(test)]
+pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
+    out.push((
+        "stats read-out panel",
+        Diagnostics::default().panel_rect(),
+    ));
 }
 
 #[cfg(test)]
@@ -2131,33 +2204,32 @@ mod tests {
     /// The device card is SHORTER and has no chart. Both come off one sampled flag, so the measure
     /// and the paint cannot disagree — the failure the two-rules version of this panel already had
     /// once, when reserved rows fell out of the bottom of the card onto the transport.
+    ///
+    /// **No `testlock` any more, and that is the point of the phase-10 change**: the two states are
+    /// two INSTANCES now, so this test cannot be perturbed by another one and cannot perturb one.
+    /// It used to save, overwrite and restore two `static mut`s under the crate-wide lock.
     #[test]
     fn the_device_card_drops_the_row_floor_and_the_chart() {
-        let _g = crate::testlock::serial();
-        unsafe {
-            let saved_rows = addr_of_mut!(ROWS).replace(device_rows());
-            let saved_idle = addr_of_mut!(IDLE).read();
+        let pipeline = Diagnostics::default();
+        let device = Diagnostics {
+            idle: true,
+            rows: device_rows(),
+            ..Default::default()
+        };
+        let pipeline_h = pipeline.panel_rect().h;
+        let device_h = device.panel_rect().h;
 
-            addr_of_mut!(IDLE).write(false);
-            let pipeline_h = panel_rect().h;
-            addr_of_mut!(IDLE).write(true);
-            let device_h = panel_rect().h;
-
-            drop(addr_of_mut!(ROWS).replace(saved_rows));
-            addr_of_mut!(IDLE).write(saved_idle);
-
-            assert!(
-                device_h < pipeline_h,
-                "device {device_h} not shorter than pipeline {pipeline_h}"
-            );
-            // Exactly the chart band plus the rows the floor would have reserved but the content
-            // does not fill — no fudge factor, which is what makes this an assertion about the
-            // layout rule rather than about a number somebody measured once.
-            let n = FieldList::wrapped_line_count(&device_rows());
-            let reserved = FieldList::height(RIGHT_ROWS) - FieldList::height(n);
-            let chart_h = FieldList::height(CHART_ROWS);
-            assert!((pipeline_h - device_h - reserved - chart_h).abs() < 0.5);
-        }
+        assert!(
+            device_h < pipeline_h,
+            "device {device_h} not shorter than pipeline {pipeline_h}"
+        );
+        // Exactly the chart band plus the rows the floor would have reserved but the content
+        // does not fill — no fudge factor, which is what makes this an assertion about the
+        // layout rule rather than about a number somebody measured once.
+        let n = FieldList::wrapped_line_count(&device_rows());
+        let reserved = FieldList::height(RIGHT_ROWS) - FieldList::height(n);
+        let chart_h = FieldList::height(CHART_ROWS);
+        assert!((pipeline_h - device_h - reserved - chart_h).abs() < 0.5);
     }
 
     /// A fresh, never-started session must read as faults, not as a healthy zero — that is the
@@ -2203,7 +2275,7 @@ mod tests {
         // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept
         // spelling 60 for both.
-        let p = panel_rect();
+        let p = Diagnostics::default().panel_rect();
         assert!(
             p.x + p.w <= SCR_W - crate::ui::consts::MARGIN_X,
             "panel is wider than the safe frame"

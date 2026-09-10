@@ -435,8 +435,18 @@ pub(crate) fn scoped_motion<T>(f: impl FnOnce() -> T) -> (T, bool) {
 /// function body rather than a closure — a popover's `update`, which steps three or four springs
 /// through several early returns and would otherwise have to be reindented into a closure to say
 /// the same thing.
+///
+/// **It closes on `Drop` as well as on [`close`](Self::close)**, which is what lets it be held as a
+/// plain guard over a region with early returns — the dispatcher's per-surface step and draw
+/// (§4.4), where the alternative is a `close()` on every path out. Before that it had no `Drop` at
+/// all, so a scope that was dropped rather than closed left [`SCOPE_DEPTH`] raised for the rest of
+/// the frame: every later spring in the app would then report as a popover's, and nothing would
+/// fail — the gate would simply stop seeing the page move. `close` still consumes the guard and
+/// returns the verdict; the `Drop` that follows it is a no-op.
 pub(crate) struct MotionScope {
     before: bool,
+    /// Still raising [`SCOPE_DEPTH`] — false once [`close`](Self::close) has merged it back.
+    open: bool,
 }
 
 impl MotionScope {
@@ -444,11 +454,20 @@ impl MotionScope {
         SCOPE_DEPTH.with(|d| d.set(d.get() + 1));
         Self {
             before: MOVING.with(|m| m.replace(false)),
+            open: true,
         }
     }
 
     /// Merge the scope back into the frame-wide bit and report whether anything inside it moved.
-    pub(crate) fn close(self) -> bool {
+    pub(crate) fn close(mut self) -> bool {
+        self.merge()
+    }
+
+    fn merge(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        self.open = false;
         let before = self.before;
         SCOPE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
         MOVING.with(|m| {
@@ -456,6 +475,12 @@ impl MotionScope {
             m.set(before || own);
             own
         })
+    }
+}
+
+impl Drop for MotionScope {
+    fn drop(&mut self) {
+        let _ = self.merge();
     }
 }
 
@@ -570,7 +595,7 @@ mod tests {
     /// The gate's statics are reached from `gfx::spring`, which every other module's spring tests
     /// also drive — so this contends across modules, not just within this file. `testlock`, not a
     /// module-local mutex (see `lib.rs::testlock`).
-    fn fresh() -> std::sync::MutexGuard<'static, ()> {
+    fn fresh() -> crate::testlock::Serial {
         let g = crate::testlock::serial();
         set_enabled(true);
         frame_begin(1.0 / 60.0);

@@ -9,7 +9,8 @@
 //!
 //! # Where it sits, and why not where the other read-out sits
 //!
-//! Top RIGHT normally; immediately BELOW `ui::stats` when both are shown. The diagnostics panel is
+//! Top RIGHT normally; immediately BELOW the diagnostics read-out when both are shown — its frame
+//! arrives as a parameter (`app::diagnostics`, phase 10). The diagnostics panel is
 //! the state, the toast is whether the state got out, and neither may cover the other. Both stay
 //! inside the overscan frame (`consts::MARGIN_X`) because a lab set is one nobody here can measure,
 //! so nothing may rely on the panel showing every pixel.
@@ -29,16 +30,13 @@ const PAD: f32 = 24.0;
 /// Clear of the top edge by the same margin the safe area uses on the sides.
 const TOP: f32 = 60.0;
 
-fn frame() -> Rect {
-    frame_for(crate::ui::stats::enabled())
-}
-
-fn frame_for(stats_on: bool) -> Rect {
-    let y = if stats_on {
-        let stats = crate::ui::stats::panel_rect();
-        stats.y + stats.h + theme::space::SM
-    } else {
-        TOP
+/// Where the diagnostics read-out ENDS, when it is on screen — the whole of what this module needs
+/// to know about it. A `Rect` rather than a handle on the panel: the read-out's state is an `App`
+/// field (`app.diagnostics`, phase 10) and `ui/` does not reach into the application for it.
+fn frame_for(stats: Option<Rect>) -> Rect {
+    let y = match stats {
+        Some(stats) => stats.y + stats.h + theme::space::SM,
+        None => TOP,
     };
     Rect::new(SCR_W - MARGIN_X - W, y, W, H)
 }
@@ -48,7 +46,7 @@ pub(crate) fn update(now: u32) {
     upload::update(now);
 }
 
-pub(crate) fn draw() {
+pub(crate) fn draw(stats: Option<Rect>) {
     if !upload::showing() {
         return;
     }
@@ -57,9 +55,9 @@ pub(crate) fn draw() {
         upload::PHASE_OK => ("Diagnostics uploaded", theme::TEXT_PRIMARY),
         _ => ("Diagnostics upload failed", theme::DANGER),
     };
-    let r = frame();
+    let r = frame_for(stats);
     let p = Painter::root();
-    // Its own opaque ground, like `stats`: on the player route the UI plane is cleared fully
+    // Its own opaque ground, like the diagnostics read-out's: on the player route the UI plane is cleared fully
     // transparent, so a scrim would leave the picture showing through the text — and this read-out
     // has to survive being looked at over a bright frame of video.
     p.rect(r, 20.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
@@ -89,15 +87,13 @@ mod tests {
     /// look at, so nothing about this may depend on the panel showing its outermost pixels.
     #[test]
     fn the_toast_stays_inside_the_safe_area() {
-        for stats_on in [false, true] {
-            let r = frame_for(stats_on);
-            assert!(r.x >= SAFE.x, "left edge, stats={stats_on}");
-            assert!(r.x + r.w <= SAFE.x + SAFE.w, "right edge, stats={stats_on}");
-            assert!(r.y >= SAFE.y, "top edge, stats={stats_on}");
-            assert!(
-                r.y + r.h <= SAFE.y + SAFE.h,
-                "bottom edge, stats={stats_on}"
-            );
+        let panel = crate::app::diagnostics::Diagnostics::default().panel_rect();
+        for (name, stats) in [("no read-out", None), ("under the read-out", Some(panel))] {
+            let r = frame_for(stats);
+            assert!(r.x >= SAFE.x, "left edge, {name}");
+            assert!(r.x + r.w <= SAFE.x + SAFE.w, "right edge, {name}");
+            assert!(r.y >= SAFE.y, "top edge, {name}");
+            assert!(r.y + r.h <= SAFE.y + SAFE.h, "bottom edge, {name}");
         }
     }
 
@@ -105,8 +101,8 @@ mod tests {
     #[test]
     fn it_does_not_overlap_the_stats_read_out() {
         let mut rects = Vec::new();
-        crate::ui::stats::overscan_rects(&mut rects);
-        let r = frame_for(true);
+        crate::app::diagnostics::overscan_rects(&mut rects);
+        let r = frame_for(Some(crate::app::diagnostics::Diagnostics::default().panel_rect()));
         for (name, s) in rects {
             assert!(
                 r.x >= s.x + s.w || s.x >= r.x + r.w || r.y >= s.y + s.h || s.y >= r.y + r.h,

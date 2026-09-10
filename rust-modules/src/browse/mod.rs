@@ -587,6 +587,10 @@ fn requery() {
 /// user's cached grid, watched-state angles, or section tabs (pms.rs's hub catalog is
 /// rebuilt wholesale on the same event; this is the browse twin).
 pub(crate) fn reset() {
+    // The section table is a crate global, and emptying it under another module's test is exactly
+    // the pollution `testlock` exists to stop — see `lib.rs::testlock`.
+    #[cfg(test)]
+    crate::testlock::assert_held("browse's section table (reset)");
     bump_gen();
     SECTIONS_GEN.fetch_add(1, Ordering::SeqCst);
     EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -930,6 +934,8 @@ impl SecKind {
 /// makes a source arriving late safe at all. A source is only ever appended once, so a repeat call
 /// for it is a no-op rather than a duplicated library.
 fn append_sections(src: usize, list: Vec<(i64, String, SecKind)>) {
+    #[cfg(test)]
+    crate::testlock::assert_held("browse's section table (append)");
     // Only what this source does not already have. A re-discovery ("Check for new shares", or a
     // server that came back) therefore ADDS a library the owner has since created and leaves every
     // existing row — and every index — exactly where it was.

@@ -17,7 +17,7 @@
 //! to know it is the whole value of a stack.
 //!
 //! **This module decides nothing about screens.** It owns the trail's ORDER and its bounds; putting
-//! a page back on screen is `app.rs`'s `enter_node` ritual. That seam is the same one `item_menu.rs`
+//! a page back on screen is `app.rs`'s `enter_node` ritual. That seam is the same one the card menu
 //! draws (it only REPORTS an `Action`; `app.rs` performs it), and here it is what makes the decision
 //! host-testable at all: the BACK arm itself lives inside the SDL event loop, where no host test can
 //! reach it, so everything it decides has to be liftable into a value first.

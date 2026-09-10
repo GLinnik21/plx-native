@@ -11,7 +11,7 @@
 //! * **Information** is *"four facts the detail screen already prints in full behind the panel, so
 //!   they stay there"* — no alert, and (see below) no copy of them in this one either.
 //! * **Languages** — the audio list — *"belongs beside the bitrates in Track information"* (§1B),
-//!   so that column opens §1B rather than a panel of its own. `crate::ui::tracks_panel`.
+//!   so that column opens §1B rather than a panel of its own. `crate::screens::tracks_panel`.
 //!
 //! Do not give columns 1 or 3 an alert from this note. The absence is the design.
 //!
@@ -30,11 +30,24 @@
 //!
 //! # What it is made of
 //!
-//! One [`Popover`] on the shared open/appear choreography, one glass ground, and a fixed vertical
-//! ladder of runs — no list, no focus, no control. The only key it answers is BACK (and OK, see
-//! [`on_ok`]), because §1E states the family rule: *"only 1D carries a control — the read-only
-//! panels close on BACK."* So the closing `Press [BACK] to return` line is not a hint, it is the
-//! whole affordance, and it is the shared [`crate::ui::widgets::KeyHint`].
+//! One glass ground and a fixed vertical ladder of runs — no list, no focus, no control, and no
+//! state of its own at all. The only key it answers is BACK (and OK, see [`AboutPanelScreen`]),
+//! because §1E states the family rule: *"only 1D carries a control — the read-only panels close on
+//! BACK."* So the closing `Press [BACK] to return` line is not a hint, it is the whole affordance,
+//! and it is the shared [`crate::ui::widgets::KeyHint`].
+//!
+//! **A `Style::Alert` surface on the container tree** since restructure phase 10 (§6.2) — the
+//! shape it always had, stated to the container instead of implied, and the FIRST conversion §0's
+//! criterion 5 is proven on. Its `static mut POP` is gone: the container owns the phase, the appear
+//! spring (`DrawFrame::page_alpha` IS that spring for a surface) and the dim
+//! (`ModalStack::draw_scrims`, off [`AboutPanelScreen::scrim`]). Nothing on screen changes.
+//!
+//! **It is the panel with the least state in the app, and that is worth stating rather than
+//! reading as an omission**: no cursor, no scroll, no selection — the sheet is one measured
+//! ladder over `metadata::current()`. So its `LogicalState` writes nothing and its whole record in
+//! a recording is the container's: which argument is present, in which phase. There is no UP/DOWN
+//! here for a replay to be blind to, which is exactly what `tracks_panel`'s `page:i32` had to be in
+//! its shape for.
 //!
 //! # Two things about it that are decisions rather than defaults
 //!
@@ -57,13 +70,11 @@
 
 use crate::metadata;
 use crate::ui::consts::{SCR_H, SCR_W};
-use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::widgets;
 use crate::ui::widgets::KeyHint;
 use crate::ui::{Painter, Rect};
-use std::ptr::{addr_of, addr_of_mut};
 
 // ---- the frame -------------------------------------------------------------------------------
 
@@ -233,178 +244,273 @@ pub(crate) fn panel_rect(content_h: f32) -> Rect {
     )
 }
 
-// ---- state -----------------------------------------------------------------------------------
+// ---- the surface -------------------------------------------------------------------------------
 
-/// The card page under this alert does not move while it is up, so it is served from the shared
-/// host snapshot — see [`crate::ui::popover::host`].
-static mut POP: Popover = Popover::new().caching_host();
+/// The fields [`AboutPanelScreen`] canonicalises, for the recorder's shape pin (§5.4). It is EMPTY
+/// and that is the honest answer: this sheet has no cursor, no scroll and no selection, so its
+/// whole record in a recording is the container's — which argument is present, in which phase
+/// (`Navigation::write`). A shape with a field in it would be claiming state the panel does not
+/// have, and the pin would then move for a change nothing could observe.
+pub(crate) const SHAPE: &str = "AboutPanelScreen{}";
 
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
+/// **How far the sheet rises as it appears, in px** — `Popover::RISE`, the one number the whole
+/// panel family shares so that two surfaces leaving together read as one movement. The container
+/// owns the spring; this is only the distance it drives.
+const RISE: f32 = crate::ui::popover::Popover::RISE;
+
+/// The About footer's card, read in full. Presented on the Detail page's own `ModalStack`
+/// (`registry::ContentPanel::About`), dismissed by BACK or OK.
+pub(crate) struct AboutPanelScreen {
+    entry: crate::ui::machine::EntryId,
+    /// The frosted ground's render state — a resource, never logical state, which is why it is not
+    /// in [`SHAPE`].
+    glass: crate::ui::widgets::GlassState,
 }
 
-pub(crate) fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
-}
-
-/// Open it over the page. Repaints — a modal appearing is exactly the discrete change
-/// [`crate::ui::idle`] cannot see from a spring alone on its first frame.
-pub(crate) fn open() {
-    pop().open();
-    crate::ui::idle::invalidate();
-}
-
-pub(crate) fn close() {
-    if is_open() {
-        pop().dismiss();
-        crate::ui::idle::invalidate();
-    }
-}
-/// The INSTANT hide, for page teardown — the item or page this panel is about is being replaced
-/// under it, so there is nothing for a fade to fade over. Interactive exits use [`close`], which
-/// runs the appear choreography backwards (`Popover::dismiss`); a teardown that used it would
-/// leave `visible()` true with the old rows in the sheet, drawn over the incoming page until the
-/// spring ran out (Codex review, 2026-09-02).
-pub(crate) fn hide() {
-    if pop().visible() {
-        pop().close();
-        crate::ui::idle::invalidate();
-    }
-}
-
-/// OK while the panel is up.
-///
-/// **It closes.** The design says only BACK, and the panel carries no control for OK to commit — but
-/// on a remote OK is the primary button, and a modal that answers it with nothing is the one dead
-/// key on the screen. Closing is the superset: BACK still closes, and nothing else can be reached
-/// from here for OK to mean instead. Reported rather than performed, so the page's key ladder keeps
-/// deciding whether the press was spent.
-pub(crate) fn on_ok() {
-    close();
-}
-
-pub(crate) fn update(dt: f32) {
-    // The appear spring is this panel's motion, not the page's behind it — `popover::own_motion`.
-    // Unguarded on `is_open` like the rest of this function has always been: a closed `Popover`
-    // steps nothing, so the scope closes empty.
-    let _own = crate::ui::popover::own_motion();
-    pop().update(dt);
-}
-
-// ---- draw ------------------------------------------------------------------------------------
-
-/// The modal dim, drawn by the HOST PAGE rather than by the panel.
-///
-/// Pairs with [`draw`], which uses `Popover::content_painter` and so draws no scrim of its own —
-/// calling `Popover::painter` instead would dim twice. The split is the rule `ui/CLAUDE.md` states
-/// and `account_menu` is the worked example of: the scrim sits between the page and the panel, so it
-/// is part of what the glass looks through, and a dim drawn WITH the panel reaches the visible frame
-/// but not the blur's source. This panel's policy is `CACHED`, which grabs framebuffer 0 and would
-/// survive either placement — it is written the right way round anyway, because the placement is a
-/// property of where a scrim BELONGS and not of which capture path today's policy happens to take.
-///
-/// Nothing is LIFTED back out of the dim. `Popover::scrim_lifting` exists for a panel that is ABOUT
-/// an element still on screen; this one is about the card it was opened from and says everything the
-/// card says, at length — lifting it would put a truncated copy of this panel's own first three runs
-/// alongside it. The mock lifts nothing either.
-pub(crate) fn draw_scrim() {
-    if pop().visible() {
-        // FIRST lift of the frame on this page, so this is where the host snapshot is taken —
-        // before the dim, which is what makes the snapshot the UNDIMMED page.
-        let _live = crate::ui::popover::host::live();
-        pop().scrim(SCRIM_A);
-    }
-}
-
-pub(crate) fn draw() {
-    if !pop().visible() {
-        return;
-    }
-    // Live over the frozen host — see `popover::host::live`.
-    let _live = crate::ui::popover::host::live();
-    let Some(d) = metadata::current() else {
-        return;
-    };
-
-    // ---- measure ----
-    // The tagline first, because the synopsis's line budget is what is LEFT after it.
-    let mut b = Blocks {
-        synopsis: 0.0,
-        tagline: if d.tagline.is_empty() { 0.0 } else { FINE_LEAD },
-    };
-    let syn = TextView::new(&d.summary, theme::size::BODY, theme::TEXT_READING)
-        .leading(SYN_LEAD)
-        .max_lines(syn_lines(b));
-    b.synopsis = if d.summary.is_empty() {
-        0.0
-    } else {
-        syn.measure_h(CONTENT_W)
-    };
-    let s = stack(b);
-    let r = panel_rect(s.h);
-
-    // ---- ground ----
-    let p = pop().content_painter(Popover::RISE);
-    pop().panel(p, r, theme::ALERT_PANEL_RAD);
-
-    // ---- content ----
-    let cx = r.x + PAD;
-    let run = |text: &str, y: f32, sz, lead: f32, col, bold| {
-        let mut v = TextView::new(text, sz, col).leading(lead).max_lines(1);
-        if bold {
-            v = v.bold();
+impl AboutPanelScreen {
+    pub(crate) fn new(entry: crate::ui::machine::EntryId) -> Self {
+        Self {
+            entry,
+            glass: crate::ui::widgets::GlassState::new(),
         }
-        v.draw(p, Rect::new(cx, r.y + y, CONTENT_W, 0.0));
-    };
-
-    run(
-        "ABOUT",
-        s.eyebrow,
-        theme::size::CAPTION,
-        EYEBROW_LEAD,
-        theme::TEXT_TERTIARY,
-        true,
-    );
-    if s.synopsis > 0.0 {
-        syn.draw(p, Rect::new(cx, r.y + s.synopsis, CONTENT_W, 0.0));
     }
-    if s.tagline > 0.0 {
+
+    /// The whole panel, at this frame's appear fraction.
+    ///
+    /// `Painter::root()` rather than a painter handed down the tree, and `alpha`/`translate` rather
+    /// than `Popover::content_painter`: the container draws a surface after the page, so the fade
+    /// and the slide are this draw's own, and the scrim is already down (see [`Self::scrim`]).
+    fn paint(&mut self, d: &metadata::Detail, appear: f32) {
+        let slide = RISE * (1.0 - appear);
+        let p = Painter::root().alpha(appear).translate(0.0, slide);
+
+        // ---- measure ----
+        // The tagline first, because the synopsis's line budget is what is LEFT after it.
+        let mut b = Blocks {
+            synopsis: 0.0,
+            tagline: if d.tagline.is_empty() { 0.0 } else { FINE_LEAD },
+        };
+        let syn = TextView::new(&d.summary, theme::size::BODY, theme::TEXT_READING)
+            .leading(SYN_LEAD)
+            .max_lines(syn_lines(b));
+        b.synopsis = if d.summary.is_empty() {
+            0.0
+        } else {
+            syn.measure_h(CONTENT_W)
+        };
+        let s = stack(b);
+        let r = panel_rect(s.h);
+
+        // ---- ground ----
+        crate::ui::widgets::Glass::CACHED.panel(p, r, slide, theme::ALERT_PANEL_RAD);
+
+        // ---- content ----
+        let cx = r.x + PAD;
+        let run = |text: &str, y: f32, sz, lead: f32, col, bold| {
+            let mut v = TextView::new(text, sz, col).leading(lead).max_lines(1);
+            if bold {
+                v = v.bold();
+            }
+            v.draw(p, Rect::new(cx, r.y + y, CONTENT_W, 0.0));
+        };
+
         run(
-            &d.tagline,
-            s.tagline,
+            "ABOUT",
+            s.eyebrow,
             theme::size::CAPTION,
-            FINE_LEAD,
+            EYEBROW_LEAD,
             theme::TEXT_TERTIARY,
-            false,
+            true,
+        );
+        if s.synopsis > 0.0 {
+            syn.draw(p, Rect::new(cx, r.y + s.synopsis, CONTENT_W, 0.0));
+        }
+        if s.tagline > 0.0 {
+            run(
+                &d.tagline,
+                s.tagline,
+                theme::size::CAPTION,
+                FINE_LEAD,
+                theme::TEXT_TERTIARY,
+                false,
+            );
+        }
+        rule(p, r, s.rule);
+
+        let hint = KeyHint::new(c"Press", c"BACK", c"to return");
+        // RIGHT-aligned on the padding edge, as §1B and §1C are and as the design draws all three
+        // (§1A's footer row is `justify-content:flex-end`). It was centred for one revision, on the
+        // theory that a lone hint with no left-hand partner should not sit at a margin; the owner's
+        // answer was to keep it right, so the family has ONE footer alignment and this panel is not the
+        // exception to it. Do not re-derive the centred form — `KeyHint`'s own doc offers the
+        // arithmetic, and no caller wants it.
+        hint.draw(
+            p,
+            r.x + r.w - PAD - hint.width(),
+            r.y + s.footer + KeyHint::height() * 0.5,
         );
     }
-    rule(p, r, s.rule);
+}
 
-    let hint = KeyHint::new(c"Press", c"BACK", c"to return");
-    // RIGHT-aligned on the padding edge, as §1B and §1C are and as the design draws all three
-    // (§1A's footer row is `justify-content:flex-end`). It was centred for one revision, on the
-    // theory that a lone hint with no left-hand partner should not sit at a margin; the owner's
-    // answer was to keep it right, so the family has ONE footer alignment and this panel is not the
-    // exception to it. Do not re-derive the centred form — `KeyHint`'s own doc offers the
-    // arithmetic, and no caller wants it.
-    hint.draw(
-        p,
-        r.x + r.w - PAD - hint.width(),
-        r.y + s.footer + KeyHint::height() * 0.5,
-    );
+impl<H: crate::screens::registry::AppLike> crate::ui::machine::Machine<H> for AboutPanelScreen {
+    type Ev = crate::ui::screen::ScreenEvent<H>;
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+        fx: &mut crate::ui::machine::Effects<'_, H>,
+    ) -> crate::ui::machine::Handled {
+        use crate::ui::machine::{Edge, Fx, Handled, InputKind, Key, NavOp};
+        use crate::ui::screen::ScreenEvent;
+        match ev {
+            ScreenEvent::Input(input) => match input.kind {
+                // **BACK and OK both close, and OK is the deliberate half.** The design says only
+                // BACK, and the panel carries no control for OK to commit — but on a remote OK is
+                // the primary button, and a modal that answers it with nothing is the one dead key
+                // on the screen. Closing is the superset: nothing else can be reached from here for
+                // OK to mean instead.
+                InputKind::Key {
+                    key: Key::Back | Key::Ok,
+                    edge: Edge::Down,
+                    ..
+                } => {
+                    fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+                    Handled::Yes
+                }
+                // Every other key is SWALLOWED rather than passed down: the sheet is modal, and a
+                // D-pad press that walked the page's own ladder under it is the trap the legacy
+                // `is_open()` guard in `detail::key` existed to prevent.
+                InputKind::Key { edge: Edge::Down | Edge::Repeat, .. } => Handled::Yes,
+                // A click does nothing at all — `Style::Alert`'s own `on_miss`, stated here
+                // because a `HitSource::Legacy` surface is handed the pointer whatever the
+                // container's miss policy says. This is the one thing about the panel that
+                // CHANGED: the legacy module closed on a click anywhere ("the panel holds nothing
+                // to hit"), which is a `Compact` popover's rule, and this sheet is an Alert — the
+                // same call `tracks_panel` made when it converted, so the family answers a stray
+                // click one way rather than two.
+                InputKind::Click { .. } | InputKind::Pointer { .. } => Handled::Yes,
+                _ => Handled::No,
+            },
+            _ => Handled::No,
+        }
+    }
+}
+
+/// No focusable element at all — the panel holds no control — so the engine and the hit map are
+/// inert for it and `FocusSource::Legacy`/`HitSource::Legacy` is the honest answer, exactly as it
+/// is for `tracks_panel` and the player's four overlays.
+impl<H: crate::screens::registry::AppLike> crate::ui::screen::Focusable<H> for AboutPanelScreen {
+    fn groups(&self, _cx: &crate::ui::machine::Cx<'_, H>, _out: &mut Vec<crate::ui::screen::GroupSpec>) {}
+    fn group_of(&self, _key: &u32, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<crate::ui::machine::GroupId> {
+        None
+    }
+    fn neighbour(
+        &self,
+        _key: crate::ui::machine::FocusKey<u32>,
+        _dir: crate::ui::screen::Dir,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::screen::Step<u32> {
+        crate::ui::screen::Step::Edge
+    }
+    fn place(
+        &self,
+        _key: &u32,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+        _at: crate::ui::screen::At,
+    ) -> Option<crate::ui::screen::Placed> {
+        None
+    }
+    fn reconcile(
+        &self,
+        want: crate::ui::machine::FocusKey<u32>,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        want
+    }
+    fn seat(
+        &self,
+        _g: crate::ui::machine::GroupId,
+        _from: crate::ui::screen::Placed,
+        _cx: &crate::ui::machine::Cx<'_, H>,
+    ) -> crate::ui::machine::FocusKey<u32> {
+        crate::ui::machine::FocusKey {
+            entry: self.entry,
+            elem: 0,
+        }
+    }
+}
+
+impl crate::ui::machine::LogicalState for AboutPanelScreen {
+    fn write(&self, _c: &mut crate::ui::machine::Canon) {}
+    fn probe(&self, out: &mut String) {
+        out.push_str("about");
+    }
+}
+
+impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
+    fn name(&self) -> &'static str {
+        "about"
+    }
+    fn state(&self) -> &dyn crate::ui::machine::LogicalState {
+        self
+    }
+    fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+        None
+    }
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {
+        crate::ui::widgets::Glass::CACHED.prepare(&mut self.glass, false);
+    }
+    /// The modal dim, asked for rather than drawn.
+    ///
+    /// **Nothing is LIFTED back out of it.** `Scrim::lifting` exists for a panel that is ABOUT an
+    /// element still on screen; this one is about the card it was opened from and says everything
+    /// that card says, at length — lifting it would put a truncated copy of this panel's own first
+    /// three runs alongside it. The mock lifts nothing either.
+    ///
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
+    /// `Glass::CACHED` ground samples the framebuffer as it stands, so the dim has to be down
+    /// before the sheet's backdrop is taken, or the frosted ground reads brighter than the dimmed
+    /// screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
+    /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
+    /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
+    /// the page-drawn version could reach.
+    fn scrim(&self) -> crate::ui::screen::Scrim {
+        crate::ui::screen::Scrim::dim(SCRIM_A)
+    }
+    fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
+        // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
+        // one page and dismissed with it, so in practice they are the same item; reading
+        // `metadata::current()` keeps this module's dependency at the store it always had rather
+        // than adding a copy of the page's identity to an argument that carries nothing.
+        let Some(d) = metadata::current() else { return };
+        // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
+        // for a surface, which is what this panel's own `Popover` used to hold.
+        let appear = f.page_alpha;
+        // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
+        // this sheet is up can be read as the PANEL or as the host under it rather than as one
+        // `main.ui` total.
+        crate::ui::profile::phase("dt.about", || self.paint(&d, appear));
+    }
+    fn render(&self) -> crate::ui::screen::RenderStrategy {
+        crate::ui::screen::RenderStrategy::Page
+    }
+    fn focus_source(&self) -> crate::ui::screen::FocusSource {
+        crate::ui::screen::FocusSource::Legacy
+    }
+    fn hit_source(&self) -> crate::ui::screen::HitSource {
+        crate::ui::screen::HitSource::Legacy
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// One full-width hairline across the content column.
 fn rule(p: Painter, r: Rect, y: f32) {
     widgets::hairline(p, r.x + PAD, r.y + y, CONTENT_W);
-}
-
-// ---- pointer ---------------------------------------------------------------------------------
-
-/// A click anywhere dismisses, which is what a click outside a popover means everywhere in this
-/// app — and here it is what a click INSIDE one means too, since the panel holds nothing to hit.
-pub(crate) fn click(_mx: f32, _my: f32) {
-    close();
 }
 
 #[cfg(test)]
@@ -647,4 +753,143 @@ mod tests {
             "side edge clear"
         );
     }
+
+    // ---- the surface, driven with no SDL (§15.1 `a_new_screen_is_unit_tested_with_no_sdl`) -----
+    //
+    // A host of its own, three lines of it, rather than the application's: this panel is generic
+    // over `AppLike` exactly so it can be stepped without one, and borrowing a sibling's test host
+    // is the sibling dependency the layer gate exists to refuse.
+
+    use crate::screens::registry::{AppFx, AppMsg};
+    use crate::ui::machine::{
+        Canon, Chrome, Cx, Edge, Effects, EntryId, FocusRead, Fx, Handled, Host, InputEvent,
+        InputKind, InputOwner, Key, LogicalState, Machine, NavOp, PressRead, ScreenId,
+        Source, Stamped, Tick,
+    };
+    use crate::ui::present::Present;
+    use crate::ui::screen::{ScreenArg, ScreenEvent};
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct TestArg;
+    impl LogicalState for TestArg {
+        fn write(&self, c: &mut Canon) {
+            c.u32(0);
+        }
+        fn probe(&self, _: &mut String) {}
+    }
+    impl ScreenArg for TestArg {
+        fn chrome(&self) -> Chrome {
+            Chrome::None
+        }
+        fn id(&self) -> ScreenId {
+            ScreenId(701)
+        }
+        fn title(&self) -> Option<&str> {
+            None
+        }
+        fn same_instance(&self, other: &Self) -> bool {
+            self == other
+        }
+    }
+
+    #[derive(Clone, Default, Debug)]
+    struct TestInit;
+    impl LogicalState for TestInit {
+        fn write(&self, _: &mut Canon) {}
+        fn probe(&self, _: &mut String) {}
+    }
+
+    struct TestHost;
+    impl Host for TestHost {
+        type Arg = TestArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = TestInit;
+        type Memory = TestInit;
+    }
+
+    const ENTRY: EntryId = EntryId(7);
+
+    fn cx(measure: &crate::ui::fixture::FixtureMeasure) -> Cx<'_, TestHost> {
+        Cx {
+            views: (),
+            tick: Tick::default(),
+            measure,
+            press: PressRead::default(),
+            focus: FocusRead::default(),
+            owner: InputOwner::Entry(ENTRY),
+        }
+    }
+
+    /// What one input does to a fresh panel: the effects it emitted, and whether it was consumed.
+    fn press(kind: InputKind<u32>) -> (Vec<Stamped<TestHost>>, Handled) {
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        let (mut out, mut present) = (Vec::new(), Present::new());
+        let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Nav, &mut present);
+        let mut panel = AboutPanelScreen::new(ENTRY);
+        let handled = panel.step(
+            &ScreenEvent::Input(InputEvent {
+                kind,
+                at: Tick::default(),
+                source: Source::Sdl,
+            }),
+            &cx,
+            &mut fx,
+        );
+        (out, handled)
+    }
+
+    fn key(k: Key) -> InputKind<u32> {
+        InputKind::Key {
+            key: k,
+            sym: 0,
+            wcode: 0,
+            edge: Edge::Down,
+            at_edge: false,
+        }
+    }
+
+    fn dismissed(out: &[Stamped<TestHost>]) -> bool {
+        out.iter()
+            .any(|s| matches!(&s.fx, Fx::Nav(NavOp::Dismiss(id)) if *id == ENTRY))
+    }
+
+    /// **BACK and OK both leave, and every other key is EATEN.**
+    ///
+    /// The second half is the one that had a bug's worth of wiring behind it: while this was a
+    /// `Popover`, the page's own `panel_input` had to test `about_panel::is_open()` before its key
+    /// ladder ran, or a D-pad press walked the detail page's sections under the open sheet. That
+    /// guard is deleted with the popover — the container gives input to the topmost surface and the
+    /// page is never asked — so what stops the ladder now is this screen answering `Handled::Yes`,
+    /// and nothing else does.
+    #[test]
+    fn back_and_ok_dismiss_the_sheet_and_every_other_key_is_swallowed() {
+        for k in [Key::Back, Key::Ok] {
+            let (out, handled) = press(key(k));
+            assert_eq!(handled, Handled::Yes, "{k:?} is the panel's own");
+            assert!(dismissed(&out), "{k:?} dismisses this entry");
+        }
+        for k in [Key::Up, Key::Down, Key::Left, Key::Right] {
+            let (out, handled) = press(key(k));
+            assert_eq!(handled, Handled::Yes, "{k:?} must not reach the page under the sheet");
+            assert!(!dismissed(&out), "{k:?} is not an exit");
+            assert!(out.is_empty(), "{k:?} does nothing at all");
+        }
+    }
+
+    /// A click does NOTHING — not even close, which is the one thing about this panel that changed
+    /// when it became a surface. `Style::Alert` answers a miss with nothing (§6.2), and a
+    /// `HitSource::Legacy` surface is handed the pointer whatever the miss policy says, so the
+    /// refusal has to be here. `tracks_panel` made the same call when it converted; the legacy
+    /// module closed on a click anywhere, which is a `Compact` popover's rule.
+    #[test]
+    fn a_click_neither_dismisses_the_sheet_nor_reaches_the_page() {
+        let (out, handled) = press(InputKind::Click { x: 10.0, y: 10.0, hit: None });
+        assert_eq!(handled, Handled::Yes);
+        assert!(out.is_empty(), "an Alert answers a click with nothing");
+    }
+
 }

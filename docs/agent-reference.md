@@ -502,7 +502,8 @@ which the linking section explains is load-bearing rather than tidy.
   old `crate::browse::set_cur(` spelling on any production line of `ui/` or `app/`. Every applied
   command raises the store's notice, which the shadow container tree delivers to its pages as
   `StoreChanged`. That tree was `app/legacy.rs` through phase 4; phase 5b (2026-09-07) folded its
-  `Dispatcher<AppHost>`, `LegacyPage` and `Dispatcher::store_changed` into `app/bridge.rs` — the
+  `Dispatcher<AppHost>`, its blank route-word page (deleted in phase 10) and
+  `Dispatcher::store_changed` into `app/bridge.rs` — the
   same host module that now also mounts the Settings family's owned screens, so the shadow tree and
   the real one are the same `Dispatcher` rather than two trees kept in sync. The data and the
   workers are still in the legacy modules; the vocabulary is what a migrated screen (5b on) emits
@@ -1061,6 +1062,18 @@ you get without waking a television. What it covers today, by module:
   left to take, but `pms`'s catalog statics are still shared. Those locks are load-bearing, not incidental — hold one for the
   whole test in anything new that touches a crate global, and reach for `testlock` (not a fresh
   local mutex) whenever the global is shared across modules.
+  **Since 2026-09-10 the lock also records WHICH THREAD holds it, and the stores ASSERT it.** A
+  mutex nobody is obliged to take is a convention, and a convention broken by one test in two
+  thousand does not fail — it hands some other module's test a wiped store, at a rate that reads
+  as flakiness. `browse::reset`/`append_sections`, `plex::servers::reset_for_test` and the whole
+  app frame (`app::bridge::frame_with_results`, which drains `stores::take_notices` and pumps
+  every store) call `testlock::assert_held`, so an unguarded write is now a deterministic panic in
+  the culprit rather than an intermittent failure in a bystander. That is how
+  `app::chrome::four_libraries_on_two_servers_publish_two_type_destinations` was finally
+  attributed: it lost both library destinations about one full-suite run in six, and the cause was
+  three `app::heartbeat_word_tests` cases that took no lock and derived their word alphabet by
+  running real frames — whose `browse` pump reaches `sync_roster`, which resets the table on any
+  source the live registry does not hold, i.e. on every `browse` fixture in the suite.
 
 **Tier 1.5 — the desktop simulator (`make sim`), which DOES draw pixels on the host.** This tier
 did not exist before 2026-08-14, and the line below used to read "there is no host *runtime*" flatly
@@ -1401,6 +1414,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   (`grid`, `h265`, `playidx`, `ptype`) are named nowhere but their `dev::flag`/`dev::read` call, so
   the path grep alone silently under-reports. This line carried that grep alone and called it
   complete.
+  **Since UI restructure phase 10 the ARMS live in `rust-modules/src/dev/scenarios.rs`, not
+  scattered through `app/{boot,run,content,mod}.rs`** — `dev.rs` stays the one door onto `/tmp`
+  itself, and the catalog command above is unaffected because every `dev::flag`/`dev::read` call
+  moved with its spelling unchanged.
   **Every read goes through `rust-modules/src/dev.rs`, gated on the `devtriggers` cargo feature —
   read that module's doc before adding a trigger, and never open a `/tmp` path directly.** Default
   builds are unchanged; `RELEASE=1` drops the feature, and then `dev::flag` is `false` and
@@ -1434,14 +1451,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   and the hit map for real on every engine page, reports each focus mismatch as its own line and
   CONTINUES from the recording (`ui::replay::run_resolve`; exercised only by the host suite's
   `FixtureHost` pages — nothing wires it to a real screen, so an on-device recording never runs in
-  this mode. That is no longer because every product page is a `LegacyPage`: since phase 5b
+  this mode. That is no longer because every product page is the blank route-word page: since phase 5b
   (2026-09-07) the Settings family and first-run Favourites answer
   `FocusSource::Engine`/`HitSource::Engine` for real, and phase 7 adds Detail, Person and the
   Filmography surface. `tests/fixtures/replay/6-settings-family/` is a committed synthetic simulator
   recording of the first set — replayed the only way `plxnative-recplay` runs anything, in
   `targets` mode. Engine pages replay in `resolve` mode; the player is the one route left that
-  cannot, since it still answers `FocusSource::Legacy`/`HitSource::Legacy` (no route mounts a bare
-  `LegacyPage` any more) — it replays on device by target only). Both names are `dev::DIAG`, so
+  cannot, since it still answers `FocusSource::Legacy`/`HitSource::Legacy` — it is the LAST screen
+  that does, the blank route-word page every unmigrated route used to mount having been deleted in
+  phase 10; it replays on device by target only). Both names are `dev::DIAG`, so
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
   logs `softfloat: … MATCH|DIVERGE` against the host's pinned hash and writes the table beside
@@ -1526,8 +1544,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   has no shared chrome, a hero backdrop and ambient ground on the far side, and a real teardown at
   the fade floor (`fps:home-detail-nav`). Both boot to Home), and
   `/tmp/plxnative-itemmenu` (snap into the grid, then open the **press-and-hold card context menu**
-  on the focused card — `route=itemmenu`; the interactive path is a real ≥500 ms hold, which no boot
-  trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
+  on the focused card — `route=home overlay=itemmenu` since UI-restructure phase 10, when the menu
+  became a `ModalStack` surface and `route=itemmenu` stopped existing; the interactive path is a
+  real ≥500 ms hold, which no boot trigger can express). Note `/tmp/plxnative-press` is its TAP twin: it now schedules its own release
   ~150 ms in, because a down with no up is past `press::LONG_MS` and is a HOLD, not a tap.
   Remote-driving: `/tmp/plxnative-remote` is **not** a trigger — the app mkfifos and drains it
   every frame on every boot (so it never affects the picker; its DIAG entry is a permanent

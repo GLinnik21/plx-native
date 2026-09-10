@@ -25,7 +25,7 @@
 //! gate would hold every screen presenting forever, which would destroy the very idle behaviour a
 //! harness built on this is meant to be able to observe.
 //!
-//! **Redaction.** The event log is pasted into public issue threads (`ui/stats.rs`'s module doc has
+//! **Redaction.** The event log is pasted into public issue threads (`app/diagnostics.rs`'s module doc has
 //! the reasoning, and `dev.rs`'s `DevServer::describe` has the incident). So the line carries
 //! indices, enum tags, booleans, and — as the only identity — rating keys and the registry SLOT
 //! number of a server. No title, no path, no URL, no server name, address or `machineIdentifier`,
@@ -135,15 +135,6 @@ pub(crate) enum Screen {
     },
     /// the home hero + grid
     Home,
-    /// the top-left profile popover, over whichever of the bar-wearing screens its chip was
-    /// pressed on
-    Account {
-        over: Host,
-    },
-    /// the press-and-hold card menu, over whichever screen the hold happened on
-    ItemMenu {
-        over: Host,
-    },
     Library,
     Detail,
     Person,
@@ -155,56 +146,13 @@ pub(crate) enum Screen {
     },
 }
 
-/// Which live screen a POPOVER is sitting on — the probe's mirror of `app.rs`'s private `MenuHost`
-/// and `BarHost`, mapped by the same exhaustive `match` that maps `Route`.
-///
-/// A type and not a bool: the card menu had exactly two hosts and the fingerprint spelled them
-/// `over_detail: bool`, which stops being expressible the moment there is a third. Every host is a
-/// [`Screen`] in its own right, so the popover's line is the HOST's fields plus the panel's — see
-/// [`Host::screen`].
-///
-/// ONE type for both popovers, deliberately, even though [`Screen::Account`] can only ever name the
-/// three bar-wearing hosts while [`Screen::ItemMenu`] uses all five: the fact being recorded is the
-/// same fact — "which page is live under this panel" — and `app.rs` is where the narrowing already
-/// lives, in `BarHost` itself. A second three-variant enum here would be a second vocabulary for one
-/// question, and the `over=` word is what a reader joins on either way.
-#[derive(Clone, Copy)]
-pub(crate) enum Host {
-    Home,
-    Detail,
-    Library,
-    Search,
-    Person,
-}
-
-impl Host {
-    /// The word printed after `over=`. Anything reading a schema off a `route=itemmenu` or
-    /// `route=account` line needs it, because one route word now covers several different field
-    /// sets.
-    fn word(self) -> &'static str {
-        match self {
-            Host::Home => "home",
-            Host::Detail => "detail",
-            Host::Library => "library",
-            Host::Search => "search",
-            Host::Person => "person",
-        }
-    }
-    /// The host as the screen it is — the popover sits on a LIVE screen, so the host's own focus is
-    /// still part of the state (the tile the menu is about is the one still focused behind it) and
-    /// its fields are exactly that screen's. Never [`Screen::ItemMenu`] and never
-    /// [`Screen::Account`], which is what stops [`push_fields`]' one level of recursion from being a
-    /// loop — a popover cannot be its own host.
-    fn screen(self) -> Screen {
-        match self {
-            Host::Home => Screen::Home,
-            Host::Detail => Screen::Detail,
-            Host::Library => Screen::Library,
-            Host::Search => Screen::Search,
-            Host::Person => Screen::Person,
-        }
-    }
-}
+// (`enum Host` and its `word`/`screen` impls stood here — the probe's mirror of `app.rs`'s private
+// `MenuHost`, which turned `route=itemmenu` into ` over=<host>` plus one level of recursion into
+// that host screen's own fields. It served BOTH popovers until phase 10, when each in turn became
+// a `ModalStack` surface: a surface's host is the top PAGE, which the line already names as
+// `route=`, and each panel's own fields ride on `content` like the player's four and the Library
+// menu's — `app::bridge::content_probe`. With no popover left that is a route, there is nothing
+// for this type to answer about.)
 
 /// The player HUD's focus cursor, plus whether the transport is on screen at all.
 ///
@@ -283,7 +231,7 @@ fn fingerprint_content(ps: &crate::route::PlaybackSession, route: &str, screen: 
     s
 }
 
-/// One screen's own fields. Split out of [`fingerprint`] so [`Screen::ItemMenu`] can spend it on its
+/// One screen's own fields. Split out of [`fingerprint`] so a popover ROUTE could spend it on its
 /// HOST — the popover's line is the host's state plus the panel's, and there is no other way to say
 /// that without five copies of the host arms.
 fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str) {
@@ -312,38 +260,6 @@ fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Scree
             let _ = write!(s, " list={} row={row}", b(list));
         }
         Screen::Home => s.push_str(content),
-        Screen::Account { over } => {
-            // The HOST is named, for [`Screen::ItemMenu`]'s reason one screen over: the profile chip
-            // is shared CHROME, so this popover stands on any of the three bar-wearing pages and
-            // `route=account` is one word for three different field sets. It printed Home's fields
-            // outright while Home was the only screen whose chip could be pressed — so an account
-            // menu opened from the Library fingerprinted as though the user were standing on Home,
-            // and a harness diffing two presses across it read the wrong screen's cursor.
-            let _ = write!(s, " over={}", over.word());
-            push_fields(ps, s, over.screen(), hud, ctrl, content);
-            let _ = write!(
-                s,
-                " acct={} asel={}",
-                b(crate::ui::account_menu::is_open()),
-                crate::ui::account_menu::sel()
-            );
-        }
-        Screen::ItemMenu { over } => {
-            // The HOST is named on the line, because `route=itemmenu` is one word for FIVE different
-            // field sets: the popover sits on a LIVE screen, so the host's own focus is still part
-            // of the state (the tile the menu is about is the one still focused behind it), and no
-            // two hosts have the same fields to print. Anything reading a schema off this line needs
-            // `over=` as well as `route=`.
-            let _ = write!(s, " over={}", over.word());
-            push_fields(ps, s, over.screen(), hud, ctrl, content);
-            let _ = write!(
-                s,
-                " imenu={} isel={} imsid=",
-                b(crate::ui::item_menu::is_open()),
-                crate::ui::item_menu::sel()
-            );
-            push_sid(s, crate::ui::item_menu::item_sid());
-        }
         Screen::Library => s.push_str(content),
         Screen::Detail | Screen::Person => s.push_str(content),
         // Owned like Library/Detail/Person: the content string is built generically by the
@@ -387,23 +303,18 @@ fn push_player(ps: &crate::route::PlaybackSession, s: &mut String, overlay: &str
         ctrl.items(),
         b(crate::ui::player_hud::transport_hidden(ps))
     );
-    // The panels: whether each is open, ITS HIGHLIGHTED ROW, and for the track menu the two tracks
-    // already committed. The row is what makes the overlay arms characterizable at all — each has
-    // an UP/DOWN branch that moves a cursor and changes nothing else, so with only the open flags
-    // this line recorded a panel appearing and disappearing with a hole between. The `sel()`
-    // readers were added for this and do nothing else. `tracks` is the detail page's
-    // Track-information panel, whose cursor is a PAGE rather than a row — same reasoning, and
-    // without it a paging press is invisible here (it moves nothing but that number).
+    // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
+    // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
+    // surface (`app::bridge::content_probe`).
+    //
+    // The detail page's *Track information* sheet used to be written here too, as
+    // `tracks=`/`tpage=`. It never belonged: no Detail panel can be up on the player route, so
+    // those two fields were constant for the whole of every player recording while the page that
+    // opens the sheet recorded nothing. They are on `content_probe`'s Detail line now.
     let _ = write!(
         s,
         " haschap={}",
         b(crate::ui::chapters_panel::has_chapters())
-    );
-    let _ = write!(
-        s,
-        " tracks={} tpage={}",
-        b(crate::ui::tracks_panel::is_open()),
-        crate::ui::tracks_panel::sel()
     );
 }
 
@@ -497,27 +408,12 @@ mod tests {
             ("onboard", Screen::Onboard { list: true, row: 0 }),
             ("onboard", Screen::Onboard { list: false, row: -1 }),
             ("home", Screen::Home),
-            // one per bar-wearing HOST, for the `itemmenu` rows' reason below
-            ("account", Screen::Account { over: Host::Home }),
-            (
-                "account",
-                Screen::Account {
-                    over: Host::Library,
-                },
-            ),
-            ("account", Screen::Account { over: Host::Search }),
-            // one per HOST — the popover's field set is its host's, so five hosts are five
-            // different `route=itemmenu` lines and the grammar assertions have to see all of them
-            ("itemmenu", Screen::ItemMenu { over: Host::Home }),
-            ("itemmenu", Screen::ItemMenu { over: Host::Detail }),
-            (
-                "itemmenu",
-                Screen::ItemMenu {
-                    over: Host::Library,
-                },
-            ),
-            ("itemmenu", Screen::ItemMenu { over: Host::Search }),
-            ("itemmenu", Screen::ItemMenu { over: Host::Person }),
+            // (three `account` rows, one per bar-wearing HOST, stood here. The profile menu is a
+            // `ModalStack` surface since phase 10: its host is the top PAGE, which this line
+            // already names as `route=`, and its own fields ride on `content` — so there is no
+            // `Screen::Account` and no second field set for a grammar assertion to cover.)
+            // (five `itemmenu` rows, one per HOST, stood beside them and went the same way in
+            // the same phase — its `imenu=`/`isel=`/`imsid=` fields are on `content` now too.)
             ("library", Screen::Library),
             ("detail", Screen::Detail),
             ("person", Screen::Person),

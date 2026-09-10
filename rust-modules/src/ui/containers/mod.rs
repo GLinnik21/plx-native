@@ -7,7 +7,7 @@
 //!
 //! Under `ui/containers/` rather than the spec's `ui/nav/` because `ui/nav.rs` is the LEGACY page
 //! transition and lives until phase 12; the directory takes that name when the file goes.
-#![allow(dead_code)] // phase 3b: the product mounts one LegacyPage; screens arrive from 5b
+#![allow(dead_code)] // phase 3b: the tree was a shadow of the loop's route; screens arrive from 5b
 
 pub mod modal;
 pub mod stack;

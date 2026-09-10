@@ -90,7 +90,9 @@
     {
       "name": "item-menu",
       "tier": "ui",
-      "route": "itemmenu",
+      "route": "home",
+      "overlay": "itemmenu",
+      "_route_note": "`route: home` + `overlay: itemmenu` since UI-restructure phase 10, and `route: home` is the HOST rather than a rename: the card menu WAS a route of its own (`Route::ItemMenu { over: MenuHost }`) whose heartbeat word was `itemmenu`, and it is a `Style::Compact` surface on the shared ModalStack now, so the heartbeat prints the page under it as `route=` and the surface's own `Screen::name` as ` overlay=`. The trigger (`plxnative-itemmenu`) opens it on a HOME grid card, which is what makes `home` the right host word here. tests/run.py\u0027s LOOP_RE matches the two groups independently, so a scene left keyed on the retired word would match zero samples and fail as \"never entered this screen\" — the same re-key `home-acct-glass` took in the commit before this one.",
       "_floor_note": "45 like the other scrim'd-popover scenes (track-menu, library-switch): this one draws a full-screen scrim plus a panel OVER the live home grid, which is strictly more fill than home-grid's 50.",
       "loop_floor": 45,
       "run_secs": 18,
@@ -410,7 +412,8 @@
     {
       "name": "home-acct-glass",
       "tier": "ui",
-      "route": "account",
+      "route": "home",
+      "overlay": "account",
       "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 5,
@@ -423,7 +426,7 @@
       "_trigger_note": "acctosc is load-bearing: the frozen host is supposed to remain still, so the former homeosc trigger would correctly produce no motion and grade only the idle keepalive. heroidx pins the stationary host image so an unrelated hero auto-rotation cannot change the sample.",
       "fps_floor": 50,
       "_fps_floor_note": "The oscillator keeps the profile menu's own selection spring moving and the present gate awake. A frozen white plate cannot pass this floor, while the removed repeated backdrop captures are no longer part of the intended composition.",
-      "_route_note": "`account`, not `home`: the Account popover is a ROUTE of its own (app.rs names it in the heartbeat), so a scene keyed on home matches zero samples and fails as \"never entered this screen\" — which is exactly what the first run of this scene did."
+      "_route_note": "`route: home` + `overlay: account` since UI-restructure phase 10. The Account popover WAS a route of its own (`Route::Account { over: BarHost }`) and this scene was keyed `route: account`; it is a `Style::Sheet` surface on the shared ModalStack now, so the heartbeat prints the HOST page's word as `route=` and the surface's own `Screen::name` as ` overlay=`. tests/run.py's LOOP_RE matches the two groups independently, so a scene keyed on the retired word would match zero samples and fail as \"never entered this screen\" \u2014 which is exactly what the first run of this scene did, from the other direction."
     },
     {
       "name": "modal-ramp",
@@ -469,6 +472,43 @@
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-tracks": true
+      }
+    },
+    {
+      "name": "about-panel",
+      "tier": "ui",
+      "route": "detail",
+      "overlay": "about",
+      "item": "movie_h264_ac3_1080p",
+      "loop_floor": 30,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "fps_ceiling": 5,
+      "worst_ceiling_ms": 40,
+      "comment": "The About sheet (plxnative-about), the second page-owned glass alert over the same caching host as page-panel and the first surface converted for restructure phase 10's criterion 5. Same gates as page-panel, and the pair is the point: same page, same host policy, two different sheets, so a frame-time regression in the SHARED path (the host snapshot, the scrim, the glass ground) shows on both while one panel's own layout shows on one. It carries an overlay word where page-panel does not, because this scene is also what proves `overlay=about` reaches the heartbeat now that the word is the surface's own `Screen::name` rather than a byte on the page. NOT YET MEASURED on the television: the ceilings are page-panel's, inherited rather than baselined, and the first device run owes this comment its own numbers.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-about": true
+      }
+    },
+    {
+      "name": "person-bio",
+      "tier": "ui",
+      "route": "person",
+      "overlay": "bio",
+      "item": "movie_cast0_in_both_libraries",
+      "loop_floor": 30,
+      "run_secs": 18,
+      "warmup_s": 5,
+      "fps_ceiling": 5,
+      "worst_ceiling_ms": 40,
+      "comment": "The biography sheet (plxnative-bio) over the person page. Same gates as about-panel and page-panel, and it is the third of that family for one reason worth knowing: this is the app's only DYNAMIC_BACKDROP glass, so it re-sources its blur while the other two sample once — a ceiling that holds for those and fails here is the refresh CADENCE (`Screen::prepare_present`), not the panel. It needs plxnative-personbio to have any prose at all on a headless boot: the bio comes from plex.tv, which answers an injected server token 401. NOT YET MEASURED on the television; the ceilings are page-panel's, inherited rather than baselined.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": 1,
+        "plxnative-detailok": true,
+        "plxnative-personbio": "The biography this scene reads, seeded because plex.tv refuses an injected server token. It is deliberately long enough to page: a sheet with one screenful of prose draws no rail and no feather, which is not the frame this scene is grading. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.",
+        "plxnative-bio": true
       }
     },
     {

@@ -202,7 +202,7 @@ static mut TLF_FADE: c_int = 0;
 /// `y1 > y0` is then false) means "off": the shader's gate skips the multiply rather than relying
 /// on a sentinel width like the horizontal band's, because a vertical band has no natural "past
 /// the string" edge to sentinel against. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
-/// replacement note in `ui::person_bio` for why this exists — a scrolling viewport's edge used to
+/// replacement note in `screens::person_bio` for why this exists — a scrolling viewport's edge used to
 /// be an OPAQUE panel-coloured gradient painted over the glass, which read as a grey band rather
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;

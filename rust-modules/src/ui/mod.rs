@@ -19,9 +19,6 @@
 
 use std::os::raw::{c_char, c_int};
 
-pub mod about_panel; // the detail About footer's CARD, read in full — the glass alert (Alert Views §1A)
-pub mod account_menu; // Home top-left profile popover (change profile / sign out)
-pub mod alt_sources; // "Also available": the same item on a second pinned source, as a picker
 pub mod anim;
 pub mod card_row;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
@@ -49,7 +46,6 @@ pub mod info_panel;
 #[cfg(test)]
 mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — engine, map, press, keyboard, legacy
 pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
-pub mod item_menu; // press-and-hold card context menu (Go to Show / Mark as Watched / Play from Start)
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
 pub mod label;
@@ -67,7 +63,6 @@ pub(crate) mod motion; // RESTRUCTURE (spec §4.2): the spring integrators' own 
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod nav; // ROUTE-level page cross-fade + the continuous-chrome rule (the tab bar rides across)
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
-pub mod person_bio; // ...and that page's bio ALERT panel — the full biography behind its `MORE` mark
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
@@ -78,9 +73,7 @@ pub(crate) mod route_screen;
 pub(crate) mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub(crate) mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
 pub(crate) mod screen; // RESTRUCTURE spike (spec §6.1, §7.1): Screen, Focusable, Composed/Part, DrawFrame
-pub mod skip_pill; // in-player Skip Intro / Skip Credits pill (server marker driven)
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
-pub mod stats; // the "Stats for nerds" diagnostics overlay — how bug reports leave a stranger's TV
 pub mod table;
 pub mod table_screen; // Header / TableScreen / DocumentScreen — the route family's screens as components (phase 5a)
 pub(crate) mod tex; // RESTRUCTURE spike (spec §10): TexCache — the render-resource half of image caching
@@ -90,7 +83,6 @@ pub mod text_view;
 pub(crate) mod text_buffer;
 pub mod theme;
 pub mod track_menu;
-pub mod tracks_panel; // the detail page's "Track information" file inspector (Alert Views §1B)
 pub mod trail; // the BACK trail: which pages are behind the one on screen (app.rs pops it)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
@@ -953,7 +945,7 @@ impl Painter {
     /// SCROLLING viewport's clipped edge rather than a fixed truncation mark past the string's own
     /// width. `None` leaves a band off.
     ///
-    /// This is what replaced `widgets::edge_feather` in `ui::person_bio`'s bio panel: that widget
+    /// This is what replaced `widgets::edge_feather` in `screens::person_bio`'s bio panel: that widget
     /// painted an OPAQUE `SURFACE_PANEL`-coloured gradient over the glass, which read as a distinct
     /// grey band rather than the text itself dissolving — the report this method exists to fix.
     /// See `ui::text_view::TextView::edge_fade` for the caller that decides, per line, which lines

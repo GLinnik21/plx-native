@@ -145,7 +145,8 @@ ALL_TRIGGERS = [
     "plxnative-heroidx", "plxnative-pickuser", "plxnative-firstrun",
     "plxnative-onboardosc", "plxnative-consent", "plxnative-consentosc",
     "plxnative-settings", "plxnative-settingsosc", "plxnative-acct", "plxnative-acctosc",
-    # itemmenu snaps into the grid and opens the press-and-hold card context menu (route=itemmenu)
+    # itemmenu snaps into the grid and opens the press-and-hold card context menu
+    # (route=home overlay=itemmenu: the menu is a ModalStack surface since UI-restructure phase 10)
     "plxnative-itemmenu",
     # playurl is the synthetic tier's entry; replay is how many times a FINISHED one restarts (#46)
     "plxnative-playurl", "plxnative-replay", "plxnative-gstlog", "plxnative-quality",

@@ -4,7 +4,7 @@
 //!
 //! Data comes from the PLAYING leaf (`metadata::playing_chapters`, loaded with `?includeChapters=1`
 //! on the same fetch the track store already makes), never from `metadata::current()` — the same
-//! identity rule `ui/track_menu.rs` and `ui/skip_pill.rs` state. Reading `current()` is what made
+//! identity rule `ui/track_menu.rs` and `screens/player/skip_pill.rs` state. Reading `current()` is what made
 //! the Chapters tab vanish for every episode started from a show detail page: `current()` is then
 //! the SHOW, and a show container carries no `Chapter[]`.
 #![allow(dead_code)]

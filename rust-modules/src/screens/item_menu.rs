@@ -1,5 +1,5 @@
-//! The **item context menu** — the popover a press-and-hold opens on a home shelf tile, on the same
-//! [`Popover`] + [`TableView`] pair as the track menu and the profile menu.
+//! The **item context menu** — a registered `Style::Compact` surface on the shared `ModalStack`,
+//! opened by a press-and-hold on a card (or on the detail page's episode still / season tab).
 //!
 //! The reference is **Apple TV's card menu, not Plex's**: a panel anchored BESIDE the focused card
 //! (the card and the rest of the shelf stay where they are, visible behind it), rows of
@@ -12,21 +12,12 @@
 //! interaction, and until it existed Go-to-Show, per-item Mark-as-Watched and Play-from-Start had
 //! nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
 //!
-//! **Every card surface opens it**, through two builders and one presenter. [`open`] serves the
-//! card rows — a home shelf, the Library browse grid, a Search result shelf, a person's filmography
-//! and the detail page's Related shelf — and [`open_episode`] the detail page's episode filmstrip
-//! (the owner-reported gap: a long press on an episode still did nothing, so there was nowhere to
-//! mark an episode watched). The row SET differs only because a navigation row that leads to the
+//! **Every card surface opens it** — a home shelf, the Library browse grid, a Search result shelf,
+//! a person's filmography and the detail page's Related shelf present [`ItemMenuKind::Card`]; the
+//! detail page's episode filmstrip and season tabs present [`ItemMenuKind::Episode`] /
+//! [`ItemMenuKind::Season`]. The row SET differs only because a navigation row that leads to the
 //! page you are standing on is not an action; everything else — the panel, the placement, the
 //! choreography, the state rows — is shared.
-//!
-//! **The Related shelf was the last card surface to join, and it is worth knowing why it was late.**
-//! It was excluded on the grounds that its tiles carried no `(ratingKey, watched)` pair to build
-//! rows from — which was true of the struct behind them and never of the data: `/related` returns
-//! the same wire DTO as every other listing, and `fetch_related` copied three fields out of it and
-//! dropped the rest. So the fix was upstream (`metadata::Related` is a real `pms::PmsMovie` now),
-//! and this module needed nothing: a Related tile takes [`open`], because it is a card row like the
-//! others and NOT a leaf of the season the page beneath it has loaded.
 //!
 //! **What remains excluded is excluded for a reason that does not dissolve.** A tile that is a
 //! PERSON or a TAG has no rating key and no watch state at all, so every row this module can build
@@ -34,24 +25,44 @@
 //! Search's Cast & Crew / Collections rows (`search::Item::Tag` has no rating key). A hold there
 //! keeps doing nothing, deliberately.
 //!
-//! Like [`crate::ui::account_menu`], this module only **reports** the chosen [`Action`]; `app.rs`
-//! performs the routing, the server call and the hub refresh. It never mutates playback or PMS
-//! state itself.
-#![allow(non_upper_case_globals)]
-use crate::pms::PmsMovie;
-use crate::ui::consts::*;
-use crate::ui::icons::Icon;
-use crate::ui::popover::{Opener, Popover};
-use crate::ui::table::{Row, Section, TableView};
-use crate::ui::widgets::PosterMark;
-use crate::ui::{theme, Rect};
+//! **Navigation owns its lifetime, phase and input scope** (restructure phase 10). It was
+//! `ui/item_menu.rs` — a `Popover` plus six `static mut`s (`POP`, `TABLE`, `ACTS`, `OPENER`,
+//! `ITEM`, `SID`) driven by `Route::ItemMenu { over: MenuHost }` — and every one of those statics
+//! is a field of the entry's argument or of the instance now: the ROW the menu is about and the
+//! anchor it hangs off travel on [`ItemMenuArg`], the built rows and their actions are the
+//! screen's own. The six-variant `MenuHost` is down to the two BITS an action actually reads
+//! (`loaded_episode`, `from_home`), which is all it was still deciding once the route it named
+//! stopped existing.
+//!
+//! It still only **reports** the chosen [`Action`]: `AppFx::ItemMenu` carries it to
+//! `app::input::apply_item_action`, which does the routing, the server call and the hub refresh.
+//! It never mutates playback or PMS state itself.
+
+use std::borrow::Cow;
 use std::os::raw::c_int;
-use std::ptr::{addr_of, addr_of_mut};
+
+use crate::pms::PmsMovie;
+use crate::screens::registry::{RepeatGate, PANEL_REPEAT_MS};
+use crate::screens::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
+use crate::ui::consts::*;
+use crate::ui::frame::Budget;
+use crate::ui::icons::Icon;
+use crate::ui::machine::{
+    Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
+    LogicalState, Machine, NavOp,
+};
+use crate::ui::screen::{
+    Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
+    Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
+};
+use crate::ui::table::{Row, Section, TableView};
+use crate::ui::widgets::{Glass, GlassState, PosterMark};
+use crate::ui::{theme, Rect};
 
 /// What the highlighted row does on OK. Every variant carries the identity it needs, captured when
-/// the menu opened — a hub refetch can re-order the catalog underneath an open popover, so nothing
+/// the menu opened — a hub refetch can re-order the catalog underneath an open panel, so nothing
 /// here is an index.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     None,
     /// open this leaf's own detail page (an episode's page, a movie's page)
@@ -66,9 +77,10 @@ pub(crate) enum Action {
     MarkUnwatched(String),
     /// play this leaf ignoring its resume point
     PlayFromStart(String),
-    /// hide this item from the Continue Watching deck — the server-side `removeFromContinueWatching`.
-    /// **Keeps the resume point**: it is a hide, not a reset, so playing the item again picks up
-    /// where it left off (see `plex::Client::remove_from_continue_watching`).
+    /// hide this item from the Continue Watching deck — the server-side
+    /// `removeFromContinueWatching`. **Keeps the resume point**: it is a hide, not a reset, so
+    /// playing the item again picks up where it left off (see
+    /// `plex::Client::remove_from_continue_watching`).
     RemoveFromDeck(String),
 }
 
@@ -78,15 +90,44 @@ impl Action {
     /// rather than one flag.
     ///
     /// The old shape was `MarkWatched(rk, watched)` where the bool was **what the item is NOW**, and
-    /// `apply_item_action` inverted it at the press. That works for exactly as long as the menu emits
-    /// one row: with this menu's part-watched PAIR both rows would carry the same bool, so one would
-    /// invert to its neighbour's write and silently do the opposite of its own label. Now the glyph
-    /// the user aimed at IS the verb, and nothing downstream re-reads the item.
+    /// `apply_item_action` inverted it at the press. That works for exactly as long as the menu
+    /// emits one row: with this menu's part-watched PAIR both rows would carry the same bool, so one
+    /// would invert to its neighbour's write and silently do the opposite of its own label. Now the
+    /// glyph the user aimed at IS the verb, and nothing downstream re-reads the item.
     pub(crate) fn watch_write(&self) -> Option<crate::viewstate::Write> {
         match self {
             Action::MarkWatched(_) => Some(crate::viewstate::Write::Watched),
             Action::MarkUnwatched(_) => Some(crate::viewstate::Write::Unwatched),
             _ => None,
+        }
+    }
+
+    /// The ratingKey this action acts on — empty for [`Action::None`].
+    pub(crate) fn rk(&self) -> &str {
+        match self {
+            Action::GoToItem(rk)
+            | Action::GoToShow(rk, _)
+            | Action::MarkWatched(rk)
+            | Action::MarkUnwatched(rk)
+            | Action::PlayFromStart(rk)
+            | Action::RemoveFromDeck(rk) => rk,
+            Action::None => "",
+        }
+    }
+
+    fn write(&self, c: &mut Canon) {
+        let tag = match self {
+            Action::None => 0,
+            Action::GoToItem(_) => 1,
+            Action::GoToShow(..) => 2,
+            Action::MarkWatched(_) => 3,
+            Action::MarkUnwatched(_) => 4,
+            Action::PlayFromStart(_) => 5,
+            Action::RemoveFromDeck(_) => 6,
+        };
+        c.u32(tag).str(self.rk());
+        if let Action::GoToShow(_, season) = self {
+            c.u32(*season as u32);
         }
     }
 }
@@ -110,164 +151,31 @@ const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
 /// blanking them.
 const SCRIM_A: f32 = 0.34;
 
-/// Shared open/appear choreography, plus `caching_host`: the screen under this menu is frozen
-/// while it is up, and the tile the menu is ABOUT is lifted back out of the dim LIVE above that
-/// snapshot rather than baked into it — see [`draw_scrim`] and [`crate::ui::popover::host`].
-static mut POP: Popover = Popover::new().caching_host();
-static mut TABLE: TableView = TableView::new(); // main-thread only
-/// The chosen action per global row index (`None` for the separator, which is unfocusable anyway).
-/// Parallel to the table's rows because the row SET varies by item kind — a movie has no
-/// "Go to Show", a show has no "Play from Start" — so a positional `match sel` would be a lie.
-static mut ACTS: Vec<Option<Action>> = Vec::new();
-/// The element the menu was opened ON — its drawn rect (what the panel anchors beside) and how its
-/// own screen re-draws it above the modal scrim. Supplied by the host at [`open`]; see
-/// [`Opener`] for why the two halves are one value.
-static mut OPENER: Opener = Opener::NONE;
-/// **The item the menu is about**, captured at [`open`].
-///
-/// Every [`Action`] carries a `ratingKey` and [`SID`] says which server it means, which is enough to
-/// FETCH — but not enough to PLAY: `route::request_play_movie` needs the whole row (its part id,
-/// duration, resume offset, media flags), and the only way to get one back from a bare key used to
-/// be `pms::index_of_rk`, which walks the HOME hub catalog alone. A library, search or person tile
-/// is usually in no hub, so that lookup silently found nothing and "Play from Start" did nothing at
-/// all. Carrying the row is both the fix and the smaller claim: this popover is about ONE item, and
-/// it is the item that was on screen when the hold began, not whatever a key resolves to later.
-///
-/// Deliberately NOT cleared by [`close`], for [`SID`]'s reason — `on_ok` closes and then returns the
-/// action, so the drain reads this one frame later.
-static mut ITEM: Option<PmsMovie> = None;
-/// WHICH SERVER every [`Action`] above is about, captured when the menu opened.
-///
-/// One popover is about ONE item, so the server belongs to the menu rather than to each variant —
-/// and it has to be captured, not looked up when the action is performed: on a Continue Watching
-/// shelf merged across servers, `apply_item_action` resolving a bare rk against the current server
-/// is precisely the reported failure (long-press a friend's episode → Play from Start → our film
-/// with the same number plays, under the friend's title). Deliberately NOT cleared by [`close`]:
-/// `on_ok` returns the action after closing, so the drain reads this one frame later.
-static mut SID: crate::plex::ServerId = crate::plex::ServerId::UNSET;
-
-fn table() -> &'static mut TableView {
-    unsafe { &mut *addr_of_mut!(TABLE) }
-}
-
-/// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the key
-/// ladder moves, and the reason it exists: `app.rs`'s UP/DOWN arm for this panel changes nothing
-/// else, so without this the fingerprint records the panel opening and closing and nothing between.
-/// Through `addr_of!` rather than the module's own `table()`, which hands out a `&'static mut`.
-pub(crate) fn sel() -> i32 {
-    unsafe { (*addr_of!(TABLE)).sel }
-}
-fn pop() -> &'static mut Popover {
-    unsafe { &mut *addr_of_mut!(POP) }
-}
-fn acts() -> &'static mut Vec<Option<Action>> {
-    unsafe { &mut *addr_of_mut!(ACTS) }
-}
-
-pub(crate) fn is_open() -> bool {
-    unsafe { (*addr_of!(POP)).is_open() }
-}
-
-pub(crate) fn visible() -> bool {
-    unsafe { (*addr_of!(POP)).visible() }
-}
+pub(crate) const SHAPE: &str =
+    "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32}>],sel:i32,\
+     table:TableViewMotion}";
 
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
-/// home shelves carry. Kept as a predicate so the caller can decline to open an empty popover.
+/// home shelves carry. Kept as a predicate so the caller can decline to present an empty panel.
 pub(crate) fn has_actions(m: &PmsMovie) -> bool {
     !m.rk.is_empty()
 }
 
-/// Open the menu for `m`, anchored beside (and lifting) `opener` — the focused tile on whichever
-/// screen the hold happened on. An [`Opener`] with no rect centres the panel, which is what the
-/// headless trigger and a host with nothing focused get.
-pub(crate) fn open(m: &PmsMovie, from_deck: bool, opener: Opener) {
-    unsafe {
-        *addr_of_mut!(SID) = m.sid; // the ROW's server, not the current one
-        *addr_of_mut!(ITEM) = Some(m.clone()); // …and the row itself — see [`ITEM`]
-    }
-    present(build(m, from_deck), opener);
-}
-
-/// Open the menu for the DETAIL page's focused episode still — the owner-reported gap (a long press
-/// on an episode tile had no menu at all, so there was nowhere to mark one watched). Same panel,
-/// same choreography, a shorter row set: see [`build_episode`].
+/// Why [`build`], [`build_episode`] and [`build_season`] all end in a length assertion.
 ///
-/// No [`ITEM`] here: the detail page plays an episode through its own loaded season
-/// (`detail::play_episode_rk_from_start`), which is the one path that never needed a catalog row.
-pub(crate) fn open_episode(sid: crate::plex::ServerId, rk: &str, mark: PosterMark, opener: Opener) {
-    unsafe {
-        *addr_of_mut!(SID) = sid; // the loaded show's server — the episode is one of its own
-        *addr_of_mut!(ITEM) = None;
-    }
-    present(build_episode(rk, mark), opener);
-}
-
-/// Open the menu for the DETAIL page's focused SEASON tab — the middle of the three grains this
-/// page can mark, and the one that had no surface at all.
-///
-/// An episode is marked from its still's long press, a show from the hero's toggle (and from its
-/// poster's menu on every card screen). "I have seen season 3" was expressible only by opening
-/// eleven episodes one at a time, which is the shape of a missing control rather than a workflow.
-///
-/// Same panel, same rows, and — like [`open_episode`] — **no navigation group**: the season's tab
-/// is selected by the very press that opened this, so there is nowhere for a nav row to go.
-///
-/// No [`ITEM`], for `open_episode`'s reason: a season is not a catalog row here, it is one of the
-/// loaded show's own children.
-pub(crate) fn open_season(sid: crate::plex::ServerId, rk: &str, mark: PosterMark, opener: Opener) {
-    unsafe {
-        *addr_of_mut!(SID) = sid; // the loaded show's server — the season is one of its own
-        *addr_of_mut!(ITEM) = None;
-    }
-    present(build_season(rk, mark), opener);
-}
-
-/// The server every [`Action`] from the open (or just-closed) menu names — see [`SID`]. Read by
-/// `app.rs`'s dispatch, which pairs it with the action's rk.
-pub(crate) fn item_sid() -> crate::plex::ServerId {
-    unsafe { *addr_of!(SID) }
-}
-
-/// The catalog row the open (or just-closed) menu is about — see [`ITEM`]. `None` on the detail
-/// page's episode menu, which plays through the loaded season instead.
-pub(crate) fn item() -> Option<&'static PmsMovie> {
-    unsafe { (*addr_of!(ITEM)).as_ref() }
-}
-
-/// Put a built row set on screen beside `opener`. Shared by both entry points so the panel's
-/// choreography — anchor fallback, compact rows, selection reset, the appear spring — is written
-/// once and cannot drift between the screens the menu serves.
-fn present((rows, a): (Section, Vec<Option<Action>>), opener: Opener) {
-    let fallback = Rect::new(
-        (SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5,
-        (SCR_H - CARD_H) * 0.5,
-        CARD_W,
-        CARD_H,
-    );
-    // The fallback is resolved HERE, once, so `panel_rect` (asked three times a frame) is a pure
-    // read and the panel cannot drift if a host's rect stops resolving while the menu is up.
-    unsafe {
-        *addr_of_mut!(OPENER) = Opener {
-            rect: Some(opener.rect.unwrap_or(fallback)),
-            ..opener
-        }
-    };
-    *acts() = a;
-    table().compact = true; // a short list of one-line actions — BODY labels, not menu-size HEADLINE
-    table().set_sections(vec![rows], 0, false);
-    pop().open();
-}
-
-pub(crate) fn close() {
-    pop().dismiss();
-}
+/// `acts` is the index→action map — the pressed row is resolved by its index into it — so a
+/// `sec.row` added without its `acts.push` cannot panic. It shifts every action below it by one,
+/// and the press performs its neighbour's. This is the menu where that is easiest to do, because
+/// it is the only one of the four whose row set is CONDITIONAL: three item kinds, an optional
+/// `Go to Show`, an optional deck row, and a state group shared with two other entry points.
+const ACTS_PARALLEL: &str = "acts must stay one-to-one with the rows: a row without its action \
+                             shifts every action below it, and the press performs its neighbour's";
 
 /// The rows, and the action each one commits. Order is the pinned design's:
 /// navigation (`Go to Episode` · `Go to Show`) — separator — state (the watch row or ROWS ·
 /// `Play from Start`), adapted per item kind (`PmsMovie::kind`: 0 movie / 1 show / 2 season /
 /// 3 episode). The state group is one row or two off [`state_rows`], so this list has no fixed
-/// length and every index into it is resolved through `ACTS` — see [`ACTS_PARALLEL`].
+/// length and every index into it is resolved through `acts` — see [`ACTS_PARALLEL`].
 fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     let mut sec = Section::new(""); // no header: the card behind the panel IS the title
     let mut acts: Vec<Option<Action>> = Vec::new();
@@ -320,13 +228,10 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
 
     // ---- state ----
     // The row set comes from the shared `widgets::row_watch_state`, over the catalog row this menu
-    // captured at `open` — so it is exact for a leaf (`viewCount`/`viewOffset` off the same container
-    // the shelf was built from) AND for a container, whose three states are already on the row as the
-    // `unwatched`/`watched` PAIR (`pms::parse_item`: a show is "neither" exactly while some of its
-    // leaves are viewed and some are not). This is the follow-up the comment here used to ask for —
-    // it said a show/season "cannot distinguish part-watched from fully-watched" and so kept a
-    // one-way row, which stopped being true when `PmsMovie::watched` gained its strict
-    // `viewedLeafCount >= leafCount` rule.
+    // captured when it was presented — so it is exact for a leaf (`viewCount`/`viewOffset` off the
+    // same container the shelf was built from) AND for a container, whose three states are already
+    // on the row as the `unwatched`/`watched` PAIR (`pms::parse_item`: a show is "neither" exactly
+    // while some of its leaves are viewed and some are not).
     let mut sec = state_rows(
         sec,
         &mut acts,
@@ -344,33 +249,16 @@ fn build(m: &PmsMovie, from_deck: bool) -> (Section, Vec<Option<Action>>) {
     // view — the destructive-ish end of the group, where a mis-hit is least likely.
     if from_deck {
         // "Remove from Deck", not "Remove from Continue Watching": the longer label elides inside
-        // `PANEL_W` at the table's compact BODY size, and widening the panel would push it across the
-        // neighbouring card it is anchored beside. It is also the more accurate of the two — the server
-        // action hides the item from the DECK and leaves its resume point intact, so "remove from
-        // continue watching" over-promises a reset it does not perform.
+        // `PANEL_W` at the table's compact BODY size, and widening the panel would push it across
+        // the neighbouring card it is anchored beside. It is also the more accurate of the two —
+        // the server action hides the item from the DECK and leaves its resume point intact, so
+        // "remove from continue watching" over-promises a reset it does not perform.
         sec = sec.row(Row::new("Remove from Deck").licon(Icon::Close));
         acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
     }
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
     (sec, acts)
 }
-
-/// Why [`build`] and [`build_episode`] both end in a length assertion, and why it is HERE rather
-/// than at the `present` that installs the pair.
-///
-/// `ACTS` is the index→action map — `on_ok` resolves the pressed row by its index into it — so a
-/// `sec.row` added without its `acts.push` cannot panic. It shifts every action below it by one,
-/// and the press performs its neighbour's. This is the menu where that is easiest to do, because
-/// it is the only one of the four whose row set is CONDITIONAL: three item kinds, an optional
-/// `Go to Show`, an optional deck row, and a state group shared with a second entry point.
-///
-/// The three sibling menus (`account_menu`, `more_menu`, `alt_sources`) assert at their equivalent
-/// of `present`. This one cannot usefully: `present` is reached only from `open`/`open_episode`,
-/// which no host test calls, and `debug_assert!` is compiled out of the `--release` build the
-/// Makefile ships — so an assertion there would be unreachable in the only configuration that can
-/// still run it. At the two builders it is exercised by all nine of this module's tests for free.
-const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row without its action \
-                             shifts every action below it, and the press performs its neighbour's";
 
 /// The state group every menu ends with: the watch-state row (or ROWS), then (for a leaf) Play from
 /// Start. ONE builder, because these are the rows the menu exists for and they must read identically
@@ -390,18 +278,10 @@ const ACTS_PARALLEL: &str = "ACTS must stay one-to-one with the rows: a row with
 /// to list both; a toggle is one thing and must read as the thing it currently is. Same vocabulary,
 /// two presentations of it — so do NOT "fix" this row set to match the hero's.
 ///
-/// It was one row whose label and glyph FLIPPED on a `watched` bool. That is an exact toggle only
-/// while an item is at one end or the other; on the third state it had to pick an end and picked
-/// "not watched", so the way back from a half-watched item was unreachable from the tile that
-/// offered every other action on it — the owner's report.
-///
 /// **Both glyphs are FILLED discs**: [`Icon::CheckCircleFill`] for the row that marks watched,
 /// [`Icon::MinusCircleFill`] for the one that takes it away. A ticked circle beside "Mark as
 /// Unwatched" states the outcome backwards, which is the one thing a destructive-ish row must not do
-/// — and filled is what separates an ACTION from a STATE: this column carries a picker's bare tick or
-/// an action's glyph, while a switch says what it is set to in words at the far edge. The hero's
-/// discs take the BARE glyph for the other half of that same rule (a control that IS a circle needs
-/// no drawn disc), and the two are deliberately not unified.
+/// — and filled is what separates an ACTION from a STATE.
 fn state_rows(
     sec: Section,
     acts: &mut Vec<Option<Action>>,
@@ -435,16 +315,11 @@ fn state_rows(
 /// showing — its still, title, full summary and air date are all right there. A row that navigates
 /// away from a page to show less of what that page already shows is not an action.
 ///
-/// It is worth saying what is NO LONGER a reason, because it used to be half of this argument:
-/// reaching that page cost you your place. It does not any more — the filmstrip's own metadata row
-/// is the way there, it raises `detail::take_open_request` instead of re-mounting in place, and
-/// `ui::trail` brings BACK to the season being browsed, on the episode it was opened from.
-///
 /// `mark` is exact here — `detail::focused_episode` resolves it through the same `ep_state` that
 /// draws the still's own state line, so the tile and the menu opened on it cannot describe one
-/// episode two ways — and with no nav group there is no separator either (`build`'s rule: the divider
-/// only exists when there is a group above it). An episode is a LEAF, so all three states are
-/// reachable and a part-watched one gets the pair, exactly as a shelf card does.
+/// episode two ways — and with no nav group there is no separator either ([`build`]'s rule: the
+/// divider only exists when there is a group above it). An episode is a LEAF, so all three states
+/// are reachable and a part-watched one gets the pair, exactly as a shelf card does.
 fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
     let sec = state_rows(Section::new(""), &mut acts, rk, mark, true);
@@ -459,10 +334,6 @@ fn build_episode(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
 /// would have to pick a leaf, which is a second decision the row does not state. Starting a season
 /// from its beginning is what the first episode's own tile does, exactly and visibly. So
 /// `leaf: false` — the same flag [`build`] passes for a show, for the same reason.
-///
-/// A season IS a container, so all three states are reachable and a part-watched one gets the PAIR
-/// ([`state_rows`]) — the menu's rule, deliberately not the hero toggle's; see `state_rows` for
-/// why the two surfaces answer one question differently.
 fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     let mut acts: Vec<Option<Action>> = Vec::new();
     let sec = state_rows(Section::new(""), &mut acts, rk, mark, false);
@@ -470,58 +341,10 @@ fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
     (sec, acts)
 }
 
-pub(crate) fn move_focus(sym: c_int) {
-    let s = sym as u32;
-    if s == SDLK_UP {
-        table().move_sel(-1);
-    } else if s == SDLK_DOWN {
-        table().move_sel(1);
-    } else {
-        return;
-    }
-    // The menu moved; the shelf behind it did not — see `popover::note_own_damage`.
-    crate::ui::popover::note_own_damage();
-}
-
-/// Commit the highlighted row and close.
-pub(crate) fn on_ok() -> Action {
-    let sel = table().sel;
-    close();
-    acts()
-        .get(sel.max(0) as usize)
-        .cloned()
-        .flatten()
-        .unwrap_or(Action::None)
-}
-
-/// Pointer hover: focus follows the cursor over the popover rows.
-pub(crate) fn pointer_focus(mx: f32, my: f32) {
-    if !is_open() {
-        return;
-    }
-    if let Some(gi) = table().hit_row(panel_rect(), mx, my) {
-        table().sel = gi;
-    }
-}
-
-/// Pointer click: commit the row under the cursor (same as OK); a click elsewhere reports
-/// `Action::None` and the caller dismisses like BACK.
-pub(crate) fn click(mx: f32, my: f32) -> Action {
-    if !is_open() {
-        return Action::None;
-    }
-    if let Some(gi) = table().hit_row(panel_rect(), mx, my) {
-        table().sel = gi;
-        return on_ok();
-    }
-    close();
-    Action::None
-}
-
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run
 /// past the screen's keep-out. Vertically it hangs off the card's top edge, pulled back inside the
 /// safe band so a bottom shelf still gets a whole panel. Pure (anchor + measured height in, rect
-/// out) so the placement rules are host-testable without the module's statics.
+/// out), which is what makes the placement rules host-testable.
 fn panel_at(a: Rect, content_h: f32) -> Rect {
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE); // same floor the profile popover uses
     let right = a.x + a.w + CARD_GAP;
@@ -535,78 +358,354 @@ fn panel_at(a: Rect, content_h: f32) -> Rect {
     Rect::new(x, y, PANEL_W, h)
 }
 
-fn panel_rect() -> Rect {
-    let a = unsafe { (*addr_of!(OPENER)).rect }.unwrap_or(Rect::new(0.0, 0.0, CARD_W, CARD_H));
-    panel_at(a, table().measured_height())
+/// The anchor a menu with no rect to hang off falls back to — a centred card. The headless trigger
+/// and a host with nothing focused both land here.
+///
+/// Resolved by the PRESENTER, once, rather than every frame inside [`ItemMenuScreen::frame`], so
+/// the panel cannot drift if a host's rect stops resolving while the menu is up — the same
+/// argument the legacy `present` made for resolving it before it stored `OPENER`.
+pub(crate) fn fallback_anchor() -> Rect {
+    Rect::new(
+        (SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5,
+        (SCR_H - CARD_H) * 0.5,
+        CARD_W,
+        CARD_H,
+    )
 }
 
-pub(crate) fn update(dt: f32) {
-    if !pop().visible() {
-        return;
-    }
-    // This menu's own springs, kept out of the host page's motion — `popover::own_motion`.
-    let _own = crate::ui::popover::own_motion();
-    pop().update(dt);
-    // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
-    table().update(dt, panel_rect().h);
+pub(crate) struct ItemMenuScreen {
+    entry: EntryId,
+    arg: ItemMenuArg,
+    /// The chosen action per global row index (`None` for the separator, which is unfocusable
+    /// anyway). Parallel to the table's rows because the row SET varies by item kind — see
+    /// [`ACTS_PARALLEL`].
+    acts: Vec<Option<Action>>,
+    table: TableView,
+    glass: GlassState,
+    /// The cadence a HELD direction walks this panel's list at. `app/run.rs`'s client-side repeat
+    /// timer (`App::held_key`) did this at 110 ms for exactly this menu and, before phase 9, for
+    /// the player's four panels; the dispatcher delivers the hardware's ~50 ms `Edge::Repeat`
+    /// instead, so the surface applies the cadence itself — the same [`PANEL_REPEAT_MS`] those
+    /// four take, reused rather than copied.
+    repeat: RepeatGate,
+    built: bool,
 }
 
-/// The modal dim, drawn as part of the HOST PAGE rather than with the panel — see
-/// [`crate::ui::popover::Popover::scrim`] for why, and `app.rs`'s page closure for where.
-///
-/// **This menu is drawn AFTER the page closure, which is the whole test.** It is served by the
-/// capture path today, which grabs framebuffer 0 and so picks the scrim up for free — but only
-/// because no dynamic glass owner is live while a popover is open (`tab_glass_wanted` excludes
-/// them), so nothing invalidates and the direct path never runs. That is three modules' behaviour
-/// holding one invariant up; arm `/tmp/plxnative-glassboth` and it is already false. Owning the
-/// scrim here costs one call and does not depend on any of it.
-///
-/// It also LIFTS the tile the menu was opened on back out of the dim ([`Opener`]). That tile is the
-/// panel's whole subject — the design's stated point is that "the card and the rest of the shelf
-/// stay where they are, visible behind it", which a scrim over the card itself quietly contradicts
-/// — and being inside the page closure is what puts the un-dimmed copy into the direct-blur
-/// snapshot too, so the panel's own glass never frosts a dimmed picture of its own card.
-///
-/// **The LIFT is live, not cached, and that is the decision the frozen host forces.** The snapshot
-/// is taken by the guard below, i.e. immediately BEFORE this dim goes down — so the tile is in the
-/// texture exactly once, undimmed, in its own place. The scrim then dims that whole quad, and the
-/// lift redraws the tile over it. Baking the lift into the snapshot instead would put it UNDER the
-/// live scrim, which dims it again: the card the menu is about would recede with the page, which is
-/// the precise bug the lift exists to undo. Live also keeps the lift correct while the scrim is
-/// still ramping, since `scrim_lifting` fades both together.
-pub(crate) fn draw_scrim() {
-    if pop().visible() {
-        // First lift of the frame on this page — the snapshot is taken here, before the dim.
-        let _live = crate::ui::popover::host::live();
-        pop().scrim_lifting(SCRIM_A, unsafe { &*addr_of!(OPENER) });
+impl ItemMenuScreen {
+    pub(crate) fn new(entry: EntryId, arg: ItemMenuArg) -> Self {
+        Self {
+            entry,
+            arg,
+            acts: Vec::new(),
+            table: TableView::new(),
+            glass: GlassState::new(),
+            repeat: RepeatGate::IDLE,
+            built: false,
+        }
+    }
+
+    /// The rows, built ONCE at `Mount`. A hub refetch can re-order the catalog underneath an open
+    /// panel, so nothing here is rebuilt while the menu is up — which is also why every [`Action`]
+    /// carries the identity it needs rather than an index.
+    fn build_rows(&mut self) {
+        if self.built {
+            return;
+        }
+        self.built = true;
+        let (sec, acts) = match &self.arg.kind {
+            ItemMenuKind::Card { row, from_deck } => build(row, *from_deck),
+            ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
+            ItemMenuKind::Season { mark } => build_season(&self.arg.rk, *mark),
+        };
+        self.acts = acts;
+        // a short list of one-line actions — BODY labels, not menu-size HEADLINE
+        self.table.compact = true;
+        self.table.set_sections(vec![sec], 0, false);
+    }
+
+    fn frame(&self) -> Rect {
+        let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
+        panel_at(Rect::new(x, y, w, h), self.table.measured_height())
+    }
+
+    /// The rows a focus stop exists for — every index whose action is `Some`. The separator is
+    /// unfocusable, exactly as `TableView::move_sel` used to skip it.
+    fn focusable(&self) -> impl Iterator<Item = u32> + '_ {
+        self.acts
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.is_some())
+            .map(|(i, _)| i as u32)
+    }
+
+    fn step_focus(&self, from: u32, delta: i32) -> Option<u32> {
+        let rows: Vec<u32> = self.focusable().collect();
+        let at = rows.iter().position(|r| *r == from)?;
+        let next = if delta < 0 { at.checked_sub(1)? } else { at + 1 };
+        rows.get(next).copied()
+    }
+
+    /// Commit the focused row: report the action, then dismiss. The legacy `on_ok` closed first and
+    /// returned the action second; the two are one drain here, and the order is what keeps the
+    /// loop's dispatch reading a REQUEST rather than a static a frame after the close.
+    fn activate<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
+        let act = self
+            .acts
+            .get(elem as usize)
+            .cloned()
+            .flatten()
+            .unwrap_or(Action::None);
+        // Every arm of the dispatch turns an rk into a blocking fetch, a scrobble or a play; an
+        // empty one would fetch nothing and land on a blank page. `build` already refuses to offer
+        // such a row — this is the belt to that braces, since the rows are data-driven off hub
+        // rows.
+        if !matches!(act, Action::None) && !act.rk().is_empty() {
+            fx.push(Fx::App(AppFx::ItemMenu(ItemMenuReq {
+                act,
+                sid: self.arg.sid,
+                item: match &self.arg.kind {
+                    ItemMenuKind::Card { row, .. } => Some((**row).clone()),
+                    _ => None,
+                },
+                loaded_episode: self.arg.loaded_episode,
+                from_home: self.arg.from_home,
+            })));
+        }
+        fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+    }
+
+    /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
+    pub(crate) fn sel(&self) -> i32 {
+        self.table.sel
+    }
+
+    /// The server every action from this menu names. Captured rather than looked up: on a Continue
+    /// Watching shelf merged across servers, resolving a bare rk against the CURRENT server is the
+    /// reported bug itself (hold a friend's episode → Play from Start → our film with the same key
+    /// plays, under the friend's title).
+    pub(crate) fn sid(&self) -> crate::plex::ServerId {
+        self.arg.sid
+    }
+
+    /// The page this menu hangs off, and the element on it the panel is anchored beside and lifted
+    /// back out of the dim. ONE owner: the entry's own argument, captured when the menu was
+    /// presented. It was `Bridge::menu_opener`, a second copy of the same pair on the side.
+    pub(crate) fn opener(&self) -> (EntryId, Option<FocusKey<u32>>) {
+        (self.arg.host, self.arg.focus)
     }
 }
 
-pub(crate) fn draw() {
-    if !pop().visible() {
-        return;
+impl<H: AppLike> Machine<H> for ItemMenuScreen {
+    type Ev = ScreenEvent<H>;
+    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        match ev {
+            ScreenEvent::Mount => self.build_rows(),
+            ScreenEvent::Tick(tick) => {
+                self.table.sel = cx
+                    .focus
+                    .current
+                    .filter(|key| key.entry == self.entry)
+                    .map(|key| key.elem as i32)
+                    .unwrap_or(self.table.sel);
+                self.table.update(tick.dt(), self.frame().h);
+            }
+            ScreenEvent::FocusMoved { to, .. } => self.table.sel = to.elem as i32,
+            ScreenEvent::Activate(elem) => self.activate(*elem, fx),
+            ScreenEvent::PressCommit(_) => {
+                if let Some(key) = cx.focus.current {
+                    self.activate(key.elem, fx);
+                }
+            }
+            ScreenEvent::Input(input) => {
+                let InputKind::Key { key, edge, .. } = input.kind else {
+                    return Handled::No;
+                };
+                if key == Key::Back && edge == Edge::Down {
+                    fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+                    return Handled::Yes;
+                }
+                // **The hold-to-move cadence, applied HERE and nowhere else.** It was
+                // `app/run.rs`'s per-frame `App::held_key` timer, whose LAST consumer this menu
+                // was; the dispatcher hands the surface the hardware's own `Edge::Repeat` at
+                // ~50 ms, which walks a five-row list faster than anybody can read it. A FRESH
+                // press is never swallowed by the cadence of the press before it — it is acted on
+                // unconditionally by falling through to `Handled::No`, and `rearm` records it as
+                // the step it is.
+                if matches!(key, Key::Up | Key::Down) {
+                    match edge {
+                        Edge::Down => self.repeat.rearm(input.at.ms),
+                        Edge::Repeat if !self.repeat.ready_every(input.at.ms, PANEL_REPEAT_MS) => {
+                            return Handled::Yes
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        Handled::No
     }
-    // Live over the frozen host — see `popover::host::live`. (Drawn AFTER the page closure, so the
-    // freeze is already lifted by then; the guard is kept for the reason every panel keeps it: the
-    // rule is a property of the panel, not of where `app.rs` happens to call it from today.)
-    let _live = crate::ui::popover::host::live();
-    // the shared appear fade, rising a short beat into place off the card it belongs to. The scrim
-    // (light — the shelf must stay readable behind it) is the PAGE's now: `content_painter`, not
-    // `painter`, or the dim is drawn twice.
-    let p = pop().content_painter(14.0);
-    let r = panel_rect();
-    pop().panel(p, r, PANEL_RAD);
-    table().draw(p, r);
+}
+
+impl<H: AppLike> Focusable<H> for ItemMenuScreen {
+    fn groups(&self, _: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(GroupSpec {
+            id: GroupId(0),
+            kind: GroupKind::Column,
+            seat: Seat::Remembered,
+            reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Stop; 4],
+            extent: self.frame(),
+            len: self.focusable().count(),
+            elem: ElemKind::Bare,
+        });
+    }
+    fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> {
+        self.acts
+            .get(*elem as usize)
+            .is_some_and(|a| a.is_some())
+            .then_some(GroupId(0))
+    }
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
+        let delta = match dir {
+            Dir::Up => -1,
+            Dir::Down => 1,
+            _ => return Step::Edge,
+        };
+        match self.step_focus(key.elem, delta) {
+            Some(elem) => Step::Move(FocusKey {
+                entry: self.entry,
+                elem,
+            }),
+            None => Step::Edge,
+        }
+    }
+    fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
+        <Self as Focusable<H>>::group_of(self, elem, cx)?;
+        let rect = self.table.row_frame(self.frame(), *elem as i32)?;
+        Some(Placed {
+            rect,
+            rest_rect: rect,
+            clip: self.frame(),
+            index: Some(*elem),
+        })
+    }
+    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if <Self as Focusable<H>>::group_of(self, &want.elem, cx).is_some() {
+            want
+        } else {
+            FocusKey {
+                entry: self.entry,
+                elem: self.focusable().next().unwrap_or(0),
+            }
+        }
+    }
+    fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
+        let sel = u32::try_from(self.table.sel).unwrap_or(0);
+        FocusKey {
+            entry: self.entry,
+            elem: if self.acts.get(sel as usize).is_some_and(|a| a.is_some()) {
+                sel
+            } else {
+                self.focusable().next().unwrap_or(0)
+            },
+        }
+    }
+}
+
+impl<H: AppLike> Screen<H> for ItemMenuScreen {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn name(&self) -> &'static str {
+        crate::screens::registry::word::ITEM_MENU
+    }
+    fn state(&self) -> &dyn LogicalState {
+        self
+    }
+    fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
+        None
+    }
+    /// The modal dim. **The TILE is lifted back out of it, and the lift is the HOST PAGE's to
+    /// draw** — only the screen that drew an element knows where it landed, and a `Scrim::lift` is
+    /// a bare `fn()` with nothing to borrow a page through. So this asks for the dim alone, and
+    /// `app/bridge.rs`'s `redraw_opener` — the ONE owner, reading this surface's own
+    /// [`ItemMenuScreen::opener`] rather than a copy kept on the side — repaints the focused
+    /// element immediately after the container's page pass, above the dim it just laid down.
+    ///
+    /// That tile is the panel's whole subject: the design's stated point is that "the card and the
+    /// rest of the shelf stay where they are, visible behind it", which a scrim over the card
+    /// itself quietly contradicts. The un-dimmed copy is also what the host snapshot holds, so the
+    /// panel's own glass never frosts a dimmed picture of the very card it is about.
+    fn scrim(&self) -> Scrim {
+        Scrim::dim(SCRIM_A)
+    }
+    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
+        Glass::CACHED.prepare(&mut self.glass, false);
+    }
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        let p = f.painter.alpha(f.page_alpha);
+        let r = self.frame();
+        Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
+        self.table.draw(p, r);
+        for elem in self.focusable().collect::<Vec<_>>() {
+            if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
+                f.stop(
+                    p,
+                    Stop {
+                        key: FocusKey {
+                            entry: self.entry,
+                            elem,
+                        },
+                        rect: placed.rect,
+                        rest_rect: placed.rest_rect,
+                        clip: placed.clip,
+                        hover: Hover::Focus,
+                        activate: Activate::Immediate,
+                    },
+                );
+            }
+        }
+    }
+    fn render(&self) -> RenderStrategy {
+        RenderStrategy::Page
+    }
+}
+
+impl LogicalState for ItemMenuScreen {
+    fn write(&self, c: &mut Canon) {
+        self.arg.write(c);
+        c.seq(self.acts.len());
+        for a in &self.acts {
+            c.option(a.as_ref(), |c, a| a.write(c));
+        }
+        c.u32(self.table.sel as u32);
+        self.table.write_motion(c);
+    }
+    fn probe(&self, out: &mut String) {
+        out.push_str("item_menu");
+    }
 }
 
 // ---------------------------------------------------------------------------------------
+/// The row sets, the focus walk, the placement and the capture — all fourteen moved by NAME from
+/// `ui/item_menu.rs` (restructure phase 10), plus the one this phase adds
+/// (`the_item_menu_hold_repeats_through_the_surface_not_the_loop`).
+///
+/// **Two of them changed SUBJECT without changing name, and both are the phase working.** The
+/// focus walk and the separator settle were stated on a live `TableView` (`move_sel`, and
+/// `set_sections`' settle) because that is where the cursor lived; the walk is the focus ENGINE's
+/// now, so they are stated on the screen's own `Focusable` answers — which is where the
+/// separator's unfocusability actually lives (`acts[i].is_none()`) and what the engine asks. They
+/// no longer take `testlock::serial()` either: nothing here drives a live `Spring`, so there is no
+/// process-global dirty flag to contend for.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A catalog row of `kind` in a given watch state, with the flags a real `pms::parse_item`
-    /// would set — which is the part that matters here, since the menu's row set is now derived
-    /// from `unwatched`/`watched`/`resume_ms` together rather than from one of them.
+    /// would set — which is the part that matters here, since the menu's row set is derived from
+    /// `unwatched`/`watched`/`resume_ms` together rather than from one of them.
     ///
     /// A LEAF in the middle is `viewCount == 0` with a live `viewOffset`; a CONTAINER in the middle
     /// is "some leaves viewed, not all", i.e. NEITHER flag — the state a bool could not hold and the
@@ -755,13 +854,13 @@ mod tests {
         assert_eq!(labels(&sec), ["Mark as Watched"]);
     }
 
-    /// **Remove from Continue Watching** is gated on the SHELF, not on the item: only a card that came
-    /// from the deck has a deck to leave. Offered anywhere else it would be a row that appeared to work
-    /// and silently changed nothing, since the server-side action only affects that hub.
+    /// **Remove from Continue Watching** is gated on the SHELF, not on the item: only a card that
+    /// came from the deck has a deck to leave. Offered anywhere else it would be a row that appeared
+    /// to work and silently changed nothing, since the server-side action only affects that hub.
     ///
-    /// Pinned last in the group on purpose — it is the one row here that takes something out of view,
-    /// so it sits where a mis-press is least likely, and the assertion below is what keeps a later row
-    /// from being appended after it.
+    /// Pinned last in the group on purpose — it is the one row here that takes something out of
+    /// view, so it sits where a mis-press is least likely, and the assertion below is what keeps a
+    /// later row from being appended after it.
     #[test]
     fn the_remove_from_deck_row_exists_only_on_a_continue_watching_card() {
         // same card, both shelves — the ONLY difference is where it was focused
@@ -832,7 +931,7 @@ mod tests {
         assert_eq!(labels(&sec), labels(&shelf)[shelf.rows.len() - 2..]);
 
         // a watched episode gets the way back instead, carrying its OWN rk (the menu captured its
-        // target at open time — nothing here may resolve through a live focus index)
+        // target when it was presented — nothing here may resolve through a live focus index)
         let (sec, acts) = build_episode("77", PosterMark::Watched);
         assert_eq!(labels(&sec), ["Mark as Unwatched", "Play from Start"]);
         match acts[0].as_ref().unwrap() {
@@ -910,13 +1009,8 @@ mod tests {
     /// It is deliberately only that half. The other coupling — that `fetch_related` still hands the
     /// shelf a fully parsed row instead of going back to copying three fields — cannot be seen from
     /// here, because this test calls `parse_item` itself. That one is
-    /// `metadata::tests::related_rows_carry_the_watch_state_the_wire_already_had`, which drives the
-    /// real `related_rows`; the two are a pair and neither is sufficient alone.
-    ///
-    /// It also pins the half a `viewCount > 0` shortcut gets wrong. A related **movie** is a leaf
-    /// and offers Play from Start; a related **show** is a container, offers none, and when it is
-    /// part-watched it is at NEITHER end of the range and gets both write verbs — the same rule the
-    /// detail hero's discs follow.
+    /// `metadata::tests::related_rows_carry_the_watch_state_the_wire_already_had`; the two are a
+    /// pair and neither is sufficient alone.
     #[test]
     fn a_related_tile_off_the_wire_gets_the_row_set_its_state_earns() {
         let row = |json: &str| {
@@ -1011,10 +1105,11 @@ mod tests {
         }
     }
 
-    /// The pair is TWO ROWS and therefore two actions, and `ACTS` has to grow with it —
-    /// `ACTS_PARALLEL`'s failure is silent by construction (the press performs its neighbour's
-    /// action), and the conditional tail is exactly where a row gets added without one. The builders'
-    /// own `debug_assert` covers this for every case a test builds; this states it as the property.
+    /// The pair is TWO ROWS and therefore two actions, and `acts` has to grow with it —
+    /// [`ACTS_PARALLEL`]'s failure is silent by construction (the press performs its neighbour's
+    /// action), and the conditional tail is exactly where a row gets added without one. The
+    /// builders' own `debug_assert` covers this for every case a test builds; this states it as the
+    /// property.
     #[test]
     fn the_action_vector_grows_with_the_conditional_rows() {
         for mark in [
@@ -1037,92 +1132,118 @@ mod tests {
         }
     }
 
-    /// This test and the next drive a live `TableView`, whose selection moves `Spring::jump` —
-    /// which reports to `ui::idle`'s process-global dirty flag. Serial by obligation, not
-    /// precaution (`xfade.rs`'s rule): run parallel, they intermittently failed OTHER modules'
-    /// "a settled screen asks for nothing" assertions.
+    /// **The focus walk steps over the separator and stops at the ends.**
+    ///
+    /// It was `TableView::move_sel`'s own skip-and-clamp, exercised on a live `TableView`; the walk
+    /// is the focus ENGINE's now, so the property is stated on the screen's own
+    /// `Focusable::neighbour` — which is where the separator's unfocusability actually lives
+    /// (`acts[i].is_none()`), and which is what the engine asks.
     #[test]
     fn the_focus_walk_steps_over_the_separator_and_stops_at_the_ends() {
-        let _g = crate::testlock::serial();
-        let mut t = TableView::new();
-        let (sec, _) = build(&item(3, PosterMark::None), false);
-        t.set_sections(vec![sec], 0, false);
-        assert_eq!(t.sel, 0); // Go to Episode
-        t.move_sel(1);
-        assert_eq!(t.sel, 1); // Go to Show
-        t.move_sel(1);
-        assert_eq!(t.sel, 3); // NOT 2 — the separator is skipped
-        t.move_sel(1);
-        assert_eq!(t.sel, 4); // Play from Start
-        t.move_sel(1);
-        assert_eq!(t.sel, 4); // clamped at the end
-        t.move_sel(-1);
-        assert_eq!(t.sel, 3);
-        t.move_sel(-1);
-        assert_eq!(t.sel, 1); // skipped back over the separator
-        t.move_sel(-1);
-        t.move_sel(-1);
-        assert_eq!(t.sel, 0); // clamped at the start
+        let screen = screen_with(build(&item(3, PosterMark::None), false).1);
+        let step = |from: u32, dir: Dir| {
+            match with_cx(|cx| {
+                <ItemMenuScreen as Focusable<HostFixture>>::neighbour(
+                    &screen,
+                    FocusKey {
+                        entry: EntryId(7),
+                        elem: from,
+                    },
+                    dir,
+                    cx,
+                )
+            }) {
+                Step::Move(key) => Some(key.elem),
+                _ => None,
+            }
+        };
+        assert_eq!(step(0, Dir::Down), Some(1)); // Go to Episode → Go to Show
+        assert_eq!(step(1, Dir::Down), Some(3)); // NOT 2 — the separator is skipped
+        assert_eq!(step(3, Dir::Down), Some(4)); // Play from Start
+        assert_eq!(step(4, Dir::Down), None); // stops at the end
+        assert_eq!(step(3, Dir::Up), Some(1)); // skipped back over the separator
+        assert_eq!(step(1, Dir::Up), Some(0));
+        assert_eq!(step(0, Dir::Up), None); // stops at the start
     }
 
+    /// A cursor landed on the separator settles onto a real row — `TableView::set_sections`'
+    /// `settle` used to do this; the ENGINE asks `reconcile`, which answers the first focusable
+    /// row for anything that is not one.
     #[test]
     fn a_selection_landed_on_the_separator_settles_onto_a_real_row() {
-        let _g = crate::testlock::serial();
-        let mut t = TableView::new();
-        let (sec, _) = build(&item(3, PosterMark::None), false);
-        t.set_sections(vec![sec], 2, false); // index 2 IS the separator
-        assert_eq!(t.sel, 3);
+        let screen = screen_with(build(&item(3, PosterMark::None), false).1);
+        let want = FocusKey {
+            entry: EntryId(7),
+            elem: 2,
+        }; // index 2 IS the separator
+        let got =
+            with_cx(|cx| <ItemMenuScreen as Focusable<HostFixture>>::reconcile(&screen, want, cx));
+        assert_ne!(got.elem, 2, "the separator is not a focus stop");
+        assert_eq!(got.elem, 0, "…and the first real row is where it lands");
     }
 
-    /// **The menu carries the row it was opened on** — the fix for a Play-from-Start that resolved
-    /// its target through the HOME hub catalog and so silently did nothing on every other card
-    /// surface. Three properties, because they are the three ways the capture can be wrong: the row
-    /// is there after `open`, it SURVIVES the close (`on_ok` closes and then returns the action, so
-    /// the drain reads this a frame later, exactly as `SID` does), and the episode menu leaves it
-    /// empty rather than holding the last card's — the detail page plays through its loaded season
-    /// and must never fall back onto a stale row.
+    /// **The menu carries the row it was opened on**, and it is the ENTRY's argument now rather
+    /// than a `static mut ITEM`. That capture is the fix for a Play-from-Start that resolved its
+    /// target through the HOME hub catalog (`pms::index_of_rk`) and so silently did nothing on
+    /// every other card surface — and it is a stronger claim as an argument than as a global: the
+    /// row cannot be re-pointed by a hub refetch rebuilding the catalog under an open panel, and
+    /// the episode / season entry points carry NONE rather than the last card's.
     ///
-    /// Serial: `present` drives a live `TableView`, whose `Spring::jump` reports to `ui::idle`'s
-    /// process-global flag, and `open`/`close` move the popover's process-wide open count.
+    /// The third property the legacy test asserted — that the capture SURVIVES the close, because
+    /// `on_ok` closed and the drain read the static a frame later — is gone with the static that
+    /// needed it: the request carries the row, so nothing is read after the dismissal at all.
     #[test]
     fn the_menu_carries_the_row_it_was_opened_on_and_the_episode_menu_carries_none() {
-        let _g = crate::testlock::serial();
         let mut m = item(0, PosterMark::None);
         m.sid = crate::plex::ServerId::from_raw(3);
         m.part = "/library/parts/42/file.mkv".to_string();
 
-        open(&m, false, crate::ui::popover::Opener::NONE);
-        // `super::item`, spelled out: this module's tests already have a local `item(kind, …)`
-        // fixture builder, which shadows the glob import
-        let carried = super::item().expect("the row the popover is about");
+        let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
+        screen.build_rows();
+        let elem = first_action(&screen, |a| matches!(a, Action::PlayFromStart(_)));
+        let req = commit(&mut screen, elem);
+        assert_eq!(
+            req.sid,
+            crate::plex::ServerId::from_raw(3),
+            "the ROW's server, not the current one"
+        );
+        let carried = req.item.expect("the row the panel is about");
         assert_eq!(carried.rk, "42");
         assert_eq!(
             carried.part, "/library/parts/42/file.mkv",
             "the WHOLE row — a key alone cannot start playback"
         );
-        assert_eq!(
-            item_sid(),
-            crate::plex::ServerId::from_raw(3),
-            "…on the row's own server"
+        assert!(
+            !req.loaded_episode,
+            "a card row is not a leaf of a loaded season"
         );
 
-        close();
-        assert!(
-            super::item().is_some(),
-            "the drain reads it a frame after the close, like `SID`"
+        let mut strip = ItemMenuScreen::new(
+            EntryId(8),
+            ItemMenuArg {
+                sid: crate::plex::ServerId::from_raw(3),
+                rk: "77".into(),
+                kind: ItemMenuKind::Episode {
+                    mark: PosterMark::None,
+                },
+                host: EntryId(1),
+                focus: None,
+                anchor: [0; 4],
+                loaded_episode: true,
+                from_home: false,
+            },
         );
-
-        open_episode(
-            crate::plex::ServerId::from_raw(3),
-            "77",
-            PosterMark::None,
-            crate::ui::popover::Opener::NONE,
-        );
+        strip.build_rows();
+        let elem = first_action(&strip, |a| matches!(a, Action::PlayFromStart(_)));
+        let req = commit(&mut strip, elem);
         assert!(
-            super::item().is_none(),
+            req.item.is_none(),
             "an episode menu plays through the loaded season, never a stale row"
         );
-        close();
+        assert!(
+            req.loaded_episode,
+            "…and says so, which is what routes it there"
+        );
     }
 
     #[test]
@@ -1177,5 +1298,173 @@ mod tests {
                 p.h
             );
         }
+    }
+
+    /// **A held direction walks the list at the panel's own cadence, not the hardware's.**
+    ///
+    /// `app/run.rs` did this from a per-frame `App::held_key` timer at 110 ms, and this menu was
+    /// its LAST consumer — the block, the field and `HeldKey::arm` all go with it. The dispatcher
+    /// hands the surface `Edge::Repeat` at the remote's own ~50 ms, so the cadence has to be
+    /// applied by the surface that receives it: the same `RepeatGate` / [`PANEL_REPEAT_MS`] the
+    /// player's four panels take, reused rather than copied.
+    ///
+    /// A swallowed repeat is `Handled::Yes` (the engine never sees it); an admitted one is
+    /// `Handled::No`, which is what hands the direction to the focus engine. Red first, observed:
+    /// with the `RepeatGate` arm deleted from `step`, every repeat falls through and the engine
+    /// walks the list at the hardware rate — 12 admitted steps in the window below against 4.
+    #[test]
+    fn the_item_menu_hold_repeats_through_the_surface_not_the_loop() {
+        let mut screen = screen_with(build(&item(3, PosterMark::None), false).1);
+        // the fresh press: acted on unconditionally, and it re-arms the cadence from itself
+        assert_eq!(feed(&mut screen, Key::Down, Edge::Down, 1000), Handled::No);
+        // the hardware's own repeats, 50 ms apart
+        let mut admitted = 0;
+        for i in 1..=12u32 {
+            if feed(&mut screen, Key::Down, Edge::Repeat, 1000 + i * 50) == Handled::No {
+                admitted += 1;
+            }
+        }
+        // Four, not the 5.5 the ratio suggests: the gate admits a step at the first repeat AT OR
+        // PAST the cadence, and the hardware's 50 ms lattice means that is every third one — the
+        // same rounding the loop's own 110 ms timer had against a 16 ms frame.
+        assert_eq!(
+            admitted, 4,
+            "600 ms of hardware repeat is 4 steps at {PANEL_REPEAT_MS} ms, not 12 at the remote's 50"
+        );
+        // …and a FRESH press is never swallowed by the cadence of the press before it
+        assert_eq!(feed(&mut screen, Key::Up, Edge::Down, 1620), Handled::No);
+    }
+
+    // ---- fixtures ---------------------------------------------------------------------------
+
+    use crate::screens::registry::{AppMsg, PageMemory};
+    use crate::ui::fixture::FixtureMeasure;
+    use crate::ui::machine::{FocusRead, Host, InputEvent, InputOwner, PressRead, Source, Tick};
+    use crate::ui::screen::ScreenArg;
+
+    #[derive(Clone)]
+    struct Arg;
+    impl LogicalState for Arg {
+        fn write(&self, _: &mut Canon) {}
+        fn probe(&self, _: &mut String) {}
+    }
+    impl ScreenArg for Arg {
+        fn chrome(&self) -> crate::ui::machine::Chrome {
+            crate::ui::machine::Chrome::None
+        }
+        fn id(&self) -> crate::ui::machine::ScreenId {
+            crate::ui::machine::ScreenId(1)
+        }
+        fn title(&self) -> Option<&str> {
+            None
+        }
+        fn same_instance(&self, _: &Self) -> bool {
+            true
+        }
+    }
+    struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = Arg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = Arg;
+        type Memory = PageMemory;
+    }
+
+    fn with_cx<R>(test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
+        let measure = FixtureMeasure;
+        test(&Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &measure,
+            focus: FocusRead {
+                current: None,
+                ..Default::default()
+            },
+            press: PressRead::default(),
+            owner: InputOwner::Entry(EntryId(7)),
+        })
+    }
+
+    fn card_arg(m: &PmsMovie, from_deck: bool) -> ItemMenuArg {
+        ItemMenuArg {
+            sid: m.sid,
+            rk: m.rk.clone(),
+            kind: ItemMenuKind::Card {
+                row: Box::new(m.clone()),
+                from_deck,
+            },
+            host: EntryId(1),
+            focus: None,
+            anchor: [0; 4],
+            loaded_episode: false,
+            from_home: true,
+        }
+    }
+
+    /// A mounted screen whose row set is already built, so a test can state a property about the
+    /// walk or the cadence without going through the container.
+    fn screen_with(acts: Vec<Option<Action>>) -> ItemMenuScreen {
+        let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&item(3, PosterMark::None), false));
+        s.built = true;
+        s.acts = acts;
+        s
+    }
+
+    fn first_action(s: &ItemMenuScreen, want: impl Fn(&Action) -> bool) -> u32 {
+        s.acts
+            .iter()
+            .position(|a| a.as_ref().is_some_and(&want))
+            .expect("the row set offers this action") as u32
+    }
+
+    /// Commit a row and return the ONE request it emitted.
+    fn commit(s: &mut ItemMenuScreen, elem: u32) -> ItemMenuReq {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(
+            &mut out,
+            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(8)),
+            &mut present,
+        );
+        s.activate::<HostFixture>(elem, &mut fx);
+        let mut req = None;
+        let mut dismissed = false;
+        for e in out {
+            match e.fx {
+                Fx::App(AppFx::ItemMenu(r)) => req = Some(r),
+                Fx::Nav(NavOp::Dismiss(_)) => dismissed = true,
+                _ => {}
+            }
+        }
+        assert!(
+            dismissed,
+            "every commit dismisses, exactly as the legacy `on_ok` closed first"
+        );
+        req.expect("a row that acts reports its action")
+    }
+
+    fn feed(s: &mut ItemMenuScreen, key: Key, edge: Edge, ms: u32) -> Handled {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(
+            &mut out,
+            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(8)),
+            &mut present,
+        );
+        let ev = ScreenEvent::<HostFixture>::Input(InputEvent {
+            at: Tick { ms, dt_us: 0 },
+            source: Source::Sdl,
+            kind: InputKind::Key {
+                key,
+                sym: 0,
+                wcode: 0,
+                edge,
+                at_edge: false,
+            },
+        });
+        with_cx(|cx| <ItemMenuScreen as Machine<HostFixture>>::step(s, &ev, cx, &mut fx))
     }
 }

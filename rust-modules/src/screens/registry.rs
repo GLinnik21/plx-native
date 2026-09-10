@@ -2,20 +2,35 @@
 //! screen may ask for (`AppFx`), the messages a machine receives (`AppMsg`), and the requests an
 //! owned screen makes of the legacy LOOP (`LoopReq`) while the two coexist (§14).
 //!
-//! The concrete `Host` impl — the `Arg` enum that names every screen, the mounter's one `match` —
-//! lives in `app/bridge.rs` and not here, for one reason the layer rule cannot argue with: its
-//! `Arg` still carries the legacy `Route` (§14: "`Route` survives only as its argument"), and
-//! `Route` is `app`-private. So the screens are GENERIC over any host that carries this bundle
-//! ([`AppLike`]), and the bridge instantiates them for its `AppHost`; the Settings family
-//! instantiates the same screens a second time for the surface's own inner stack
-//! (`screens::settings::InnerHost`), which is how one `OnboardScreen` mounts twice (§6.2).
+//! **…and, since restructure phase 10, the concrete `ScreenArg` ([`AppArg`]), the page alphabet it
+//! is spelled in ([`Route`]) and the one `mount` match ([`AppMounter`])** — which §2.1 always put
+//! here and which lived in `app/bridge.rs` until then. The blocker was stated in this doc and is
+//! gone: the argument carried the legacy `Route`, `Route` was `app`-private, and a screen may not
+//! name `app::`. `Route` MOVED (the loop reads it through `app::nav`'s re-export and its own uses
+//! retire in phase 12), so the argument and the mounter could follow it. What §0's criterion 5 buys
+//! for that is the thing this module is for: **a new screen touches its own `screens/<name>.rs`,
+//! this file, `dev/scenarios.rs` and `tests/manifest.json` and nothing else** — the variant, the id,
+//! the `mount` arm and the recorded shape ([`SCREEN_SHAPES`]) are all here.
+//!
+//! What stays in `app/bridge.rs` is the concrete `Host` and the rig it lends the dispatcher
+//! (`AppHost`, `AppViews`, `Bridge`), plus the two conversions that are about the LEGACY trail
+//! rather than about the alphabet (`AppArg::from_node`/`node`). The mounter is generic over the
+//! host for the same reason the screens are: the views it needs arrive through the `*Like`
+//! accessors below, so it names no application type. The Settings family instantiates the same
+//! screens a second time for the surface's own inner stack (`screens::settings::InnerHost`), which
+//! is how one `OnboardScreen` mounts twice (§6.2).
 //!
 //! `LoopReq` is a DEBT with a phase number on each variant: a request the loop performs because
 //! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
+use crate::screens::family::SettingsPage;
+use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
-use crate::ui::machine::{Cx, Host};
+use crate::ui::machine::{
+    Canon, Chrome, Cx, Effects, EntryId, Host, InstanceId, LogicalState, ScreenId,
+};
+use crate::ui::screen::{Mounter, ReturnState, Screen};
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub(crate) enum AppFx {
@@ -38,6 +53,45 @@ pub(crate) enum AppFx {
     /// loop, because the thing being asked for needs the `MainThread` token, the route or the
     /// trail (§14). Executed by `app/playback.rs`'s drain.
     Player(PlayerReq),
+    /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
+    ItemMenu(ItemMenuReq),
+}
+
+/// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed
+/// row to an [`crate::screens::item_menu::Action`].
+///
+/// The panel owns its rows, its cursor, its anchor and its dismissal; it owns none of what an
+/// action DOES. Every arm of `app::input::apply_item_action` either navigates (a `Route` flip plus
+/// a blocking metadata fetch), starts playback (the playback session's `&mut`) or reaches the
+/// view-state store, and a screen may name none of the three (§2.1). So the panel decides and the
+/// loop performs, exactly as `LibraryReq` and `PlayerReq` do for their screens.
+///
+/// The four payload fields beside the action are the whole of what `MenuHost` and two `static mut`s
+/// were still deciding by the time the route that carried them was deleted:
+///
+/// * `sid` — WHICH SERVER the action's ratingKey is about, captured when the menu was presented.
+///   Resolving it against `plex::current_server()` at the press is the reported bug itself: on a
+///   Continue Watching shelf merged across servers, Play from Start on a friend's episode found
+///   OUR row with the same key and played a different film under the friend's title.
+/// * `item` — the catalog ROW the menu was opened on, for the one action a key cannot perform.
+///   `route::request_play_movie` needs the part id, duration, resume offset and media flags, and
+///   the only way back from a bare key used to be `pms::index_of_rk`, which walks the HOME hub
+///   catalog alone — so on a Library, Search or person tile the press silently did nothing.
+///   `None` for the detail page's filmstrip and season menus, which play through the loaded season.
+/// * `loaded_episode` — `MenuHost::is_loaded_episode`, the one bit that changed what an action
+///   means: only the filmstrip's rk is a leaf of the season the mounted page has loaded, so its
+///   Play from Start goes through that page's own episode path and its scrobble makes the page
+///   re-read itself. Every other entry point — including the detail page's own RELATED shelf,
+///   which stands on that page while its tiles are OTHER items — is a card row.
+/// * `from_home` — `menu_leave`'s only question (`matches!(host, MenuHost::Home)`): a navigation
+///   out of a menu opened on a HOME shelf resets the trail, because Home is the trail's root and
+///   the page being left is not one BACK can return to.
+pub(crate) struct ItemMenuReq {
+    pub(crate) act: crate::screens::item_menu::Action,
+    pub(crate) sid: crate::plex::ServerId,
+    pub(crate) item: Option<crate::pms::PmsMovie>,
+    pub(crate) loaded_episode: bool,
+    pub(crate) from_home: bool,
 }
 
 /// **What a player overlay asks for**, once its own `step` has decided.
@@ -152,6 +206,106 @@ impl crate::ui::machine::LogicalState for LibraryMenuArg {
         for value in self.anchor { c.u32(value); }
     }
     fn probe(&self, out: &mut String) { out.push_str("library_menu_arg"); }
+}
+
+/// **What the item context menu is about**, captured at the moment it is presented and never
+/// re-resolved (`screens::item_menu`). [`LibraryMenuArg`] is the precedent: an anchored `Compact`
+/// surface whose whole subject is decided by the press that opened it.
+///
+/// Six `static mut`s collapsed into this one value in restructure phase 10 — `ITEM` and `SID`
+/// (what the menu is about), `OPENER` (where it hangs and what it lifts), and the `MenuHost` the
+/// route carried, down to the two bits an action actually reads. Being an ARGUMENT rather than a
+/// global is a stronger claim than it looks: a hub refetch cannot re-point the row under an open
+/// panel, and two menus could not exist at once to fight over it.
+#[derive(Clone)]
+pub(crate) struct ItemMenuArg {
+    /// The server every action's ratingKey names — see [`ItemMenuReq`].
+    pub(crate) sid: crate::plex::ServerId,
+    /// The item the menu is about. For a card it is the row's own key, repeated here so the
+    /// identity questions (`same_instance`, the canonical hash) need not look inside the row.
+    pub(crate) rk: String,
+    pub(crate) kind: ItemMenuKind,
+    /// The PAGE entry the menu hangs off: its focused element is the anchor the panel sits beside
+    /// and the tile lifted back out of the modal dim (`app::bridge::redraw_opener`).
+    pub(crate) host: crate::ui::machine::EntryId,
+    /// …and which element that is, as the host page's own focus at the press frame. The surface
+    /// takes input the moment it is presented, so the host's live cursor is not the answer.
+    pub(crate) focus: Option<crate::ui::machine::FocusKey<u32>>,
+    /// The focused tile's drawn rect, bit-preserving so a canonical argument needs no float
+    /// equality — [`LibraryMenuArg::anchor`]'s rule. The presenter resolves the centred fallback
+    /// (`item_menu::fallback_anchor`) before storing it, so this is always a real rect.
+    pub(crate) anchor: [u32; 4],
+    pub(crate) loaded_episode: bool,
+    pub(crate) from_home: bool,
+}
+
+/// Which of the three menus this is, and the data its row set is built from.
+///
+/// No `Debug`, deliberately: `PmsMovie` is a wire DTO with none, and deriving one for it would put
+/// a household's viewing on the far end of any `{:?}` — which `diag::scrub` cannot make safe,
+/// because nothing distinguishes a title from an ordinary log word (`diag/scrub.rs`'s own rule, and
+/// the tree-wide grep that enforces it).
+#[derive(Clone)]
+pub(crate) enum ItemMenuKind {
+    /// A card row — a home shelf, the Library grid, a Search result shelf, a person's filmography,
+    /// the detail page's Related shelf. `from_deck` is the SHELF's answer, not the item's: the
+    /// deck-removal row exists only on Continue Watching.
+    Card {
+        /// Boxed because it is by far the largest thing an `AppArg` can carry, and every other
+        /// variant of that enum would pay for it inline.
+        row: Box<crate::pms::PmsMovie>,
+        from_deck: bool,
+    },
+    /// The detail page's episode filmstrip. `mark` is resolved by the page through the same
+    /// `ep_state` that draws the still's own state line, so the tile and the menu opened on it
+    /// cannot describe one episode two ways.
+    Episode { mark: crate::ui::widgets::PosterMark },
+    /// The detail page's season tabs.
+    Season { mark: crate::ui::widgets::PosterMark },
+}
+
+/// **Identity, not contents.** `PmsMovie` is a wire DTO with no `PartialEq` of its own, and one
+/// derived over its forty-odd fields would be the wrong question anyway: two menus are the same
+/// menu when they are about the same item on the same server in the same role, and a refreshed
+/// copy of that row with a new `viewOffset` is still that menu. The container asks this through
+/// `ScreenArg::same_instance`, which must never be able to think it is holding two of them.
+impl PartialEq for ItemMenuKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Card { row: a, from_deck: da }, Self::Card { row: b, from_deck: db }) =>
+                da == db && a.sid == b.sid && a.rk == b.rk && a.kind == b.kind,
+            (Self::Episode { mark: a }, Self::Episode { mark: b }) => a == b,
+            (Self::Season { mark: a }, Self::Season { mark: b }) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for ItemMenuKind {}
+
+impl PartialEq for ItemMenuArg {
+    fn eq(&self, other: &Self) -> bool {
+        self.sid == other.sid && self.rk == other.rk && self.kind == other.kind
+            && self.host == other.host && self.focus == other.focus
+            && self.anchor == other.anchor && self.loaded_episode == other.loaded_episode
+            && self.from_home == other.from_home
+    }
+}
+impl Eq for ItemMenuArg {}
+
+impl crate::ui::machine::LogicalState for ItemMenuArg {
+    fn write(&self, c: &mut crate::ui::machine::Canon) {
+        c.u32(u32::from(self.sid.raw())).str(&self.rk);
+        match &self.kind {
+            ItemMenuKind::Card { row, from_deck } => { c.u32(0).bool(*from_deck).u32(row.kind as u32); }
+            ItemMenuKind::Episode { mark } => { c.u32(1).u32(*mark as u32); }
+            ItemMenuKind::Season { mark } => { c.u32(2).u32(*mark as u32); }
+        }
+        c.u32(self.host.0);
+        c.option(self.focus, |c, key| { c.u32(key.entry.0).u32(key.elem); });
+        for value in self.anchor { c.u32(value); }
+        c.bool(self.loaded_episode).bool(self.from_home);
+    }
+    fn probe(&self, out: &mut String) { out.push_str("item_menu_arg"); }
 }
 
 /// Addressed simulator/harness intentions. They are resolved by the mounted instance.
@@ -525,6 +679,79 @@ pub(crate) enum ContentReq {
     Back,
     Play { play: PlayIntent, resume_ns: i64 },
     ItemMenu,
+    /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
+    /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place
+    /// itself; the loop knows the style and the page's identity, so neither is on this request.
+    Panel(ContentPanel),
+}
+
+/// **Which page-owned panel [`ContentReq::Panel`] asks for** — any content page's, not one
+/// screen's: the Detail page's three and the Person page's biography sheet.
+///
+/// One variant per panel rather than one screen with an inner kind — unlike the player's four
+/// overlays, which share a key ladder and a transport rule. These share nothing: two are read-only
+/// `Style::Alert` sheets (one with a page cursor, one with none), one is a `Style::Compact` menu
+/// anchored to a button whose OK navigates.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ContentPanel {
+    /// *Also available* (`screens::alt_sources`), anchored to the drawn rect of the pill that
+    /// opened it — bit-preserving, so a canonical argument holds it without float equality.
+    AltSources { anchor: [u32; 4] },
+    /// *Track information* (`screens::tracks_panel`), opened at 1-based `page`. Every interactive
+    /// opening passes 1; `/tmp/plxnative-tracks=<n>` is the only caller that does not, and it is
+    /// what makes a headless capture of page 2 possible at all.
+    Tracks { page: i32 },
+    /// *About* (`screens::about_panel`), the footer card's synopsis read in full. It carries
+    /// nothing: the sheet has no cursor to open at and describes the item that landed.
+    About,
+    /// The **Person** page's biography, in full (`screens::person_bio`) — the alert behind that
+    /// page's `MORE` mark. It carries nothing and takes no subject: the sheet is about the person
+    /// the person store holds, and this page has no `(sid, rk)` to give.
+    Bio,
+}
+
+impl ContentPanel {
+    /// **The surface a panel IS**: its container style and its argument, which is the whole of what
+    /// presenting one needs beyond the host the loop already holds.
+    ///
+    /// Here rather than in `app/bridge::open_content_panel`, which is where the same `match` stood
+    /// until the About panel joined it. The reason is §0's criterion 5 and nothing subtler: with the
+    /// map in the bridge, adding a page-owned panel edited `app/bridge.rs` — so the "and nothing
+    /// else" the criterion claims would have been false on its first proof, for a reason that has
+    /// nothing to do with the loop. The bridge still owns the PRESENTING (the duplicate check, the
+    /// `next_style` handshake, the `NavOp`); this owns which surface the page asked for.
+    ///
+    /// `subject` is the ITEM the host page is standing on, and it is an `Option` because a content
+    /// page need not have one: the Person page is about a person, so it has no `(sid, rk)` to give
+    /// and every panel that needs one is refused rather than presented against a neighbour's item.
+    /// `None` back means "this page cannot offer that panel", which the caller drops.
+    pub(crate) fn surface(
+        self,
+        host: crate::ui::machine::InstanceId,
+        subject: Option<(crate::plex::ServerId, &str)>,
+    ) -> Option<(crate::ui::containers::modal::Style, AppArg)> {
+        use crate::ui::containers::modal::Style;
+        Some(match self {
+            Self::AltSources { anchor } => {
+                let (sid, rk) = subject?;
+                (
+                    Style::Compact,
+                    AppArg::AltSources(crate::screens::alt_sources::AltSourcesArg {
+                        host,
+                        sid,
+                        rk: rk.to_string(),
+                        anchor,
+                    }),
+                )
+            }
+            Self::Tracks { page } => (
+                Style::Alert,
+                AppArg::TracksPanel(crate::screens::tracks_panel::TracksPanelArg { page }),
+            ),
+            Self::About => (Style::Alert, AppArg::AboutPanel),
+            Self::Bio => (Style::Alert, AppArg::PersonBio),
+        })
+    }
 }
 
 /// **The play a content page decided on, for the loop to start** (spec §2.2, phase 9).
@@ -588,6 +815,10 @@ pub(crate) enum AppMsg {
     LibraryEdit { target: crate::stores::browse::SectionAddress, edit: crate::stores::browse::QueryEdit },
     LibrarySelect(crate::stores::browse::SectionAddress),
     DetailRestore { spot: crate::metadata::Spot, episode: Option<String> },
+    /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names
+    /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
+    /// what keeps "what a press means on the Detail page" in one place instead of two.
+    AltSourceOpen(ContentArg),
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.
@@ -627,6 +858,29 @@ pub(crate) enum LoopReq {
     /// screens' root-press handling is identical bar one log word, which the loop derives from
     /// its own `Route` at the point it drains this.
     AuthBackAtRoot,
+    /// **Phase 10, the profile menu's five rows.** `screens::account_menu` is a surface on the
+    /// shared `ModalStack` and owns its own rows, cursor and dismissal — but not one of the five
+    /// things a row DOES. Three call `crate::auth` and then flip `app.route` (a screen may not
+    /// name `Route` at all, §2.1); one presents another surface, whose `Style` is the
+    /// application's to choose and not a screen's (`Navigation::next_style`); and one reaches
+    /// `crate::lab`. Each is therefore a request the loop performs, exactly as `LibraryReq` and
+    /// `PlayerReq` are for their screens. They retire when Session owns the sign-in and the
+    /// registry owns the style (phases 6/12's remainder).
+    ///
+    /// Every one of them ALSO gets a `Fx::Nav(NavOp::Dismiss)` from the screen in the same drain,
+    /// which is the legacy `on_ok`'s own "close, then return the action" in the order a container
+    /// can express it.
+    AccountChangeProfile,
+    AccountSignIn,
+    AccountSignOut,
+    /// PRESENTS the Settings surface over the same page, so the host route does not move.
+    /// Reachable signed OUT as well: a person who cannot sign in has still received a copy of this
+    /// software, and LG requires the privacy notice to be readable in the app rather than only on
+    /// the store listing.
+    AccountSettings,
+    /// Lab builds only, and it changes no route: the tester stays where they were and the toast
+    /// says what happened.
+    AccountSendDiagnostics,
 }
 
 /// Any host that carries this bundle. The screens under `screens/` are written against it, so the
@@ -648,6 +902,16 @@ impl<H: Host<Elem = u32, Fx = AppFx, Msg = AppMsg>> AppLike for H {}
 /// than failing anything visible.
 pub(crate) mod word {
     pub(crate) const HOME: &str = "home";
+    /// The profile menu (`screens::account_menu`). An `overlay=` word since phase 10 — it was a
+    /// `route=` word (`Route::Account`) while the menu was a legacy popover with a route of its
+    /// own, and `tests/manifest.json`'s `home-acct-glass` scene was re-keyed with it.
+    pub(crate) const ACCOUNT: &str = "account";
+    /// The item context menu (`screens::item_menu`). An `overlay=` word since phase 10 — it was a
+    /// `route=` word (`Route::ItemMenu { over }`) while the menu was a legacy popover with a route
+    /// of its own, and `tests/manifest.json`'s `item-menu` scene was re-keyed with it. The
+    /// SPELLING is unchanged (`itemmenu`, one word, no separator), so a reader's grammar and every
+    /// tool that greps for it are unchanged too.
+    pub(crate) const ITEM_MENU: &str = "itemmenu";
     pub(crate) const PERSON: &str = "person";
     pub(crate) const SETTINGS: &str = "settings";
     pub(crate) const PRIVACY: &str = "privacy";
@@ -721,6 +985,122 @@ pub(crate) fn alert_index(elem: u32) -> Option<usize> {
     (elem >= ALERT && elem < ALERT + 2).then(|| (elem - ALERT) as usize)
 }
 
+// ── The modal REPEAT CADENCE ─────────────────────────────────────────────────────────────────
+//
+// **Here, and not in `screens/player/input.rs`, because it is not the player's** (phase 10 merge).
+// It lived there while the player's four overlay panels were the only screens that paced their own
+// `Edge::Repeat`; the item context menu became a surface in the same phase and needs the identical
+// cadence, and a screen may not reach into a sibling family for a shared word (§2.1, and
+// `ci/check-deps.sh`'s `sibling` gate). The `app/` side — `App::modal_repeat`, seeded in
+// `app/boot.rs` — has always used it too, so "the player's input module" was never an honest home:
+// the callers are one surface family, one standalone surface and the loop.
+
+/// Rate-limits a REPEAT-DRIVEN discrete step — a forwarded hardware auto-repeat, or one tick of a
+/// scroll-wheel gesture — to a couch-comfortable cadence, independent of the SOURCE's own cadence.
+/// A held hardware key repeats roughly every 50ms; a wheel gesture can deliver several ticks in one
+/// pass. Settings, Consent and Legal move a whole table row — or, inside a document, a full page of
+/// reading text — per step, so letting either source drive `on_updown` at its own rate reads as a
+/// blur rather than a scroll: item 13's whole ask.
+///
+/// Pure and host-testable — no `SDL_GetTicks` inside; `now` is threaded in by the caller, the same
+/// shape `HeldKey`'s own `wrapping_sub` timing takes, so it survives the tick wrap the same way.
+pub(crate) struct RepeatGate {
+    /// The tick of the last step this gate admitted; `None` before the first one.
+    pub(crate) last: Option<u32>,
+}
+impl RepeatGate {
+    /// Minimum time between two repeat-driven steps this gate allows. Slower than the discrete
+    /// focus-list repeat (110ms, [`PANEL_REPEAT_MS`]) on purpose — a home-grid card is a glance, a
+    /// settings row or a line of reading text is not.
+    pub(crate) const STEP_MS: u32 = 160;
+    pub(crate) const IDLE: RepeatGate = RepeatGate { last: None };
+    /// True at most once per [`Self::STEP_MS`]; always true the first call, or after a gap at
+    /// least that long (which is also what makes a long-idle gate behave like a fresh one).
+    pub(crate) fn ready(&mut self, now: u32) -> bool {
+        self.ready_every(now, Self::STEP_MS)
+    }
+    /// The same gate at a caller-chosen cadence. The player's four overlay surfaces take
+    /// [`PANEL_REPEAT_MS`] through this, which is what preserves the exact hold-to-move feel the
+    /// loop's own client-side repeat timer gave them before phase 9 moved their input onto the
+    /// dispatcher: the remote streams `Edge::Repeat` at roughly 50 ms, and a list walked at that
+    /// rate reads as a blur (see [`PANEL_REPEAT_MS`]).
+    pub(crate) fn ready_every(&mut self, now: u32, step_ms: u32) -> bool {
+        let due = match self.last {
+            None => true,
+            Some(last) => now.wrapping_sub(last) >= step_ms,
+        };
+        if due {
+            self.last = Some(now);
+        }
+        due
+    }
+    /// **A fresh press restarts the cadence from itself.** The press is acted on unconditionally
+    /// by its own arm — a fresh press is never swallowed by the cadence of the press before it —
+    /// and this records it as the step it is, so the FIRST hardware repeat of the new hold waits a
+    /// full [`PANEL_REPEAT_MS`] rather than landing on top of it.
+    ///
+    /// It cleared `last` instead until the surface tests were written, which was wrong in exactly
+    /// the direction that is invisible on a fresh gate: the remote streams `Edge::Repeat` at ~50 ms
+    /// and the first of them arrives with `last: None`, so a held key stepped TWICE before the
+    /// cadence engaged, once for the press and once for the repeat behind it.
+    pub(crate) fn rearm(&mut self, now: u32) {
+        self.last = Some(now);
+    }
+}
+
+/// **The cadence a held direction walks a player panel's list at**, in ms.
+///
+/// 110 ms, which is the number `app/run.rs`'s client-side repeat timer used for exactly these four
+/// panels (the track menu, the `…` popover, the Info card and the Chapters strip) while their keys
+/// went through the loop's own ladder. That timer existed because the Magic Remote streams
+/// hardware auto-repeat at ~50 ms and a list walked at that rate is unusable; phase 9 put the
+/// panels' input on the dispatcher, where `Edge::Repeat` arrives at the hardware's rate, so the
+/// cadence has to be applied by the surface that receives it. Same number, same feel, one owner.
+pub(crate) const PANEL_REPEAT_MS: u32 = 110;
+
+#[cfg(test)]
+mod repeat_gate_tests {
+    use super::{RepeatGate, PANEL_REPEAT_MS};
+
+    #[test]
+    fn a_gate_admits_the_first_step_then_holds_the_cadence() {
+        let mut gate = RepeatGate::IDLE;
+        assert!(gate.ready(1_000), "nothing has fired yet");
+        assert!(!gate.ready(1_050), "too soon");
+        assert!(!gate.ready(1_159), "still short of the step");
+        assert!(gate.ready(1_160), "exactly one step later");
+        assert!(!gate.ready(1_161));
+    }
+
+    /// SDL ticks wrap at 2^32ms; the same arithmetic `HeldKey`'s lost-keyup net and client-side
+    /// repeat already rely on, so this gate must survive it the same way.
+    #[test]
+    fn the_gate_survives_the_tick_wrap() {
+        let mut gate = RepeatGate::IDLE;
+        let at = u32::MAX - 50;
+        assert!(gate.ready(at));
+        assert!(!gate.ready(at.wrapping_add(100)));
+        assert!(gate.ready(at.wrapping_add(160)));
+    }
+
+    /// The player panels' own cadence, and the reason `ready_every` exists: the remote's ~50 ms
+    /// hardware repeat is admitted at 110 ms, not at 160 (a settings row) and not at 50.
+    #[test]
+    fn a_player_panel_walks_a_held_direction_at_its_own_cadence() {
+        let mut gate = RepeatGate::IDLE;
+        assert!(gate.ready_every(1_000, PANEL_REPEAT_MS));
+        assert!(!gate.ready_every(1_050, PANEL_REPEAT_MS), "the hardware's own rate is too fast");
+        assert!(gate.ready_every(1_110, PANEL_REPEAT_MS));
+        // …and a FRESH press restarts the cadence FROM ITSELF. The press is acted on by its own
+        // arm without consulting the gate, so it is never swallowed; what this pins is the other
+        // half, which was wrong until the surface tests caught it — the first hardware repeat of
+        // the new hold must wait a full cadence rather than landing on top of the press.
+        gate.rearm(1_115);
+        assert!(!gate.ready_every(1_165, PANEL_REPEAT_MS), "the repeat behind a fresh press waits");
+        assert!(gate.ready_every(1_225, PANEL_REPEAT_MS));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,5 +1136,620 @@ mod tests {
         assert_eq!(alert_index(ALERT + 2), None, "the alert's range is exactly two elements wide");
         assert_eq!(band_index(ALERT - 1), Some((ALERT - 1 - BAND) as usize), "the band's range runs right up to the alert's");
         assert_eq!(band_index(ALERT), None, "…and stops there — the two ranges must not overlap");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// the page alphabet, the screen argument and the one mount match
+// ---------------------------------------------------------------------------------------------
+
+/// **The PAGE alphabet** — one value per page the application stack can hold, and the payload of
+/// [`AppArg::Legacy`].
+///
+/// It lived in `app/nav.rs` as the legacy navigation model's own enum until restructure phase 10,
+/// and the reason it MOVED rather than being copied is the layer rule (§2.1): this module owns the
+/// concrete `ScreenArg` and the one `mount` match, both of which are written over these nine
+/// values — so while `Route` was `app`-private, the registry could hold neither. That was the
+/// blocker this module's own doc used to name.
+///
+/// What the LOOP still does with it is unchanged and retires in phase 12 (§14: "`Route` survives
+/// only as its argument"): `app::nav` re-exports the name, so every `super::Route` spelling in
+/// `app/` still resolves. What is left after that retirement is exactly this — the alphabet a page
+/// argument is spelled in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route {
+    Login,    // plex.tv sign-in (QR) — shown when there's no usable session
+    Profiles, // "who's watching" Plex Home picker
+    /// **"Which libraries do you want?"** — the *Favorite libraries* route (`screens::onboard`,
+    /// an OWNED screen since phase 5b: this route still names the page, but the dispatcher mounts,
+    /// steps, focuses and draws it, and the loop's ladders never see its keys), the
+    /// third and last onboarding screen and the only one that is not about credentials: which of
+    /// the granted libraries this profile wants, asked once PER PROFILE and only when the roster
+    /// holds more than one. It asked "what goes on your Home?" until 2026-09-05, and both the words
+    /// and the SCOPE changed: favourites fill Home's shelves, decide which type pills the top strip
+    /// draws at all, and scope the Library's own Sources picker. The grant is untouched, and Search
+    /// still reaches every granted library. Between the picker and
+    /// Home, so a household member answers for themselves rather than inheriting the answer of
+    /// whoever set the television up.
+    Onboard,
+    Home,
+    Library, // owned screens/library page; sort/filter/source panels are LibraryMenu entries
+    Detail,
+    /// The person/actor page (screens/person.rs), reached by OK on a detail page's cast
+    /// headshot. Exclusive with Detail like every other node — what is UNDER it is the BACK
+    /// trail's business (`ui::trail`), not this enum's, which is exactly why the trail
+    /// exists: a `Route` names one screen, and person→detail→person is three.
+    Person,
+    /// The Search screen (`screens::search`'s `SearchScreen`). A PEER of Home and the Library, not
+    /// a stacking page: it is reached from the strip's last pill and BACK from it returns to Home,
+    /// so it needs no trail node of its own — what it OPENS stacks, but it does not.
+    Search,
+    /// Playback. Its four panels are NOT here — they are entries on the player page's own
+    /// `ModalStack` (`screens::player::overlay::OverlayKind`), and the container owns which is up.
+    Player,
+}
+
+/// Which routes draw the shared top tab bar — the ONE test behind `ui::nav`'s continuous-chrome
+/// rule. Exhaustive on purpose: a new screen must not be able to answer this by accident. (Both
+/// popovers that used to wear a route are SURFACES since phase 10 and neither is a route at all,
+/// so the page each stands on is the top page and answers this for itself — which is what the card
+/// menu's own `Route::ItemMenu { over } => route_wears_tab_bar(over.route())` arm was arranging by
+/// hand. Detail and Person have no bar, which is what makes every transition to or from them fade
+/// the bar with the page.)
+///
+/// It moved here with [`Route`] because [`AppArg::chrome`] is its first reader and a screen
+/// argument may not name `app::`; the loop reads it through `app::nav`'s re-export, unchanged.
+pub(crate) fn route_wears_tab_bar(r: Route) -> bool {
+    match r {
+        Route::Home | Route::Library | Route::Search => true,
+        Route::Login
+        | Route::Profiles
+        | Route::Onboard
+        | Route::Detail
+        | Route::Person
+        | Route::Player => false,
+    }
+}
+
+/// A page's own name, for the one `debug_assert!` in the mounter that can name a route.
+///
+/// Deliberately NOT `app::route_word`, which is the HEARTBEAT's table and belongs to the loop:
+/// this is a panic message, and lifting nine words for it would give `heartbeat_word_tests` a
+/// second table to keep in step. The two agree today because both spell the page's own name;
+/// nothing depends on their agreeing.
+fn page_word(r: Route) -> &'static str {
+    match r {
+        Route::Login => "login",
+        Route::Profiles => "profiles",
+        Route::Onboard => "onboard",
+        Route::Home => "home",
+        Route::Library => "library",
+        Route::Detail => "detail",
+        Route::Person => "person",
+        Route::Search => "search",
+        Route::Player => "player",
+    }
+}
+
+/// A screen argument: the legacy `Route` (§14: "`Route` survives only as its argument"), or an
+/// OWNED screen — the Settings surface and the first-run consent surface (both `RouteSurface`).
+///
+/// **Both owned variants carry the page their inner stack is ROOTED at**, which is there for the
+/// dev boot targets and for nothing else. `/tmp/plxnative-settings=privacy` has to put a headless
+/// run on a page that is normally two presses inside the surface, and the loop cannot press them:
+/// the Settings root's row indices are `RootPage`'s private business (the Favourites row is absent
+/// signed out), so a loop that reached the child by delivering `Activate(<row>)` would be encoding
+/// a table it does not own and would rot the first time a row is added. Rooting the stack at the
+/// target instead needs nothing from the page. The one thing it costs is that BACK at a
+/// dev-booted child DISMISSES the surface rather than revealing the root — a difference that
+/// exists only under a trigger, and that the fps scenes it serves (`legal-document`,
+/// `decision-alert`, `settings-*`) never press.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum AppArg {
+    LibraryMenu(LibraryMenuArg),
+    /// The profile menu (`screens::account_menu`), presented on the shared `ModalStack` over
+    /// whichever bar-wearing page the chip was pressed on. **It carries nothing**, and that is the
+    /// whole of what `Route::Account { over: BarHost }` was for: the host is the page the surface
+    /// was presented over, which the container already knows and does not replace, so there is
+    /// neither a host to name nor a destination to "close back to".
+    AccountMenu,
+    /// The item context menu (`screens::item_menu`), presented on the shared `ModalStack` over
+    /// whichever card surface the hold happened on. **Everything the popover is about travels on
+    /// the argument** — the row, its server, the anchor it hangs beside, and the two bits an
+    /// action reads — which is what six `static mut`s and `Route::ItemMenu { over: MenuHost }`
+    /// were between them doing. There is no host to NAME because the host is the top page, which
+    /// the container already knows and does not replace.
+    ItemMenu(ItemMenuArg),
+    /// One of the player's four panels, presented on the PLAYER PAGE's own `ModalStack` (§6.2).
+    /// It carries only which panel: the host is the page it is presented over, which the container
+    /// already knows, and the panel's own state is the instance's.
+    PlayerOverlay(crate::screens::player::overlay::PlayerOverlayArg),
+    /// The Detail page's *Also available* picker (§6.2's page-owned panels). Its ANCHOR — the drawn
+    /// rect of the pill it hangs off — is on the argument, `LibraryMenuArg`'s shape and for the
+    /// same reason: the entry outlives any one frame's idea of where that pill was.
+    AltSources(crate::screens::alt_sources::AltSourcesArg),
+    /// The Detail page's *Track information* sheet (§6.2's page-owned panels). It carries only the
+    /// 1-based PAGE the sheet opens at — a boot address like `Settings`'s root, not an identity —
+    /// because the sheet describes `metadata::current()` and the host it is presented over is the
+    /// container's own knowledge.
+    TracksPanel(crate::screens::tracks_panel::TracksPanelArg),
+    /// The Detail page's *About* sheet (§6.2's page-owned panels). **It carries nothing**, like
+    /// [`Self::AccountMenu`] and for the same reason twice over: the sheet describes
+    /// `metadata::current()`, it has no cursor to be opened at, and the host it is presented over
+    /// is the container's own knowledge.
+    AboutPanel,
+    /// The Person page's biography sheet (§6.2's page-owned panels). **It carries nothing**, for
+    /// `AboutPanel`'s reasons: the sheet describes `person::current()`, it opens at the top of the
+    /// prose every time, and the host it is presented over is the container's own knowledge.
+    PersonBio,
+    Legacy(Route),
+    Content(ContentArg),
+    /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
+    Settings(SettingsPage),
+    /// The first-run consent question, rooted at this stage byte (0 for every real opening;
+    /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).
+    FirstRunConsent(u8),
+}
+
+pub(crate) const ARG_SHAPE: &str = "AppArg{Legacy:Route{Login,Profiles,Onboard,Home,Library,Detail,Person,Search,Player},Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
+     AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
+     TracksPanel{page:i32},AboutPanel,PersonBio,AccountMenu,\
+     ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32}},\
+     host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool}}";
+
+impl LogicalState for AppArg {
+    fn write(&self, c: &mut Canon) {
+        match self {
+            Self::LibraryMenu(arg) => { c.u32(4); arg.write(c); }
+            Self::PlayerOverlay(arg) => { c.u32(5); arg.write(c); }
+            Self::AltSources(arg) => { c.u32(6); arg.write(c); }
+            Self::TracksPanel(arg) => { c.u32(7); arg.write(c); }
+            // 10, after the two menus' 8 and 9: a canon tag is a surface's identity in a recorded
+            // state, so a retired or reallocated one would make two surfaces indistinguishable in
+            // a replay. They are allocated forward, exactly as `ScreenId` is.
+            Self::AboutPanel => { c.u32(10); }
+            Self::PersonBio => { c.u32(11); }
+            // 8 and 9 rather than the 6/7 the profile and card menus carried on their own
+            // branch: this canon tag is the surface's identity in a recorded state, so two
+            // surfaces merged from two lanes may not share one. 4/5 are the library and player
+            // menus; 6/7 are the two Detail panels above.
+            Self::AccountMenu => { c.u32(8); }
+            Self::ItemMenu(arg) => { c.u32(9); arg.write(c); }
+            Self::Legacy(route) => {
+                c.u32(0);
+                match route {
+                    Route::Login => { c.u32(0); }
+                    Route::Profiles => { c.u32(1); }
+                    Route::Onboard => { c.u32(2); }
+                    Route::Home => { c.u32(3); }
+                    Route::Library => { c.u32(6); }
+                    Route::Detail => { c.u32(7); }
+                    Route::Person => { c.u32(8); }
+                    Route::Search => { c.u32(9); }
+                    Route::Player => { c.u32(10); }
+                }
+            }
+            Self::Content(arg) => { c.u32(1); arg.write(c); }
+            Self::Settings(page) => { c.u32(2); page.write(c); }
+            Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
+        }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("app_arg"); }
+}
+
+impl crate::ui::screen::ScreenArg for AppArg {
+    fn chrome(&self) -> Chrome {
+        match self {
+            AppArg::Legacy(r) if route_wears_tab_bar(*r) => Chrome::TabBar,
+            _ => Chrome::None,
+        }
+    }
+    fn id(&self) -> ScreenId {
+        ScreenId(match self {
+            AppArg::LibraryMenu(_) => 15,
+            // One id for all four panels, exactly as `Settings(_)` collapses its root payload:
+            // they are four kinds of ONE screen, and `same_instance` must never let the container
+            // think it is holding two of them.
+            AppArg::PlayerOverlay(_) => 16,
+            AppArg::AltSources(_) => 17,
+            AppArg::TracksPanel(_) => 18,
+            // 21, not a vacated id: allocated forward, so a retired identity is never handed to
+            // the screen that replaced it.
+            AppArg::AboutPanel => 21,
+            AppArg::PersonBio => 22,
+            // 19 and 20, not the 5 and 6 `Route::Account`/`Route::ItemMenu` vacated when this
+            // phase deleted them, and not the 17/18 these two carried on their own branch: ids
+            // are allocated forward here so a retired identity is never handed to the screen
+            // that replaced it, and so two lanes' surfaces cannot collide on one.
+            AppArg::AccountMenu => 19,
+            // One id for all three entry points (a card, an episode still, a season tab): they are
+            // three row sets of ONE screen, and `same_instance` must never let the container think
+            // it is holding two of them.
+            AppArg::ItemMenu(_) => 20,
+            AppArg::Legacy(Route::Login) => 1,
+            AppArg::Legacy(Route::Profiles) => 2,
+            AppArg::Legacy(Route::Onboard) => 3,
+            AppArg::Legacy(Route::Home) => 4,
+            AppArg::Legacy(Route::Library) => 7,
+            AppArg::Legacy(Route::Detail) => 8,
+            AppArg::Legacy(Route::Person) => 9,
+            AppArg::Legacy(Route::Search) => 10,
+            AppArg::Legacy(Route::Player) => 11,
+            // The ROOT payload is a boot address, not an identity: one Settings surface and one
+            // consent question, whichever page each happens to have been rooted at.
+            AppArg::Settings(_) => 12,
+            AppArg::FirstRunConsent(_) => 13,
+            AppArg::Content(ContentArg::Detail { .. }) => 8,
+            AppArg::Content(ContentArg::Person { .. }) => 9,
+            AppArg::Content(ContentArg::Filmography { .. }) => 14,
+        })
+    }
+    fn title(&self) -> Option<&str> {
+        None
+    }
+    fn same_instance(&self, other: &Self) -> bool {
+        if let (Self::Content(a), Self::Content(b)) = (self, other) {
+            return a.same_item(b);
+        }
+        if matches!(self, Self::Content(_)) || matches!(other, Self::Content(_)) {
+            return false;
+        }
+        // **A player overlay's identity is its KIND, never the playback under it** (§16.9): the
+        // panel is a surface on the player's own stack, so the page beneath it is not part of what
+        // "the same instance" means here — and, the other way round, the PLAYER's own argument
+        // carries no overlay at all any more, which is what makes a BACK out of the track menu
+        // dismiss a surface instead of remounting the page (the reuse-vs-remount risk this rule
+        // exists for).
+        if let (Self::PlayerOverlay(a), Self::PlayerOverlay(b)) = (self, other) {
+            return a.kind.slot() == b.kind.slot();
+        }
+        // …and the same reason `id` collapses the payload: `Settings(Root)` and
+        // `Settings(Legal)` are the same SCREEN, so a container must never be able to think it
+        // is holding two of them.
+        <Self as crate::ui::screen::ScreenArg>::id(self) == <Self as crate::ui::screen::ScreenArg>::id(other)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// the mounter: the one match
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Default)]
+pub(crate) struct AppMounter {
+    pub(crate) seed: Option<crate::ui::trail::Node>,
+    pub(crate) library_kind: Option<crate::browse::SecKind>,
+    /// How long the NEXT player instance pins its transport for, in ms — `HUD_LINGER_MS` for an
+    /// ordinary start and `HUD_HEADLESS_MS` for a capture run. It is a seed rather than a constant
+    /// because `start_playback` is what knows which, and because the deadline must be stamped from
+    /// the instant the page MOUNTS: callers used to pass `last_input + HUD_LINGER_MS`, a timestamp
+    /// taken before a blocking resolve, so a load longer than the 4.5 s linger expired the HUD
+    /// before it was ever drawn and the user got a blank screen instead of a transport.
+    pub(crate) player_hud_ms: Option<u32>,
+}
+
+/// **The one `mount` match** (spec §2.1) — the whole of what "add a screen" costs, in the module
+/// that owns the alphabet it matches on.
+///
+/// **Generic over the host rather than written against `app::bridge::AppHost`**, for the layer
+/// rule's sake and for one practical consequence of it: the screens are generic already, the
+/// views they need arrive through the `*Like` accessors above, and nothing in this match wants a
+/// concrete application type. So the mounter names no `app::` module and the bridge instantiates
+/// it for its own host exactly as the dispatcher instantiates everything else.
+impl<H> Mounter<H> for AppMounter
+where
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike,
+{
+    fn mount(
+        &mut self,
+        id: InstanceId,
+        arg: &AppArg,
+        ret: &ReturnState<u32, PageMemory>,
+        cx: &Cx<'_, H>,
+        _fx: &mut Effects<'_, H>,
+    ) -> Box<dyn Screen<H>> {
+        let entry = match cx.owner {
+            crate::ui::machine::InputOwner::Entry(e) => e,
+            _ => EntryId(0),
+        };
+        match arg {
+            AppArg::LibraryMenu(arg) => Box::new(crate::screens::library::menu::LibraryMenu::new(entry, arg.clone())),
+            AppArg::AccountMenu => Box::new(crate::screens::account_menu::AccountMenuScreen::new(entry)),
+            AppArg::ItemMenu(arg) => Box::new(crate::screens::item_menu::ItemMenuScreen::new(entry, arg.clone())),
+            AppArg::PlayerOverlay(arg) => Box::new(
+                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), entry, arg.kind),
+            ),
+            AppArg::AltSources(arg) => Box::new(
+                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone()),
+            ),
+            AppArg::TracksPanel(arg) => Box::new(
+                crate::screens::tracks_panel::TracksPanelScreen::new(entry, *arg),
+            ),
+            AppArg::AboutPanel => Box::new(
+                crate::screens::about_panel::AboutPanelScreen::new(entry),
+            ),
+            AppArg::PersonBio => Box::new(
+                crate::screens::person_bio::PersonBioScreen::new(entry),
+            ),
+            AppArg::Content(ContentArg::Detail { sid, rk }) => {
+                let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
+                if let PageMemory::Detail(spot) = &ret.memory {
+                    page.restore_memory(spot);
+                } else if let Some(crate::ui::trail::Node::Detail { sid: seed_sid, rk: seed_rk, spot }) = self.seed.take() {
+                    if seed_sid == *sid && seed_rk == *rk { page.restore(&spot); }
+                }
+                Box::new(page)
+            }
+            AppArg::Content(ContentArg::Person { sid, key, guid, name, thumb }) => {
+                let mut page = crate::screens::person::PersonScreen::new(entry, *sid, key.clone(), guid.clone(), name.clone(), thumb.clone());
+                if let PageMemory::Person(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Content(ContentArg::Filmography { sid, key }) => {
+                let mut page = crate::screens::filmography::FilmographyScreen::new(entry, *sid, key.clone());
+                if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
+            // word stays the loop's while the loop still names the page
+            AppArg::Legacy(Route::Onboard) => Box::new(crate::screens::onboard::OnboardScreen::first_run(entry)),
+            // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
+            // exactly the same way — the route word is still the loop's (`route_word`), and
+            // naming the route is the whole of (re)mounting either: a fresh instance is built
+            // every time `bridge::frame` follows a `Replace` onto one of them, which is what lets
+            // every remaining `app::input`/`app::run` call site drop its own `enter()`-equivalent
+            // reset (see `input::enter_profiles_from_onboard`'s doc for the same argument made
+            // about `screens::onboard` in 5b).
+            AppArg::Legacy(Route::Login) => Box::new(crate::screens::login::LoginScreen::new(entry)),
+            AppArg::Legacy(Route::Profiles) => Box::new(crate::screens::profiles::ProfilesScreen::new(entry)),
+            AppArg::Legacy(Route::Home) => {
+                let mut page = crate::screens::home::HomeScreen::new(entry, id);
+                if let PageMemory::Home(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Library) => {
+                let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
+                    .unwrap_or(crate::browse::SecKind::Movie);
+                let mut page = crate::screens::library::LibraryScreen::new(entry, id, kind);
+                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            AppArg::Legacy(Route::Search) => {
+                let mut page = crate::screens::search::SearchScreen::new(entry, id);
+                if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
+            // gesture, the held-key timer, the control row's springs and the Up Next countdown,
+            // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
+            // instant it mounts (`AppMounter::player_hud_ms`), never from the keypress that asked
+            // for the playback.
+            AppArg::Legacy(Route::Player) => {
+                let mut page = crate::screens::player::PlayerScreen::new(entry);
+                page.hud.extend(cx.tick.ms, self.player_hud_ms.take().unwrap_or(crate::screens::player::input::HUD_LINGER_MS));
+                page.publish();
+                Box::new(page)
+            }
+            // **Phase 10: the `Legacy` arm is EXHAUSTIVE.** The fallback that mounted a route
+            // WORD as a blank page is gone — every route above mounts an owned screen, and the
+            // two `Route` values left cannot reach here at all, for the reason stated below.
+            //
+            // The fold this comment used to describe is gone with its subjects: `Route::Account`
+            // and `Route::ItemMenu` were popovers wearing a route, and both are surfaces on the
+            // `ModalStack` now (`AppArg::AccountMenu` / `AppArg::ItemMenu`), so there is no host
+            // page to fold onto and `page_of` — the identity function for every other variant —
+            // is deleted rather than left as a second name for "the page".
+            // Detail and Person carry an ITEM IDENTITY, which a `Legacy(Route)` has no room for,
+            // so their pages mount from a `Content` arg and `AppArg::from_node` answers `Content`
+            // for both nodes. Nothing constructs the `Legacy` spelling; if anything ever does, it
+            // lands on Home rather than on a blank page, because a screen with nothing on it is
+            // precisely what the retired fallback was and what this arm exists to have removed.
+            AppArg::Legacy(r @ (Route::Detail | Route::Person)) => {
+                debug_assert!(false, "{}: a page with an identity mounts from a Content arg", page_word(*r));
+                Box::new(crate::screens::home::HomeScreen::new(entry, id))
+            }
+            AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
+            AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
+                entry,
+                id,
+                Family::FirstRunConsent,
+                SettingsPage::ConsentStage(*stage),
+            )),
+        }
+    }
+}
+
+/// **Every `AppArg` a SURFACE can be presented with, one per variant** — the domain the heartbeat's
+/// ` overlay=` alphabet is derived over (`app::overlay_words`, restructure phase 10 item 4).
+///
+/// Exhaustive by the COMPILER, which is the whole reason it is written this way: the `match` below
+/// names every variant of the enum, so adding one and forgetting it here does not compile. A word
+/// that silently never joins the table is the failure this guards — `tests/manifest.json` selects
+/// fps samples by these strings, and a scene keyed on a word the app cannot print fails on the
+/// television as "only 0 post-warmup samples", which is indistinguishable from a real regression.
+///
+/// The PAGE variants (`Legacy`, `Content`) are excluded on purpose and by name rather than by a
+/// wildcard: a page's word is `route=`, and it comes from `app::route_word` over
+/// `app::EVERY_ROUTE`. `Settings` and `FirstRunConsent` appear once each because their payload is
+/// a boot ADDRESS rather than an identity (`ScreenArg::id` collapses it the same way), and the
+/// family's inner stack is what decides its word at any moment — `RouteSurface::top_word`.
+#[cfg(test)]
+pub(crate) fn every_surface_arg() -> Vec<AppArg> {
+    use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
+    let args = vec![
+        AppArg::LibraryMenu(LibraryMenuArg {
+            host: crate::ui::machine::InstanceId(1),
+            target: crate::stores::browse::SectionAddress {
+                epoch: 0, sid: crate::plex::ServerId::UNSET, section: 0,
+            },
+            kind: LibraryMenuKind::Sort,
+            anchor: [0; 4],
+        }),
+        AppArg::AccountMenu,
+        AppArg::ItemMenu(ItemMenuArg {
+            sid: crate::plex::ServerId::UNSET,
+            rk: "1".into(),
+            kind: ItemMenuKind::Card { row: Box::new(crate::pms::PmsMovie::default()), from_deck: false },
+            host: EntryId(0),
+            focus: None,
+            anchor: [0; 4],
+            loaded_episode: false,
+            from_home: false,
+        }),
+        // The Detail page's own two panels. Presented over Home here like every other
+        // non-player surface: `Screen::name` is a constant of the screen, so the word it
+        // answers does not depend on which page it was opened from — and the alternative,
+        // standing a real Detail page up first, would make this derivation depend on the
+        // metadata store landing.
+        AppArg::AltSources(crate::screens::alt_sources::AltSourcesArg {
+            host: crate::ui::machine::InstanceId(1),
+            sid: crate::plex::ServerId::UNSET,
+            rk: "1".into(),
+            anchor: [0; 4],
+        }),
+        AppArg::TracksPanel(crate::screens::tracks_panel::TracksPanelArg { page: 1 }),
+        AppArg::AboutPanel,
+        AppArg::PersonBio,
+        // The four panels are ONE screen with four kinds, and each answers a different
+        // `Screen::name` — so every kind is listed, not one representative.
+        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } }),
+        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info }),
+        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Chapters }),
+        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::More { quality: false } }),
+        AppArg::Settings(SettingsPage::Root),
+        AppArg::FirstRunConsent(0),
+    ];
+    for a in &args {
+        match a {
+            AppArg::LibraryMenu(_)
+            | AppArg::AccountMenu
+            | AppArg::ItemMenu(_)
+            | AppArg::AltSources(_)
+            | AppArg::TracksPanel(_)
+            | AppArg::AboutPanel
+            | AppArg::PersonBio
+            | AppArg::PlayerOverlay(_)
+            | AppArg::Settings(_)
+            | AppArg::FirstRunConsent(_) => {}
+            // The two PAGE variants. Named rather than swept into a `_`, so the exhaustiveness
+            // above is real and a new SURFACE variant cannot land in a catch-all.
+            AppArg::Legacy(_) | AppArg::Content(_) => {
+                panic!("a page argument is not a surface: its word is `route=`")
+            }
+        }
+    }
+    args
+}
+// ---------------------------------------------------------------------------------------------
+// the shape inventory
+// ---------------------------------------------------------------------------------------------
+
+/// **Every SCREEN-side shape the recorder's `state_fp` hashes** (spec §5.4), as one array in the
+/// module a new screen is added to.
+///
+/// It was a hand-written list inside `app/recorder.rs::state_fp` until restructure phase 10, which
+/// made `app/recorder.rs` a file every new screen had to touch — and §0's criterion 5 is that a
+/// conversion touches its own `screens/<name>.rs`, this module, `dev/scenarios.rs` and
+/// `tests/manifest.json` and nothing else. The recorder still owns the shapes that are the LOOP's
+/// (the press machine, the input state, the frame line, the container tree, the return state, the
+/// PMS fixtures, the app's own init) and folds them in FRONT of these; what belongs to a screen is
+/// declared here, beside the argument that mounts it.
+///
+/// **Order is part of the hash** (`ui::rec::state_fp` writes the sequence), so an entry is
+/// APPENDED, or [`SCREEN_SHAPES_PIN`] moves for that reason alone.
+pub(crate) const SCREEN_SHAPES: &[&str] = &[
+    ARG_SHAPE,
+    PAGE_MEMORY_SHAPE,
+    crate::screens::search::Memory::SHAPE,
+    crate::screens::search::SHAPE,
+    crate::screens::home::SHAPE,
+    crate::screens::library::SHAPE[0],
+    crate::screens::library::SHAPE[1],
+    crate::screens::library::SHAPE[2],
+    crate::screens::library::SHAPE[3],
+    crate::screens::library::SHAPE[4],
+    crate::screens::library::SHAPE[5],
+    crate::screens::library::SHAPE[6],
+    crate::screens::library::SHAPE[7],
+    crate::screens::library::menu::SHAPE[0],
+    crate::screens::library::menu::SHAPE[1],
+    crate::screens::account_menu::SHAPE,
+    crate::screens::item_menu::SHAPE,
+    crate::screens::detail::SHAPE,
+    crate::screens::person::PersonScreen::SHAPE,
+    crate::screens::filmography::FilmographyScreen::SHAPE,
+    crate::screens::player::SHAPE,
+    crate::screens::player::overlay::SHAPE,
+    crate::screens::alt_sources::SHAPE[0],
+    crate::screens::alt_sources::SHAPE[1],
+    crate::screens::tracks_panel::SHAPE,
+    crate::screens::about_panel::SHAPE,
+    crate::screens::person_bio::SHAPE,
+];
+
+/// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
+///
+/// A committed replay fixture recorded against a different value cannot be LOADED at all, which is
+/// the cost this exists to make visible rather than silent; `tools/plxnative-rec rerecord` is the
+/// verb (`tests/fixtures/replay/README.md`). The APP-side half is pinned separately in
+/// `app/recorder.rs`, over the shapes that are the loop's, so neither pin moves for the other's
+/// reason.
+///
+/// **Phase 10, the Detail page's *About* sheet** (0x844a_099e_5f0e_46d6 → this): `ARG_SHAPE` gains
+/// `AboutPanel`, `screens::about_panel::SHAPE` joins the array, and `screens::detail::SHAPE` loses
+/// `about_panel_open:u8` in the same commit — which panel is up is the CONTAINER's record now
+/// (`Navigation::write` writes every surface's argument, phase and instance hash) and a second
+/// copy on the page would be two producers of one fact. A schema transition rather than a
+/// rebaseline: a recording taken before it hashed the sheet as ONE BYTE on the page, so a replay
+/// could not tell an About sheet from a Track sheet, nor either from the page's own byte going
+/// stale.
+///
+/// **Phase 10, the Person page's biography sheet** (0x4e7f_3aa3_b666_b4b0 → this): `ARG_SHAPE`
+/// gains `PersonBio` and `screens::person_bio::SHAPE` joins the array. Its PAGE is in that shape
+/// deliberately — UP/DOWN there moves nothing else in the app, so a recording taken before this
+/// graded the sheet opening and closing with a hole between, and its page cursor was a `static mut`
+/// no `LogicalState` could see.
+///
+/// `#[cfg(test)]` because the pin is an ASSERTION about the array above and never a value the
+/// app reads — `state_fp()` hashes [`SCREEN_SHAPES`] itself.
+#[cfg(test)]
+const SCREEN_SHAPES_PIN: u64 = 0x2ba1_a831_5580_d0b1;
+
+#[cfg(test)]
+mod arg_tests {
+    use super::*;
+
+    /// **The screen half of the recorder's shape pin** (§5.4), asserted here rather than in
+    /// `app/recorder.rs` because this is the array a new screen joins — so the bump lands in the
+    /// same file, and the same commit, as the entry that caused it.
+    #[test]
+    fn the_screen_shape_inventory_is_pinned() {
+        assert_eq!(crate::ui::rec::state_fp(SCREEN_SHAPES), SCREEN_SHAPES_PIN);
+    }
+
+    /// **One `ScreenId` per surface VARIANT.** Ids are allocated forward here precisely so a
+    /// retired identity is never handed to the screen that replaced it, and `same_instance` is
+    /// derived from `id` — so two different variants sharing one would let the container hold a
+    /// mounted instance of the wrong screen and believe it was reusing the right one.
+    ///
+    /// Two arguments of ONE variant sharing an id is the DELIBERATE case (the four player panels,
+    /// the three item-menu entry points, both Settings roots), which is why the assertion is over
+    /// `mem::discriminant` rather than over equality of the arguments themselves.
+    #[test]
+    fn two_different_surface_variants_never_share_a_screen_id() {
+        use crate::ui::screen::ScreenArg;
+        let args = every_surface_arg();
+        for (i, a) in args.iter().enumerate() {
+            for b in args.iter().skip(i + 1) {
+                if a.id() == b.id() {
+                    assert_eq!(
+                        std::mem::discriminant(a),
+                        std::mem::discriminant(b),
+                        "two different surfaces share ScreenId({})",
+                        a.id().0
+                    );
+                }
+            }
+        }
     }
 }

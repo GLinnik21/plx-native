@@ -1,11 +1,4 @@
-# count: 10
+# count: 3
 rust-modules/src/ui/nav.rs	phase 8: the nav alphas move onto DrawFrame; the statics die in 12
 rust-modules/src/ui/widgets.rs	phase 8/11: the strip statics become the container's group (8); the glass/material caches move under the frame plan (11) and are then named in statics.txt
-rust-modules/src/ui/tracks_panel.rs	phase 10: a Detail page-owned panel (with alt_sources/about_panel)
-rust-modules/src/ui/account_menu.rs	phase 10: a ModalStack instance
-rust-modules/src/ui/item_menu.rs	phase 10: a ModalStack instance
-rust-modules/src/ui/about_panel.rs	phase 10: a ModalStack instance (the FIRST conversion, §0 done-criterion 5)
-rust-modules/src/ui/person_bio.rs	phase 10: a page panel on Person's own ModalStack
-rust-modules/src/ui/alt_sources.rs	phase 10: a page panel on Detail's own ModalStack
-rust-modules/src/ui/stats.rs	phase 10: Diagnostics as a ModalStack instance (the SECOND conversion)
 rust-modules/src/ui/popover.rs	phase 10: HOST_CLOSING/HOST_USERS/OPEN_COUNT — the modal phase's last legacy owners; CACHE/HELD stay, named in statics.txt

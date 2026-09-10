@@ -404,8 +404,9 @@ line from the same counter.
 ## FPS regression suite (`--fps`)
 
 A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
-`loop=<n> route=<login|profiles|account|itemmenu|library|detail|person|search|player|home>
-[overlay=<info|chapters|menu|none>] fps=<n>` heartbeat; each
+`loop=<n> route=<login|profiles|library|detail|person|search|player|home>
+[overlay=<the topmost surface's own screen name, or `none` on a bare player>]
+fps=<n>` heartbeat; each
 *scene* in the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and
 asserts its gates. This is the automated form of the by-hand FPS hunting that found the hero /
 cast+about / info-panel regressions.

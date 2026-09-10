@@ -594,16 +594,16 @@ fn owned_search_walks_the_shared_strip_to_the_chip_and_back_to_the_field() {
 /// arrival does, and let that first sync pick the query up off `AppViews.search` exactly as an
 /// interactive keystroke would land there.
 ///
-/// **This drives `app::run::apply_search_boot_trigger` directly** — the exact function
-/// `dev_scripts`'s `dev::read("search")` arm calls with the trigger file's (already-trimmed)
-/// content — rather than re-typing its store command by hand as an earlier version of this test
-/// did. A dropped route flip, a dropped trail push or a wrong trim inside that function now fails
-/// here. **What this still cannot see is the one line above it in `dev_scripts` itself**
-/// (`if let Some(q) = crate::dev::read("search")`): driving the real trigger-FILE read needs a
-/// full `App`/SDL frame, which this suite does not construct (see `dev.rs`'s own tests for host
-/// coverage of `dev::read`'s file-reading half in isolation).
+/// **This drives `dev::scenarios::apply_search_boot_trigger` directly** — the exact function
+/// `dev::scenarios::grid_library_search_heroidx_arm`'s `super::read("search")` arm calls with the
+/// trigger file's (already-trimmed) content — rather than re-typing its store command by hand as
+/// an earlier version of this test did. A dropped route flip, a dropped trail push or a wrong trim
+/// inside that function now fails here. **What this still cannot see is the one line above it in
+/// that arm itself** (`if let Some(q) = super::read("search")`): driving the real trigger-FILE
+/// read needs a full `App`/SDL frame, which this suite does not construct (see `dev.rs`'s own
+/// tests for host coverage of `dev::read`'s file-reading half in isolation).
 ///
-/// The draft is `pub(super)` to `screens::search` alone, so this cannot read it directly — the
+/// The draft is `pub(crate)` to `screens::search` alone, so this cannot read it directly — the
 /// proof goes through the same observable the wheel/scroll tests already use: a query the draft
 /// never held is not a "real query" (`SearchScreen::real_query`), so no published shelf is ever
 /// turned into a row. Seeing `rows` non-empty on the very first frame after mount is therefore
@@ -618,7 +618,7 @@ fn a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync() {
     crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
     let mut route = Route::Home;
     let mut trail = super::super::Trail::new();
-    super::super::run::apply_search_boot_trigger("dune", &mut route, &mut trail);
+    crate::dev::scenarios::apply_search_boot_trigger("dune", &mut route, &mut trail);
     assert!(matches!(route, Route::Search), "the trigger must stand on Search, not just seed the query");
     assert_eq!(*trail.top(), super::super::Node::Search,
         "the trigger must push a trail node so BACK behaves like an interactive arrival");
@@ -791,7 +791,7 @@ fn draw_chromes_guard_calls_the_named_predicate_and_names_no_route_literal() {
 /// shape of gap, one function over), this reads the source text of the arm itself rather than
 /// running it.
 ///
-/// Observed RED: commenting out the `else if host_page_updates(...) && matches!(page_of(app.route),
+/// Observed RED: commenting out the `else if !host_frozen(&app.pages) && matches!(app.route,
 /// Route::Search) { ... }` block in `run.rs` (leaving the Home/Library arms above it and the
 /// `search_osc` block below it untouched) makes this test fail with "update must still branch on
 /// Route::Search to step the shared strip", while `cargo +nightly test --lib` on that same
@@ -804,7 +804,9 @@ fn update_still_steps_the_shared_strip_on_search_the_way_home_and_library_do() {
     ).expect("read run.rs");
     let fn_start = src.find("unsafe fn update(app: &mut App, fr: &mut Frame)")
         .expect("app::run::update must exist with its documented signature");
-    let needle = "matches!(page_of(app.route), Route::Search)";
+    // `page_of(app.route)` until restructure phase 10, when the two popover routes it resolved
+    // were deleted and `page_of` became the identity function and went with them.
+    let needle = "matches!(app.route, Route::Search)";
     let arm_at = src[fn_start..].find(needle).map(|i| fn_start + i).expect(
         "update must still branch on Route::Search to step the shared strip — no arm of this \
          shape was found after fn update's own start",

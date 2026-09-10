@@ -209,7 +209,7 @@ pub(crate) fn vp_mode() -> c_int {
 }
 
 /// The exported windowId the seam holds, or an empty string when none was created. Diagnostics
-/// only (`ui::stats`): it answers "did the window this firmware needs ever exist?", which is the
+/// only (`app::diagnostics`): it answers "did the window this firmware needs ever exist?", which is the
 /// first thing to check when webOS 5+ plays sound over a black screen. Points at the seam's own
 /// long-lived buffer, so it is never NULL and never owned here. No token — it reads a static char[].
 #[inline]

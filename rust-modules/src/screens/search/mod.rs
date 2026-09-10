@@ -80,10 +80,10 @@ pub(crate) struct SearchScreen {
     restored: Option<Memory>,
     render: render::Resources,
     /// Diagnostic-only counter, not part of [`LogicalState::write`]/the state hash — how many
-    /// `Search` `StoreChanged` deliveries this instance has seen, mirroring `LegacyPage`'s own
-    /// `notices` so `app::bridge`'s generic "did a store notice reach the top screen" probes stay
-    /// readable now that `Route::Search` mounts this screen unconditionally instead of a
-    /// `LegacyPage`.
+    /// `Search` `StoreChanged` deliveries this instance has seen. It carries the same name
+    /// (`notices`) the retired route-word page kept its own count under, so `app::bridge`'s generic
+    /// "did a store notice reach the top screen" probes stay readable now that `Route::Search`
+    /// mounts this screen unconditionally.
     notices: u32,
 }
 

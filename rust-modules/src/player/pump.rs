@@ -313,9 +313,10 @@ fn publish_diag(eng: &Engine, now: u32) {
     SHARED.dg_stage.store(eng.stage as u8, Relaxed);
     // Nobody is looking: skip it. `aq_bytes` takes each queue's pthread mutex, and the read-out
     // samples at 2 Hz, so publishing at 60 Hz is 30x more often than anything can observe. Costs
-    // no freshness — the loop order is pump → stats::update → stats::draw, so the frame the panel
+    // no freshness — the loop order is pump → `Diagnostics::update` → `Diagnostics::draw`
+    // (`app/run.rs`), so the frame the panel
     // is switched on has already republished.
-    if !crate::ui::stats::enabled() {
+    if !crate::app::diagnostics::enabled() {
         return;
     }
     let qv = eng.aq_video.as_ref().map_or(0, |q| {
@@ -329,7 +330,7 @@ fn publish_diag(eng: &Engine, now: u32) {
     SHARED.dg_fed_v_pts.store(eng.max_fed_video_pts, Relaxed);
     SHARED.dg_fed_a_pts.store(eng.max_fed_audio_pts, Relaxed);
     // Stamp when the frame count MOVES. The panel needs "how long has it been stuck" and a
-    // photograph has no time axis; stamping here rather than in `ui::stats` is what makes the
+    // photograph has no time axis; stamping here rather than in `app::diagnostics` is what makes the
     // clock measure the STALL rather than how long the panel has been open.
     let f = SHARED.frames.load(Relaxed);
     if LAST_FRAMES.swap(f, Relaxed) != f {

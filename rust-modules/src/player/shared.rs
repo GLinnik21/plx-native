@@ -639,7 +639,7 @@ pub(crate) struct Shared {
     // the worker threads (Engine drops after join), so the ptr stays valid.
     pub hs_ptr: AtomicPtr<HttpStream>,
 
-    // ---- diagnostics mirror (`ui::stats`) -------------------------------------------------
+    // ---- diagnostics mirror (`app::diagnostics`) -------------------------------------------------
     // Values the render path (and the opted-in handled-error snapshot) need that live on the
     // Engine, republished from the pump.
     // The render path holds no `&mut PlayerAdapter` and so cannot reach the `Engine` at all (when
@@ -680,7 +680,7 @@ pub(crate) struct Shared {
     pub dg_net_rx: AtomicI64,
     /// SDL ticks when `loadCompleted` landed, and when `frames` last CHANGED. A photograph has no
     /// time axis: "Load completed, 0 frames" is innocent at 2 s and damning at 4 minutes, and the
-    /// panel cannot tell the difference without these. Stamped in the pump, never in `ui::stats` —
+    /// panel cannot tell the difference without these. Stamped in the pump, never in `app::diagnostics` —
     /// a stats-local timer would start when the panel is OPENED, so a four-minute hang would
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,

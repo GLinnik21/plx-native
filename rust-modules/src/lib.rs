@@ -81,10 +81,96 @@ pub(crate) mod testlock {
     //!
     //! Hold the guard for the whole test. Poison is stepped over so a failing test reports ITS
     //! assertion instead of dragging every later one down with a poison panic.
-    static GLOBALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    //!
+    //! **The lock also RECORDS who holds it, and that half is what makes the rule enforceable.**
+    //! A mutex nobody is obliged to take is a convention, and a convention that is broken in one
+    //! test out of two thousand does not fail — it hands some *other* module's test a wiped store
+    //! at a rate low enough to read as flakiness. That is exactly how
+    //! `app::chrome`'s `four_libraries_on_two_servers_publish_two_type_destinations` failed: its
+    //! own `browse::reset()` + `seed_two_source_table_for_test()` are adjacent statements, so the
+    //! table could only have been emptied by another thread, and the only thread that can run
+    //! beside a lock holder is one that never took the lock.
+    //!
+    //! So [`serial`] publishes the holding thread in [`OWNER`], and [`assert_held`] — called from
+    //! every crate-global mutator a test can reach — turns "somebody wrote this without the lock"
+    //! from an intermittent failure in a bystander into a deterministic panic in the culprit,
+    //! naming the culprit. Add the call to any new global store; do not add a retry anywhere.
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
-        GLOBALS.lock().unwrap_or_else(|e| e.into_inner())
+    static GLOBALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The [`ticket`] of the thread currently inside a [`serial`] guard, or [`NOBODY`].
+    static OWNER: AtomicU64 = AtomicU64::new(NOBODY);
+    const NOBODY: u64 = 0;
+
+    /// This thread's identity as a plain integer. `ThreadId` has no stable numeric projection on
+    /// the pinned toolchain, and the value only has to be unique and comparable, so it is minted
+    /// from a counter on first use and kept for the thread's life.
+    fn ticket() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        thread_local! {
+            static MINE: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+        }
+        MINE.with(|mine| *mine)
+    }
+
+    /// The guard [`serial`] hands back. Its own `Drop` runs BEFORE its field's, so the owner is
+    /// cleared while the mutex is still held — no window in which a second thread has the lock and
+    /// this one still claims it.
+    pub(crate) struct Serial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for Serial {
+        fn drop(&mut self) {
+            OWNER.store(NOBODY, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn serial() -> Serial {
+        let guard = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        OWNER.store(ticket(), Ordering::SeqCst);
+        Serial(guard)
+    }
+
+    /// Does THIS thread hold the lock? Not "is it held" — a foreign holder is the failure.
+    pub(crate) fn held() -> bool {
+        OWNER.load(Ordering::SeqCst) == ticket()
+    }
+
+    /// Refuse a write to a crate global from a thread that does not hold the lock.
+    ///
+    /// `what` names the store, because the panic is read by whoever wrote the offending test and
+    /// the useful half is "which global" — the thread name libtest prints already says which test.
+    #[track_caller]
+    pub(crate) fn assert_held(what: &str) {
+        assert!(
+            held(),
+            "{what} was written without crate::testlock::serial(). It is a process global: \
+             without the lock this write lands in the middle of some other module's test and \
+             fails THAT one, intermittently. Take the guard for the whole test body (see \
+             lib.rs::testlock)."
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// **Ownership is per THREAD, which is the whole discriminating property.**
+        ///
+        /// "Is the mutex locked" cannot answer this question: while a test holds the guard the
+        /// mutex is locked for everybody, so a bystander thread asking that would be told yes and
+        /// would go on to write the global it had no right to. The lock records WHO, and a second
+        /// thread — the shape every one of these bugs has taken — is told no.
+        #[test]
+        fn a_second_thread_is_never_mistaken_for_the_holder() {
+            assert!(!super::held(), "a thread that never took the guard holds nothing");
+            let guard = super::serial();
+            assert!(super::held());
+            // …and while THIS thread holds it, another one still does not.
+            assert!(
+                !std::thread::spawn(super::held).join().expect("probe thread"),
+                "a foreign thread must not inherit this one's claim"
+            );
+            drop(guard);
+            assert!(!super::held(), "the claim ends with the guard, not after it");
+        }
     }
 }
 mod text;
