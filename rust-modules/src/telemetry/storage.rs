@@ -184,6 +184,7 @@ pub(crate) fn event_body(
         body["dist"] = Value::String(dist.to_string());
     }
     super::sentry::attach_user(&mut body, errors_id);
+    super::sentry::attach_hardware_context(&mut body);
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
@@ -309,6 +310,25 @@ mod tests {
         assert_eq!(ccodes.len(), n, "duplicate class code");
     }
 
+    /// Same PLX-NATIVE-F gap as playback/signin: a handled storage error must carry the crash
+    /// path's `hardware`/`webos` contexts, not just its own `storage` context.
+    #[test]
+    fn handled_storage_error_carries_the_same_hardware_context_as_a_crash() {
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            context(),
+        ))
+        .expect("event JSON");
+        assert!(v["contexts"]["hardware"].is_object(), "no hardware: {v}");
+        assert!(v["contexts"]["hardware"]["rtkmem"].is_string());
+        assert!(v["contexts"]["hardware"]["install"].is_string());
+        assert!(v["contexts"]["hardware"]["soc"].is_string());
+        assert_eq!(v["contexts"]["webos"]["type"], "webos");
+        assert!(v["contexts"]["storage"].is_object());
+    }
+
     #[test]
     fn event_body_top_level_and_context_keys_are_exact() {
         fn keys(v: &Value) -> Vec<&str> {
@@ -347,6 +367,15 @@ mod tests {
                 "transaction",
                 "user",
             ]
+        );
+        assert_eq!(keys(&v["contexts"]), ["hardware", "storage", "webos"]);
+        assert_eq!(
+            keys(&v["contexts"]["webos"]),
+            ["api", "codename", "name", "release", "type"]
+        );
+        assert_eq!(
+            keys(&v["contexts"]["hardware"]),
+            ["install", "model", "revision", "rtkmem", "soc", "type"]
         );
         assert_eq!(
             keys(&v["contexts"]["storage"]),

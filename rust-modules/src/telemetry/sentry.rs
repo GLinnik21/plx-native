@@ -520,6 +520,50 @@ pub(crate) fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>)
     }
 }
 
+/// Attach the same `webos`/`hardware` sandbox contexts a NATIVE CRASH carries, to a HANDLED event
+/// this crate builds by hand.
+///
+/// A crash gets these two contexts because `sdk::start` (`telemetry/native.rs`) calls
+/// `plx_sentry_set_webos_context` once at Sentry-backend startup, which puts them on the SDK's own
+/// scope; the native backend copies that scope into every envelope the out-of-process daemon
+/// writes. A handled event — playback failure, sign-in error, storage error, and any other one
+/// this crate serialises straight to JSON — never touches that SDK scope at all, so without this
+/// function it carries none of it: issue seen live in Sentry issue PLX-NATIVE-F (event
+/// `097ae1ebb1b4afa5dc8f607e9b28aaa5`), whose Contexts section had only `User`, the event's own
+/// custom context and `Trace Details` — no `hardware`, no `webos`, no `os`.
+///
+/// One function rather than a copy per call site, so playback/sign-in/storage/future handled
+/// events cannot drift into their own spelling of "which webOS is this" — the same reasoning
+/// `attach_user` states for the identity field. Field names match `telemetry/native.rs`'s
+/// `WEBOS_FIELDS`/`HARDWARE_FIELDS` allowlists exactly, so a handled event and a crash report read
+/// identically in Sentry's Contexts UI. Merges into whatever `contexts` object the caller already
+/// built (a `playback`/`signin`/`storage` context sits beside these, not under them) rather than
+/// replacing it — and creates one if the body had none yet.
+pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
+    let webos = crate::webos::info();
+    let hw = crate::webos::device();
+    let contexts = body
+        .as_object_mut()
+        .expect("event body is always a JSON object")
+        .entry("contexts")
+        .or_insert_with(|| serde_json::json!({}));
+    contexts["webos"] = serde_json::json!({
+        "type": "webos",
+        "name": webos.name,
+        "release": webos.release,
+        "codename": webos.codename,
+        "api": webos.api,
+    });
+    contexts["hardware"] = serde_json::json!({
+        "type": "hardware",
+        "model": hw.model,
+        "soc": hw.board,
+        "revision": hw.hw_revision,
+        "rtkmem": crate::webos::rtkmem_context(),
+        "install": crate::paths::install_kind(),
+    });
+}
+
 /// Frame one item into an envelope: an envelope header line, an item header line, then the payload.
 ///
 /// Newline-delimited, and the item header's `length` is the payload's byte length — the field this
@@ -559,6 +603,48 @@ mod tests {
         assert_eq!(body["user"], serde_json::json!({"id": "abc"}));
         let keys: Vec<&String> = body["user"].as_object().unwrap().keys().collect();
         assert_eq!(keys, vec!["id"]);
+    }
+
+    /// A handled event gets the same two contexts a native crash carries — this is the fix for
+    /// PLX-NATIVE-F, where a handled playback failure showed only `User`/`playback`/`Trace
+    /// Details` in Sentry's Contexts section.
+    #[test]
+    fn attach_hardware_context_matches_the_crash_schema() {
+        let mut body = serde_json::json!({"event_id": "e", "contexts": {"playback": {"type": "playback"}}});
+        attach_hardware_context(&mut body);
+        // The pre-existing per-kind context survives beside the two new ones.
+        assert_eq!(body["contexts"]["playback"]["type"], "playback");
+        let webos = body["contexts"]["webos"]
+            .as_object()
+            .expect("webos context present");
+        let mut webos_keys: Vec<&str> = webos.keys().map(String::as_str).collect();
+        webos_keys.sort_unstable();
+        assert_eq!(webos_keys, ["api", "codename", "name", "release", "type"]);
+        assert_eq!(webos["type"], "webos");
+        let hardware = body["contexts"]["hardware"]
+            .as_object()
+            .expect("hardware context present");
+        let mut hardware_keys: Vec<&str> = hardware.keys().map(String::as_str).collect();
+        hardware_keys.sort_unstable();
+        assert_eq!(
+            hardware_keys,
+            ["install", "model", "revision", "rtkmem", "soc", "type"]
+        );
+        assert_eq!(hardware["type"], "hardware");
+        // On the host these read as the empty/`n/a`/`unknown` fallbacks the probes report when
+        // there is no `/var/run/nyx/os_info.json` — still present as keys, never omitted.
+        assert!(hardware["rtkmem"].is_string());
+        assert!(hardware["install"].is_string());
+    }
+
+    /// Attaching onto a body with no `contexts` key at all still produces both contexts, so a
+    /// future handled-event builder that forgets its own context object is not silently dropped.
+    #[test]
+    fn attach_hardware_context_creates_contexts_when_absent() {
+        let mut body = serde_json::json!({"event_id": "e"});
+        attach_hardware_context(&mut body);
+        assert!(body["contexts"]["webos"].is_object());
+        assert!(body["contexts"]["hardware"].is_object());
     }
 
     #[test]

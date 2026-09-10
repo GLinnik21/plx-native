@@ -69,7 +69,8 @@ classes, coarse raster, rate, HTTP and buffer classes, whether a first picture a
 most 32 typed playback transitions with bucketed elapsed times. It contains no title, ratingKey,
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
 and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
-report ID as a crash report. Buffering, seeking, holding
+report ID as a crash report, and the same television model, SoC, hardware revision, webOS release
+and the `rtkmem`/`install` sandbox facts a crash report carries. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
 `original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and
@@ -85,7 +86,9 @@ bare number, a bucketed count of consecutive unanswered attempts, a bucketed dur
 the attempt had been failing, which automatic code the flow was on, and how your sign-in is
 protected on this television right now (`none` / `plaintext` / `secure` / `secure_locked` /
 `secure_refused` / `unknown`). It contains no PIN, sign-in code, token, account, URL, hostname or
-address, and carries the same Crash report ID as a crash report.
+address, and carries the same Crash report ID as a crash report, and the same television model,
+SoC, hardware revision, webOS release and the `rtkmem`/`install` sandbox facts a crash report
+carries.
 
 The same independent choice also covers a handled storage error report when this television's
 attempt to seal or open your saved sign-in fails. That report contains which step failed
@@ -94,7 +97,9 @@ attempt to seal or open your saved sign-in fails. That report contains which ste
 service replied with when one was reached, how the session is protected right now (`none` /
 `plaintext` / `secure` / `secure_locked` / `secure_refused` / `unknown`), and whether this install has already
 recorded that its key service is refused. It contains no key material, ciphertext, plaintext or
-file path, and carries the same Crash report ID as a crash report.
+file path, and carries the same Crash report ID as a crash report, and the same television model,
+SoC, hardware revision, webOS release and the `rtkmem`/`install` sandbox facts a crash report
+carries.
 
 Separately, **whether or not crash reporting is on**, the sign-in screen can offer to send a
 **one-off report** about a specific sign-in problem — sent only if you explicitly press "Send

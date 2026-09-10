@@ -96,7 +96,11 @@ fn breadcrumb(step: TraceStep) -> Value {
 /// Pure body builder. `dist` and `errors_id` are passed in so the consent preview can exercise this
 /// exact serialiser without reading `/proc/self/exe` or minting an id before consent. `errors_id`
 /// is the crash-report identifier, attached as `user.id` through the one shared
-/// [`super::sentry::attach_user`]; the SDK scope does not reach a body this module builds by hand.
+/// [`super::sentry::attach_user`]; the SDK scope does not reach a body this module builds by hand
+/// — which is also why [`super::sentry::attach_hardware_context`] must be called here explicitly:
+/// unlike a native crash, this event never touches the scope `sdk::start` put the `webos`/
+/// `hardware` contexts on, so without that call it would carry no compatibility context at all
+/// (see that function's doc for the PLX-NATIVE-F gap this closed).
 pub(crate) fn event_body(
     event_id: &str,
     dist: &str,
@@ -150,6 +154,7 @@ pub(crate) fn event_body(
         body["dist"] = Value::String(dist.to_string());
     }
     super::sentry::attach_user(&mut body, errors_id);
+    super::sentry::attach_hardware_context(&mut body);
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
@@ -503,6 +508,33 @@ mod tests {
         assert_eq!(crumbs[2]["data"]["outcome"], "deadline");
     }
 
+    /// Regression for the PLX-NATIVE-F gap: a handled playback failure must carry the same
+    /// `hardware`/`webos` sandbox contexts a native crash carries (issue #74's `rtkmem`/`install`
+    /// among them), not just its own `playback` context.
+    #[test]
+    fn handled_playback_error_carries_the_same_hardware_context_as_a_crash() {
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            FailureKind::PlaybackInterrupted,
+            context(),
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert!(
+            v["contexts"]["hardware"].is_object(),
+            "no hardware context: {v}"
+        );
+        assert!(v["contexts"]["hardware"]["rtkmem"].is_string());
+        assert!(v["contexts"]["hardware"]["install"].is_string());
+        assert!(v["contexts"]["hardware"]["soc"].is_string());
+        assert_eq!(v["contexts"]["webos"]["type"], "webos");
+        assert!(v["contexts"]["webos"]["release"].is_string());
+        // The playback-specific context must still be there beside the two new ones.
+        assert!(v["contexts"]["playback"].is_object());
+    }
+
     #[test]
     fn handled_error_schema_has_no_content_or_identity_slots() {
         fn keys(v: &Value, out: &mut Vec<String>) {
@@ -644,7 +676,15 @@ mod tests {
             ]
         );
         assert_eq!(keys(&v["sdk"]), ["name", "version"]);
-        assert_eq!(keys(&v["contexts"]), ["playback"]);
+        assert_eq!(keys(&v["contexts"]), ["hardware", "playback", "webos"]);
+        assert_eq!(
+            keys(&v["contexts"]["webos"]),
+            ["api", "codename", "name", "release", "type"]
+        );
+        assert_eq!(
+            keys(&v["contexts"]["hardware"]),
+            ["install", "model", "revision", "rtkmem", "soc", "type"]
+        );
         assert_eq!(
             keys(&v["contexts"]["playback"]),
             [
