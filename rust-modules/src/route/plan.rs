@@ -12,8 +12,9 @@ use crate::plex::ServerId;
 use std::sync::atomic::Ordering;
 
 use super::decision::{
-    measure_remote_original, put_selection, resolve_playqueue, server_decision,
-    ActiveEncoderState, AutomaticRouteIntent, PlayerControl, ENCODER_GENERATION,
+    measure_remote_original, measure_remote_remux, put_selection, resolve_playqueue,
+    server_decision, ActiveEncoderState, AutomaticRouteIntent, MdeVerdict, PlayerControl,
+    ENCODER_GENERATION,
 };
 
 /// One worker's right to observe or replace the active route. Both fields are required: `encoder`
@@ -358,15 +359,6 @@ pub(super) fn remote_probe_plan(source_kbps: i64) -> Option<crate::abr::SourcePr
 pub(super) fn remote_probe_target_bytes(source_kbps: i64) -> Option<usize> {
     remote_probe_plan(source_kbps).map(|plan| plan.target_bytes)
 }
-
-/// **One bounded measurement of the actual file, as an observation and nothing more.** It reports
-/// bytes, active duration and whether the target was reached, because all three decide how much
-/// the measurement is worth: a 40 KiB read that finished instantly honestly reports a huge rate
-/// and proves nothing. What it does NOT do is decide anything — [`crate::abr::bootstrap`] owns the
-/// admission rule, so the policy is stated once and is host-testable without a network.
-///
-/// `None` means there is nothing to reason from (no source bitrate, or the transfer never
-/// returned), which is deliberately distinct from a completed slow probe.
 
 /// **Two ceilings mean the stricter one**, per flavor, and this is the only place the two are put
 /// together. A ceiling can only ever REMOVE a flavor: a fast link cannot restore what a low rung
@@ -890,10 +882,13 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // by `link`. Fixed rungs retain their ordinary ceiling policy.
     let tentative_quality = quality_policy(env.quality, true, env.src_kbps, src_w, src_h);
     let mut allowed = flavors_allowed(link, tentative_quality);
-    // MDE verdict for this resolve: Some(true)=Original, Some(false)=explicit transcode (also
-    // forbids remux), None=unreachable/unusable OR never asked (gates already refused Original).
+    // MDE verdict for this resolve: Some(original)=Part.decision=directplay, Some(!original)=
+    // start.mkv, None=unreachable/unusable OR never asked (gates already refused Original).
     // PMS 1.43 503s a Part GET without a registered decision, so None must never become Original.
-    let mde: Option<bool> = if !allowed.direct_play || !video_dp || !streamable || rk.is_empty() {
+    // `video_forbids_copy` is independent: Part=transcode + video=copy (TrueHD-only, a selected
+    // sub MDE still refuses, …) is a remux, not a full re-encode.
+    let skip_mde = !allowed.direct_play || !video_dp || !streamable || rk.is_empty();
+    let mde: Option<MdeVerdict> = if skip_mde {
         None
     } else {
         // Register the session before any Part GET. Smart-DP used to skip this because MDE would
@@ -909,11 +904,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             .unwrap_or(0);
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
-    let mut directplay = matches!(mde, Some(true));
-    // An explicit MDE transcode vetoes a local codec-copy remux (bit depth, image-sub, etc.).
+    let mut directplay = mde.as_ref().is_some_and(|v| v.original);
     // An unreachable MDE (None after we asked, or never asked) still allows remux when the
-    // video gate and link policy do.
-    let mde_forbids_copy = matches!(mde, Some(false));
+    // video gate and link policy do. A video-stream `transcode` (bit depth, …) forbids remux.
+    let mde_forbids_copy = mde.as_ref().is_some_and(|v| v.video_forbids_copy);
 
     // A container-only remux also preserves the original video and avoids the GPU, so it belongs
     // to Auto's Original state and must pass the same remote bandwidth gate as direct play.
@@ -1023,7 +1017,24 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             // answer: a direct Remote with a feasible Original. Local needs no proof and Relay
             // cannot be talked into carrying a remux.
             let probe = (link == crate::abr::LinkKind::Remote && original_feasible)
-                .then(|| measure_remote_original(&client, part, &session, source_transport_kbps))
+                .then(|| {
+                    if directplay {
+                        measure_remote_original(
+                            &client.direct_play_url(part, &session).to_url(),
+                            source_transport_kbps,
+                        )
+                    } else {
+                        // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
+                        measure_remote_remux(
+                            client,
+                            rk,
+                            &session,
+                            env.audio_sid,
+                            env.sub_sid,
+                            source_transport_kbps,
+                        )
+                    }
+                })
                 .flatten();
             Some(crate::abr::bootstrap(
                 link,
@@ -1182,8 +1193,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `allowed.remux` is `link.remux` AND the user's ceiling — see `flavors_allowed` above. The
     // ceiling is the newer of the two terms and it denies a remux for the reason the relay does: a
     // copy ships the source at the source's own rate, which is precisely what the rung says the
-    // link cannot carry. `!mde_forbids_copy` is the MDE half: an explicit Part.decision=transcode
-    // must not be answered with a local codec-copy remux.
+    // link cannot carry. `!mde_forbids_copy` is the MDE half: a VIDEO stream decision of
+    // `transcode` must not be answered with a local codec-copy remux. Part.decision=transcode
+    // alone is not that veto.
     let remux = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
     if remux {
         let achosen = audio_sel

@@ -302,7 +302,10 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   id, or `0` so a selected sidecar or unadvertised codec does not force a burn). If
   `/decision` is unreachable the app does **not**
   return the Part URL (that would 503); it remuxes or re-encodes instead. An explicit MDE
-  `transcode` also refuses a local codec-copy remux. (Catalog **D-7** still describes
+  `transcode` still remuxes when the video stream's own decision is `copy` or unnamed
+  (`Part.decision` is a container change); only a video-stream `transcode` forbids the
+  codec-copy. Remote Auto's Original probe then samples that remux `start.mkv` rather than
+  the Part (a Part GET after a transcode decision is 503). (Catalog **D-7** still describes
   `audioStreamID`/`subtitleStreamID` on *transcode* start/decision GETs as undocumented relative
   to the PUT selection API; the MDE handshake above is a separate use of those query names.)
 - **Divergences:** none (the key comes straight from `part.key`). The middle path segment is a
