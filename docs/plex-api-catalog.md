@@ -295,9 +295,16 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   a decision and no decision could be inferred" — i.e. some server configs require a
   `transcodeDecision` call even for direct-play. PMS 1.43 logs that 503 as "Denying access due
   to session lacking permission to direct play" (or "due to terminated session" after
-  `/stop?closeResourceSession=1`). Every Original Part GET now registers
+  `/stop?closeResourceSession=1`). Every Original Part GET registers
   `GET /video/:/transcode/universal/decision?hasMDE=1&directPlay=1` first so the session is
-  admitted; smart-DP names the chosen AAC/AC3/EAC3 track as `audioStreamID` on that query.
+  admitted; smart-DP names the chosen AAC/AC3/EAC3 track as `audioStreamID` on that query, and
+  the decision always carries `subtitleStreamID` (an advertised embedded client-rendered
+  id, or `0` so a selected sidecar or unadvertised codec does not force a burn). If
+  `/decision` is unreachable the app does **not**
+  return the Part URL (that would 503); it remuxes or re-encodes instead. An explicit MDE
+  `transcode` also refuses a local codec-copy remux. (Catalog **D-7** still describes
+  `audioStreamID`/`subtitleStreamID` on *transcode* start/decision GETs as undocumented relative
+  to the PUT selection API; the MDE handshake above is a separate use of those query names.)
 - **Divergences:** none (the key comes straight from `part.key`). The middle path segment is a
   **changestamp** (part updatedAt), not a byte offset — the app treats it as opaque, which is
   correct.

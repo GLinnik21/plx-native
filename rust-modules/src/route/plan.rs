@@ -771,19 +771,17 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .clone()
         .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
-    // capability profile. Falls back to the local codec test if the server returns no usable
-    // decision; the local-sample/demo path (rk empty) skips the decision entirely.
-    // Server-adjudicated (Phase 2). HEVC now direct-plays (Phase 3 demuxer + native decode);
-    // the guard that forced non-h264 to transcode is gone.
+    // capability profile. An unusable / unreachable `/decision` must not Original (PMS 1.43
+    // 503s a Part without a registered decision); remux/re-encode still registers via a
+    // separate `transcode_decision`. The local-sample/demo path (rk empty) skips MDE entirely.
     // Smart direct-play: the video decodes natively (H264/HEVC) AND some audio track is
     // direct-playable (AAC/AC3/E-AC3) — even if the DEFAULT track isn't. We own the demuxer, so
     // we direct-play the raw file and FEED a direct-playable track (e.g. a 4K HEVC item: TrueHD
     // default + an AC3 track → native 4K HEVC + AC3, no transcode — beats the server's
     // video-downscaling transcode). The chosen audio rides `audioStreamID` on `/decision` so MDE
-    // evaluates that sibling rather than vetoing the TrueHD/DTS default. Falls back to the local
-    // codec test when the server returns no usable decision. PMS 1.43 503s a Part GET without a
-    // registered decision ("session lacking permission to direct play"), so the smart-DP audio
-    // pick is no longer a reason to skip `/decision`.
+    // evaluates that sibling rather than vetoing the TrueHD/DTS default. When `/decision` is
+    // unreachable the plan fails closed (no Original Part — PMS 1.43 503s without a registered
+    // decision) and may still remux/re-encode; an explicit MDE transcode also forbids remux.
     // The video gate consults the DEVICE's own decoder table (devcaps), not this codebase's
     // memory of the dev TV: "the panel decodes HEVC" was the last dev-environment claim still
     // asserted as universal (issue #22's bug class — docs/plex-pass-audit.md, closing section).
@@ -892,36 +890,34 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // by `link`. Fixed rungs retain their ordinary ceiling policy.
     let tentative_quality = quality_policy(env.quality, true, env.src_kbps, src_w, src_h);
     let mut allowed = flavors_allowed(link, tentative_quality);
-    let mut directplay = if !allowed.direct_play {
-        false
-    } else if !video_dp {
-        // The buffer-feed pipeline only decodes what the Load payload declares — H264/H265,
-        // and H265 only on a SoC whose table lists the decoder (devcaps). Anything else
-        // (AV1/VP9/MPEG-2/…) MUST transcode: we can't feed it even if the server's /decision
-        // says directplay (it adjudicates the panel's decoders, not our payload). This gate is
-        // why the local sample path (rk empty) is the only other non-transcode case. A source
-        // exceeding the device's width/height bound lands here too, and deliberately on the
-        // RE-ENCODE side of the branch below (a remux would copy the too-big pixels verbatim);
-        // its /decision carries the profile's own bound, so PMS scales the video down.
-        false
-    } else if !streamable || rk.is_empty() {
-        // non-streamable container → remux (transcode branch copies the source codecs);
-        // empty rk (local sample) → no MDE / no Original
-        false
+    // MDE verdict for this resolve: Some(true)=Original, Some(false)=explicit transcode (also
+    // forbids remux), None=unreachable/unusable OR never asked (gates already refused Original).
+    // PMS 1.43 503s a Part GET without a registered decision, so None must never become Original.
+    let mde: Option<bool> = if !allowed.direct_play || !video_dp || !streamable || rk.is_empty() {
+        None
     } else {
-        // Register the session before any Part GET. PMS 1.43 maps a part without a decision
-        // (or whose decision is a transcode) to HTTP 503: "Denying access due to session
-        // lacking permission to direct play". Smart-DP used to skip this because MDE would
-        // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on
-        // the query is what keeps that class on Original.
+        // Register the session before any Part GET. Smart-DP used to skip this because MDE would
+        // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on the
+        // query is what keeps that class on Original. subtitleStreamID is an advertised embedded
+        // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
+        // force a burn.
         let audio_id = audio_sel.as_ref().map(|(_, _, id)| *id).unwrap_or(0);
-        server_decision(client, rk, &session, audio_id)
-            .unwrap_or_else(|| audio_sel.is_some() || crate::plex::is_dp_audio(acodec))
+        let subtitle_id = plan
+            .playing
+            .as_ref()
+            .map(|p| mde_subtitle_stream_id(&p.subs))
+            .unwrap_or(0);
+        server_decision(client, rk, &session, audio_id, subtitle_id)
     };
+    let mut directplay = matches!(mde, Some(true));
+    // An explicit MDE transcode vetoes a local codec-copy remux (bit depth, image-sub, etc.).
+    // An unreachable MDE (None after we asked, or never asked) still allows remux when the
+    // video gate and link policy do.
+    let mde_forbids_copy = matches!(mde, Some(false));
 
     // A container-only remux also preserves the original video and avoids the GPU, so it belongs
     // to Auto's Original state and must pass the same remote bandwidth gate as direct play.
-    let remux_candidate = video_dp && allowed.remux && !no_video_copy;
+    let remux_candidate = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
     let source_transport_kbps = plan
         .playing
         .as_ref()
@@ -1186,8 +1182,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `allowed.remux` is `link.remux` AND the user's ceiling — see `flavors_allowed` above. The
     // ceiling is the newer of the two terms and it denies a remux for the reason the relay does: a
     // copy ships the source at the source's own rate, which is precisely what the rung says the
-    // link cannot carry.
-    let remux = video_dp && allowed.remux && !no_video_copy;
+    // link cannot carry. `!mde_forbids_copy` is the MDE half: an explicit Part.decision=transcode
+    // must not be answered with a local codec-copy remux.
+    let remux = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
     if remux {
         let achosen = audio_sel
             .as_ref()
@@ -1404,6 +1401,23 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
         return None;
     }
     Some((subs[i].id, ord))
+}
+
+/// Stream id named on the MDE `/decision` handshake, or `0`.
+///
+/// [`pick_dp_subtitle`] is what Original will client-render. MDE only sees that id when the
+/// codec is in [`crate::plex::DP_SUBTITLE_CODECS`]: a sidecar, or a selected embedded track
+/// we render but do not advertise (`vplayer`, …), is sent as `0` so MDE evaluates subs off
+/// instead of answering transcode (which then forbids a codec-copy remux).
+fn mde_subtitle_stream_id(subs: &[crate::metadata::Stream]) -> i64 {
+    pick_dp_subtitle(subs)
+        .and_then(|(id, _)| {
+            subs.iter()
+                .find(|s| s.id == id)
+                .filter(|s| crate::plex::is_dp_subtitle(&s.codec))
+                .map(|_| id)
+        })
+        .unwrap_or(0)
 }
 
 
@@ -2221,6 +2235,32 @@ mod tests {
             sub(11, 4, "rus", false),
         ];
         assert_eq!(pick_dp_subtitle(&subs), None);
+    }
+
+    #[test]
+    fn mde_subtitle_stream_id_names_advertised_codecs_and_zeroes_the_rest() {
+        assert_eq!(mde_subtitle_stream_id(&[]), 0);
+        assert_eq!(
+            mde_subtitle_stream_id(&[server_selected(sub(10, 3, "eng", true))]),
+            0,
+            "sidecar → 0"
+        );
+        let mut pgs = server_selected(sub(12, 4, "eng", false));
+        pgs.codec = "pgs".into();
+        assert_eq!(mde_subtitle_stream_id(&[pgs]), 12);
+        let mut mov = server_selected(sub(14, 4, "eng", false));
+        mov.codec = "mov_text".into();
+        assert_eq!(mde_subtitle_stream_id(&[mov]), 14);
+        let mut dvd = server_selected(sub(15, 4, "eng", false));
+        dvd.codec = "dvd_subtitle".into();
+        assert_eq!(mde_subtitle_stream_id(&[dvd]), 15);
+        let mut obscure = server_selected(sub(13, 4, "eng", false));
+        obscure.codec = "vplayer".into();
+        assert_eq!(
+            mde_subtitle_stream_id(&[obscure]),
+            0,
+            "unadvertised but still client-rendered → 0 so MDE does not transcode"
+        );
     }
 
     #[test]

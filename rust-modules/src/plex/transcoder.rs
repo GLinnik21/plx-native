@@ -10,9 +10,10 @@
 //!     The caller MUST read the OUTPUT codecs off the returned body (Part.Stream[].codec):
 //!     the Load payload has to describe what the server will actually send, not the source
 //!     (see route::apply_decision_codecs and [[audio-payload-codecs]]).
-//! The ordinary calls return the parsed MediaContainer; a `?`/None degrades exactly like the old
-//! raw-body scan (caller falls back to the local codec heuristic / skips the codec override). The
-//! ABR deadline-bearing twin retains HTTP, deadline and transport causes for route policy.
+//! The ordinary calls return the parsed MediaContainer; a `?`/None from MDE means the caller
+//! must not Original (PMS 1.43 503s a Part without a registered decision) and may still remux
+//! or re-encode via a separate `transcode_decision`. The ABR deadline-bearing twin retains
+//! HTTP, deadline and transport causes for route policy.
 use super::client::{Client, JsonDeadlineOutcome, QueryBuilder, StreamUrl};
 use super::models::MediaContainer;
 use super::params::{Ceiling, TranscodeDelivery, TranscodeSpec};
@@ -28,6 +29,22 @@ use super::probe::Location;
 pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3";
 pub fn is_dp_audio(codec: &str) -> bool {
     crate::devcaps::caps().audio_has(codec)
+}
+
+/// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
+/// `subtitleCodec=` list on the direct-play profile **and** the gate on MDE's
+/// `subtitleStreamID`: a selected embedded track whose codec is here is named on `/decision`,
+/// anything else (sidecar, or a codec we render but do not advertise) is sent as `0` so MDE
+/// does not burn/transcode a sub the demuxer will draw itself.
+///
+/// Spellings are PMS profile names plus the FFmpeg/Stream.codec aliases they arrive as
+/// (`movtext` as in Roku; `dvd` beside `vobsub` / `dvd_subtitle`). Obscure `ff.rs` Plain
+/// aliases (`vplayer`, `jacosub`, …) stay off this list on purpose — unknown selected codecs
+/// take the `0` path rather than a full re-encode.
+pub const DP_SUBTITLE_CODECS: &str = "srt,subrip,ass,ssa,mov_text,movtext,webvtt,text,pgs,hdmv_pgs_subtitle,vobsub,dvd,dvd_subtitle,dvdsub,dvb_subtitle,dvbsub";
+pub fn is_dp_subtitle(codec: &str) -> bool {
+    let codec = codec.to_ascii_lowercase();
+    DP_SUBTITLE_CODECS.split(',').any(|c| c == codec)
 }
 
 // ---- the relay policy: what the LINK to a server allows a plan to ask for -------------------
@@ -194,12 +211,13 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
                 .to_string()
         }
     };
-    // pgs,vobsub: the demuxer client-renders those bitmaps (`ff.rs` / the track menu). Leaving
-    // them off made MDE answer transcode whenever a Blu-ray image sub was selected, which then
-    // 503'd the Original part GET ("decision is for a transcode").
+    // Image + text subs the demuxer client-renders (`ff.rs` / the track menu). Leaving a
+    // selected bitmap off made MDE answer transcode, which then 503'd the Original part GET
+    // ("decision is for a transcode"). [`DP_SUBTITLE_CODECS`] is the one list — MDE's
+    // `subtitleStreamID` gate reads the same constant.
     format!(
         "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={dp_video}\
-         &audioCodec={dp_audio}&subtitleCodec=srt,subrip,ass,ssa,pgs,vobsub)\
+         &audioCodec={dp_audio}&subtitleCodec={DP_SUBTITLE_CODECS})\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value={w}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value={h}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
@@ -336,11 +354,16 @@ impl Client {
     /// `audio_stream_id` is the track the demuxer will actually feed (0 = omit, PMS uses the
     /// part default). Smart direct-play names the AAC/AC3/EAC3 sibling here so MDE does not
     /// veto a TrueHD/DTS default we never intended to play.
+    ///
+    /// `subtitle_stream_id` is always sent: a positive id is an advertised embedded track Original
+    /// will client-render; **0** tells MDE to evaluate with subs off so a selected sidecar or
+    /// unadvertised codec does not force a burn/transcode. (`opt_int` would omit 0.)
     pub fn mde_decision(
         &self,
         rating_key: &str,
         session: &str,
         audio_stream_id: i64,
+        subtitle_stream_id: i64,
     ) -> Option<MediaContainer> {
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
@@ -354,7 +377,8 @@ impl Client {
             .int("mediaBufferSize", 20971)
             .str("session", session)
             .str("X-Plex-Session-Identifier", session)
-            .opt_int("audioStreamID", audio_stream_id);
+            .opt_int("audioStreamID", audio_stream_id)
+            .int("subtitleStreamID", subtitle_stream_id);
         let q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
@@ -1099,6 +1123,25 @@ mod tests {
         assert_eq!(list_of(target_of(&p), "audioCodec="), ["aac"]);
     }
 
+    /// The profile's `subtitleCodec=` list IS [`DP_SUBTITLE_CODECS`] — MDE's stream-id gate
+    /// reads the same constant, so a selected PGS/mov_text/dvd_subtitle cannot be advertised
+    /// here and omitted from `/decision`, or the other way around.
+    #[test]
+    fn the_direct_play_subtitle_list_is_the_shared_constant() {
+        let p = super::profile_for(&Caps::assumed());
+        assert!(
+            p.contains(&format!("subtitleCodec={})", super::DP_SUBTITLE_CODECS)),
+            "profile must interpolate DP_SUBTITLE_CODECS verbatim: {p}"
+        );
+        assert!(super::is_dp_subtitle("MOV_TEXT"));
+        assert!(super::is_dp_subtitle("dvd_subtitle"));
+        assert!(super::is_dp_subtitle("hdmv_pgs_subtitle"));
+        assert!(
+            !super::is_dp_subtitle("vplayer"),
+            "obscure aliases stay off the advertised set"
+        );
+    }
+
     /// PIN: the assumed (table-unreadable) profile is byte-identical to the constant string the
     /// app sent before devcaps existed. This is the fallback half of devcaps' contract — the
     /// derivation may never drift for a device that was working yesterday, and any deliberate
@@ -1108,7 +1151,7 @@ mod tests {
         assert_eq!(
             super::profile_for(&Caps::assumed()),
             "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc\
-             &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa,pgs,vobsub)\
+             &audioCodec=aac,ac3,eac3&subtitleCodec=srt,subrip,ass,ssa,mov_text,movtext,webvtt,text,pgs,hdmv_pgs_subtitle,vobsub,dvd,dvd_subtitle,dvdsub,dvb_subtitle,dvbsub)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
