@@ -165,7 +165,9 @@ on `main`, present on the branch a patch is being prepared from.
 ### 2. Write BOTH documents before building
 
 **The note** — `docs/release-notes/vX.Y.Z.md`, from `docs/release-notes/TEMPLATE.md`, to the
-standard in that directory's README. It is what a television owner reads, and it is short. Two
+standard in that directory's README. It is what a television owner reads, and it is short. Its
+opening `# vX.Y.Z — <theme>` line is not published as body text — CI lifts it into the release's
+title and strips it from the body, so it must name the tag exactly. Two
 rules a linter enforces and everyone forgets: **do not hard-wrap prose** (one source line per
 paragraph — GitHub wraps it), and **links must be absolute**, because a release body resolves no
 repository-relative path.

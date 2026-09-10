@@ -25,6 +25,8 @@ Two other readers exist — a webosbrew reviewer deciding whether to put an unsi
 
 A small standard, not a wall of mandatory sections. Sections that would add nothing are omitted; the order below is the default, and questions 3 and 4 override it.
 
+The H1 becomes the published release's title — CI lifts it out and hands it to GitHub as the release name, then strips it from the body, so it must not be repeated in the rendered body.
+
 ```markdown
 # vX.Y.Z — <short human-readable theme>
 
