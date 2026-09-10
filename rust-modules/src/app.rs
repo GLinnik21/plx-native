@@ -259,11 +259,13 @@ fn install_panic_logger() {
         let thread = cur.name().unwrap_or("?");
         let line = format!("*** RUST PANIC [{thread}] at {loc}: {msg}");
         log(&line);
+        // Same hardened sink as `crate::log`'s event log — 0600, O_NOFOLLOW, owned-regular-file
+        // checked and repaired — not a bare `OpenOptions`: this file is read back cross-launch by
+        // `telemetry::crashreport`, and on `make sim` / the macOS app bundle `src/main.c` (which
+        // otherwise chmods the fd 0600) never runs at all, so this hook is this file's creator.
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&crate::paths::in_runtime_dir("plxnative-crash.log"))
+        if let Ok(mut f) =
+            crate::open_private_log_append(&crate::paths::in_runtime_dir("plxnative-crash.log"))
         {
             let _ = writeln!(f, "{line}");
         }
@@ -5160,6 +5162,17 @@ unsafe fn key_onboarding(
         } else {
             crate::ui::profiles::key(sym, wcode);
         }
+    } else if is_ok(sym) && crate::ui::login::storage_readout_showing() {
+        // The storage read-out's *Try again* pill is this route's one action-row control face
+        // (`STORAGE_ACTION_POP`, drawn `.focused(true)` — it is the only thing OK can mean while
+        // the read-out is up). Arm the shared press exactly as the Onboard/Profiles branches
+        // above do for their own action pills, so the dip and spring-back bounce are on screen
+        // before the retry fires; the deferred commit reaches
+        // `crate::ui::login::commit_storage_retry` from `press::take_commit`'s dispatch. Do NOT
+        // also call `crate::ui::login::key` here — that would fall through to its own (now
+        // defensive no-op) OK branch, and a press this arms must resolve through exactly one path.
+        crate::ui::press::begin_ctl(SDL_GetTicks());
+        *ok_armed = true;
     } else {
         crate::ui::login::key(sym, wcode);
     }
@@ -6690,6 +6703,16 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
     // playback/UI regression cannot make the instrument unreachable. Compiled out with
     // `devtriggers`; a no-op in every other build.
     crate::dev::crash_on_purpose();
+    // If `plxnative-keymanager=<mode>` named a mode this build understands, say so loudly and
+    // before anything could have called `keymanager::seal`/`open` — session load is still ahead
+    // of this line. Compiled out with `devtriggers`; a no-op in every other build. Issue #76.
+    crate::keymanager::boot_log_fake_if_armed();
+    // If `plxnative-ls2identity` is armed, ask the LS2 hub for every registration shape once and
+    // log what it answers — HERE, because the next thing to register on the bus is
+    // `plex::session::load`'s keymanager call, and on a webOS 4 set `player::acb_init` has not yet
+    // taken the app-id name either. Compiled out with `devtriggers`; a no-op in every other build.
+    // Issue #76.
+    crate::webos::ls2_identity_probe_if_armed();
     // The first reportable event, and it is a marker with no fields on purpose — everything that
     // would qualify a launch (model, firmware, version, locale) is a session constant and belongs
     // in a sender's envelope, not repeated on every record. It reaches PostHog when the usage
@@ -9683,6 +9706,14 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         {
                             route = next;
                         }
+                    } else if matches!(route, Route::Login)
+                        && crate::ui::login::storage_readout_showing()
+                    {
+                        // The storage read-out's *Try again* pill, armed above in
+                        // `key_onboarding`'s OK-down branch — see that arm's own comment and
+                        // `commit_storage_retry`'s doc for why the retry itself waits for this
+                        // per-frame commit rather than firing on the key-down.
+                        crate::ui::login::commit_storage_retry();
                     } else {
                         match route {
                             // `Account { over: Home }` and not every `Account`: the popover can stand on

@@ -133,10 +133,50 @@ pub(crate) fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
 /// the simulator binary (which truncates it at startup), and `src/main.c` on the television — and
 /// the last of those cannot see this module, which is what [`paths::ENV_STEERABLE`] guarantees.
 fn events_log() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(p) = test_log_override() {
+        return p;
+    }
     paths::in_runtime_dir("plxnative-events.log")
 }
 
-fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+/// Test-only sink override for [`events_log`]. Without this, every test that truncated and read
+/// back `plxnative-events.log` (`telemetry::storage`, `telemetry::mod`) shared the SAME
+/// process-wide path — `paths::runtime_dir()` resolves to the literal `/tmp` in a test build — so
+/// a concurrent test process in another lane, or a live `make sim`/device-adjacent tool, could
+/// interleave a write between the truncate and the read-back, and `make check` in one worktree
+/// could clobber a live simulator's own event log (review finding, 2026-09-10). Keyed by this
+/// process's own pid so two `cargo test` processes never collide, even outside `testlock::serial()`.
+#[cfg(test)]
+static TEST_LOG: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn test_log_override() -> Option<std::path::PathBuf> {
+    TEST_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Point [`log`] at a scratch file private to this test PROCESS for the duration of the closure,
+/// then restore whatever was there before. Callers must still hold `testlock::serial()` — this
+/// only stops a DIFFERENT process from clobbering the file, not two tests in the same process from
+/// racing each other.
+#[cfg(test)]
+pub(crate) fn with_test_log<R>(f: impl FnOnce(&std::path::Path) -> R) -> R {
+    use std::os::unix::fs::OpenOptionsExt;
+    let p = std::env::temp_dir().join(format!("plxnative-log-test-{}", std::process::id()));
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&p);
+    *TEST_LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(p.clone());
+    let result = f(&p);
+    *TEST_LOG.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let _ = std::fs::remove_file(&p);
+    result
+}
+
+pub(crate) fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -151,7 +191,10 @@ fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::F
             "unsafe log sink",
         ));
     }
-    if meta.permissions().mode() & 0o777 != 0o600 {
+    // Same predicate as `session::repair_owned_mode`: only group/other bits are a security
+    // problem worth repairing (an owned file found at 0700 is left alone), so the two hardened
+    // sinks agree on what "widened" means rather than one being stricter than the other.
+    if meta.permissions().mode() & 0o077 != 0 {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(file)

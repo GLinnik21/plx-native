@@ -366,6 +366,14 @@ fn with_live_epoch<R>(epoch: u64, f: impl FnOnce() -> R) -> Option<R> {
 pub fn phase() -> Phase {
     with_ctl(|c| c.phase)
 }
+/// The flow's current attempt id (see `Ctl::attempt`'s own doc for what starts a new one).
+/// Exposed so a caller that captures it before starting async work OFF this flow — the
+/// storage-retry worker in `ui/login.rs` is the one caller today — can tell, once that work
+/// lands, whether the attempt it is about to act on is still the one it started against, or a
+/// later reset (a fresh sign-in, a restart) has already moved the flow on.
+pub fn current_attempt() -> u64 {
+    with_ctl(|c| c.attempt)
+}
 pub fn pin_code() -> String {
     with_ctl(|c| c.pin_code.clone())
 }
@@ -915,6 +923,76 @@ fn resume_stored(sess: Session) -> bool {
     true
 }
 
+/// **The sign-in screen's *Try again* worked: enter the app as the boot gate would have.**
+///
+/// A launch that booted with a sealed session it could not read starts the QR flow, because
+/// `session::load` had nothing to hand `app.rs`'s `can_go_local()` gate. Once
+/// `session::retry_secure_open` opens that envelope inside the same launch, the destination is
+/// not "a fresh sign-in has succeeded" — it is exactly the branch `plex_run`'s boot gate takes for
+/// a stored session, and this puts the flow there: the who's-watching picker when the account has
+/// a Plex Home roster and this is not an automated boot, otherwise `Phase::Ready`, which
+/// `take_ready` hands to the main loop's own `install_pms`/consent/Home step like every other
+/// resolved credential — `app.rs`'s generic `Route::Login`/`Route::Profiles` handling around
+/// `take_ready()` is the ONE place that runs `install_pms`, resets the nav trail and asks the
+/// first-run consent question, so both this path and a fresh QR sign-in already share it exactly.
+///
+/// **The one thing that generic handler does NOT do is `refresh_roster()`** — the boot gate's own
+/// straight-to-Home branch calls it explicitly, right after `install_pms`, because the roster it
+/// just installed came off DISK and may be stale (a share granted since the last write). This
+/// function's non-picker branch below is exactly that boot branch with the `install_pms` half
+/// deferred to `take_ready`'s caller, so it has to spend the online refresh itself, or a
+/// storage-retry resume would silently serve a staler roster than an ordinary boot would have —
+/// which review flagged this doc as promising it does not. The picker branch needs no matching
+/// call: [`start_switch`] already issues its own.
+///
+/// **Not [`cancel`]/[`resume_stored`]**, which run `resumable` first: that gate answers a
+/// different question (may BACK out of a sign-in silently reinstate a profile somebody else's PIN
+/// protects), and its `Picker::Boot` case is satisfied here by routing a multi-profile household
+/// to the picker rather than by refusing. Returns whether anything was resumed — `false` for a
+/// session the boot gate itself would not have accepted.
+pub fn resume_secure_session(sess: Session) -> bool {
+    if !sess.can_go_local() {
+        return false;
+    }
+    let picker = sess.home_users.len() > 1 && !crate::dev::any_trigger_present();
+    log(&format!(
+        "auth: the sealed session was recovered mid-launch — resuming (picker={picker})"
+    ));
+    if picker {
+        // The read client only, exactly as the boot gate installs before `start_switch`: the
+        // picker's own avatars proxy through the PMS photo transcoder, and the catalog fetch
+        // belongs to whichever profile is then chosen.
+        crate::plex::install(&sess.server.origin(), sess.pms_token());
+        session::set_current(Some(sess.user.clone()));
+        // Takes the activation gate itself (`cancel_and_load_session`), so it must not be called
+        // with the gate held.
+        start_switch(Picker::Boot);
+        return true;
+    }
+    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    // Retire the pin worker this launch started when it found no session: its poll would
+    // otherwise land a code nobody is looking at over the session just recovered.
+    AUTH_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    with_ctl(|c| {
+        *c = Ctl {
+            phase: Phase::Ready,
+            session: sess,
+            apply_pending: true,
+            from: Picker::Boot,
+            attempt: next_attempt(),
+            ..Ctl::default()
+        }
+    });
+    drop(_gate);
+    // The boot gate's own online roster refresh (see the doc above) — self-contained (it reloads
+    // the session from disk and spawns its own worker), so it needs neither the just-released gate
+    // nor the `sess` this function was handed, and its ordering against the `install_pms` that
+    // `take_ready`'s caller still owes is not load-bearing: `start_switch` already fires this call
+    // before ITS OWN `install_pms` equivalent ever runs.
+    refresh_roster();
+    true
+}
+
 /// Choose a profile with no PIN (or after the keypad, via [`submit_pin`]).
 pub fn select_profile(index: usize) {
     switch_thread(index, None);
@@ -932,6 +1010,19 @@ pub fn submit_pin(index: usize, pin: &str) {
 /// here too — every path that resolves credentials passes through this one function (sign-in, a
 /// profile pick, and `cancel`'s resume of the stored session), and a share that is not in the
 /// registry is a share nothing can browse.
+///
+/// **Stage B2 (issue #76 field report case 6): the chip must not lie about who is signed in just
+/// because the disk said no.** `session::save`'s write can fail outright (every candidate path
+/// refused) — rare, but on this app's own jail model not impossible — and `session::save_locked`
+/// only publishes its in-process cache once a write actually lands, so a caller that assumed
+/// "saved" and called `set_current` regardless used to leave `peek()` answering the *default*
+/// session for the rest of this run: the chip has a user, but every OTHER reader of the session
+/// (the account surfaces, `signed_in()`) reads back signed out. This run still worked — the
+/// in-memory `Ctl` holds real credentials — so it must still BEHAVE as signed in: publish the
+/// session into the cache unconditionally (`session::publish_unpersisted`, when the write itself
+/// failed) before calling `set_current`, and say once, loudly, that the sign-in will not survive a
+/// reboot. The write failure is reported on its own (`session::save_locked`'s own
+/// `StorageStage::WriteFailed`); this is the run-facing half.
 pub fn take_ready() -> Option<ReadyCreds> {
     // Serialize the whole-session handoff with background roster reconciliation. In particular,
     // a picker opened from a pre-refresh snapshot must not save that snapshot over a refresh that
@@ -940,7 +1031,12 @@ pub fn take_ready() -> Option<ReadyCreds> {
     let (sources, creds) = with_ctl(|c| {
         if c.phase == Phase::Ready && c.apply_pending {
             c.apply_pending = false;
-            session::save(&c.session);
+            if !session::save(&c.session) {
+                session::publish_unpersisted(c.session.clone());
+                log(
+                    "session: sign-in is NOT persisted on this install — it will be asked again next launch",
+                );
+            }
             session::set_current(Some(c.session.user.clone())); // drives the Home profile chip
             Some((
                 c.session.sources.clone(),
@@ -6442,6 +6538,7 @@ mod tests {
             key: "plxnative.session.v1".into(),
             iv: "AAAAAAAAAAAAAAAAAAAAAA==".into(),
             data: "c2VjcmV0".into(),
+            identity: crate::keymanager::Identity::Anonymous,
         };
         let envelope = serde_json::json!({
             "format": "plxnative-secure-session",
@@ -6474,6 +6571,55 @@ mod tests {
 
         crate::plex::session::redirect_for_test(None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Stage B2 item 2 (issue #76 field report case 6, ported): a save that cannot write must not
+    /// leave the RUN looking signed out.** `session::save_locked` only publishes its in-process
+    /// cache once a write actually lands, so on an install where every candidate refuses the write
+    /// (a jail-profile directory that LOOKS writable and is not — `auth_paths`'s own doc), the old
+    /// `take_ready` called `session::set_current` unconditionally right after `session::save`
+    /// regardless of whether anything was actually written — leaving the account chip showing a
+    /// user while every OTHER reader of the session (`session::peek`, `signed_in()`) answered the
+    /// default. That is exactly "the chip said *Sign in* during the run that had just signed in".
+    #[test]
+    fn field_6_a_save_that_cannot_write_leaves_the_run_looking_signed_in_anyway() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = crate::testlock::serial();
+
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-auth-unwritable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp dir to start from");
+        let file = dir.join("auth.json");
+        crate::plex::session::redirect_for_test(Some(file));
+        crate::keymanager::disarm_for_test(); // no key manager on this install — plain plaintext save
+        // Make the candidate's OWN directory refuse a new entry — the jail-profile shape a
+        // "writable-looking but is not" candidate takes on a real television.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        with_ctl(|c| {
+            *c = Ctl {
+                phase: Phase::Ready,
+                apply_pending: true,
+                session: signed_in_as("u-adult"),
+                ..Ctl::default()
+            }
+        });
+        let ready = take_ready();
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let seen = crate::plex::session::peek().account_token;
+
+        assert!(ready.is_some(), "the run still resolved credentials in memory");
+        assert_eq!(
+            seen, "acct",
+            "the sign-in this run just took must at least be true FOR this run — a failed \
+             persist is a reason to warn, not a reason for every other reader to see signed out"
+        );
+
+        crate::plex::session::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(&dir);
+        with_ctl(|c| *c = Ctl::default());
     }
 
     /// A fresh flow starts believing plex.tv is fine — the failing state of whatever flow came

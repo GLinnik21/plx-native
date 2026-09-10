@@ -57,10 +57,26 @@ use std::sync::RwLock;
 /// The version of *what is collected and why*. Bumping it re-asks.
 ///
 /// **This is not the wire schema's version**, and the distinction collapses the moment nobody
-/// writes the rule down, so: **a new field bumps this unless it is derivable from a field already
-/// declared.** A raster added beside an existing width and height does not; a new event does. The
-/// incentive gradient runs towards never bumping — every bump costs consent — which is exactly why
-/// the rule lives here rather than in a reviewer's head.
+/// writes the rule down. **The rule is the PURPOSE, not the field count** (owner decision,
+/// 2026-09-10 — scope, not policy version), and it has exactly two outcomes, which is why the
+/// gradient argument below is not the whole story:
+///
+///  * A new field that **widens what is collected beyond the described purpose of the category it
+///    rides in** bumps that category's SCOPE ([`ERRORS_SCOPE`]/[`USAGE_SCOPE`], with a
+///    [`SCOPE_CHANGES`] row), and the people who have that category on are asked about that
+///    category alone. A whole new report, or a new event, is always this.
+///  * A new field **inside a purpose the notice already describes** bumps [`NOTICE_REVISION`]
+///    instead: the words change so the notice stays true, and nobody is re-asked. `registered_with_name`
+///    and `sealed_identity` (2026-09-10) are the worked example — both answer "how is your sign-in
+///    stored", which is the whole of what the version-6 question put, so re-asking for them would
+///    have charged a person consent for a more precise answer to the question they already
+///    answered. Derivability from a declared field is a SUFFICIENT reason to be in this bucket,
+///    not the boundary of it.
+///
+/// The incentive gradient runs towards never bumping the first kind — every bump costs consent —
+/// which is why "does this stay inside the purpose the notice describes" is a written rule with a
+/// test behind it (`telemetry::storage`'s `the_storage_report_fields_are_a_documented_list`)
+/// rather than a judgement made in review and forgotten.
 // Version 4 combines the compatibility/network dimensions introduced by version 3 with handled
 // playback-error events and their bounded typed breadcrumb sequence. Existing version-3 answers
 // covered the former but not the latter, so they must be asked again rather than silently expanded.
@@ -95,13 +111,117 @@ const REASK_CHANGES: &[(u32, &str)] = &[
     ),
     (
         5,
-        "Crash reports can now include a sign-in error report when a sign-in fails.",
+        "Crash reports can now include a sign-in error report.",
     ),
     (
         6,
-        "Reports can now say how the sign-in is stored and why it was refused.",
+        "Reports can now say how your sign-in is stored.",
     ),
 ];
+
+// ---- Model stage M1: per-category consent SCOPE (owner decision, 2026-09-10) -------------------
+//
+// The rule above this line — one `POLICY_VERSION` shared by both channels, and a bump re-asks
+// EVERYONE, about EVERYTHING — is too coarse: "updated the privacy notice → ask everyone again."
+// [`POLICY_VERSION`]/[`REASK_CHANGES`]/[`apply`]/[`reask_note`]/[`should_ask`] above stay exactly
+// as they were for the one caller that still asks the monolithic question this way — `ui::consent`'s
+// first-run screen and its Settings toggle, not yet rebuilt for this model (that is its own,
+// later change). Everything below is the model those call sites will move onto: **a notice
+// revision (text edits) never re-asks; a consent SCOPE expansion re-asks only the people who have
+// that category ON, only for that category; a stored No stays No; an event belonging to a scope a
+// person has not yet accepted is held back, never the whole category.**
+
+/// The version of *the words on the consent screen*, with no bearing on who gets asked again.
+/// Bumping this changes what the notice SAYS without re-opening the question for anybody — the
+/// counterpart to [`ERRORS_SCOPE`]/[`USAGE_SCOPE`], which are what actually gates a re-ask. Not
+/// stored on [`Consent`]: nothing here depends on which revision a person last read, because a
+/// pure text edit never needs to be told apart from the current one.
+///
+/// **Not yet read anywhere.** It belongs to the redesigned consent SCREEN this model change is
+/// preparing (`ui::consent` still asks the old monolithic question, per-category and all — see
+/// [`should_ask`]'s doc), so it has no caller yet; kept and named now so a future text-only notice
+/// edit has an obvious place to record "this changed the words, not what is collected".
+// Revision 2 (issue #76 review): the notice gained the cross-launch storage-probe paragraph and
+// the `write_failed` stage — words changed, not what is collected, so this bumps alone with no
+// re-ask. This is the exact edit the doc above asks a text-only notice change to record here.
+// Revision 3 (2026-09-10): the storage report gained two facts about the SAME thing scope 6
+// already covers — "how your sign-in is stored" — so the notice describes them and nothing is
+// re-asked. `registered_with_name` (the app registered under a fixed bus NAME rather than as an
+// application service) and `sealed_identity` (which of those identities protects the saved
+// sign-in this particular report is about, or `none`). Both fit the data and the purpose the
+// version-6 question already put; neither widens either, so `ERRORS_SCOPE` stays at 6 — the exact
+// case the notice's own "a new field that still fits the data and purpose you already read about"
+// sentence describes.
+#[allow(dead_code)]
+pub(crate) const NOTICE_REVISION: u32 = 3;
+
+/// The Crash reports channel's collected-data scope. Grew at 4 (playback error report), 5
+/// (sign-in error report) and 6 (storage facts — `StorageError`, and `session_storage` riding the
+/// sign-in error report). A person whose accepted [`Consent::errors_scope`] is below this has a
+/// pending extension for [`Category::Errors`] — see [`pending_extensions`].
+pub(crate) const ERRORS_SCOPE: u32 = 6;
+
+/// The Product analytics channel's collected-data scope. Grew at 6 only (the `session_storage`
+/// property riding every usage event) — usage never grew at 4 or 5, which is why a migrated
+/// version-4 or version-5 answer's [`scope_at_policy_version`] for usage is *itself*, not 0: those
+/// answers already covered every usage field that existed at the time.
+pub(crate) const USAGE_SCOPE: u32 = 6;
+
+/// The two channels a consent scope can independently grow for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Category {
+    Errors,
+    Usage,
+}
+
+/// One row per (category, scope) bump, for [`extension_note`] and for [`scope_at_policy_version`]'s
+/// migration math. **Add a row here in the SAME change that bumps [`ERRORS_SCOPE`] or
+/// [`USAGE_SCOPE`]** — [`every_scope_bump_has_a_row`] catches the omission.
+const SCOPE_CHANGES: &[(Category, u32, &str)] = &[
+    (
+        Category::Errors,
+        4,
+        "Crash reports can now include a playback error report with its steps.",
+    ),
+    (
+        Category::Errors,
+        5,
+        "Crash reports can now include a sign-in error report.",
+    ),
+    (
+        Category::Errors,
+        6,
+        "Reports can now say how your sign-in is stored.",
+    ),
+    (
+        Category::Usage,
+        6,
+        "Reports can now include how your sign-in is stored.",
+    ),
+];
+
+/// The scope `cat` had as of the (now-retired) monolithic `POLICY_VERSION` numbered `version` —
+/// used only to migrate an old single-version file into the two-scope model. The most recent
+/// [`SCOPE_CHANGES`] row for `cat` at or before `version`, or `version` itself when `cat` had no
+/// row that old: usage never bumped at versions 4 or 5, so a version-4 "yes" to usage already
+/// covered everything usage had at version 4 — which, under the old joint numbering, is exactly
+/// what answering "yes" at version 4 meant for a field set that had not yet grown.
+fn scope_at_policy_version(version: u32, cat: Category) -> u32 {
+    SCOPE_CHANGES
+        .iter()
+        .filter(|&&(c, v, _)| c == cat && v <= version)
+        .map(|&(_, v, _)| v)
+        .max()
+        .unwrap_or(version)
+}
+
+/// The current scope for `cat` — [`ERRORS_SCOPE`] or [`USAGE_SCOPE`].
+fn current_scope(cat: Category) -> u32 {
+    match cat {
+        Category::Errors => ERRORS_SCOPE,
+        Category::Usage => USAGE_SCOPE,
+    }
+}
 
 /// Why is this television being asked again? `None` when there is nothing to explain —
 /// `previous == 0` (never asked; this is a first run, not a re-ask) or `previous >=
@@ -161,12 +281,51 @@ pub(crate) struct Consent {
     /// which destroys both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errors_id: Option<String>,
+    /// The [`ERRORS_SCOPE`] this person actually ACCEPTED for the Crash reports channel — `0` when
+    /// [`Self::errors`] is off (irrelevant) or the question has never been engaged at all. Never
+    /// rewritten retroactively: a scope bump changes [`ERRORS_SCOPE`], not this field, until the
+    /// person answers the extension it creates.
+    #[serde(default)]
+    pub errors_scope: u32,
+    /// The [`USAGE_SCOPE`] equivalent of [`Self::errors_scope`], for Product analytics.
+    #[serde(default)]
+    pub usage_scope: u32,
+    /// **The Crash reports channel's own "no, not that expansion" memory.** The [`ERRORS_SCOPE`]
+    /// this person was looking at the LAST TIME they declined an extension for this category — `0`
+    /// means never declined one. Owner decision, 2026-09-10: **a No to an extension is not a
+    /// withdrawal.** It leaves [`Self::errors`]/[`Self::errors_id`]/[`Self::errors_scope`] exactly
+    /// where they were — the category keeps sending at the scope already accepted — and this field
+    /// alone is what stops [`pending_extensions`] from asking the same question again the very next
+    /// boot. It is cleared the moment the scope grows past it (a genuinely NEW expansion, which
+    /// deserves its own question) or the category is explicitly turned on through Settings (a fresh
+    /// opt-in has nothing pending to remember a No against). Withdrawing the category through
+    /// Settings' OFF switch is the one door that actually turns [`Self::errors`] off, and it clears
+    /// this too, since a category that is off has nothing extension-pending to decline.
+    #[serde(default)]
+    pub errors_declined_scope: u32,
+    /// [`Self::errors_declined_scope`]'s twin for Product analytics.
+    #[serde(default)]
+    pub usage_declined_scope: u32,
 }
 
 impl Consent {
     /// Has this person been asked, against the CURRENT policy? A bump re-asks.
+    ///
+    /// This is the LEGACY monolithic gate: `asked_version` is set once, by [`apply`]'s full
+    /// question, to [`POLICY_VERSION`] — which this maintenance line freezes at 6 — and never again,
+    /// because a collected-data change after that point grows [`ERRORS_SCOPE`]/[`USAGE_SCOPE`]
+    /// instead. So `answered()` stays true forever once the first-run screen has been answered, and
+    /// it is deliberately NOT how [`allows_errors`]/[`allows_usage`] are gated — see their docs.
     pub(crate) fn answered(&self) -> bool {
         self.asked_version >= POLICY_VERSION
+    }
+    /// Has this person engaged the consent question AT ALL, at any scope? Distinct from
+    /// [`Self::answered`], which asks about the current (frozen) policy version specifically —
+    /// `ever_answered` is what tells a genuinely fresh install apart from one whose decision merely
+    /// predates a later scope bump, which `diag::event`'s sign-in defer needs: a person who already
+    /// decided (even a stale "yes") is not the case that funnel exists for.
+    pub(crate) fn ever_answered(&self) -> bool {
+        self.asked_version > 0
     }
     /// Is anything switched on at all?
     pub(crate) fn any(&self) -> bool {
@@ -181,8 +340,96 @@ impl Consent {
 /// heartbeat on a known route, and every `sim-shot` script drives a screen it chose. Getting this
 /// wrong would not fail loudly — it would quietly re-point every headless run at a screen nobody
 /// wrote an assertion for.
+///
+/// **Model stage M1 (owner decision, 2026-09-10):** a fresh install (`asked_version == 0`) gets the
+/// full first-run question, exactly as before. Otherwise the question is never "has the policy
+/// moved" — it is [`pending_extensions`]: are there categories this person has ON whose accepted
+/// scope trails [`ERRORS_SCOPE`]/[`USAGE_SCOPE`]? A category left OFF is never re-asked by a scope
+/// bump, because a stored No is a real decision, not an unanswered one — and neither is a category
+/// already accepted at the current scope.
 pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
-    !automated && !c.answered()
+    if automated {
+        return false;
+    }
+    if c.asked_version == 0 {
+        return !c.answered();
+    }
+    !pending_extensions(c).is_empty()
+}
+
+/// Which categories does `c` have ON whose accepted scope trails the current one? Empty for a
+/// category that is OFF (a stored No is never re-asked), for one already at
+/// [`ERRORS_SCOPE`]/[`USAGE_SCOPE`], and — since the 2026-09-10 scope-versions model — for one
+/// whose most recent DECLINE already covers the current scope
+/// (`declined_scope >= current_scope`): a No is a real decision and is not re-asked until the
+/// scope grows PAST what was declined. A later expansion (current scope > declined scope) makes
+/// the category pending again — the gap widened after the No — and [`extension_note`] then lists
+/// every row above the ACCEPTED scope, not just the ones past the decline, so a second question
+/// re-offers the whole gap rather than only the newest sliver.
+pub(crate) fn pending_extensions(c: &Consent) -> Vec<Category> {
+    let mut v = Vec::new();
+    if c.errors && c.errors_scope < ERRORS_SCOPE && c.errors_declined_scope < ERRORS_SCOPE {
+        v.push(Category::Errors);
+    }
+    if c.usage && c.usage_scope < USAGE_SCOPE && c.usage_declined_scope < USAGE_SCOPE {
+        v.push(Category::Usage);
+    }
+    v
+}
+
+/// Why is `cat` being asked again, for the television owner this is re-asking? `None` when `cat`
+/// is not actually pending (nothing to explain) — otherwise every [`SCOPE_CHANGES`] row for `cat`
+/// strictly after its ACCEPTED scope and up to the current one, accumulated in order, so a 4→6
+/// jump names both the version-5 and version-6 change for that category alone.
+///
+/// **Deliberately keyed off the accepted scope, never the declined one.** A person who said No at
+/// scope 4 and is now pending again because the scope grew to 6 sees the SAME note a person who
+/// had never been asked before would see for that same 4→6 gap — every row since what they last
+/// actually agreed to, including the one they already declined. The alternative (naming only the
+/// rows past the decline) would silently under-explain a second question: the person never accepted
+/// the version-5 change either, so leaving it out of the note reads as though it were settled.
+///
+/// **Model stage M2's caller**: `ui::consent::open` calls this once per category at ceremony
+/// open (never from the draw path — it builds a fresh owned `String` on every call) and leaks the
+/// result for the extension screen's note line.
+pub(crate) fn extension_note(c: &Consent, cat: Category) -> Option<String> {
+    if !pending_extensions(c).contains(&cat) {
+        return None;
+    }
+    let accepted = match cat {
+        Category::Errors => c.errors_scope,
+        Category::Usage => c.usage_scope,
+    };
+    let current = current_scope(cat);
+    let mut note = String::from("Asking again because what is collected has changed: ");
+    let mut wrote_any = false;
+    for &(row_cat, version, what_changed) in SCOPE_CHANGES {
+        if row_cat == cat && version > accepted && version <= current {
+            if wrote_any {
+                note.push(' ');
+            }
+            note.push_str(what_changed);
+            wrote_any = true;
+        }
+    }
+    wrote_any.then_some(note)
+}
+
+/// Migrate a file written before per-category scope existed. A file with `asked_version >= 1` (it
+/// was answered against the old monolithic policy) and a category flag ON gets that category's
+/// `_scope` field backfilled to [`scope_at_policy_version`] — **only when the loaded scope is still
+/// `0`**, so this is a no-op on a file the current code already wrote (idempotent to call on every
+/// load) and never overwrites an accepted scope retroactively. A flag OFF needs no scope at all.
+pub(crate) fn migrate_loaded(mut c: Consent) -> Consent {
+    if c.asked_version >= 1 {
+        if c.errors && c.errors_scope == 0 {
+            c.errors_scope = scope_at_policy_version(c.asked_version, Category::Errors);
+        }
+        if c.usage && c.usage_scope == 0 {
+            c.usage_scope = scope_at_policy_version(c.asked_version, Category::Usage);
+        }
+    }
+    c
 }
 
 /// **The one transition.** Apply a person's answer to the previous state.
@@ -200,13 +447,22 @@ pub(crate) fn should_ask(c: &Consent, automated: bool) -> bool {
 /// mint. `/dev/urandom` does not fail on this platform; the branch exists so that the behaviour is
 /// a decision rather than an accident.
 ///
-/// Five behaviours, and each is a test below:
+/// Six behaviours, and each is a test below:
 /// * enabling a channel, with no identifier yet, mints one for THAT channel;
 /// * enabling it again does NOT re-mint;
 /// * disabling a channel DROPS its identifier, independently of the other channel;
 /// * a channel whose mint returns `None` is recorded as off, and the other channel still counts;
 /// * the answer is recorded against the current [`POLICY_VERSION`] either way, so a "no" is a real
-///   answer and is not re-asked until the policy itself changes.
+///   answer and is not re-asked until the policy itself changes;
+/// * **a channel that was ALREADY on and stays on keeps its OLD accepted scope**, rather than
+///   silently being bumped to the current one — this is also the door Settings edits go through
+///   (`ui::consent::record_answer`'s non-extension branch), and a person editing one category must
+///   not have the OTHER category's still-pending scope extension accepted for them as a side
+///   effect of that edit. Only a channel that is genuinely NEWLY turned on here (off in `prev`,
+///   on now) gets the current scope — that press really is an answer to the current question for
+///   that channel, the same as a fresh first-run opt-in. A category with a pending extension that
+///   stays on unchanged keeps `pending_extensions`/`should_ask` naming it, exactly as before this
+///   edit.
 pub(crate) fn apply(
     prev: &Consent,
     errors: bool,
@@ -224,13 +480,130 @@ pub(crate) fn apply(
     };
     let errors_id = keep_or_mint(errors, &prev.errors_id);
     let install_id = keep_or_mint(usage, &prev.install_id);
+    let errors = errors && errors_id.is_some();
+    let usage = usage && install_id.is_some();
+    // A category that was already on and stays on keeps its OLD accepted scope — only a channel
+    // genuinely newly turned on here gets bumped to the current scope. See the doc above: this is
+    // what stops a Settings edit of one category from silently accepting the other's pending scope
+    // extension as a side effect.
+    let errors_scope = if !errors {
+        0
+    } else if prev.errors {
+        prev.errors_scope
+    } else {
+        current_scope(Category::Errors)
+    };
+    let usage_scope = if !usage {
+        0
+    } else if prev.usage {
+        prev.usage_scope
+    } else {
+        current_scope(Category::Usage)
+    };
+    // A category turned OFF here has nothing extension-pending to remember a No against; a
+    // category genuinely turned ON here (was off in `prev`) is a fresh opt-in, and a fresh opt-in
+    // has no prior decline either — see `Consent::errors_declined_scope`'s doc. Only a category
+    // that was ALREADY on and stays on keeps whatever it had declined, exactly like its scope above.
+    let errors_declined_scope = if !errors || !prev.errors {
+        0
+    } else {
+        prev.errors_declined_scope
+    };
+    let usage_declined_scope = if !usage || !prev.usage {
+        0
+    } else {
+        prev.usage_declined_scope
+    };
     Consent {
         asked_version: POLICY_VERSION,
-        errors: errors && errors_id.is_some(),
-        usage: usage && install_id.is_some(),
+        errors,
+        usage,
         install_id,
         errors_id,
+        errors_scope,
+        usage_scope,
+        errors_declined_scope,
+        usage_declined_scope,
     }
+}
+
+/// **The scope-EXTENSION transition.** Apply a person's answer to exactly ONE pending category —
+/// see [`pending_extensions`] — leaving the other category's flag, identifier and accepted scope
+/// entirely untouched either way. `mint` behaves exactly as in [`apply`]: called at most once, only
+/// when this category actually needs a fresh identifier (in practice never here, since
+/// [`pending_extensions`] only names a category that is already on and so already holds one), and a
+/// `None` from it refuses the extension the same way a failed mint refuses a fresh opt-in.
+///
+/// **Owner decision, 2026-09-10: a No to an extension is not a withdrawal.** A "Yes" KEEPS the
+/// existing identifier (an extension is not a fresh opt-in) and raises the ACCEPTED
+/// `errors_scope`/`usage_scope` to the current one, clearing any earlier decline. A "No" changes
+/// NOTHING about whether the category is on, its identifier, or its accepted scope — the category
+/// keeps sending at exactly the scope it already agreed to, nothing of the NEW scope goes out
+/// ([`pending_extensions`]/`allows_*_at` are what withhold that), and the only field this writes is
+/// `errors_declined_scope`/`usage_declined_scope`, so the same question is not asked again until
+/// the scope grows further still. Withdrawing the category is a different door entirely — Settings'
+/// OFF switch, through [`apply`] — and stays exactly where it always was.
+///
+/// **Model stage M2's caller**: `ui::consent::record_answer` folds this once per
+/// [`pending_extensions`] category the open ceremony actually asked about, leaving every category
+/// it did not ask about untouched — including the OTHER one, on a ceremony asking about only one.
+///
+/// **Also stamps [`Consent::asked_version`] to [`POLICY_VERSION`].** An extension answer IS an
+/// answer against the current policy — this is the question `should_ask`/`pending_extensions`
+/// route to instead of the first-run one, not a lesser one — and `Consent::answered()` stays the
+/// wire gate `sender::allowed`/`native::sync`/`mod.rs`'s boot line all read. Without this, an old
+/// install (shipped `asked_version` 4 or 5) that accepts an extension never becomes `answered()`,
+/// so every record of BOTH categories is retired unsent forever and the native crash backend never
+/// arms — silently, since `allows_errors`/`allows_usage` (M1) do not depend on `answered()` and so
+/// see nothing wrong. This does not skip a still-pending OTHER category's own question:
+/// `pending_extensions`/`should_ask` key off the per-category `_scope` fields, which this only
+/// advances for `cat`.
+pub(crate) fn apply_extension(
+    prev: &Consent,
+    cat: Category,
+    answer: bool,
+    mut mint: impl FnMut() -> Option<String>,
+) -> Consent {
+    let mut next = prev.clone();
+    next.asked_version = POLICY_VERSION;
+    if !answer {
+        // **Owner decision, 2026-09-10: a No to an extension is not a withdrawal.** The category
+        // stays ON, at the scope it was already accepted at — its flag, identifier and accepted
+        // `_scope` are untouched — and nothing of the NEW scope is sent, which is what
+        // `pending_extensions`/`allows_*_at` already enforce off the unchanged accepted scope.
+        // The only thing this records is the refusal itself, so the same question is not asked
+        // again on the very next boot: `declined_scope` is set to the scope being declined.
+        // Withdrawing the category outright stays exactly where it always was — Settings' own OFF
+        // switch, through `apply`, which is the only door that actually turns a category off.
+        match cat {
+            Category::Errors => next.errors_declined_scope = current_scope(cat),
+            Category::Usage => next.usage_declined_scope = current_scope(cat),
+        }
+        return next;
+    }
+    let mut resolve = |had_id: &Option<String>| -> Option<String> {
+        match had_id {
+            Some(id) if !id.is_empty() => Some(id.clone()),
+            _ => mint().filter(|id| !id.is_empty()),
+        }
+    };
+    match cat {
+        Category::Errors => {
+            let id = resolve(&prev.errors_id);
+            next.errors = id.is_some();
+            next.errors_scope = if next.errors { current_scope(cat) } else { 0 };
+            next.errors_declined_scope = 0;
+            next.errors_id = id;
+        }
+        Category::Usage => {
+            let id = resolve(&prev.install_id);
+            next.usage = id.is_some();
+            next.usage_scope = if next.usage { current_scope(cat) } else { 0 };
+            next.usage_declined_scope = 0;
+            next.install_id = id;
+        }
+    }
+    next
 }
 
 // ---- the cached snapshot, and the disk under it ------------------------------------------------
@@ -266,21 +639,49 @@ pub(crate) fn current() -> Option<Consent> {
 /// **Fails closed.** No snapshot installed, or a poisoned lock, both answer `false` — a build that
 /// has not loaded a decision has not been given one, and the only safe reading of "I do not know"
 /// here is no.
+///
+/// **Means "the category is ON, at ANY accepted scope"** — deliberately NOT gated on
+/// [`Consent::answered`]/scope staleness, unlike before model stage M1. A person whose usage
+/// consent predates the current [`USAGE_SCOPE`] still gets ordinary usage events; only the FIELDS a
+/// scope bump actually added are held back, per event, by [`allows_usage_at`] — the
+/// `session_storage` property is the one that exists today.
 pub(crate) fn allows_usage() -> bool {
     CURRENT
         .read()
-        .map(|g| g.as_ref().is_some_and(|c| c.answered() && c.usage))
+        .map(|g| g.as_ref().is_some_and(|c| c.usage))
         .unwrap_or(false)
 }
 
 /// May an ERROR report be sent? The crash channel's twin of [`allows_usage`], failing closed for
-/// the same reason. It gates both `crashreport::report_pending` (the only thing that opens the
-/// crash log at all) and the sparse in-memory playback-error trace. Consent gates collection, not
-/// just the send: a television whose owner said no is neither scanned for faults nor traced.
+/// the same reason and meaning the same "on at any scope" thing. It gates both
+/// `crashreport::report_pending` (the only thing that opens the crash log at all) and the sparse
+/// in-memory playback-error trace. Consent gates collection, not just the send: a television whose
+/// owner said no is neither scanned for faults nor traced.
 pub(crate) fn allows_errors() -> bool {
     CURRENT
         .read()
-        .map(|g| g.as_ref().is_some_and(|c| c.answered() && c.errors))
+        .map(|g| g.as_ref().is_some_and(|c| c.errors))
+        .unwrap_or(false)
+}
+
+/// May a report belonging to the Crash reports channel's `scope`-numbered field set be sent? The
+/// per-FIELD twin of [`allows_errors`] — the sign-in error report (scope 5), the storage error
+/// report (scope 6) and the playback error report (scope 4) each ask this with their own number
+/// rather than the coarse [`allows_errors`], so a person whose accepted scope trails the field's
+/// own is held back on exactly that field, not the whole channel.
+pub(crate) fn allows_errors_at(scope: u32) -> bool {
+    CURRENT
+        .read()
+        .map(|g| g.as_ref().is_some_and(|c| c.errors && c.errors_scope >= scope))
+        .unwrap_or(false)
+}
+
+/// The Product analytics twin of [`allows_errors_at`] — the `session_storage` property (usage
+/// scope 6) is today's one caller.
+pub(crate) fn allows_usage_at(scope: u32) -> bool {
+    CURRENT
+        .read()
+        .map(|g| g.as_ref().is_some_and(|c| c.usage && c.usage_scope >= scope))
         .unwrap_or(false)
 }
 
@@ -290,11 +691,10 @@ pub(crate) fn allows_errors() -> bool {
 /// but a producer must READ it rather than assume it: the failure would be a report carrying a
 /// fabricated or empty id, which is the one outcome this field exists to make impossible.
 pub(crate) fn errors_id() -> Option<String> {
-    CURRENT.read().ok().and_then(|g| {
-        g.as_ref()
-            .filter(|c| c.answered() && c.errors)
-            .and_then(|c| c.errors_id.clone())
-    })
+    CURRENT
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().filter(|c| c.errors).and_then(|c| c.errors_id.clone()))
 }
 
 #[cfg(test)]
@@ -397,6 +797,92 @@ mod tests {
         assert_eq!(third, second);
     }
 
+    /// **Regression: a Settings edit of ONE category must not silently accept the OTHER category's
+    /// pending scope extension.** `prev` is at scope 4 for both, current is 6 for both (a real
+    /// shape once `ERRORS_SCOPE`/`USAGE_SCOPE` moved past this maintenance line's frozen values in
+    /// a test double below) — turning usage off through `apply` (Settings' non-extension door) must
+    /// leave `errors_scope` exactly where it was, since errors was never touched by this edit, and
+    /// `pending_extensions` must still name it.
+    #[test]
+    fn a_settings_edit_of_one_category_does_not_silently_accept_the_others_pending_scope() {
+        let prev = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            usage: true,
+            usage_scope: 4,
+            install_id: Some("u".repeat(32)),
+            ..Default::default()
+        };
+        assert_eq!(
+            pending_extensions(&prev),
+            vec![Category::Errors, Category::Usage]
+        );
+
+        // Turn usage OFF; errors stays on, untouched by this edit.
+        let next = apply(&prev, true, false, || panic!("must not mint turning usage off"));
+        assert!(next.errors && !next.usage);
+        assert_eq!(
+            next.errors_scope, 4,
+            "errors was not touched by this edit — its scope must not silently advance to current"
+        );
+        assert_eq!(
+            pending_extensions(&next),
+            vec![Category::Errors],
+            "errors' extension question must still be pending after an unrelated edit"
+        );
+
+        // A category genuinely turned ON by this same edit still gets the current scope — that
+        // press really is a fresh answer for it.
+        let fresh_on = apply(&next, true, true, || Some("u2".repeat(16)));
+        assert_eq!(fresh_on.usage_scope, USAGE_SCOPE, "a fresh opt-in gets the current scope");
+        assert_eq!(fresh_on.errors_scope, 4, "errors, still untouched, still keeps its old scope");
+    }
+
+    /// **A Settings edit's two doors onto `errors_declined_scope`.** Turning a category ON after a
+    /// No is a FRESH opt-in — it gets the current scope and the decline is forgotten, exactly like
+    /// a first answer, because there is nothing left pending to remember a refusal against. Turning
+    /// it OFF clears the memory too, since an off category has nothing extension-pending to have
+    /// declined. Neither is `apply_extension`'s door (that one records a decline without touching
+    /// the flag) — this is Settings' own on/off switch, through `apply`.
+    #[test]
+    fn a_settings_edit_turning_a_category_on_after_a_no_clears_the_decline_and_off_clears_both() {
+        let declined = Consent {
+            asked_version: POLICY_VERSION,
+            errors: true,
+            errors_scope: 4,
+            errors_declined_scope: ERRORS_SCOPE,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        assert!(pending_extensions(&declined).is_empty(), "the No still stands");
+
+        // OFF then back ON through Settings — a fresh opt-in, not a re-acceptance of the old
+        // decline.
+        let off = apply(&declined, false, false, || panic!("no mint on a withdrawal"));
+        assert_eq!(off.errors_scope, 0);
+        assert_eq!(off.errors_declined_scope, 0, "an off category remembers no decline");
+
+        let back_on = apply(&off, true, false, || Some("fresh".into()));
+        assert_eq!(
+            back_on.errors_scope, ERRORS_SCOPE,
+            "a fresh opt-in gets the current scope, like any first answer"
+        );
+        assert_eq!(
+            back_on.errors_declined_scope, 0,
+            "the earlier No is forgotten — it belonged to the identity that was withdrawn"
+        );
+        assert!(pending_extensions(&back_on).is_empty());
+
+        // Staying ON across an unrelated edit keeps the memory of the decline exactly as it was.
+        let unrelated_edit = apply(&declined, true, true, || Some("u".repeat(16)));
+        assert_eq!(
+            unrelated_edit.errors_declined_scope, ERRORS_SCOPE,
+            "errors stayed on through this edit, so its decline is untouched"
+        );
+    }
+
     /// **Withdrawal drops the identifier.** Neither vendor can delete data belonging to no account,
     /// so severing the link locally is the only thing this app controls: a later opt-in is a new
     /// install rather than a resumed profile.
@@ -470,23 +956,30 @@ mod tests {
         assert!(!empty.errors && empty.errors_id.is_none());
     }
 
-    /// The crash-report id accessor reads the SNAPSHOT and fails closed exactly like the gates: a
-    /// stale-policy yes, or an unanswered decision, yields no id however the field is set.
+    /// The crash-report id accessor reads the SNAPSHOT and fails closed on the flag: an unanswered
+    /// decision or the wrong channel yields no id, but — model stage M1 — a stale ACCEPTED SCOPE no
+    /// longer withholds it, because the coarse channel and its baseline crash reports stay valid
+    /// across a scope bump; only the NEW per-field report types are scope-gated, and that gate is
+    /// [`allows_errors_at`], tested separately.
     #[test]
-    fn the_errors_id_accessor_fails_closed_with_the_gate() {
+    fn the_errors_id_accessor_fails_closed_on_the_flag_not_on_scope_staleness() {
         let _g = crate::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
         install(Consent {
-            asked_version: POLICY_VERSION - 1,
+            asked_version: 4,
             errors: true,
-            errors_id: Some("stale".into()),
+            errors_scope: 4,
+            errors_id: Some("stale-scope".into()),
             ..Default::default()
         });
-        assert!(!allows_errors());
         assert!(
-            errors_id().is_none(),
-            "a stale-policy id must not be reported"
+            allows_errors(),
+            "a stale ACCEPTED SCOPE still authorises the baseline crash-report channel"
         );
+        assert_eq!(errors_id().as_deref(), Some("stale-scope"));
+        install(Consent::default());
+        assert!(!allows_errors(), "an unanswered decision fails closed");
+        assert!(errors_id().is_none());
         install(apply(&Consent::default(), true, false, || {
             Some("live".into())
         }));
@@ -503,29 +996,388 @@ mod tests {
         }
     }
 
-    /// A policy bump re-asks, and does NOT silently carry the old answer forward as consent.
+    // ---- Model stage M1: per-category consent scope versions --------------------------------
+
+    /// (a) **A stored No for both categories is never re-asked by any scope bump.** Neither
+    /// category is ON, so `pending_extensions` is empty regardless of how stale `asked_version` or
+    /// the (irrelevant, `0`) scope fields are — a refusal is a real decision, not an unanswered one.
     #[test]
-    fn a_policy_bump_re_asks() {
-        let old = Consent {
-            asked_version: POLICY_VERSION - 1,
-            usage: true,
+    fn a_stored_no_for_both_categories_is_never_reasked_by_a_scope_bump() {
+        let both_refused = Consent {
+            asked_version: 4,
+            errors: false,
+            usage: false,
+            ..Default::default()
+        };
+        assert!(pending_extensions(&both_refused).is_empty());
+        assert!(!should_ask(&both_refused, false));
+    }
+
+    /// (b) **errors=on at scope 4, usage=off, current 6 → asked only about errors**, and answering
+    /// Yes sets `errors_scope` to the current scope while No turns errors off and destroys its
+    /// identifier — usage, being off, is neither pending nor touched by either answer.
+    #[test]
+    fn an_extension_asks_only_the_enabled_category_and_apply_extension_resolves_it() {
+        let c = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            usage: false,
+            usage_scope: 0,
+            install_id: None,
+            ..Default::default()
+        };
+        assert_eq!(pending_extensions(&c), vec![Category::Errors]);
+        assert!(should_ask(&c, false));
+
+        let yes = apply_extension(&c, Category::Errors, true, || Some("e2".repeat(16)));
+        assert!(yes.errors);
+        assert_eq!(yes.errors_scope, ERRORS_SCOPE);
+        assert_eq!(
+            yes.errors_id.as_deref(),
+            Some("e".repeat(32).as_str()),
+            "an extension KEEPS the existing identifier — it is not a fresh opt-in"
+        );
+        assert_eq!(yes.errors_declined_scope, 0, "a Yes clears any earlier decline");
+        assert!(!yes.usage && yes.usage_scope == 0 && yes.install_id.is_none());
+        assert!(pending_extensions(&yes).is_empty());
+
+        // Owner decision, 2026-09-10: a No to an extension is not a withdrawal — it leaves the
+        // category exactly as it was (still on, same scope, same identifier) and records only the
+        // refusal, so nothing mints and nothing is dropped.
+        let no = apply_extension(&c, Category::Errors, false, || {
+            panic!("must not mint on a refusal")
+        });
+        assert!(
+            no.errors && no.errors_scope == 4 && no.errors_id.as_deref() == Some("e".repeat(32).as_str()),
+            "a No keeps the category on, at its already-accepted scope, with its identifier intact"
+        );
+        assert_eq!(
+            no.errors_declined_scope, ERRORS_SCOPE,
+            "the refusal is recorded against the scope that was actually declined"
+        );
+        assert!(
+            pending_extensions(&no).is_empty(),
+            "a declined scope is not re-asked until the scope grows past it"
+        );
+        assert!(!no.usage && no.usage_scope == 0 && no.install_id.is_none());
+    }
+
+    /// A decline that still covers the current scope is not re-asked; one a later expansion has
+    /// outgrown is — and the note it is re-asked with names every row since the ACCEPTED scope,
+    /// not just the ones past the decline, so a second question re-offers the whole gap
+    /// (`Consent::errors_declined_scope`'s doc makes the same promise).
+    #[test]
+    fn a_further_expansion_past_a_decline_asks_again_and_the_note_covers_the_whole_gap() {
+        // Declined exactly at the current scope: nothing has grown since, so the No still stands.
+        let declined_at_current = Consent {
+            asked_version: POLICY_VERSION,
+            errors: true,
+            errors_scope: 2,
+            errors_declined_scope: ERRORS_SCOPE,
+            errors_id: Some("e".repeat(32)),
             ..Default::default()
         };
         assert!(
-            !old.answered(),
-            "an answer to an older policy is not an answer to this one"
+            pending_extensions(&declined_at_current).is_empty(),
+            "the decline still covers the current scope — nothing has grown past it"
         );
-        assert!(should_ask(&old, false));
+        assert!(extension_note(&declined_at_current, Category::Errors).is_none());
+
+        // The scope has since grown past what was declined (a real shape once ERRORS_SCOPE moves
+        // past 4 again in the future; today it exercises the same math with 4 standing in for "an
+        // earlier decline"). Pending again, and the note lists every row after the ACCEPTED scope
+        // (2) up to the current one — including the version-4 row the person already said no to —
+        // not merely the rows strictly after the decline.
+        let declined_then_outgrown = Consent {
+            errors_declined_scope: 4,
+            ..declined_at_current.clone()
+        };
+        assert_eq!(
+            pending_extensions(&declined_then_outgrown),
+            vec![Category::Errors]
+        );
+        let note = extension_note(&declined_then_outgrown, Category::Errors)
+            .expect("pending again — there is something to explain");
+        for &(cat, version, what_changed) in SCOPE_CHANGES {
+            if cat == Category::Errors && version > 2 && version <= ERRORS_SCOPE {
+                assert!(
+                    note.contains(what_changed),
+                    "the note dropped a row the person never actually accepted: {what_changed:?}"
+                );
+            }
+        }
+    }
+
+    /// **Regression: accepting a pending extension must make `Consent::answered()` true again**,
+    /// because `sender::allowed`/`native::sync` still gate on it. Built from a REALISTIC migrated
+    /// shape — `asked_version` 4 (a v0.6.0-shipped file), scope backfilled by `migrate_loaded` —
+    /// rather than the M2 test helper's `asked_version: POLICY_VERSION` shape, which no loaded file
+    /// can actually have while a scope trails it.
+    #[test]
+    fn accepting_an_extension_from_a_migrated_file_makes_answered_true_and_unblocks_sending() {
+        let old = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_id: Some("e".repeat(32)),
+            errors_scope: 0,
+            ..Default::default()
+        };
+        let migrated = migrate_loaded(old);
+        assert_eq!(migrated.errors_scope, 4);
+        assert!(!migrated.answered(), "a version-4 file is stale against POLICY_VERSION 6");
+        assert_eq!(pending_extensions(&migrated), vec![Category::Errors]);
+
+        let next = apply_extension(&migrated, Category::Errors, true, || Some("e2".repeat(16)));
+        assert!(
+            next.answered(),
+            "accepting the extension is an answer against the current policy"
+        );
+
+        let record = super::super::queue::Record {
+            category: super::super::queue::Category::Errors,
+            dest: super::super::queue::Dest::Sentry,
+            event_id: "id".into(),
+            body: Vec::new(),
+        };
+        assert!(
+            super::super::sender::allowed(&record, &next),
+            "an accepted extension must unblock sending, not leave every record retired unsent"
+        );
+
+        let declined = apply_extension(&migrated, Category::Errors, false, || {
+            panic!("must not mint on a refusal")
+        });
+        assert!(declined.answered(), "a No to the extension is also a real answer");
+        assert!(
+            super::super::sender::allowed(&record, &declined),
+            "a No to an extension is not a withdrawal — the category stays ON at its already-\
+             accepted scope, so its ordinary (non-scope-gated) records still flow"
+        );
+        assert!(
+            declined.errors && declined.errors_scope < ERRORS_SCOPE,
+            "but the accepted scope did not move, so the NEW scope's own fields stay withheld"
+        );
+    }
+
+    /// (c) **errors on at scope 4 while current is 6: a crash report is still sent, a
+    /// `StorageError` is NOT, and after Yes it is.** The coarse `allows_errors` gate is
+    /// scope-blind; `allows_errors_at` is what a NEW field type (storage scope 6) asks instead.
+    #[test]
+    fn a_pending_extension_still_sends_baseline_reports_but_withholds_the_new_field() {
         let _g = crate::testlock::serial();
         let saved = CURRENT.read().ok().and_then(|g| g.clone());
-        install(old);
+        let stale = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        install(stale.clone());
+        assert!(allows_errors(), "an ordinary crash report is still sent");
         assert!(
-            !allows_usage(),
-            "an old yes must not authorize fields added by the new policy"
+            !allows_errors_at(6),
+            "a StorageError (errors scope 6) is withheld until the extension is accepted"
+        );
+        let yes = apply_extension(&stale, Category::Errors, true, || Some("e2".repeat(16)));
+        install(yes);
+        assert!(allows_errors_at(6), "accepting the extension unlocks it");
+        if let Ok(mut g) = CURRENT.write() {
+            *g = saved;
+        }
+    }
+
+    /// **Requirement 4, Errors: a DECLINED scope keeps the new field withheld while ordinary crash
+    /// reports still flow.** Twin of the accept-side test above, over the refusal path — declining
+    /// must not silently unlock the very field the person said no to.
+    #[test]
+    fn a_declined_errors_extension_still_sends_baseline_reports_but_withholds_the_new_field() {
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let stale = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let no = apply_extension(&stale, Category::Errors, false, || {
+            panic!("must not mint on a refusal")
+        });
+        install(no);
+        assert!(allows_errors(), "an ordinary crash report is still sent after a No");
+        assert!(
+            !allows_errors_at(6),
+            "the StorageError field stays withheld — that is exactly what was declined"
         );
         if let Ok(mut g) = CURRENT.write() {
             *g = saved;
         }
+    }
+
+    /// **Requirement 4, Usage: the Product analytics twin.** A declined `session_storage` extension
+    /// leaves ordinary usage events flowing while withholding the one field the scope bump added.
+    #[test]
+    fn a_declined_usage_extension_still_sends_baseline_events_but_withholds_the_new_field() {
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        let stale = Consent {
+            asked_version: 4,
+            usage: true,
+            usage_scope: 4,
+            install_id: Some("u".repeat(32)),
+            ..Default::default()
+        };
+        assert!(pending_extensions(&stale).contains(&Category::Usage));
+        let no = apply_extension(&stale, Category::Usage, false, || {
+            panic!("must not mint on a refusal")
+        });
+        install(no.clone());
+        assert!(allows_usage(), "an ordinary usage event is still sent after a No");
+        assert!(
+            !allows_usage_at(6),
+            "the session_storage property stays withheld — that is exactly what was declined"
+        );
+        assert!(pending_extensions(&no).is_empty(), "the No is not re-asked immediately");
+
+        let yes = apply_extension(&stale, Category::Usage, true, || Some("u2".repeat(16)));
+        install(yes);
+        assert!(allows_usage_at(6), "accepting it afterwards unlocks the field");
+        if let Ok(mut g) = CURRENT.write() {
+            *g = saved;
+        }
+    }
+
+    /// (d) **Migration**: an old file (`asked_version` 4, both flags true, no scope fields) yields
+    /// `errors_scope == 4` and `usage_scope == 4` — usage never bumped before 6, so its scope at an
+    /// old asked_version is the asked_version itself, not `0` — and both categories are pending
+    /// against the current scope of 6.
+    #[test]
+    fn migrating_an_old_file_backfills_both_scopes_from_its_asked_version() {
+        let old = Consent {
+            asked_version: 4,
+            errors: true,
+            usage: true,
+            errors_id: Some("e".repeat(32)),
+            install_id: Some("u".repeat(32)),
+            errors_scope: 0,
+            usage_scope: 0,
+            ..Default::default()
+        };
+        let migrated = migrate_loaded(old);
+        assert_eq!(migrated.errors_scope, 4);
+        assert_eq!(
+            migrated.usage_scope, 4,
+            "usage never bumped before 6, so a version-4 answer already covered it whole"
+        );
+        assert_eq!(
+            pending_extensions(&migrated),
+            vec![Category::Errors, Category::Usage]
+        );
+
+        // A category left OFF gets no scope at all, migrated or not.
+        let errors_only = Consent {
+            asked_version: 5,
+            errors: true,
+            usage: false,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let migrated = migrate_loaded(errors_only);
+        assert_eq!(migrated.errors_scope, 5, "the most recent errors row at or before 5");
+        assert_eq!(migrated.usage_scope, 0, "usage is off — nothing to migrate");
+
+        // Idempotent: migrating an already-current file changes nothing.
+        let current = apply(&Consent::default(), true, true, || Some("x".repeat(32)));
+        assert_eq!(migrate_loaded(current.clone()), current);
+    }
+
+    /// (e) **A `NOTICE_REVISION` bump alone re-asks nobody** — it has no bearing on `should_ask` at
+    /// all, which is the whole point of separating it from the per-category scopes.
+    #[test]
+    fn a_notice_revision_bump_alone_reasks_nobody() {
+        let fully_current = apply(&Consent::default(), true, true, || Some("x".repeat(32)));
+        assert!(!should_ask(&fully_current, false));
+        // NOTICE_REVISION does not even appear in `Consent` or in `should_ask`'s inputs — a bump to
+        // it cannot change this answer, by construction rather than by one sampled value. Naming it
+        // here keeps the constant from silently losing its one documented property unnoticed.
+        let _ = NOTICE_REVISION;
+    }
+
+    /// (f) **A fresh install is asked the full question**, unaffected by any of the above.
+    #[test]
+    fn a_fresh_install_is_asked_the_full_question() {
+        assert!(should_ask(&Consent::default(), false));
+    }
+
+    /// `scope_at_policy_version` is the migration primitive (d) relies on: the most recent
+    /// [`SCOPE_CHANGES`] row for a category at or before an old version, or the version itself when
+    /// the category had no row that old.
+    #[test]
+    fn scope_at_policy_version_finds_the_most_recent_row_or_falls_back_to_the_version() {
+        assert_eq!(scope_at_policy_version(4, Category::Errors), 4);
+        assert_eq!(scope_at_policy_version(5, Category::Errors), 5);
+        assert_eq!(scope_at_policy_version(6, Category::Errors), 6);
+        assert_eq!(
+            scope_at_policy_version(3, Category::Errors),
+            3,
+            "no Errors row is this old — the version itself is the fallback"
+        );
+        assert_eq!(
+            scope_at_policy_version(4, Category::Usage),
+            4,
+            "Usage's only row is 6, so a version-4 answer falls back to itself"
+        );
+        assert_eq!(scope_at_policy_version(6, Category::Usage), 6);
+    }
+
+    /// Every [`ERRORS_SCOPE`]/[`USAGE_SCOPE`] bump has a [`SCOPE_CHANGES`] row for that category —
+    /// the per-category twin of [`every_reasked_version_has_a_row`], catching a scope bump with no
+    /// explanatory row the same way.
+    #[test]
+    fn every_scope_bump_has_a_row() {
+        for v in 4..=ERRORS_SCOPE {
+            assert!(
+                SCOPE_CHANGES
+                    .iter()
+                    .any(|&(c, version, _)| c == Category::Errors && version == v),
+                "errors scope {v} has no SCOPE_CHANGES row"
+            );
+        }
+        assert!(
+            SCOPE_CHANGES
+                .iter()
+                .any(|&(c, version, _)| c == Category::Usage && version == USAGE_SCOPE),
+            "usage scope {USAGE_SCOPE} has no SCOPE_CHANGES row"
+        );
+    }
+
+    /// [`extension_note`] names only the rows strictly between the accepted and current scope, and
+    /// is `None` once nothing is pending.
+    #[test]
+    fn extension_note_names_only_the_rows_still_pending() {
+        let c = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let note = extension_note(&c, Category::Errors).expect("errors is pending");
+        assert!(note.contains("sign-in error report"));
+        assert!(note.contains("how your sign-in is stored"));
+        assert!(!note.contains("playback error report"), "4 was already accepted");
+
+        assert_eq!(
+            extension_note(&c, Category::Usage),
+            None,
+            "usage is off — nothing pending, nothing to explain"
+        );
+
+        let current = apply(&Consent::default(), true, true, || Some("x".repeat(32)));
+        assert_eq!(extension_note(&current, Category::Errors), None);
     }
 
     /// **An automated boot never sees the question**, whatever the stored state. `tests/run.py`,
@@ -584,8 +1436,8 @@ mod tests {
             reask_note(4),
             Some(
                 "Asking again because what is collected has changed: Crash reports can now \
-                 include a sign-in error report when a sign-in fails. Reports can now say how \
-                 the sign-in is stored and why it was refused."
+                 include a sign-in error report. Reports can now say how your sign-in is \
+                 stored."
             )
         );
     }
@@ -597,7 +1449,7 @@ mod tests {
             reask_note(5),
             Some(
                 "Asking again because what is collected has changed: Reports can now say how \
-                 the sign-in is stored and why it was refused."
+                 your sign-in is stored."
             )
         );
     }
@@ -610,8 +1462,7 @@ mod tests {
             Some(
                 "Asking again because what is collected has changed: Crash reports can now \
                  include a playback error report with its steps. Crash reports can now include \
-                 a sign-in error report when a sign-in fails. Reports can now say how the \
-                 sign-in is stored and why it was refused."
+                 a sign-in error report. Reports can now say how your sign-in is stored."
             )
         );
     }

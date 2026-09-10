@@ -301,7 +301,13 @@ fn wire_body(r: &Record) -> Vec<u8> {
             let Some(key) = POSTHOG_KEY else {
                 return Vec::new();
             };
-            posthog::captured(key, &id, &event, ENVIRONMENT)
+            posthog::captured(
+                key,
+                &id,
+                &event,
+                ENVIRONMENT,
+                consent::allows_usage_at(6),
+            )
         }
     }
 }
@@ -556,6 +562,7 @@ mod tests {
             usage: false,
             install_id: None,
             errors_id: Some("e".repeat(32)),
+            ..Default::default()
         };
         assert!(allowed(&rec(Category::Errors, Dest::Sentry), &errors_only));
         assert!(!allowed(&rec(Category::Usage, Dest::PostHog), &errors_only));
@@ -580,6 +587,7 @@ mod tests {
             usage: false,
             install_id: None,
             errors_id: None,
+            ..Default::default()
         };
         assert!(refused.answered());
         assert!(allowed(&rec(Category::OneOff, Dest::Sentry), &refused));

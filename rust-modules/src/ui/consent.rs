@@ -77,7 +77,7 @@
 //! `tests/run.py` injects a token and expects Home, the fps scenes grade a heartbeat on a known
 //! route, and every `sim-shot` script drives a screen it chose — a consent prompt in front of all
 //! of them would quietly re-point the entire harness at a screen nobody wrote an assertion for.
-use crate::telemetry::consent::{self, Consent};
+use crate::telemetry::consent::{self, Category, Consent};
 use crate::ui::consts::SCR_W;
 use crate::ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use crate::ui::document_reader::DocumentReader;
@@ -182,7 +182,17 @@ const SETTINGS_TITLE: &str = "Privacy & data";
 /// verb and the shortest noun that keeps the pair parallel. They read `Share Crash Reports` /
 /// `Don’t Share` while they were table ROWS, because a row has no question above it to inherit
 /// from and had to name the purpose itself.
+///
+/// **An EXTENSION asks a different question and must say so** (owner decision, 2026-09-10): this
+/// is not "turn the category on or off", it is "let the category you already agreed to also cover
+/// this new thing?" — a No here is not a withdrawal, so neither label may read as one. Nothing on
+/// this pair may say "off"/"don't"/"decline": the affirmative names what changes (`Keep on, with
+/// this`) and the negative names what stays the same (`Keep as before`), which is also literally
+/// true — `apply_extension`'s No branch changes nothing about whether the category is on.
 fn answer_labels() -> (&'static std::ffi::CStr, &'static std::ffi::CStr) {
+    if is_extension() {
+        return (c"Keep on, with this", c"Keep as before");
+    }
     if stage() == Stage::Crash {
         (c"Share reports", c"Don’t share")
     } else {
@@ -282,6 +292,29 @@ static mut STAGE: Stage = Stage::Crash;
 /// [`consent::reask_note`]'s own rule; Settings never sets this at all, since Settings is not a
 /// re-ask of anything.
 static mut ASKED_VERSION: u32 = 0;
+/// **Model stage M2.** Is the ceremony currently open an EXTENSION (a category whose accepted
+/// scope has fallen behind [`consent::ERRORS_SCOPE`]/[`consent::USAGE_SCOPE`]) rather than the
+/// full two-stage first-run question? Set once, in [`open`]/[`open_settings`], and read by
+/// [`record_answer`] to choose [`consent::apply_extension`] over [`consent::apply`] — Settings
+/// always answers `false`, since Settings edits both switches freely and is never a re-ask of
+/// anything.
+static mut IS_EXTENSION: bool = false;
+/// **Model stage M2.** Which of the two stages this ceremony actually asks about —
+/// `(Crash pending, Product pending)`. A fresh first-run or a Settings ceremony carries `(true,
+/// true)`: both purposes are always in play there. An extension ceremony carries only the
+/// categories [`consent::pending_extensions`] returned at [`open`], so a person whose Crash
+/// consent is current and whose Usage consent just grew sees the Product question ALONE — no
+/// Crash stage, no crumb naming one, and Product becomes this ceremony's own root.
+static mut STAGE_ACTIVE: (bool, bool) = (true, true);
+/// The line drawn between the heading and the body for each stage, computed ONCE at [`open`] —
+/// never per frame. [`consent::extension_note`] (extension) and [`reask_line`] (the legacy
+/// monolithic re-ask, effectively dead today — see [`consent::POLICY_VERSION`]'s doc) both build
+/// a fresh owned `String` on every call and leak it to get a `'static` str for [`RouteLayout`] to
+/// borrow; calling either from the draw path, which runs every presented frame while the screen
+/// is open, would leak a new string every frame instead of once per ceremony.
+static mut NOTE_CRASH: Option<&'static str> = None;
+/// [`NOTE_CRASH`]'s Product twin.
+static mut NOTE_PRODUCT: Option<&'static str> = None;
 static mut PREVIEW_KIND: PreviewKind = PreviewKind::Crash;
 static mut DELETE_REQUESTED: bool = false;
 static mut DOCUMENT_OPEN: bool = false;
@@ -590,6 +623,14 @@ fn mode() -> Mode {
 fn stage() -> Stage {
     unsafe { *addr_of!(STAGE) }
 }
+/// **Model stage M2.** See [`IS_EXTENSION`]'s doc.
+fn is_extension() -> bool {
+    unsafe { *addr_of!(IS_EXTENSION) }
+}
+/// **Model stage M2.** See [`STAGE_ACTIVE`]'s doc.
+fn stage_active() -> (bool, bool) {
+    unsafe { *addr_of!(STAGE_ACTIVE) }
+}
 fn title() -> &'static str {
     if stage() == Stage::Crash {
         CRASH_TITLE
@@ -625,15 +666,47 @@ pub(crate) fn open(prev: &Consent) {
     if menu_open() && mode() == Mode::FirstRun {
         return;
     }
+    // **Model stage M2.** A fresh install (`asked_version == 0`) always gets the full two-stage
+    // question — `consent::pending_extensions` is never consulted for it, matching
+    // `consent::should_ask`'s own first branch. Otherwise this open is reached only because
+    // `pending_extensions` is non-empty (`should_show`'s second branch), so the categories it
+    // names are exactly what this ceremony asks about — the other one is answered already, either
+    // way, and is left alone.
+    let pending = consent::pending_extensions(prev);
+    let is_ext = prev.asked_version != 0 && !pending.is_empty();
+    let active = if is_ext {
+        (pending.contains(&Category::Errors), pending.contains(&Category::Usage))
+    } else {
+        (true, true)
+    };
+    // The ceremony's own root: Crash when it is asked at all, else Product — a Usage-only
+    // extension never visits a Crash stage nobody needs to answer.
+    let start = if active.0 { Stage::Crash } else { Stage::Product };
     unsafe {
         addr_of_mut!(MODE).write(Mode::FirstRun);
-        addr_of_mut!(STAGE).write(Stage::Crash);
+        addr_of_mut!(IS_EXTENSION).write(is_ext);
+        addr_of_mut!(STAGE_ACTIVE).write(active);
+        addr_of_mut!(STAGE).write(start);
         addr_of_mut!(ASKED_VERSION).write(prev.asked_version);
         addr_of_mut!(BASE).write((prev.errors, prev.usage));
         addr_of_mut!(DRAFT).write((false, false));
+        // Computed once, here — see NOTE_CRASH's doc for why the draw path must never call
+        // either note builder itself.
+        addr_of_mut!(NOTE_CRASH).write(if is_ext {
+            consent::extension_note(prev, Category::Errors)
+                .map(|s| &*Box::leak(s.into_boxed_str()))
+        } else {
+            reask_line(prev.asked_version, Stage::Crash)
+        });
+        addr_of_mut!(NOTE_PRODUCT).write(if is_ext {
+            consent::extension_note(prev, Category::Usage)
+                .map(|s| &*Box::leak(s.into_boxed_str()))
+        } else {
+            reask_line(prev.asked_version, Stage::Product)
+        });
         DOCUMENT_OPEN = false;
         (*addr_of_mut!(DOCUMENT_MORPH)).jump(false);
-        (*addr_of_mut!(STAGE_PUSH)).jump(false);
+        (*addr_of_mut!(STAGE_PUSH)).jump(start == Stage::Product);
         addr_of_mut!(FOCUS).write(RouteFocus::content());
         (*addr_of_mut!(GROUND)).reset();
         GROUND_DRAWN = false;
@@ -650,8 +723,18 @@ pub(crate) fn open(prev: &Consent) {
 ///
 /// This changes presentation state only: it neither answers nor records either choice. Keeping
 /// the harness seam here means the app cannot construct a half-valid consent draft of its own.
+///
+/// **A no-op unless Product is already part of the OPEN ceremony**
+/// (`stage_active().1`). `mode() == Mode::FirstRun` is also true of an in-progress EXTENSION
+/// ceremony (`open` sets the same `Mode` for both), and an extension can be Errors-only
+/// (`stage_active() == (true, false)`) — jumping such a ceremony to `Stage::Product` used to leave
+/// `STAGE_ACTIVE` unchanged, so `choose`/`commit` folded the operator's Product-stage press
+/// through `apply_extension(Errors, …)` instead: pressing Share there recorded an unasked
+/// WITHDRAWAL of crash reports (turning `errors` off and destroying `errors_id`) rather than the
+/// Product answer actually given. There is no answer this trigger can safely manufacture for a
+/// ceremony that never asks about Product at all, so it simply declines rather than guessing one.
 pub(crate) fn show_product_for_dev() {
-    if menu_open() && mode() == Mode::FirstRun {
+    if menu_open() && mode() == Mode::FirstRun && stage_active().1 {
         unsafe {
             addr_of_mut!(STAGE).write(Stage::Product);
             // A boot trigger lands directly on this stage rather than pressing through Crash, so
@@ -661,6 +744,10 @@ pub(crate) fn show_product_for_dev() {
         }
         enter_first_run_stage();
         crate::ui::idle::invalidate();
+    } else if menu_open() && mode() == Mode::FirstRun {
+        crate::log(
+            "consent: show_product_for_dev ignored — this ceremony has no Product stage to jump to",
+        );
     }
 }
 
@@ -669,6 +756,11 @@ pub(crate) fn show_product_for_dev() {
 pub(crate) fn open_settings(prev: &Consent) {
     unsafe {
         addr_of_mut!(MODE).write(Mode::Settings);
+        // Settings is never a re-ask of anything — it edits both switches freely — so it always
+        // resets the M2 ceremony state a previous FirstRun ceremony may have left behind, rather
+        // than inheriting a stale `IS_EXTENSION`/`STAGE_ACTIVE`.
+        addr_of_mut!(IS_EXTENSION).write(false);
+        addr_of_mut!(STAGE_ACTIVE).write((true, true));
         addr_of_mut!(BASE).write((prev.errors, prev.usage));
         addr_of_mut!(DRAFT).write((prev.errors, prev.usage));
         DOCUMENT_OPEN = false;
@@ -777,15 +869,34 @@ fn commit() {
 
 /// Record one explicit answer and close. BACK never reaches this function.
 ///
-/// `consent::apply` owns the whole transition, including the refusal of a channel whose identifier
-/// could not be minted; what is left here is saying so in the log, per channel, because the
-/// person's answer and the recorded decision differ at that moment and nothing on screen says why.
+/// **Model stage M2: two transitions, chosen by [`is_extension`].** A fresh first-run answer goes
+/// through [`consent::apply`], which owns both channels — the whole ceremony, at once — exactly as
+/// the old monolithic screen did. An extension answer instead folds [`consent::apply_extension`]
+/// once per [`stage_active`] category: a Crash-only extension calls it for `Category::Errors`
+/// alone and leaves `Category::Usage`'s flag, identifier and scope completely untouched, whatever
+/// this person's `draft().1` happens to hold — the other purpose was never asked about this frame
+/// and must not move because of it. Either way, `consent::apply`/`apply_extension` owns the
+/// refusal of a channel whose identifier could not be minted; what is left here is saying so in the
+/// log, per channel actually asked, because the person's answer and the recorded decision differ
+/// at that moment and nothing on screen says why.
 fn record_answer(errors: bool, usage: bool) {
     let prev = consent::current().unwrap_or_default();
-    let next = consent::apply(&prev, errors, usage, crate::telemetry::mint_id);
+    let active = stage_active();
+    let next = if is_extension() {
+        let mut acc = prev.clone();
+        if active.0 {
+            acc = consent::apply_extension(&acc, Category::Errors, errors, crate::telemetry::mint_id);
+        }
+        if active.1 {
+            acc = consent::apply_extension(&acc, Category::Usage, usage, crate::telemetry::mint_id);
+        }
+        acc
+    } else {
+        consent::apply(&prev, errors, usage, crate::telemetry::mint_id)
+    };
     for (asked, got, channel) in [
-        (errors, next.errors, "crash reports"),
-        (usage, next.usage, "usage analytics"),
+        (active.0 && errors, next.errors, "crash reports"),
+        (active.1 && usage, next.usage, "usage analytics"),
     ] {
         if asked && !got {
             crate::log(&format!(
@@ -859,14 +970,19 @@ pub(crate) fn on_back() -> bool {
     if menu_open() {
         if mode() == Mode::Settings {
             close();
-        } else if stage() == Stage::Product {
+        } else if stage() == Stage::Product && stage_active().0 {
+            // Crash came before Product in THIS ceremony — walk back to it. A Crash-less
+            // extension (Usage alone pending) never reaches this arm at Product: `stage_active().0`
+            // is false and Product is that ceremony's own root instead.
             unsafe { addr_of_mut!(STAGE).write(Stage::Crash) };
             enter_first_run_stage();
             crate::ui::idle::invalidate();
         }
-        // …and at Crash, BACK is SWALLOWED. There is no previous step to restore — this question
-        // is the first thing after sign-in — and letting it fall through would drop an
-        // unanswered television onto whatever route happens to be underneath.
+        // …and at the ceremony's ROOT, BACK is SWALLOWED — Crash when it is asked at all, else
+        // Product. There is no previous step to restore (a fresh first run's root sits right
+        // after sign-in; an extension's root sits right after whatever screen it interrupted) —
+        // and letting it fall through would drop an unanswered television onto whatever route
+        // happens to be underneath.
         return true;
     }
     false
@@ -875,12 +991,17 @@ pub(crate) fn on_back() -> bool {
 fn choose(share: bool) {
     let (e, u) = draft();
     if stage() == Stage::Crash {
-        unsafe {
-            addr_of_mut!(DRAFT).write((share, u));
-            addr_of_mut!(STAGE).write(Stage::Product);
+        unsafe { addr_of_mut!(DRAFT).write((share, u)) };
+        if stage_active().1 {
+            // Product is also part of this ceremony (a fresh first run, or an extension pending
+            // on both categories) — walk on to it.
+            unsafe { addr_of_mut!(STAGE).write(Stage::Product) };
+            enter_first_run_stage();
+            crate::ui::idle::invalidate();
+        } else {
+            // A Crash-only extension: there is no Product stage in this ceremony to walk to.
+            commit();
         }
-        enter_first_run_stage();
-        crate::ui::idle::invalidate();
     } else {
         unsafe { addr_of_mut!(DRAFT).write((e, share)) };
         commit();
@@ -1437,10 +1558,13 @@ pub(crate) fn draw() {
 fn crumb_for(mode: Mode, which: Stage) -> Option<&'static str> {
     match (mode, which) {
         (Mode::Settings, _) => Some(CRUMB_SETTINGS),
-        // The ROOT of the ceremony: sign-in is behind it and cannot be undone, so there is
-        // nothing honest to name. See the module doc.
+        // The ROOT of the ceremony: sign-in is behind it and cannot be undone (a fresh first
+        // run), or it is this extension's only stage — either way there is nothing honest to
+        // name. See the module doc.
         (Mode::FirstRun, Stage::Crash) => None,
-        (Mode::FirstRun, Stage::Product) => Some(CRASH_TITLE),
+        // Product names Crash as where BACK goes only when THIS ceremony actually asked Crash
+        // first — a Usage-only extension never showed one, and its Product stage is the root.
+        (Mode::FirstRun, Stage::Product) => stage_active().0.then_some(CRASH_TITLE),
     }
 }
 
@@ -1552,7 +1676,12 @@ fn draw_stage(route_layer: crate::ui::Painter, layout: RouteLayout, which: Stage
         Stage::Crash => (CRASH_TITLE, CRASH_BODY, table_crash()),
         Stage::Product => (PRODUCT_TITLE, PRODUCT_BODY, table_product()),
     };
-    let note = reask_line(unsafe { *addr_of!(ASKED_VERSION) }, which);
+    // Computed once at `open` (see NOTE_CRASH's doc) rather than called here — extension_note
+    // and reask_line both leak a fresh String, and this function runs every presented frame.
+    let note = match which {
+        Stage::Crash => unsafe { *addr_of!(NOTE_CRASH) },
+        Stage::Product => unsafe { *addr_of!(NOTE_PRODUCT) },
+    };
     layout.draw_narrative_with_note(
         p,
         crumb_for(Mode::FirstRun, which),
@@ -1745,8 +1874,14 @@ mod tests {
         }
     }
 
-    /// A material schema expansion must receive two new explicit answers. The previous choices
-    /// remain fail-closed while the first-run route asks the expanded questions again.
+    /// A stale `asked_version` with no per-category scope set (the pre-M2 shape this literal
+    /// predates `migrate_loaded` backfilling) is still shown the ceremony. **The previous choices
+    /// are NOT fail-closed any more** — since model stage M1, `allows_errors`/`allows_usage` answer
+    /// on the flag alone, at any scope, so ordinary reports keep flowing while this is pending; see
+    /// `consent::tests::a_pending_extension_still_sends_baseline_reports_but_withholds_the_new_field`
+    /// for that half. This test's own job is narrower than its old doc claimed: only that
+    /// `should_show` is still true for such a file, and that a freshly-`apply`'d current answer is
+    /// not re-shown.
     #[test]
     fn a_policy_bump_reasks_without_reusing_the_old_answer() {
         let old = Consent {
@@ -1755,6 +1890,7 @@ mod tests {
             usage: true,
             install_id: Some("old-id".into()),
             errors_id: Some("old-errors-id".into()),
+            ..Default::default()
         };
         assert!(should_show(&old, false));
         let current = consent::apply(&Consent::default(), true, false, || Some("new-id".into()));
@@ -2723,6 +2859,272 @@ mod tests {
         assert!(!delete_alert().visible());
     }
 
+    // ---- Model stage M2: the extension question --------------------------------------------
+
+    /// A `Consent` shaped like a real answered account: both categories ON, both identifiers
+    /// present, `asked_version` at the frozen monolithic [`consent::POLICY_VERSION`] — and the
+    /// two ACCEPTED scopes set by the caller, so a scope below [`consent::ERRORS_SCOPE`]/
+    /// [`consent::USAGE_SCOPE`] is exactly [`consent::pending_extensions`]' definition of pending.
+    fn answered_at(errors_scope: u32, usage_scope: u32) -> Consent {
+        Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            usage: true,
+            errors_id: Some("e".repeat(32)),
+            install_id: Some("u".repeat(32)),
+            errors_scope,
+            usage_scope,
+            ..Default::default()
+        }
+    }
+
+    /// **The extension screen's two pills must never read as turning the category off.** Owner
+    /// decision, 2026-09-10: a No there is not a withdrawal, so neither label may carry "off",
+    /// "don't" or "decline" — and the two answers change on the SAME `is_extension()` switch the
+    /// rest of the ceremony reads, never on `Stage` alone (the first-run wording still varies by
+    /// stage; the extension wording does not, on purpose — both categories are asked the identical
+    /// "keep this going" question).
+    #[test]
+    fn the_extension_pills_never_read_as_turning_the_category_off() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        let prev = answered_at(4, 4);
+        consent::install(prev.clone());
+        open(&prev);
+        assert!(is_extension());
+        let (share, decline) = answer_labels();
+        let share = share.to_str().unwrap();
+        let decline = decline.to_str().unwrap();
+        for label in [share, decline] {
+            let lower = label.to_lowercase();
+            assert!(
+                !lower.contains("off") && !lower.contains("don") && !lower.contains("decline"),
+                "extension pill {label:?} reads as a withdrawal"
+            );
+        }
+        assert_eq!(share, "Keep on, with this");
+        assert_eq!(decline, "Keep as before");
+        close();
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    /// A fresh install is never mistaken for an extension, whatever the (irrelevant, zeroed) scope
+    /// fields say — `open`'s `is_ext` check gates on `asked_version != 0` first.
+    #[test]
+    fn a_fresh_install_is_never_treated_as_an_extension() {
+        let _g = crate::testlock::serial();
+        open(&Consent::default());
+        assert!(!is_extension());
+        assert_eq!(stage_active(), (true, true));
+        close();
+    }
+
+    /// **Both categories pending: the extension ceremony asks both stages, in the same order a
+    /// fresh run does**, and each answer is folded through [`consent::apply_extension`] alone —
+    /// accepting KEEPS the existing identifier and raises the accepted scope (not a fresh opt-in);
+    /// declining (owner decision, 2026-09-10) changes NEITHER the flag NOR the identifier NOR the
+    /// accepted scope, only recording the decline — exactly as [`consent::apply_extension`]'s own
+    /// tests pin at the transition level.
+    #[test]
+    fn a_pending_extension_on_both_categories_asks_both_stages_in_order() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        let prev = answered_at(4, 4);
+        consent::install(prev.clone());
+        open(&prev);
+        assert!(is_extension());
+        assert_eq!(stage_active(), (true, true), "both categories are pending");
+        assert_eq!(stage(), Stage::Crash, "errors precedes usage, exactly like a fresh run");
+        assert_eq!(crumb(), None, "this ceremony's own root");
+        choose(true); // accept the crash/errors extension
+        assert_eq!(stage(), Stage::Product);
+        assert_eq!(crumb(), Some(CRASH_TITLE), "the second stage returns to the first");
+        choose(false); // decline the product/usage extension
+        let next = consent::current().expect("record_answer installed a decision");
+        assert!(next.errors, "the accepted extension stays on");
+        assert_eq!(next.errors_scope, consent::ERRORS_SCOPE);
+        assert_eq!(
+            next.errors_id, prev.errors_id,
+            "acceptance KEEPS the identifier — it is not a fresh opt-in"
+        );
+        assert!(next.usage, "a No to an extension is not a withdrawal — usage stays on");
+        assert_eq!(next.usage_scope, 4, "…at exactly the scope it already had");
+        assert_eq!(
+            next.usage_declined_scope,
+            consent::USAGE_SCOPE,
+            "the refusal is recorded instead"
+        );
+        assert_eq!(next.install_id, prev.install_id, "…and its identifier is untouched");
+        assert!(
+            consent::pending_extensions(&next).is_empty(),
+            "declined at the current scope — not re-asked until it grows further"
+        );
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    /// **Only Crash is pending: a single-stage ceremony, and Usage — never asked about — is left
+    /// exactly as it was**, whatever this person presses. That is the "the other category is not
+    /// shown" half of the spec, checked at the RECORDED decision rather than only at what draws.
+    #[test]
+    fn a_crash_only_extension_is_a_single_stage_and_leaves_usage_untouched() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        let prev = answered_at(4, 6);
+        consent::install(prev.clone());
+        open(&prev);
+        assert!(is_extension());
+        assert_eq!(stage_active(), (true, false), "usage is already current");
+        assert_eq!(stage(), Stage::Crash, "this ceremony's own root");
+        assert_eq!(crumb(), None);
+        assert!(on_back(), "swallowed at the root, like every ceremony's first stage");
+        assert_eq!(stage(), Stage::Crash);
+        choose(false); // decline the only stage — no Product stage exists to walk to
+        let next = consent::current().expect("record_answer installed a decision");
+        assert!(
+            next.errors && next.errors_id == prev.errors_id,
+            "a No to an extension is not a withdrawal — errors stays on with its identifier"
+        );
+        assert_eq!(next.errors_scope, 4, "…at the scope it already had");
+        assert_eq!(
+            next.errors_declined_scope,
+            consent::ERRORS_SCOPE,
+            "the refusal is recorded instead"
+        );
+        assert!(next.usage, "usage was never part of this ceremony");
+        assert_eq!(next.usage_scope, 6, "and its accepted scope did not move");
+        assert_eq!(next.install_id, prev.install_id, "…nor did its identifier");
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    /// **Only Usage is pending: the ceremony starts directly on Product, with no Crash stage ever
+    /// shown** — the mirror image of the Crash-only case, and the one that would be silently wrong
+    /// if `crumb_for`/`on_back` still assumed Crash always comes first.
+    #[test]
+    fn a_usage_only_extension_starts_directly_on_product_with_no_crash_stage() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        let prev = answered_at(6, 4);
+        consent::install(prev.clone());
+        open(&prev);
+        assert!(is_extension());
+        assert_eq!(stage_active(), (false, true), "errors is already current");
+        assert_eq!(
+            stage(),
+            Stage::Product,
+            "usage is the only pending category, so it is this ceremony's own root"
+        );
+        assert_eq!(crumb(), None, "no crash stage exists in this ceremony to name");
+        assert!(on_back(), "swallowed at the root");
+        assert_eq!(stage(), Stage::Product, "back does not invent a crash stage to walk to");
+        choose(true); // accept the only stage
+        let next = consent::current().expect("record_answer installed a decision");
+        assert!(next.usage);
+        assert_eq!(next.usage_scope, consent::USAGE_SCOPE);
+        assert_eq!(next.install_id, prev.install_id, "acceptance kept the existing identifier");
+        assert!(next.errors, "errors was never part of this ceremony");
+        assert_eq!(next.errors_scope, 6, "and its accepted scope did not move");
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    /// **Settings is never a re-ask of anything**, even right after an extension ceremony closed
+    /// without committing — `open_settings` must reset `IS_EXTENSION`/`STAGE_ACTIVE` rather than
+    /// inherit whatever a previous FirstRun ceremony left behind, or a Settings toggle taken next
+    /// would silently be folded through `apply_extension` instead of `apply`.
+    #[test]
+    fn open_settings_resets_the_extension_state_a_prior_ceremony_left_behind() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        let prev = answered_at(4, 4);
+        consent::install(prev.clone());
+        open(&prev);
+        assert!(is_extension());
+        close();
+        open_settings(&prev);
+        assert!(!is_extension(), "Settings is never a re-ask of anything");
+        assert_eq!(stage_active(), (true, true));
+        close();
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    /// **Regression: `show_product_for_dev` on an Errors-only extension must not commit a hidden
+    /// withdrawal of crash reports.** Before the fix, jumping straight to `Stage::Product` left
+    /// `STAGE_ACTIVE` at `(true, false)` from the open Errors-only ceremony; pressing Share there
+    /// then folded through `apply_extension(Errors, false)` (because `active.0` was still true and
+    /// `draft().0` was still the initial `false`), turning crash reports off and destroying
+    /// `errors_id` — an answer to a question the trigger skipped past, not the Product answer the
+    /// caller actually gave. The fix makes the trigger a no-op on such a ceremony instead of
+    /// manufacturing an answer for a stage that was never asked about.
+    #[test]
+    fn show_product_for_dev_on_an_errors_only_extension_does_not_withdraw_crash_reports() {
+        let _g = crate::testlock::serial();
+        let saved = consent::current();
+        // errors_scope 4 (< ERRORS_SCOPE) is pending; usage_scope at USAGE_SCOPE is not — an
+        // Errors-only extension, so `open` sets `STAGE_ACTIVE = (true, false)`.
+        let prev = answered_at(4, consent::USAGE_SCOPE);
+        consent::install(prev.clone());
+        open(&prev);
+        assert_eq!(stage_active(), (true, false), "this is an errors-only extension");
+
+        show_product_for_dev();
+        assert_eq!(stage(), Stage::Crash, "no Product stage exists here — the trigger must decline");
+        assert_eq!(stage_active(), (true, false), "unchanged by the no-op");
+
+        // The real (Crash) answer still goes through cleanly and touches only errors.
+        choose(true);
+        let next = consent::current().expect("record_answer installed a decision");
+        assert!(next.errors);
+        assert_eq!(next.errors_id.as_deref(), prev.errors_id.as_deref());
+        assert!(next.usage, "usage was already accepted and untouched by this ceremony");
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+    }
+
+    /// The extension note shares the reask note's small character budget — nothing reachable from
+    /// this module may measure text (SDL2_ttf is not linked into the host test binary), so this is
+    /// the same guard `the_four_to_five_reask_note_fits_a_small_character_budget` keeps below, for
+    /// the note this route actually shows a person once a category has grown.
+    ///
+    /// **The budget was 200 and is now 165.** A device capture of the errors-note-at-scope-4 case
+    /// (the largest population — every v0.6.0-shipped install) showed the note wrapping to FOUR
+    /// lines against the note block's `max_lines(3)` at the old 196-character text, i.e. this test
+    /// passing was not proof the note actually fit. `SCOPE_CHANGES`' rows 5 and 6 were shortened to
+    /// bring the worst case (this one) to 153 characters; 165 stays a real ceiling rather than 200,
+    /// which the same measurement showed had roughly 50 characters of slack nobody was using. This
+    /// is still not a pixel-exact proof — that needs a `ui-sim` capture of the Crash stage with a
+    /// scope-4 note, which a text change here should be re-verified against.
+    #[test]
+    fn the_extension_note_fits_the_same_small_character_budget_as_a_reask_note() {
+        let c = Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_scope: 4,
+            errors_id: Some("e".repeat(32)),
+            usage: false,
+            usage_scope: 0,
+            install_id: None,
+            ..Default::default()
+        };
+        let note =
+            consent::extension_note(&c, Category::Errors).expect("errors is pending against scope 4");
+        assert!(
+            note.chars().count() <= 165,
+            "the extension note is {} characters, over the 165 budget the route's narrative \
+             note line is known to fit in three lines",
+            note.chars().count()
+        );
+    }
+
     // ---- reask_line ----------------------------------------------------------------------------
 
     /// Never asked before: this is a first run, not a re-ask, on either stage.
@@ -2797,8 +3199,8 @@ mod tests {
     fn the_four_to_five_reask_note_fits_a_small_character_budget() {
         let note = reask_line(4, Stage::Crash).expect("version 4 is a re-ask");
         assert!(
-            note.chars().count() <= 200,
-            "the 4->5 re-ask note is {} characters, over the 200 budget",
+            note.chars().count() <= 165,
+            "the 4->5 re-ask note is {} characters, over the 165 budget",
             note.chars().count()
         );
     }

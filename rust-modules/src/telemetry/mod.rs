@@ -112,11 +112,36 @@ pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
 }
 
 fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
-    candidates
-        .iter()
-        .filter_map(|p| crate::plex::session::read_owned_regular(p))
-        .find_map(|b| serde_json::from_slice::<Consent>(&b).ok())
-        .unwrap_or_default()
+    for p in candidates {
+        let Some((bytes, trust)) = crate::plex::session::read_owned_regular_trusted(p) else {
+            continue;
+        };
+        if !trust.content_trusted() {
+            // Write-widened: another uid could have rewritten this file, so a stored `usage: true`
+            // or `errors: true` here is not provably this person's decision, and its ids are not
+            // provably ours either — a forged consent file must not silently stand in for one. Both
+            // categories go back to unanswered (the question is asked again on the next
+            // opportunity, same as a fresh install), the identifiers are discarded with it, and the
+            // reset state is written back at 0600 so the next boot does not repeat this discovery.
+            crate::log(
+                "telemetry: consent file was writable by others — content is untrusted, resetting",
+            );
+            let reset = Consent::default();
+            if let Ok(json) = serde_json::to_vec_pretty(&reset) {
+                let _ = crate::plex::session::write_atomic(p, &json);
+            }
+            // Every other path that revokes a decision purges the spool of records queued under
+            // it (`record`'s own call, right below) — a forged consent file is exactly such a
+            // revocation, and without this a record queued under the untrusted decision would
+            // still leave the device under it (review finding, 2026-09-10).
+            spool::purge_withdrawn(&reset);
+            return reset;
+        }
+        if let Ok(c) = serde_json::from_slice::<Consent>(&bytes) {
+            return consent::migrate_loaded(c);
+        }
+    }
+    Consent::default()
 }
 
 /// Record a decision: write it, then publish it. **Write first** — a decision that took effect but
@@ -141,6 +166,10 @@ pub(crate) fn record(c: Consent) {
     // newly authorised.
     if enabling_errors {
         crashreport::discard_pending_before_opt_in();
+        // Issue #76 review (should-fix): a stage `plex::session::report_once` genuinely DROPPED
+        // (a real "No", not merely "not asked yet") must get its one attempt back the moment this
+        // same process turns Errors on — see `retry_dropped_stages`'s own doc.
+        crate::plex::session::retry_dropped_stages();
     }
     consent::install(c.clone());
     // Issue #75: replay whatever sign-in funnel `diag::event` had to hold back because the consent
@@ -148,6 +177,11 @@ pub(crate) fn record(c: Consent) {
     // through the normal gate, a "no" hits that same gate and drops, and either way the queue must
     // not survive to be misread by the next decision.
     crate::diag::replay_deferred();
+    // Issue #76: the storage-error report's own twin — a locked/refused read found before the
+    // Errors channel's consent question (or its scope-6 extension) was answered waits here rather
+    // than being dropped for good. Same unconditional shape: a "yes" sends it through the normal
+    // gate, a "no" hits that gate and drops, and the queue empties either way.
+    storage::replay_deferred();
     if !c.errors {
         crate::player::report::clear_error_trace();
     }
@@ -294,7 +328,7 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
     // to them any more. One list, because `queue::ack` asks one question — is this record still
     // ours to keep — and the two reasons for "no" need no distinction downstream.
     let mut retired: Vec<String> = Vec::new();
-    let (newly_retired, retry) = process_records(
+    let (newly_retired, dropped_by_consent, retry) = process_records(
         &all,
         c,
         || consent::revision() == decision_revision,
@@ -305,6 +339,15 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
         crate::log(&format!(
             "telemetry: holding {} records, ~{s}s",
             all.len() - retired.len()
+        ));
+    }
+    // **Records queued under an earlier decision, re-checked against the CURRENT one at flush
+    // time.** `sender::allowed` already answers this per record above (`process_records`); the log
+    // line is what the 2026-09-10 TV telemetry proof's negative control had to work around by
+    // moving a stale spool aside by hand instead of being able to read that they were dropped.
+    if dropped_by_consent > 0 {
+        crate::log(&format!(
+            "telemetry: dropped {dropped_by_consent} spooled record(s) the current consent no longer allows"
         ));
     }
     if !retired.is_empty() {
@@ -320,13 +363,19 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
 
 /// Process each destination as an independent logical lane. A dead/rate-limited Sentry endpoint
 /// cannot prevent a later PostHog record from being attempted, or vice versa.
+/// Returns `(retired ids, how many of those were dropped rather than sent because the CURRENT
+/// consent no longer allows their category, the retry hold)`. The middle value is what lets the
+/// flush log a consent-drop distinctly from an ordinary send/hopeless retirement — see
+/// `flush_now`'s doc and the 2026-09-10 TV telemetry proof's negative control, which had no way to
+/// read that a stale spooled record would be dropped rather than sent on the next flush.
 fn process_records(
     all: &[queue::Record],
     c: &consent::Consent,
     mut still_current: impl FnMut() -> bool,
     mut send: impl FnMut(&queue::Record) -> (sender::Verdict, Option<u64>),
-) -> (Vec<String>, Option<u64>) {
+) -> (Vec<String>, usize, Option<u64>) {
     let mut retired = Vec::new();
+    let mut dropped_by_consent = 0usize;
     let mut retry: Option<u64> = None;
     'destinations: for dest in [queue::Dest::Sentry, queue::Dest::PostHog] {
         for r in all.iter().filter(|r| r.dest == dest) {
@@ -337,10 +386,14 @@ fn process_records(
             if !still_current() {
                 break 'destinations;
             }
-            // Per record, against its own category — a spool written before a withdrawal can still
-            // hold records of a category that is now off.
+            // Per record, against its own category — a spool written before a withdrawal (or
+            // inherited from disk under a decision this process never lived through as a `record`
+            // call, so `spool::purge_withdrawn` never ran against it) can still hold records of a
+            // category that is now off. `r.category == OneOff` always answers true here — see
+            // `sender::allowed`'s doc — so a one-off report is never counted as a consent-drop.
             if !sender::allowed(r, c) {
                 retired.push(r.event_id.clone());
+                dropped_by_consent += 1;
                 continue;
             }
             match send(r) {
@@ -357,7 +410,7 @@ fn process_records(
             }
         }
     }
-    (retired, retry)
+    (retired, dropped_by_consent, retry)
 }
 
 /// 16 bytes of `/dev/urandom` as lowercase hex — the ONLY way a consent identifier (the analytics
@@ -401,6 +454,7 @@ mod tests {
             usage: false,
             install_id: None,
             errors_id: None,
+            ..Default::default()
         };
         assert!(newly_enables_errors(None, &state(true)));
         assert!(newly_enables_errors(Some(&state(false)), &state(true)));
@@ -413,6 +467,7 @@ mod tests {
             usage: false,
             install_id: None,
             errors_id: None,
+            ..Default::default()
         };
         assert!(
             newly_enables_errors(Some(&stale_yes), &state(true)),
@@ -438,9 +493,10 @@ mod tests {
             usage: true,
             install_id: Some("id".into()),
             errors_id: Some("eid".into()),
+            ..Default::default()
         };
         let mut attempted = Vec::new();
-        let (retired, retry) = process_records(
+        let (retired, dropped_by_consent, retry) = process_records(
             &all,
             &c,
             || true,
@@ -455,7 +511,101 @@ mod tests {
         );
         assert_eq!(attempted, vec!["s1", "p1"]);
         assert_eq!(retired, vec!["p1"]);
+        assert_eq!(dropped_by_consent, 0);
         assert_eq!(retry, Some(7));
+    }
+
+    /// **The flush re-checks consent, not just append time.** The 2026-09-10 TV telemetry proof
+    /// had to move a stale spool aside by hand for its negative control — three records queued by
+    /// an EARLIER session sat in the spool under a decision that no longer covered them, and
+    /// nothing in the flush path proved they would be dropped rather than sent on the next flush.
+    /// A record whose CURRENT consent no longer allows its category must never reach `send`, must
+    /// be retired (removed from the spool) anyway, and must be logged as a consent-drop distinct
+    /// from an ordinary send.
+    #[test]
+    fn process_records_drops_a_record_the_current_consent_no_longer_allows() {
+        let record = |id: &str, category, dest| queue::Record {
+            category,
+            dest,
+            event_id: id.into(),
+            body: b"{}".to_vec(),
+        };
+        let all = vec![record("stale-error", queue::Category::Errors, queue::Dest::Sentry)];
+        let no_consent = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: false,
+            usage: false,
+            ..Default::default()
+        };
+        let mut attempted = Vec::new();
+        let (retired, dropped_by_consent, retry) = process_records(
+            &all,
+            &no_consent,
+            || true,
+            |r| {
+                attempted.push(r.event_id.clone());
+                (sender::Verdict::Done, None)
+            },
+        );
+        assert!(attempted.is_empty(), "a disallowed record must never reach send");
+        assert_eq!(retired, vec!["stale-error"]);
+        assert_eq!(dropped_by_consent, 1);
+        assert_eq!(retry, None);
+    }
+
+    /// **End-to-end through `flush_now` and the real spool**: a record queued while consent
+    /// allowed it, flushed once the CURRENT consent no longer does, leaves the spool empty and
+    /// logs the drop — the exact scenario the negative control worked around by hand. Mirrors
+    /// `spool::tests::a_withdrawal_purges_its_own_category_and_leaves_the_other` in spirit, but at
+    /// the FLUSH boundary rather than the withdrawal-time purge, which is a separate, already-
+    /// covered mechanism (`record`'s call to `spool::purge_withdrawn`).
+    #[test]
+    fn flush_drops_a_spooled_record_the_current_consent_no_longer_allows() {
+        let _g = crate::testlock::serial();
+        let dir =
+            std::env::temp_dir().join(format!("plxnative-flush-consent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = consent::current();
+        spool::set_test_path(Some(dir.join("spool.bin")));
+
+        spool::append(&queue::Record {
+            category: queue::Category::Errors,
+            dest: queue::Dest::Sentry,
+            event_id: "stale-error".into(),
+            body: b"{}".to_vec(),
+        });
+        assert_eq!(spool::read().len(), 1, "the record must be on disk before the flush");
+
+        let no_consent = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: false,
+            usage: false,
+            ..Default::default()
+        };
+        consent::install(no_consent.clone());
+
+        let logged = crate::with_test_log(|p| {
+            let retry = flush_now(&no_consent, consent::revision());
+            assert!(retry.is_none());
+            assert!(
+                spool::read().is_empty(),
+                "a record the current consent no longer allows must not survive the flush"
+            );
+            std::fs::read_to_string(p).unwrap_or_default()
+        });
+        assert!(
+            logged.contains(
+                "telemetry: dropped 1 spooled record(s) the current consent no longer allows"
+            ),
+            "missing the consent-drop log line: {logged}"
+        );
+
+        spool::set_test_path(None);
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The identifier is 32 hex characters and two mints differ. Not a randomness test — it is a
@@ -573,6 +723,120 @@ mod tests {
         let _ = std::fs::remove_file(candidate);
         let _ = std::fs::remove_file(victim);
         let _ = std::fs::remove_dir(dir);
+    }
+
+    /// **A write-widened consent file is not this person's decision — it is discarded like a
+    /// symlink or a corrupt file, not merely repaired.** Seeded here as a stored "yes/yes" (the
+    /// worst case: a forged `usage: true`/`errors: true` reaching further consent than anyone here
+    /// actually granted). Read-only widening (`0o644`) is a disclosure problem and is covered
+    /// separately below — this test is specifically the write-widened (`0o666`) case.
+    #[test]
+    fn a_write_widened_consent_file_is_treated_as_unanswered_and_reset_to_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-widened-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("telemetry.json");
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"asked_version":{},"errors":true,"usage":true,"install_id":"{}","errors_id":"{}"}}"#,
+                consent::POLICY_VERSION,
+                "a".repeat(32),
+                "b".repeat(32)
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let loaded = load_from(&[file.clone()]);
+        assert!(
+            !loaded.errors && !loaded.usage,
+            "both categories must come back unanswered, not the forged yes/yes"
+        );
+        assert!(!loaded.answered() && !loaded.any());
+        assert!(
+            loaded.install_id.is_none() && loaded.errors_id.is_none(),
+            "a forged file's identifiers are not ours and must be discarded with it"
+        );
+
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the reset decision must still be written 0600: {mode:o}");
+        let on_disk: Consent = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert!(!on_disk.answered() && !on_disk.any(), "the reset state must be persisted");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The read-only-widened twin: `0o644` carries no write bit, so the stored decision is still
+    /// provably this person's own and must load exactly as written.
+    #[test]
+    fn a_read_only_widened_consent_file_still_loads_as_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-readable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("telemetry.json");
+        std::fs::write(
+            &file,
+            format!(r#"{{"asked_version":{},"errors":true,"usage":false}}"#, consent::POLICY_VERSION),
+        )
+        .unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let loaded = load_from(&[file.clone()]);
+        assert!(loaded.errors && !loaded.usage && loaded.answered());
+
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Same known limitation as `plex::session`'s replay test.** Ownership + mode checks (and the
+    /// trust-vs-repair split) tell a forged consent file apart from ours; they cannot tell a
+    /// STALE-but-genuine one apart from the current one. A peer with rename rights in the shared
+    /// namespace can move this install's own, currently-valid, correctly-0600 consent file aside,
+    /// let a later decision overwrite it, and move the old bytes back. This test PINS that as
+    /// expected (green) behavior, not a bug to fix: the replayed older decision loads as though it
+    /// were current.
+    #[test]
+    fn a_replayed_older_valid_consent_file_is_accepted() {
+        let _g = crate::testlock::serial();
+        let dir =
+            std::env::temp_dir().join(format!("plxnative-consent-replay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("telemetry.json");
+
+        let old = format!(r#"{{"asked_version":{},"errors":false,"usage":false}}"#, consent::POLICY_VERSION);
+        std::fs::write(&file, &old).unwrap();
+        let old_bytes = std::fs::read(&file).unwrap();
+
+        // A later decision supersedes it.
+        std::fs::write(
+            &file,
+            format!(r#"{{"asked_version":{},"errors":true,"usage":true}}"#, consent::POLICY_VERSION),
+        )
+        .unwrap();
+        let current = load_from(&[file.clone()]);
+        assert!(current.errors && current.usage);
+
+        // The replay: the old bytes come back, same owner, same mode (an existing path's mode is
+        // untouched by an ordinary overwrite).
+        std::fs::write(&file, &old_bytes).unwrap();
+
+        let replayed = load_from(&[file.clone()]);
+        assert!(
+            !replayed.errors && !replayed.usage,
+            "the replayed OLDER decision is indistinguishable from a current one — known limitation"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A file written by a FUTURE build, carrying fields this one does not know, still parses —

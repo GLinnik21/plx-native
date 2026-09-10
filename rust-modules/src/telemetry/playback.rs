@@ -161,7 +161,8 @@ pub(crate) fn event_body(
 /// Queue one handled event and ask the existing background sender to flush it. No network work is
 /// performed on the render thread.
 pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, trace: &[TraceStep]) {
-    if !super::consent::allows_errors() || !super::sender::has_sentry() {
+    // Playback error reports are Errors scope 4 — see `consent::allows_errors_at`'s doc.
+    if !super::consent::allows_errors_at(4) || !super::sender::has_sentry() {
         return;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
@@ -182,7 +183,7 @@ pub(crate) fn report_error(kind: FailureKind, context: PlaybackErrorContext, tra
         event_id,
         body,
     };
-    match super::spool::append_if(&record, super::consent::allows_errors) {
+    match super::spool::append_if(&record, || super::consent::allows_errors_at(4)) {
         Some(true) => super::flush_soon(),
         Some(false) => {
             crate::log("telemetry: handled playback error did not fit the durable spool")

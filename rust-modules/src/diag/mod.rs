@@ -107,7 +107,7 @@ fn event_for_impl(
         // A replayed event (`stamp.is_some()`) that STILL finds consent unanswered is not
         // re-deferred — `replay_deferred` empties the queue unconditionally, and re-holding it here
         // would fight that.
-        let unanswered = crate::telemetry::consent::current().is_none_or(|c| !c.answered());
+        let unanswered = crate::telemetry::consent::current().is_none_or(|c| !c.ever_answered());
         if unanswered && stamp.is_none() && is_deferrable(&e) {
             defer(e);
         }
@@ -424,6 +424,7 @@ mod tests {
                 errors: true,
                 install_id: Some("i".repeat(32)),
                 errors_id: Some("e".repeat(32)),
+                ..Default::default()
             }); // answered "yes" — replay now resolves a stamp instead of re-deferring
             take_last_stamp_used(); // clear anything a previous test left behind
             replay_deferred();
@@ -451,6 +452,7 @@ mod tests {
                 errors: true,
                 install_id: Some("i".repeat(32)),
                 errors_id: Some("e".repeat(32)),
+                ..Default::default()
             });
             take_last_stamp_used(); // clear anything a previous test left behind
             event_for_impl(

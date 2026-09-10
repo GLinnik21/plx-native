@@ -170,6 +170,24 @@ pub(crate) struct SignInErrorContext {
     /// the `Ctl` lock is taken, since the read can do flash I/O and that lock is also taken by the
     /// render thread every frame.
     pub storage: SessionStorageClass,
+    /// Unix-epoch milliseconds at the moment this context was BUILT (`context_from`), not at
+    /// whichever later moment a report carrying it actually reaches the wire — the standing report
+    /// can sit in the durable spool across a flush retry or a closed app, and the one-off report
+    /// (`send_once`) is not sent until the person presses "Send report", which can be minutes after
+    /// the failure it describes. Without this, Sentry stamps the event at RECEIPT time — exactly
+    /// the gap the 2026-09-10 TV telemetry proof (scenario 4) found, where a held report's Sentry
+    /// timestamp landed at the draining launch rather than the failing one.
+    /// `storage::StorageErrorContext` carries the same fact as a separate `occurred_at_ms`
+    /// parameter to its `event_body`, rather than a field on its context, because its context is
+    /// `Copy` with no held-until-later reuse; this one IS reused later (`auth::Trouble::ctx`), so
+    /// the timestamp has to travel with it.
+    pub occurred_at_ms: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Coarsen one `net::CallOutcome` into the class this report carries, plus the fields that are
@@ -221,6 +239,7 @@ pub(crate) fn context_from(
         unanswered: UnansweredBucket::from_count(link.unanswered),
         failing_for: FailingForBucket::from_duration(link.failing_for),
         code_generation: generation.clamp(1, 4) as u8,
+        occurred_at_ms: now_ms(),
     }
 }
 
@@ -248,17 +267,24 @@ impl ConsentKind {
 /// Pure body builder — same shape as `playback::event_body`: `dist` and `errors_id` are passed in
 /// so the consent preview can exercise this exact serialiser without reading `/proc/self/exe` or
 /// minting an id before consent.
+///
+/// `storage_allowed` is the caller's read of `consent::allows_errors_at(6)` — `storage` is Errors
+/// SCOPE 6 (`SCOPE_CHANGES`'s "Reports can now say how the sign-in is stored and why it was
+/// refused"), one scope above the report's own gate (`report_error` is scope 5). A person whose
+/// accepted scope is only 5 must not have this field on the wire yet, so it is OMITTED — not sent
+/// as a placeholder — exactly as `posthog::envelope_props` omits `session_storage` when
+/// `allows_usage_at(6)` is false. See `consent::allows_errors_at`.
 pub(crate) fn event_body(
     event_id: &str,
     dist: &str,
     errors_id: Option<&str>,
     consent: ConsentKind,
     ctx: SignInErrorContext,
+    storage_allowed: bool,
 ) -> Vec<u8> {
     let kind_code = ctx.kind.code();
     let link_code = ctx.link.code();
     let consent_code = consent.code();
-    let storage_code = ctx.storage.code();
     let mut signin_ctx = serde_json::json!({
         "type": "signin",
         "kind": kind_code,
@@ -267,8 +293,10 @@ pub(crate) fn event_body(
         "failing_for": ctx.failing_for.code(),
         "code_generation": ctx.code_generation,
         "consent": consent_code,
-        "storage": storage_code,
     });
+    if storage_allowed {
+        signin_ctx["storage"] = Value::from(ctx.storage.code());
+    }
     if let Some(status) = ctx.http_status {
         signin_ctx["http_status"] = Value::from(status);
     }
@@ -295,12 +323,22 @@ pub(crate) fn event_body(
             "signin.kind": kind_code,
             "signin.link": link_code,
             "signin.consent": consent_code,
-            "signin.storage": storage_code,
         },
         "contexts": {"signin": signin_ctx},
     });
+    if storage_allowed {
+        body["tags"]["signin.storage"] = Value::from(ctx.storage.code());
+    }
     if !dist.is_empty() {
         body["dist"] = Value::String(dist.to_string());
+    }
+    // Omitted rather than sent as `0.0` (1970-01-01) when the wall clock was at or behind the
+    // epoch when this was captured (`now_ms`'s own doc) — the envelope's `sent_at`
+    // (`sentry::envelope`) still dates the report to POST time either way, but a fabricated
+    // 1970 OCCURRENCE timestamp would be actively misleading rather than merely imprecise
+    // (review finding, 2026-09-10).
+    if ctx.occurred_at_ms > 0 {
+        body["timestamp"] = Value::from(ctx.occurred_at_ms as f64 / 1000.0);
     }
     super::sentry::attach_user(&mut body, errors_id);
     super::sentry::attach_hardware_context(&mut body);
@@ -316,19 +354,25 @@ pub(crate) fn event_body(
 /// Returns whether the report was actually queued, so a caller that also wants to tell the person
 /// "a report was sent" can know it really was.
 pub(crate) fn report_error(ctx: SignInErrorContext) -> bool {
-    if !super::consent::allows_errors() || !super::sender::has_sentry() {
+    // Sign-in error reports are Errors scope 5 — a stored yes from an accepted scope below 5 does
+    // not cover this field set yet, even while ordinary crash reports keep flowing.
+    if !super::consent::allows_errors_at(5) || !super::sender::has_sentry() {
         return false;
     }
     let Some(event_id) = crate::diag::random_hex_id() else {
         crate::log("telemetry: no /dev/urandom — handled sign-in error was not queued");
         return false;
     };
+    // The `storage` fact is a SEPARATE, later scope (Errors 6) than the report itself (5) — read
+    // and bake it in here, same as the spool re-check below reads the report's own scope.
+    let storage_allowed = super::consent::allows_errors_at(6);
     let body = event_body(
         &event_id,
         super::sentry::build_id(),
         super::consent::errors_id().as_deref(),
         ConsentKind::Standing,
         ctx,
+        storage_allowed,
     );
     let record = super::queue::Record {
         category: super::queue::Category::Errors,
@@ -336,7 +380,7 @@ pub(crate) fn report_error(ctx: SignInErrorContext) -> bool {
         event_id,
         body,
     };
-    match super::spool::append_if(&record, super::consent::allows_errors) {
+    match super::spool::append_if(&record, || super::consent::allows_errors_at(5)) {
         Some(true) => {
             super::flush_soon();
             true
@@ -372,12 +416,15 @@ pub(crate) fn send_once(ctx: SignInErrorContext) -> bool {
         return false;
     };
     // No errors_id: a one-off report carries no identifier of any kind, standing or otherwise.
+    // Gated on nothing (PRIVACY.md: "the explicit press, gated on nothing"), so `storage` always
+    // rides — the person is looking at the offer to send this exact shape when they press it.
     let body = event_body(
         &event_id,
         super::sentry::build_id(),
         None,
         ConsentKind::OneOff,
         ctx,
+        true,
     );
     let record = super::queue::Record {
         category: super::queue::Category::OneOff,
@@ -404,7 +451,9 @@ pub(crate) fn send_once(ctx: SignInErrorContext) -> bool {
 /// Shows the STANDING form — the automatic report a person who already turned error reports on
 /// gets at a failed sign-in, since that is the one the crash/errors consent question is actually
 /// asking about. The one-off form ([`send_once`]) is not gated on this question at all — it is
-/// its own press, described in prose rather than by a second sample.
+/// its own press, described in prose rather than by a second sample. Always shows `storage` — a
+/// preview is what a FULLY ACCEPTED decision would send, and disclosing that field before anyone
+/// accepts it is the whole point (`posthog::preview`'s doc says the same for `session_storage`).
 pub(crate) fn preview_event() -> Vec<u8> {
     event_body(
         "<random per-error event id>",
@@ -420,7 +469,9 @@ pub(crate) fn preview_event() -> Vec<u8> {
             failing_for: FailingForBucket::Under10s,
             code_generation: 1,
             storage: SessionStorageClass::Secure,
+            occurred_at_ms: 0,
         },
+        true,
     )
 }
 
@@ -569,6 +620,7 @@ mod tests {
             failing_for: FailingForBucket::Under10s,
             code_generation: 1,
             storage: SessionStorageClass::SecureRefused,
+            occurred_at_ms: 1_725_000_000_000,
         }
     }
 
@@ -585,6 +637,7 @@ mod tests {
                 curl_rc: None,
                 ..context()
             },
+            true,
         ))
         .expect("event JSON");
         let ctx = &answered["contexts"]["signin"];
@@ -597,11 +650,53 @@ mod tests {
             Some(&"e".repeat(32)),
             ConsentKind::Standing,
             context(),
+            true,
         ))
         .expect("event JSON");
         let ctx = &transport["contexts"]["signin"];
         assert_eq!(ctx["curl_rc"], 6);
         assert!(ctx.get("http_status").is_none());
+    }
+
+    /// **The 2026-09-10 TV telemetry proof (scenario 4)**: a sign-in report queued while the
+    /// spool held onto it (a slow flush, a closed app) was stamped with SENTRY'S RECEIPT time
+    /// rather than when the sign-in actually failed, because `event_body` wrote no `timestamp` at
+    /// all. `storage::event_body` already carries `occurred_at_ms` for exactly this reason
+    /// (`docs/measurements/telemetry-proof-tv-2026-09-10.md`'s deviation 3) — this pins the same
+    /// field here.
+    #[test]
+    fn context_from_stamps_occurred_at_ms_and_event_body_carries_it() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let ctx = context_from(
+            SignInFailureKind::PinCreate,
+            &link(0, None),
+            None,
+            1,
+            SessionStorageClass::None,
+        );
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(
+            ctx.occurred_at_ms >= before && ctx.occurred_at_ms <= after,
+            "occurred_at_ms {} not in [{before}, {after}]",
+            ctx.occurred_at_ms
+        );
+
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            ConsentKind::Standing,
+            ctx,
+            true,
+        ))
+        .expect("event JSON");
+        assert_eq!(v["timestamp"], ctx.occurred_at_ms as f64 / 1000.0);
     }
 
     /// Same PLX-NATIVE-F gap as playback: a handled sign-in error must carry the crash path's
@@ -614,6 +709,7 @@ mod tests {
             Some(&"e".repeat(32)),
             ConsentKind::Standing,
             context(),
+            true,
         ))
         .expect("event JSON");
         assert!(v["contexts"]["hardware"].is_object(), "no hardware: {v}");
@@ -642,6 +738,7 @@ mod tests {
             Some(&"e".repeat(32)),
             ConsentKind::Standing,
             context(),
+            true,
         ))
         .expect("event JSON");
         assert_eq!(
@@ -660,6 +757,7 @@ mod tests {
                 "release",
                 "sdk",
                 "tags",
+                "timestamp",
                 "transaction",
                 "user",
             ]
@@ -704,6 +802,23 @@ mod tests {
         assert_eq!(v["tags"]["signin.storage"], "secure_refused");
     }
 
+    /// A zero `occurred_at_ms` (the wall clock was at/behind the epoch when it was captured —
+    /// `now_ms`'s own doc) must produce a body with NO `timestamp` key at all, never a fabricated
+    /// 1970 stamp (review finding, 2026-09-10).
+    #[test]
+    fn a_zero_occurred_at_produces_no_timestamp_key() {
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            ConsentKind::Standing,
+            SignInErrorContext { occurred_at_ms: 0, ..context() },
+            true,
+        ))
+        .expect("event JSON");
+        assert!(v.get("timestamp").is_none(), "expected no timestamp key, got {v}");
+    }
+
     /// **The two reporting paths are tagged distinctly, everywhere a Sentry query could split on
     /// it** — a body built with `ConsentKind::OneOff` never says "standing" anywhere.
     #[test]
@@ -714,12 +829,55 @@ mod tests {
             None,
             ConsentKind::OneOff,
             context(),
+            true,
         ))
         .expect("event JSON");
         assert_eq!(one_off["contexts"]["signin"]["consent"], "one_off");
         assert_eq!(one_off["tags"]["signin.consent"], "one_off");
         // No `user` object at all for a one-off report — no identifier of any kind.
         assert!(one_off.get("user").is_none());
+    }
+
+    /// **The `storage` fact is Errors scope 6, one scope above the sign-in report itself (5): a
+    /// person whose accepted scope is only 5 must not have it on the wire yet, and it is OMITTED
+    /// — not sent as a placeholder — exactly like `posthog`'s `session_storage`.**
+    #[test]
+    fn storage_is_omitted_when_the_scope_is_not_accepted() {
+        let allowed: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            ConsentKind::Standing,
+            context(),
+            true,
+        ))
+        .expect("event JSON");
+        assert_eq!(allowed["contexts"]["signin"]["storage"], "secure_refused");
+        assert_eq!(allowed["tags"]["signin.storage"], "secure_refused");
+
+        let refused: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            ConsentKind::Standing,
+            context(),
+            false,
+        ))
+        .expect("event JSON");
+        assert!(
+            refused["contexts"]["signin"].get("storage").is_none(),
+            "an unaccepted errors scope must OMIT the key, not send a placeholder: {:?}",
+            refused["contexts"]["signin"]
+        );
+        assert!(
+            refused["tags"].get("signin.storage").is_none(),
+            "an unaccepted errors scope must OMIT the tag, not send a placeholder: {:?}",
+            refused["tags"]
+        );
+        // Every other field is unaffected — this is a per-field omission, not a truncated event.
+        assert_eq!(refused["contexts"]["signin"]["kind"], "pin_create");
+        assert_eq!(refused["contexts"]["signin"]["consent"], "standing");
+        assert_eq!(refused["tags"]["signin.consent"], "standing");
     }
 
     /// **`send_once` needs no standing consent at all** — unlike `report_error`, it does not ask

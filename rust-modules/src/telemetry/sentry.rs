@@ -520,6 +520,16 @@ pub(crate) fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>)
     }
 }
 
+/// Now, in Unix milliseconds — mapped to `0` on a clock error exactly like every other `now_ms` in
+/// this crate (`signin::now_ms`, `storage::now_ms`), rather than panicking over a wall clock this
+/// codebase already knows runs skewed on at least one deployed set.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Attach the same `webos`/`hardware` sandbox contexts a NATIVE CRASH carries, to a HANDLED event
 /// this crate builds by hand.
 ///
@@ -569,9 +579,20 @@ pub(crate) fn attach_hardware_context(body: &mut serde_json::Value) {
 /// Newline-delimited, and the item header's `length` is the payload's byte length — the field this
 /// function exists to get right, since a wrong one makes the receiver parse the next line as
 /// payload and reject the whole envelope with a message about neither.
+///
+/// The envelope header also carries `sent_at` — generated HERE, as close to transmission as
+/// Sentry's own envelope spec asks for, rather than reusing the event body's own `timestamp`
+/// (which is the OCCURRENCE time, can be replayed long after the fact from `DEFERRED`, and is
+/// `0` outright on a clock at/behind the epoch — see `storage::now_ms`'s doc). `sent_at` is what
+/// lets Relay correct for a skewed device clock instead of trusting it; without it, a report from
+/// a set whose wall clock runs hours off (this repo's own dev set is one) is simply mis-dated on
+/// ingest (review finding, 2026-09-10).
 pub(crate) fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u8> {
+    let sent_at = super::posthog::rfc3339_millis(now_ms());
     let mut out = Vec::with_capacity(payload.len() + 160);
-    out.extend_from_slice(format!("{{\"event_id\":\"{event_id}\"}}\n").as_bytes());
+    out.extend_from_slice(
+        format!("{{\"event_id\":\"{event_id}\",\"sent_at\":\"{sent_at}\"}}\n").as_bytes(),
+    );
     out.extend_from_slice(
         format!(
             "{{\"type\":\"{item_type}\",\"length\":{}}}\n",
@@ -719,9 +740,11 @@ mod tests {
         let env = envelope("0123456789abcdef0123456789abcdef", "event", payload);
         let text = String::from_utf8(env).expect("utf-8");
         let mut lines = text.split('\n');
-        assert_eq!(
-            lines.next().unwrap(),
-            r#"{"event_id":"0123456789abcdef0123456789abcdef"}"#
+        let header: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        assert_eq!(header["event_id"], "0123456789abcdef0123456789abcdef");
+        assert!(
+            header["sent_at"].as_str().is_some_and(|s| !s.is_empty()),
+            "the envelope header must carry sent_at for Relay's clock-drift correction: {header}"
         );
         assert_eq!(
             lines.next().unwrap(),

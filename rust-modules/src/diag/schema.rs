@@ -249,7 +249,8 @@ pub(crate) struct UsageContext {
     pub install: String,
     /// issue #76: how this install's session file is protected right now — one of
     /// `crate::telemetry::storage::SessionStorageClass`'s codes (`none` / `plaintext` / `secure` /
-    /// `secure_locked` / `secure_refused`), never key material, ciphertext or plaintext. Present on
+    /// `secure_locked` / `secure_refused` / `secure_unavailable`), never key material, ciphertext or
+    /// plaintext. Present on
     /// every event so a locked-storage rate is queryable the same way a sandbox rate is. Read from
     /// `crate::plex::session::storage_class()` in [`UsageContext::for_server`] (and so also by
     /// [`UsageContext::current`], which is `for_server(None)`) — the one runtime site; `Default`
@@ -350,7 +351,8 @@ impl UsageContext {
             ip_version: "<v4 / v6 / unknown>".into(),
             rtkmem: "<ok / missing / n/a>".into(),
             install: "<devmode / homebrew / unknown>".into(),
-            session_storage: "<none / plaintext / secure / secure_locked / secure_refused>".into(),
+            session_storage: "<none / plaintext / secure / secure_locked / secure_refused / secure_unavailable>"
+                .into(),
         }
     }
 }
@@ -687,7 +689,7 @@ pub(crate) const CONTEXT_SPECS: &[F] = &[
     },
     F {
         key: "session_storage",
-        domain: "`none` / `plaintext` / `secure` / `secure_locked` / `secure_refused` / `unknown` — how the saved sign-in is protected on this television, never key material, ciphertext or plaintext",
+        domain: "`none` / `plaintext` / `secure` / `secure_locked` / `secure_refused` / `secure_unavailable` / `unknown` — how the saved sign-in is protected on this television, never key material, ciphertext or plaintext",
     },
 ];
 
@@ -973,6 +975,7 @@ mod tests {
             key: "plxnative.session.v1".into(),
             iv: "AAAAAAAAAAAAAAAAAAAAAA==".into(),
             data: "c2VjcmV0".into(),
+            identity: crate::keymanager::Identity::Anonymous,
         };
         let envelope = serde_json::json!({
             "format": "plxnative-secure-session",

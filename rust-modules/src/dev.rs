@@ -184,6 +184,44 @@ pub(crate) fn read(_name: &str) -> Option<String> {
     None
 }
 
+/// **Select a fake `com.webos.service.keymanager3` double** — `plxnative-keymanager=<mode>`
+/// (issue #76: `keymanager3` seals and round-trips a session envelope IN-PROCESS but the envelope
+/// never reopens on the NEXT launch). Read once at boot, like every other automation trigger, and
+/// handed to `crate::keymanager::fake`, which owns the mode grammar (`perprocess`, `healthy`,
+/// `stall`, `refuse=<code>`, `nocode`, `badoutput`, `absent`) and the in-process service it
+/// implements. Deliberately **not** in [`DIAG`]: it swaps which backend `keymanager::seal`/`open`
+/// talk to, which is exactly the kind of behaviour change every other automation trigger already
+/// suppresses the who's-watching picker for.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn keymanager_fake_mode() -> Option<String> {
+    read("keymanager")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn keymanager_fake_mode() -> Option<String> {
+    None
+}
+
+/// **Ask the LS2 hub which identity it grants this app** — `plxnative-ls2identity[=probe]`
+/// (issue #76). At boot, before anything could register for a keymanager call, try every
+/// registration shape once and log the hub's own answer to each — the name asked for, the numeric
+/// code and the `LSError` message text, which this app freed unread for a whole device session.
+/// `Some("")`/`Some("probe")` runs it; any other content is logged and ignored, so a typo cannot
+/// look like a silent refusal.
+///
+/// It exists because "which owner does this firmware's key manager see" is answerable on a set
+/// that has NO keymanager3 at all (the 2019 dev set) and on a reporter's set alike (5.6.2 through
+/// 11.2.0, all with `libAcbAPI` gone), without
+/// either of them having to reach a seal. Deliberately **not** in [`DIAG`]: it registers on the
+/// bus, which briefly takes and releases the app-id name — behaviour, not observation.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn ls2_identity_probe() -> Option<String> {
+    read("ls2identity")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn ls2_identity_probe() -> Option<String> {
+    None
+}
+
 /// **Hold the Load-returned flag** — `plxnative-holdload[=ms]`.
 ///
 /// `Some(ms)` when armed (default 30000 for a bare/empty trigger, per its own `parse` fallback),

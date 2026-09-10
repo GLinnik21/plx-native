@@ -1040,6 +1040,27 @@ pub(crate) use engine::aq_caps;
 pub(crate) use engine::feed_leads_ms;
 pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
 
+/// Does something in THIS process hold the app id as an LS2 bus name?
+///
+/// Asked by `keymanager`, which would otherwise like that name for itself (its module doc's
+/// "Identity" section). The answer is the video path: on a firmware that ships `libAcbAPI`,
+/// [`engine::acb_init`] hands the app id to `AcbAPI_initialize` at boot and the ACB keeps that
+/// registration for the life of the process; webOS 5.0 deleted `libAcbAPI` outright, so on a
+/// newer set nothing here claims the name at all and `vp_mode()` answers `VP_EXPORTED` (or
+/// `VP_NONE`).
+///
+/// **It is a firmware fact, not a race.** `plex::session::load` runs BEFORE `acb_init`, so on a
+/// webOS 4 set the name is still free when the first keymanager registration happens — asking the
+/// hub instead of asking this would get a yes, take the name, and leave ACB's own registration to
+/// fail at boot, which costs a picture rather than a sign-in.
+///
+/// Resolving `vp_mode()` here memoizes it inside the seam earlier than `acb_init` would have.
+/// That is the same `dlopen("libAcbAPI.so.1")` + `dlsym` sweep, with the same answer, and it
+/// creates no ACB object — `AcbAPI_create`/`initialize` still happen only in `acb_init`.
+pub(crate) fn acb_holds_app_id() -> bool {
+    ffi::vp_mode() == VP_ACB
+}
+
 /// One consistent read of everything the on-screen diagnostics overlay shows (`ui::stats`).
 ///
 /// A struct rather than twenty accessors for one reason: the panel must not tell a story that

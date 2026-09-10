@@ -70,7 +70,15 @@ fn path() -> Option<PathBuf> {
 /// that loses the report this whole module exists to keep.
 fn resolve() -> Option<PathBuf> {
     let cands = crate::paths::telemetry_spool_candidates();
-    if let Some(p) = cands.iter().find(|p| p.exists()) {
+    // Not `Path::exists()`: that follows symlinks and checks neither ownership nor file type, so a
+    // peer-planted name at the first candidate would capture the spool for the whole process (every
+    // later reader/writer refuses it on the owned-regular check, or blocks on it if it is a FIFO,
+    // and this `OnceLock` never reconsiders). Select on the same owned-regular predicate the readers
+    // use instead (review finding, 2026-09-10).
+    if let Some(p) = cands
+        .iter()
+        .find(|p| crate::plex::session::read_owned_regular_trusted(p).is_some())
+    {
         return Some(p.clone());
     }
     // Nothing yet: take the first candidate whose directory will accept a write. Probing by writing
@@ -89,9 +97,24 @@ pub(crate) fn read() -> Vec<Record> {
 
 fn read_locked() -> Vec<Record> {
     let Some(p) = path() else { return Vec::new() };
-    let Some(bytes) = crate::plex::session::read_owned_regular(&p) else {
+    let Some((bytes, trust)) = crate::plex::session::read_owned_regular_trusted(&p) else {
         return Vec::new();
     };
+    if !trust.content_trusted() {
+        // Write-widened: another uid could have appended or replaced records, so nothing here is
+        // provably ours to send. Count what is there only for the log, then truncate — never keep
+        // a byte of it. `ON_DISK` is reset to 0 so the next append's fast path does not believe a
+        // stale count.
+        let discarded = queue::decode_all(&bytes).records.len();
+        if discarded > 0 {
+            crate::log(&format!(
+                "telemetry: discarded {discarded} spool records after an untrusted mode"
+            ));
+        }
+        let _ = crate::plex::session::write_atomic(&p, &[]);
+        ON_DISK.store(0, std::sync::atomic::Ordering::Relaxed);
+        return Vec::new();
+    }
     let d = queue::decode_all(&bytes);
     if d.dropped_bytes > 0 {
         // Expected after a power cut, and worth one line either way: a non-zero count after a CLEAN
@@ -141,7 +164,7 @@ pub(crate) fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bo
 
 fn append_locked(r: &Record) -> bool {
     use std::io::Write;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
     let Some(p) = path() else { return false };
     let Some(frame) = queue::encode(r) else {
@@ -159,21 +182,43 @@ fn append_locked(r: &Record) -> bool {
     // `resolve`/compaction creates the file through `write_atomic`, so ordinary append only opens
     // an existing object. O_NOFOLLOW plus fstat closes the fixed-name symlink/TOCTOU path in the
     // shared runtime directory; the fd, rather than a second pathname lookup, is what is checked.
+    // O_NONBLOCK: without it, a peer-planted FIFO at this fixed name blocks `open(2)` before the
+    // `is_file()` check below ever runs, wedging the frame loop that calls `append`. No-op for a
+    // genuine regular file on Linux (review finding, 2026-09-10; twin fix in `plex::session`).
     let opened = std::fs::OpenOptions::new()
         .append(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(&p);
     let Ok(mut f) = opened else {
         crate::log("telemetry: could not open the spool for append");
         return false;
     };
     let Ok(meta) = f.metadata() else { return false };
-    if !meta.file_type().is_file()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.permissions().mode() & 0o077 != 0
-    {
+    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
         crate::log("telemetry: refused an unsafe spool file");
         return false;
+    }
+    // A widened MODE on a file that is still ours and still regular is repaired in place rather
+    // than refused — see `session::repair_owned_mode`'s doc for why, and
+    // `docs/measurements/credential-storage-native-apps-2026-09-10.md` for the device finding
+    // that made the old refusal a silent, permanent telemetry outage. **The mode is always
+    // repaired, but a write-widened file's CONTENT is never trusted** — another uid could have
+    // appended a forged record — so that case truncates instead of appending onto it. This stays
+    // the cheap "one write(2)" path in the ordinary (trusted) case: only an untrusted mode pays for
+    // reading the file back, and that is a rare event, not the steady state this path is sized for.
+    let trust = crate::plex::session::repair_owned_mode(&f, &meta, &p);
+    if !trust.content_trusted() {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut existing = Vec::new();
+        let _ = f.seek(SeekFrom::Start(0));
+        let _ = Read::by_ref(&mut f).take(4 * 1024 * 1024).read_to_end(&mut existing);
+        let discarded = queue::decode_all(&existing).records.len();
+        if discarded > 0 {
+            crate::log(&format!(
+                "telemetry: discarded {discarded} spool records after an untrusted mode"
+            ));
+        }
+        return write_locked(std::slice::from_ref(r));
     }
     if f.write_all(&frame).is_err() {
         return false;
@@ -298,9 +343,19 @@ fn test_path() -> Option<PathBuf> {
 /// There is one spool per process by design, so without this every test in the suite would share
 /// one file under the build directory — the cross-test pollution `crate::testlock` exists for,
 /// arriving by a path nobody would think to grep. Callers hold [`crate::testlock::serial`].
+///
+/// **Also forgets [`ON_DISK`].** It is a per-PROCESS count that is sound in production because
+/// `path()` is a `OnceLock` and the file never moves — but a test moves it, and a stale non-
+/// `UNKNOWN` count from whichever spool test ran last makes the very next `append` skip
+/// compaction and try to open a file that was never created at this new path (`append_locked`'s
+/// fast path only opens, it never creates). Every test in this module already did this itself via
+/// `Scratch::new`; centralising it here is what let the first test OUTSIDE this module
+/// (`telemetry::tests::flush_drops_a_spooled_record_the_current_consent_no_longer_allows`) call
+/// `set_test_path` directly and still see its append actually land.
 #[cfg(test)]
 pub(crate) fn set_test_path(p: Option<PathBuf>) {
     *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    ON_DISK.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -572,5 +627,129 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&s.0).expect("spool").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "spool mode is {mode:o}");
+    }
+
+    /// **A spool widened to 0777 after this process already knows its record count is REPAIRED,
+    /// not refused.** Measured on the device (2026-09-10, `docs/measurements/credential-storage-
+    /// native-apps-2026-09-10.md`): the debug install's spool was found at 0777 in the shared
+    /// `/media/developer` namespace, and the pre-hardening `append_locked` refused every append to
+    /// such a file forever, which is telemetry dying silently rather than loudly. Ownership (our
+    /// uid, a regular file) is still the line that must never be crossed — only the MODE is
+    /// self-healing.
+    #[test]
+    fn an_append_to_a_world_writable_spool_repairs_the_mode_and_discards_the_old_record() {
+        let _g = crate::testlock::serial();
+        let s = Scratch::new("repair");
+
+        // First append: compaction runs (ON_DISK starts UNKNOWN every process), creating the file
+        // fresh at 0600 and learning the on-disk count — the ordinary case.
+        append(&rec("already-here"));
+
+        // Something in the shared namespace widens the mode mid-session (a peer devmode app, or —
+        // per the archaeology in the measurement doc above — an unexplained external actor; this
+        // repo's own code has never written this file at anything but 0600). 0o777 carries WRITE
+        // bits, so another uid could have rewritten the pre-existing record — its content is no
+        // longer trustworthy, unlike the mode alone.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&s.0, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        // A SECOND append takes the fast direct-append path (ON_DISK is now known), which is the
+        // one that used to refuse outright on a bad mode, and later (pre-trust-policy) kept
+        // whatever was already there across the repair.
+        assert!(
+            append(&rec("second")),
+            "append refused a file this process owns — telemetry died silently"
+        );
+
+        assert_eq!(
+            ids(),
+            vec!["second".to_string()],
+            "a write-widened mode makes the pre-existing record untrusted — it must be discarded, \
+             not kept across the repair"
+        );
+
+        let mode = std::fs::metadata(&s.0).expect("spool").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
+    }
+
+    /// **The READ path has the same rule and had no test** (review finding, 2026-09-10). The two
+    /// write-widened branches in this module are not one: the append side runs on the frame loop
+    /// and the read side is what a FLUSH calls, and a flush is the only one of the two that can
+    /// put a record on the network. A forged record reaching `read()` is therefore the worse half
+    /// — bytes another uid could have written, sent under this television's own reporting
+    /// identifier — and until now nothing graded it. `an_append_to_a_world_writable_spool_…`
+    /// cannot: by the time its own `ids()` runs, the append has already repaired the mode to 0600,
+    /// so the branch here is never entered.
+    #[test]
+    fn a_flush_read_of_a_world_writable_spool_discards_every_record_and_truncates() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let s = Scratch::new("read-repair");
+
+        append(&rec("already-here"));
+        // Nothing in this process writes after this point: the read path is on its own.
+        std::fs::set_permissions(&s.0, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        assert!(
+            ids().is_empty(),
+            "a flush must never pick up records another uid could have written"
+        );
+        assert_eq!(
+            std::fs::read(&s.0).expect("spool"),
+            Vec::<u8>::new(),
+            "and not a byte of them is left to be read again by the next flush"
+        );
+        assert_eq!(
+            ON_DISK.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the append fast path must not go on believing a count from before the truncation"
+        );
+        let mode = std::fs::metadata(&s.0).expect("spool").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
+
+        // And the spool is usable again straight away: this is a discard, not a permanent break.
+        assert!(append(&rec("after")));
+        assert_eq!(ids(), vec!["after".to_string()]);
+    }
+
+    /// The read-only-widened twin, and the reason the distinction is worth carrying on the read
+    /// path too: `0o644` grants no write bit, so the records are still provably this process's own
+    /// and a flush keeps them. Discarding here would throw away real reports over a disclosure
+    /// problem the mode repair has already closed.
+    #[test]
+    fn a_flush_read_of_a_read_only_widened_spool_keeps_every_record() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let s = Scratch::new("read-repair-readable");
+
+        append(&rec("already-here"));
+        std::fs::set_permissions(&s.0, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(ids(), vec!["already-here".to_string()]);
+        let mode = std::fs::metadata(&s.0).expect("spool").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
+    }
+
+    #[test]
+    fn an_append_to_a_read_only_widened_spool_repairs_the_mode_and_keeps_the_old_record() {
+        let _g = crate::testlock::serial();
+        let s = Scratch::new("repair-readable");
+
+        append(&rec("already-here"));
+
+        // 0644 widens group/other READ only — no write bit. The content is still provably ours.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&s.0, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(append(&rec("second")));
+
+        assert_eq!(
+            ids(),
+            vec!["already-here".to_string(), "second".to_string()],
+            "a read-only widened mode must not cost the pre-existing record"
+        );
+
+        let mode = std::fs::metadata(&s.0).expect("spool").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the widened mode was not repaired: {mode:o}");
     }
 }

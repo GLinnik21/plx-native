@@ -569,6 +569,41 @@ fn ls2_probe() {
     ls2::probe();
 }
 
+/// `/tmp/plxnative-ls2identity[=probe]` — at boot, ask the hub which identity it grants this
+/// executable, and log the answer to every registration shape (`crate::dev::ls2_identity_probe`).
+///
+/// **Called before `plex::session::load`**, which is the first thing that would register for a
+/// keymanager call, so the probe's answers describe a bus nothing of ours has touched yet. That
+/// ordering is the whole value of running it here rather than through the `gohome=probe` leg,
+/// which only fires on a root BACK press — long after `player::acb_init` has taken the app-id
+/// name on a webOS 4 set, so it can only ever report the AFTER picture.
+///
+/// It logs the ACB fact beside the hub's, because on a firmware that has `libAcbAPI` the answer
+/// the keymanager acts on is that one and not the hub's (`player::acb_holds_app_id`). A run on a
+/// set without `libAcbAPI` (webOS 5 and newer) is the measurement issue #76 needs.
+pub(crate) fn ls2_identity_probe_if_armed() {
+    let Some(mode) = crate::dev::ls2_identity_probe() else {
+        return;
+    };
+    if !(mode.is_empty() || mode == "probe") {
+        crate::log(&format!(
+            "ls2probe: unknown mode {mode:?} — arm the trigger empty or as `probe`"
+        ));
+        return;
+    }
+    let acb = crate::player::acb_holds_app_id();
+    crate::log(&format!(
+        "ls2probe: acb_holds_app_id={acb} — the keymanager identity this firmware would take is {}",
+        if acb {
+            // Both named shapes ask for the name ACB is about to take, so both are skipped.
+            "anonymous"
+        } else {
+            "app_id, else named, else anonymous (whichever the hub grants first)"
+        }
+    ));
+    ls2_probe();
+}
+
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 fn launch_home() -> bool {
     let payload = format!("{{\"id\":\"{HOME_APP_ID}\"}}");
@@ -658,20 +693,50 @@ pub(crate) fn bind_window(_win: *mut std::os::raw::c_void) {}
 /// television) allows `""` and the app id as names, and grants outbound permissions to the app id
 /// only.
 ///
-/// **What the hub actually answers, measured on the set through [`probe`] (2026-09-04):**
+/// **What the hub actually answers, measured on the set through [`probe`]** — the 2026-09-04
+/// column was taken on a root BACK press, i.e. AFTER `player::acb_init`; the 2026-09-10 column at
+/// BOOT, before anything of ours had registered
+/// (`docs/measurements/ls2-identity-tv-2026-09-10.md`). **They disagree, and the boot reading is
+/// the one that decides anything**, because it is the moment `plex::session::load` asks:
 ///
-/// | registration | answer |
-/// |---|---|
-/// | `LSRegisterApplicationService(app_id, app_id)` | `-1028 Attempted to register for a service name that already exists` — this PROCESS already holds the app id: `ls-monitor -l` lists it beside an anonymous client, both ours, from boot; ACB is the one component handed the app id (`AcbAPI_initialize`, `player::acb_init` at boot) |
-/// | `LSRegisterApplicationService(NULL, app_id)` | `-1027 Invalid permissions for (null)` — the `""` name has no permissions entry |
-/// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
+/// | registration | after `acb_init` (2026-09-04) | at boot (2026-09-10) |
+/// |---|---|---|
+/// | `LSRegisterApplicationService(app_id, app_id)` | `-1028 Attempted to register for a service name that already exists` | **`-1027 Invalid permissions for <app id>`** |
+/// | `LSRegisterApplicationService(NULL, app_id)` | `-1027 Invalid permissions for (null)` | `-1027 Invalid permissions for (null)` |
+/// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it | same |
+/// | `LSRegister(app_id)` | not tried | **not tried until now** — see [`register_named`] |
 ///
-/// So every caller registers as a plain anonymous client, [`register`]. The role file still
-/// decides what such a client may CALL — the probe proves SAM's read-only method; `launch_home`
-/// grades the reply of the one that matters — and the hub's refusal, when there is one, travels
-/// in [`RegisterFail`] to the caller's log line instead of being freed. Anonymous clients do not
-/// collide with each other, so nothing here is serialised; a registration lives for one caller's
-/// use and is unregistered on drop, as both copies always did.
+/// **`-1027` for `name=NULL` at boot is what makes the app-service column a verdict on the API
+/// rather than on the name**: that shape asks for no name at all, so there is nothing for the hub
+/// to have found taken, and the app id was demonstrably free at that instant (`acb create=1`
+/// appears 29 lines later). The role file appinstalld generates lists BOTH `""` and the app id in
+/// `allowedNames` and grants the app id `outbound: ["*"]`, and `LSRegister(NULL)` — which takes
+/// `""` off that same list — registers and completes an outbound call. So on this firmware
+/// `LSRegisterApplicationService` is refused for a `type: "regular"` dev-mode role whatever name
+/// it is handed, while `LSRegister` is granted.
+///
+/// That is precisely why [`register_named`] exists: `LSRegister(app_id)` is the shape the role
+/// file's `allowedNames` should permit AND the shape that gives the hub a sender service name —
+/// the second key of LG's key-manager ownership rule (application id > sender service name). It
+/// is **untested on any television** as of 2026-09-10; [`probe`] is what settles it.
+///
+/// So [`register`], the plain anonymous client, is what every caller but `keymanager` takes. The
+/// role file still decides what such a client may CALL — the probe proves SAM's read-only method;
+/// `launch_home` grades the reply of the one that matters — and the hub's refusal, when there is
+/// one, travels in [`RegisterFail`] to the caller's log line instead of being freed. Anonymous
+/// clients do not collide with each other, so nothing here is serialised; a registration lives
+/// for one caller's use and is unregistered on drop, as both copies always did.
+///
+/// **One caller needs an identity, and it now has three shapes to ask through.** `keymanager`
+/// keys nothing of its own by identity — LG's key manager keys ITS keys by the caller's, so an
+/// anonymous client owns a different key every launch (issue #76). Since 2026-09-10 that one
+/// caller asks for [`register_app_service`] (`LSRegisterApplicationService(app_id, app_id)`),
+/// then [`register_named`] (`LSRegister(app_id)`), and falls back to [`register`] on any refusal;
+/// `keymanager`'s module doc owns the rule, including why the decision is gated on whether THIS
+/// firmware has an ACB to hold the name rather than on the hub's reply. **Both named shapes are
+/// behind that one gate**, since both ask for the same bus name ACB would take.
+/// `go_home` deliberately keeps the anonymous shape: it needs no identity, and a name is a
+/// process-wide resource to contend for.
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 pub(crate) mod ls2 {
     use std::ffi::{CStr, CString};
@@ -750,11 +815,12 @@ pub(crate) mod ls2 {
         true
     }
 
-    /// The app id as a C string, for [`probe`]'s app-service shapes — `register` itself passes
-    /// no name at all (module doc).
-    fn app_id_cstring() -> Result<CString, RegisterFail> {
-        CString::new(crate::paths::app_id()).map_err(|_| RegisterFail::Setup {
+    /// The app id as a C string, for [`probe`]'s and [`register_app_service`]'s app-service
+    /// shapes — [`register`] itself passes no name at all (module doc).
+    fn app_id_cstring() -> Result<CString, Refused> {
+        CString::new(crate::paths::app_id()).map_err(|_| Refused {
             stage: "app-id",
+            code: 0,
             detail: String::new(),
         })
     }
@@ -784,6 +850,41 @@ pub(crate) mod ls2 {
         Setup { stage: &'static str, detail: String },
     }
 
+    /// The same refusal with the hub's NUMERIC code still attached.
+    ///
+    /// [`RegisterFail`] carries prose, which is right for a log line and useless for a decision:
+    /// `keymanager`'s identity choice grades `-1028` (the app id is already registered on this
+    /// bus — on a webOS 4 set, by our own ACB) apart from `-1027` (this executable's role file
+    /// grants that name no permissions) apart from everything else, and those three are the same
+    /// sentence to a reader and three different facts to the code. `stage` and `detail` are
+    /// [`RegisterFail`]'s, unchanged; `code` is `LSError::error_code`, read BEFORE `LSErrorFree`,
+    /// and is `0` for a failure the hub was never asked about (a bad app id, no glib context).
+    #[derive(Debug)]
+    pub(crate) struct Refused {
+        pub stage: &'static str,
+        pub code: c_int,
+        pub detail: String,
+    }
+
+    impl From<Refused> for RegisterFail {
+        fn from(r: Refused) -> Self {
+            RegisterFail::Setup {
+                stage: r.stage,
+                detail: r.detail,
+            }
+        }
+    }
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.detail.is_empty() {
+                write!(f, "stage={} code {}", self.stage, self.code)
+            } else {
+                write!(f, "stage={} {}", self.stage, self.detail)
+            }
+        }
+    }
+
     impl std::fmt::Display for RegisterFail {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
@@ -805,34 +906,101 @@ pub(crate) mod ls2 {
         context: *mut c_void,
     }
 
-    /// Register as a plain anonymous client — the one shape the hub accepts from this process
-    /// (module doc) — on a private glib context.
+    /// Which identity a registration asks the hub for.
+    #[derive(Clone, Copy)]
+    enum Shape {
+        /// `LSRegister(NULL)` — a plain anonymous client. The hub mints the bus name.
+        Anonymous,
+        /// `LSRegister(app_id)` — a plain registration under a NAME. The hub is given no
+        /// application id, so a service that prefers one sees only the sender's service name —
+        /// which is the second key of LG's key-manager ownership rule, and is stable across
+        /// launches exactly as the app id is.
+        Named,
+        /// `LSRegisterApplicationService(app_id, app_id)` — the bus name IS the app id, which is
+        /// the identity a service that keys anything by its caller (`keymanager3`) sees.
+        AppService,
+    }
+
+    /// Register as a plain anonymous client — the shape every caller took until 2026-09-10, and
+    /// still the fallback for all of them (module doc) — on a private glib context.
     pub(crate) fn register() -> Result<Registration, RegisterFail> {
+        register_shape(Shape::Anonymous).map_err(RegisterFail::from)
+    }
+
+    /// Register under the APPLICATION ID, so a service that keys state by its caller's identity
+    /// sees the same owner on every launch of this install. Only `keymanager` asks for this, and
+    /// only where nothing else in this process holds that name — its module doc has the rule and
+    /// the reason `go_home` deliberately does not use it (an id-named registration is a
+    /// process-wide resource; the root-press path needs no identity at all and taking one would
+    /// contend for a name for no benefit).
+    ///
+    /// Returns the hub's own numeric refusal, unfreed, so the caller can grade `-1028`/`-1027`.
+    pub(crate) fn register_app_service() -> Result<Registration, Refused> {
+        register_shape(Shape::AppService)
+    }
+
+    /// Register under the APPLICATION ID as a PLAIN bus name — `LSRegister(app_id)`, the shape
+    /// [`register_app_service`] is not: no application id is declared, so the hub grants (or
+    /// refuses) a *service name* out of the role file's `allowedNames`, which on a dev-mode set
+    /// contains the app id.
+    ///
+    /// It exists because the dev set answers `-1027` to the application-service form **for both
+    /// names, at boot, before ACB holds anything** (module doc) — a verdict on that API rather
+    /// than on the name — while plain `LSRegister` is granted. A sender service name is the
+    /// second key of LG's key-manager ownership rule, so this shape is `keymanager`'s middle
+    /// preference: weaker evidence than an application id, still stable across launches.
+    ///
+    /// Same contract as its sibling: the hub's numeric refusal comes back unfreed, and the same
+    /// ACB gate governs whether it may be asked for at all.
+    pub(crate) fn register_named() -> Result<Registration, Refused> {
+        register_shape(Shape::Named)
+    }
+
+    fn register_shape(shape: Shape) -> Result<Registration, Refused> {
+        // Held across the call below: the pointer handed to the hub has to stay alive for it.
+        let app_id = match shape {
+            Shape::AppService | Shape::Named => Some(app_id_cstring()?),
+            Shape::Anonymous => None,
+        };
         let mut error: LSError = unsafe { std::mem::zeroed() };
         unsafe { LSErrorInit(&mut error) };
         let context = unsafe { g_main_context_new() };
         if context.is_null() {
             unsafe { LSErrorFree(&mut error) };
-            return Err(RegisterFail::Setup {
+            return Err(Refused {
                 stage: "glib-context",
+                code: 0,
                 detail: String::new(),
             });
         }
         let mut handle = std::ptr::null_mut();
-        let registered = unsafe { LSRegister(std::ptr::null(), &mut handle, &mut error) };
+        let registered = unsafe {
+            match (shape, &app_id) {
+                (Shape::AppService, Some(id)) => {
+                    LSRegisterApplicationService(id.as_ptr(), id.as_ptr(), &mut handle, &mut error)
+                }
+                (Shape::Named, Some(id)) => LSRegister(id.as_ptr(), &mut handle, &mut error),
+                _ => LSRegister(std::ptr::null(), &mut handle, &mut error),
+            }
+        };
         if !registered || handle.is_null() {
+            // The code and the text both come off the LSError BEFORE it is freed — reading it
+            // afterwards is how this refusal went unexplained for a whole device session.
+            let code = error.error_code;
             let detail = error_text(&error);
             unsafe {
                 LSErrorFree(&mut error);
                 g_main_context_unref(context);
             }
-            return Err(RegisterFail::Setup {
+            return Err(Refused {
                 stage: "register",
+                code,
                 detail,
             });
         }
         reset(&mut error);
         if !unsafe { LSGmainContextAttach(handle, context, &mut error) } {
+            let code = error.error_code;
             let detail = error_text(&error);
             reset(&mut error);
             unsafe {
@@ -840,8 +1008,9 @@ pub(crate) mod ls2 {
                 LSErrorFree(&mut error);
                 g_main_context_unref(context);
             }
-            return Err(RegisterFail::Setup {
+            return Err(Refused {
                 stage: "attach",
+                code,
                 detail,
             });
         }
@@ -964,12 +1133,61 @@ pub(crate) mod ls2 {
         registration.call(uri, payload, BUDGET)
     }
 
-    /// `/tmp/plxnative-gohome=probe`: try every registration shape the role file could accept, log
-    /// what the hub answers to each — the LSError text this app freed unread for a whole device
-    /// session — and, through whichever registered, ONE read-only SAM call. Evidence, not a leg:
-    /// its answer is the table in the module doc and decided [`register`]'s shape, and it runs
-    /// jailed as the app, under the app's uid and exe path, the only place the hub's answer means
-    /// anything. Kept so the next firmware can be asked the same question in one root press.
+    /// One registration shape [`probe`] asks the hub for. `named` is whether the app id is passed
+    /// as the NAME argument (the app-service form takes it as `app_id` either way).
+    ///
+    /// **`LSRegisterPubPriv` is deliberately NOT here**, and the four reasons are worth carrying
+    /// because it is the obvious fifth shape and it is a trap:
+    ///
+    ///  1. The NDK sysroot's `luna-service2/lunaservice.h` — the header this app compiles
+    ///     against, and the one the television's own library was built from — does not declare
+    ///     it. The only two registrations it declares are `LSRegister` and
+    ///     `LSRegisterApplicationService`.
+    ///  2. `tools/fwcompat.py --lib libluna-service2.so.3 --grep LSRegister` finds it exported on
+    ///     every gated release EXCEPT **11.2.0**, where LG dropped it together with
+    ///     `LSRegisterPalmService`. So it could never be named at link time — a `DT_NEEDED`
+    ///     reference the loader cannot resolve kills the process at `exec()`, before `main` and
+    ///     before the event log exists — and `dlsym` would have to answer "absent" on exactly the
+    ///     newest set this app claims.
+    ///  3. **Its signature is not obtainable from any primary source.** webOS OSE's own
+    ///     `lunaservice.h` has REMOVED the declaration; what survives there is the macro
+    ///     `LS_DEPRECATED_PUBPRIV`, whose text is "No public/private bus any more". Writing the
+    ///     `extern` from recollection is precisely what `.agents/skills/bind-tv-lib-abi`
+    ///     forbids: a wrong parameter order is silent memory corruption on a device with no
+    ///     debugger, and no header, inventory or binary on this machine can grade it.
+    ///  4. It would be redundant even if it were safe. With no public/private split left in the
+    ///     hub, both halves reduce to the registration `Plain { named: true }` already performs,
+    ///     so the two extra lines would be two more copies of one answer.
+    #[derive(Clone, Copy)]
+    enum Attempt {
+        AppService { named: bool },
+        Plain { named: bool },
+    }
+
+    /// Try every registration shape the role file could accept, log what the hub answers to each
+    /// — the LSError text this app freed unread for a whole device session — and, through
+    /// whichever registered, ONE read-only SAM call. Evidence, not a leg: its answer is the table
+    /// in the module doc and decided [`register`]'s shape, and it runs jailed as the app, under
+    /// the app's uid and exe path, the only place the hub's answer means anything.
+    ///
+    /// **Two triggers reach it, and WHEN is the difference between them.**
+    /// `/tmp/plxnative-gohome=probe` runs it on a root BACK press — after `player::acb_init` has
+    /// taken the app-id name on a webOS 4 set, so it can only report the after picture.
+    /// `/tmp/plxnative-ls2identity` runs it at BOOT, before anything of ours has registered
+    /// ([`super::ls2_identity_probe_if_armed`]), which is the shape issue #76 needs from a
+    /// reporter's set without `libAcbAPI` (webOS 5 and newer).
+    ///
+    /// **Four shapes since 2026-09-10, and the new one is `plain LSRegister name=appid`.** The
+    /// 2026-09-10 boot measurement showed the app-service form refused `-1027` for *both* names
+    /// while `LSRegister(NULL)` was granted, i.e. a verdict on that API and not on the name — so
+    /// the obvious third shape, the one the role file's `allowedNames` actually lists, had never
+    /// been asked (module doc). `LSRegisterPubPriv` would have been a fifth and is deliberately
+    /// absent; [`Attempt`] carries the four reasons.
+    ///
+    /// Each shape registers and is **unregistered before the next is tried**, so a set on which
+    /// the named shape succeeds holds the app-id bus name only for the length of one
+    /// `getForegroundAppInfo`. That is still a name ACB wants on a webOS 4 set, which is why this
+    /// stays trigger-gated evidence and why the device recipe checks `acb create=1` after it.
     pub(super) fn probe() {
         let app_id = match app_id_cstring() {
             Ok(n) => n,
@@ -978,21 +1196,29 @@ pub(crate) mod ls2 {
                 return;
             }
         };
-        let shapes: [(&str, bool, bool); 3] = [
-            ("app-service name=appid", true, true),
-            ("app-service name=NULL", false, true),
-            ("plain LSRegister name=NULL", false, false),
+        let shapes: [(&str, Attempt); 4] = [
+            ("app-service name=appid", Attempt::AppService { named: true }),
+            ("app-service name=NULL", Attempt::AppService { named: false }),
+            ("plain LSRegister name=appid", Attempt::Plain { named: true }),
+            ("plain LSRegister name=NULL", Attempt::Plain { named: false }),
         ];
-        for (label, named, app_service) in shapes {
+        for (label, attempt) in shapes {
             let mut error: LSError = unsafe { std::mem::zeroed() };
             unsafe { LSErrorInit(&mut error) };
             let mut handle = std::ptr::null_mut();
-            let name = if named { app_id.as_ptr() } else { std::ptr::null() };
             let ok = unsafe {
-                if app_service {
-                    LSRegisterApplicationService(name, app_id.as_ptr(), &mut handle, &mut error)
-                } else {
-                    LSRegister(name, &mut handle, &mut error)
+                match attempt {
+                    Attempt::AppService { named } => LSRegisterApplicationService(
+                        if named { app_id.as_ptr() } else { std::ptr::null() },
+                        app_id.as_ptr(),
+                        &mut handle,
+                        &mut error,
+                    ),
+                    Attempt::Plain { named } => LSRegister(
+                        if named { app_id.as_ptr() } else { std::ptr::null() },
+                        &mut handle,
+                        &mut error,
+                    ),
                 }
             };
             if !ok || handle.is_null() {

@@ -832,9 +832,18 @@ impl RouteLayout {
             copy_top += note_h + theme::space::SM;
         }
         let copy_bottom = self.action.y - theme::space::XL;
+        // The cap must come from the room actually LEFT, not a fixed count: `TextView::draw`
+        // paints every line `max_lines` allows regardless of the frame height it is handed (it has
+        // no clip — see its module doc), so a fixed `12` overruns whenever something above the body
+        // (a note, a crumb) has already spent part of that vertical budget. 12 stays the CEILING —
+        // an ordinary note-less route never had more room than that to begin with — but a stage
+        // that also draws a note gets fewer lines rather than a body that runs past the action row.
+        let copy_leading = copy_size as f32 + theme::space::XS;
+        let room_lines = ((copy_bottom - copy_top).max(0.0) / copy_leading).floor() as usize;
+        let max_lines = room_lines.clamp(1, 12);
         TextView::new(copy, copy_size, theme::TEXT_READING)
-            .leading(copy_size as f32 + theme::space::XS)
-            .max_lines(12)
+            .leading(copy_leading)
+            .max_lines(max_lines)
             .draw(
                 p,
                 Rect::new(

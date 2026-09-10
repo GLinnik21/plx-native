@@ -7,9 +7,9 @@ use crate::auth::{self, Phase};
 use crate::ui::consts::*;
 use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
 use crate::ui::label::{HAlign, Label};
-use crate::ui::route_screen::{RouteGround, RouteLayout};
+use crate::ui::route_screen::{ActionRow, RouteGround, RouteLayout};
 use crate::ui::text_view::TextView;
-use crate::ui::widgets::{Spinner, StatusKind, StatusOverlay};
+use crate::ui::widgets::{Button, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::{c_int, c_uint};
@@ -71,12 +71,308 @@ fn escape_offered(phase_ms: f32) -> bool {
     phase_ms >= ESCAPE_AFTER_MS
 }
 
+/// **The sealed-sign-in-could-not-be-read read-out (issue #76 review).**
+///
+/// It names the SUBJECT (the sign-in saved on this television), the CAUSE in the words a person
+/// can act on (the television's own key service did not answer — not "keymanager3", not an error
+/// code; the footer already carries the build and the set for a photograph), and the fact that
+/// matters most and is least guessable: **nothing has been changed**. The stored sign-in is still
+/// there, byte for byte, and the next launch — or the button under this copy — may well open it.
+///
+/// The two ways out are stated in the order they should be tried, and the second one is the QR
+/// stack already drawn beside this column, which is why the copy points at it rather than the
+/// screen growing a second control for it. "Only signing in again replaces it" is the promise the
+/// storage layer actually keeps (`plex::session::seal_permitted`'s own doc), and saying it here is
+/// what stops *Try again* reading like a gamble with the stored credential.
+const STORAGE_TITLE: &str = "Your saved sign-in couldn\u{2019}t be read";
+const STORAGE_COPY: &str = "This television\u{2019}s key service didn\u{2019}t answer, so the \
+sign-in saved here couldn\u{2019}t be unlocked. Nothing has been changed \u{2014} try again, or \
+scan the code to sign in again. Only signing in again replaces what is stored here.";
+
+/// The label on the storage read-out's one control. Deliberately the same words as [`ESCAPE`] —
+/// it is the same offer (ask the thing that did not answer, again) about a different subject, and
+/// two different verbs for one gesture is how a screen teaches somebody that it is unpredictable.
+const STORAGE_RETRY: &std::ffi::CStr = c"Try again";
+
+/// What the *Try again* press is doing right now — see [`start_storage_retry`].
+///
+/// An atomic rather than a [`Scene`] field because the ask itself runs on a WORKER: reopening the
+/// envelope is one or two LS2 calls against a service that has already proved it can go quiet, and
+/// `keymanager::platform::BUDGET` is measured in seconds. Doing that inline would freeze the SDL
+/// main loop — the spinner, the QR, every key — for the whole budget, on the one screen whose
+/// subject is a television that seems stuck.
+static STORAGE_RETRY_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(RETRY_IDLE);
+const RETRY_IDLE: u8 = 0;
+/// A worker is asking the key service right now.
+const RETRY_BUSY: u8 = 1;
+/// The worker opened the envelope. The MAIN thread picks this up in [`update`] — resuming the
+/// session installs a server registry and a profile, which is main-thread work.
+const RETRY_OPENED: u8 = 2;
+/// The worker finished and the envelope is still not open.
+const RETRY_FAILED: u8 = 3;
+
+/// **Which sign-in attempt [`start_storage_retry`] was pressed for — [`settle_storage_retry`]'s
+/// stale-result guard.** `0` is never a real attempt (`auth`'s counter starts at 1), so it also
+/// means "nothing captured yet".
+///
+/// The press and the worker it starts are asking about the flow's CURRENT attempt at that
+/// instant, not about whatever the flow happens to be doing several hundred milliseconds later
+/// when the worker returns — the whole gap this screen's own async note (`storage_note`) exists
+/// to narrate. If, in that gap, the SAME running attempt reaches its own `Phase::Ready` (a QR scan
+/// completed on the phone while the television was still asking its key service about a
+/// completely different, older account), the attempt id alone cannot see it — a normal completion
+/// never bumps `Ctl::attempt`, only a fresh reset does. [`settle_storage_retry`] therefore checks
+/// the PHASE this was captured for as well: it only ever fires while `auth::phase()` is still
+/// [`Phase::Waiting`], the one phase the storage read-out draws over, so a flow that has already
+/// moved on — Ready, Profiles, Error, a fresh attempt, anything — is left alone and the newer
+/// result wins.
+static STORAGE_RETRY_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// PURE. The line under the control, or `None` when the read-out has nothing to add to it. The
+/// three states are three different sentences because they answer three different questions:
+/// whether anything is happening, whether it worked, and — the one that has to be said out loud —
+/// that a second failure is not a dead end, because the code beside it still is a way in.
+///
+/// `&'static str`, not a `CStr`: [`draw_storage_action`] draws this through [`TextView`] now
+/// (review finding — see [`storage_note_room`]), which wants a `str` to measure and wrap, and
+/// nothing else here still needed the raw-pointer shape.
+fn storage_note(state: u8) -> Option<&'static str> {
+    match state {
+        RETRY_BUSY => Some("Asking the television\u{2019}s key service\u{2026}"),
+        RETRY_FAILED => Some("Still no answer. You can scan the code to sign in again."),
+        _ => None,
+    }
+}
+
+/// **Claim the one worker slot for this press.** `true` once, for the press that takes it; `false`
+/// for a press that arrives while the slot is already spoken for.
+///
+/// **Claimed from either SETTLED state — [`RETRY_IDLE`] and [`RETRY_FAILED`]** (review finding,
+/// 2026-09-11). It used to claim from `RETRY_IDLE` alone, which reads as the same no-stacking rule
+/// and is not: a worker that got nowhere leaves the slot at `RETRY_FAILED` and nothing on this
+/// route ever puts it back (`enter` does, but that is the NEXT visit), so from the second press
+/// onward the only control on the screen did nothing at all, silently, for the rest of the visit —
+/// on the one screen whose subject is a television that seems stuck, beside a note that invites
+/// exactly that second press. Asking a service that did not answer whether it will answer NOW is
+/// the whole point of the control.
+///
+/// The two states it still refuses are the two in-flight ones: [`RETRY_BUSY`] (a worker is asking)
+/// and [`RETRY_OPENED`] (one succeeded and [`settle_storage_retry`] has not applied it yet). That
+/// is the rule that was always right — leaning on OK must not spawn a worker per frame against a
+/// service whose whole problem is that it answers slowly.
+fn claim_storage_retry() -> bool {
+    use std::sync::atomic::Ordering;
+    [RETRY_IDLE, RETRY_FAILED].iter().any(|&from| {
+        STORAGE_RETRY_STATE
+            .compare_exchange(from, RETRY_BUSY, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    })
+}
+
+/// Ask the key service again, off the main thread — the *Try again* press.
+///
+/// Refuses to stack: a second press while one is IN FLIGHT is swallowed rather than queued (see
+/// [`claim_storage_retry`], which is also why a press after a FAILED one is not). A refused spawn
+/// (`task::spawn_small` returning `false` under EAGAIN — see `task.rs`) falls back to asking
+/// inline: a frozen frame is worse than nothing, but a button that silently does nothing at all is
+/// worse than both.
+
+fn start_storage_retry() {
+    use std::sync::atomic::Ordering;
+    if !claim_storage_retry() {
+        return;
+    }
+    // Captured BEFORE the worker starts, under the same compare-exchange that claims the press —
+    // see [`STORAGE_RETRY_ATTEMPT`]'s own doc for why the settle needs it.
+    STORAGE_RETRY_ATTEMPT.store(auth::current_attempt(), Ordering::Release);
+    crate::ui::idle::invalidate();
+    let ask = || {
+        let opened = crate::plex::session::retry_secure_open();
+        STORAGE_RETRY_STATE.store(
+            if opened { RETRY_OPENED } else { RETRY_FAILED },
+            Ordering::Release,
+        );
+        crate::ui::idle::invalidate();
+    };
+    if !crate::task::spawn_small("keyretry", ask) {
+        ask();
+    }
+}
+
+/// PURE. Should an opened storage envelope still be applied to the flow, or has it gone stale?
+///
+/// `captured` is [`STORAGE_RETRY_ATTEMPT`] — the attempt id the press was about; `now_phase` and
+/// `now_attempt` are what the flow is AT SETTLE TIME. Split out from [`settle_storage_retry`] so
+/// the race it guards against is a fact a host test can assert directly, with no worker, no `Ctl`
+/// and no dependence on `auth`'s process-global state.
+///
+/// **Both checks are required, and neither alone is enough.** The attempt id alone misses a
+/// same-attempt race: a QR sign-in that completes NORMALLY (the phone's own poll landing while the
+/// television is still asking its key service about a different, older account) never bumps
+/// `Ctl::attempt` — only a fresh reset does — so a worker that returns after that still reads a
+/// matching id while `Ctl` already holds the newly-signed-in account. The phase alone misses the
+/// other direction: a BACK-then-retry that lands back on `Waiting` (a fresh reset, e.g. via
+/// `auth::retry`) is phase-equal to the press's own wait but is a different attempt entirely, and
+/// applying the old envelope over it would resurrect an account the user had already moved past.
+/// Requiring `Phase::Waiting` — the one phase the storage read-out draws over — is what makes
+/// "still on screen" and "still this attempt" the same claim from two directions.
+fn storage_retry_still_applies(captured: u64, now_phase: Phase, now_attempt: u64) -> bool {
+    now_phase == Phase::Waiting && now_attempt == captured
+}
+
+/// **Main-thread half of [`start_storage_retry`]: an opened envelope becomes a running app.**
+///
+/// The worker can only publish the session; entering it registers servers, installs a PMS client
+/// and picks a profile, all of which belong to the loop. `auth::resume_secure_session` puts the
+/// flow exactly where the boot gate would have — the who's-watching picker, or `Phase::Ready` for
+/// the main loop's own `take_ready` to install — so from the next frame this launch is
+/// indistinguishable from one whose key service answered the first time.
+///
+/// **Review finding: a worker's success is stale the instant the flow it was asked about has
+/// moved on, and this used to act on it regardless.** [`storage_retry_still_applies`] is the gate:
+/// a flow that has moved on wins either way — the opened envelope is simply not applied, `Ctl` is
+/// left exactly as the newer result made it, and this state resets to idle rather than
+/// [`RETRY_FAILED`], because nothing here failed — the read-out is just about to leave.
+fn settle_storage_retry() {
+    use std::sync::atomic::Ordering;
+    if STORAGE_RETRY_STATE.load(Ordering::Acquire) != RETRY_OPENED {
+        return;
+    }
+    let captured_attempt = STORAGE_RETRY_ATTEMPT.load(Ordering::Acquire);
+    if !storage_retry_still_applies(captured_attempt, auth::phase(), auth::current_attempt()) {
+        // The flow this press was about is no longer the one on screen — a newer sign-in (this
+        // same attempt reaching Ready, or a fresh one entirely) already won. Applying the opened
+        // envelope now would silently replace it with the stale stored account.
+        STORAGE_RETRY_STATE.store(RETRY_IDLE, Ordering::Release);
+        crate::log(
+            "login: storage retry opened the envelope after a newer sign-in already won — dropped",
+        );
+        return;
+    }
+    let resumed = crate::auth::resume_secure_session(crate::plex::session::load());
+    STORAGE_RETRY_STATE.store(
+        if resumed { RETRY_IDLE } else { RETRY_FAILED },
+        Ordering::Release,
+    );
+    crate::ui::idle::invalidate();
+}
+
+/// **The action slot, lifted clear of the identification footer.** `RouteLayout::action`'s bottom
+/// edge IS the safe area's, which is right on every route that has nothing under it — and this one
+/// does: `draw_footer` puts the permanent build/firmware/set line (issue #75, the line that makes a
+/// phone photograph of this screen worth reading) in exactly that corner, on every phase. A pill
+/// dropped into the unmodified slot lands ON that line, which the first simulator capture showed
+/// (`docs/measurements/keymanager-unavailable-signin-sim-2026-09-10.md`). One footer line plus the
+/// gap every other stacked pair on this screen uses, measured rather than guessed at, so a font
+/// change moves both together.
+///
+/// PURE, and `footer_h` is an argument rather than a `text::text_height` call inside, for the
+/// reason `StatusOverlay::above()` states about its own missing half: the host suite cannot LINK
+/// SDL2_ttf, so a rule that measures text inside itself is a rule no test can reach. The caller
+/// measures; this decides.
+fn storage_action_y(action: Rect, footer_h: f32) -> f32 {
+    action.y - footer_h - theme::space::SM
+}
+
+/// PURE. Vertical room actually left for the retry note, above the pill.
+///
+/// **Review finding, 2026-09-10**: this note used to draw at a fixed one-line offset from the
+/// pill, on the strength of a comment claiming it "borrows" the `space::XL` gap `draw_narrative`
+/// already leaves between its own body copy and the action slot
+/// (`RouteLayout::draw_narrative_with_note`'s `copy_bottom = action.y - space::XL`) — but nothing
+/// in the fixed offset actually measured that gap, so once the pill was lifted clear of the footer
+/// ([`storage_action_y`]) the note's fixed offset from the PILL routinely ran past `copy_bottom`
+/// and into the body's own territory, overprinting it whenever the body filled its allowance. The
+/// fix mirrors `draw_narrative_with_note`'s own rule for its body's `max_lines` (route_screen.rs):
+/// derive the cap from what is actually LEFT, never assume a constant fits.
+///
+/// The room is bounded above by `copy_bottom` (the body's own reserved floor) and below by the
+/// pill's own top, `space::SM` clear of it — the same gap [`draw_storage_action`] already used to
+/// place a fixed-height note, now spent as a budget instead of an offset.
+fn storage_note_room(action: Rect, r: Rect) -> f32 {
+    let copy_bottom = action.y - theme::space::XL;
+    (r.y - theme::space::SM - copy_bottom).max(0.0)
+}
+
+/// The storage read-out's control and its note, in the shared bottom action slot of the narrative
+/// column — the same slot `ui::onboard` and `ui::consent` put their own commit control in, rather
+/// than a position of this screen's own.
+fn draw_storage_action(p: Painter, env: &Env, layout: RouteLayout) {
+    let w = Button::pill_w(STORAGE_RETRY.as_ptr(), theme::size::BODY, false).min(layout.action.w);
+    let line_h = crate::text::text_height(theme::size::CAPTION, 0);
+    let r = Rect::new(
+        layout.action.x,
+        storage_action_y(layout.action, line_h),
+        w,
+        layout.action.h,
+    );
+    Button::new(STORAGE_RETRY.as_ptr(), theme::size::BODY, r)
+        // The only control on this route while the read-out is up (the QR stack is a picture, not
+        // a target), so it holds focus by construction — the same argument `draw_readout` makes
+        // for its own single action.
+        .focused(true)
+        // **Review finding, 2026-09-10**: this pill used to draw at a constant scale, with none
+        // of the shared focus pop every sibling route pill animates through — see
+        // [`STORAGE_ACTION_POP`]'s own doc for what this reaches and what it does not.
+        .scale(unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).scale(0) })
+        .draw(env, p);
+    unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).place(0, r) };
+    let Some(note) = storage_note(STORAGE_RETRY_STATE.load(std::sync::atomic::Ordering::Acquire))
+    else {
+        return;
+    };
+    // ABOVE the pill, not under it: everything below the pill belongs to the footer (see
+    // `storage_action_y`). The budget is the room actually LEFT above the pill, never a fixed
+    // one-line assumption — see [`storage_note_room`] for why that used to overprint the body.
+    let room = storage_note_room(layout.action, r);
+    let leading = theme::size::CAPTION as f32 + theme::space::XS;
+    let max_lines = ((room / leading).floor() as usize).clamp(1, 2);
+    let note_view = TextView::new(note, theme::size::CAPTION, theme::TEXT_SECONDARY)
+        .leading(leading)
+        .max_lines(max_lines);
+    // Bottom-aligned to the pill and clamped to the room itself, so a `max_lines` rounded up by
+    // the `.clamp(1, …)` floor above still cannot draw above `copy_bottom` — the two-line minimum
+    // exists so a genuinely tiny room still shows SOMETHING rather than silence, at the cost of a
+    // partial overlap the room could not avoid either way.
+    let note_h = note_view.measure_h(layout.action.w).min(room.max(line_h));
+    let bottom = r.y - theme::space::SM;
+    note_view.draw(p, Rect::new(r.x, bottom - note_h, layout.action.w, note_h));
+}
+
 /// The verb on both the failed and the stuck read-out, because it is the same call underneath.
 ///
 /// `auth::retry` bumps the auth epoch, so a worker still blocked in the wedged request has its
 /// result discarded when it finally returns, and it re-runs only the leg that failed — discovery
 /// when the pin already yielded an account credential, a whole fresh pin when it did not.
 const ESCAPE: &std::ffi::CStr = c"Try again";
+
+/// The storage read-out's one control's own press surface — the shared type every route-family
+/// action row uses ([`ActionRow`]) rather than a bespoke `Button` draw with no focus pop at all.
+///
+/// **Review finding, 2026-09-10**: this pill was the first control this screen puts in
+/// `RouteLayout::action`, and it drew as a flat `Button` at a constant scale — every sibling pill
+/// on this route family (Settings' Retry/Done, first-run consent's two answers) already animates
+/// through one of these, so this one alone read as dead on arrival: focus moved onto it with no
+/// grow, the one motion `CtlPop::step`/`::scale` give every other control the instant they are
+/// wired at all (`widgets.rs`'s own doc: "the pop is the tile's spring now"). Wiring `.step()` in
+/// [`update`] and `.scale(0)` in [`draw_storage_action`] fixes exactly that.
+///
+/// **What this does NOT reach: the press DIP itself.** `CtlPop::scale`'s own doc says the dip is
+/// folded in "once the caller has armed `press::begin_ctl` on its OK-down" — and arming is the
+/// caller's job specifically because [`crate::ui::press`] is ONE GLOBAL sequencer app.rs drives:
+/// arm on the key-DOWN that takes a control face, release on the matching key-UP (gated on the
+/// SAME local `ok_armed` app.rs's own dispatcher sets), poll for the deferred commit. Every other
+/// route-family pill arms it from app.rs's per-route keydown ladder (see `Route::Onboard`'s and
+/// `Route::Profiles`' own arms beside this route's). This screen's OK dispatch is the one
+/// fallback case that still calls straight into [`key`] with no matching arm — and this fix's
+/// scope is `ui/login.rs`/`auth.rs` only, so wiring that ladder entry is left for whoever next
+/// touches `app.rs`'s `key_onboarding`, rather than armed here with no release to pair it: a
+/// `begin_ctl` this module called with nothing setting app.rs's `ok_armed` would leave
+/// `press::State` latched at `Phase::Down` forever, breaking the dip for every OTHER control in
+/// the app after the first press on this one — a worse bug than the missing dip it would "fix".
+/// The focus pop above is real and device-verified (`docs/measurements/
+/// keymanager-unavailable-retry-pill-sim-2026-09-10.md`); the ring-on-press is a follow-up.
+static mut STORAGE_ACTION_POP: ActionRow<1> = ActionRow::new();
 
 static mut SCENE: Option<Scene> = None;
 
@@ -126,12 +422,28 @@ pub fn enter() {
     // from under the alert" (`Popover::close`'s own case), which this is — the trouble this alert
     // was about belongs to the attempt that just ended.
     s.report_alert.close();
+    // A "still no answer" note belongs to the press that earned it, not to the next visit to this
+    // route — a sign-out and a re-entry must not open on somebody else's failed retry. Only the
+    // settled failure is cleared: a retry still in flight is still in flight.
+    let _ = STORAGE_RETRY_STATE.compare_exchange(
+        RETRY_FAILED,
+        RETRY_IDLE,
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     crate::ui::idle::invalidate();
 }
 
 pub fn update(dt: f32) {
     let s = scene();
     s.spin_ms += dt * 1000.0;
+    settle_storage_retry();
+    // The storage retry pill holds focus by construction whenever it is drawn — see
+    // `draw_storage_action`'s own `.focused(true)` — so its press surface's one slot animates
+    // exactly when [`storage_readout_showing`] says the pill is on screen at all.
+    unsafe {
+        (*addr_of_mut!(STORAGE_ACTION_POP)).step(storage_readout_showing().then_some(0), dt);
+    }
     // Each wait gets its own clock. A flow that walks Creating → Waiting → Discovering is making
     // progress, and restarting the timer at every step is what stops a slow-but-healthy sign-in
     // from being offered a way out of itself.
@@ -549,13 +861,29 @@ fn draw_footer(p: Painter) {
 
 fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     let layout = RouteLayout::screen();
-    layout.draw_narrative(
-        p,
-        None,
-        "Sign in to Plex",
-        "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
-        theme::size::LABEL,
-    );
+    // **Issue #76 review: a stalled key service is not a signed-out television.** When a sealed
+    // sign-in is sitting on this install that this launch could not read, the narrative column
+    // says so and carries the one control that can fix it, while the QR stack on the right stays
+    // exactly as it is — the explicit "sign in again" choice, which is the OTHER answer and must
+    // not be the only one offered. See `plex::session::LOCKED_UNAVAILABLE`.
+    if crate::plex::session::secure_unavailable() {
+        layout.draw_narrative(p, None, STORAGE_TITLE, STORAGE_COPY, theme::size::LABEL);
+        draw_storage_action(p, env, layout);
+    } else {
+        // Rule 11, and [`ActionRow::clear`]'s own instruction: the branch that does not draw the
+        // band forgets its frame, so the pill that is no longer on screen is not hit-testable
+        // where it used to be. The read-out comes and goes WITHIN one visit to this route —
+        // `secure_unavailable()` flips the moment a retry opens the envelope — so `enter()`
+        // resetting the scene is not what covers this.
+        unsafe { (*addr_of_mut!(STORAGE_ACTION_POP)).clear() };
+        layout.draw_narrative(
+            p,
+            None,
+            "Sign in to Plex",
+            "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
+            theme::size::LABEL,
+        );
+    }
     let right = qr_layout(layout);
     // ONE read of the code, used for the bitmap, the digits and the sentence beneath them.
     let qr = auth::qr_snapshot();
@@ -604,9 +932,12 @@ fn draw_waiting(p: Painter, env: &Env, s: &mut Scene) {
     let link = auth::link_state();
     let wr = 15.0;
     let wy = right.status.cy();
+    // `qr_escape_ready`, not the bare clock: while the storage read-out owns OK it also owns the
+    // sentence that says to press it — see `storage_readout_showing`. The phase is `Waiting` by
+    // construction here (this function is the `Waiting` arm), so the two agree everywhere else.
     let status = waiting_status(
         qr.replaced,
-        qr_escape_offered(s.phase_ms),
+        qr_escape_ready(s),
         auth::link_unreachable(&link),
     );
     let status_w = crate::text::text_width(status.as_ptr(), theme::size::BODY, 0);
@@ -724,8 +1055,40 @@ fn qr_escape_offered(phase_ms: f32) -> bool {
     phase_ms >= QR_ESCAPE_AFTER_MS
 }
 
+/// **Is the sealed-storage read-out on screen right now?** — the ONE predicate behind its copy,
+/// its control and the key that activates it, so, exactly as [`escape_ready`] does for the stalled
+/// spinner, a control that is not drawn can never be pressed.
+///
+/// It draws over `Waiting` alone: the other three phases are their own full-screen read-outs
+/// (`draw_working`/`draw_failed`/`draw_deleted`), each already carrying one control of its own,
+/// and a second offer stacked on those is a screen with two answers to one press.
+///
+/// `pub(crate)` (not just this module's own `key`) since 2026-09-10: it is also the predicate
+/// `app.rs`'s `key_onboarding` uses to decide whether an OK-down on this route arms the shared
+/// [`crate::ui::press`] control-face press (see [`commit_storage_retry`]) instead of falling
+/// through to [`key`] — the same one-predicate-for-draw-and-key rule, now spanning the module
+/// boundary the arm/commit split puts between the two halves of one press.
+pub(crate) fn storage_readout_showing() -> bool {
+    auth::phase() == Phase::Waiting && crate::plex::session::secure_unavailable()
+}
+
+/// **`app.rs`'s deferred half of the storage-retry press.** [`key_onboarding`](crate::app) arms
+/// `press::begin_ctl` on the OK-down (see [`storage_readout_showing`]) instead of calling
+/// straight into [`start_storage_retry`], so the spring-back bounce from `press::release` is
+/// actually on screen before the retry fires — the same arm/commit split every other
+/// route-family action pill uses. Called from the per-frame `press::take_commit` dispatch, once,
+/// which is what makes "exactly once" a property of `press` (one commit per press) rather than of
+/// this function.
+pub(crate) fn commit_storage_retry() {
+    start_storage_retry();
+}
+
 fn qr_escape_ready(s: &Scene) -> bool {
-    auth::phase() == Phase::Waiting && qr_escape_offered(s.phase_ms)
+    auth::phase() == Phase::Waiting
+        && qr_escape_offered(s.phase_ms)
+        // The storage read-out has taken OK (see `key`), so the sentence that tells the user to
+        // press it for a new code must go with it — the line and the key are one offer.
+        && !storage_readout_showing()
 }
 
 /// The complete manual-link stack in the content column.
@@ -833,6 +1196,24 @@ pub fn key(sym: c_uint, wcode: c_uint) {
         auth::start_login();
         return;
     }
+    // **The storage read-out owns OK while it is drawn**, and it is drawn only over `Waiting`
+    // (`draw_waiting`) — the same one-predicate-for-draw-and-key rule the two timed escapes below
+    // follow, and the reason `qr_escape_ready` refuses while this is up: one key cannot mean both
+    // "ask the key service again" and "mint a new pin", and the control the user can SEE is the
+    // one it has to mean.
+    //
+    // **This branch is now a defensive no-op on the real key path, not a dead one to delete.**
+    // Since 2026-09-10 `app.rs`'s `key_onboarding` intercepts an OK-down here BEFORE calling into
+    // this function at all — it arms `press::begin_ctl` instead (see
+    // [`storage_readout_showing`]'s doc), and the actual retry now fires once from
+    // `press::take_commit`'s per-frame dispatch, via [`commit_storage_retry`]. Swallowing the
+    // press here rather than re-triggering it is what keeps a caller that reaches this function
+    // some other way (a test, or a future key source with no press arm of its own) from starting
+    // a SECOND worker underneath the deferred one — `start_storage_retry`'s own compare-exchange
+    // guard already refuses to stack, so this is belt-and-suspenders, not the primary gate.
+    if is_ok(sym) && storage_readout_showing() {
+        return;
+    }
     if auth::phase() == Phase::Error && is_ok(sym) {
         auth::retry();
         return;
@@ -896,6 +1277,188 @@ fn escape_ready(s: &Scene) -> bool {
 mod tests {
     use super::*;
     use crate::ui::consts::inside_safe;
+
+    /// **The read-out has to say the thing that is least guessable and most reassuring: nothing
+    /// was changed.** A person looking at a QR code on a television they were already signed in to
+    /// will assume they have been signed OUT — that is what this screen means everywhere else —
+    /// and the whole subject here is that they have not been: the sealed sign-in is intact and the
+    /// button under this copy may well open it. The other two clauses are the two ways out, and
+    /// the promise that taking the second one is the only thing that replaces what is stored.
+    #[test]
+    fn the_storage_readout_says_the_saved_sign_in_is_still_there() {
+        let says = |needle: &str| STORAGE_COPY.contains(needle);
+        assert!(
+            says("Nothing has been changed"),
+            "the fact a stranger cannot guess, and the one that stops a needless re-sign-in"
+        );
+        assert!(says("key service"), "…and what actually went wrong");
+        assert!(says("try again"), "the first way out — the control below this copy");
+        assert!(
+            says("scan the code"),
+            "the second, which is the QR stack already on screen beside it"
+        );
+        assert!(
+            says("Only signing in again replaces"),
+            "…and that taking it is the only thing that costs the stored sign-in"
+        );
+        assert!(
+            !STORAGE_TITLE.contains("keymanager"),
+            "the service's bus name belongs in the log, not on the television"
+        );
+    }
+
+    /// **The control may not sit on the identification footer.** That line is drawn on every phase
+    /// of this route, in the same bottom-left corner `RouteLayout::action` occupies — a slot whose
+    /// own contract assumes nothing is under it, which is true of `ui::onboard` and `ui::consent`
+    /// and false here. The first simulator capture of this read-out had the pill printed straight
+    /// through the version string.
+    #[test]
+    fn the_try_again_pill_clears_the_identification_footer() {
+        let action = RouteLayout::screen().action;
+        // The measured height of a CAPTION line on the device font, from the run that produced
+        // the capture — the host cannot link SDL2_ttf to ask (see `storage_action_y`'s doc).
+        let footer_h = 30.0;
+        let y = storage_action_y(action, footer_h);
+        assert!(
+            y + action.h <= action.y + action.h - footer_h,
+            "the pill's bottom edge must clear the footer's own line box"
+        );
+        assert!(
+            inside_safe(Rect::new(action.x, y, action.w, action.h)),
+            "…without leaving the safe area at the other end"
+        );
+    }
+
+    /// **Review finding, 2026-09-10: the note's budget must derive from the room actually left,
+    /// never a fixed one-line assumption.** At the measured device CAPTION line height (~30px,
+    /// the same number [`the_try_again_pill_clears_the_identification_footer`] uses), the pill
+    /// sits well inside `copy_bottom`'s `space::XL` (64px) reservation once the footer has also
+    /// lifted it clear — so the room left for the note is small, and a fixed one-line draw used to
+    /// run straight past it into the body's own territory. This pins that the computed room is
+    /// small (not merely "some room"), and that the max-lines budget any caller derives from it can
+    /// never exceed what the room can actually hold before the note view's own bottom edge is
+    /// clamped to sit inside it.
+    #[test]
+    fn the_retry_note_budget_derives_from_the_room_left_above_the_pill() {
+        let action = RouteLayout::screen().action;
+        let footer_h = 30.0; // measured device CAPTION line — see the footer test above
+        let r = Rect::new(
+            action.x,
+            storage_action_y(action, footer_h),
+            120.0,
+            action.h,
+        );
+        let room = storage_note_room(action, r);
+        // The room is real (the body's own `space::XL` gap is not fully eaten by the footer +
+        // pill lift) but small — nowhere near enough for the fixed offset this used to draw at,
+        // which is exactly the gap the fixed version silently ran past.
+        assert!(room >= 0.0, "the room must never go negative — `storage_note_room` clamps it");
+        assert!(
+            room < theme::space::XL,
+            "the room can never exceed the body's whole `space::XL` reservation, since the pill \
+             and footer both eat into it before the note ever gets a turn"
+        );
+        // A budget derived from this room, at the CAPTION leading `draw_storage_action` uses, must
+        // never claim a second line the room does not actually justify — the one-line floor below
+        // is the deliberate exception: it always shows SOMETHING, even in a room too small for a
+        // whole line, rather than silently drawing nothing.
+        let leading = theme::size::CAPTION as f32 + theme::space::XS;
+        let max_lines = ((room / leading).floor() as usize).clamp(1, 2);
+        assert!(max_lines >= 1, "always show something, even with no room at all");
+        if max_lines >= 2 {
+            assert!(
+                room >= 2.0 * leading,
+                "a 2-line budget must be justified by the room actually measured, not assumed"
+            );
+        }
+    }
+
+    /// **Review finding: `settle_storage_retry` must not act on a worker's result once the flow it
+    /// was about has moved on.** The attempt id alone cannot see a same-attempt race — a normal
+    /// sign-in completion never bumps it — so the phase has to be checked too; see
+    /// [`storage_retry_still_applies`]'s own doc for the two directions this covers.
+    #[test]
+    fn a_stale_storage_retry_result_is_dropped_once_a_newer_sign_in_has_won() {
+        // The press's own moment: attempt 7, phase Waiting — exactly what `storage_readout_showing`
+        // requires before the pill can even be pressed.
+        assert!(
+            storage_retry_still_applies(7, Phase::Waiting, 7),
+            "nothing has moved on — the envelope belongs to the flow still on screen"
+        );
+        // The QR flow scanned on the phone finished the SAME attempt while the key-service worker
+        // was still in flight — `Ctl::attempt` never moves for a normal completion, only the phase
+        // does. This is the race the attempt id alone cannot see.
+        assert!(
+            !storage_retry_still_applies(7, Phase::Ready, 7),
+            "a completed sign-in — same attempt, new phase — must win over the stale envelope"
+        );
+        assert!(
+            !storage_retry_still_applies(7, Phase::Profiles, 7),
+            "…and the picker branch of that same completion must win too"
+        );
+        // A fresh reset (BACK, then a retry) — different attempt, but it can land back on the same
+        // phase this press started against. The phase alone cannot see THIS race.
+        assert!(
+            !storage_retry_still_applies(7, Phase::Waiting, 8),
+            "a fresh attempt — same phase, new id — must also win over the stale envelope"
+        );
+        // Both moved on at once (a fresh sign-in that has already reached Ready): still refused.
+        assert!(!storage_retry_still_applies(7, Phase::Ready, 9));
+    }
+
+    /// **A second press after a failed retry must ask again** (review finding, 2026-09-11). The
+    /// press claimed the worker slot out of [`RETRY_IDLE`] alone, and a failed worker leaves it at
+    /// [`RETRY_FAILED`] — so from the second press onward the one control on this screen did
+    /// NOTHING, silently, for the rest of the visit, on the exact screen whose subject is a
+    /// television that seems stuck. The two states a press may claim from are the two settled ones;
+    /// the two in-flight ones ([`RETRY_BUSY`], and [`RETRY_OPENED`] waiting for the main thread to
+    /// apply it) still refuse, which is the no-stacking rule that was always right.
+    #[test]
+    fn a_press_after_a_failed_retry_asks_again() {
+        use std::sync::atomic::Ordering;
+        let _g = crate::testlock::serial();
+        for (from, claims, why) in [
+            (RETRY_IDLE, true, "the first press on a fresh read-out"),
+            (
+                RETRY_FAILED,
+                true,
+                "a press after one that got nowhere — the service may answer this time",
+            ),
+            (RETRY_BUSY, false, "never while a worker is still asking"),
+            (
+                RETRY_OPENED,
+                false,
+                "nor once one has opened and is waiting for the main thread to apply it",
+            ),
+        ] {
+            STORAGE_RETRY_STATE.store(from, Ordering::Release);
+            assert_eq!(claim_storage_retry(), claims, "{why}");
+            assert_eq!(
+                STORAGE_RETRY_STATE.load(Ordering::Acquire),
+                if claims { RETRY_BUSY } else { from },
+                "a claimed press marks the slot busy; a refused one changes nothing ({why})"
+            );
+        }
+        STORAGE_RETRY_STATE.store(RETRY_IDLE, Ordering::Release);
+    }
+
+    /// The note under the control, as the three questions it answers — and the one that matters:
+    /// a second failure must not read as a dead end while a working way in is drawn beside it.
+    #[test]
+    fn a_second_failed_retry_still_points_at_the_way_in() {
+        assert!(storage_note(RETRY_IDLE).is_none(), "a fresh read-out adds nothing");
+        assert!(
+            storage_note(RETRY_OPENED).is_none(),
+            "an opened envelope leaves this screen entirely — there is nobody left to tell"
+        );
+        let busy = storage_note(RETRY_BUSY).expect("a press has to be visibly doing something");
+        assert!(busy.ends_with('\u{2026}'));
+        let failed = storage_note(RETRY_FAILED).expect("…and so does a press that got nowhere");
+        assert!(
+            failed.contains("scan"),
+            "a second failure names the way in that is still open"
+        );
+    }
 
     /// **A partial wipe may not be reported as a whole one.** The sweep's candidate lists span
     /// both webOS install prefixes and the jail profiles disagree about which are writable, so a

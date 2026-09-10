@@ -669,7 +669,10 @@ pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
         return; // no consent for this category — nothing is read and nothing is queued
     }
     let path = crate::paths::in_runtime_dir("plxnative-crash.log");
-    let Ok(bytes) = std::fs::read(&path) else {
+    // `read_owned_regular`, not a bare `std::fs::read`: same ownership/regular-file/symlink
+    // guard as `read_mark` below — this reader was the larger of the two and the one this file's
+    // table actually names, so it is the one worth getting right first.
+    let Some(bytes) = crate::plex::session::read_owned_regular(&path) else {
         return;
     };
 
@@ -776,9 +779,14 @@ fn resume_from(log_len: u64, mark: u64) -> u64 {
 }
 
 fn read_mark() -> Mark {
+    // `read_owned_regular` rather than a bare `std::fs::read`: same ownership/regular-file/
+    // `O_NOFOLLOW` checks every other owned file in this app gets, plus the 2026-09-10 repair-on-
+    // read (a widened mode is fixed in place, not merely tolerated) — see `session.rs`'s "Storage
+    // model" doc. This file only carries a byte watermark, but a symlink planted at its name in the
+    // shared `/media/developer` namespace should still be refused rather than followed.
     crate::paths::telemetry_crashmark_candidates()
         .iter()
-        .filter_map(|p| std::fs::read(p).ok())
+        .filter_map(|p| crate::plex::session::read_owned_regular(p))
         .find_map(|b| serde_json::from_slice::<Mark>(&b).ok())
         .unwrap_or_default()
 }

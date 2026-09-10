@@ -1316,7 +1316,34 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   trigger — on `threads::load_thread` right after the real `sf_load` call returns and BEFORE the
   Load-returned flag publishes, making issue #74 D.1's budget observable on demand: the pump's
   `deferring` line, then, past `NATIVE_LOAD_BUDGET`, the failure read-out; NOT `DIAG`, since it
-  changes playback behaviour), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
+  changes playback behaviour), `/tmp/plxnative-keymanager=<mode>` (select a dev-only, in-process
+  fake `com.webos.service.keymanager3` — `perprocess`/`healthy`/`stall`/`refuse=<code>`/`nocode`/
+  `badoutput`/`absent`, `rust-modules/src/keymanager.rs`'s `fake` module — so issue #76's failure
+  (seals and round-trips in-process, never reopens on the NEXT launch) is reproducible on `make
+  sim` and on a debug install pointed at a television that has no keymanager3 at all; logs
+  `keymanager: FAKE service armed mode=<mode>` at boot; NOT `DIAG`, for `holdload`'s reason — it
+  swaps which backend `seal`/`open` talk to), **`/tmp/plxnative-ls2identity[=probe]`** (issue #76's
+  other half: at BOOT — before `session::load`'s first keymanager registration and before
+  `player::acb_init` takes the app-id bus name on a webOS 4 set — try every LS2 registration shape
+  once and log the hub's own numeric code and `LSError` text for each, `ls2probe:` lines. It is the
+  same `webos::ls2::probe` the `gohome=probe` leg runs, at the only moment whose answer decides
+  anything: `keymanager` asks for `LSRegisterApplicationService(app_id, app_id)` where nothing else
+  in the process holds that name, then for the plain named `LSRegister(app_id)`, and falls back to
+  the anonymous `LSRegister(NULL)` otherwise — one
+  `keymanager: identity=<app_id|named|anonymous> (<reason>)` line per launch. **The plain named
+  shape is there because of a measurement**: on the dev set at BOOT, before ACB held anything, the
+  application-service form was refused `-1027` for the app id AND for `NULL`, while
+  `LSRegister(NULL)` registered and completed a call — a verdict on that API rather than on the
+  name, leaving the shape the role file's `allowedNames` does list never asked
+  (`docs/measurements/ls2-identity-tv-2026-09-10.md`). **Measured 2026-09-10, a second run the same
+  evening (§10.2, run 4): the hub GRANTS it, at boot, on that same set** — but no television has
+  SEALED anything under it, because the ACB gate covers BOTH named shapes, since both want the bus name
+  `AcbAPI_initialize` takes. The identity is then PINNED
+  to the file it seals — the envelope, the probe and the proven marker each record it, an open asks
+  for the identity the envelope names, and an identity this launch cannot get is the TRANSIENT
+  `identity_unavailable` stage that keeps the file rather than the refusal that downgrades the
+  install. NOT `DIAG` — it registers on
+  the bus), `/tmp/plxnative-marker[=intro|credits]` (once playing, seek to 5s before that
   server marker — the only practical way to reach the Skip Intro / Skip Credits pill, and, via a
   `final` credits marker, the whole finish → Up Next → auto-advance chain, without playing 50
   minutes of episode first),
