@@ -116,6 +116,7 @@ fn envelope_props(
         ("ip_version", &context.ip_version),
         ("rtkmem", &context.rtkmem),
         ("install", &context.install),
+        ("session_storage", &context.session_storage),
     ] {
         properties.insert(key.into(), value.clone().into());
     }
@@ -533,6 +534,7 @@ mod tests {
             ip_version: "v4".into(),
             rtkmem: "missing".into(),
             install: "devmode".into(),
+            session_storage: "secure_locked".into(),
         };
         let event = UsageEnvelope::capture_with_context(
             DiagEvent::RouteEntered { screen: "detail" },
@@ -554,6 +556,8 @@ mod tests {
         // issue #74: the two sandbox facts ride on every event, same as `soc`/`device_model`.
         assert_eq!(body["properties"]["rtkmem"], "missing");
         assert_eq!(body["properties"]["install"], "devmode");
+        // issue #76: the saved sign-in's storage class rides on every event, same as `rtkmem`/`install`.
+        assert_eq!(body["properties"]["session_storage"], "secure_locked");
         assert_eq!(body["properties"][ANON], false);
     }
 }

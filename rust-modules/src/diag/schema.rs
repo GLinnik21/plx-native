@@ -247,6 +247,16 @@ pub(crate) struct UsageContext {
     /// `homebrew` / `unknown` — from [`crate::paths::install_kind`]. Never the path itself.
     #[serde(default = "install_default")]
     pub install: String,
+    /// issue #76: how this install's session file is protected right now — one of
+    /// `crate::telemetry::storage::SessionStorageClass`'s codes (`none` / `plaintext` / `secure` /
+    /// `secure_locked` / `secure_refused`), never key material, ciphertext or plaintext. Present on
+    /// every event so a locked-storage rate is queryable the same way a sandbox rate is. Read from
+    /// `crate::plex::session::storage_class()` in [`UsageContext::for_server`] (and so also by
+    /// [`UsageContext::current`], which is `for_server(None)`) — the one runtime site; `Default`
+    /// and [`UsageContext::preview`] keep the honest `"unknown"` placeholder `rtkmem`/`install` use
+    /// before their own probe runs.
+    #[serde(default = "session_storage_default")]
+    pub session_storage: String,
 }
 
 fn rtkmem_default() -> String {
@@ -254,6 +264,10 @@ fn rtkmem_default() -> String {
 }
 
 fn install_default() -> String {
+    "unknown".into()
+}
+
+fn session_storage_default() -> String {
     "unknown".into()
 }
 
@@ -271,6 +285,7 @@ impl Default for UsageContext {
             ip_version: "unknown".into(),
             rtkmem: rtkmem_default(),
             install: install_default(),
+            session_storage: session_storage_default(),
         }
     }
 }
@@ -317,6 +332,7 @@ impl UsageContext {
             ip_version: ip_version.into(),
             rtkmem: crate::webos::rtkmem_context().into(),
             install: crate::paths::install_kind().into(),
+            session_storage: crate::plex::session::storage_class().code().into(),
         }
     }
 
@@ -334,6 +350,7 @@ impl UsageContext {
             ip_version: "<v4 / v6 / unknown>".into(),
             rtkmem: "<ok / missing / n/a>".into(),
             install: "<devmode / homebrew / unknown>".into(),
+            session_storage: "<none / plaintext / secure / secure_locked / secure_refused>".into(),
         }
     }
 }
@@ -668,6 +685,10 @@ pub(crate) const CONTEXT_SPECS: &[F] = &[
         key: "install",
         domain: "`devmode` / `homebrew` / `unknown` — never the install path",
     },
+    F {
+        key: "session_storage",
+        domain: "`none` / `plaintext` / `secure` / `secure_locked` / `secure_refused` / `unknown` — how the saved sign-in is protected on this television, never key material, ciphertext or plaintext",
+    },
 ];
 
 #[cfg(test)]
@@ -924,6 +945,57 @@ mod tests {
         assert!(!UsageEnvelope::claims_neutral_format(
             br#"{"api_key":"legacy","event":"app.launch"}"#
         ));
+    }
+
+    /// Issue #76: `UsageContext::for_server` reads the LIVE session storage verdict, not the
+    /// `"unknown"` placeholder — a plaintext file reads `plaintext`, and a recognized-but-unopenable
+    /// envelope (which always writes the cross-launch marker before this can even be asked — see
+    /// `plex::session::storage_class`'s own doc) reads `secure_refused`.
+    #[test]
+    fn for_server_reports_the_live_session_storage_class() {
+        let _g = crate::testlock::serial();
+
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-schema-storage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp dir");
+        let file = dir.join("auth.json");
+
+        std::fs::write(&file, br#"{"client_id":"cid","account_token":"acct"}"#).unwrap();
+        crate::plex::session::redirect_for_test(Some(file.clone()));
+        let _ = crate::plex::session::load();
+        assert_eq!(UsageContext::for_server(None).session_storage, "plaintext");
+
+        // A recognized secure envelope this process's own (unarmed, in this test) key manager
+        // cannot open — the same shape `plex::session`'s own issue #76 coverage builds.
+        let sealed = crate::keymanager::Sealed {
+            backend: crate::keymanager::Backend::Keymanager3,
+            key: "plxnative.session.v1".into(),
+            iv: "AAAAAAAAAAAAAAAAAAAAAA==".into(),
+            data: "c2VjcmV0".into(),
+        };
+        let envelope = serde_json::json!({
+            "format": "plxnative-secure-session",
+            "version": 1,
+            "sealed": sealed,
+        });
+        std::fs::write(&file, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        crate::plex::session::redirect_for_test(Some(file));
+        // The cross-launch marker needs evidence a service actually answered (issue #76 review) —
+        // arm a real refusal reply rather than leaving the key manager unscripted, which now
+        // stands only for a registration/timeout that never reached a service at all.
+        crate::keymanager::arm_for_test(vec![(
+            "begin",
+            Ok(serde_json::json!({
+                "returnValue": false, "errorCode": -10001, "errorText": "key not found"
+            })),
+        )]);
+        let _ = crate::plex::session::load();
+        crate::keymanager::disarm_for_test();
+        assert_eq!(UsageContext::for_server(None).session_storage, "secure_refused");
+
+        crate::plex::session::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

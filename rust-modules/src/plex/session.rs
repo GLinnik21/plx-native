@@ -18,6 +18,18 @@
 //! **Nothing here carries a timestamp**, deliberately: this TV's wall clock runs ~3 h skewed
 //! (`docs/agent-reference.md`), so a stored "last seen" would be a number that cannot be compared with
 //! anything and would invite an expiry rule built on it.
+//!
+//! ## Storage: encrypted when it can be, 0600 always, and STAYS 0600 once refused
+//!
+//! [`save`] asks `keymanager::seal` to device-key-encrypt the file and falls back to a mode-0600
+//! plaintext file when no usable Key Manager is available. **Once an install has proven it cannot
+//! read its own sealed envelope back — [`LOCKED_RECOVERABLE`], issue #76 — that install keeps the
+//! 0600 file until sign-out or erase**, never only for the one launch that found it: the verdict is
+//! recorded in a small on-disk marker (see [`write_refused_marker`]) precisely because a backend
+//! that round-trips fine WITHIN one launch can still be the same one that sealed the now-unreadable
+//! envelope, and re-sealing on that evidence alone reproduces the loop one launch later.
+//! [`clear`] removes the marker with the session, so a different account or a future firmware gets
+//! a fresh chance.
 use super::origin::Origin;
 use super::probe::Location;
 use serde::de::DeserializeOwned;
@@ -72,14 +84,26 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 /// `in_app_dir` — the directory the test binary itself is running from, which is a real writable
 /// path, so a careless test would leave a credentials-shaped file in `target/`.
 #[cfg(test)]
-static TEST_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+static TEST_FILE: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
 
 #[cfg(test)]
 fn auth_paths() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(p) => vec![p],
+        Some(v) => v,
         None => crate::paths::session_candidates(),
     }
+}
+
+/// Test-only: the multi-candidate form of [`redirect_for_test`], for the issue #76 review's
+/// recovery-targeting/sweep coverage — everything else here drives a single candidate, which
+/// cannot exercise "the locked envelope is not at `auth_paths()[0]`" at all.
+#[cfg(test)]
+fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(paths);
+    clear_cache();
+    LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    LAST_CLASS.store(CLASS_UNKNOWN, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Point this module's file at `p`, or back at the real search order with `None`.
@@ -92,9 +116,269 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 /// The caller owes the same discipline `tests::TempSession` documents: hold
 /// [`crate::testlock::serial`] for the whole test, because this is a crate global and several
 /// modules reach `session::load` indirectly.
+///
+/// Also resets [`CACHE`] and [`LOCKED_STATE`] — both process globals, and without this a leftover
+/// cache from one test would answer `peek()` in the next one before it has written anything of its
+/// own.
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
-    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p.map(|p| vec![p]);
+    clear_cache();
+    LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    LAST_CLASS.store(CLASS_UNKNOWN, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **One in-process copy of the session.** Published by every successful [`load`], [`save_locked`]
+/// (after a write actually lands) and [`update`] — every writer in this process goes through this
+/// module under [`IO`], so this cache can never go stale relative to what THIS process itself last
+/// wrote; the file only ever moves under a peer process's feet if a second copy of the app is
+/// running against it, which is not a case this app supports. [`peek_locked`] serves straight from
+/// here once anything has been published, which is what stops the account chip, the menu and every
+/// other reader from re-decrypting the file (and re-paying keymanager3's multi-second LS2 budget)
+/// on every keypress. [`clear`] (sign-out) empties it.
+static CACHE: Mutex<Option<Session>> = Mutex::new(None);
+
+fn cached() -> Option<Session> {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn publish_cache(s: Session) {
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
+}
+
+fn clear_cache() {
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+const NOT_LOCKED: u8 = 0;
+/// The recognized secure envelope (this build's own format + version) is present but this process
+/// could not open it — the issue #76 shape: keymanager3 sealed something it can no longer decrypt,
+/// on every read, forever. A fresh sign-in (a save carrying an `account_token`) may safely replace
+/// this file; there is nothing to lose that the sign-in itself does not already re-supply.
+const LOCKED_RECOVERABLE: u8 = 1;
+/// A secure-shaped file this build does not understand at all — an unrecognized format/version, or
+/// bytes that decrypted but did not parse as a `Session`. Never blindly overwritten: unlike the
+/// recoverable case this is not necessarily the keymanager3 round-trip bug, and could as easily be
+/// a newer build's envelope or a genuinely corrupt one, either of which a same-version rewrite would
+/// destroy for no reason connected to this device's key manager at all.
+const LOCKED_UNRECOVERABLE: u8 = 2;
+/// What the most recent [`read_locked`] in this process found — see [`LOCKED_RECOVERABLE`] /
+/// [`LOCKED_UNRECOVERABLE`]. Read only by [`save_locked`]'s plaintext-downgrade decision.
+static LOCKED_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(NOT_LOCKED);
+/// The candidate path [`read_locked`] actually found the [`LOCKED_RECOVERABLE`] envelope at, kept
+/// in lockstep with [`LOCKED_STATE`] by [`locked`]/[`not_locked`]. `read_locked` tries candidates
+/// in priority order and stops at the first one that exists — so the recoverable envelope is not
+/// necessarily at `auth_paths()[0]`, and a recovery write must target the SAME candidate `read_locked`
+/// found it at rather than "whichever candidate happens to accept a write first": those can differ
+/// when a lower-priority candidate is writable but the one actually holding the locked file is not,
+/// which would otherwise leave the locked file in place — still shadowing everything below it —
+/// while a stray plaintext copy accumulates at another path.
+static LOCKED_PATH: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// This process has read or saved nothing yet — the transient state before the very first
+/// `read_locked`/`save_locked` in a process, distinct from [`CLASS_NONE`] (a real "no file exists")
+/// so [`storage_class`] can tell "unknown, ask again" apart from "known and empty" if a future
+/// caller ever needs to.
+const CLASS_UNKNOWN: u8 = 0;
+/// The last non-locked read found no file, or (unreachably in practice — a fresh install always
+/// gets a save right behind its first `Missing` read) a save has yet to happen.
+const CLASS_NONE: u8 = 1;
+const CLASS_PLAINTEXT: u8 = 2;
+const CLASS_SECURE: u8 = 3;
+/// What the most recent NON-LOCKED [`read_locked`]/[`save_locked`] in this process actually did —
+/// opened or sealed a real secure envelope, read or wrote the 0600 plaintext fallback, or found
+/// nothing at all. [`storage_class`] only consults this once the live locked/refused checks below
+/// have both come back negative; a locked or refused verdict always outranks whatever this last
+/// says, since those are facts about the file RIGHT NOW rather than about the last successful step.
+static LAST_CLASS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(CLASS_UNKNOWN);
+
+/// Issue #76 storage telemetry: this process's public, live verdict on how the session file is
+/// protected right now — [`crate::telemetry::storage::SessionStorageClass`], the one vocabulary
+/// this module, `keymanager.rs` and `diag::schema::UsageContext::session_storage` all share.
+///
+/// **Ordered by how outranking a fact is, not by how recently it was learned.** A persisted refused
+/// marker or this process's own live [`LOCKED_STATE`] both describe the file as it stands RIGHT NOW
+/// and must win over [`LAST_CLASS`], which only remembers the last NON-locked step — otherwise a
+/// process whose most recent successful read was plaintext (launch 3 of the four-launch sequence
+/// `save_locked`'s doc walks through) would report `Plaintext` even while sitting on a marker that
+/// says this install has already been downgraded for good, or — the narrower per-process case —
+/// while `LOCKED_STATE` says the file this process just tried to read is the one it could not open.
+pub(crate) fn storage_class() -> crate::telemetry::storage::SessionStorageClass {
+    use crate::telemetry::storage::SessionStorageClass;
+    if has_refused_marker() {
+        return SessionStorageClass::SecureRefused;
+    }
+    match LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed) {
+        LOCKED_RECOVERABLE | LOCKED_UNRECOVERABLE => SessionStorageClass::SecureLocked,
+        _ => match LAST_CLASS.load(std::sync::atomic::Ordering::Relaxed) {
+            CLASS_SECURE => SessionStorageClass::Secure,
+            CLASS_PLAINTEXT => SessionStorageClass::Plaintext,
+            CLASS_NONE => SessionStorageClass::None,
+            // CLASS_UNKNOWN: this process has not read or saved anything yet — reachable from
+            // `app.launch` (the highest-volume usage event), sent before the boot path's own
+            // first `load()`. Reporting `None` here would claim "no session file exists" about an
+            // install this process has simply never looked at, including a secure or locked one.
+            _ => SessionStorageClass::Unknown,
+        },
+    }
+}
+
+/// Storage-error reports discovered while [`IO`] was held, drained and sent once the lock is
+/// released — the same reason `auth.rs`'s `set_error` collects under `Ctl`'s lock and reports after:
+/// `telemetry::storage::report_error` does spool I/O (its own lock, a disk read/write, possibly a
+/// log line), and `IO` here is held across a synchronous save on the SDL main thread. A `Vec` rather
+/// than a single slot only because a read that lands Locked and a save's own seal failure could in
+/// principle both queue within the same locked step.
+static PENDING_REPORTS: Mutex<Vec<crate::telemetry::storage::StorageErrorContext>> =
+    Mutex::new(Vec::new());
+
+fn queue_report(ctx: crate::telemetry::storage::StorageErrorContext) {
+    PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).push(ctx);
+}
+
+/// Which [`crate::telemetry::storage::StorageStage`]s this PROCESS has already reported — "exactly
+/// once per process per stage", so a television whose keymanager3 answers the same refusal call
+/// after call does not fill the spool with the same report on every later save.
+static REPORTED_STAGES: Mutex<Vec<crate::telemetry::storage::StorageStage>> = Mutex::new(Vec::new());
+
+/// Route through here rather than `telemetry::storage::report_error` directly so a test can capture
+/// what this module tried to report without a real Sentry endpoint compiled in — same shape as
+/// `keymanager.rs`'s own `log`/`capture` seam.
+#[cfg(not(test))]
+fn report_storage_error(ctx: crate::telemetry::storage::StorageErrorContext) {
+    crate::telemetry::storage::report_error(ctx);
+}
+#[cfg(test)]
+fn report_storage_error(ctx: crate::telemetry::storage::StorageErrorContext) {
+    tests::capture_report(ctx);
+}
+
+fn report_once(ctx: crate::telemetry::storage::StorageErrorContext) {
+    let mut reported = REPORTED_STAGES.lock().unwrap_or_else(|e| e.into_inner());
+    if reported.contains(&ctx.stage) {
+        return;
+    }
+    reported.push(ctx.stage);
+    drop(reported);
+    report_storage_error(ctx);
+}
+
+/// Drain and send whatever [`queue_report`] collected — called by every public entry point
+/// ([`load`], [`update`], [`save`]) AFTER its own `IO` guard has dropped.
+fn drain_pending_reports() {
+    let pending: Vec<_> =
+        std::mem::take(&mut *PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()));
+    for ctx in pending {
+        report_once(ctx);
+    }
+}
+
+/// Test-only: forget every stage this process has already "reported" (see
+/// [`tests::capture_report`]) — deliberately NOT folded into [`redirect_for_test`], since the
+/// once-per-process rule is exactly what a real process never resets on a file redirect either.
+#[cfg(test)]
+fn reset_report_state_for_test() {
+    PENDING_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    REPORTED_STAGES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    tests::CAPTURED_REPORTS.with(|c| c.borrow_mut().clear());
+}
+
+/// **The cross-launch half of issue #76.** [`LOCKED_STATE`] is a *process* global — it answers
+/// nothing about what a PREVIOUS launch found, so a backend whose key differs per
+/// launch/registration (issue #76's hypothesis 2) can round-trip cleanly on launch 3, look
+/// perfectly healthy to [`seal_permitted`]'s per-process half, and re-seal — reproducing the
+/// exact loop the fix was meant to end, just one launch later. This marker is what makes the
+/// verdict persist ON THE INSTALL rather than resetting at every `exec()`: once [`read_locked`]
+/// proves an envelope unopenable, [`write_refused_marker`] records that fact on disk, and every
+/// later [`save_locked`] — this launch's or any other's — consults [`has_refused_marker`] before
+/// ever calling `keymanager::seal` again. Removed only by [`clear`] (sign-out/erase): a different
+/// account, or a future firmware, gets a fresh chance.
+fn refused_marker_paths() -> Vec<std::path::PathBuf> {
+    auth_paths()
+        .into_iter()
+        .filter_map(|p| {
+            let name = p.file_name()?.to_string_lossy().into_owned();
+            let marker_name = match name.strip_suffix("auth.json") {
+                Some(prefix) => format!("{prefix}secure-storage.refused"),
+                None => format!("{name}.secure-storage.refused"),
+            };
+            Some(p.with_file_name(marker_name))
+        })
+        .collect()
+}
+
+/// Whether a PRIOR (or this) launch has already recorded that keymanager3's envelope could not be
+/// opened on this install — see [`refused_marker_paths`]. Checked the same way [`has_secure_locked`]
+/// checks for a secure file: owned, regular, readable — never trusting a path some other uid could
+/// have planted.
+fn has_refused_marker() -> bool {
+    refused_marker_paths()
+        .iter()
+        .any(|p| read_owned_regular(p).is_some())
+}
+
+/// Record the cross-launch verdict: this process's own [`read_locked`] found a recognized secure
+/// envelope it could not open. Idempotent — a marker already on disk is left alone, since its
+/// content is a fact about the FIRST time this was seen, not something a later read should keep
+/// overwriting. No key material, ciphertext or plaintext goes into it, only the version that
+/// observed the refusal.
+fn write_refused_marker(stage: crate::telemetry::storage::StorageStage) {
+    if has_refused_marker() {
+        return;
+    }
+    // `stage` is the same closed vocabulary the handled report sends (`no_reply`, `unreachable`,
+    // `begin_decrypt`, …): it says HOW the open failed, which the log alone could not once the
+    // launch that wrote this is gone. Nothing reads it back but a person with the file.
+    let body = serde_json::to_vec_pretty(&serde_json::json!({
+        "refused_at_version": super::identity::VERSION,
+        "reason": "envelope_unopenable",
+        "stage": stage.code(),
+    }))
+    .unwrap_or_default();
+    for path in refused_marker_paths() {
+        if write_atomic(&path, &body) {
+            return;
+        }
+    }
+    crate::log(
+        "session: could not persist the refused-storage marker to ANY candidate path — secure storage may be retried next launch",
+    );
+}
+
+/// Whether this process has already logged that a save skipped sealing purely because of the
+/// persisted marker — see [`write_refused_plaintext`]. Once per process: every `update()` on an
+/// install already downgraded to plaintext takes the same branch, and repeating the line on every
+/// roster refresh would drown the log in a restatement of a fact recorded once already.
+static MARKER_SKIP_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn log_marker_skip_once() {
+    if !MARKER_SKIP_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::log(
+            "session: secure storage is marked refused on this install; keeping the 0600 file",
+        );
+    }
+}
+
+/// The pure gate behind [`save_locked`]'s plaintext-downgrade decision — whether `keymanager::seal`
+/// may even be asked to try. Two DIFFERENT reasons force the plaintext branch, and this is their
+/// union:
+///
+/// - **Per-process** (`locked_state == LOCKED_RECOVERABLE`): THIS process's own [`read_locked`]
+///   already proved the on-disk envelope unopenable. Only refuses to seal once the save itself
+///   carries real credentials (`saving_fresh_sign_in`) — an unrelated writer with nothing of its
+///   own to replace the locked file with must never be the thing that destroys it (see
+///   `update_after_a_locked_boot_does_not_destroy_the_locked_envelope`).
+/// - **Persisted** (`marker_present`): a PRIOR launch already proved it — the cross-launch half
+///   issue #76's review asked for. Once true it stays true for EVERY save on this install,
+///   `saving_fresh_sign_in` included: there is nothing left to protect, because this install has
+///   already been downgraded to plaintext once, and the marker exists precisely to stop it being
+///   re-sealed the next time an in-process round trip happens to look clean.
+fn seal_permitted(marker_present: bool, locked_state: u8, saving_fresh_sign_in: bool) -> bool {
+    if marker_present {
+        return false;
+    }
+    !(locked_state == LOCKED_RECOVERABLE && saving_fresh_sign_in)
 }
 
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
@@ -866,16 +1150,41 @@ fn io() -> std::sync::MutexGuard<'static, ()> {
 /// end up with an id; it is not one on a path a keypress can reach. Falls back to the
 /// pre-relocation path (migration), same as `load`.
 pub fn peek() -> Session {
-    let _io = io();
-    peek_locked()
+    let s = {
+        let _io = io();
+        peek_locked()
+    };
+    // The cold-cache fallback inside `peek_locked` can be the first `read_locked` in the process
+    // (see its own doc) and can therefore queue a storage report the same way `load` can — drained
+    // here for the same reason every other public entry point drains: `IO` must already be
+    // released before `report_error` does its own spool I/O.
+    drain_pending_reports();
+    s
 }
 
 /// [`peek`] with the lock already held — the read half every entry point here shares.
+///
+/// Serves [`CACHE`] once anything has been published to it in this process, and only falls back to
+/// a real [`read_locked`] the first time — before any [`load`]/[`save_locked`]/[`update`] in this
+/// process has run. In production that first read is always [`load`]'s own, at boot; this fallback
+/// exists so [`peek`] is never wrong in that narrow window rather than to be the common path.
+///
+/// **That cold-cache fallback also sets [`LOCKED_STATE`]/[`LOCKED_PATH`]**, same as any other
+/// `read_locked` call — so in the (narrow, boot-only) window before the first `load`, a `peek`
+/// reachable from a keypress can be the read that later authorizes [`save_locked`]'s plaintext
+/// recovery write. That is intentional, not an oversight: the verdict recorded is a fact about
+/// what is ON DISK, true regardless of which caller's read happened to observe it first, and a
+/// recovery write still only fires on an actual fresh sign-in later — a `peek` alone never writes.
 fn peek_locked() -> Session {
-    match read_locked() {
-        ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
+    if let Some(s) = cached() {
+        return s;
     }
+    let s = match read_locked() {
+        ReadState::Ready { session, .. } => session,
+        ReadState::Missing | ReadState::Locked { .. } => Session::default(),
+    };
+    publish_cache(s.clone());
+    s
 }
 
 const SECURE_FORMAT: &str = "plxnative-secure-session";
@@ -895,8 +1204,69 @@ enum ReadState {
     },
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
-    /// fresh client id would destroy the only copy of the credentials.
-    Locked,
+    /// fresh client id would destroy the only copy of the credentials. `recoverable` says whether
+    /// [`save_locked`] may replace this file on a fresh sign-in — see [`LOCKED_RECOVERABLE`].
+    Locked {
+        recoverable: bool,
+    },
+}
+
+/// Record what this read found in [`LOCKED_STATE`] (and, for a recoverable lock, which candidate
+/// path it was found at, in [`LOCKED_PATH`]) and hand back the same [`ReadState`] — every return
+/// point in [`read_locked`] goes through one of these two so the three stay in lockstep.
+fn locked(
+    recoverable: bool,
+    path: &std::path::Path,
+    refusal: Option<crate::keymanager::LastRefusal>,
+) -> ReadState {
+    LOCKED_STATE.store(
+        if recoverable {
+            LOCKED_RECOVERABLE
+        } else {
+            LOCKED_UNRECOVERABLE
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) =
+        recoverable.then(|| path.to_path_buf());
+    // Issue #76 storage telemetry: a read landing Locked is one of the two triggers
+    // `save_locked`'s own seal failure is the other — for a handled report, reported at most once
+    // per process per stage (`report_once`, drained by the caller after `IO` is released).
+    // `recoverable` is exactly `keymanager::open` having been attempted and failed
+    // (`EnvelopeLocked`) versus a shape this build never asked a key manager to open at all — an
+    // unrecognized envelope, or one that decrypted fine but did not parse as a session
+    // (`EnvelopeUnparseable`), where there is no service reply to attach a code from.
+    // When the open reached a stage of its own (`begin_decrypt` with a code, `no_reply`,
+    // `unreachable`, …) the report carries THAT — it is the question a dashboard on these sets
+    // needs answered, and `EnvelopeLocked` says only that the envelope did not open.
+    use crate::telemetry::storage::{StorageErrorContext, StorageStage};
+    let stage = match (recoverable, refusal) {
+        (true, Some(r)) => r.stage,
+        (true, None) => StorageStage::EnvelopeLocked,
+        (false, _) => StorageStage::EnvelopeUnparseable,
+    };
+    let service_error_code = refusal.and_then(|r| r.error_code);
+    queue_report(StorageErrorContext {
+        stage,
+        service_error_code,
+        class: storage_class(),
+        refused_marker: has_refused_marker(),
+    });
+    ReadState::Locked { recoverable }
+}
+
+fn not_locked(state: ReadState) -> ReadState {
+    LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    LAST_CLASS.store(
+        match &state {
+            ReadState::Ready { plaintext: true, .. } => CLASS_PLAINTEXT,
+            ReadState::Ready { plaintext: false, .. } => CLASS_SECURE,
+            ReadState::Missing | ReadState::Locked { .. } => CLASS_NONE,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    state
 }
 
 /// The first usable candidate, retaining whether an encrypted file exists but cannot be opened.
@@ -907,30 +1277,53 @@ fn read_locked() -> ReadState {
         };
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
-                let Some(plain) = crate::keymanager::open(&envelope.sealed) else {
+                let (plain, refusal) = crate::keymanager::open_checked(&envelope.sealed);
+                let Some(plain) = plain else {
                     crate::log("session: secure file is present but its device key is unavailable");
-                    return ReadState::Locked;
+                    // Write the CROSS-LAUNCH marker on ANY failure to open an envelope this install
+                    // wrote, with the stage that failed recorded in it. `refusal` comes straight
+                    // back from THIS `open_checked` call (not the racy global), and since the
+                    // second issue #76 review it is `Some` for a timeout (`no_reply`) and a failed
+                    // registration (`unreachable`) as well as for a service reply — the first
+                    // review's "reply-only" gate left a STALLED keymanager3 (the shape both
+                    // reporters' "slow, then try again" symptom points at) re-paying its 4 s
+                    // budget on every later launch and never reporting, because no marker and no
+                    // stage were ever recorded. The envelope's existence proves this install once
+                    // sealed; failing to reopen it is exactly the class the marker remembers. A
+                    // healthy set that hiccuped once pays for the wrong marker only at its next
+                    // FRESH sign-in (a 0600 file instead of an envelope, until sign-out) — an
+                    // ordinary `update()` never converts a present envelope (`save_locked`'s
+                    // guard), and reads are never gated on it, so the same envelope still opens on
+                    // the next launch that can. `None` here is only the unsupported-key-name
+                    // shape `open_checked` refuses before any call, which is not this install's.
+                    if let Some(refusal) = refusal {
+                        write_refused_marker(refusal.stage);
+                    }
+                    return locked(true, &path, refusal);
                 };
-                return serde_json::from_slice(&plain)
-                    .map(|session| ReadState::Ready {
+                return match serde_json::from_slice(&plain) {
+                    Ok(session) => not_locked(ReadState::Ready {
                         session,
                         plaintext: false,
-                    })
-                    .unwrap_or(ReadState::Locked);
+                    }),
+                    // Decrypted fine but the plaintext is not a session — a real corruption, not a
+                    // keymanager3 refusal, so it does not get the recoverable rewrite.
+                    Err(_) => locked(false, &path, None),
+                };
             }
         }
         if identifies_secure_envelope(&bytes) {
             crate::log("session: unsupported or damaged secure envelope is locked");
-            return ReadState::Locked;
+            return locked(false, &path, None);
         }
         if let Ok(session) = serde_json::from_slice(&bytes) {
-            return ReadState::Ready {
+            return not_locked(ReadState::Ready {
                 session,
                 plaintext: true,
-            };
+            });
         }
     }
-    ReadState::Missing
+    not_locked(ReadState::Missing)
 }
 
 fn identifies_secure_envelope(bytes: &[u8]) -> bool {
@@ -989,35 +1382,63 @@ fn publish_identities(s: &Session) {
 /// Load the persisted session, ensuring a stable `client_id` exists (generated + saved on first
 /// boot). Never returns an error — a missing/corrupt file degrades to a fresh, logged-out session.
 /// Falls back to the pre-relocation path once and re-saves at the new one (migration).
+///
+/// **Served from [`CACHE`] once anything has been published to it in this process** — the same
+/// fast path [`peek_locked`] already takes, extended to cover `load`'s own ~9 mid-run callers
+/// (the account chip's `signed_in()`, a Settings rebuild, `plex::servers`'s per-registration device
+/// id, an auth cancel/restart). This process's own writers keep `CACHE` in lockstep with the file
+/// (see its doc), so a repeat `load` gains nothing by re-reading — except paying keymanager3's
+/// multi-second LS2 budget a second time, and letting a transient mid-run decrypt hiccup on some
+/// unrelated file access overwrite [`LOCKED_STATE`]/[`LOCKED_PATH`] with a verdict about a file
+/// this run already read successfully once, which a LATER save's recovery decision then trusts.
+/// Only the FIRST `load` in a process — genuinely the boot path — does the full read/mint/reseal
+/// work below.
 pub fn load() -> Session {
-    let _io = io();
-    let read = read_locked();
-    let persisted = !matches!(read, ReadState::Missing);
-    let locked = matches!(read, ReadState::Locked);
-    let plaintext = matches!(
-        read,
-        ReadState::Ready {
-            plaintext: true,
-            ..
+    let s = {
+        let _io = io();
+        if let Some(s) = cached() {
+            s
+        } else {
+            let read = read_locked();
+            let persisted = !matches!(read, ReadState::Missing);
+            let locked = matches!(read, ReadState::Locked { .. });
+            let plaintext = matches!(
+                read,
+                ReadState::Ready {
+                    plaintext: true,
+                    ..
+                }
+            );
+            let mut s = match read {
+                ReadState::Ready { session, .. } => session,
+                ReadState::Missing | ReadState::Locked { .. } => Session::default(),
+            };
+            seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
+            if s.client_id.is_empty() {
+                s.client_id = new_client_id();
+                if !locked {
+                    save_locked(&s);
+                }
+            } else if plaintext {
+                // Offer every plaintext session to the Key Manager immediately. This also moves a
+                // parsable legacy-path file to the preferred location; without a usable service it
+                // stays an atomic mode-0600 plaintext fallback.
+                save_locked(&s);
+            }
+            publish_identities(&s);
+            // Whatever this run ends up believing the session is — even the ephemeral default
+            // that comes from a Locked or Missing read — becomes the in-process truth every later
+            // `peek` serves.
+            publish_cache(s.clone());
+            s
         }
-    );
-    let mut s = match read {
-        ReadState::Ready { session, .. } => session,
-        ReadState::Missing | ReadState::Locked => Session::default(),
     };
-    seed_fresh_quality(&mut s, persisted, crate::route::auto_quality_ready());
-    if s.client_id.is_empty() {
-        s.client_id = new_client_id();
-        if !locked {
-            save_locked(&s);
-        }
-    } else if plaintext {
-        // Offer every plaintext session to the Key Manager immediately. This also moves a
-        // parsable legacy-path file to the preferred location; without a usable service it stays
-        // an atomic mode-0600 plaintext fallback.
-        save_locked(&s);
-    }
-    publish_identities(&s);
+    // Issue #76: a read landing Locked, or a save's own seal failure, may have queued a handled
+    // report above — sent only now that `IO` has been released (see `PENDING_REPORTS`'s doc). The
+    // cached fast path above never itself queues one (it does no `read_locked`/`save_locked`), but
+    // still passes through here rather than a bare early `return`, so it cannot silently start
+    // skipping this the moment that path ever changes.
+    drain_pending_reports();
     s
 }
 
@@ -1036,19 +1457,33 @@ pub fn load() -> Session {
 /// never empty afterwards, so it is exactly the test for "something real came back". A caller with
 /// no session on disk simply keeps its change in memory for the run, which is what both of today's
 /// callers already wanted.
+///
+/// **Also refuses on a [`LOCKED_RECOVERABLE`]/[`LOCKED_UNRECOVERABLE`] read.** A `load` on a
+/// genuinely locked boot still mints an EPHEMERAL client id (never persisted for exactly this
+/// reason) so the empty-id test above no longer catches it — an unrelated writer with no
+/// credentials of its own (the home-pin, recents or quality-rung `update`s) must not be the thing
+/// that turns a recognized-but-unopenable secure envelope into a credential-free plaintext file;
+/// only a fresh SIGN-IN, through [`save_locked`]'s own recoverable branch, may do that.
 pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
-    let _io = io();
-    let cur = peek_locked();
-    if cur.client_id.is_empty() {
-        return false;
-    }
-    match edit(&cur) {
-        Some(next) => {
-            save_locked(&next);
-            true
+    let wrote = {
+        let _io = io();
+        let cur = peek_locked();
+        if cur.client_id.is_empty()
+            || LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed) != NOT_LOCKED
+        {
+            false
+        } else {
+            match edit(&cur) {
+                Some(next) => {
+                    save_locked(&next);
+                    true
+                }
+                None => false,
+            }
         }
-        None => false,
-    }
+    };
+    drain_pending_reports();
+    wrote
 }
 
 /// Persist the session (best-effort; a write failure is non-fatal — we just re-login next boot).
@@ -1062,16 +1497,40 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
 /// available, and 0600 in every case.** The probe uses TV 24+'s
 /// `com.webos.service.keymanager3`. The legacy `com.palm.keymanager` service is not used because
 /// its AES-CFB interface cannot authenticate ciphertext. A firmware that does not expose or permit
-/// keymanager3 keeps the compatible 0600 plaintext fallback. An existing encrypted file is never
-/// downgraded merely because its service is temporarily unavailable.
+/// keymanager3 keeps the compatible 0600 plaintext fallback. An existing encrypted file is
+/// preserved through a transient failure to protect it again — **except** when THIS process itself
+/// read that exact file as [`LOCKED_RECOVERABLE`] (keymanager3 sealed it once but cannot open it
+/// now, on this launch, this firmware — issue #76) and the save carries a fresh `account_token`: a
+/// sign-in nobody could ever read back is worse than one written down in plain sight, and there is
+/// nothing the locked ciphertext holds that the fresh sign-in does not already re-supply. That save
+/// does not even ask the key manager to try again — a backend proven unable to open what THIS run
+/// found on disk is not asked to seal a new envelope that could turn out just as unreadable next
+/// launch; see [`save_locked`]'s recoverable branch.
+///
+/// **The verdict outlives the launch that found it.** A per-process refusal alone would only ever
+/// interrupt the loop for one boot — issue #76's own robustness review measured the sequence
+/// (`docs/…` — see the module doc's cross-launch paragraph): launch 2 recovers to plaintext, but
+/// launch 3 reads that plaintext cleanly, so ITS OWN [`LOCKED_STATE`] never becomes
+/// [`LOCKED_RECOVERABLE`] — and if the key manager happens to round-trip fine within launch 3 (the
+/// exact "works per-launch, not across launches" shape the bug reports describe), an ordinary
+/// `update()` (a roster refresh, a pin) re-seals it, and launch 4 is locked again. So once
+/// [`read_locked`] proves an envelope unopenable, that fact is ALSO written to a small 0600 marker
+/// beside the session file (see [`write_refused_marker`]) — content only, never key material —
+/// and every later save on this install, this launch's or any other's, checks it before ever
+/// calling `keymanager::seal`. An install that has once failed to read its own envelope back stays
+/// on the 0600 file until [`clear`] (sign-out or erase), which removes the marker together with
+/// the session — a different account, or a future firmware, gets a fresh chance.
 ///
 /// The mode is set in `open(2)`'s own argument — never create-then-chmod. `fs::write` creates with
 /// `0666 & !umask` (0644 here), so a fallback token file would be readable by every other uid from
 /// the instant it hit the disk. Passing the mode through `OpenOptionsExt` means it never *exists*
 /// in a permissive mode, which a chmod after the write cannot promise.
 pub fn save(s: &Session) {
-    let _io = io();
-    save_locked(s);
+    {
+        let _io = io();
+        save_locked(s);
+    }
+    drain_pending_reports();
 }
 
 /// [`save`] with the lock already held.
@@ -1082,6 +1541,43 @@ fn save_locked(s: &Session) {
     let Ok(json) = serde_json::to_vec_pretty(s) else {
         return;
     };
+
+    // **Consulted BEFORE calling `keymanager::seal`, not only after it fails** — both halves of
+    // `seal_permitted`. `LOCKED_STATE` records whether THIS process's own `read_locked` found the
+    // on-disk envelope unopenable; the marker records whether ANY process ever did. Either way,
+    // `keymanager::seal`'s round trip proves only an IN-PROCESS, same-launch decrypt — a backend
+    // whose key is not usable by a DIFFERENT launch (or LS2 registration) than the one that sealed
+    // it would round-trip perfectly right here and hand back a fresh envelope in exactly the same
+    // unreadable shape, so a save landing here does not even ask the key manager to try again.
+    let marker_present = has_refused_marker();
+    let locked_state = LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed);
+    let saving_fresh_sign_in = !s.account_token.is_empty();
+    if !seal_permitted(marker_present, locked_state, saving_fresh_sign_in) {
+        if locked_state == LOCKED_RECOVERABLE && saving_fresh_sign_in {
+            // The more specific case: THIS launch's own read found the envelope, and knows
+            // exactly which candidate to target and sweep.
+            return recover_locked_session_as_plaintext(s, &json);
+        }
+        // The marker-only case: a PRIOR launch found it, and this one may never have seen the
+        // secure file at all (it could already be plaintext, or `LOCKED_STATE` could still be
+        // sitting at its default for an unrelated reason).
+        //
+        // **But never on THIS save's own authority alone when it carries no fresh credentials.**
+        // The marker is a stale, cross-launch fact; a secure-shaped file could still be sitting on
+        // disk from a firmware that has since started working again (the same reasoning the seal-
+        // failure branch below already applies via `has_secure_locked`). An ordinary `update()` —
+        // a roster refresh, a pinned library — must not be what silently converts a currently
+        // present secure envelope to plaintext; only a fresh sign-in (which re-supplies the
+        // credentials the marker's own downgrade would otherwise discard) may do that.
+        if !saving_fresh_sign_in && has_secure_locked() {
+            crate::log(
+                "session: secure storage is marked refused, but a secure file is present; leaving it untouched",
+            );
+            return;
+        }
+        return write_refused_plaintext(s, &json);
+    }
+
     if let Some(sealed) = crate::keymanager::seal(&json) {
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
@@ -1099,14 +1595,40 @@ fn save_locked(s: &Session) {
                     remove_temp_siblings(&stale);
                     let _ = std::fs::remove_file(stale);
                 }
+                not_locked_after_write();
+                LAST_CLASS.store(CLASS_SECURE, std::sync::atomic::Ordering::Relaxed);
+                publish_cache(s.clone());
                 return;
             }
         }
         crate::log("session: key manager succeeded but the protected file could not be written");
         return;
     }
+    // `seal` failed for a reason unrelated to a locked-boot read (that case returned above).
     // Never turn an already protected session back into plaintext because a service was
     // temporarily unavailable during a save. Preserve the previous ciphertext instead.
+    //
+    // Issue #76 storage telemetry: this IS "a seal round trip fails" — `keymanager::seal` already
+    // logged its own refusal (or the round-trip mismatch) and published it as `last_refusal`, which
+    // is the stage and code a handled report needs. A backend that is simply ABSENT (no keymanager3
+    // on this firmware at all) never reaches a service call and leaves `last_refusal` at `None`, so
+    // an ordinary plaintext-only install reports nothing here.
+    // A `no_reply`/`unreachable` here is NOT reported: on an install that has never sealed, a
+    // service that does not answer is indistinguishable from a firmware that has no keymanager3
+    // at all (every set before webOS 24), and reporting it would send one StorageError from every
+    // such install's first save. Those two stages are evidence only on the READ side, where the
+    // envelope's existence proves the service once worked (`read_locked`).
+    if let Some(refusal) = crate::keymanager::last_refusal().filter(|r| {
+        r.error_code.is_some()
+            || r.stage == crate::telemetry::storage::StorageStage::RoundtripMismatch
+    }) {
+        queue_report(crate::telemetry::storage::StorageErrorContext {
+            stage: refusal.stage,
+            service_error_code: refusal.error_code,
+            class: storage_class(),
+            refused_marker: has_refused_marker(),
+        });
+    }
     if has_secure_locked() {
         crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
         return;
@@ -1116,12 +1638,100 @@ fn save_locked(s: &Session) {
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
     for path in auth_paths() {
         if write_atomic(&path, &json) {
+            LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
+            publish_cache(s.clone());
             return;
         }
     }
     crate::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
+}
+
+fn not_locked_after_write() {
+    LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Issue #76's recovery write: this process's own read already proved the on-disk envelope at
+/// [`LOCKED_PATH`] cannot be opened, and `s` carries a fresh sign-in's own credentials — nothing
+/// the locked ciphertext held that this save does not re-supply. Refusing it is what produced the
+/// endless loop; writing the 0600 fallback in its place is what ends it.
+///
+/// Targets the SAME candidate `read_locked` found the envelope at first — not merely the first
+/// candidate willing to accept a write, which can be a different (lower-priority) path when the
+/// locked file's own candidate is readable but not writable. Whichever path the write actually
+/// lands at, every OTHER candidate is swept the same way a successful seal already does, so the
+/// locked file cannot survive at a lower-priority path and keep shadowing the fresh sign-in on the
+/// next boot.
+fn recover_locked_session_as_plaintext(s: &Session, json: &[u8]) {
+    let previously_locked_at = LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    match write_plaintext_recovery(s, json, previously_locked_at.as_deref()) {
+        Some(winner) => {
+            crate::log(
+                "session: the secure file could not be opened on this firmware; replaced by the 0600 file so the sign-in survives a reboot",
+            );
+            if let Some(locked_at) = &previously_locked_at {
+                if locked_at != &winner && locked_at.exists() {
+                    crate::log(
+                        "session: a locked file at a lower-priority path could not be removed after recovery — it may still shadow the fresh sign-in",
+                    );
+                }
+            }
+        }
+        None => crate::log(
+            "session: could not persist to ANY candidate path — login will not survive a reboot",
+        ),
+    }
+}
+
+/// The marker-only counterpart to [`recover_locked_session_as_plaintext`]: a PRIOR launch —
+/// possibly not this one — already proved an envelope on this install unopenable, so
+/// [`has_refused_marker`] alone is enough to skip `keymanager::seal`. Unlike the per-process case
+/// there is no [`LOCKED_PATH`] to target (this launch's own read may have found the file already
+/// plaintext, or never touched it at all), so the write goes through the normal candidate priority
+/// order.
+fn write_refused_plaintext(s: &Session, json: &[u8]) {
+    log_marker_skip_once();
+    if write_plaintext_recovery(s, json, None).is_none() {
+        crate::log(
+            "session: could not persist to ANY candidate path — login will not survive a reboot",
+        );
+    }
+}
+
+/// Write `s` as the 0600 plaintext file, replacing any secure envelope, and sweep every other
+/// candidate clean — the shared mechanics behind both [`recover_locked_session_as_plaintext`] and
+/// [`write_refused_plaintext`]. `target`, when known, is the SAME candidate the locked envelope was
+/// found at (`recover_locked_session_as_plaintext`'s case) rather than merely the first candidate
+/// willing to accept a write, which can differ when a lower-priority candidate is writable but the
+/// one actually holding the locked file is not — that would leave the locked file in place, still
+/// shadowing everything below it, while a stray plaintext copy accumulates elsewhere. Returns the
+/// path actually written, or `None` if every candidate refused.
+fn write_plaintext_recovery(
+    s: &Session,
+    json: &[u8],
+    target: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let mut candidates = auth_paths();
+    if let Some(first) = target {
+        candidates.retain(|p| p != first);
+        candidates.insert(0, first.to_path_buf());
+    }
+    for winner in candidates {
+        if !write_atomic(&winner, json) {
+            continue;
+        }
+        for stale in auth_paths().into_iter().filter(|p| p != &winner) {
+            remove_temp_siblings(&stale);
+            let _ = std::fs::remove_file(&stale);
+        }
+        not_locked_after_write();
+        LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
+        publish_cache(s.clone());
+        return Some(winner);
+    }
+    None
 }
 
 /// Write `json` to `path` so that whatever reads it sees the WHOLE previous file or the WHOLE new
@@ -1275,6 +1885,9 @@ fn tmp_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
 
 /// Clear the persisted session (sign-out) — removes the file; a fresh `client_id` is minted next
 /// load. The old-path copy goes too, or the migration fallback would resurrect the stale session.
+/// **Also removes the persisted refused-storage marker** (see [`write_refused_marker`]) — a
+/// different account, or a future firmware, gets a fresh chance at keymanager3 rather than
+/// inheriting a previous account's verdict about this install's key.
 ///
 /// Takes [`IO`] like every other entry point, and that is not tidiness: a sign-out racing an
 /// in-flight worker's read-modify-write would otherwise delete the file and have the worker put it
@@ -1296,6 +1909,18 @@ pub fn clear() {
         remove_temp_siblings(&path);
         let _ = std::fs::remove_file(path);
     }
+    // The marker carries no credential, but leaving it behind would keep a FUTURE sign-in on this
+    // same install pinned to plaintext for no reason connected to the account that just left.
+    for path in refused_marker_paths() {
+        remove_temp_siblings(&path);
+        let _ = std::fs::remove_file(path);
+    }
+    // No file, so nothing left to call Locked — and no cached copy of the session that just got
+    // signed out should keep answering `peek`.
+    LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
+    *LOCKED_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    LAST_CLASS.store(CLASS_UNKNOWN, std::sync::atomic::Ordering::Relaxed);
+    clear_cache();
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv
@@ -1386,6 +2011,22 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// What [`super::report_storage_error`]'s test double captured instead of a real send —
+        /// same seam `keymanager.rs`'s `log`/`capture` uses, since a dev checkout has no Sentry
+        /// endpoint compiled in and `telemetry::storage::report_error` would always refuse.
+        pub(super) static CAPTURED_REPORTS: std::cell::RefCell<Vec<crate::telemetry::storage::StorageErrorContext>> =
+            std::cell::RefCell::new(Vec::new());
+    }
+
+    pub(super) fn capture_report(ctx: crate::telemetry::storage::StorageErrorContext) {
+        CAPTURED_REPORTS.with(|c| c.borrow_mut().push(ctx));
+    }
+
+    fn captured_reports() -> Vec<crate::telemetry::storage::StorageErrorContext> {
+        CAPTURED_REPORTS.with(|c| c.borrow().clone())
+    }
 
     /// The file a signed-in device holds today, once discovery has reached two servers. Written
     /// as literal JSON rather than by serialising a `Session`, because the thing under test is
@@ -1926,6 +2567,9 @@ mod tests {
     /// the shares `auth::retoken` had correctly made tokenless, which is a re-grant and not a refresh.
     #[test]
     fn only_the_account_owners_own_profile_may_refresh_the_roster_with_the_account_token() {
+        // Holds keymanager global state (`LAST_REFUSAL`) exposed through `clear()` -> `keymanager::remove()`
+        // below; without this a concurrent `keymanager.rs` test asserting on that value can race it.
+        let _g = crate::testlock::serial();
         let home = |uuid: &str| Session {
             client_id: "cid".into(),
             account_token: "acct".into(),
@@ -2071,6 +2715,9 @@ mod tests {
     /// a bypassed PIN and being wrong the other way costs one profile pick.
     #[test]
     fn a_stored_profile_behind_a_pin_is_reported_as_protected() {
+        // Same reason as the sibling test above: `clear()` reaches `keymanager::remove()`, which
+        // touches process-global keymanager state a `keymanager.rs` test can be asserting on.
+        let _g = crate::testlock::serial();
         let home = |uuid: &str| Session {
             client_id: "cid".into(),
             account_token: "acct".into(),
@@ -2169,6 +2816,37 @@ mod tests {
         }
     }
 
+    /// Two priority-ordered candidates of this test's own — for the issue #76 review coverage
+    /// that `TempSession`'s single path structurally cannot exercise: a locked envelope that is
+    /// NOT at `auth_paths()[0]`.
+    struct TwoCandidateSession {
+        dir: std::path::PathBuf,
+    }
+
+    impl TwoCandidateSession {
+        fn new(tag: &str) -> TwoCandidateSession {
+            let dir = std::env::temp_dir()
+                .join(format!("plxnative-session-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a writable temp dir");
+            super::redirect_for_test_multi(vec![dir.join("a.json"), dir.join("b.json")]);
+            TwoCandidateSession { dir }
+        }
+        fn higher(&self) -> std::path::PathBuf {
+            self.dir.join("a.json")
+        }
+        fn lower(&self) -> std::path::PathBuf {
+            self.dir.join("b.json")
+        }
+    }
+
+    impl Drop for TwoCandidateSession {
+        fn drop(&mut self) {
+            super::redirect_for_test(None);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     fn signed_in() -> Session {
         Session {
             client_id: "cid-1".into(),
@@ -2227,13 +2905,19 @@ mod tests {
         assert_eq!(last_hero(), Some(second), "…and replaces the stored one");
     }
 
-    /// A temporary LS2/key-store failure must never turn ciphertext back into plaintext or make
-    /// `load` overwrite it with a newly minted, logged-out client id. The host has no Luna bus,
-    /// which is the exact unavailable-key condition this policy has to survive.
+    /// **Issue #76.** A pre-existing secure envelope this process cannot open (`load` never even
+    /// gets a real client id out of it — `Locked` degrades to a fresh, ephemeral default, exactly
+    /// the "takes longer than usual" + "sign in again" symptom the owner reported) must not shadow
+    /// a FRESH sign-in forever. Once a caller saves a session that carries its own `account_token`,
+    /// the locked ciphertext is replaced by the 0600 plaintext file — there is nothing in the old
+    /// envelope the new sign-in does not already re-supply, and refusing the write is exactly what
+    /// produced the endless loop: seal → unreadable envelope → every `peek` defaults → sign in
+    /// again → seal into the same unreadable shape.
     #[test]
-    fn an_unopenable_secure_session_is_preserved_without_plaintext_downgrade() {
+    fn a_locked_secure_session_is_replaced_by_plaintext_on_a_fresh_sign_in() {
+        use std::os::unix::fs::PermissionsExt;
         let _g = crate::testlock::serial();
-        let t = TempSession::new("secure-locked");
+        let t = TempSession::new("secure-locked-recovery");
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
             version: 1,
@@ -2252,8 +2936,263 @@ mod tests {
             !loaded.client_id.is_empty(),
             "the run still gets an ephemeral id"
         );
-        assert_eq!(std::fs::read(t.file()).unwrap(), original);
+        assert!(
+            loaded.account_token.is_empty(),
+            "the locked envelope's real session never came back — Locked degrades to default"
+        );
+        assert_eq!(
+            std::fs::read(t.file()).unwrap(),
+            original,
+            "a locked file is never rewritten just for a fresh client id"
+        );
 
+        // The user signs in again, exactly as the reported loop describes.
+        save(&signed_in());
+        let on_disk = std::fs::read(t.file()).unwrap();
+        assert_ne!(
+            on_disk, original,
+            "a fresh sign-in must not be discarded to protect an envelope nobody can open"
+        );
+        let saved: Session =
+            serde_json::from_slice(&on_disk).expect("the recovery file is plaintext, not sealed");
+        assert_eq!(saved.account_token, "acct");
+        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the recovery write is credentials at rest too");
+
+        // A later boot in a NEW process (no cache) reads the recovered session back.
+        clear_cache();
+        LOCKED_STATE.store(NOT_LOCKED, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            load().account_token,
+            "acct",
+            "the sign-in survives a reboot, which is the whole point"
+        );
+    }
+
+    /// **Issue #76, hypothesis 2** (the review's blocker): a keymanager3 that can encrypt AND
+    /// decrypt fine within THIS launch/registration — so `keymanager::seal`'s own in-process
+    /// round trip would pass — but whose key is not the one that sealed the envelope already on
+    /// disk (a different launch, a different registration, a rotated/lost key — the shape LG's
+    /// "a key can be used only by the owner of the key" most naturally describes). Before this
+    /// fix, `save_locked` called `seal` unconditionally and trusted whatever it returned, so a
+    /// fresh sign-in here would be RE-SEALED into another envelope in exactly the same unreadable
+    /// shape — the endless loop, unbroken, with only a misleading "replaced by the 0600 file" log
+    /// line to show for it. The fix is to consult this run's OWN read verdict (`LOCKED_STATE`)
+    /// before ever calling `seal` again.
+    #[test]
+    fn a_backend_that_would_round_trip_right_now_is_never_asked_after_this_run_already_found_the_file_locked(
+    ) {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("hypothesis-2");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        std::fs::write(t.file(), serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+
+        // The boot read fails to open the on-disk envelope — a script-free `open` always refuses,
+        // matching the dev set's "no keymanager3 at all" as well as "this launch cannot open a key
+        // sealed elsewhere". `LOCKED_STATE` is now `LOCKED_RECOVERABLE`.
+        let loaded = load();
+        assert!(loaded.account_token.is_empty());
+
+        // NOW arm a keymanager double that would round-trip PERFECTLY if asked — modelling the
+        // part of hypothesis 2 that fooled the old code: this launch's own key manager genuinely
+        // works. If `save_locked` called `seal` again here, it would succeed and hand back a new
+        // sealed envelope.
+        crate::keymanager::arm_for_test(vec![
+            ("generateKey", Ok(serde_json::json!({"returnValue": true}))),
+            (
+                "begin",
+                Ok(serde_json::json!({
+                    "returnValue": true, "handle": "h-enc", "iv": "MDEyMzQ1Njc4OWFi"
+                })),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({"returnValue": true, "output": "Y2lwaGVydGV4dA=="})),
+            ),
+            (
+                "begin",
+                Ok(serde_json::json!({"returnValue": true, "handle": "h-dec"})),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({
+                    "returnValue": true,
+                    "output": "aXNzdWUtNzYgcGxhaW50ZXh0" // an arbitrary plaintext seal() would accept
+                })),
+            ),
+        ]);
+
+        save(&signed_in());
+        crate::keymanager::disarm_for_test();
+
+        let on_disk = std::fs::read(t.file()).unwrap();
+        let saved: Session = serde_json::from_slice(&on_disk).expect(
+            "a working-right-now backend must still be bypassed — the file must be the plaintext \
+             recovery write, never a freshly sealed envelope this launch alone could open",
+        );
+        assert_eq!(saved.account_token, "acct");
+    }
+
+    /// **Recovery targets the SAME candidate the locked envelope was found at**, not merely the
+    /// first candidate willing to accept a write. `TempSession` is one path; this needs two, with
+    /// the envelope at the LOWER-priority one and the higher-priority one free — the shape that
+    /// made the old "first writable wins" loop write a fresh plaintext file the next boot's
+    /// `read_locked` would never even reach, because the untouched locked envelope at the
+    /// higher-priority candidate kept shadowing it.
+    #[test]
+    fn recovery_targets_the_candidate_the_locked_envelope_was_actually_found_at() {
+        let _g = crate::testlock::serial();
+        let t = TwoCandidateSession::new("recovery-targeting");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        // Only the LOWER-priority candidate holds the envelope; the higher-priority one is
+        // absent, so an unqualified "first writable candidate" would happily create it there.
+        std::fs::write(t.lower(), serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+        assert!(!t.higher().exists());
+
+        let loaded = load();
+        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+
+        save(&signed_in());
+
+        assert!(
+            !t.higher().exists(),
+            "the recovery write must not land at the higher-priority candidate merely because \
+             it was free — the next boot's read_locked would never reach the untouched locked \
+             file at the lower-priority path if it did"
+        );
+        let saved: Session = serde_json::from_slice(&std::fs::read(t.lower()).unwrap())
+            .expect("the recovery write lands at the SAME candidate the envelope was found at");
+        assert_eq!(saved.account_token, "acct");
+    }
+
+    /// **Recovery sweeps every OTHER candidate**, exactly like a successful seal already does —
+    /// a stale copy left behind at a lower-priority jail path is a plaintext credential another
+    /// uid can read, whether it got there from an old fallback write or from anything else.
+    #[test]
+    fn recovery_sweeps_a_stale_copy_at_another_candidate() {
+        let _g = crate::testlock::serial();
+        let t = TwoCandidateSession::new("recovery-sweep");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        std::fs::write(t.higher(), serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+        std::fs::write(t.lower(), b"leftover plaintext credentials").unwrap();
+
+        let loaded = load();
+        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+
+        save(&signed_in());
+
+        assert!(
+            !t.lower().exists(),
+            "a stale copy at another candidate must not survive the recovery write"
+        );
+        let saved: Session = serde_json::from_slice(&std::fs::read(t.higher()).unwrap()).unwrap();
+        assert_eq!(saved.account_token, "acct");
+    }
+
+    /// **Issue #76 review:** an unrelated writer (home pins, recents, the quality rung — none of
+    /// which carries fresh credentials) must never be the thing that replaces a recognized
+    /// secure-but-unopenable envelope with a credential-free plaintext file. Before this fix,
+    /// `load`'s own ephemeral (never-persisted) client id — minted even on a Locked read — made
+    /// `update`'s empty-client-id guard pass, so the very next `update` from anywhere destroyed
+    /// the locked envelope.
+    #[test]
+    fn update_after_a_locked_boot_does_not_destroy_the_locked_envelope() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("update-vs-locked");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        let original = serde_json::to_vec_pretty(&envelope).unwrap();
+        std::fs::write(t.file(), &original).unwrap();
+
+        let loaded = load();
+        assert!(
+            !loaded.client_id.is_empty(),
+            "the run still gets an ephemeral id — the exact thing that used to fool `update`"
+        );
+
+        let wrote = update(|s| {
+            Some(Session {
+                client_id: s.client_id.clone(),
+                ..Default::default()
+            })
+        });
+        assert!(
+            !wrote,
+            "an unrelated writer with no credentials of its own must not touch a locked file"
+        );
+        assert_eq!(
+            std::fs::read(t.file()).unwrap(),
+            original,
+            "the locked envelope must survive untouched"
+        );
+    }
+
+    /// A temporary LS2/key-store failure must still refuse the plaintext downgrade when THIS
+    /// process never actually found the on-disk file Locked — as opposed to the recovery case
+    /// above, where the whole point is that a boot read failed. `LOCKED_STATE` only ever becomes
+    /// [`LOCKED_RECOVERABLE`] through [`read_locked`] observing exactly that; reaching into it
+    /// directly (this test's own module, via `super::*`) is the cheapest way to pin the OTHER side
+    /// of that branch without reconstructing a byte-exact keymanager3 encrypt/decrypt round trip
+    /// that has nothing to do with what this test is about.
+    #[test]
+    fn a_transient_failure_with_no_locked_read_this_run_still_refuses_the_plaintext_downgrade() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("secure-transient");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        let original = serde_json::to_vec_pretty(&envelope).unwrap();
+        std::fs::write(t.file(), &original).unwrap();
+        // No `load()`/`read_locked()` ran against this file in this process — `LOCKED_STATE` sits
+        // at its default, never having been told this file is the recoverable shape.
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            NOT_LOCKED
+        );
+
+        // `seal` fails (no keymanager script armed, the default every unscripted test relies on).
         save(&signed_in());
         assert_eq!(
             std::fs::read(t.file()).unwrap(),
@@ -2297,6 +3236,81 @@ mod tests {
         );
     }
 
+    /// A backend that answers `encrypt` but not `decrypt` never gets to persist ciphertext at all
+    /// (stage K's own `seal` round-trip check catches it) — from `save_locked`'s side this looks
+    /// exactly like "no usable key manager", so the write falls straight through to the 0600
+    /// plaintext file. What this test is actually pinning is the CACHE half: `peek` afterwards must
+    /// not re-decrypt anything — there is nothing left to decrypt, since the file is plaintext, and
+    /// serving it from the in-process copy rather than re-reading disk is what stops the account
+    /// chip from paying a multi-second LS2 round trip on every open.
+    #[test]
+    fn a_backend_that_cannot_open_its_own_envelope_falls_back_to_plaintext_and_peek_serves_the_cache(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("cache-fallback");
+        crate::keymanager::arm_for_test(vec![
+            ("generateKey", Ok(serde_json::json!({"returnValue": true}))),
+            (
+                "begin",
+                Ok(serde_json::json!({
+                    "returnValue": true, "handle": "h-enc",
+                    "iv": "MDEyMzQ1Njc4OWFi"
+                })),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({
+                    "returnValue": true, "output": "Y2lwaGVydGV4dA=="
+                })),
+            ),
+            (
+                "begin",
+                Ok(serde_json::json!({
+                    "returnValue": false, "errorCode": -10001, "errorText": "key not found"
+                })),
+            ),
+        ]);
+
+        save(&signed_in());
+        crate::keymanager::disarm_for_test();
+
+        assert_eq!(
+            peek().account_token,
+            "acct",
+            "served from the in-process cache, not a re-decrypt of the file"
+        );
+        let raw = std::fs::read(t.file()).unwrap();
+        let on_disk: Session =
+            serde_json::from_slice(&raw).expect("the fallback file is plaintext, not sealed");
+        assert_eq!(on_disk.account_token, "acct");
+        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "credentials at rest even on the fallback path");
+    }
+
+    /// `clear()` (sign-out) must drop the in-process cache along with the file — a stale cached
+    /// copy answering `peek` after a sign-out would mean the UI keeps showing the account that was
+    /// just signed out of.
+    #[test]
+    fn clear_empties_the_cache_and_a_following_peek_reads_disk() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("clear-cache");
+        save(&signed_in());
+        assert_eq!(peek().account_token, "acct", "cached from the save above");
+
+        clear();
+        assert_eq!(
+            peek().account_token,
+            "",
+            "signed out — nothing cached, nothing on disk"
+        );
+
+        // And the cache is genuinely gone, not merely holding a signed-out value: a session
+        // written straight to disk (as another process/boot would) is what `peek` now reads.
+        save(&signed_in());
+        assert_eq!(peek().account_token, "acct");
+    }
+
     #[test]
     fn a_precreated_tmp_symlink_cannot_redirect_session_bytes() {
         use std::os::unix::fs::symlink;
@@ -2310,6 +3324,563 @@ mod tests {
 
         assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
         assert_eq!(peek().account_token, "acct");
+    }
+
+    // ---- Issue #76 review: the CROSS-LAUNCH marker ----------------------------------------------
+    //
+    // `LOCKED_STATE` is a process global: it answers nothing about what a PRIOR launch found. The
+    // robustness review's gap is that a per-process-only fix breaks the loop for exactly one boot —
+    // a later launch that reads the recovered plaintext cleanly, or whose own key manager happens
+    // to round-trip within itself, re-seals into the same unopenable shape. These tests pin the
+    // persisted marker that makes the verdict survive past the launch that found it.
+
+    fn locked_envelope_bytes() -> Vec<u8> {
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        serde_json::to_vec_pretty(&envelope).unwrap()
+    }
+
+    /// Minimal standard base64 (RFC 4648), matching `keymanager::b64::encode` — which is
+    /// `pub(super)` and unreachable from here — just enough to script a `finish(decrypt)` reply
+    /// that `keymanager::open`'s `b64::decode` will actually turn back into `plain`.
+    fn b64_encode_for_test(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = (chunk[0] as u32) << 16
+                | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+                | *chunk.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[(n >> (18 - i * 6)) as usize & 63] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// A round-tripping seal script, for a launch whose OWN key manager works fine in-process —
+    /// the shape that must still be bypassed once the marker is present. The `finish(decrypt)`
+    /// reply carries the base64 of `s`'s OWN serialized bytes so `seal`'s internal round-trip
+    /// check (and, in tests that let a save genuinely succeed, `keymanager::open` itself) sees a
+    /// real match rather than an arbitrary placeholder.
+    fn arm_round_tripping_keymanager(s: &Session) {
+        let plain = serde_json::to_vec_pretty(s).unwrap();
+        crate::keymanager::arm_for_test(vec![
+            ("generateKey", Ok(serde_json::json!({"returnValue": true}))),
+            (
+                "begin",
+                Ok(serde_json::json!({
+                    "returnValue": true, "handle": "h-enc", "iv": "MDEyMzQ1Njc4OWFi"
+                })),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({"returnValue": true, "output": "Y2lwaGVydGV4dA=="})),
+            ),
+            (
+                "begin",
+                Ok(serde_json::json!({"returnValue": true, "handle": "h-dec"})),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({
+                    "returnValue": true,
+                    "output": b64_encode_for_test(&plain)
+                })),
+            ),
+        ]);
+    }
+
+    /// A genuine, repeatable keymanager3 REFUSAL on the decrypt half — a real `returnValue:false`
+    /// reply with an `errorCode`, as opposed to the unscripted default (`Client::new` refusing
+    /// outright, standing in for a registration that never even reached the bus). Every test below
+    /// that plants a [`locked_envelope_bytes`] file and wants `read_locked` to persist the
+    /// cross-launch marker arms this first — [`write_refused_marker`]'s gate is evidence-based
+    /// (`keymanager::last_refusal().is_some()`, review issue #76): only a real service reply counts
+    /// as proof the envelope is unopenable, never a bare "nothing answered".
+    fn arm_refusing_keymanager() {
+        crate::keymanager::arm_for_test(vec![(
+            "begin",
+            Ok(serde_json::json!({
+                "returnValue": false, "errorCode": -10001, "errorText": "key not found"
+            })),
+        )]);
+    }
+
+    /// (a) A read that finds the recognized-but-unopenable envelope writes the marker — before
+    /// this fix, nothing on disk recorded that fact at all, so a later launch had no way to know.
+    #[test]
+    fn a_locked_read_persists_the_refused_marker() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("marker-write-on-locked-read");
+        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+
+        assert!(
+            !has_refused_marker(),
+            "nothing recorded before the first read"
+        );
+        arm_refusing_keymanager();
+        let loaded = load();
+        crate::keymanager::disarm_for_test();
+        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+        assert!(
+            has_refused_marker(),
+            "read_locked's LOCKED_RECOVERABLE branch must persist the verdict"
+        );
+    }
+
+    /// Issue #76, second review: a locked read whose failure never reached a service REPLY — a
+    /// refused LS2 registration (the unscripted default here) or a budget timeout — DOES persist
+    /// the cross-launch marker, with the stage that failed recorded in it. The first review gated
+    /// the marker on a `returnValue:false` reply, and the trace under a STALLED service showed
+    /// what that costs: no marker is ever written, so every later launch asks keymanager3 again
+    /// and pays the 4 s budget again, on the SDL thread, for the life of the install — and the
+    /// handled report never fires either, because nothing recorded a stage. The envelope's own
+    /// existence proves this install sealed once; failing to open it, for whatever reason, is the
+    /// failure class the marker exists to remember. A healthy set pays for a wrong marker only
+    /// at its next fresh sign-in (a 0600 file instead of an envelope, until sign-out), and an
+    /// ordinary `update()` never converts a present envelope (see `save_locked`'s guard) — so a
+    /// launch that CAN open the envelope still does, marker or not.
+    #[test]
+    fn an_unreachable_service_at_open_writes_the_marker_and_a_healthy_launch_still_reads() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("marker-on-unreachable");
+
+        // Launch 1: signs in while a keymanager3 that round-trips fine in-process seals the file.
+        arm_round_tripping_keymanager(&signed_in());
+        save(&signed_in());
+        crate::keymanager::disarm_for_test();
+        assert!(
+            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            "launch 1 ends with a genuinely sealed envelope on disk"
+        );
+
+        // Launch 2: fresh process state, same file — the unscripted default, i.e. the service
+        // could not even be registered with.
+        super::redirect_for_test(Some(t.file()));
+        let loaded2 = load();
+        assert!(loaded2.account_token.is_empty(), "this launch still can't open it");
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            LOCKED_RECOVERABLE,
+            "the per-process read still protects THIS launch's file"
+        );
+        assert!(
+            has_refused_marker(),
+            "an envelope this install wrote could not be opened — that is the marker's whole case"
+        );
+        assert_eq!(
+            marker_stage_for_test().as_deref(),
+            Some("unreachable"),
+            "the marker records WHICH way the open failed"
+        );
+
+        // Launch 3: fresh process state, and this time the key manager genuinely reopens the
+        // envelope launch 1 sealed — the marker gates SEALING, never reading.
+        super::redirect_for_test(Some(t.file()));
+        let plain = serde_json::to_vec_pretty(&signed_in()).unwrap();
+        crate::keymanager::arm_for_test(vec![
+            (
+                "begin",
+                Ok(serde_json::json!({"returnValue": true, "handle": "h-dec"})),
+            ),
+            (
+                "finish",
+                Ok(serde_json::json!({
+                    "returnValue": true,
+                    "output": b64_encode_for_test(&plain)
+                })),
+            ),
+        ]);
+        let loaded3 = load();
+        crate::keymanager::disarm_for_test();
+        assert_eq!(
+            loaded3.account_token, "acct",
+            "a healthy launch must still be able to reopen its own envelope"
+        );
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            NOT_LOCKED,
+            "the marker does not gate reads"
+        );
+    }
+
+    /// The stalled-service shape specifically (issue #75/#76's "slow, then try again" symptom): a
+    /// `begin(decrypt)` that never answers within its budget is recorded as `no_reply`, and the
+    /// marker is written so the next launch does not pay the budget again.
+    #[test]
+    fn a_service_that_never_answers_at_open_writes_the_marker_as_no_reply() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("marker-on-no-reply");
+        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        crate::keymanager::arm_for_test(vec![("begin", Err(()))]);
+        let loaded = load();
+        crate::keymanager::disarm_for_test();
+        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+        assert!(has_refused_marker(), "a timeout on an envelope we wrote is evidence enough");
+        assert_eq!(marker_stage_for_test().as_deref(), Some("no_reply"));
+    }
+
+    /// Reads the `stage` field back out of whichever candidate holds the marker.
+    fn marker_stage_for_test() -> Option<String> {
+        refused_marker_paths().into_iter().find_map(|p| {
+            let bytes = std::fs::read(p).ok()?;
+            let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            v.get("stage")?.as_str().map(str::to_string)
+        })
+    }
+
+    /// (b) With the marker present, `save` never even reaches the key manager — checked with
+    /// `calls_for_test`, not merely "no error", because a backend that round-trips PERFECTLY would
+    /// otherwise look identical to one correctly bypassed.
+    #[test]
+    fn a_present_marker_stops_save_before_it_asks_the_key_manager() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("marker-skips-seal");
+        // Plant the marker directly, bypassing a real locked read: this test is about `save_locked`
+        // consulting it, not about how it got there (that is test (a) above).
+        let marker = refused_marker_paths().into_iter().next().unwrap();
+        std::fs::write(
+            &marker,
+            br#"{"refused_at_version":"0.0.0-test","reason":"envelope_unopenable"}"#,
+        )
+        .unwrap();
+        // This launch's OWN read is clean — plaintext, no lock at all — so only the marker can be
+        // gating the save that follows.
+        std::fs::write(t.file(), serde_json::to_vec_pretty(&signed_in()).unwrap()).unwrap();
+        let _ = load();
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            NOT_LOCKED,
+            "this launch's own read found nothing wrong"
+        );
+
+        arm_round_tripping_keymanager(&signed_in());
+        save(&signed_in());
+        let calls = crate::keymanager::calls_for_test();
+        crate::keymanager::disarm_for_test();
+        assert!(
+            calls.is_empty(),
+            "the marker must stop save_locked before it ever calls the scripted backend, got {calls:?}"
+        );
+
+        let on_disk = std::fs::read(t.file()).unwrap();
+        let saved: Session = serde_json::from_slice(&on_disk)
+            .expect("plaintext, never a freshly sealed envelope from a backend that would round-trip");
+        assert_eq!(saved.account_token, "acct");
+        let mode = std::fs::metadata(t.file()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the marker-gated write is credentials at rest too");
+    }
+
+    /// (c) `clear()` removes the marker along with the session, and a LATER save on the same
+    /// install is free to seal again — a different account, or the same one signing back in,
+    /// deserves a fresh chance rather than inheriting a stale verdict forever.
+    #[test]
+    fn clear_removes_the_marker_and_a_later_save_seals_again() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("marker-cleared-on-signout");
+        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        arm_refusing_keymanager();
+        let _ = load();
+        crate::keymanager::disarm_for_test();
+        assert!(has_refused_marker());
+
+        clear();
+        assert!(
+            !has_refused_marker(),
+            "sign-out must take the marker with the session"
+        );
+
+        arm_round_tripping_keymanager(&signed_in());
+        save(&signed_in());
+        let calls = crate::keymanager::calls_for_test();
+        crate::keymanager::disarm_for_test();
+        assert!(
+            !calls.is_empty(),
+            "with no marker left, a working key manager must be asked to seal again"
+        );
+        let on_disk = std::fs::read(t.file()).unwrap();
+        assert!(
+            serde_json::from_slice::<SecureEnvelope>(&on_disk).is_ok(),
+            "a fresh sign-in after clear() gets a real sealed envelope, not the plaintext fallback"
+        );
+    }
+
+    /// (d) The four-launch sequence the robustness review described end to end: launch 1 seals,
+    /// launch 2 finds it locked and recovers to plaintext (as the pre-existing per-process fix
+    /// already did), launch 3 reads that plaintext cleanly and — the gap this fix closes — must NOT
+    /// re-seal even though ITS OWN key manager would round-trip perfectly, and launch 4 reads the
+    /// session back with no third sign-in asked for. `redirect_for_test` is the "new launch" — it
+    /// resets `CACHE`/`LOCKED_STATE`/`LOCKED_PATH` while keeping the same on-disk file.
+    #[test]
+    fn the_four_launch_loop_is_broken_by_the_persisted_marker() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("four-launch");
+
+        // Launch 1: signs in while a keymanager3 that round-trips fine in-process seals the file.
+        arm_round_tripping_keymanager(&signed_in());
+        save(&signed_in());
+        crate::keymanager::disarm_for_test();
+        assert!(
+            serde_json::from_slice::<SecureEnvelope>(&std::fs::read(t.file()).unwrap()).is_ok(),
+            "launch 1 ends with a genuinely sealed envelope on disk"
+        );
+
+        // Launch 2: fresh process state, same file, and this time the key manager gives a real
+        // (repeatable) refusal on the decrypt — not merely an unreachable registration, since
+        // review confirmed the marker must persist only on genuine evidence a service answered
+        // (`write_refused_marker`'s gate below).
+        super::redirect_for_test(Some(t.file()));
+        crate::keymanager::arm_for_test(vec![(
+            "begin",
+            Ok(serde_json::json!({
+                "returnValue": false, "errorCode": -10001, "errorText": "key not found"
+            })),
+        )]);
+        let loaded2 = load();
+        crate::keymanager::disarm_for_test();
+        assert!(
+            loaded2.account_token.is_empty(),
+            "launch 2 cannot open what launch 1 sealed"
+        );
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            LOCKED_RECOVERABLE
+        );
+        assert!(
+            has_refused_marker(),
+            "launch 2's locked read must persist the verdict for launch 3"
+        );
+        save(&signed_in()); // the reported loop: sign in again
+        let s2: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap())
+            .expect("launch 2 recovers to the plaintext fallback");
+        assert_eq!(s2.account_token, "acct");
+
+        // Launch 3: fresh process state again. This launch's OWN read is clean (the file is
+        // plaintext now), and a key manager that would round-trip perfectly if asked is armed —
+        // exactly the shape that fooled a per-process-only fix into re-sealing.
+        super::redirect_for_test(Some(t.file()));
+        let loaded3 = load();
+        assert_eq!(loaded3.account_token, "acct");
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            NOT_LOCKED,
+            "launch 3's own read succeeded — only the marker can still be gating anything"
+        );
+        arm_round_tripping_keymanager(&signed_in());
+        let wrote = update(|cur| {
+            Some(Session {
+                account_token: cur.account_token.clone(),
+                client_id: cur.client_id.clone(),
+                ..cur.clone()
+            })
+        });
+        assert!(wrote, "an ordinary roster-refresh-shaped update still writes");
+        let calls = crate::keymanager::calls_for_test();
+        crate::keymanager::disarm_for_test();
+        assert!(
+            calls.is_empty(),
+            "launch 3 must not re-seal — the marker from launch 2 must still gate it"
+        );
+        let s3: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap())
+            .expect("launch 3's update stays plaintext");
+        assert_eq!(s3.account_token, "acct");
+
+        // Launch 4: fresh process state — reads the session back, no third sign-in needed.
+        super::redirect_for_test(Some(t.file()));
+        let loaded4 = load();
+        assert_eq!(
+            loaded4.account_token, "acct",
+            "the loop is broken: no third sign-in is asked for"
+        );
+    }
+
+    // ---- issue #76 storage telemetry: `storage_class` and the handled-report wiring ----
+
+    /// (f) An ordinary save with no key manager at all lands as plaintext, and `storage_class`
+    /// reports exactly that — no marker, no lock, nothing sitting behind it.
+    #[test]
+    fn storage_class_reports_plaintext_after_an_ordinary_save() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("class-plaintext");
+        reset_report_state_for_test();
+        save(&signed_in());
+        assert_eq!(storage_class(), crate::telemetry::storage::SessionStorageClass::Plaintext);
+    }
+
+    /// (g) A save that genuinely seals reports `Secure`.
+    #[test]
+    fn storage_class_reports_secure_after_a_sealing_save() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("class-secure");
+        reset_report_state_for_test();
+        arm_round_tripping_keymanager(&signed_in());
+        save(&signed_in());
+        crate::keymanager::disarm_for_test();
+        assert_eq!(storage_class(), crate::telemetry::storage::SessionStorageClass::Secure);
+    }
+
+    /// (h) A locked-recoverable read always writes the marker before this function can even be
+    /// asked, so the live verdict is `SecureRefused` — the more definitive of the two, per
+    /// `storage_class`'s own doc — not merely `SecureLocked`.
+    #[test]
+    fn storage_class_reports_secure_refused_after_a_locked_recoverable_read() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("class-locked-recoverable");
+        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        reset_report_state_for_test();
+        arm_refusing_keymanager();
+        let _ = load();
+        crate::keymanager::disarm_for_test();
+        assert_eq!(
+            storage_class(),
+            crate::telemetry::storage::SessionStorageClass::SecureRefused
+        );
+    }
+
+    /// (i) An UNRECOVERABLE locked read — a secure-shaped file this build does not recognize —
+    /// never writes the marker (see `ReadState::Locked`'s own doc), so `storage_class` reports the
+    /// narrower `SecureLocked` instead of `SecureRefused`.
+    #[test]
+    fn storage_class_reports_secure_locked_for_an_unrecoverable_unrecognized_envelope() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("class-unrecoverable");
+        std::fs::write(t.file(), br#"{"format":"plxnative-secure-session"}"#).unwrap();
+        reset_report_state_for_test();
+        let _ = load();
+        assert_eq!(
+            LOCKED_STATE.load(std::sync::atomic::Ordering::Relaxed),
+            LOCKED_UNRECOVERABLE
+        );
+        assert!(
+            !has_refused_marker(),
+            "an unrecoverable read must not write the cross-launch marker"
+        );
+        assert_eq!(
+            storage_class(),
+            crate::telemetry::storage::SessionStorageClass::SecureLocked
+        );
+    }
+
+    /// (j) A read that lands `LOCKED_RECOVERABLE` reports the handled error exactly once — with
+    /// `EnvelopeLocked`, the live class and the marker fact at the time of the report — and a LATER
+    /// launch against the same still-locked file must not report the identical stage again.
+    #[test]
+    fn a_locked_read_reports_once_per_process_with_stage_envelope_locked() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("report-envelope-locked");
+        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        reset_report_state_for_test();
+
+        arm_refusing_keymanager();
+        let _ = load();
+        crate::keymanager::disarm_for_test();
+        let reports = captured_reports();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        // The open failed at `begin(decrypt)` with a real code, so the report says THAT rather
+        // than the bare `envelope_locked` a failure with no stage of its own would carry.
+        assert_eq!(reports[0].stage, crate::telemetry::storage::StorageStage::BeginDecrypt);
+        assert_eq!(
+            reports[0].class,
+            crate::telemetry::storage::SessionStorageClass::SecureRefused
+        );
+        assert!(reports[0].refused_marker);
+
+        // A later launch against the SAME still-locked file — `redirect_for_test` is the "new
+        // launch" the four-launch test above uses (fresh `LOCKED_STATE`/`CACHE`, same file); the
+        // once-per-process dedup is deliberately NOT reset by it.
+        super::redirect_for_test(Some(t.file()));
+        arm_refusing_keymanager();
+        let _ = load();
+        crate::keymanager::disarm_for_test();
+        assert_eq!(
+            captured_reports().len(),
+            1,
+            "the same stage must not be reported twice in one process"
+        );
+    }
+
+    /// (k) A save whose `keymanager::seal` fails reports the handled error with THE KEYMANAGER'S
+    /// OWN stage and code — `BeginEncrypt` here, not a generic "seal failed".
+    #[test]
+    fn a_seal_failure_reports_once_with_the_keymanagers_stage_and_code() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("report-seal-failure");
+        reset_report_state_for_test();
+        crate::keymanager::arm_for_test(vec![
+            ("generateKey", Ok(serde_json::json!({"returnValue": true}))),
+            (
+                "begin",
+                Ok(serde_json::json!({
+                    "returnValue": false, "errorCode": -10001, "errorText": "key not found"
+                })),
+            ),
+        ]);
+
+        save(&signed_in());
+        crate::keymanager::disarm_for_test();
+
+        let reports = captured_reports();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert_eq!(reports[0].stage, crate::telemetry::storage::StorageStage::BeginEncrypt);
+        assert_eq!(reports[0].service_error_code, Some(-10001));
+    }
+
+    /// (l) An install with no key manager at all — the ordinary case on today's dev set — gets no
+    /// answer from any service (`keymanager` records that as `unreachable`/`no_reply`), and the
+    /// seal-failure path deliberately does not report those two stages: with no envelope on disk
+    /// they are indistinguishable from a firmware that simply has no keymanager3.
+    ///
+    /// **Disarms first rather than relying on nothing else in the process having touched
+    /// `keymanager::LAST_REFUSAL`** (issue #76 review, `keymanager::seal` has no `SELECTED`-keyed
+    /// fast path clearing that value on every call — see `keymanager::open`'s doc for why, and why
+    /// `seal` deliberately does not). A test that ran earlier in this binary and left a genuine
+    /// refusal published (e.g. `last_refusal_publishes_the_stage_and_code_of_a_begin_decrypt_refusal`)
+    /// would otherwise be indistinguishable here from this save's own `keymanager::seal` call
+    /// finding one, since an install that has already settled on `UNAVAILABLE` takes `seal`'s fast
+    /// path without asking a service anything. The premise this test states in its name —
+    /// "reaches no service call" — is made true here rather than assumed.
+    #[test]
+    fn a_healthy_plaintext_install_reports_nothing() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("report-healthy-plaintext");
+        crate::keymanager::disarm_for_test();
+        reset_report_state_for_test();
+        save(&signed_in());
+        assert!(captured_reports().is_empty(), "{:?}", captured_reports());
+    }
+
+    /// (e) The marker file itself is credentials-adjacent evidence about this device's key manager
+    /// and is written through the same 0600 path everything else here uses.
+    #[test]
+    fn the_refused_marker_is_written_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("marker-mode");
+        std::fs::write(t.file(), locked_envelope_bytes()).unwrap();
+        arm_refusing_keymanager();
+        let _ = load();
+        crate::keymanager::disarm_for_test();
+
+        let marker = refused_marker_paths()
+            .into_iter()
+            .find(|p| p.exists())
+            .expect("the locked read wrote a marker somewhere");
+        let mode = std::fs::metadata(&marker).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the marker is written through the same 0600 atomic path");
     }
 
     #[test]
@@ -2487,6 +4058,44 @@ mod tests {
             }
         });
         assert_eq!(peek().home_users.len(), 20);
+    }
+
+    /// Once a fresh sign-in has recovered a Locked boot (the scenario above), `update` must treat
+    /// the run as signed in — not keep refusing the way it would right after `load()` alone, which
+    /// left `client_id` empty in memory (an ephemeral id is never persisted for a Locked read; see
+    /// [`load`]). Before the cache, `update`'s own `peek_locked` would have re-run `read_locked`
+    /// and found the file STILL the old locked envelope (a lower-priority reader never sees this
+    /// process's own writes go by), reproducing the empty-client-id refusal on every attempted
+    /// change for the rest of the run — a second shape of the same loop.
+    #[test]
+    fn update_no_longer_refuses_after_a_locked_boot_once_a_fresh_sign_in_has_landed() {
+        let _g = crate::testlock::serial();
+        let t = TempSession::new("update-after-recovery");
+        let envelope = SecureEnvelope {
+            format: SECURE_FORMAT.to_string(),
+            version: 1,
+            sealed: crate::keymanager::Sealed {
+                backend: crate::keymanager::Backend::Keymanager3,
+                key: "plxnative.session.v1".to_string(),
+                iv: "AAAAAAAAAAAAAAAAAAAAAA==".to_string(),
+                data: "c2VjcmV0".to_string(),
+            },
+        };
+        std::fs::write(t.file(), serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+
+        let loaded = load();
+        assert!(loaded.account_token.is_empty(), "Locked degrades to default");
+
+        save(&signed_in());
+        assert!(
+            update(|s| Some(Session {
+                account_token: s.account_token.clone(),
+                client_id: s.client_id.clone(),
+                ..Default::default()
+            })),
+            "the freshly signed-in session must be visible to `update` in the same run"
+        );
+        assert_eq!(peek().account_token, "acct");
     }
 
     /// `update` must never CREATE a session. A missing or unparseable file reads back as a default

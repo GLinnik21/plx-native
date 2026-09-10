@@ -119,8 +119,8 @@ const PRODUCT_TITLE: &str = "Share product analytics?";
 // including the whole "no identifier of any kind" guarantee — fell off the screen with no
 // ellipsis and no MORE affordance. This says the same things in fewer words; every substring the
 // tests below pin is still here.
-const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem: the signal, code addresses, thread information and device compatibility details, plus a random crash report identifier, cleared when you turn it off or sign out. It also covers a handled sign-in error report; even while this is off, the sign-in screen may send a one-off report with no identifier of any kind. Reports never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
-const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.";
+const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem: the signal, code addresses, thread and device details, plus a random crash report identifier, cleared when you turn it off or sign out. It also covers a handled sign-in error report and a storage error report; even while this is off, the sign-in screen may send a one-off report with no identifier of any kind. Reports never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, key material, or the product analytics identifier.";
+const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, whether a selected server is local, remote or relayed, and how the saved sign-in is stored on this television. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, key material, or exact viewing history.";
 
 const ROW_ERRORS: &str = "Crash reports";
 const ROW_ERRORS_SUB: &str = "Optional technical crash and sign-in reports.";
@@ -1231,6 +1231,13 @@ pub(crate) fn preview_crash() -> String {
          `tags[\"signin.consent\"]` read \"one_off\" instead of \"standing\", and it carries no \
          `user` field at all: no crash report identifier, no identifier of any kind.",
     );
+    out.push_str("\n\nHandled storage error (only when error reporting is on):\n");
+    let storage = crate::telemetry::storage::preview_event();
+    let storage_text = serde_json::from_slice::<serde_json::Value>(&storage)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&storage).into_owned());
+    out.push_str(&storage_text);
     out
 }
 
@@ -2331,11 +2338,14 @@ mod tests {
     ///
     /// **A character budget, not a measurement, and that is forced rather than lazy**: the real
     /// wrap goes through `text::text_width`, i.e. SDL2_ttf, and a host test that reaches it does
-    /// not fail — it does not LINK (`_TTF_OpenFont` undefined for the test binary). The budget is
-    /// measured on the simulator instead: the 539-character text below wraps to 11 of the 12
-    /// lines at the narrative column's width with its last sentence intact
-    /// (`/tmp/sim-issue75f/consent.png`, 2026-09-10), so the budget is that plus a few
-    /// characters of slack. Growing the text needs a new capture, not a bigger number.
+    /// not fail — it does not LINK (`_TTF_OpenFont` undefined for the test binary). The budget was
+    /// measured on the simulator against the 539-character version of this text, which wrapped to
+    /// 11 of the 12 lines at the narrative column's width with its last sentence intact
+    /// (`/tmp/sim-issue75f/consent.png`, 2026-09-10). **Issue #76 shortened the middle sentence to
+    /// make room for the storage-error mention and stayed under the same 560, but that specific
+    /// wrap has not been re-captured** — the number is carried forward on the strength of the
+    /// original measurement (both versions are within one character of each other), not asserted
+    /// as freshly verified. Growing the text past 560 needs a new capture, not a bigger number.
     #[test]
     fn crash_body_stays_inside_its_routes_line_cap() {
         let budget = 560;
@@ -2344,6 +2354,24 @@ mod tests {
             n <= budget,
             "CRASH_BODY is {n} characters, over the {budget} the first-run route is known to \
              fit in 12 lines — shorten it; the privacy sentences must not fall off"
+        );
+    }
+
+    /// **PRODUCT_BODY shares the same route family and the same `TextView::max_lines(12)` cap
+    /// as CRASH_BODY** (`route_screen.rs`'s `draw_narrative`), so the same 560-character budget
+    /// applies by construction rather than by an independent measurement of this text: same
+    /// column width, same font, same rung. No simulator capture of the Product stage's narrative
+    /// specifically backs this number — it borrows CRASH_BODY's, which the comment above pins to
+    /// one real capture. Growing PRODUCT_BODY past 560 should get its own capture before the
+    /// number is trusted further.
+    #[test]
+    fn product_body_stays_inside_the_same_routes_line_cap() {
+        let budget = 560;
+        let n = PRODUCT_BODY.chars().count();
+        assert!(
+            n <= budget,
+            "PRODUCT_BODY is {n} characters, over the {budget} shared route line cap — shorten \
+             it; the privacy sentences must not fall off"
         );
     }
 
@@ -2358,6 +2386,29 @@ mod tests {
         assert!(text.contains("\"standing\""));
         assert!(text.contains("\"one_off\""));
         assert!(text.contains("no identifier of any kind"));
+    }
+
+    /// **Issue #76: the Crashes/Errors preview also shows the handled storage-error sample.**
+    #[test]
+    fn preview_crash_shows_the_storage_error_sample() {
+        let text = preview_crash();
+        assert!(text.contains("Handled storage error"));
+        assert!(text.contains("\"StorageError\""));
+        assert!(text.contains("\"envelope_locked\""));
+        // A recoverable lock always writes the cross-launch marker before a report can even be
+        // built (`plex::session::locked`'s doc), so the real shape is `secure_refused`, never the
+        // narrower `secure_locked` — the preview must show exactly what a real report would.
+        assert!(text.contains("\"secure_refused\""));
+        // The one free-numeric field a real StorageError can carry — must actually appear in the
+        // one payload a person can inspect before consenting to send it (issue #76 review).
+        assert!(text.contains("\"service_error_code\""));
+    }
+
+    /// **Issue #76: every Analytics/Usage preview event carries the `session_storage` property.**
+    #[test]
+    fn preview_usage_shows_the_session_storage_property() {
+        let text = preview_usage();
+        assert!(text.contains("\"session_storage\""));
     }
 
     /// **Toggling a switch leaves focus on the switch.** Reported: "focus immediately jumps to

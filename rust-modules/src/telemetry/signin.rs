@@ -19,6 +19,7 @@
 //! for the on-screen sign-in diagnostic this module reuses classifications from.
 
 use crate::net::CallOutcome;
+use crate::telemetry::storage::SessionStorageClass;
 use serde_json::Value;
 
 /// Which stage of the sign-in flow the failure was reported from. Mirrors
@@ -162,6 +163,13 @@ pub(crate) struct SignInErrorContext {
     /// Which automatic code the flow was on, 1..=4 — clamped, since this is a count of pins
     /// issued during one flow, not an open-ended value worth reporting exactly past that.
     pub code_generation: u8,
+    /// issue #76: how this install's session file is protected at the moment the sign-in error was
+    /// reported — the same closed vocabulary [`crate::diag::schema::UsageContext::session_storage`]
+    /// rides. `auth.rs`'s `signin_error_context` reads the live value
+    /// (`crate::plex::session::storage_class()`) and passes it in — collected by the CALLER before
+    /// the `Ctl` lock is taken, since the read can do flash I/O and that lock is also taken by the
+    /// render thread every frame.
+    pub storage: SessionStorageClass,
 }
 
 /// Coarsen one `net::CallOutcome` into the class this report carries, plus the fields that are
@@ -192,13 +200,16 @@ fn classify(outcome: Option<CallOutcome>) -> (LinkOutcomeClass, Option<u16>, Opt
 }
 
 /// PURE. Build the report's context from the flow's own state. Called from
-/// `auth.rs::signin_error_context`, which supplies the live `LinkState`, the last plex.tv call and
-/// the code generation under `Ctl`'s lock.
+/// `auth.rs::signin_error_context`, which supplies the live `LinkState`, the last plex.tv call, the
+/// code generation under `Ctl`'s lock, and (issue #76) the session's current storage class — that
+/// last one is a plain pass-through, since deriving the live verdict is `plex::session`'s business,
+/// not this pure builder's.
 pub(crate) fn context_from(
     kind: SignInFailureKind,
     link: &crate::auth::LinkState,
     last: Option<CallOutcome>,
     generation: u32,
+    storage: SessionStorageClass,
 ) -> SignInErrorContext {
     let (class, http_status, curl_rc) = classify(last);
     SignInErrorContext {
@@ -206,6 +217,7 @@ pub(crate) fn context_from(
         link: class,
         http_status,
         curl_rc,
+        storage,
         unanswered: UnansweredBucket::from_count(link.unanswered),
         failing_for: FailingForBucket::from_duration(link.failing_for),
         code_generation: generation.clamp(1, 4) as u8,
@@ -246,6 +258,7 @@ pub(crate) fn event_body(
     let kind_code = ctx.kind.code();
     let link_code = ctx.link.code();
     let consent_code = consent.code();
+    let storage_code = ctx.storage.code();
     let mut signin_ctx = serde_json::json!({
         "type": "signin",
         "kind": kind_code,
@@ -254,6 +267,7 @@ pub(crate) fn event_body(
         "failing_for": ctx.failing_for.code(),
         "code_generation": ctx.code_generation,
         "consent": consent_code,
+        "storage": storage_code,
     });
     if let Some(status) = ctx.http_status {
         signin_ctx["http_status"] = Value::from(status);
@@ -281,6 +295,7 @@ pub(crate) fn event_body(
             "signin.kind": kind_code,
             "signin.link": link_code,
             "signin.consent": consent_code,
+            "signin.storage": storage_code,
         },
         "contexts": {"signin": signin_ctx},
     });
@@ -403,6 +418,7 @@ pub(crate) fn preview_event() -> Vec<u8> {
             unanswered: UnansweredBucket::One,
             failing_for: FailingForBucket::Under10s,
             code_generation: 1,
+            storage: SessionStorageClass::Secure,
         },
     )
 }
@@ -515,6 +531,7 @@ mod tests {
             &link(3, Some(Duration::from_secs(45))),
             Some(CallOutcome::Answered(429)),
             2,
+            SessionStorageClass::Secure,
         );
         assert_eq!(ctx.kind, SignInFailureKind::Authorization);
         assert_eq!(ctx.link, LinkOutcomeClass::Answered4xx);
@@ -523,17 +540,20 @@ mod tests {
         assert_eq!(ctx.unanswered, UnansweredBucket::TwoToFive);
         assert_eq!(ctx.failing_for, FailingForBucket::Under60s);
         assert_eq!(ctx.code_generation, 2);
+        assert_eq!(ctx.storage, SessionStorageClass::Secure);
     }
 
     #[test]
     fn context_from_clamps_code_generation() {
         let s = link(0, None);
         assert_eq!(
-            context_from(SignInFailureKind::Other, &s, None, 0).code_generation,
+            context_from(SignInFailureKind::Other, &s, None, 0, SessionStorageClass::None)
+                .code_generation,
             1
         );
         assert_eq!(
-            context_from(SignInFailureKind::Other, &s, None, 9).code_generation,
+            context_from(SignInFailureKind::Other, &s, None, 9, SessionStorageClass::None)
+                .code_generation,
             4
         );
     }
@@ -547,6 +567,7 @@ mod tests {
             unanswered: UnansweredBucket::One,
             failing_for: FailingForBucket::Under10s,
             code_generation: 1,
+            storage: SessionStorageClass::SecureRefused,
         }
     }
 
@@ -631,18 +652,26 @@ mod tests {
                 "failing_for",
                 "kind",
                 "link",
+                "storage",
                 "type",
                 "unanswered",
             ]
         );
         assert_eq!(
             keys(&v["tags"]),
-            ["signin.consent", "signin.kind", "signin.link"]
+            [
+                "signin.consent",
+                "signin.kind",
+                "signin.link",
+                "signin.storage",
+            ]
         );
         assert_eq!(v["exception"]["values"][0]["type"], "SignInError");
         assert_eq!(v["fingerprint"], serde_json::json!(["signin-error", "pin_create", "dns"]));
         assert_eq!(v["contexts"]["signin"]["consent"], "standing");
         assert_eq!(v["tags"]["signin.consent"], "standing");
+        assert_eq!(v["contexts"]["signin"]["storage"], "secure_refused");
+        assert_eq!(v["tags"]["signin.storage"], "secure_refused");
     }
 
     /// **The two reporting paths are tagged distinctly, everywhere a Sentry query could split on

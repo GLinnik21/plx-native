@@ -3589,7 +3589,15 @@ fn switch_thread(index: usize, pin: Option<String>) {
 /// PURE (given the `Ctl` snapshot). Build the issue #75 handled-error report's context from the
 /// flow's own state — factored out of [`set_error`] so it can be exercised directly against a
 /// constructed `Ctl` in tests, with no thread, no network and no consent gate in the way.
-fn signin_error_context(c: &Ctl) -> crate::telemetry::signin::SignInErrorContext {
+/// `storage` is collected by the CALLER, before `with_ctl` is entered — `plex::session::
+/// storage_class` can do a flash read (`has_refused_marker`'s candidate scan) on the cold-cache
+/// path, and this `Ctl` lock is taken by the render thread every frame, so nothing that could
+/// block may be computed while it is held (see `set_error`'s note on the same rule; found in
+/// review, issue #76).
+fn signin_error_context(
+    c: &Ctl,
+    storage: crate::telemetry::storage::SessionStorageClass,
+) -> crate::telemetry::signin::SignInErrorContext {
     let kind = match c.phase {
         Phase::Creating => crate::telemetry::signin::SignInFailureKind::PinCreate,
         Phase::Waiting => crate::telemetry::signin::SignInFailureKind::Authorization,
@@ -3599,7 +3607,10 @@ fn signin_error_context(c: &Ctl) -> crate::telemetry::signin::SignInErrorContext
     let outcome = c
         .dev_link_outcome
         .or_else(|| crate::net::last_plex_tv_call().map(|l| l.outcome));
-    crate::telemetry::signin::context_from(kind, &link_state_of(c), outcome, c.code_generation)
+    // issue #76: the live verdict, not a placeholder — `plex::session::storage_class` reads the
+    // same process-wide state `keymanager.rs`'s own refusal tracking and `diag::schema::
+    // UsageContext::session_storage` are wired from, so a sign-in report and a usage event agree.
+    crate::telemetry::signin::context_from(kind, &link_state_of(c), outcome, c.code_generation, storage)
 }
 
 fn set_error(msg: &str) {
@@ -3610,9 +3621,10 @@ fn set_error(msg: &str) {
     // spool I/O (a lock of their own, a disk read/write, possibly a log line), and this `Ctl` lock
     // is also taken from the render thread every frame — nothing that could block belongs inside
     // `with_ctl`. This used to call `diag::event` from inside the closure; found in review.
+    let storage = crate::plex::session::storage_class();
     let report = with_ctl(|c| {
         let ctx = if c.signin_active {
-            let ctx = signin_error_context(c);
+            let ctx = signin_error_context(c, storage);
             let kind = match c.phase {
                 Phase::Creating => crate::diag::schema::SignInFailure::PinCreate,
                 Phase::Waiting => crate::diag::schema::SignInFailure::Authorization,
@@ -3684,11 +3696,18 @@ fn set_error(msg: &str) {
 /// this screen even with the switch already on. `send_trouble_once` is the only door this trouble
 /// leaves through.
 pub fn note_waiting_trouble() {
+    // Cheap check first, under the lock the render thread also takes every frame — `storage_class`
+    // below can do a flash read, so it must run only on the one frame it is actually needed, never
+    // on every poll while a trouble is already recorded (see `signin_error_context`'s doc).
+    if with_ctl(|c| c.trouble.is_some()) {
+        return;
+    }
+    let storage = crate::plex::session::storage_class();
     with_ctl(|c| {
         if c.trouble.is_some() {
             return;
         }
-        let ctx = signin_error_context(c);
+        let ctx = signin_error_context(c, storage);
         c.trouble = Some(Trouble { ctx, reported: false });
     });
 }
@@ -6386,7 +6405,7 @@ mod tests {
             code_generation: 2,
             ..Ctl::default()
         };
-        let ctx = signin_error_context(&c);
+        let ctx = signin_error_context(&c, crate::telemetry::storage::SessionStorageClass::None);
         assert_eq!(ctx.kind, crate::telemetry::signin::SignInFailureKind::Authorization);
         assert_eq!(ctx.unanswered, crate::telemetry::signin::UnansweredBucket::TwoToFive);
         assert_eq!(ctx.code_generation, 2);
@@ -6400,9 +6419,61 @@ mod tests {
             phase: Phase::Creating,
             ..Ctl::default()
         };
-        let ctx = signin_error_context(&c);
+        let ctx = signin_error_context(&c, crate::telemetry::storage::SessionStorageClass::None);
         assert_eq!(ctx.kind, crate::telemetry::signin::SignInFailureKind::PinCreate);
         assert_eq!(ctx.code_generation, 1, "0 clamps up to 1");
+    }
+
+    /// Issue #76: a sign-in trouble report carries the LIVE session storage verdict —
+    /// `signin_error_context` reads `plex::session::storage_class()`, not a placeholder. A
+    /// recognized-but-unopenable envelope always writes the cross-launch marker before this can
+    /// even be asked (see `plex::session::storage_class`'s own doc), so the class here is
+    /// `secure_refused` rather than the narrower `secure_locked`.
+    #[test]
+    fn signin_error_context_carries_the_live_session_storage_class() {
+        let _lock = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-auth-storage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp dir");
+        let file = dir.join("auth.json");
+        let sealed = crate::keymanager::Sealed {
+            backend: crate::keymanager::Backend::Keymanager3,
+            key: "plxnative.session.v1".into(),
+            iv: "AAAAAAAAAAAAAAAAAAAAAA==".into(),
+            data: "c2VjcmV0".into(),
+        };
+        let envelope = serde_json::json!({
+            "format": "plxnative-secure-session",
+            "version": 1,
+            "sealed": sealed,
+        });
+        std::fs::write(&file, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        crate::plex::session::redirect_for_test(Some(file));
+        // The cross-launch marker is written only on evidence a service actually answered
+        // (`plex::session::read_locked`'s gate, issue #76 review) — a real refusal reply, not the
+        // unscripted default that stands in for a registration that never reached a service at all.
+        crate::keymanager::arm_for_test(vec![(
+            "begin",
+            Ok(serde_json::json!({
+                "returnValue": false, "errorCode": -10001, "errorText": "key not found"
+            })),
+        )]);
+        let _ = crate::plex::session::load();
+        crate::keymanager::disarm_for_test();
+
+        let c = Ctl {
+            phase: Phase::Waiting,
+            ..Ctl::default()
+        };
+        let ctx = signin_error_context(&c, crate::plex::session::storage_class());
+        assert_eq!(
+            ctx.storage,
+            crate::telemetry::storage::SessionStorageClass::SecureRefused
+        );
+
+        crate::plex::session::redirect_for_test(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A fresh flow starts believing plex.tv is fine — the failing state of whatever flow came
@@ -6641,7 +6712,7 @@ mod tests {
     #[test]
     fn send_trouble_once_refuses_an_already_reported_trouble() {
         let _lock = crate::testlock::serial();
-        let ctx = signin_error_context(&Ctl::default());
+        let ctx = signin_error_context(&Ctl::default(), crate::telemetry::storage::SessionStorageClass::None);
         with_ctl(|c| {
             *c = Ctl::default();
             c.trouble = Some(Trouble { ctx, reported: true });

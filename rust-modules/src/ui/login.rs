@@ -218,16 +218,18 @@ fn current_report_note(send_failed: bool) -> Option<&'static std::ffi::CStr> {
 
 /// **Issue #75.** Everything the one-off report alert's body states about what it sends — the
 /// stage of the sign-in, a coarse class of plex.tv's last answer with its bare status/error code,
-/// bucketed try counts and durations, and this app's version — and what it does not: no PIN, no
-/// code, no account, no token, no address, no identifier of any kind. It does NOT name webOS
-/// version or TV model — `telemetry::signin::event_body` attaches neither to this report (its
-/// only fields are the ones this sentence lists, pinned exactly by
-/// `event_body_top_level_keys_are_exact`), and this text used to claim it did, overstating what
-/// actually leaves the television.
-const REPORT_BODY: &str = "This includes the sign-in stage, a general class of \
+/// bucketed try counts and durations, how the sign-in is stored on this television, and this
+/// app's version — and what it does not: no PIN, no code, no account, no token, no address, no
+/// identifier of any kind. It does NOT name webOS version or TV model —
+/// `telemetry::signin::event_body` attaches neither to this report (its only fields are the ones
+/// this sentence lists, pinned exactly by `event_body_top_level_keys_are_exact`), and this text
+/// used to claim it did, overstating what actually leaves the television. **Issue #76 added the
+/// storage clause** — the payload gained `signin.storage`/`contexts.signin.storage` and this text
+/// used to fall silent on it, understating what leaves the television instead.
+const REPORT_BODY: &str = "This includes the sign-in stage, a class of \
 plex.tv\u{2019}s last answer with its bare status or error code, rounded try counts and \
-durations, and this app\u{2019}s version. It never includes your PIN, code, account, token, or \
-this television\u{2019}s address, and it carries no identifier.";
+durations, how your sign-in is stored, and this app\u{2019}s version. It never includes your \
+PIN, code, account, token, or this television\u{2019}s address, and it carries no identifier.";
 
 /// Is the one-off report alert open (or still fading out)? `app.rs` checks this before its
 /// onboarding-screen root BACK rule fires, so the alert can claim BACK for itself instead of
@@ -1222,6 +1224,10 @@ mod tests {
         assert!(
             REPORT_BODY.contains("carries no identifier"),
             "the disclosure's last sentence is the one truncation used to eat"
+        );
+        assert!(
+            REPORT_BODY.contains("how your sign-in is stored"),
+            "issue #76 added a storage field to the payload; the disclosure must name it too"
         );
     }
 }

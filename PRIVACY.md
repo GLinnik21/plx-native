@@ -82,9 +82,19 @@ fails, sent automatically the same way a crash report is. That report contains w
 reach plex.tv actually did (an HTTP status range such as `answered_4xx`, or a transport class such
 as `dns`, `tls`, `timeout` or `transport_other`), that exact HTTP status or curl return code as a
 bare number, a bucketed count of consecutive unanswered attempts, a bucketed duration of how long
-the attempt had been failing, and which automatic code the flow was on. It contains no PIN, sign-in
-code, token, account, URL, hostname or address, and carries the same Crash report ID as a crash
-report.
+the attempt had been failing, which automatic code the flow was on, and how your sign-in is
+protected on this television right now (`none` / `plaintext` / `secure` / `secure_locked` /
+`secure_refused` / `unknown`). It contains no PIN, sign-in code, token, account, URL, hostname or
+address, and carries the same Crash report ID as a crash report.
+
+The same independent choice also covers a handled storage error report when this television's
+attempt to seal or open your saved sign-in fails. That report contains which step failed
+(`generate_key`, `begin_encrypt`, `finish_encrypt`, `begin_decrypt`, `finish_decrypt`,
+`roundtrip_mismatch`, `envelope_unparseable`, `envelope_locked`, `no_reply` or `unreachable`), the numeric error code the key
+service replied with when one was reached, how the session is protected right now (`none` /
+`plaintext` / `secure` / `secure_locked` / `secure_refused` / `unknown`), and whether this install has already
+recorded that its key service is refused. It contains no key material, ciphertext, plaintext or
+file path, and carries the same Crash report ID as a crash report.
 
 Separately, **whether or not crash reporting is on**, the sign-in screen can offer to send a
 **one-off report** about a specific sign-in problem — sent only if you explicitly press "Send
@@ -101,9 +111,10 @@ confused.
 Product analytics is a separate choice and is off until you choose to share it. If enabled,
 PlxNative sends typed screen and feature events and broad sign-in and playback outcome classes to
 PostHog in Germany. Reports carry a random Analytics ID created when you turn product analytics on
-and may include the app version, webOS version, television model and SoC, and whether the selected
-server is local, remote or relayed. Turning product analytics off, or signing out, deletes the
-local identifier; enabling it later creates a new one.
+and may include the app version, webOS version, television model and SoC, whether the selected
+server is local, remote or relayed, and how the saved sign-in is stored on this television. Turning
+product analytics off, or signing out, deletes the local identifier; enabling it later creates a new
+one.
 
 The Settings screen shows field-by-field example payloads produced through the same serializers
 used for real reports.
@@ -123,6 +134,7 @@ Every product analytics event also carries this bounded compatibility and connec
 | `ip_version` | `v4` / `v6` / `unknown` |
 | `rtkmem` | `ok` / `missing` / `n/a` — the k5lp/k3lp `/dev/rtkmem` jail pre-flight |
 | `install` | `devmode` / `homebrew` / `unknown` — never the install path |
+| `session_storage` | `none` / `plaintext` / `secure` / `secure_locked` / `secure_refused` / `unknown` — how the saved sign-in is protected on this television, never key material, ciphertext or plaintext |
 
 | event | fields |
 |---|---|
@@ -144,7 +156,8 @@ Every product analytics event also carries this bounded compatibility and connec
 ## Never included in optional reports
 
 Optional reports have no fields for media titles, Plex accounts or profile names, searches, server
-names or addresses, access tokens, subtitle text, or exact viewing history.
+names or addresses, access tokens, subtitle text, key material, ciphertext, plaintext, file paths,
+or exact viewing history.
 
 ## Your choices
 

@@ -75,7 +75,14 @@ use std::sync::RwLock;
 // never covered, since sign-in was previously invisible to this channel by construction (a failed
 // sign-in never reaches an authorized account, and `maybe_ask_consent` only asks once one
 // exists). Every existing version-4 answer must be asked again.
-pub(crate) const POLICY_VERSION: u32 = 5;
+//
+// Version 6 (issue #76) adds three new facts: a `session_storage` class riding every usage event
+// (how this install's saved sign-in is protected — never key material, ciphertext or plaintext,
+// the same closed vocabulary as `rtkmem`/`install`), a handled `StorageError` report on the
+// Crashes/Errors channel when a seal/open attempt fails, and the same `session_storage` class
+// added to the handled sign-in error report (`signin.storage`/`contexts.signin.storage`). None of
+// the three was covered by a version-5 answer.
+pub(crate) const POLICY_VERSION: u32 = 6;
 
 /// One row per version whose bump changed what is collected, for [`reask_note`] to explain a
 /// re-ask to the television owner it is re-asking. **Add a row here in the SAME change that bumps
@@ -89,6 +96,10 @@ const REASK_CHANGES: &[(u32, &str)] = &[
     (
         5,
         "Crash reports can now include a sign-in error report when a sign-in fails.",
+    ),
+    (
+        6,
+        "Reports can now say how the sign-in is stored and why it was refused.",
     ),
 ];
 
@@ -566,27 +577,41 @@ mod tests {
         assert_eq!(reask_note(POLICY_VERSION), None);
     }
 
-    /// A 4→5 re-ask names only the version-5 change.
+    /// A 4→6 re-ask accumulates the version-5 and version-6 changes, in order.
     #[test]
-    fn reask_note_from_four_names_only_the_signin_change() {
+    fn reask_note_from_four_names_signin_and_storage_changes() {
         assert_eq!(
             reask_note(4),
             Some(
                 "Asking again because what is collected has changed: Crash reports can now \
-                 include a sign-in error report when a sign-in fails."
+                 include a sign-in error report when a sign-in fails. Reports can now say how \
+                 the sign-in is stored and why it was refused."
             )
         );
     }
 
-    /// A 3→5 re-ask accumulates BOTH the version-4 and version-5 changes, in order.
+    /// A 5→6 re-ask names only the version-6 storage change.
     #[test]
-    fn reask_note_from_three_names_both_changes() {
+    fn reask_note_from_five_names_only_the_storage_change() {
+        assert_eq!(
+            reask_note(5),
+            Some(
+                "Asking again because what is collected has changed: Reports can now say how \
+                 the sign-in is stored and why it was refused."
+            )
+        );
+    }
+
+    /// A 3→6 re-ask accumulates the version-4, version-5 and version-6 changes, in order.
+    #[test]
+    fn reask_note_from_three_names_all_three_changes() {
         assert_eq!(
             reask_note(3),
             Some(
                 "Asking again because what is collected has changed: Crash reports can now \
                  include a playback error report with its steps. Crash reports can now include \
-                 a sign-in error report when a sign-in fails."
+                 a sign-in error report when a sign-in fails. Reports can now say how the \
+                 sign-in is stored and why it was refused."
             )
         );
     }

@@ -24,6 +24,7 @@ pub(crate) mod sender;
 pub(crate) mod sentry;
 pub(crate) mod signin;
 pub(crate) mod spool;
+pub(crate) mod storage;
 
 use consent::Consent;
 
