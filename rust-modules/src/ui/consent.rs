@@ -277,6 +277,11 @@ static mut DRAFT: (bool, bool) = (false, false);
 static mut BASE: (bool, bool) = (false, false);
 static mut MODE: Mode = Mode::FirstRun;
 static mut STAGE: Stage = Stage::Crash;
+/// The `asked_version` the account carried into this ceremony — captured once, in [`open`], for
+/// [`reask_line`] to explain a re-ask against. `0` (never asked) draws nothing, exactly like
+/// [`consent::reask_note`]'s own rule; Settings never sets this at all, since Settings is not a
+/// re-ask of anything.
+static mut ASKED_VERSION: u32 = 0;
 static mut PREVIEW_KIND: PreviewKind = PreviewKind::Crash;
 static mut DELETE_REQUESTED: bool = false;
 static mut DOCUMENT_OPEN: bool = false;
@@ -623,6 +628,7 @@ pub(crate) fn open(prev: &Consent) {
     unsafe {
         addr_of_mut!(MODE).write(Mode::FirstRun);
         addr_of_mut!(STAGE).write(Stage::Crash);
+        addr_of_mut!(ASKED_VERSION).write(prev.asked_version);
         addr_of_mut!(BASE).write((prev.errors, prev.usage));
         addr_of_mut!(DRAFT).write((false, false));
         DOCUMENT_OPEN = false;
@@ -1495,6 +1501,20 @@ fn draw_action_row(p: crate::ui::Painter, layout: RouteLayout) {
 /// rather than something only a captured frame sequence can show. Crash is the parent (visible
 /// while the push has not fully completed) and Product the child (visible once it has begun) —
 /// the same fixed-role split `draw_stage` draws with.
+/// The re-ask note shown between the heading and the body, or `None`. **Pure** — it does not
+/// measure a single glyph, so it is gradeable in the host suite, unlike the pixel height its
+/// caller needs. Shown on the CRASH stage alone: [`consent::REASK_CHANGES`] is a table of
+/// crash-channel changes only, and the Product question has not changed shape since it was
+/// introduced, so there is nothing to explain there. `Mode::Settings` never reaches this
+/// predicate at all — `draw_question`'s Settings arm does not call [`draw_stage`] — because
+/// Settings shows the STORED answer, not a re-ask of it.
+fn reask_line(prev_version: u32, stage: Stage) -> Option<&'static str> {
+    if stage != Stage::Crash {
+        return None;
+    }
+    consent::reask_note(prev_version)
+}
+
 fn stage_visible(which: Stage, amount: f32) -> bool {
     match which {
         Stage::Crash => amount < 0.999,
@@ -1525,7 +1545,15 @@ fn draw_stage(route_layer: crate::ui::Painter, layout: RouteLayout, which: Stage
         Stage::Crash => (CRASH_TITLE, CRASH_BODY, table_crash()),
         Stage::Product => (PRODUCT_TITLE, PRODUCT_BODY, table_product()),
     };
-    layout.draw_narrative(p, crumb_for(Mode::FirstRun, which), stage_title, stage_body, theme::size::BODY);
+    let note = reask_line(unsafe { *addr_of!(ASKED_VERSION) }, which);
+    layout.draw_narrative_with_note(
+        p,
+        crumb_for(Mode::FirstRun, which),
+        stage_title,
+        note,
+        stage_body,
+        theme::size::BODY,
+    );
     stage_table.draw(p, layout.content);
     if which == stage() && !preview_open() {
         draw_action_row(p, layout);
@@ -2642,5 +2670,85 @@ mod tests {
             delete_alert().update(1.0 / 60.0);
         }
         assert!(!delete_alert().visible());
+    }
+
+    // ---- reask_line ----------------------------------------------------------------------------
+
+    /// Never asked before: this is a first run, not a re-ask, on either stage.
+    #[test]
+    fn reask_line_is_none_for_a_fresh_install() {
+        assert_eq!(reask_line(0, Stage::Crash), None);
+        assert_eq!(reask_line(0, Stage::Product), None);
+    }
+
+    /// Already answered against the current policy: nothing to explain, on either stage.
+    #[test]
+    fn reask_line_is_none_when_already_current() {
+        assert_eq!(reask_line(consent::POLICY_VERSION, Stage::Crash), None);
+        assert_eq!(reask_line(consent::POLICY_VERSION, Stage::Product), None);
+    }
+
+    /// **Shown iff `reask_note` has something to say AND the stage is Crash** — the pure predicate
+    /// this function exists to pin, since the pixel draw that reads it cannot run in a host test.
+    #[test]
+    fn reask_line_shows_only_on_the_crash_stage() {
+        assert_eq!(
+            reask_line(4, Stage::Crash),
+            consent::reask_note(4),
+            "the Crash stage shows exactly what the pure note function returns"
+        );
+        assert_eq!(
+            reask_line(4, Stage::Product),
+            None,
+            "Product's question has not changed shape — nothing to explain there"
+        );
+    }
+
+    /// **Settings-mode consent never shows the re-ask note.** `draw_question`'s Settings arm
+    /// cannot be driven from a host test — it reaches SDL2_ttf — so this pins the STRUCTURAL fact
+    /// that makes the runtime behaviour true instead: the only two call sites of `reask_line`
+    /// (via `draw_stage`) live inside the `mode() != Mode::Settings` branch, and Settings' own
+    /// narrative call is the plain `draw_narrative` (no note parameter at all), never
+    /// `draw_narrative_with_note`. A future edit that let Settings pass a note would have to
+    /// touch one of those two calls, which is exactly what this greps for.
+    #[test]
+    fn settings_mode_consent_never_draws_a_reask_note() {
+        let src = include_str!("consent.rs");
+        let settings_arm = src
+            .find("if mode() == Mode::Settings {")
+            .expect("the Settings/FirstRun split in draw_question moved");
+        let else_arm = src[settings_arm..]
+            .find("} else {")
+            .map(|i| i + settings_arm)
+            .expect("the Settings/FirstRun split in draw_question moved");
+        let firstrun_end = src[else_arm..]
+            .find("\n\n    if t > 0.01 {")
+            .map(|i| i + else_arm)
+            .expect("draw_question's end moved");
+        let settings_block = &src[settings_arm..else_arm];
+        let firstrun_block = &src[else_arm..firstrun_end];
+        assert!(
+            !settings_block.contains("draw_stage") && !settings_block.contains("reask_line"),
+            "Settings must never reach draw_stage/reask_line"
+        );
+        assert!(
+            firstrun_block.contains("draw_stage(route_layer, layout, Stage::Crash)"),
+            "the Crash stage — the only one that can carry a note — must still be reachable \
+             from first run"
+        );
+    }
+
+    /// The 4→5 re-ask note fits a small character budget, because nothing reachable from this
+    /// module may measure text (SDL2_ttf is not linked into the host test binary) — a pixel-exact
+    /// check is the simulator capture's job, this one just keeps the sentence from growing
+    /// unnoticed into several lines.
+    #[test]
+    fn the_four_to_five_reask_note_fits_a_small_character_budget() {
+        let note = reask_line(4, Stage::Crash).expect("version 4 is a re-ask");
+        assert!(
+            note.chars().count() <= 200,
+            "the 4->5 re-ask note is {} characters, over the 200 budget",
+            note.chars().count()
+        );
     }
 }

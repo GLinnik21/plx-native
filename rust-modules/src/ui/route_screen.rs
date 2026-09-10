@@ -789,6 +789,24 @@ impl RouteLayout {
         copy: &str,
         copy_size: std::os::raw::c_int,
     ) {
+        self.draw_narrative_with_note(p, back_to, title, None, copy, copy_size);
+    }
+
+    /// [`Self::draw_narrative`], with one optional block inserted between the heading and the
+    /// body: a short explanatory NOTE, in `theme::TEXT_SECONDARY` at the rung below the body's
+    /// own, that pushes the body down by exactly its own measured height plus one `space::SM` gap
+    /// — never a fixed offset, so a note of any length still leaves the body's own text
+    /// untouched by it. `note` is `None` on every ordinary route; issue #75's consent re-ask is
+    /// its first caller.
+    pub(crate) fn draw_narrative_with_note(
+        self,
+        p: Painter,
+        back_to: Option<&str>,
+        title: &str,
+        note: Option<&str>,
+        copy: &str,
+        copy_size: std::os::raw::c_int,
+    ) {
         let top = self.narrative_top(back_to.is_some());
         if let Some(back_to) = back_to {
             self.draw_crumb(p, self.narrative.y, back_to);
@@ -800,7 +818,19 @@ impl RouteLayout {
         let title_h = title.measure_h(self.narrative.w);
         title.draw(p, Rect::new(self.narrative.x, top, self.narrative.w, title_h));
 
-        let copy_top = top + title_h + theme::space::MD;
+        let mut copy_top = top + title_h + theme::space::MD;
+        if let Some(note) = note {
+            let note_size = theme::size::LABEL;
+            let note_view = TextView::new(note, note_size, theme::TEXT_SECONDARY)
+                .leading(note_size as f32 + theme::space::XS)
+                .max_lines(3);
+            let note_h = note_view.measure_h(self.narrative.w);
+            note_view.draw(
+                p,
+                Rect::new(self.narrative.x, copy_top, self.narrative.w, note_h),
+            );
+            copy_top += note_h + theme::space::SM;
+        }
         let copy_bottom = self.action.y - theme::space::XL;
         TextView::new(copy, copy_size, theme::TEXT_READING)
             .leading(copy_size as f32 + theme::space::XS)

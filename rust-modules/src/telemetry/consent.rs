@@ -77,6 +77,45 @@ use std::sync::RwLock;
 // exists). Every existing version-4 answer must be asked again.
 pub(crate) const POLICY_VERSION: u32 = 5;
 
+/// One row per version whose bump changed what is collected, for [`reask_note`] to explain a
+/// re-ask to the television owner it is re-asking. **Add a row here in the SAME change that bumps
+/// [`POLICY_VERSION`]** — that is the whole point of the table: a bump with no row here still
+/// compiles, and [`every_reasked_version_has_a_row`] is what catches the omission.
+const REASK_CHANGES: &[(u32, &str)] = &[
+    (
+        4,
+        "Crash reports can now include a playback error report with its steps.",
+    ),
+    (
+        5,
+        "Crash reports can now include a sign-in error report when a sign-in fails.",
+    ),
+];
+
+/// Why is this television being asked again? `None` when there is nothing to explain —
+/// `previous == 0` (never asked; this is a first run, not a re-ask) or `previous >=
+/// POLICY_VERSION` (not a re-ask at all, the caller answered the current question already).
+/// Otherwise names every collected-data change strictly after `previous` and up to
+/// [`POLICY_VERSION`], accumulated in order, so a 3→5 jump names both the version-4 and the
+/// version-5 change in one sentence.
+pub(crate) fn reask_note(previous: u32) -> Option<&'static str> {
+    if previous == 0 || previous >= POLICY_VERSION {
+        return None;
+    }
+    let mut note = String::from("Asking again because what is collected has changed: ");
+    let mut wrote_any = false;
+    for &(version, what_changed) in REASK_CHANGES {
+        if version > previous && version <= POLICY_VERSION {
+            if wrote_any {
+                note.push(' ');
+            }
+            note.push_str(what_changed);
+            wrote_any = true;
+        }
+    }
+    wrote_any.then(|| &*Box::leak(note.into_boxed_str()))
+}
+
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so
 /// none of them is dead even while only one accessor has a caller.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -512,6 +551,56 @@ mod tests {
 
         if let Ok(mut g) = CURRENT.write() {
             *g = saved;
+        }
+    }
+
+    /// Never asked (`0`) is a first run, not a re-ask, and has nothing to explain.
+    #[test]
+    fn reask_note_is_none_when_never_asked() {
+        assert_eq!(reask_note(0), None);
+    }
+
+    /// Already answered against the current policy: nothing to explain either.
+    #[test]
+    fn reask_note_is_none_when_already_current() {
+        assert_eq!(reask_note(POLICY_VERSION), None);
+    }
+
+    /// A 4→5 re-ask names only the version-5 change.
+    #[test]
+    fn reask_note_from_four_names_only_the_signin_change() {
+        assert_eq!(
+            reask_note(4),
+            Some(
+                "Asking again because what is collected has changed: Crash reports can now \
+                 include a sign-in error report when a sign-in fails."
+            )
+        );
+    }
+
+    /// A 3→5 re-ask accumulates BOTH the version-4 and version-5 changes, in order.
+    #[test]
+    fn reask_note_from_three_names_both_changes() {
+        assert_eq!(
+            reask_note(3),
+            Some(
+                "Asking again because what is collected has changed: Crash reports can now \
+                 include a playback error report with its steps. Crash reports can now include \
+                 a sign-in error report when a sign-in fails."
+            )
+        );
+    }
+
+    /// Every version from 4 up to the current policy has a row in [`REASK_CHANGES`] — so a future
+    /// bump with no row fails HERE rather than silently producing a bare prefix or a note that
+    /// skips a version.
+    #[test]
+    fn every_reasked_version_has_a_row() {
+        for v in 4..=POLICY_VERSION {
+            assert!(
+                REASK_CHANGES.iter().any(|&(version, _)| version == v),
+                "version {v} bumped POLICY_VERSION but has no REASK_CHANGES row"
+            );
         }
     }
 
