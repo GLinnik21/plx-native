@@ -331,9 +331,6 @@ mod tests {
         assert_eq!(env["records"], 1);
     }
 
-    /// The exact shape the log's own backstop was written for still cannot survive this one.
-    #[test]
-
     /// The document's SHAPE: line 1 is the envelope, one line per kept record, and the counts in
     /// the envelope describe the lines that follow it.
     #[test]
