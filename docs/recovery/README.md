@@ -300,3 +300,10 @@ Source checkpoint: `7200a96970b34fa8014cde7c8b642fe18f248ed3` on `codex/ui-phase
 This section supersedes the historical phase-8 notes above. Phases 0-11 have been integrated on local main; this snapshot includes phase-12 deletion/gate work and the first widgets ownership pass. Host, shipping-feature and lab-diagnostics checks passed on the code baseline; later edits are documentation only.
 
 This is recovery, not a release or completion claim. Chrome ownership fixes are still in a separate worker lane and are NOT included here. Closed product replay, both replay modes in the product harness, final simulator/device proof and carried scheduling findings remain unfinished. Original dirty Claude worktrees are preserved locally and not silently included in this snapshot. No phase-12 ARM or device proof is claimed.
+
+## Latest recovery checkpoint (2026-09-11)
+
+Source checkpoint: `b7156fa1926aee1d31cbfef4cdd72cd699d7cbb2` on `codex/ui-phase12-resume`.
+This section supersedes the historical phase-8 notes above. Phases 0-11 have been integrated on local main; this snapshot includes phase-12 deletion/gate work and the first widgets ownership pass. Host, shipping-feature and lab-diagnostics checks passed on the Rust baseline. Subsequent documentation and harness-counting fixes were reviewed; targeted accounting tests and a real simulator replay run passed. The harness correctly reports 3 matching anchors and 9 skips, not 11 passes.
+
+This is recovery, not a release or completion claim. Chrome ownership fixes are still in a separate worker lane and are NOT included here. Closed product replay, both replay modes in the product harness, final simulator/device proof and carried scheduling findings remain unfinished. Original dirty Claude worktrees are preserved locally and not silently included in this snapshot. No phase-12 ARM or device proof is claimed.

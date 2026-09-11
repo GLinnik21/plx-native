@@ -98,7 +98,7 @@ run_flow() {
   [ -n "$REC" ] && touch "$d/plxnative-rec"
   if [ -n "$REPLAY" ]; then
     local fixture="$ROOT/tests/fixtures/replay/$n-$name"
-    [ -d "$fixture" ] || { echo "  [SKIP] $n $name: no committed fixture at $fixture"; return 0; }
+    [ -d "$fixture" ] || { echo "  [SKIP] $n $name: no committed fixture at $fixture"; return 2; }
     printf '%s' "$fixture" > "$d/plxnative-recplay"
   fi
   for t in $triggers; do
@@ -193,36 +193,54 @@ run_flow() {
 
 want() { [ -z "$ONLY" ] || [[ ",$ONLY," == *",$1,"* ]]; }
 
-fails=0; ran=0; skipped=0
+passed=0; fails=0; skipped=0; selected=0
+record_flow() {
+  local n="$1"; shift
+  want "$n" || return 0
+  selected=$((selected+1))
+  if run_flow "$n" "$@"; then
+    passed=$((passed+1))
+  else
+    local status=$?
+    if [ "$status" -eq 2 ]; then
+      skipped=$((skipped+1))
+    else
+      fails=$((fails+1))
+    fi
+  fi
+}
 echo "=== focusfp: $PMS (seed $SEED), out=$OUT ==="
 # 1 boot -> Home -> chip -> grid   (the picker is suppressed by the injected token; a TV flow)
-want 1 && { ran=$((ran+1)); run_flow 1 boot-home-chip-grid "" "up left down down down" 'hubs: landed' || fails=$((fails+1)); }
+record_flow 1 boot-home-chip-grid "" "up left down down down" 'hubs: landed'
 # 2 grid -> Detail -> BACK
-want 2 && { ran=$((ran+1)); run_flow 2 grid-detail-back "grid" "down ok sleep:2 back" 'hubs: landed' || fails=$((fails+1)); }
+record_flow 2 grid-detail-back "grid" "down ok sleep:2 back" 'hubs: landed'
 # 3 Home -> Library -> real grid card -> Detail -> BACK to the same Library card. The shot tokens
 # retain the Library grid before Detail and after the return; they do not alter navigation. The
 # second pre-detail shot is intentional: the first can catch the simulator's route transition.
-want 3 && { ran=$((ran+1)); run_flow 3 home-library-detail-back "" "up right right ok sleep:3 down down down sleep:1 shot sleep:2 shot sleep:1 ok sleep:3 back sleep:3 shot" 'hubs: landed' || fails=$((fails+1)); }
+record_flow 3 home-library-detail-back "" "up right right ok sleep:3 down down down sleep:1 shot sleep:2 shot sleep:1 ok sleep:3 back sleep:3 shot" 'hubs: landed'
 # 4 Search with a seeded query -> shelf -> Detail -> BACK   (typing is the television's keyboard;
 #   the seed is the only way a headless run reaches a result shelf — docs/search.md)
-want 4 && { ran=$((ran+1)); run_flow 4 search-shelf-detail-back "search=s0" "sleep:2 down down ok sleep:2 back" 'route=search' || fails=$((fails+1)); }
+record_flow 4 search-shelf-detail-back "search=s0" "sleep:2 down down ok sleep:2 back" 'route=search'
 # 5 Detail -> Person -> Detail -> BACK -> Person -> BACK -> Detail
-want 5 && { ran=$((ran+1)); run_flow 5 detail-person-detail "detail=$RK_MOVIE detailsec=1 detailok" "sleep:2 down ok sleep:2 back sleep:1 back sleep:1 down ok sleep:2 back" 'route=person' || fails=$((fails+1)); }
+record_flow 5 detail-person-detail "detail=$RK_MOVIE detailsec=1 detailok" "sleep:2 down ok sleep:2 back sleep:1 back sleep:1 down ok sleep:2 back" 'route=person'
 # 6 chip -> Account -> Settings -> Privacy -> Legal -> document -> BACK x4
 # The synthetic token boot has no signed-in account: Favourites is absent, so Privacy is row 0.
 # Visit it and toggle its first choice, then return to row 0 and step down once to Legal.
-want 6 && { ran=$((ran+1)); run_flow 6 settings-family "settings=root" "sleep:1 ok sleep:1 ok sleep:1 back sleep:1 down ok sleep:1 ok sleep:1 back back back" 'overlay=settings' || fails=$((fails+1)); }
+record_flow 6 settings-family "settings=root" "sleep:1 ok sleep:1 ok sleep:1 back sleep:1 down ok sleep:1 ok sleep:1 back back back" 'overlay=settings'
 # 7 first-run consent -> onboard -> Home
-want 7 && { ran=$((ran+1)); run_flow 7 firstrun-consent-onboard "firstrun" "sleep:1 ok sleep:1 ok sleep:1 down ok sleep:2" 'route=' || fails=$((fails+1)); }
+record_flow 7 firstrun-consent-onboard "firstrun" "sleep:1 ok sleep:1 ok sleep:1 down ok sleep:2" 'route='
 # 8 Detail -> hold on Related -> ItemMenu -> BACK. detailsec is a DOWN count, not a section id:
 # the synthetic movie's order is hero -> Cast -> Related -> About.
-want 8 && { ran=$((ran+1)); run_flow 8 detail-hold-itemmenu "detail=$RK_MOVIE detailsec=2" "sleep:2 okdown sleep:0.7 okup sleep:1 back" 'route=detail' || fails=$((fails+1)); }
+record_flow 8 detail-hold-itemmenu "detail=$RK_MOVIE detailsec=2" "sleep:2 okdown sleep:0.7 okup sleep:1 back" 'route=detail'
 # 9 player (the mock's part bytes are not a film: the run lands on the failure read-out, which is
 #   the one screen the simulator reaches for playback — spec §15.4 requires a player line)
-want 9 && { ran=$((ran+1)); run_flow 9 player-readout "play=$RK_MOVIE clocksink" "sleep:3 down sleep:1 ok sleep:1 back" 'route=player' || fails=$((fails+1)); }
-want 10 && { skipped=$((skipped+1)); echo "  [SKIP] 10 root-back: a television flow (tv-session skill) — the simulator's root BACK is a log line"; }
+record_flow 9 player-readout "play=$RK_MOVIE clocksink" "sleep:3 down sleep:1 ok sleep:1 back" 'route=player'
+if want 10; then
+  selected=$((selected+1)); skipped=$((skipped+1))
+  echo "  [SKIP] 10 root-back: a television flow (tv-session skill) — the simulator's root BACK is a log line"
+fi
 # 11 pointer clicks on every stop class incl. a clipped one and one under the tab track
-want 11 && { ran=$((ran+1)); run_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:1 ck:220,960 sleep:1 ck:1850,960 sleep:1 ck:960,540" 'hubs: landed' || fails=$((fails+1)); }
+record_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:1 ck:220,960 sleep:1 ck:1850,960 sleep:1 ck:960,540" 'hubs: landed'
 # 12 Phase-7 adoption: Filmography owns its own focus scope. A library-matched credit opens Detail, BACK
 # restores the Filmography entry and the next BACK dismisses it to its Person host. `nowan`: the
 # person page's F_PROFILE/F_CREDITS mailboxes still dial discover.provider.plex.tv for real (the
@@ -230,7 +248,7 @@ want 11 && { ran=$((ran+1)); run_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:
 # sent before the seed runs), and against the injected token that call 401s — so this flow's
 # stability otherwise depends on the internet answering that 401 promptly. `nowan` makes the name
 # refuse locally and at once, the same offline reproduction `docs/agent-reference.md` documents.
-want 12 && { ran=$((ran+1)); run_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person' || fails=$((fails+1)); }
+record_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person'
 
-echo "=== focusfp: $((ran - fails)) passed, $fails failed of $ran, $skipped skipped ==="
+echo "=== focusfp: $passed passed, $fails failed, $skipped skipped of $selected ==="
 [ "$fails" -eq 0 ]

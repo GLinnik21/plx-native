@@ -239,6 +239,72 @@ class ContentFocusFlows(unittest.TestCase):
         self.assertIsNotNone(focusfp_check.check(12, log[:-1]))
 
 
+class FocusFpAccounting(unittest.TestCase):
+    @staticmethod
+    def _run_isolated_focusfp(simulator, *args):
+        """Run a copied focusfp script against only the fixtures this accounting test needs."""
+        fixture_names = (
+            "1-boot-home-chip-grid",
+            "6-settings-family",
+            "12-filmography-detail-return",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "repo")
+            tests = os.path.join(repo, "tests")
+            fixtures = os.path.join(tests, "fixtures", "replay")
+            os.makedirs(fixtures)
+            for name in fixture_names:
+                os.makedirs(os.path.join(fixtures, name))
+
+            focusfp = os.path.join(tests, "focusfp.sh")
+            shutil.copyfile(os.path.join(TESTS_DIR, "focusfp.sh"), focusfp)
+            os.chmod(focusfp, 0o755)
+
+            sim = os.path.join(tmp, "fake-sim")
+            with open(sim, "w", encoding="utf-8") as f:
+                f.write(simulator)
+            os.chmod(sim, 0o755)
+
+            env = os.environ.copy()
+            env.update({"SIM_BIN": sim, "OUT": os.path.join(tmp, "out")})
+            return subprocess.run(
+                [focusfp, "--pms", "127.0.0.1:9", "--replay", *args],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_replay_counts_pass_skip_and_failure_separately(self):
+        """A missing replay fixture is a skip, not a successful flow."""
+        script = """#!/bin/sh
+root="$PLXNATIVE_RUNTIME_DIR"
+if [ -e "$root/plxnative-settings" ]; then
+    marker='overlay=settings'
+elif [ -e "$root/plxnative-filmography" ]; then
+    marker='route=person'
+else
+    marker='hubs: landed'
+fi
+printf '%s\\nreplay: done frames=1 graded=1 diverged=0 present_diffs=0 verdict=SAME\\n' "$marker" > "$root/plxnative-events.log"
+exit 0
+"""
+        result = self._run_isolated_focusfp(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("=== focusfp: 3 passed, 0 failed, 9 skipped of 12 ===", result.stdout)
+
+
+    def test_only_counts_a_failed_simulator_and_the_tv_root_as_selected_outcomes(self):
+        script = """#!/bin/sh
+root="$PLXNATIVE_RUNTIME_DIR"
+printf 'hubs: landed\\n' > "$root/plxnative-events.log"
+exit 0
+"""
+        result = self._run_isolated_focusfp(script, "--only", "1,10")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("=== focusfp: 0 passed, 1 failed, 1 skipped of 2 ===", result.stdout)
+
+
 class ReplayFixtures(unittest.TestCase):
     """Restructure spec §5.6 rule 2: every string value in a committed replay fixture belongs to
     the closed synthetic alphabet (tests/fixtures/replay/ALPHABET.json). The guard applies the same
