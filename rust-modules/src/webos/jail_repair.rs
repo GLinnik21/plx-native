@@ -25,6 +25,11 @@ pub(crate) enum Failure {
     HbcUnavailable,
     NotRoot,
     CommandFailed,
+    // The simulator has no LS2 timeout; development fixtures and tests still construct it.
+    #[cfg_attr(
+        all(feature = "hostsim", not(feature = "devtriggers"), not(test)),
+        expect(dead_code)
+    )]
     Timeout,
     Unreadable,
     Unsupported,
