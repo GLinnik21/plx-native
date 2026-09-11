@@ -26,7 +26,7 @@ is the final verification for the fixes.
 | **Intro detection** | Skip Intro pill | no marker → no pill; nothing dangles | graceful, nothing to do |
 | **Hardware transcoding** | transcode throughput | software transcode: a weak free server re-encoding 4K will buffer | documented; nothing client-side to do — direct-play-first already minimizes exposure (after the mp4 fix, only genuinely undecodable sources transcode) |
 | **HDR tone mapping** | HDR source that must re-encode on a free server | h264 8-bit without tone mapping → washed-out colors | documented; **cannot be fixed client-side.** Narrow in practice: this panel decodes HEVC/HDR natively, so only undecodable HDR (e.g. AV1 on this SoC) hits it |
-| **Plex Home (managed users)** | boot who's-watching picker | free account = roster of 1 → `app.rs` skips the picker (`home_users.len() > 1`) | graceful by construction |
+| **Plex Home (managed users)** | boot who's-watching picker | free account = roster of 1 → boot skips the picker (`Session::boot_shows_picker`); Automatically Sign In skips it on a multi-user roster too | graceful by construction |
 | **Video preview thumbnails (BIF)** | chapter card thumbnails (`chapters_panel.rs`) | `thumb` empty → placeholder card; chapters themselves (embedded) still work | graceful |
 | **Trailers / extras** | `Extras` appears in an include-list string (`plex/library.rs`) and is never rendered | server returns none; nothing requests or draws them | no-op |
 | Live TV / DVR, music (sonic analysis, lyrics), photos, downloads/sync | not in scope of this app | — | n/a |

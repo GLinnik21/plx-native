@@ -42,7 +42,7 @@ use crate::ui::motion;
 use crate::ui::present::Provenance;
 use crate::ui::route_screen::{RouteGround, RouteLayout};
 use crate::ui::screen::{
-    At, Dir, DrawFrame, Enter, Focusable, FocusSource, FocusTarget, GroupSpec, HitSource, Mounter,
+    At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
 };
 use crate::ui::table::{Row, Section, TableView};
@@ -109,11 +109,13 @@ impl Push {
     }
     fn parent(&self, p: Painter) -> Painter {
         let t = self.amount();
-        p.alpha(1.0 - t).translate(-PARENT_TRAVEL * Rect::FULL.w * t, 0.0)
+        p.alpha(1.0 - t)
+            .translate(-PARENT_TRAVEL * Rect::FULL.w * t, 0.0)
     }
     fn child(&self, p: Painter) -> Painter {
         let t = self.amount();
-        p.alpha(t).translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0)
+        p.alpha(t)
+            .translate(CHILD_LEAD * Rect::FULL.w * (1.0 - t), 0.0)
     }
 }
 
@@ -192,8 +194,16 @@ impl RouteSurface {
                     let icx = inner_cx(cx);
                     let mut out: Vec<Stamped<InnerHost>> = Vec::new();
                     let screen = {
-                        let mut ifx = Effects::from_handle(&mut out, MachineId::Instance(inst_id), fx.present());
-                        let arg = self.inner.entry(eid).map(|e| e.arg).unwrap_or(SettingsPage::Root);
+                        let mut ifx = Effects::from_handle(
+                            &mut out,
+                            MachineId::Instance(inst_id),
+                            fx.present(),
+                        );
+                        let arg = self
+                            .inner
+                            .entry(eid)
+                            .map(|e| e.arg)
+                            .unwrap_or(SettingsPage::Root);
                         mount_page(entry, arg, &icx, &mut ifx)
                     };
                     if let Some(e) = self.inner.entry_mut(eid) {
@@ -240,14 +250,21 @@ impl RouteSurface {
     }
 
     /// Step one inner body under the outer context and forward what it emitted.
-    fn deliver<H: AppLike>(&mut self, eid: EntryId, ev: ScreenEvent<InnerHost>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+    fn deliver<H: AppLike>(
+        &mut self,
+        eid: EntryId,
+        ev: ScreenEvent<InnerHost>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) -> Handled {
         let mut out: Vec<Stamped<InnerHost>> = Vec::new();
         let handled = {
             let icx = inner_cx(cx);
             let Some(inst) = self.inner.entry_mut(eid).and_then(|e| e.inst.as_mut()) else {
                 return Handled::No;
             };
-            let mut ifx = Effects::from_handle(&mut out, MachineId::Instance(inst.id), fx.present());
+            let mut ifx =
+                Effects::from_handle(&mut out, MachineId::Instance(inst.id), fx.present());
             inst.screen.step(&ev, &icx, &mut ifx)
         };
         self.forward(out, cx, fx);
@@ -255,7 +272,12 @@ impl RouteSurface {
     }
 
     /// Step the TOP page.
-    fn step_top<H: AppLike>(&mut self, ev: ScreenEvent<InnerHost>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+    fn step_top<H: AppLike>(
+        &mut self,
+        ev: ScreenEvent<InnerHost>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) -> Handled {
         match self.inner.top().map(|e| e.id) {
             Some(eid) => self.deliver(eid, ev, cx, fx),
             None => Handled::No,
@@ -264,7 +286,12 @@ impl RouteSurface {
 
     /// An inner page's emissions, translated to the outer sink: a `Nav` op is the inner stack's
     /// (§6.2), everything else passes through unchanged (same bundle, same element type).
-    fn forward<H: AppLike>(&mut self, out: Vec<Stamped<InnerHost>>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn forward<H: AppLike>(
+        &mut self,
+        out: Vec<Stamped<InnerHost>>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
         for s in out {
             match s.fx {
                 // an inner page's Dismiss is the SURFACE's dismissal (consent's final answer)
@@ -326,7 +353,12 @@ impl RouteSurface {
     /// above it, so it becomes `Dismiss(self.entry)` — the same effect `forward` already
     /// translates an inner `Dismiss` into for consent's final answer, so both roads out of the
     /// family end at one op.
-    fn request<H: AppLike>(&mut self, op: NavOp<SettingsPage>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn request<H: AppLike>(
+        &mut self,
+        op: NavOp<SettingsPage>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
         if matches!(op, NavOp::Pop) && self.inner.depth() <= 1 {
             fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
             return;
@@ -347,7 +379,8 @@ impl RouteSurface {
         // for a MOUNTED or merely EVICTED entry (an evicted body keeps its cursor for exactly
         // this kind of remount, `containers::stack`'s own CAP doc), so this drops only the ids
         // that are gone for good and never the ones a later `PopTo`/`Root` could still reach.
-        self.remembered.retain(|(e, _)| self.inner.entry(*e).is_some());
+        self.remembered
+            .retain(|(e, _)| self.inner.entry(*e).is_some());
         // the spring: a push runs 0 → 1 with the new page in the child role; a pop runs 1 → 0
         // with the retired page in the child role
         if popping {
@@ -364,7 +397,12 @@ impl RouteSurface {
                 .remembered
                 .iter()
                 .find(|(e, _)| *e == eid)
-                .map(|(_, elem)| FocusTarget::Elem(FocusKey { entry: self.entry, elem: *elem }))
+                .map(|(_, elem)| {
+                    FocusTarget::Elem(FocusKey {
+                        entry: self.entry,
+                        elem: *elem,
+                    })
+                })
                 .unwrap_or(FocusTarget::ContainerGroup(GroupId(0))),
             _ => FocusTarget::ContainerGroup(GroupId(0)),
         };
@@ -382,7 +420,12 @@ impl RouteSurface {
 }
 
 /// The mounter's one `match` for the family (§6.1).
-fn mount_page(entry: EntryId, arg: SettingsPage, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Box<dyn Screen<InnerHost>> {
+fn mount_page(
+    entry: EntryId,
+    arg: SettingsPage,
+    cx: &Cx<'_, InnerHost>,
+    fx: &mut Effects<'_, InnerHost>,
+) -> Box<dyn Screen<InnerHost>> {
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry)),
         SettingsPage::Legal => Box::new(super::legal::LegalIndex::new(entry)),
@@ -390,7 +433,9 @@ fn mount_page(entry: EntryId, arg: SettingsPage, cx: &Cx<'_, InnerHost>, fx: &mu
         SettingsPage::Document(i) => Box::new(super::legal::DocumentPage::legal(entry, i)),
         SettingsPage::Privacy => Box::new(super::consent::ConsentPage::settings(entry, cx, fx)),
         SettingsPage::Preview(i) => Box::new(super::consent::PreviewPage::new(entry, i)),
-        SettingsPage::ConsentStage(i) => Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx)),
+        SettingsPage::ConsentStage(i) => {
+            Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx))
+        }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry)),
     }
 }
@@ -423,7 +468,7 @@ fn mount_page(entry: EntryId, arg: SettingsPage, cx: &Cx<'_, InnerHost>, fx: &mu
 /// census, as of 2026-09-07, one line per page kind, so the next reader can check it instead of
 /// trusting it:
 ///
-///  * `RootPage` → `RootState`: the selected row.
+///  * `RootPage` → `RootState`: the selected row and the Automatically Sign In switch.
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
@@ -538,7 +583,13 @@ impl<H: AppLike> Machine<H> for RouteSurface {
             }
             ScreenEvent::Enter(_) => {
                 // the engine seats on this (after_step); the top page hears it too
-                self.step_top(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) }), cx, fx);
+                self.step_top(
+                    ScreenEvent::Enter(Enter::Fresh {
+                        focus: FocusTarget::ContainerGroup(GroupId(0)),
+                    }),
+                    cx,
+                    fx,
+                );
                 Handled::Yes
             }
             ScreenEvent::Input(iev) => {
@@ -571,7 +622,14 @@ impl<H: AppLike> Machine<H> for RouteSurface {
                 // container a `Dismiss` it never got first refusal on; `back_at_the_surface_s_own_
                 // root_is_not_handled` and `left_at_the_surfaces_own_root_dismisses_it` are the
                 // two ends of that.
-                let back = matches!(iev.kind, crate::ui::machine::InputKind::Key { key: Key::Back, edge: crate::ui::machine::Edge::Down, .. });
+                let back = matches!(
+                    iev.kind,
+                    crate::ui::machine::InputKind::Key {
+                        key: Key::Back,
+                        edge: crate::ui::machine::Edge::Down,
+                        ..
+                    }
+                );
                 if back && self.inner.depth() > 1 {
                     self.request(NavOp::Pop, cx, fx);
                     return Handled::Yes;
@@ -579,7 +637,15 @@ impl<H: AppLike> Machine<H> for RouteSurface {
                 Handled::No
             }
             ScreenEvent::FocusMoved { from, to, by } => {
-                self.step_top(ScreenEvent::FocusMoved { from: *from, to: *to, by: *by }, cx, fx);
+                self.step_top(
+                    ScreenEvent::FocusMoved {
+                        from: *from,
+                        to: *to,
+                        by: *by,
+                    },
+                    cx,
+                    fx,
+                );
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
             }
@@ -642,7 +708,14 @@ impl RouteSurface {
     fn tick<H: AppLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if !self.push.settled() {
             let mut ph: PresentHandle<'_> = fx.present();
-            motion::spring(&mut self.push.pos, &mut self.push.vel, self.push.target, PUSH_K, t, &mut ph);
+            motion::spring(
+                &mut self.push.pos,
+                &mut self.push.vel,
+                self.push.target,
+                PUSH_K,
+                t,
+                &mut ph,
+            );
             if self.push.settled() {
                 self.push.pos = self.push.target;
                 self.push.vel = 0.0;
@@ -671,7 +744,8 @@ impl RouteSurface {
         {
             let icx = inner_cx(cx);
             if let Some(inst) = self.push.leaving.as_mut() {
-                let mut ifx = Effects::from_handle(&mut out, MachineId::Instance(inst.id), fx.present());
+                let mut ifx =
+                    Effects::from_handle(&mut out, MachineId::Instance(inst.id), fx.present());
                 inst.screen.step(&ScreenEvent::Tick(t), &icx, &mut ifx);
             }
         }
@@ -686,16 +760,20 @@ impl<H: AppLike> Focusable<H> for RouteSurface {
         }
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        self.top().and_then(|t| t.screen.group_of(key, &inner_cx(cx)))
+        self.top()
+            .and_then(|t| t.screen.group_of(key, &inner_cx(cx)))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
-        self.top().map_or(Step::Edge, |t| t.screen.neighbour(key, dir, &inner_cx(cx)))
+        self.top()
+            .map_or(Step::Edge, |t| t.screen.neighbour(key, dir, &inner_cx(cx)))
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
-        self.top().and_then(|t| t.screen.place(key, &inner_cx(cx), at))
+        self.top()
+            .and_then(|t| t.screen.place(key, &inner_cx(cx), at))
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
-        self.top().map_or(want, |t| t.screen.reconcile(want, &inner_cx(cx)))
+        self.top()
+            .map_or(want, |t| t.screen.reconcile(want, &inner_cx(cx)))
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         self.top().map_or(
@@ -800,7 +878,11 @@ impl RouteSurface {
                 }
             }
             if t > 0.01 {
-                let child = if popping { self.push.leaving.as_mut() } else { self.top_mut() };
+                let child = if popping {
+                    self.push.leaving.as_mut()
+                } else {
+                    self.top_mut()
+                };
                 if let Some(inst) = child {
                     let mut inner = DrawFrame::with_navigation(&icx, child_p, navigation);
                     inst.screen.draw(&mut inner);
@@ -821,7 +903,14 @@ impl RouteSurface {
 /// The surface's mounter is itself — `mount_page` — but the CONTAINER mounts the surface
 /// through the app's mounter; this impl exists so a test bundle can mount family pages alone.
 impl Mounter<InnerHost> for RouteSurface {
-    fn mount(&mut self, _id: InstanceId, arg: &SettingsPage, _ret: &ReturnState<u32>, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Box<dyn Screen<InnerHost>> {
+    fn mount(
+        &mut self,
+        _id: InstanceId,
+        arg: &SettingsPage,
+        _ret: &ReturnState<u32>,
+        cx: &Cx<'_, InnerHost>,
+        fx: &mut Effects<'_, InnerHost>,
+    ) -> Box<dyn Screen<InnerHost>> {
         mount_page(self.entry, *arg, cx, fx)
     }
 }
@@ -835,6 +924,7 @@ enum Action {
     Favourites,
     Privacy,
     Legal,
+    AutoSignIn,
     About,
 }
 
@@ -848,14 +938,18 @@ pub(crate) struct RootPage {
 
 struct RootState {
     sel: i32,
+    auto_sign_in: bool,
 }
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.sel as u32);
+        w.u32(self.sel as u32).bool(self.auto_sign_in);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("root sel={}", self.sel));
+        out.push_str(&format!(
+            "root sel={} auto_sign_in={}",
+            self.sel, self.auto_sign_in
+        ));
     }
 }
 
@@ -879,22 +973,32 @@ fn signed_in() -> bool {
         .signed_in
 }
 
+
 impl RootPage {
     fn new(entry: EntryId) -> Self {
         let mut s = Self {
             entry,
             table: TableView::new(),
             rows: Vec::new(),
-            state: RootState { sel: 0 },
+            state: RootState {
+                sel: 0,
+                auto_sign_in: false,
+            },
         };
         s.rebuild(0);
         s
     }
 
     fn rebuild(&mut self, sel: i32) {
+        let sess = crate::plex::session::peek();
+        let signed_in = signed_in();
+        let auto_sign_in = sess.auto_sign_in();
+        let multi_user = sess.home_users.len() > 1;
+        self.state.auto_sign_in = auto_sign_in;
+
         let mut actions = Vec::new();
         let mut sections = Vec::new();
-        if signed_in() {
+        if signed_in {
             let n = crate::browse::pinned_count();
             // The section is Libraries and the row is Favorite libraries: the switch governs the
             // whole app — Home's shelves, the top tab strip and the Library's Sources picker.
@@ -902,7 +1006,10 @@ impl RootPage {
                 Section::new("Libraries").row(
                     Row::new("Favorite libraries")
                         .detail("Which libraries this television shows.")
-                        .value(format!("{n} {}", if n == 1 { "favorite" } else { "favorites" }))
+                        .value(format!(
+                            "{n} {}",
+                            if n == 1 { "favorite" } else { "favorites" }
+                        ))
                         .chevron(true),
                 ),
             );
@@ -922,13 +1029,22 @@ impl RootPage {
                 ),
         );
         actions.extend([Action::Privacy, Action::Legal]);
-        sections.push(
-            Section::new("System").row(
-                Row::new("About PlxNative")
-                    .detail("Version, copyright and project information.")
-                    .chevron(true),
-            ),
+        let mut system = Section::new("System");
+        // A one-person account already skips the picker; the switch only changes a multi-user boot.
+        if signed_in && multi_user {
+            system = system.row(
+                Row::new("Automatically Sign In")
+                    .detail("Skip the profile list and enter as this profile when the app starts.")
+                    .toggle(auto_sign_in),
+            );
+            actions.push(Action::AutoSignIn);
+        }
+        system = system.row(
+            Row::new("About PlxNative")
+                .detail("Version, copyright and project information.")
+                .chevron(true),
         );
+        sections.push(system);
         actions.push(Action::About);
         self.rows = actions;
         self.table.compact = false;
@@ -951,23 +1067,31 @@ impl RootPage {
         )
     }
 
-    fn open(&self, row: i32, fx: &mut Effects<'_, InnerHost>) {
-        let Some(action) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
+    fn activate(&mut self, row: i32, fx: &mut Effects<'_, InnerHost>) {
+        let Some(&action) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
             return;
         };
-        let page = match action {
-            Action::Favourites => SettingsPage::Favourites,
-            Action::Privacy => SettingsPage::Privacy,
-            Action::Legal => SettingsPage::Legal,
-            Action::About => SettingsPage::About,
-        };
-        fx.push(Fx::Nav(NavOp::Push(page)));
+        match action {
+            Action::AutoSignIn => {
+                crate::plex::session::set_auto_sign_in(!self.state.auto_sign_in);
+                self.rebuild(self.table.sel);
+            }
+            Action::Favourites => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Favourites))),
+            Action::Privacy => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Privacy))),
+            Action::Legal => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Legal))),
+            Action::About => fx.push(Fx::Nav(NavOp::Push(SettingsPage::About))),
+        }
     }
 }
 
 impl Machine<InnerHost> for RootPage {
     type Ev = ScreenEvent<InnerHost>;
-    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
+    fn step(
+        &mut self,
+        ev: &Self::Ev,
+        cx: &Cx<'_, InnerHost>,
+        fx: &mut Effects<'_, InnerHost>,
+    ) -> Handled {
         match ev {
             ScreenEvent::Enter(_) => {
                 // a return from a child: the favourite count may have changed
@@ -976,7 +1100,8 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                self.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
+                self.table
+                    .update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -985,17 +1110,22 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
-                self.open(*e as i32, fx);
+                self.activate(*e as i32, fx);
                 Handled::Yes
             }
             ScreenEvent::Input(crate::ui::machine::InputEvent {
-                kind: crate::ui::machine::InputKind::Key { key: Key::Right, at_edge: true, .. },
+                kind:
+                    crate::ui::machine::InputKind::Key {
+                        key: Key::Right,
+                        at_edge: true,
+                        ..
+                    },
                 ..
             }) => {
                 // rule 8: RIGHT on a row that opens nested content enters it, exactly as OK does
                 if let Some(k) = cx.focus.current {
                     if self.table.row_opens(k.elem as i32) {
-                        self.open(k.elem as i32, fx);
+                        self.activate(k.elem as i32, fx);
                     }
                 }
                 Handled::Yes
@@ -1057,9 +1187,11 @@ mod tests {
     // a pointer, a restore) — belongs to `ui::screen` beside `ScreenEvent::FocusMoved`, the only
     // thing that carries one. Writing it as `ui::machine::By` compiles nowhere and is invisible
     // to every non-test gate, since this module is `cfg(test)`.
-    use crate::ui::machine::{Edge, FocusRead, InputEvent, InputKind, InputOwner, PressRead, Source};
-    use crate::ui::screen::By;
+    use crate::ui::machine::{
+        Edge, FocusRead, InputEvent, InputKind, InputOwner, PressRead, Source,
+    };
     use crate::ui::present::Present;
+    use crate::ui::screen::By;
 
     /// Spec §14 phase 8: `Family::Settings`'s scrim/entrance composition reads
     /// `DrawFrame::nav_page_alpha` rather than the `ui::nav` statics — these two pin the
@@ -1107,7 +1239,11 @@ mod tests {
 
     /// Step the surface once and return what it emitted, the way `RouteSurface::forward` would
     /// hand effects up to whatever mounted it.
-    fn step(s: &mut RouteSurface, ev: ScreenEvent<InnerHost>, focus: Option<FocusKey<u32>>) -> Vec<Stamped<InnerHost>> {
+    fn step(
+        s: &mut RouteSurface,
+        ev: ScreenEvent<InnerHost>,
+        focus: Option<FocusKey<u32>>,
+    ) -> Vec<Stamped<InnerHost>> {
         let mut out = Vec::new();
         let mut present = Present::new();
         let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
@@ -1265,17 +1401,178 @@ mod tests {
         assert_eq!(before.len(), after.len(), "and nothing about its contents moved either");
     }
 
+    fn multi_user_session(tag: &str) -> crate::plex::session::TempSession {
+        let t = crate::plex::session::TempSession::new(tag);
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "cid-test".into(),
+            account_token: "acct".into(),
+            server: crate::plex::session::ServerRef {
+                address: "192.168.0.10".into(),
+                port: 32400,
+                token: "t".into(),
+                ..Default::default()
+            },
+            user: crate::plex::session::UserRef {
+                uuid: "u-0".into(),
+                token: "ut".into(),
+                title: "Admin".into(),
+                ..Default::default()
+            },
+            home_users: vec![
+                crate::plex::session::HomeUserRef {
+                    uuid: "u-0".into(),
+                    title: "Admin".into(),
+                    admin: true,
+                    ..Default::default()
+                },
+                crate::plex::session::HomeUserRef {
+                    uuid: "u-1".into(),
+                    title: "Kid".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        t.watching("u-0");
+        t
+    }
+
+    /// Signed-in with a Plex Home roster, row 3 is Automatically Sign In (after Favorite libraries,
+    /// Privacy & data, Legal notices).
+    const AUTO_SIGN_IN_ROW: u32 = 3;
+
     /// Mounting the surface at its `Root` page runs the inner stack's own lifecycle (§3.4) and
     /// names the root — the heartbeat's `overlay=` before anything has been pressed.
     #[test]
     fn mounting_the_surface_names_its_root_page() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-mount");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
         assert_eq!(name(&s), word::SETTINGS);
         assert_eq!(s.inner.depth(), 1);
         assert_eq!(s.kind, Family::Settings);
+    }
+
+    #[test]
+    fn signed_out_root_does_not_offer_automatically_sign_in() {
+        let _g = crate::testlock::serial();
+        let _sess = scratch_session("root-signed-out-auto");
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
+        step(&mut s, ScreenEvent::Mount, None);
+        // Privacy / Legal / About — row 2 is About, not a switch.
+        let about = FocusKey {
+            entry: EntryId(0),
+            elem: 2,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: about,
+                by: By::Dir,
+            },
+            Some(about),
+        );
+        step(&mut s, ScreenEvent::Activate(about.elem), Some(about));
+        assert_eq!(
+            s.inner.depth(),
+            2,
+            "signed out, row 2 is About — a document push"
+        );
+        assert_eq!(name(&s), word::LEGAL);
+        assert!(!crate::plex::session::peek().auto_sign_in());
+    }
+
+    #[test]
+    fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
+        let _g = crate::testlock::serial();
+        let _sess = multi_user_session("root-auto-toggle");
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
+        step(&mut s, ScreenEvent::Mount, None);
+        let row = FocusKey {
+            entry: EntryId(0),
+            elem: AUTO_SIGN_IN_ROW,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: row,
+                by: By::Dir,
+            },
+            Some(row),
+        );
+        step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+        assert_eq!(
+            name(&s),
+            word::SETTINGS,
+            "OK on the switch must not push a page"
+        );
+        assert_eq!(s.inner.depth(), 1);
+        assert!(
+            crate::plex::session::peek().auto_sign_in(),
+            "OK commits the switch immediately"
+        );
+        step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+        assert!(!crate::plex::session::peek().auto_sign_in());
+        assert_eq!(s.inner.depth(), 1);
+    }
+
+    #[test]
+    fn right_on_automatically_sign_in_does_not_push() {
+        let _g = crate::testlock::serial();
+        let _sess = multi_user_session("root-auto-right");
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
+        step(&mut s, ScreenEvent::Mount, None);
+        let row = FocusKey {
+            entry: EntryId(0),
+            elem: AUTO_SIGN_IN_ROW,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: row,
+                by: By::Dir,
+            },
+            Some(row),
+        );
+        let right: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
+            at: Tick::default(),
+            source: Source::Sdl,
+            kind: InputKind::Key {
+                key: Key::Right,
+                sym: 0,
+                wcode: 0,
+                edge: Edge::Down,
+                at_edge: true,
+            },
+        });
+        let _ = step(&mut s, right, Some(row));
+        assert_eq!(s.inner.depth(), 1, "RIGHT on a switch is not rule 8");
+        assert!(!crate::plex::session::peek().auto_sign_in());
+        assert_eq!(name(&s), word::SETTINGS);
     }
 
     /// **BACK at the surface's own root does not touch the inner stack, and it is not swallowed
@@ -1287,19 +1584,38 @@ mod tests {
     fn back_at_the_surface_s_own_root_is_not_handled() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-back-root");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
         let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
             source: Source::Sdl,
-            kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key {
+                key: Key::Back,
+                sym: 0,
+                wcode: 0,
+                edge: Edge::Down,
+                at_edge: false,
+            },
         });
         let mut out = Vec::new();
         let mut present = Present::new();
         let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
         let handled = <RouteSurface as Machine<InnerHost>>::step(&mut s, &back, &cx(None), &mut fx);
-        assert_eq!(handled, Handled::No, "the surface's own stack has nothing to pop at depth 1");
-        assert_eq!(s.inner.depth(), 1, "…and nothing about the stack moved while deciding that");
+        assert_eq!(
+            handled,
+            Handled::No,
+            "the surface's own stack has nothing to pop at depth 1"
+        );
+        assert_eq!(
+            s.inner.depth(),
+            1,
+            "…and nothing about the stack moved while deciding that"
+        );
     }
 
     /// **The remembered-focus round trip (spec §7.3 step 4).** Signed out, the root's rows are
@@ -1311,30 +1627,65 @@ mod tests {
     fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-pop-focus");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
 
-        let legal_row = FocusKey { entry: EntryId(0), elem: 1 };
+        let legal_row = FocusKey {
+            entry: EntryId(0),
+            elem: 1,
+        };
         step(
             &mut s,
-            ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir },
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: legal_row,
+                by: By::Dir,
+            },
             Some(legal_row),
         );
-        step(&mut s, ScreenEvent::Activate(legal_row.elem), Some(legal_row));
-        assert_eq!(name(&s), word::LEGAL, "OK on Legal notices pushed the index");
+        step(
+            &mut s,
+            ScreenEvent::Activate(legal_row.elem),
+            Some(legal_row),
+        );
+        assert_eq!(
+            name(&s),
+            word::LEGAL,
+            "OK on Legal notices pushed the index"
+        );
         assert_eq!(s.inner.depth(), 2);
 
         let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
             source: Source::Sdl,
-            kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key {
+                key: Key::Back,
+                sym: 0,
+                wcode: 0,
+                edge: Edge::Down,
+                at_edge: false,
+            },
         });
         let out = step(&mut s, back, None);
-        assert_eq!(name(&s), word::SETTINGS, "BACK popped the inner stack, not the surface");
+        assert_eq!(
+            name(&s),
+            word::SETTINGS,
+            "BACK popped the inner stack, not the surface"
+        );
         assert_eq!(s.inner.depth(), 1);
 
         let reseat = out.iter().find_map(|st| match &st.fx {
-            Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(k) }))) => Some(*k),
+            Fx::Deliver(
+                _,
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                    focus: FocusTarget::Elem(k),
+                })),
+            ) => Some(*k),
             _ => None,
         });
         assert_eq!(
@@ -1352,13 +1703,31 @@ mod tests {
     fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-push-seat");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
-        let root_row = FocusKey { entry: EntryId(0), elem: 1 };
-        step(&mut s, ScreenEvent::FocusMoved { from: None, to: root_row, by: By::Dir }, Some(root_row));
+        let root_row = FocusKey {
+            entry: EntryId(0),
+            elem: 1,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: root_row,
+                by: By::Dir,
+            },
+            Some(root_row),
+        );
         let out = step(&mut s, ScreenEvent::Activate(root_row.elem), Some(root_row));
         let seat = out.iter().find_map(|st| match &st.fx {
-            Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) => Some(*focus),
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) => {
+                Some(*focus)
+            }
             _ => None,
         });
         assert!(
@@ -1375,17 +1744,43 @@ mod tests {
     fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-remembered");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
-        let legal_row = FocusKey { entry: EntryId(0), elem: 1 };
+        let legal_row = FocusKey {
+            entry: EntryId(0),
+            elem: 1,
+        };
         for _ in 0..5 {
-            step(&mut s, ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir }, Some(legal_row));
-            step(&mut s, ScreenEvent::Activate(legal_row.elem), Some(legal_row));
+            step(
+                &mut s,
+                ScreenEvent::FocusMoved {
+                    from: None,
+                    to: legal_row,
+                    by: By::Dir,
+                },
+                Some(legal_row),
+            );
+            step(
+                &mut s,
+                ScreenEvent::Activate(legal_row.elem),
+                Some(legal_row),
+            );
             assert_eq!(name(&s), word::LEGAL);
             let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
                 at: Tick::default(),
                 source: Source::Sdl,
-                kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+                kind: InputKind::Key {
+                    key: Key::Back,
+                    sym: 0,
+                    wcode: 0,
+                    edge: Edge::Down,
+                    at_edge: false,
+                },
             });
             step(&mut s, back, None);
             assert_eq!(name(&s), word::SETTINGS);
@@ -1401,7 +1796,14 @@ mod tests {
     /// fails the test rather than hanging the suite.
     fn settle(s: &mut RouteSurface) {
         for i in 1..600u32 {
-            step(s, ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_000 }), None);
+            step(
+                s,
+                ScreenEvent::Tick(Tick {
+                    ms: i * 16,
+                    dt_us: 16_000,
+                }),
+                None,
+            );
             if s.at_rest() {
                 return;
             }
@@ -1424,27 +1826,74 @@ mod tests {
     fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-at-rest");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
-        assert!(s.at_rest(), "a freshly mounted surface has no push in flight");
+        assert!(
+            s.at_rest(),
+            "a freshly mounted surface has no push in flight"
+        );
 
         // root → Legal notices → About-style document: two pushes, so the pop below lands on a
         // stack that still has something UNDER its top
-        let legal_row = FocusKey { entry: EntryId(0), elem: 1 };
-        step(&mut s, ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir }, Some(legal_row));
-        step(&mut s, ScreenEvent::Activate(legal_row.elem), Some(legal_row));
-        assert!(!s.at_rest(), "the push is in flight the frame it is requested");
+        let legal_row = FocusKey {
+            entry: EntryId(0),
+            elem: 1,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: legal_row,
+                by: By::Dir,
+            },
+            Some(legal_row),
+        );
+        step(
+            &mut s,
+            ScreenEvent::Activate(legal_row.elem),
+            Some(legal_row),
+        );
+        assert!(
+            !s.at_rest(),
+            "the push is in flight the frame it is requested"
+        );
         settle(&mut s);
-        let doc_row = FocusKey { entry: EntryId(0), elem: 0 };
-        step(&mut s, ScreenEvent::FocusMoved { from: None, to: doc_row, by: By::Dir }, Some(doc_row));
+        let doc_row = FocusKey {
+            entry: EntryId(0),
+            elem: 0,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: doc_row,
+                by: By::Dir,
+            },
+            Some(doc_row),
+        );
         step(&mut s, ScreenEvent::Activate(doc_row.elem), Some(doc_row));
         settle(&mut s);
-        assert_eq!(s.inner.depth(), 3, "root → Legal index → one Legal document");
+        assert_eq!(
+            s.inner.depth(),
+            3,
+            "root → Legal index → one Legal document"
+        );
 
         let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
             at: Tick::default(),
             source: Source::Sdl,
-            kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key {
+                key: Key::Back,
+                sym: 0,
+                wcode: 0,
+                edge: Edge::Down,
+                at_edge: false,
+            },
         });
         step(&mut s, back, None);
         assert_eq!(s.inner.depth(), 2, "BACK popped the document");
@@ -1455,7 +1904,10 @@ mod tests {
             "with the spring settled and nothing leaving, the Legal index is the only page on \
              screen — even though `below()` still answers the Settings root"
         );
-        assert!(s.push.leaving.is_none(), "the outgoing body is released when the spring lands");
+        assert!(
+            s.push.leaving.is_none(),
+            "the outgoing body is released when the spring lands"
+        );
     }
 
     /// **The surface's logical state covers its inner stack — the whole reason phase 5b re-pinned
@@ -1477,13 +1929,33 @@ mod tests {
     fn the_logical_state_follows_the_inner_stack() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-state-hash");
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
         let at_root = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
 
-        let legal_row = FocusKey { entry: EntryId(0), elem: 1 };
-        step(&mut s, ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir }, Some(legal_row));
-        step(&mut s, ScreenEvent::Activate(legal_row.elem), Some(legal_row));
+        let legal_row = FocusKey {
+            entry: EntryId(0),
+            elem: 1,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: legal_row,
+                by: By::Dir,
+            },
+            Some(legal_row),
+        );
+        step(
+            &mut s,
+            ScreenEvent::Activate(legal_row.elem),
+            Some(legal_row),
+        );
         let at_legal = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
         assert_ne!(
             at_root, at_legal,
@@ -1506,7 +1978,13 @@ mod tests {
         ScreenEvent::Input(InputEvent {
             at: Tick::default(),
             source: Source::Sdl,
-            kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            kind: InputKind::Key {
+                key: Key::Back,
+                sym: 0,
+                wcode: 0,
+                edge: Edge::Down,
+                at_edge: false,
+            },
         })
     }
 
@@ -1570,16 +2048,30 @@ mod tests {
     fn a_pop_that_would_empty_the_stack_dismisses_the_surface_instead() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-pop-empty");
-        let mut s = RouteSurface::new(EntryId(7), InstanceId(0), Family::Settings, SettingsPage::Privacy);
+        let mut s = RouteSurface::new(
+            EntryId(7),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Privacy,
+        );
         step(&mut s, ScreenEvent::Mount, None);
-        assert_eq!(s.inner.depth(), 1, "rooted at Privacy, there is nothing under it");
+        assert_eq!(
+            s.inner.depth(),
+            1,
+            "rooted at Privacy, there is nothing under it"
+        );
 
         let out = forwarded(&mut s, Fx::Nav(NavOp::Pop));
         assert!(
-            out.iter().any(|st| matches!(&st.fx, Fx::Nav(NavOp::Dismiss(e)) if *e == EntryId(7))),
+            out.iter()
+                .any(|st| matches!(&st.fx, Fx::Nav(NavOp::Dismiss(e)) if *e == EntryId(7))),
             "the Pop must become this surface's own dismissal, emitted against its entry"
         );
-        assert_eq!(s.inner.depth(), 1, "…and the stack must NOT have been emptied on the way");
+        assert_eq!(
+            s.inner.depth(),
+            1,
+            "…and the stack must NOT have been emptied on the way"
+        );
         assert!(
             s.top().is_some(),
             "a surface with no top page draws its ground over nothing and cannot be left"
@@ -1594,20 +2086,45 @@ mod tests {
     fn a_pop_with_a_page_under_it_pops_the_inner_stack_and_stays_up() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-pop-inner");
-        let mut s = RouteSurface::new(EntryId(7), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut s = RouteSurface::new(
+            EntryId(7),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut s, ScreenEvent::Mount, None);
-        let legal_row = FocusKey { entry: EntryId(7), elem: 1 };
-        step(&mut s, ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir }, Some(legal_row));
-        step(&mut s, ScreenEvent::Activate(legal_row.elem), Some(legal_row));
+        let legal_row = FocusKey {
+            entry: EntryId(7),
+            elem: 1,
+        };
+        step(
+            &mut s,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: legal_row,
+                by: By::Dir,
+            },
+            Some(legal_row),
+        );
+        step(
+            &mut s,
+            ScreenEvent::Activate(legal_row.elem),
+            Some(legal_row),
+        );
         assert_eq!(s.inner.depth(), 2, "Legal is up");
 
         let out = forwarded(&mut s, Fx::Nav(NavOp::Pop));
         assert!(
-            !out.iter().any(|st| matches!(&st.fx, Fx::Nav(NavOp::Dismiss(_)))),
+            !out.iter()
+                .any(|st| matches!(&st.fx, Fx::Nav(NavOp::Dismiss(_)))),
             "a Pop with something under it is the INNER stack's, never the surface's"
         );
         assert_eq!(s.inner.depth(), 1);
-        assert_eq!(name(&s), word::SETTINGS, "it landed back on the Settings root");
+        assert_eq!(
+            name(&s),
+            word::SETTINGS,
+            "it landed back on the Settings root"
+        );
     }
 
     /// **`remembered` is in the hash, and this is the arrangement that isolates it.** Two
@@ -1623,21 +2140,64 @@ mod tests {
     fn the_remembered_seats_are_part_of_the_hash() {
         let _g = crate::testlock::serial();
         let _sess = scratch_session("surface-seat-hash");
-        let legal_row = FocusKey { entry: EntryId(0), elem: 1 };
+        let legal_row = FocusKey {
+            entry: EntryId(0),
+            elem: 1,
+        };
 
-        let mut seated = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut seated = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut seated, ScreenEvent::Mount, None);
-        step(&mut seated, ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir }, Some(legal_row));
-        step(&mut seated, ScreenEvent::Activate(legal_row.elem), Some(legal_row));
+        step(
+            &mut seated,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: legal_row,
+                by: By::Dir,
+            },
+            Some(legal_row),
+        );
+        step(
+            &mut seated,
+            ScreenEvent::Activate(legal_row.elem),
+            Some(legal_row),
+        );
 
-        let mut unseated = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+        let mut unseated = RouteSurface::new(
+            EntryId(0),
+            InstanceId(0),
+            Family::Settings,
+            SettingsPage::Root,
+        );
         step(&mut unseated, ScreenEvent::Mount, None);
-        step(&mut unseated, ScreenEvent::FocusMoved { from: None, to: legal_row, by: By::Dir }, Some(legal_row));
+        step(
+            &mut unseated,
+            ScreenEvent::FocusMoved {
+                from: None,
+                to: legal_row,
+                by: By::Dir,
+            },
+            Some(legal_row),
+        );
         step(&mut unseated, ScreenEvent::Activate(legal_row.elem), None);
 
-        assert_eq!(seated.inner.depth(), unseated.inner.depth(), "the same stack, by construction");
-        assert!(!seated.remembered.is_empty(), "the seated push recorded where focus was");
-        assert!(unseated.remembered.is_empty(), "the unseated one had nothing to record");
+        assert_eq!(
+            seated.inner.depth(),
+            unseated.inner.depth(),
+            "the same stack, by construction"
+        );
+        assert!(
+            !seated.remembered.is_empty(),
+            "the seated push recorded where focus was"
+        );
+        assert!(
+            unseated.remembered.is_empty(),
+            "the unseated one had nothing to record"
+        );
         assert_ne!(
             <RouteSurface as Screen<InnerHost>>::state(&seated).hash(),
             <RouteSurface as Screen<InnerHost>>::state(&unseated).hash(),
@@ -1651,12 +2211,17 @@ mod tests {
         let b = step(&mut unseated, back_key(), None);
         let seat_of = |out: &[Stamped<InnerHost>]| {
             out.iter().find_map(|st| match &st.fx {
-                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) => Some(*focus),
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) => {
+                    Some(*focus)
+                }
                 _ => None,
             })
         };
         assert!(matches!(seat_of(&a), Some(FocusTarget::Elem(k)) if k == legal_row));
-        assert!(matches!(seat_of(&b), Some(FocusTarget::ContainerGroup(GroupId(0)))));
+        assert!(matches!(
+            seat_of(&b),
+            Some(FocusTarget::ContainerGroup(GroupId(0)))
+        ));
     }
 
     /// **THE LEFT ROAD, EXECUTED** (§7.3 step 2 + rule 9) — the one road into this surface that
@@ -1757,11 +2322,31 @@ mod tests {
                     measure: &self.measure,
                 }
             }
-            fn deliver(&mut self, _to: MachineId, _msg: &AppMsg, _parts: &CxParts<u32>, _fx: &mut Effects<'_, InnerHost>) -> Handled {
+            fn deliver(
+                &mut self,
+                _to: MachineId,
+                _msg: &AppMsg,
+                _parts: &CxParts<u32>,
+                _fx: &mut Effects<'_, InnerHost>,
+            ) -> Handled {
                 Handled::No
             }
-            fn timer(&mut self, _owner: MachineId, _id: TimerId, _parts: &CxParts<u32>, _fx: &mut Effects<'_, InnerHost>) {}
-            fn app_fx(&mut self, _from: MachineId, _fx: AppFx, _parts: &CxParts<u32>, _out: &mut Effects<'_, InnerHost>) {}
+            fn timer(
+                &mut self,
+                _owner: MachineId,
+                _id: TimerId,
+                _parts: &CxParts<u32>,
+                _fx: &mut Effects<'_, InnerHost>,
+            ) {
+            }
+            fn app_fx(
+                &mut self,
+                _from: MachineId,
+                _fx: AppFx,
+                _parts: &CxParts<u32>,
+                _out: &mut Effects<'_, InnerHost>,
+            ) {
+            }
             fn log(&mut self, _line: &str) {}
             fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
             fn ls2_pump(&mut self) {}
@@ -1781,7 +2366,12 @@ mod tests {
         /// what this module grades (ingest, the engine, the drain, the nav commit), and step 10
         /// is the only one it cannot run. The prepare pass still runs, which is safe: every
         /// `prepare` in this family is empty.
-        fn frame(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, ms: u32, inputs: Vec<crate::ui::machine::InputEvent<u32>>) {
+        fn frame(
+            d: &mut Dispatcher<InnerHost>,
+            rig: &mut SurfaceRig,
+            ms: u32,
+            inputs: Vec<crate::ui::machine::InputEvent<u32>>,
+        ) {
             d.frame_with(rig, tick(ms), inputs, vec![], &mut NoTap, false);
         }
 
@@ -1799,7 +2389,13 @@ mod tests {
             d.nav.next_style = Style::Opaque { snapshot: true };
             d.request(MachineId::Nav, NavOp::Present(SettingsPage::Root));
             frame(&mut d, &mut rig, 16, vec![]);
-            let id = d.nav.modals.top().expect("the surface is presented").entry.id;
+            let id = d
+                .nav
+                .modals
+                .top()
+                .expect("the surface is presented")
+                .entry
+                .id;
             (d, rig, id)
         }
 
@@ -1808,7 +2404,15 @@ mod tests {
         /// `&dyn Screen`, so there is no downcast to a `RouteSurface`).
         fn path(d: &Dispatcher<InnerHost>, id: EntryId) -> String {
             let mut s = String::new();
-            d.nav.entry(id).unwrap().inst.as_ref().unwrap().screen.state().probe(&mut s);
+            d.nav
+                .entry(id)
+                .unwrap()
+                .inst
+                .as_ref()
+                .unwrap()
+                .screen
+                .state()
+                .probe(&mut s);
             s
         }
 
@@ -1961,17 +2565,31 @@ mod tests {
             let _g = crate::testlock::serial();
             let _sess = scratch_session("composed-left-inner");
             let (mut d, mut rig, id) = opened();
-            assert!(path(&d, id).starts_with("settings/root:"), "{}", path(&d, id));
+            assert!(
+                path(&d, id).starts_with("settings/root:"),
+                "{}",
+                path(&d, id)
+            );
 
             seat(&mut d, id, 1);
             frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
-            assert!(path(&d, id).contains("/legal:"), "OK on Legal notices pushed the index: {}", path(&d, id));
+            assert!(
+                path(&d, id).contains("/legal:"),
+                "OK on Legal notices pushed the index: {}",
+                path(&d, id)
+            );
 
             seat(&mut d, id, 0);
             frame(&mut d, &mut rig, 48, vec![key(Key::Left, tick(48))]);
             let p = path(&d, id);
-            assert!(!p.contains("/legal:"), "LEFT popped the index off the surface's stack: {p}");
-            assert!(p.starts_with("settings/root:"), "…and landed on the Settings root: {p}");
+            assert!(
+                !p.contains("/legal:"),
+                "LEFT popped the index off the surface's stack: {p}"
+            );
+            assert!(
+                p.starts_with("settings/root:"),
+                "…and landed on the Settings root: {p}"
+            );
             assert_ne!(
                 d.nav.modals.top().unwrap().phase,
                 Phase::Closing,
@@ -1998,14 +2616,25 @@ mod tests {
             let (mut d, mut rig, id) = opened();
             seat(&mut d, id, 0);
             frame(&mut d, &mut rig, 32, vec![key(Key::Left, tick(32))]);
-            assert!(path(&d, id).starts_with("settings/root:"), "the stack never moved: {}", path(&d, id));
+            assert!(
+                path(&d, id).starts_with("settings/root:"),
+                "the stack never moved: {}",
+                path(&d, id)
+            );
             assert_eq!(
                 d.nav.modals.top().unwrap().phase,
                 Phase::Closing,
                 "the refusal became the container's BACK, in the same frame"
             );
-            assert_ne!(d.nav.input_owner(), Some(InputOwner::Entry(id)), "input left with it");
-            assert_eq!(rig.roots, 0, "a surface dismissal is not the platform's BACK");
+            assert_ne!(
+                d.nav.input_owner(),
+                Some(InputOwner::Entry(id)),
+                "input left with it"
+            );
+            assert_eq!(
+                rig.roots, 0,
+                "a surface dismissal is not the platform's BACK"
+            );
         }
     }
 }
