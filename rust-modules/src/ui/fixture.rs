@@ -505,6 +505,8 @@ pub struct FixtureModal {
     pub last_navigation: super::screen::NavPresentation,
     /// The peak alpha this surface asks its host page to dim to (`Screen::scrim`). 0 = none.
     pub scrim_alpha: f32,
+    /// Optional lifted element callback for exercising the dispatcher's borrowed frame context.
+    pub scrim_lift: Option<super::screen::ScrimLift>,
     /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
     /// this surface's own `draw` ran. The two together are how a host test observes that the
     /// scrim landed inside the PAGE PASS rather than with the panel — see
@@ -541,6 +543,7 @@ impl FixtureModal {
             last_draw_alpha: 0.0,
             last_navigation: Default::default(),
             scrim_alpha: 0.0,
+            scrim_lift: None,
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
             render: RenderReport::NONE,
@@ -711,7 +714,10 @@ impl Screen<FixtureHost> for FixtureModal {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
-        super::screen::Scrim::dim(self.scrim_alpha)
+        match self.scrim_lift {
+            Some(lift) => super::screen::Scrim::lifting(self.scrim_alpha, lift),
+            None => super::screen::Scrim::dim(self.scrim_alpha),
+        }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.draw_at = draw_order();
@@ -901,6 +907,11 @@ pub struct FixtureRig {
     pub ls2_pumps: u32,
     pub opaque_route_calls: Vec<bool>,
     pub clears: u32,
+    scrim_name: std::ffi::CString,
+    scrim_initial: std::ffi::CString,
+    scrim_labels: Vec<String>,
+    scrim_expand: f32,
+    scrim_chrome: bool,
     us: u64,
 }
 
@@ -922,8 +933,21 @@ impl FixtureRig {
             ls2_pumps: 0,
             opaque_route_calls: Vec::new(),
             clears: 0,
+            scrim_name: std::ffi::CString::default(),
+            scrim_initial: std::ffi::CString::default(),
+            scrim_labels: Vec::new(),
+            scrim_expand: 0.0,
+            scrim_chrome: false,
             us: 0,
         }
+    }
+
+    pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, labels: &[&str], expand: f32) {
+        self.scrim_name = std::ffi::CString::new(name).unwrap();
+        self.scrim_initial = std::ffi::CString::new(initial).unwrap();
+        self.scrim_labels = labels.iter().map(|s| (*s).to_owned()).collect();
+        self.scrim_expand = expand;
+        self.scrim_chrome = true;
     }
 }
 
@@ -935,6 +959,18 @@ impl Rig<FixtureHost> for FixtureRig {
             page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
             view_tab: self.view_tab, blur_amount: self.blur_amount,
         }
+    }
+    fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
+        self.scrim_chrome.then(|| super::widgets::ChromeRead {
+            profile: super::widgets::ProfileChipRead {
+                thumb: "",
+                initial: &self.scrim_initial,
+                name: &self.scrim_name,
+                name_w: 0.0,
+            },
+            labels: super::widgets::TabLabels { generation: 1, labels: &self.scrim_labels },
+            chip_expand: self.scrim_expand,
+        })
     }
     fn split(&mut self) -> Split<'_, FixtureHost> {
         Split {
@@ -1165,7 +1201,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
 
 use super::dispatch::Tap;
 use super::rec::{Header, MemSink, Recording, Writer};
-use super::replay::{run_targets, Codec};
+use super::replay::Codec;
 use serde_json::{json, Value};
 
 pub struct RecTap {
@@ -1272,7 +1308,8 @@ impl Codec<FixtureHost> for FixtureCodec {
             "right" => Key::Right,
             "ok" => Key::Ok,
             "back" => Key::Back,
-            _ => Key::Other,
+            "other" => Key::Other,
+            _ => return None,
         };
         Some(key(k, at))
     }
@@ -1281,15 +1318,15 @@ impl Codec<FixtureHost> for FixtureCodec {
         let inst = to.strip_prefix("inst:")?.parse::<u32>().ok()?;
         let addr = Addr {
             to: MachineId::Instance(super::machine::InstanceId(inst)),
-            req: RequestId(v["req"].as_u64()? as u32),
+            req: RequestId(v["req"].as_u64()?.try_into().ok()?),
         };
         let p = &v["payload"];
         let msg = match p["kind"].as_str()? {
             "http" => FixtureMsg::Http {
-                status: p["status"].as_u64()? as u16,
+                status: p["status"].as_u64()?.try_into().ok()?,
                 blob: vec![],
             },
-            "store" => FixtureMsg::Store(StoreOrd(p["ord"].as_u64()? as u32), p["v"].as_u64()? as u32),
+            "store" => FixtureMsg::Store(StoreOrd(p["ord"].as_u64()?.try_into().ok()?), p["v"].as_u64()?.try_into().ok()?),
             _ => return None,
         };
         Some((addr, msg))
@@ -1349,6 +1386,10 @@ fn record() -> Recording {
 /// Replay `rec` the way the product driver will: the replay re-registers the inflight requests
 /// the scenario minted (the app's registry does that from `Fx::App` in phase 2's registry).
 fn replay(rec: &Recording, codec: &dyn Codec<FixtureHost>) -> super::replay::Report {
+    replay_mode(rec, codec, super::replay::Mode::Targets)
+}
+
+fn replay_mode(rec: &Recording, codec: &dyn Codec<FixtureHost>, mode: super::replay::Mode) -> super::replay::Report {
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
@@ -1362,7 +1403,8 @@ fn replay(rec: &Recording, codec: &dyn Codec<FixtureHost>) -> super::replay::Rep
         metrics: Default::default(),
         stopped_at: None,
     };
-    let r0 = run_targets(&head, codec, &mut d, &mut rig, &|| None);
+    let r0 = super::replay::run(&head, codec, &mut d, &mut rig, &|| None, mode);
+    assert!(r0.is_clean(), "fixture bootstrap: {:?}", r0.safe_lines());
     let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     d.track_inflight(home, RequestId(1));
     d.track_inflight(home, RequestId(0));
@@ -1372,11 +1414,12 @@ fn replay(rec: &Recording, codec: &dyn Codec<FixtureHost>) -> super::replay::Rep
         metrics: Default::default(),
         stopped_at: None,
     };
-    let mut r = run_targets(&tail, codec, &mut d, &mut rig, &|| None);
+    let mut r = super::replay::run(&tail, codec, &mut d, &mut rig, &|| None, mode);
     r.frames += r0.frames;
     r.graded += r0.graded;
     r.divergences.splice(0..0, r0.divergences);
     r.present_diffs.splice(0..0, r0.present_diffs);
+    r.focus_diffs.splice(0..0, r0.focus_diffs);
     r
 }
 
@@ -1390,23 +1433,160 @@ fn a_sim_recording_replays_to_the_same_state_hash_stream() {
     assert!(report.is_clean(), "{:?}", report.safe_lines());
     assert_eq!(report.graded as usize, rec.state_stream().len());
 
-    // A codec that loses the HTTP landing is a different application: pointwise divergences from
+    // A codec that changes a valid HTTP landing is a different application: pointwise divergences from
     // the frame it first mattered, and replay CONTINUES.
-    struct Lossy;
-    impl Codec<FixtureHost> for Lossy {
+    struct Changed;
+    impl Codec<FixtureHost> for Changed {
         fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> {
             FixtureCodec.decode_input(v)
         }
         fn decode_result(&self, v: &Value) -> Option<(Addr, FixtureMsg)> {
-            let r = FixtureCodec.decode_result(v)?;
-            matches!(r.1, FixtureMsg::Store(..)).then_some(r)
+            let (addr, mut msg) = FixtureCodec.decode_result(v)?;
+            if let FixtureMsg::Http { status, .. } = &mut msg { *status = 404; }
+            Some((addr, msg))
         }
     }
-    let report = replay(&rec, &Lossy);
-    assert!(!report.is_clean());
-    assert_eq!(report.divergences[0].frame, 2, "the landing frame is the first to diverge");
-    assert!(report.frames == rec.frames.len() as u64, "replay continued past the divergence");
-    assert!(report.safe_lines()[0].starts_with("diverge f=2 expected=0x"));
+    for mode in [super::replay::Mode::Targets, super::replay::Mode::Resolve] {
+        let clean = replay_mode(&rec, &FixtureCodec, mode);
+        assert!(clean.is_clean(), "{:?}", clean.safe_lines());
+        let report = replay_mode(&rec, &Changed, mode);
+        assert!(!report.is_clean());
+        assert!(report.decode_failure.is_none());
+        assert_eq!(report.divergences[0].frame, 2, "the landing frame is the first to diverge");
+        assert!(report.frames == rec.frames.len() as u64, "replay continued past the divergence");
+        assert!(report.safe_lines()[0].starts_with("diverge f=2 expected=0x"));
+    }
+}
+
+#[test]
+fn replay_decode_refusal_is_atomic_in_both_modes() {
+    use super::replay::{run, Mode};
+    for mode in [Mode::Targets, Mode::Resolve] {
+        for stream in ["input", "result"] {
+            let mut rec = record();
+            rec.frames.truncate(1);
+            let mut d = Dispatcher::<FixtureHost>::new();
+            let mut rig = FixtureRig::new();
+            d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+            assert!(run(&rec, &FixtureCodec, &mut d, &mut rig, &|| None, mode).is_clean());
+            let home = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+            d.track_inflight(home, RequestId(1));
+            let before = d.state_hash();
+            rec.frames = vec![super::rec::Frame {
+                f: 73, tick: Some(tick(16)),
+                inputs: vec![json!({"kind":"key", "key":"ok", "ms":16})],
+                results: vec![json!({"to":format!("inst:{}", home.0), "req":1,
+                    "payload":{"kind":"http", "status":200}})],
+                ..Default::default()
+            }];
+            let fr = &mut rec.frames[0];
+            if stream == "input" { fr.inputs.push(json!({"kind":"unknown"})); }
+            else { fr.results.push(json!({"payload":{"kind":"unknown"}})); }
+            let report = run(&rec, &FixtureCodec, &mut d, &mut rig, &|| None, mode);
+            assert!(!report.is_clean(), "{mode:?} {stream}: malformed data was skipped");
+            assert_eq!(report.frames, 0);
+            assert_eq!(report.graded, 0);
+            assert_eq!(report.decode_failure, Some(super::replay::DecodeFailure {
+                frame: 73,
+                stream: if stream == "input" { super::replay::DecodeStream::Input } else { super::replay::DecodeStream::Result },
+                index: 1,
+            }));
+            assert_eq!(d.state_hash(), before, "refused frame mutated dispatcher");
+            assert!(rig.store.view.items.is_empty(), "refused frame ran store effect");
+            assert_eq!(report.safe_lines(), vec![format!("decode-refused f=73 stream={stream} index=1")]);
+        }
+    }
+}
+
+#[test]
+fn replay_codec_refuses_unknown_missing_and_overflow_values() {
+    for input in [
+        json!({"kind":"key", "key":"unknown", "ms":0}),
+        json!({"kind":"key", "key":"ok", "ms":4294967296u64}),
+        json!({"kind":"key", "ms":0}), json!({"kind":"unknown", "ms":0}),
+        json!({"kind":"keyboard", "up":1, "ms":0}),
+        json!({"kind":"text", "op":"commit", "ms":0}),
+    ] { assert!(FixtureCodec.decode_input(&input).is_none(), "{input}"); }
+    let base = json!({"to":"inst:1", "req":1, "payload":{"kind":"http", "status":200}});
+    for (field, bad) in [("req", json!(4294967296u64)), ("req", json!(-1)),
+        ("req", Value::Null), ("to", json!("inst:4294967296")),
+        ("to", json!("unknown:1")), ("to", Value::Null)] {
+        let mut v = base.clone(); v[field] = bad;
+        assert!(FixtureCodec.decode_result(&v).is_none(), "{v}");
+    }
+    for payload in [json!({"kind":"http", "status":65536}),
+        json!({"kind":"http", "status":-1}), json!({"kind":"http"}),
+        json!({"kind":"unknown"}), json!({"kind":"store", "ord":4294967296u64, "v":0}),
+        json!({"kind":"store", "ord":0, "v":4294967296u64}),
+        json!({"kind":"store", "ord":0})] {
+        let mut v = base.clone(); v["payload"] = payload;
+        assert!(FixtureCodec.decode_result(&v).is_none(), "{v}");
+    }
+    assert!(FixtureCodec.decode_input(&json!({"kind":"key", "key":"other", "ms":0})).is_some());
+}
+
+#[test]
+fn replay_none_refusal_keeps_completed_frames_and_stops_the_suffix() {
+    use super::replay::{run, DecodeFailure, DecodeStream, Mode};
+    struct Refusing;
+    impl Codec<FixtureHost> for Refusing {
+        fn decode_input(&self, v: &Value) -> Option<InputEvent<u32>> { FixtureCodec.decode_input(v) }
+        fn decode_result(&self, _: &Value) -> Option<(Addr, FixtureMsg)> { None }
+    }
+    for mode in [Mode::Targets, Mode::Resolve] {
+        let mut rec = record();
+        let mut expected = Dispatcher::<FixtureHost>::new();
+        let mut expected_rig = FixtureRig::new();
+        expected.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        expected.frame(&mut expected_rig, tick(0), vec![], vec![], &mut NoTap);
+        rec.frames[1].f = 73;
+        let mut d = Dispatcher::<FixtureHost>::new();
+        let mut rig = FixtureRig::new();
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        let report = run(&rec, &Refusing, &mut d, &mut rig, &|| None, mode);
+        assert_eq!(report.decode_failure, Some(DecodeFailure { frame: 73, stream: DecodeStream::Result, index: 0 }));
+        assert_eq!(report.frames, 1);
+        assert_eq!(report.graded, 1);
+        assert_eq!(d.state_hash(), expected.state_hash());
+        assert!(rig.store.view.items.is_empty());
+    }
+}
+
+#[test]
+fn replay_safe_lines_use_decoded_event_labels() {
+    struct Accepting;
+    impl Codec<FixtureHost> for Accepting {
+        fn decode_input(&self, _: &Value) -> Option<InputEvent<u32>> { Some(key(Key::Other, tick(0))) }
+        fn decode_result(&self, v: &Value) -> Option<(Addr, FixtureMsg)> { FixtureCodec.decode_result(v) }
+    }
+    for mode in [super::replay::Mode::Targets, super::replay::Mode::Resolve] {
+        let mut rec = record();
+        rec.frames.truncate(1);
+        rec.frames[0].inputs = vec![json!({"kind":"synthetic-payload\nnot-an-event-label"})];
+        let mut d = Dispatcher::<FixtureHost>::new();
+        let mut rig = FixtureRig::new();
+        let report = super::replay::run(&rec, &Accepting, &mut d, &mut rig, &|| None, mode);
+        assert!(!report.divergences.is_empty());
+        let lines = report.safe_lines().join("\n");
+        assert!(!lines.contains("synthetic-payload"), "{lines}");
+        assert!(lines.contains("inputs=[key]"), "{lines}");
+    }
+}
+
+#[test]
+fn replay_well_formed_stale_addresses_follow_normal_drop_semantics() {
+    for mode in [super::replay::Mode::Targets, super::replay::Mode::Resolve] {
+        let mut rec = record();
+        let expected = replay_mode(&rec, &FixtureCodec, mode);
+        rec.frames[1].results.push(json!({"to":"inst:4294967295", "req":4294967295u64,
+            "payload":{"kind":"http", "status":65535}}));
+        let mut stale_request = rec.frames[1].results[0].clone();
+        stale_request["req"] = json!(4294967295u64);
+        rec.frames[1].results.push(stale_request);
+        let report = replay_mode(&rec, &FixtureCodec, mode);
+        assert!(report.is_clean(), "{:?}", report.safe_lines());
+        assert_eq!(report.frames, expected.frames);
+    }
 }
 
 #[test]

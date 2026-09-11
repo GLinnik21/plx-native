@@ -1258,7 +1258,7 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
                 }
             }
             AppArg::Library => crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
-                HomeTab::Home, Some(crate::ui::widgets::pill_at(1)), None),
+                HomeTab::Home, Some(crate::app::chrome::pill_at(1)), None),
             _ => {}
         }
     }

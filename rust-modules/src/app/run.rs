@@ -1756,7 +1756,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
             // route-agnostically right after `dt` above)
             let (_, moving) = crate::ui::idle::scoped_motion(|| {
-                app.bridge.update_home_chrome(&mut app.pages, fr.dt);
+                app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });
             fr.underlay_moving |= moving;
         } else if !super::bridge::host_frozen(&app.pages)
@@ -1767,7 +1767,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // scoped like Home's above, because this page can be the one UNDER the account
             // popover now and its glass backdrop is refreshed off the underlay's motion
             let (_, moving) = crate::ui::idle::scoped_motion(|| {
-                app.bridge.update_home_chrome(&mut app.pages, fr.dt);
+                app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });
             fr.underlay_moving |= moving;
         } else if !super::bridge::host_frozen(&app.pages)
@@ -1782,7 +1782,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // strip rects (read by pointer hit-testing and focus) go stale. This mirrors the
             // Home/Library arms above rather than adding a fourth call site.
             let (_, moving) = crate::ui::idle::scoped_motion(|| {
-                app.bridge.update_home_chrome(&mut app.pages, fr.dt);
+                app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });
             fr.underlay_moving |= moving;
         }
@@ -2021,7 +2021,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             // `ui::widgets` legacy label cache this used to fall back to for
                             // every other bar-wearing route (Search, plus either MENU over one of
                             // them back when each was a route of its own) is gone with this call.
-                            app.bridge.prepare_home_chrome(app.glass.clock());
+                            app.bridge.prepare_home_chrome(&mut app.glass);
                         }
                         // The episode tiles' frosted label band — `/tmp/plxnative-tileglass`,
                         // the 2026-09-05 experiment. Self-gated on the trigger, so a default
@@ -2118,7 +2118,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             // of the dispatcher's own page pass — see the `page_owned`/
                             // `host_replaced` guards below.
                             if page_owned {
-                                app.pages.draw(&mut app.bridge, true);
+                                app.pages.draw_with_glass(&mut app.bridge, &mut app.glass, true);
                             } else {
                                 // A loop request may have selected Home after this frame's
                                 // commit. Its owned body mounts next frame; never draw a retired
@@ -2234,7 +2234,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // opaque ground is up. The ordering question this comment used to settle
                         // by listing the owned pages is therefore the same one the legacy page
                         // answered on every frame before the migration.
-                        if plan != super::bridge::PagePlan::Owned { app.pages.draw(&mut app.bridge, false); }
+                        if plan != super::bridge::PagePlan::Owned {
+                            app.pages.draw_with_glass(&mut app.bridge, &mut app.glass, false);
+                        }
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on

@@ -4,7 +4,53 @@
 use crate::ui::containers::tabs::StripMember;
 use crate::ui::dispatch::STRIP_BASE;
 use crate::ui::machine::{FocusKey, Measure};
-use crate::ui::widgets::{self, ProfileChipRead, TabLabels, TopFocus};
+use crate::ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Pill {
+    Home,
+    Section(crate::browse::SecKind),
+    Search,
+}
+
+pub(crate) fn tab_count() -> usize {
+    1 + crate::browse::tab_count() + 1
+}
+
+pub(crate) fn pill_at(i: usize) -> Pill {
+    pill_in(i, tab_count() - 1, crate::browse::tab_kind)
+}
+
+fn pill_in(
+    i: usize,
+    search: usize,
+    kind_at: impl Fn(usize) -> Option<crate::browse::SecKind>,
+) -> Pill {
+    if i == search {
+        Pill::Search
+    } else if let Some(section) = i.checked_sub(1) {
+        kind_at(section).map(Pill::Section).unwrap_or(Pill::Home)
+    } else {
+        Pill::Home
+    }
+}
+
+pub(crate) fn pill_of(pill: Pill) -> Option<usize> {
+    let search = tab_count() - 1;
+    pill_index(pill, search, crate::browse::tab_of_kind)
+}
+
+fn pill_index(
+    pill: Pill,
+    search: usize,
+    tab_of: impl Fn(crate::browse::SecKind) -> Option<usize>,
+) -> Option<usize> {
+    match pill {
+        Pill::Home => Some(0),
+        Pill::Section(kind) => tab_of(kind).map(|i| i + 1),
+        Pill::Search => Some(search),
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct ChromeSnapshot {
@@ -14,8 +60,9 @@ pub(crate) struct ChromeSnapshot {
     keys: Vec<u32>,
     widths: Vec<f32>,
     thumb: String,
-    label: String,
-    initial: String,
+    initial: std::ffi::CString,
+    name: std::ffi::CString,
+    name_w: f32,
 }
 
 impl ChromeSnapshot {
@@ -44,9 +91,11 @@ impl ChromeSnapshot {
             let current = crate::plex::session::current();
             let account = crate::plex::session::peek().account(current.as_ref());
             self.thumb = current.map(|user| user.thumb).unwrap_or_default();
-            self.label = crate::screens::account_menu::chip_label(&account);
-            self.initial = account.name.as_deref().and_then(|name| name.chars().next())
+            let label = crate::screens::account_menu::chip_label(&account);
+            let initial = account.name.as_deref().and_then(|name| name.chars().next())
                 .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+            (self.initial, self.name, self.name_w) =
+                widgets::profile_chip_text(&label, &initial, measure);
             self.profile_generation = Some(generation);
         }
     }
@@ -65,8 +114,12 @@ impl ChromeSnapshot {
     }
 
     pub(crate) fn profile(&self) -> ProfileChipRead<'_> {
-        ProfileChipRead { generation: self.profile_generation.unwrap_or(0), thumb: &self.thumb,
-            label: &self.label, initial: &self.initial }
+        ProfileChipRead { thumb: &self.thumb, initial: &self.initial, name: &self.name,
+            name_w: self.name_w }
+    }
+
+    pub(crate) fn read(&self, chip_expand: f32) -> ChromeRead<'_> {
+        ChromeRead { profile: self.profile(), labels: self.labels(), chip_expand }
     }
 
     pub(crate) fn focus(&self, focus: Option<FocusKey<u32>>) -> TopFocus {
@@ -84,6 +137,18 @@ impl ChromeSnapshot {
         out.clear();
         out.push(StripMember::new(STRIP_BASE + 4, widgets::CHIP_FRAME));
         widgets::tab_members(&self.widths, &self.keys, selected, self.focus(focus), scroll, out);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_for_test(&mut self, name: &str, initial: &str, labels: &[&str], measure: &dyn Measure) {
+        self.tabs_generation = Some(1);
+        self.labels = labels.iter().map(|s| (*s).to_owned()).collect();
+        self.keys = (0..self.labels.len()).map(|i| STRIP_BASE + i as u32).collect();
+        self.widths = widgets::tab_widths(&self.labels, measure);
+        self.profile_generation = Some(1);
+        self.thumb.clear();
+        (self.initial, self.name, self.name_w) =
+            widgets::profile_chip_text(name, initial, measure);
     }
 }
 
@@ -122,5 +187,39 @@ mod tests {
         assert_eq!(members.iter().map(|member| member.elem).collect::<Vec<_>>(),
             vec![STRIP_BASE + 4, STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    }
+
+    #[test]
+    fn every_projected_pill_round_trips_by_stable_section_identity() {
+        use crate::browse::SecKind::{Movie, Show};
+        let kinds = [Movie, Show];
+        let at = |i| kinds.get(i).copied();
+        let search = kinds.len() + 1;
+        assert_eq!(pill_in(0, search, at), Pill::Home);
+        assert_eq!(pill_in(1, search, at), Pill::Section(Movie));
+        assert_eq!(pill_in(2, search, at), Pill::Section(Show));
+        assert_eq!(pill_in(search, search, at), Pill::Search);
+        assert_eq!(pill_in(search + 1, search, at), Pill::Home);
+        let pos = |kind| kinds.iter().position(|&candidate| candidate == kind);
+        for i in 0..=search {
+            assert_eq!(pill_index(pill_in(i, search, at), search, pos), Some(i));
+        }
+        assert_eq!(pill_index(Pill::Section(Show), search, |_| None), None,
+            "a type the captured strip no longer contains borrows no other position");
+        assert_eq!(pill_in(1, 3, |_| None), Pill::Home,
+            "an unfilled section slot falls back to the one fixed destination");
+    }
+
+    #[test]
+    fn shared_widgets_read_no_live_application_vocabulary() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/widgets.rs"),
+        ).expect("read widgets.rs");
+        let live = src.lines().filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>().join("\n");
+        for forbidden in ["crate::browse::", "crate::plex::session::", "crate::screens::"] {
+            assert!(!live.contains(forbidden),
+                "shared widgets must consume captured app projections, found {forbidden}");
+        }
     }
 }

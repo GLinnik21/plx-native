@@ -124,7 +124,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod playback;
 pub(crate) mod input;
 pub(crate) mod bridge;
-mod chrome;
+pub(crate) mod chrome;
 pub(crate) mod content;
 pub(crate) mod run;
 use self::boot::*;

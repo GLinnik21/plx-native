@@ -213,7 +213,7 @@ fn search_requests(app: &mut App) {
                 if !app.bridge.search_tab_available(*tab) { continue; }
                 if matches!(tab, HomeTab::Search) { continue }
                 bridge::nav_tab(&mut app.pages, &mut app.bridge, *tab,
-                    Some(crate::ui::widgets::Pill::Home), Some(ret));
+                    Some(crate::app::chrome::Pill::Home), Some(ret));
             }
             SearchReq::Account => {
                 // The owned screen releases its keyboard before emitting this request. Do not
@@ -297,11 +297,11 @@ fn library_requests(app: &mut App, now: u32) {
             LibraryReq::Account => chip_activate(&mut app.pages),
             LibraryReq::BackToHome { kind } => {
                 bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home,
-                    Some(crate::ui::widgets::Pill::Section(kind)), Some(ret));
+                    Some(crate::app::chrome::Pill::Section(kind)), Some(ret));
             }
             LibraryReq::Tab(tab) => {
                 bridge::nav_tab(&mut app.pages, &mut app.bridge, tab,
-                    Some(crate::ui::widgets::Pill::Home), Some(ret));
+                    Some(crate::app::chrome::Pill::Home), Some(ret));
             }
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };

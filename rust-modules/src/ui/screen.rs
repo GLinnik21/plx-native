@@ -104,10 +104,22 @@ pub enum RenderStrategy {
     VideoPlane,
 }
 
+/// Borrowed frame data passed to a [`Scrim::lift`]. Shared chrome comes from its application's
+/// captured owner, while the material is the face the application-owned `GlassPlan` resolved and
+/// the normal chrome draw published for this frame. Fixtures without either capability use
+/// `None`; drawing never recovers either value from globals.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ScrimLiftRead<'a> {
+    pub(crate) chrome: Option<crate::ui::widgets::ChromeRead<'a>>,
+    pub(crate) bar_material: Option<crate::gfx::GlassFace>,
+}
+
+pub(crate) type ScrimLift = for<'a> fn(ScrimLiftRead<'a>);
+
 /// The [`Scrim::lift`] of a surface with nothing to lift — a named `fn` rather than a closure, so
 /// [`Scrim::NONE`] can be a `const`. (`popover::Opener::NONE` carries its own twin of this for the
 /// legacy popovers; the two disappear together when the last of those becomes a surface.)
-fn no_lift(_: f32, _: Option<crate::gfx::GlassFace>) {}
+fn no_lift(_: ScrimLiftRead<'_>) {}
 
 /// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3), and the one element it
 /// lifts back out of that dim.
@@ -133,15 +145,15 @@ pub struct Scrim {
     /// own screen knows where it landed and how to paint it, and this is minted as a `const` on
     /// that screen's own `Screen::scrim`.
     ///
-    /// The two arguments are the shared top bar's render VALUES this frame (the chip's focus
-    /// unfurl, and the bar's glass face if it has one) — [`ModalStack::draw_scrims`] gets them from
-    /// [`crate::ui::dispatch::Rig::scrim_chip_read`] and hands them to every lift it calls (spec
-    /// phase 12, PX-WIDGETS). A bare `fn` cannot borrow the `Bridge` that owns those values, so they
-    /// cross as plain `Copy` arguments instead of through a `static`; a surface with nothing to lift
-    /// ([`Scrim::NONE`], [`Scrim::dim`]) simply ignores them (`no_lift`).
+    /// Its [`ScrimLiftRead`] argument carries the shared top bar's borrowed render values for this
+    /// frame: captured profile/labels and focus unfurl from the rig's chrome owner, plus the face
+    /// published by the application-owned `GlassPlan`. [`ModalStack::draw_scrims`] passes that one
+    /// typed context to every lift it calls (spec phase 12, PX-WIDGETS). Thus a bare `fn` needs no
+    /// `Bridge` borrow and performs no global/session read while drawing; a surface with nothing to
+    /// lift ([`Scrim::NONE`], [`Scrim::dim`]) simply ignores it (`no_lift`).
     ///
     /// [`ModalStack::draw_scrims`]: crate::ui::containers::modal::ModalStack::draw_scrims
-    pub lift: fn(f32, Option<crate::gfx::GlassFace>),
+    pub(crate) lift: ScrimLift,
 }
 
 impl Scrim {
@@ -160,7 +172,7 @@ impl Scrim {
     }
 
     /// A dim of `alpha` with `lift` re-drawn above it.
-    pub const fn lifting(alpha: f32, lift: fn(f32, Option<crate::gfx::GlassFace>)) -> Scrim {
+    pub(crate) const fn lifting(alpha: f32, lift: ScrimLift) -> Scrim {
         Scrim { alpha, lift }
     }
 }

@@ -492,18 +492,25 @@ impl Bridge {
         search_changed
     }
 
-    pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>, dt: f32) {
+    pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
+        glass: &mut crate::ui::frame::glass::GlassPlan, dt: f32) {
         let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
         let labels = self.chrome.labels();
         let chrome_focus = self.chrome.focus(focus);
         self.strip.update(labels, selected, chrome_focus, dt);
+        glass.step_tab_band(dt);
         self.chrome.members(selected, focus, self.strip.scroll_pos(), &mut d.nav.tabs.strip);
     }
 
-    pub(crate) fn prepare_home_chrome(&mut self, clock: &mut crate::ui::widgets::DynamicClock) {
+    pub(crate) fn prepare_home_chrome(&self, glass: &mut crate::ui::frame::glass::GlassPlan) {
         let labels = self.chrome.labels();
-        self.strip.prepare_glass(labels, clock);
+        glass.prepare_tab_band(labels);
+    }
+
+    #[cfg(test)]
+    fn seed_chrome_for_test(&mut self, name: &str, initial: &str, labels: &[&str]) {
+        self.chrome.seed_for_test(name, initial, labels, self.measure);
     }
 
     pub(crate) fn home_command(&mut self, command: HomeCmd) -> bool {
@@ -752,25 +759,28 @@ impl Bridge {
 }
 
 impl Rig<AppHost> for Bridge {
-    fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>, nav: crate::ui::screen::NavPresentation) {
+    fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>,
+        nav: crate::ui::screen::NavPresentation,
+        glass: Option<&mut crate::ui::frame::glass::GlassPlan>) {
         if !Self::draws_chrome_for(arg) { return; }
+        let Some(glass) = glass else { return };
         let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
-        let labels = self.chrome.labels();
-        self.strip.draw(labels, p);
-        let glass_wanted = crate::ui::widgets::bar_glass_wanted_with(labels);
+        let chrome = self.chrome.read(self.strip.chip_expand_pos());
+        self.strip.draw(chrome.labels, p, glass.tab_band_mut());
+        let glass_wanted = crate::ui::widgets::bar_glass_wanted_with(chrome.labels);
         crate::ui::widgets::profile_chip_with(
             p,
-            self.chrome.profile(),
+            chrome.profile,
             glass_wanted,
-            self.strip.chip_expand_pos(),
-            self.strip.bar_glass_face(),
+            chrome.chip_expand,
+            glass.tab_face(),
         );
     }
-    /// See [`crate::ui::dispatch::Rig::scrim_chip_read`] — the account menu's chip lift (a bare
-    /// `Scrim::lift` fn with no `&Bridge` to borrow) redraws the chip in the SAME strip render
-    /// values [`Bridge::draw_chrome`] just used, never through a static.
-    fn scrim_chip_read(&self) -> (f32, Option<crate::gfx::GlassFace>) {
-        (self.strip.chip_expand_pos(), self.strip.bar_glass_face())
+    /// See [`crate::ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
+    /// the SAME captured profile, labels and unfurl [`Bridge::draw_chrome`] used. The dispatcher
+    /// adds this frame's material from `GlassPlan`; neither value crosses through a static.
+    fn scrim_chrome_read(&self) -> Option<crate::ui::widgets::ChromeRead<'_>> {
+        Some(self.chrome.read(self.strip.chip_expand_pos()))
     }
     fn page_alpha(&self) -> f32 { crate::ui::nav::page_alpha() }
     fn navigation_presentation(&self) -> crate::ui::screen::NavPresentation {
@@ -1609,7 +1619,7 @@ pub(crate) fn nav_push_with_return(
 /// the `browse` store's business): the answer is the section the store is pointing at, which
 /// `nav_tab`'s `LibraryCmd::Enter` has already aimed.
 fn pill_of_arg(arg: &AppArg) -> Option<usize> {
-    use crate::ui::widgets::{pill_of, Pill};
+    use crate::app::chrome::{pill_of, Pill};
     match arg {
         AppArg::Home => pill_of(Pill::Home),
         AppArg::Search => pill_of(Pill::Search),
@@ -1638,16 +1648,16 @@ fn pill_of_arg(arg: &AppArg) -> Option<usize> {
 /// teleport exists to restore.
 pub(crate) fn nav_tab(
     d: &mut Dispatcher<AppHost>, rig: &mut Bridge, tab: HomeTab,
-    focus_pill: Option<crate::ui::widgets::Pill>,
+    focus_pill: Option<crate::app::chrome::Pill>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
-    use crate::ui::widgets::Pill;
+    use crate::app::chrome::Pill;
     let arg = match tab {
         HomeTab::Home => {
             // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
             // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
             // delivered when Home MOUNTS, not now.
-            if let Some(pill) = focus_pill.filter(|pill| crate::ui::widgets::pill_of(*pill).is_some()) {
+            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(*pill).is_some()) {
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
@@ -3626,8 +3636,9 @@ mod tests {
 
         // The fix under test: the Search arm of `run::update`'s chrome chain calls exactly this,
         // every frame, while standing on Search.
+        let mut glass = crate::ui::frame::glass::GlassPlan::new();
         for _ in 0..60 {
-            rig.update_home_chrome(&mut d, 1.0 / 60.0);
+            rig.update_home_chrome(&mut d, &mut glass, 1.0 / 60.0);
         }
 
         let after = search_member(&d);
@@ -3637,5 +3648,37 @@ mod tests {
              (stale={stale_gap}, settled after 1s={settled_gap}) — losing the Search chrome arm \
              again silently reproduces the frozen capsule / stale pointer targets this pins");
         crate::stores::browse::apply(crate::stores::browse::BrowseCmd::Reset);
+    }
+
+    /// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second
+    /// publication. Changing the process globals after A captured must not make A draw B's chip.
+    #[test]
+    fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
+        let _guard = crate::testlock::serial();
+        struct Restore(Option<crate::plex::session::UserRef>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::plex::session::set_current(self.0.take());
+            }
+        }
+        let _restore = Restore(crate::plex::session::current());
+        let mut a = Bridge::for_test(|| 0);
+        let mut b = Bridge::for_test(|| 0);
+        a.seed_chrome_for_test("Owner A", "A", &["Home", "Movies", ""]);
+        b.seed_chrome_for_test("Owner B", "B", &["Home", "TV Shows", ""]);
+        crate::plex::session::set_current(Some(crate::plex::session::UserRef {
+            title: "Global B".into(),
+            ..Default::default()
+        }));
+
+        let ar = <Bridge as crate::ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&a)
+            .expect("a bar-wearing bridge publishes lift chrome");
+        let br = <Bridge as crate::ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&b)
+            .expect("the second bridge publishes its own lift chrome");
+        assert_eq!(ar.profile.name.to_bytes(), b"Owner A");
+        assert_eq!(ar.profile.initial.to_bytes(), b"A");
+        assert_eq!(ar.labels.labels, ["Home", "Movies", ""]);
+        assert_eq!(br.profile.name.to_bytes(), b"Owner B");
+        assert_eq!(br.labels.labels, ["Home", "TV Shows", ""]);
     }
 }

@@ -419,11 +419,11 @@ impl<H: Host> ModalStack<H> {
     /// pair, since there is one bar and at most one lift reads it (spec phase 12, PX-WIDGETS): a
     /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
     /// call's own argument instead of through a static.
-    pub fn draw_scrims(&self, nav_page_alpha: f32, chip_read: (f32, Option<crate::gfx::GlassFace>)) {
+    pub fn draw_scrims(&self, nav_page_alpha: f32, read: crate::ui::screen::ScrimLiftRead<'_>) {
         for (_, a, lift) in self.scrims(nav_page_alpha) {
             let dim = crate::ui::theme::scrim_black(a);
             crate::ui::Painter::root().rect(crate::ui::Rect::FULL, 0.0, dim, dim, 0.0);
-            (lift)(chip_read.0, chip_read.1);
+            (lift)(read);
         }
     }
 
@@ -435,7 +435,7 @@ impl<H: Host> ModalStack<H> {
     /// or neither the alpha ladder nor the draw ORDER could be graded at all. Every eligible
     /// surface is ASKED (`Screen::scrim`) whatever its answer, which is what makes "the container
     /// asked me, in the page pass" observable from a fixture that wants no dim.
-    pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32, fn(f32, Option<crate::gfx::GlassFace>))> {
+    pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32, crate::ui::screen::ScrimLift)> {
         let mut out = Vec::new();
         for s in &self.surfaces {
             if s.phase == Phase::Hidden || matches!(s.style, Style::Opaque { .. }) {
