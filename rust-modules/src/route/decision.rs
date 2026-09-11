@@ -9223,6 +9223,350 @@ mod tests {
         crate::plex::reset_servers_for_test();
     }
 
+    /// 720p denies remux, so the encoder can transcode the selected DTS. Putting the smart-DP
+    /// AC3 sibling here replaced English with the Russian default (reproduced on PMS 1.43.4).
+    #[test]
+    fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::P720);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-selected-dts",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-selected-dts-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::P720;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 2663,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    default: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2669,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "dca".into(),
+                    channels: 6,
+                    selected: true,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "dca",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "720p must re-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "re-encode installs start.mkv: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2669"),
+            "PUT must keep selected English DTS, not the Russian AC3 sibling: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2669"),
+            "start.mkv must name that DTS, not the AC3 sibling: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 2669);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// 720p with a selected flag that only echoes the Russian default must still PUT English,
+    /// the same sibling smart-DP / pref-lang would copy. Treating that echo as a pick would
+    /// open The Morning Show in the foreign dub at 720p.
+    #[test]
+    fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::P720);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-default-echo",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-default-echo-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::P720;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 10975,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "eac3".into(),
+                    channels: 6,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 10976,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "eac3".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "720p must re-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "re-encode installs start.mkv: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("10976"),
+            "PUT must keep English, not the echoed Russian default: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("10976"),
+            "start.mkv must name English, not the echoed Russian default: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 10976);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// 720p can transcode unselected English DTS when the smart-DP sibling is a foreign AC3.
+    /// Treating pref-lang as DP-only would keep the Russian copy the encoder does not need.
+    #[test]
+    fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::P720);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-pref-lang-dts",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-pref-lang-dts-client",
+        );
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::P720;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 2663,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    default: true,
+                    selected: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2669,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "dca".into(),
+                    channels: 6,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "dca",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "720p must re-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.mkv"),
+            "re-encode installs start.mkv: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2669"),
+            "PUT must name pref-lang English DTS, not the Russian AC3 sibling: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2669"),
+            "start.mkv must name that DTS, not the AC3 sibling: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 2669);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// Relay Auto cannot Original, so bootstrap installs HLS. The play-path PUT and start.m3u8
+    /// must still name selected English DTS, not the Russian AC3 sibling a remux would copy.
+    #[test]
+    fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
+        use std::time::Duration;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::Auto);
+        let (port, rx, server) = plan_pms(3, EMPTY_MC);
+        let sid = crate::plex::register_for_test(
+            "reencode-auto-hls-dts",
+            "127.0.0.1",
+            port,
+            "token",
+            "reencode-auto-hls-dts-client",
+        );
+        crate::plex::client_for(sid)
+            .expect("registered")
+            .set_link(crate::plex::probe::Location::Relay);
+        let mut env = ResolveEnv::snapshot(&ps, sid, "rk-4k");
+        env.quality = Quality::Auto;
+        env.src_kbps = 48_000;
+        env.audio_sid = 0;
+        env.cached_item = Some(fourk_item(
+            sid,
+            vec![
+                crate::metadata::Stream {
+                    id: 2663,
+                    index: 0,
+                    lang_code: "rus".into(),
+                    codec: "ac3".into(),
+                    channels: 6,
+                    default: true,
+                    ..Default::default()
+                },
+                crate::metadata::Stream {
+                    id: 2669,
+                    index: 1,
+                    lang_code: "eng".into(),
+                    codec: "dca".into(),
+                    channels: 6,
+                    selected: true,
+                    ..Default::default()
+                },
+            ],
+        ));
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "dca",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        assert!(
+            !plan.remux,
+            "Relay Auto must HLS-encode, not copy: {}",
+            plan.url
+        );
+        assert!(
+            plan.url.contains("start.m3u8"),
+            "Relay Auto installs start.m3u8: {}",
+            plan.url
+        );
+        let put = requests
+            .iter()
+            .find(|line| line.contains("PUT /library/parts/"))
+            .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
+        assert_eq!(
+            query_param(put, "audioStreamID"),
+            Some("2669"),
+            "PUT must keep selected English DTS, not the Russian AC3 sibling: {put}"
+        );
+        assert_eq!(
+            query_param(&plan.url, "audioStreamID"),
+            Some("2669"),
+            "start.m3u8 must name that DTS, not the AC3 sibling: {}",
+            plan.url
+        );
+        assert_eq!(plan.audio_sid, 2669);
+        restore_quality(Quality::Original);
+        crate::plex::reset_servers_for_test();
+    }
+
     /// A remux probe that registers `/decision` and then gets no `start.mkv` body must
     /// physical-stop (`closeResourceSession=0`) so the HLS `/decision` on the same identity
     /// is not 503'd. Closing the Streaming Resource would.

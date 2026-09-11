@@ -901,8 +901,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // evaluate a TrueHD/DTS default and veto; naming the chosen AAC/AC3/EAC3 sibling on the
         // query is what keeps that class on Original. subtitleStreamID is an advertised embedded
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
-        // force a burn. Same audio id goes on the remux probe, the play-path PUT, and
-        // transcode_spec so MDE / start.mkv / selection name one track.
+        // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
+        // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
+        // the sibling; a re-encode names a real selected pick or pref-lang English so 720p
+        // does not copy a foreign AC3 sibling.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
     let mut directplay = mde.as_ref().is_some_and(|v| v.original);
@@ -1203,6 +1205,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // `transcode` must not be answered with a local codec-copy remux. Part.decision=transcode
     // alone is not that veto.
     let remux = video_dp && allowed.remux && !no_video_copy && !mde_forbids_copy;
+    // Remux copies, so this PUT names the smart-DP sibling. A re-encode transcodes a real
+    // selected source track (English DTS → AC3) and must not PUT that sibling or a 720p start
+    // replaces the pick with a foreign AC3 copy. A selected flag that only echoes default is
+    // not a pick; `encode_audio_id` then keeps an English sibling or, if the sibling is a
+    // foreign dub, the first English track (unselected DTS included).
+    let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks);
     if remux {
         let achosen = audio_sel
             .as_ref()
@@ -1220,13 +1228,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.vcodec = crate::devcaps::caps().encode_vcodec().into();
         plan.acodec = "ac3".into();
     }
-    // Carry the picked SOURCE track into the server-side selection (put_selection +
-    // &audioStreamID on the transcode query): the remux copies — and the re-encode encodes —
-    // the CHOSEN track instead of the part default. The demuxer is NOT pointed at a source
-    // ordinal here (the old set_audio_track(aidx) indexed the SERVER's output, whose stream
-    // layout is the transcoder's, not the source's) — the payload-codec match finds the lane.
-    if let Some((_, _, asid)) = &audio_sel {
-        plan.audio_sid = *asid;
+    // Carry the SOURCE track this path will PUT and name on start.mkv. The demuxer is NOT
+    // pointed at a source ordinal here (the old set_audio_track(aidx) indexed the SERVER's
+    // output, whose stream layout is the transcoder's, not the source's) — the payload-codec
+    // match finds the lane.
+    if encode_audio > 0 {
+        plan.audio_sid = encode_audio;
     }
     // keep the flavor so a later seek rebuilds the same query for start.mkv?...&offset=T
     // Both halves of this line landed in the same batch from different units and each is
@@ -1242,10 +1249,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild this query
     // from `Session`, and one that dropped the ceiling would hand the encoder back the full
     // 4K/60 Mbps bound the moment the user touched the scrubber.
-    // Same audio id MDE and the remux probe already named. `env.audio_sid` is the part default
-    // (TrueHD) at resolve start; putting that undoes smart-DP. Subtitle stays `env.sub_sid`:
-    // a positive id here is a burn, and Original client-renders instead.
-    put_selection(env.sid, plan.part_id, audio_id, env.sub_sid);
+    // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
+    // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
+    // `encode_audio_id` (a real selected pick, else English, else that sibling). Subtitle stays
+    // `env.sub_sid`: a positive id here is a burn, and Original client-renders instead.
+    put_selection(env.sid, plan.part_id, encode_audio, env.sub_sid);
     if remux_probed && adaptive {
         // Probe registered start.mkv on this playback identity. HLS `/decision` reuses it;
         // closeResourceSession=1 would 503 the next start. A failed sample already stopped
@@ -1260,7 +1268,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         remux,
         no_video_copy,
         crate::plex::TranscodeOffset::Fresh,
-        audio_id,
+        encode_audio,
         env.sub_sid,
         plan.ceiling,
         plan.delivery,
@@ -1382,6 +1390,58 @@ pub(super) fn pick_dp_audio(
         .iter()
         .position(|s| dp(&s.codec.to_lowercase()))
         .map(pick)
+}
+
+
+/// Stream id named on the remux/re-encode PUT and start.mkv.
+///
+/// A remux COPIES, so this is the smart-DP sibling (`dp_audio_id`) — putting a selected
+/// TrueHD/DTS track would ship audio the TV cannot decode. A re-encode can transcode a real
+/// selected pick (`selected && !default`) to AC3, so naming the sibling would replace English
+/// DTS with a foreign AC3 copy. A `selected` flag that only echoes `default` is not a choice
+/// (The Morning Show: the Russian default reads `selected`); that falls through rather than
+/// beating English.
+///
+/// After that pick, a sibling already in [`PREF_AUDIO_LANG`] stays — taking "first English, any
+/// codec" would PUT English TrueHD on 720p when an English AC3 sibling exists, undoing smart-DP.
+/// Only when the sibling is a foreign dub does the first English track win, so an unselected
+/// English DTS is encoded instead of a Russian AC3 copy. Never `0` (an omitted PUT encodes the
+/// part default).
+/// `env_audio_sid` is the session/retry pick and wins on re-encode when set, including a remux
+/// leftover sibling (mid-play quality drop keeps what is already playing). A cold play zeros
+/// it (`request_play`).
+fn encode_audio_id(
+    remux: bool,
+    dp_audio_id: i64,
+    env_audio_sid: i64,
+    tracks: &[crate::metadata::Stream],
+) -> i64 {
+    if remux {
+        return dp_audio_id;
+    }
+    if env_audio_sid > 0 {
+        return env_audio_sid;
+    }
+    if let Some(id) = tracks
+        .iter()
+        .find(|s| s.selected && !s.default)
+        .map(|s| s.id)
+        .filter(|&id| id > 0)
+    {
+        return id;
+    }
+    let sibling_is_pref = tracks
+        .iter()
+        .any(|s| s.id == dp_audio_id && s.lang_code == PREF_AUDIO_LANG);
+    if sibling_is_pref {
+        return dp_audio_id;
+    }
+    tracks
+        .iter()
+        .find(|s| s.lang_code == PREF_AUDIO_LANG)
+        .map(|s| s.id)
+        .filter(|&id| id > 0)
+        .unwrap_or(dp_audio_id)
 }
 
 
@@ -2164,6 +2224,161 @@ mod tests {
             trk(2673, "ac3", "eng", false),
         ];
         assert_eq!(pick_dp_audio(&tracks, "dca"), Some((2, "ac3".into(), 2673)));
+    }
+
+    /// The 720p re-encode must name the selected DTS, not the Russian AC3 sibling smart-DP
+    /// would copy. Remux still names that sibling — a copy of DTS would not play.
+    #[test]
+    fn a_reencode_keeps_the_selected_dts_instead_of_the_ac3_sibling() {
+        let tracks = [
+            trk(2663, "ac3", "rus", true),
+            server_selected(trk(2669, "dca", "eng", false)),
+        ];
+        let dp = pick_dp_audio(&tracks, "dca")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            2663,
+            "remux copies the sibling"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2669,
+            "cold re-encode keeps the selected DTS"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 2669, &tracks),
+            2669,
+            "a retry/session pick of that DTS is kept"
+        );
+        assert_eq!(
+            encode_audio_id(true, dp, 2669, &tracks),
+            2663,
+            "remux still copies the sibling even when a DTS pick is in env"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, dp, &tracks),
+            dp,
+            "retry after remux keeps the sibling already playing"
+        );
+    }
+
+    /// A selected flag that only echoes the container default is not a 720p pick. Treating it
+    /// as one would open The Morning Show in the Russian default the English rung exists to skip.
+    #[test]
+    fn a_reencode_does_not_treat_a_default_echo_as_a_pick() {
+        let tracks = [
+            server_selected(trk(10975, "eac3", "rus", true)),
+            trk(10976, "eac3", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "eac3")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 10976, "smart-DP / pref-lang sibling is English");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            10976,
+            "remux copies English"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            10976,
+            "cold re-encode keeps English, not the echoed Russian default"
+        );
+    }
+
+    /// Live three-track shape: selected English DTS plus an English AC3 sibling. Remux copies
+    /// the AC3; re-encode names the DTS.
+    #[test]
+    fn a_reencode_names_selected_dts_not_the_english_ac3_sibling() {
+        let tracks = [
+            trk(2663, "ac3", "rus", true),
+            server_selected(trk(2669, "dca", "eng", false)),
+            trk(2673, "ac3", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "dca")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2673, "smart-DP sibling is the English AC3");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            2673,
+            "remux copies the English AC3"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2669,
+            "cold re-encode keeps the selected DTS"
+        );
+    }
+
+    /// Unselected English DTS beside a Russian AC3 sibling: remux still copies the sibling, but
+    /// a re-encode can consume the English track PREF_AUDIO_LANG would have taken if it were DP.
+    #[test]
+    fn a_reencode_names_pref_lang_dts_when_the_sibling_is_foreign() {
+        let tracks = [
+            server_selected(trk(2663, "ac3", "rus", true)),
+            trk(2669, "dca", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "dca")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            2663,
+            "remux copies the sibling"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2669,
+            "cold re-encode names unselected English DTS, not the Russian AC3"
+        );
+    }
+
+    /// First-English-any-codec would PUT TrueHD here. The sibling is already English, so 720p
+    /// keeps that AC3 copy instead of re-encoding lossless.
+    #[test]
+    fn a_reencode_keeps_an_english_ac3_sibling_over_truehd() {
+        let tracks = [
+            server_selected(trk(1, "truehd", "eng", true)),
+            trk(2, "ac3", "eng", false),
+        ];
+        let dp = pick_dp_audio(&tracks, "truehd")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 2, "smart-DP sibling is the English AC3");
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2,
+            "re-encode must not replace the English AC3 with TrueHD"
+        );
+    }
+
+    /// No AC3 sibling: smart-DP has nothing to copy. A real selected DTS must still be named,
+    /// not omitted (PUT 0 encodes the TrueHD default).
+    #[test]
+    fn a_reencode_names_selected_dts_when_there_is_no_ac3_sibling() {
+        let tracks = [
+            trk(1, "truehd", "eng", true),
+            server_selected(trk(2, "dca", "eng", false)),
+        ];
+        let dp = pick_dp_audio(&tracks, "truehd")
+            .map(|(_, _, id)| id)
+            .unwrap_or(0);
+        assert_eq!(dp, 0, "no direct-playable track");
+        assert_eq!(
+            encode_audio_id(true, dp, 0, &tracks),
+            0,
+            "remux has no sibling to name"
+        );
+        assert_eq!(
+            encode_audio_id(false, dp, 0, &tracks),
+            2,
+            "cold re-encode names the selected DTS, not 0"
+        );
     }
 
     /// The whole ladder, rung by rung, with the selected flag switched on and off — the order is
