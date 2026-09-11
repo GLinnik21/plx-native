@@ -94,14 +94,30 @@ about to establish. That fact is what decides §3 below.
    `admit` returns typed `Duplicate` or `Capacity`; the requester handles rejection synchronously,
    without spawning or queueing a refusal. Unlimited rejected attempts cannot have a bounded
    queued answer each. OS spawn refusal AFTER admission remains a reserved `Refused` terminal.
-   A full data lane atomically queues one `Dropped` terminal in arrival order; duplicate/unknown
-   publications cannot complete a second request. `clear` discards queued terminals but only
+   A full one-shot data lane atomically queues one `Dropped` terminal in arrival order;
+   duplicate/unknown publications cannot complete a second request. `clear` discards queued terminals but only
    cancels running reservations: their workers queue sequenced, payload-free acknowledgements;
    reservations retire and cancellation drops are counted when the main thread drains or clears
    those terminals, which are never delivered to the addressee.
    Metadata propagates the admission outcome directly and settles a rejected new generation's
-   spinner immediately. Drop counters include discarded terminals per canonical MachineId;
-   full queued-payload hashing and explicit progress/terminal streams remain separate work.
+   spinner immediately. Drop counters include discarded terminals per canonical MachineId.
+   **R2Q2 adds explicit streams on this same transport:** `admit` remains one-shot;
+   `admit_stream` reserves one operation for ordered `progress` followed by exactly one terminal.
+   `Landed::terminal` distinguishes the two; draining progress never retires admission. Stream
+   `put` uses its reserved terminal slot even when the capped data queue is full. An overflowing
+   `progress` instead closes the stream with one ordered `Dropped`; the producer must stop and
+   cannot replace that partial-flow failure with later success. Queue storage is bounded by the
+   data cap plus accepted terminal reservations. `cancel(addr)` discards only that operation's
+   queued progress/terminal on the main thread, retaining running reservations until their
+   ordered acknowledgement is consumed; `clear` applies this to all operations. A worker creates
+   `completion_guard(addr)` inside its running closure: early return or unwind queues `Dropped`
+   once, while an explicit terminal already queued/consumed makes guard drop a no-op. The caller
+   still answers OS spawn refusal, because no worker guard exists when the closure never starts.
+   This clarifies §5.2's one-answer rule for §2.3's multievent login protocol as one terminal per
+   admitted stream, with progress explicitly nonterminal. Metadata remains strictly one-shot.
+   The bounds count records/reservations, not bytes of unconstrained payloads: Session integration
+   must enforce QR/HTTP/result payload limits. Session adapter wiring and full queued-payload
+   canonical replay hashing remain mandatory subsequent work.
 5. **The detail mailbox carries identity.** `metadata`'s one-slot `DETAIL_SLOT` becomes a
    `Landing` keyed on `(ServerId, ratingKey)`: a landing for a different server's item of the same
    number is skipped rather than installed, which is the gap the spec's evidence line names

@@ -106,6 +106,7 @@ pub use models::*;
 pub use params::*;
 #[cfg(test)]
 pub(crate) use servers::{
+    register_pinned_with_client_id,
     register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test,
     write_held_for_test,
 };

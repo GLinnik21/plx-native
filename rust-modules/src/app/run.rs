@@ -1511,12 +1511,12 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // The person STORE is deliberately still installed on the press frame by `person::open`
         // — the detail page fading out reads none of it, so nothing blanks, and `enter_node`'s
         // re-open guard then makes the floor's entry a pure route flip.
-        // **Phase 6: the sign-in worker no longer writes `auth`'s controller from its own
-        // thread.** `login_thread` publishes what it observed as `LoginProgress`, and this is the
-        // one place on the main thread that turns each of them into the controller's next state
+        // **Auth workers no longer write `auth`'s controller, persisted Session or registry from
+        // their own threads.** They publish typed `AuthProgress`, and this is the one place on the
+        // main thread that turns each observation into accepted application state
         // (`auth::apply_progress`) — the same "drain a mailbox, then act on the result" shape
         // `run()`'s own `super::adapters::poster::drain_decoded()` uses for landed images, just
-        // addressed (each `LoginProgress` names the flow epoch it came from) rather than global.
+        // addressed by flow epoch plus the relevant session/server identity.
         // Unconditional on `app.route`, unlike the phase→route follower two lines down: the
         // worker can report progress while some OTHER screen is showing (a switch started from
         // the Account surface, whose host page is still Home, before the loop has moved to
@@ -1527,10 +1527,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // frame rather than lagging it by one iteration.
         for progress in crate::auth::take_progress() {
             // The token is `land_results`'s own proof this really runs on the main thread — the same
-            // token every other main-thread-only call in this function already carries. Not a
-            // finding of this pass: `auth::apply_progress` grew this parameter as part of a
-            // concurrent lane's own work on `auth.rs`, and this is the one call site (in a file
-            // that lane does not own) its signature change left needing an update.
+            // token every other main-thread-only call in this function already carries.
             crate::auth::apply_progress(app.adapters.player.mt(), progress);
         }
         // login flow: install resolved creds on the MAIN thread, then follow the flow phase →

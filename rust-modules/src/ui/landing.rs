@@ -1,12 +1,15 @@
-//! Bounded one-shot addressed results (§5.2; clarification in docs/stores-as-machines.md §2).
+//! Bounded addressed one-shot results and explicit progress streams (§5.2; see
+//! docs/stores-as-machines.md §2 for the one-terminal-per-stream clarification).
 //! Admission reserves one completion slot, bounded globally and per addressee. Capacity rejection
 //! is synchronous; the requester settles it without spawning or queueing an unbounded refusal.
 //! OS spawn refusal after admission is a reserved terminal, just like Data or Dropped.
-//! A full data lane atomically queues Dropped; the caller must not publish a second completion.
+//! One-shot data Full or stream progress overflow atomically queues Dropped. A stream's terminal
+//! payload uses its reserved slot even when progress data is full. Progress never retires a slot.
 //! Both lanes merge by arrival sequence. Reservations last until terminal consumption/discard.
 //! Cancellation retains running reservations until the worker acknowledges completion; it does
 //! not stop workers. Each admitted Addr must be unique for its operation (no completion tombstones).
-//! Only drop counters are canonical here; complete queued-payload hashing and streams remain work.
+//! Record/reservation bounds do not bound arbitrary V bytes: adapters must bound payload sizes.
+//! Only drop counters are canonical here; complete queued-payload replay hashing remains work.
 #![allow(dead_code)] // phase 4: the generic surface is wider than its first consumer uses
 
 use std::collections::{BTreeMap, VecDeque};
@@ -26,11 +29,13 @@ pub enum PublishError {
     Full,
     Unknown,
     AlreadyTerminal,
+    NotStream,
+    Cancelled,
 }
 
 #[derive(Clone, Copy)]
 enum Reservation {
-    Running { cancelled: bool },
+    Running { cancelled: bool, stream: bool },
     Terminal { cancelled: bool },
 }
 
@@ -46,6 +51,20 @@ pub struct Landed<K, V> {
     pub seq: u64,
     pub addr: Addr,
     pub lane: Lane<K, V>,
+    /// False only for stream progress. Every one-shot result and stream completion is terminal.
+    pub terminal: bool,
+}
+
+/// Construct inside the running worker, borrowing its Arc-owned Landing. Early return/unwind
+/// queues Dropped unless an explicit terminal already exists. The launcher, not this guard,
+/// answers an OS refusal when the closure never starts. Addr identifies one unique operation.
+pub struct CompletionGuard<'a, K, V> {
+    landing: &'a Landing<K, V>,
+    addr: Addr,
+}
+
+impl<K, V> Drop for CompletionGuard<'_, K, V> {
+    fn drop(&mut self) { let _ = self.landing.dropped(self.addr); }
 }
 
 struct Inner<K, V> {
@@ -96,6 +115,15 @@ impl<K, V> Landing<K, V> {
 
     /// BEFORE a spawn. Rejection queues nothing: the requester handles this exact outcome.
     pub fn admit(&self, addr: Addr) -> Result<(), AdmissionError> {
+        self.admit_mode(addr, false)
+    }
+
+    /// One reservation for ordered progress followed by exactly one terminal outcome.
+    pub fn admit_stream(&self, addr: Addr) -> Result<(), AdmissionError> {
+        self.admit_mode(addr, true)
+    }
+
+    fn admit_mode(&self, addr: Addr, stream: bool) -> Result<(), AdmissionError> {
         let mut g = self.lock();
         let key = (addr.to, addr.req.0);
         if g.inflight.contains_key(&key) {
@@ -105,7 +133,7 @@ impl<K, V> Landing<K, V> {
             || g.inflight.keys().filter(|(to, _)| *to == addr.to).count() >= self.inflight_cap as usize {
             return Err(AdmissionError::Capacity);
         }
-        g.inflight.insert(key, Reservation::Running { cancelled: false });
+        g.inflight.insert(key, Reservation::Running { cancelled: false, stream });
         Ok(())
     }
 
@@ -142,6 +170,36 @@ impl<K, V> Landing<K, V> {
         self.complete(addr, Lane::Data(key, value))
     }
 
+    /// Nonterminal data for a live stream. Full closes it with one ordered Dropped terminal;
+    /// the producer must stop. Later success cannot conceal a partially lost observation flow.
+    pub fn progress(&self, addr: Addr, key: K, value: V) -> Result<(), PublishError> {
+        let mut g = self.lock();
+        match g.inflight.get(&(addr.to, addr.req.0)) {
+            None => return Err(PublishError::Unknown),
+            Some(Reservation::Terminal { .. }) => return Err(PublishError::AlreadyTerminal),
+            Some(Reservation::Running { stream: false, .. }) => return Err(PublishError::NotStream),
+            Some(Reservation::Running { cancelled: true, .. }) => return Err(PublishError::Cancelled),
+            Some(Reservation::Running { .. }) => {}
+        }
+        if g.data.len() >= self.cap {
+            Self::count_drop(&mut g, addr.to);
+            self.complete_locked(&mut g, addr, Lane::Dropped(addr.req))?;
+            return Err(PublishError::Full);
+        }
+        g.seq += 1;
+        let seq = g.seq;
+        g.data.push_back(Landed { seq, addr, lane: Lane::Data(key, value), terminal: false });
+        Ok(())
+    }
+
+    pub fn completion_guard(&self, addr: Addr) -> Result<CompletionGuard<'_, K, V>, PublishError> {
+        match self.lock().inflight.get(&(addr.to, addr.req.0)) {
+            None => Err(PublishError::Unknown),
+            Some(Reservation::Terminal { .. }) => Err(PublishError::AlreadyTerminal),
+            Some(Reservation::Running { .. }) => Ok(CompletionGuard { landing: self, addr }),
+        }
+    }
+
     /// Worker abandonment after admission, using its reserved terminal slot.
     pub fn dropped(&self, addr: Addr) -> Result<(), PublishError> {
         self.complete(addr, Lane::Dropped(addr.req))
@@ -152,17 +210,21 @@ impl<K, V> Landing<K, V> {
         self.complete(addr, Lane::Refused(addr.req))
     }
 
-    fn complete(&self, addr: Addr, mut lane: Lane<K, V>) -> Result<(), PublishError> {
+    fn complete(&self, addr: Addr, lane: Lane<K, V>) -> Result<(), PublishError> {
         let mut g = self.lock();
+        self.complete_locked(&mut g, addr, lane)
+    }
+
+    fn complete_locked(&self, g: &mut Inner<K, V>, addr: Addr, mut lane: Lane<K, V>) -> Result<(), PublishError> {
         let key = (addr.to, addr.req.0);
-        let cancelled = match g.inflight.get(&key) {
+        let (cancelled, stream) = match g.inflight.get(&key) {
             None => return Err(PublishError::Unknown),
             Some(Reservation::Terminal { .. }) => return Err(PublishError::AlreadyTerminal),
-            Some(Reservation::Running { cancelled }) => *cancelled,
+            Some(Reservation::Running { cancelled, stream }) => (*cancelled, *stream),
         };
-        let full = !cancelled && matches!(lane, Lane::Data(..)) && g.data.len() >= self.cap;
+        let full = !cancelled && !stream && matches!(lane, Lane::Data(..)) && g.data.len() >= self.cap;
         if full {
-            Self::count_drop(&mut g, addr.to);
+            Self::count_drop(g, addr.to);
         }
         if full || cancelled {
             // Cancelled completions still arrive in sequence and retain their reserved slot.
@@ -172,8 +234,8 @@ impl<K, V> Landing<K, V> {
         g.inflight.insert(key, Reservation::Terminal { cancelled });
         g.seq += 1;
         let seq = g.seq;
-        let record = Landed { seq, addr, lane };
-        if matches!(record.lane, Lane::Data(..)) { g.data.push_back(record); }
+        let record = Landed { seq, addr, lane, terminal: true };
+        if !stream && matches!(record.lane, Lane::Data(..)) { g.data.push_back(record); }
         else { g.control.push_back(record); }
         if full { Err(PublishError::Full) } else { Ok(()) }
     }
@@ -203,8 +265,10 @@ impl<K, V> Landing<K, V> {
         }
         merged.sort_by_key(|r| r.seq);
         for rec in merged {
-            let cancelled = matches!(g.inflight.remove(&(rec.addr.to, rec.addr.req.0)),
-                Some(Reservation::Terminal { cancelled: true }));
+            let key = (rec.addr.to, rec.addr.req.0);
+            let cancelled = matches!(g.inflight.get(&key),
+                Some(Reservation::Terminal { cancelled: true } | Reservation::Running { cancelled: true, .. }));
+            if rec.terminal { g.inflight.remove(&key); }
             if cancelled || !is_deliverable(&rec.addr) {
                 Self::count_drop(&mut g, rec.addr.to);
                 continue;
@@ -225,13 +289,33 @@ impl<K, V> Landing<K, V> {
     /// the worker's completion acknowledgement: cancellation is not worker termination.
     pub fn clear(&self) {
         let mut g = self.lock();
-        while let Some(rec) = g.data.pop_front().or_else(|| g.control.pop_front()) {
-            Self::count_drop(&mut g, rec.addr.to);
-            g.inflight.remove(&(rec.addr.to, rec.addr.req.0));
+        let addresses: Vec<_> = g.inflight.keys().map(|(to, req)| Addr { to: *to, req: RequestId(*req) }).collect();
+        for addr in addresses { Self::cancel_locked(&mut g, addr); }
+    }
+
+    /// Main-thread cancellation of only this operation. Progress/queued terminal discard is
+    /// counted here; a running worker retains its reservation until its terminal is consumed.
+    pub fn cancel(&self, addr: Addr) -> bool {
+        Self::cancel_locked(&mut self.lock(), addr)
+    }
+
+    fn cancel_locked(g: &mut Inner<K, V>, addr: Addr) -> bool {
+        let key = (addr.to, addr.req.0);
+        let Some(state) = g.inflight.get(&key).copied() else { return false };
+        let mut discarded = 0;
+        let mut keep = |rec: &Landed<K, V>| {
+            if rec.addr == addr { discarded += 1; false } else { true }
+        };
+        g.data.retain(&mut keep);
+        g.control.retain(&mut keep);
+        for _ in 0..discarded { Self::count_drop(g, addr.to); }
+        match state {
+            Reservation::Terminal { .. } => { g.inflight.remove(&key); }
+            Reservation::Running { stream, .. } => {
+                g.inflight.insert(key, Reservation::Running { cancelled: true, stream });
+            }
         }
-        for state in g.inflight.values_mut() {
-            *state = Reservation::Running { cancelled: true };
-        }
+        true
     }
 
     /// Per-landing drop counter — hashed state (§5.2).
@@ -248,6 +332,10 @@ impl<K, V> Landing<K, V> {
         self.len() == 0
     }
 }
+
+#[cfg(test)]
+#[path = "landing/stream_tests.rs"]
+mod stream_tests;
 
 #[cfg(test)]
 mod tests {

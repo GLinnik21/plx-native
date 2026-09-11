@@ -9,18 +9,16 @@
 //! All network happens on spawned threads; the UI only reads snapshots through the accessors here.
 //! Tokens live in the working [`Session`] and are never logged.
 //!
-//! **The QR sign-in + discovery pipeline (`login_thread` and everything it calls) does not write
-//! its own results.** A worker packages what it observed as a [`LoginProgress`] and [`take_progress`]
-//! /[`apply_progress`] carry it to the one thread allowed to act on it — see the section doc above
-//! `LoginProgress` for the full account. The profile-switch and roster-refresh workers below it in
-//! this file are NOT yet converted and still write their controller state directly; that boundary is
-//! named there rather than implied here.
+//! **Auth workers do not write their own results.** A worker packages what it observed as an
+//! [`AuthProgress`] value and [`take_progress`]/[`apply_progress`] carry it to the one thread
+//! allowed to act on it, in publication order. R2A leaves the physical [`Ctl`] owner in this
+//! module; moving that owner into the app's Session is the separate R2B boundary.
 #![allow(dead_code)]
 use crate::plex::account::{AccountClient, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
 use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 use crate::plex::{Origin, ServerId};
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -237,18 +235,27 @@ static AUTH_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// the property this doc opens with: a generation is never handed to a code that never gets shown.
 static QR_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// One in-flight endpoint re-probe per registry slot. Catalog retries prove that the CURRENT
-/// origin stopped answering, but a Wi-Fi/LAN transition can make another connection from the same
-/// plex.tv Resource become the right one. Coalescing here keeps two failing catalog surfaces from
-/// launching duplicate `/resources` requests for the same server.
-static ENDPOINT_REFRESHING: AtomicU32 = AtomicU32::new(0);
+/// Main-thread endpoint admission. A unique flight id sits beside each occupied slot, so a stale
+/// or duplicate terminal observation can never clear a newer request for the same registry id.
+struct EndpointAdmission {
+    next: u64,
+    flights: [u64; 32],
+}
 
-struct EndpointRefreshFlight(u32);
+static ENDPOINT_ADMISSION: Mutex<EndpointAdmission> = Mutex::new(EndpointAdmission {
+    next: 0,
+    flights: [0; 32],
+});
 
-impl Drop for EndpointRefreshFlight {
-    fn drop(&mut self) {
-        ENDPOINT_REFRESHING.fetch_and(!self.0, Ordering::AcqRel);
+fn admit_endpoint(raw: usize) -> Option<u64> {
+    let mut admission = ENDPOINT_ADMISSION.lock().unwrap_or_else(|e| e.into_inner());
+    if raw >= admission.flights.len() || admission.flights[raw] != 0 {
+        return None;
     }
+    admission.next = admission.next.wrapping_add(1).max(1);
+    let flight = admission.next;
+    admission.flights[raw] = flight;
+    Some(flight)
 }
 
 /// **How many files the last "Delete all local data" sweep could not remove.** Moved here from
@@ -922,52 +929,35 @@ pub fn start_switch(from: Picker) {
     refresh_roster();
     // best-effort: a refused spawn just leaves the persisted roster on screen (already installed
     // above), so there is no flag to release and nothing to tell the user
+    let expected = SessionIdentity {
+        client_id: cid.clone(),
+        account_token: tok.clone(),
+        profile_uuid: profile,
+        authority: SessionAuthority::Controller,
+    };
     let _ = crate::task::spawn_small("roster", move || {
-        let ac = AccountClient::new(&cid, Some(&tok));
-        match ac.home_users() {
-            Some(us) if !us.is_empty() => {
-                let users: Vec<UserTile> = us.iter().map(UserTile::of).collect();
-                log(&format!("auth: roster refreshed n={}", users.len()));
-                let roster: Vec<session::HomeUserRef> =
-                    users.iter().map(UserTile::to_ref).collect();
-                let applied = with_live_epoch(epoch, || {
-                    let live = with_ctl(|c| {
-                        if c.session.client_id != cid
-                            || c.session.account_token != tok
-                            || c.session.user.uuid != profile
-                        {
-                            return false;
-                        }
-                        c.session.home_users = roster.clone();
-                        c.users = users;
-                        true
-                    });
-                    live && session::update(|s| {
-                        (s.client_id == cid && s.account_token == tok && s.user.uuid == profile)
-                            .then(|| Session {
-                                home_users: roster,
-                                ..s.clone()
-                            })
-                    })
-                });
-                // Only the field this worker owns, and through the one door. A whole-session save
-                // from the CTL snapshot would put the stale `sources` back over the SERVER roster
-                // — which `refresh_roster` is refreshing at this very moment, since
-                // `start_switch` spawns both and neither can know which lands first.
-                if applied != Some(true) {
-                    log("auth: home-user roster refresh dropped — session identity changed");
-                }
-            }
-            _ => {
-                log("auth: roster refresh failed — keeping cached roster");
-                let _ = with_live_epoch(epoch, || {
-                    if with_ctl(|c| c.users.is_empty() && c.phase == Phase::Profiles) {
-                        set_error("Couldn't load profiles — check the connection.");
-                    }
-                });
-            }
-        }
+        home_roster_worker(epoch, expected, cid, tok)
     });
+}
+
+fn home_roster_worker(epoch: u64, expected: SessionIdentity, cid: String, token: String) {
+    let ac = AccountClient::new(&cid, Some(&token));
+    let users = match ac.home_users() {
+        Some(users) if !users.is_empty() => {
+            let users: Vec<UserTile> = users.iter().map(UserTile::of).collect();
+            log(&format!("auth: roster refreshed n={}", users.len()));
+            Some(users)
+        }
+        _ => {
+            log("auth: roster refresh failed — keeping cached roster");
+            None
+        }
+    };
+    push_auth_progress(AuthProgress::HomeRoster(HomeRosterProgress {
+        epoch,
+        expected,
+        users,
+    }));
 }
 
 /// Sign out: forget the persisted session + roster and start a fresh login. The caller routes to
@@ -1044,18 +1034,227 @@ fn deleted_ctl() -> Ctl {
 // The fix is the oldest one there is for "two threads must not both hold a write": stop the second
 // one from writing at all. A worker now does exactly what `login_thread`'s own network calls always
 // did — discover a FACT (a code was minted, the user authorized, discovery found a server, the whole
-// attempt failed) — and hands that fact to the main thread as a [`LoginProgress`] instead of acting
+// attempt failed) — and hands that fact to the main thread as an [`AuthProgress`] instead of acting
 // on it. [`apply_progress`] is the only function outside the main-thread control calls above that
 // may write `Ctl`, and it must only ever be called from the MAIN THREAD, once per queued
 // observation, in the order [`take_progress`] drained them.
 //
-// **This section converts the QR sign-in + discovery pipeline: [`login_thread`], [`mint_pin`],
-// [`finish_sign_in`], [`discover_and_store`] and [`retry_discovery_thread`].** It does NOT (yet)
-// convert [`switch_thread`] (the profile-PIN worker) or the background roster/endpoint-refresh
-// workers spawned by [`start_switch`]/[`refresh_roster`]/[`request_endpoint_refresh`], which still
-// write `Ctl` from their own spawned threads exactly as they did before this phase. Those are a
-// comparable-sized second migration and are named here rather than left to be discovered by a
-// reader diffing this file against the spec.
+// **This section covers every auth worker:** QR sign-in/discovery, profile switching, roster
+// refresh and endpoint recovery all publish [`AuthProgress`]. The main-thread drain applies those
+// facts to `Ctl`, the persisted Session and the server registry. `Ctl` is still the temporary
+// module-global physical owner until R2B; R2A closes worker mutation authority, not that ownership.
+
+/// The credential identity a worker captured at its spawn. It is validation only: accepted
+/// observations patch the latest controller/disk value field-by-field and never write this stale
+/// snapshot back over preferences that changed while the request was in flight.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SessionIdentity {
+    client_id: String,
+    account_token: String,
+    profile_uuid: String,
+    authority: SessionAuthority,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionAuthority {
+    /// This flow was launched from the controller snapshot and must still match it.
+    Controller,
+    /// Straight-to-Home boot has no auth controller snapshot; disk is authoritative unless a
+    /// newer usable controller session has appeared in the meantime.
+    Persisted,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControllerIdentity {
+    Match,
+    Absent,
+    Conflict,
+}
+
+impl SessionIdentity {
+    fn of(s: &Session) -> Self {
+        Self {
+            client_id: s.client_id.clone(),
+            account_token: s.account_token.clone(),
+            profile_uuid: s.user.uuid.clone(),
+            authority: SessionAuthority::Controller,
+        }
+    }
+
+    fn persisted(s: &Session) -> Self {
+        Self {
+            authority: SessionAuthority::Persisted,
+            ..Self::of(s)
+        }
+    }
+
+    fn matches(&self, s: &Session) -> bool {
+        self.client_id == s.client_id
+            && self.account_token == s.account_token
+            && self.profile_uuid == s.user.uuid
+    }
+
+    fn controller_identity(&self, c: &Ctl) -> ControllerIdentity {
+        if self.matches(&c.session) {
+            ControllerIdentity::Match
+        } else if self.authority == SessionAuthority::Persisted && !c.session.can_go_local() {
+            ControllerIdentity::Absent
+        } else {
+            ControllerIdentity::Conflict
+        }
+    }
+}
+
+/// One candidate activation observed by a probe coordinator. This carries the exact origin,
+/// credential and link facts the old worker-side `activate_candidate` call used; applying them is
+/// delayed until the main thread accepts the epoch/session identity.
+pub(crate) struct CandidateActivation {
+    machine_id: String,
+    token: String,
+    name: String,
+    credit: String,
+    owned: bool,
+    origin: Origin,
+    address: String,
+    location: probe::Location,
+    ipv6: bool,
+}
+
+pub(crate) enum RegistryProgress {
+    Activate {
+        epoch: u64,
+        expected: Option<SessionIdentity>,
+        candidate: CandidateActivation,
+    },
+    Settled {
+        epoch: u64,
+        expected: Option<SessionIdentity>,
+        probe: SettledProbe,
+    },
+    Install {
+        epoch: u64,
+        expected: Option<SessionIdentity>,
+        sources: Vec<SourceRef>,
+        primary: Option<usize>,
+    },
+}
+
+pub(crate) struct HomeRosterProgress {
+    epoch: u64,
+    expected: SessionIdentity,
+    users: Option<Vec<UserTile>>,
+}
+
+pub(crate) struct ServerRosterProgress {
+    epoch: u64,
+    expected: SessionIdentity,
+    outcome: ServerRosterOutcome,
+}
+
+pub(crate) enum ServerRosterOutcome {
+    Unreachable,
+    NoReachable,
+    Reconcile {
+        resources: Vec<Resource>,
+        found: Vec<SourceRef>,
+        household: Vec<i64>,
+        settled: Vec<SettledProbe>,
+    },
+}
+
+pub(crate) struct EndpointProgress {
+    flight: u64,
+    epoch: u64,
+    expected: SessionIdentity,
+    id: ServerId,
+    machine_id: String,
+    lifecycle: Option<ClientLifecycle>,
+    fresh: Option<SourceRef>,
+}
+
+/// The exact registry incarnation an endpoint request was issued through. `ServerId` and
+/// `machine_id` survive a re-point and a profile retoken, so neither can prove that a late route
+/// result still belongs to the client/token that launched it.
+#[derive(Clone, Copy)]
+struct ClientLifecycle {
+    client: &'static crate::plex::Client,
+    token_gen: u32,
+}
+
+/// Worker-owned terminal guarantee. Dropping on success, any early return, or unwind publishes
+/// exactly one immutable observation; only its main-thread application may release admission.
+struct EndpointTerminal(Option<EndpointProgress>);
+
+impl EndpointTerminal {
+    fn new(progress: EndpointProgress) -> Self {
+        Self(Some(progress))
+    }
+
+    fn success(&mut self, fresh: SourceRef) {
+        if let Some(progress) = self.0.as_mut() {
+            progress.fresh = Some(fresh);
+        }
+    }
+}
+
+impl Drop for EndpointTerminal {
+    fn drop(&mut self) {
+        if let Some(progress) = self.0.take() {
+            push_auth_progress(AuthProgress::Endpoint(progress));
+        }
+    }
+}
+
+pub(crate) struct ProfileDelta {
+    server: ServerRef,
+    sources: Vec<SourceRef>,
+    user: UserRef,
+    cache: Option<ProfileCreds>,
+}
+
+pub(crate) enum ProfileSwitchOutcomeProgress {
+    Failed {
+        error: String,
+        pin_denied: bool,
+    },
+    Ready {
+        delta: ProfileDelta,
+        probes: Vec<SettledProbe>,
+    },
+}
+
+pub(crate) struct ProfileSwitchProgress {
+    epoch: u64,
+    expected: SessionIdentity,
+    outcome: ProfileSwitchOutcomeProgress,
+}
+
+pub(crate) struct ProfileRosterProgress {
+    epoch: u64,
+    expected: SessionIdentity,
+    resources: Vec<Resource>,
+    reached: Vec<SourceRef>,
+    probes: Vec<SettledProbe>,
+}
+
+/// The one ordered auth stream. `Login` is the already-shipped multi-observation QR protocol;
+/// R2A adds the remaining immutable worker observations beside it without changing its variants or
+/// terminal ordering.
+pub(crate) enum AuthProgress {
+    Login(LoginProgress),
+    Registry(RegistryProgress),
+    HomeRoster(HomeRosterProgress),
+    ServerRoster(ServerRosterProgress),
+    Endpoint(EndpointProgress),
+    ProfileSwitch(ProfileSwitchProgress),
+    ProfileRoster(ProfileRosterProgress),
+}
+
+impl From<LoginProgress> for AuthProgress {
+    fn from(value: LoginProgress) -> Self {
+        Self::Login(value)
+    }
+}
 
 /// One thing the sign-in/discovery worker OBSERVED — never a decision about `Ctl`. Every variant
 /// carries the epoch the observation was made under, because that is the only fact the worker has
@@ -1101,7 +1300,7 @@ pub(crate) enum LoginProgress {
     },
 }
 
-/// FIFO of [`LoginProgress`] queued since the main thread last called [`take_progress`].
+/// FIFO of [`AuthProgress`] queued since the main thread last called [`take_progress`].
 ///
 /// A `Vec` behind one plain `Mutex` rather than `std::sync::mpsc`, because there can genuinely be
 /// more than one live PRODUCER for a short window — a superseded worker's very last message can
@@ -1109,10 +1308,14 @@ pub(crate) enum LoginProgress {
 /// so sharing the one receiver a `pub(crate) fn take_progress` needs would require wrapping it in a
 /// mutex of its own anyway. A vector behind a lock IS that wrapper, with none of a channel's
 /// per-message allocation to justify once multiple senders are in play regardless.
-static PROGRESS: Mutex<Vec<LoginProgress>> = Mutex::new(Vec::new());
+static PROGRESS: Mutex<Vec<AuthProgress>> = Mutex::new(Vec::new());
 
 /// Worker-side: queue an observation. Never touches `Ctl` — see the section doc above.
 fn push_progress(p: LoginProgress) {
+    push_auth_progress(AuthProgress::Login(p));
+}
+
+fn push_auth_progress(p: AuthProgress) {
     PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push(p);
 }
 
@@ -1128,12 +1331,11 @@ fn push_failed(epoch: u64, msg: &str) {
     });
 }
 
-/// **Main-thread only.** Drain every [`LoginProgress`] queued since the last call, in the order the
-/// workers pushed them. The frame loop is expected to call this once per frame and feed each result
-/// to [`apply_progress`] — a worker's own steps (a code minted, then replaced, then authorized) are
-/// pushed by ONE producer in the order they happened, so draining and applying in that same order is
-/// what keeps them landing in the order they happened, exactly as the old synchronous writes did.
-pub(crate) fn take_progress() -> Vec<LoginProgress> {
+/// **Main-thread only.** Drain every [`AuthProgress`] queued since the last call, in the order the
+/// workers pushed them. The frame loop calls this once per frame and feeds each result to
+/// [`apply_progress`]. A streaming worker's observations are pushed by one producer in occurrence
+/// order, so draining and applying in that same order preserves the old synchronous ordering.
+pub(crate) fn take_progress() -> Vec<AuthProgress> {
     std::mem::take(&mut *PROGRESS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
@@ -1152,7 +1354,19 @@ pub(crate) fn take_progress() -> Vec<LoginProgress> {
 /// than racing on a device nobody happened to be watching. The sole call site, `app/run.rs`'s
 /// `land_results`, already holds one — it is passed in, never minted here, since minting is
 /// `unsafe` and reserved for `plex_run`'s own boot (see `MainThread::assume`'s own doc).
-pub(crate) fn apply_progress(_mt: &crate::task::MainThread, p: LoginProgress) {
+pub(crate) fn apply_progress(_mt: &crate::task::MainThread, p: impl Into<AuthProgress>) {
+    match p.into() {
+        AuthProgress::Login(p) => apply_login_progress(p),
+        AuthProgress::Registry(p) => apply_registry_progress(p),
+        AuthProgress::HomeRoster(p) => apply_home_roster_progress(p),
+        AuthProgress::ServerRoster(p) => apply_server_roster_progress(p),
+        AuthProgress::Endpoint(p) => apply_endpoint_progress(p),
+        AuthProgress::ProfileSwitch(p) => apply_profile_switch_progress(p),
+        AuthProgress::ProfileRoster(p) => apply_profile_roster_progress(p),
+    }
+}
+
+fn apply_login_progress(p: LoginProgress) {
     match p {
         LoginProgress::CodeReplacing { epoch } => {
             let applied = with_live_epoch(epoch, || {
@@ -1289,6 +1503,444 @@ pub(crate) fn apply_progress(_mt: &crate::task::MainThread, p: LoginProgress) {
     }
 }
 
+fn accepted_identity(expected: Option<&SessionIdentity>) -> bool {
+    expected.is_none_or(
+        |expected| match with_ctl(|c| expected.controller_identity(c)) {
+            ControllerIdentity::Match => true,
+            ControllerIdentity::Absent => expected.matches(&session::peek()),
+            ControllerIdentity::Conflict => false,
+        },
+    )
+}
+
+/// Register one accepted observed origin. Host tests use the registry's explicit no-I/O seam;
+/// shipping builds retain `register_origin`'s server-info refresh and persisted client identity.
+fn register_observed_origin(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    pin: Option<&crate::plex::ResolvePin>,
+) -> ServerId {
+    #[cfg(not(test))]
+    {
+        crate::plex::register_origin(machine_id, origin, token, pin)
+    }
+    #[cfg(test)]
+    {
+        crate::plex::register_pinned_with_client_id(
+            machine_id,
+            origin,
+            token,
+            pin,
+            "auth-observation-test",
+        )
+    }
+}
+
+fn apply_candidate_activation(candidate: CandidateActivation) {
+    let pin = crate::plex::ResolvePin::for_origin(&candidate.origin, &candidate.address);
+    let id = register_observed_origin(
+        &candidate.machine_id,
+        &candidate.origin,
+        &candidate.token,
+        pin.as_ref(),
+    );
+    if let Some(client) = crate::plex::client_for(id) {
+        client.set_connection(
+            candidate.location,
+            Some(if candidate.ipv6 {
+                crate::plex::IpVersion::V6
+            } else {
+                crate::plex::IpVersion::V4
+            }),
+        );
+        crate::plex::publish_probe_result(id, Outcome::Reachable);
+    }
+    crate::plex::describe_server(id, &candidate.name, &candidate.credit, candidate.owned);
+}
+
+fn apply_registry_progress(progress: RegistryProgress) {
+    let applied = match progress {
+        RegistryProgress::Activate {
+            epoch,
+            expected,
+            candidate,
+        } => with_live_epoch(epoch, || {
+            if !accepted_identity(expected.as_ref()) {
+                return false;
+            }
+            apply_candidate_activation(candidate);
+            true
+        }),
+        RegistryProgress::Settled {
+            epoch,
+            expected,
+            probe,
+        } => with_live_epoch(epoch, || {
+            if !accepted_identity(expected.as_ref()) {
+                return false;
+            }
+            publish_settled_probe(&probe);
+            true
+        }),
+        RegistryProgress::Install {
+            epoch,
+            expected,
+            sources,
+            primary,
+        } => with_live_epoch(epoch, || {
+            if !accepted_identity(expected.as_ref()) {
+                return false;
+            }
+            install_roster(&sources, primary);
+            true
+        }),
+    };
+    if applied != Some(true) {
+        log("auth: registry observation dropped — a newer session owns the flow");
+    }
+}
+
+fn apply_home_roster_progress(progress: HomeRosterProgress) {
+    let HomeRosterProgress {
+        epoch,
+        expected,
+        users,
+    } = progress;
+    let applied = with_live_epoch(epoch, || match users {
+        Some(users) => {
+            let roster: Vec<session::HomeUserRef> = users.iter().map(UserTile::to_ref).collect();
+            let live = with_ctl(|c| {
+                if !expected.matches(&c.session) {
+                    return false;
+                }
+                c.session.home_users = roster.clone();
+                c.users = users;
+                true
+            });
+            if live {
+                let _ = session::update(|s| {
+                    expected.matches(s).then(|| Session {
+                        home_users: roster,
+                        ..s.clone()
+                    })
+                });
+            }
+            live
+        }
+        None => {
+            if with_ctl(|c| {
+                expected.matches(&c.session) && c.users.is_empty() && c.phase == Phase::Profiles
+            }) {
+                set_error("Couldn't load profiles — check the connection.");
+            }
+            true
+        }
+    });
+    if applied != Some(true) {
+        log("auth: home-user roster observation dropped — session identity changed");
+    }
+}
+
+fn apply_server_roster_progress(progress: ServerRosterProgress) {
+    let ServerRosterProgress {
+        epoch,
+        expected,
+        outcome,
+    } = progress;
+    let ServerRosterOutcome::Reconcile {
+        resources,
+        found,
+        household,
+        settled,
+    } = outcome
+    else {
+        if network_epoch() == epoch {
+            match outcome {
+                ServerRosterOutcome::Unreachable => {
+                    log("auth: roster refresh — plex.tv unreachable, keeping the stored roster")
+                }
+                ServerRosterOutcome::NoReachable => {
+                    log("auth: roster refresh — nothing answered, keeping the stored roster")
+                }
+                ServerRosterOutcome::Reconcile { .. } => unreachable!(),
+            }
+        }
+        return;
+    };
+    let applied = with_live_epoch(epoch, || {
+        // Straight-to-Home boot deliberately never seeds auth's controller. Its persisted Session
+        // remains the authority for this refresh, but only while no conflicting usable controller
+        // session has appeared since the worker was launched.
+        if !accepted_identity(Some(&expected)) {
+            return None;
+        }
+        let mut reconciled: Option<(Vec<SourceRef>, ServerRef, bool, bool)> = None;
+        let persisted = session::update(|s| {
+            if !expected.matches(s) {
+                return None;
+            }
+            let refreshed = refreshed_sources(&s.sources, &found, &resources, &household);
+            let usable_refresh = !refreshed.is_empty();
+            let sources = if usable_refresh {
+                refreshed
+            } else {
+                s.sources.clone()
+            };
+            let roster_changed = !same_sources(&sources, &s.sources);
+            let mut next = s.clone();
+            let moved = usable_refresh && reconcile_refresh_session(&mut next, &sources);
+            next.sources = sources.clone();
+            let record_repaired = next.refresh_profile_record();
+            let changed = roster_changed || moved || record_repaired;
+            reconciled = Some((sources, next.server.clone(), changed, usable_refresh));
+            changed.then_some(next)
+        });
+        let Some((sources, server, changed, usable_refresh)) = reconciled else {
+            return None;
+        };
+        let ctl_accepted = with_ctl(|c| match expected.controller_identity(c) {
+            ControllerIdentity::Match => {
+                let current = c.session.clone();
+                reconcile_ctl_roster(c, &current, &server, &sources);
+                true
+            }
+            ControllerIdentity::Absent => true,
+            ControllerIdentity::Conflict => false,
+        });
+        if !ctl_accepted {
+            return None;
+        }
+        if changed {
+            crate::plex::revoke_for_profile_switch();
+            let primary = sources
+                .iter()
+                .position(|s| s.machine_id == server.machine_id);
+            let installed = install_roster(&sources, primary);
+            crate::plex::finish_profile_switch(&installed);
+            publish_settled_probes(&settled);
+        }
+        Some((sources.len(), persisted, usable_refresh))
+    });
+    match applied {
+        Some(Some((n, persisted, true))) => log(&format!(
+            "auth: roster refresh — {n} server(s){}",
+            if persisted { ", persisted" } else { "" }
+        )),
+        Some(Some((_, _, false))) => {
+            log("auth: roster refresh — no usable granted token, keeping the stored roster")
+        }
+        _ => log("auth: roster refresh dropped — session identity changed while probing"),
+    }
+}
+
+fn finish_endpoint_flight(id: ServerId, flight: u64) -> bool {
+    let raw = id.raw() as usize;
+    let mut admission = ENDPOINT_ADMISSION.lock().unwrap_or_else(|e| e.into_inner());
+    if raw >= admission.flights.len() || admission.flights[raw] != flight {
+        return false;
+    }
+    admission.flights[raw] = 0;
+    true
+}
+
+fn apply_endpoint_progress(progress: EndpointProgress) {
+    if !finish_endpoint_flight(progress.id, progress.flight) {
+        return;
+    }
+    let EndpointProgress {
+        epoch,
+        expected,
+        id,
+        machine_id,
+        lifecycle,
+        fresh,
+        ..
+    } = progress;
+    let Some(fresh) = fresh else { return };
+    let Some(lifecycle) = lifecycle else { return };
+    let applied = with_live_epoch(epoch, || {
+        // Validation and the controller commit share the registry's lifecycle lock. A slot can
+        // keep both its id and machine id while a re-point publishes a different Client, and a
+        // same-origin profile switch keeps the pointer while rotating its token generation.
+        let ctl_acceptance =
+            crate::plex::commit_if_current(id, lifecycle.client, lifecycle.token_gen, || {
+                with_ctl(|c| match expected.controller_identity(c) {
+                    ControllerIdentity::Match => {
+                        let landed = apply_refreshed_endpoint(&mut c.session, &machine_id, &fresh)
+                            .map(|(source, _)| source);
+                        Some((landed, c.apply_pending))
+                    }
+                    // The ordinary stored single-user Home path never creates an auth Ctl. Keep
+                    // its original disk-only recovery, but only for an observation explicitly
+                    // captured from persisted state.
+                    ControllerIdentity::Absent => Some((None, false)),
+                    ControllerIdentity::Conflict => None,
+                })
+            })
+            .flatten();
+        let Some((from_ctl, pending)) = ctl_acceptance else {
+            return false;
+        };
+        let mut from_disk = None;
+        if !pending {
+            let _ = session::update(|disk| {
+                if !expected.matches(disk) {
+                    return None;
+                }
+                let mut next = disk.clone();
+                let (source, changed) = apply_refreshed_endpoint(&mut next, &machine_id, &fresh)?;
+                from_disk = Some(source);
+                changed.then_some(next)
+            });
+        }
+        let Some(source) = from_disk.or(from_ctl) else {
+            return false;
+        };
+        let Some(origin) = source.origin() else {
+            return false;
+        };
+        let live_id = register_observed_origin(
+            &source.machine_id,
+            &origin,
+            &source.token,
+            source.resolve_pin().as_ref(),
+        );
+        if live_id != id {
+            return false;
+        }
+        if let Some(client) = crate::plex::client_for(live_id) {
+            if let Some(tier) = source.tier {
+                client.set_connection(tier, crate::plex::IpVersion::of_host(&source.address));
+            }
+        }
+        crate::plex::describe_server(live_id, &source.name, &source.shared_by, source.owned);
+        crate::plex::publish_probe_result(live_id, Outcome::Reachable);
+        true
+    });
+    if applied == Some(true) {
+        log(&format!(
+            "auth: source {} endpoint refreshed after transport failure",
+            id.raw()
+        ));
+    }
+}
+
+fn apply_profile_switch_progress(progress: ProfileSwitchProgress) {
+    let ProfileSwitchProgress {
+        epoch,
+        expected,
+        outcome,
+    } = progress;
+    let applied = with_live_epoch(epoch, || {
+        if !with_ctl(|c| expected.matches(&c.session)) {
+            return false;
+        }
+        match outcome {
+            ProfileSwitchOutcomeProgress::Failed { error, pin_denied } => {
+                with_ctl(|c| {
+                    c.error = error;
+                    c.pin_denied = pin_denied;
+                    c.phase = Phase::Profiles;
+                });
+            }
+            ProfileSwitchOutcomeProgress::Ready { delta, probes } => {
+                crate::plex::revoke_for_profile_switch();
+                let primary = delta
+                    .sources
+                    .iter()
+                    .position(|s| s.machine_id == delta.server.machine_id);
+                let installed = install_roster(&delta.sources, primary);
+                crate::plex::finish_profile_switch(&installed);
+                publish_settled_probes(&probes);
+                with_ctl(|c| {
+                    merge_profile_delta(&mut c.session, delta);
+                    c.error.clear();
+                    c.pin_denied = false;
+                    c.phase = Phase::Ready;
+                    c.apply_pending = true;
+                });
+            }
+        }
+        true
+    });
+    if applied != Some(true) {
+        log("auth: profile-switch observation dropped — a newer flow owns the session");
+    }
+}
+
+fn merge_profile_delta(session: &mut Session, delta: ProfileDelta) {
+    session.server = delta.server;
+    session.sources = delta.sources;
+    session.user = delta.user;
+    if let Some(cache) = delta.cache {
+        session.remember_profile(cache);
+    } else {
+        session.refresh_profile_record();
+    }
+}
+
+fn apply_profile_roster_progress(progress: ProfileRosterProgress) {
+    let ProfileRosterProgress {
+        epoch,
+        expected,
+        resources,
+        reached,
+        probes,
+    } = progress;
+    let applied = with_live_epoch(epoch, || {
+        let landed = with_ctl(|c| {
+            if !expected.matches(&c.session) {
+                return None;
+            }
+            let sources = profile_sources(
+                &c.session.sources,
+                &reached,
+                &resources,
+                &c.session.household_ids(),
+            );
+            let primary = sources
+                .iter()
+                .find(|s| s.machine_id == c.session.server.machine_id)
+                .or_else(|| sources.get(primary_index(&sources)))?
+                .clone();
+            c.session.sources = sources;
+            c.session.server = server_ref(&primary);
+            c.session.user.token = primary.token.clone();
+            c.session.refresh_profile_record();
+            Some((c.session.clone(), c.apply_pending))
+        });
+        let Some((next, apply_pending)) = landed else {
+            return false;
+        };
+        crate::plex::revoke_for_profile_switch();
+        let primary = next
+            .sources
+            .iter()
+            .position(|s| s.machine_id == next.server.machine_id);
+        let installed = install_roster(&next.sources, primary);
+        crate::plex::finish_profile_switch(&installed);
+        publish_settled_probes(&probes);
+        if !apply_pending {
+            let next = next.clone();
+            let _ = session::update(|disk| {
+                expected.matches(disk).then(|| {
+                    let mut merged = disk.clone();
+                    merged.server = next.server.clone();
+                    merged.sources = next.sources.clone();
+                    merged.user.token = next.user.token.clone();
+                    merged.refresh_profile_record();
+                    merged
+                })
+            });
+        }
+        true
+    });
+    if applied != Some(true) {
+        log("auth: late profile-roster observation dropped — a newer flow owns the session");
+    }
+}
+
 // ---- worker threads ----
 
 /// `cid` arrives as a plain parameter, captured by the caller ([`start_login`]/[`restart`]) at the
@@ -1361,9 +2013,7 @@ fn login_thread(epoch: u64, cid: String) {
     let (server, sources) = match discover_and_store(&ac, epoch) {
         Discovery::Ok { server, sources } => (server, sources),
         Discovery::Cancelled => return,
-        Discovery::NoServers => {
-            return push_failed(epoch, "This Plex account has no server yet.")
-        }
+        Discovery::NoServers => return push_failed(epoch, "This Plex account has no server yet."),
         Discovery::Refused => {
             return push_failed(
                 epoch,
@@ -2282,33 +2932,23 @@ fn activation_allowed_by_policy(origin: &Origin, allow_plaintext_credentials: bo
     )
 }
 
-fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin, credit: &str) {
-    // The pin is decided here, from the address plex.tv advertised BESIDE this candidate's uri —
-    // the one moment both halves are in hand. Persisted as `SourceRef::address`, it is re-derived
-    // the same way at every later boot.
-    let pin = crate::plex::ResolvePin::for_origin(origin, &c.address);
-    let id = crate::plex::register_origin(&plan.machine_id, origin, &plan.token, pin.as_ref());
-    // Registration can re-point by publishing a fresh Client. The link write must follow that
-    // publication every time or the new client silently returns to UNKNOWN.
-    if let Some(client) = crate::plex::client_for(id) {
-        client.set_connection(
-            c.location,
-            Some(if c.ipv6 {
-                crate::plex::IpVersion::V6
-            } else {
-                crate::plex::IpVersion::V4
-            }),
-        );
-        // First activation is already usable while the rest of the race settles. Publish the same
-        // fact now; the per-server settlement below repeats it with the final winning tier.
-        crate::plex::publish_probe_result(id, Outcome::Reachable);
+fn candidate_activation(
+    plan: &ProbePlan,
+    c: &Candidate,
+    origin: &Origin,
+    credit: &str,
+) -> CandidateActivation {
+    CandidateActivation {
+        machine_id: plan.machine_id.clone(),
+        token: plan.token.clone(),
+        name: plan.name.clone(),
+        credit: credit.to_owned(),
+        owned: plan.owned,
+        origin: origin.clone(),
+        address: c.address.clone(),
+        location: c.location,
+        ipv6: c.ipv6,
     }
-    // The CREDIT the caller decided, never `plan.source_title`. This publication is EARLY — the
-    // first candidate to answer, before the roster settles — and it used to publish the raw handle,
-    // which is a second place the "Shared by …" rule was being written out by hand. The plan is the
-    // wrong shape to decide it (`probe::plan` carries what to DIAL), so the caller, which still has
-    // the `/api/v2/resources` row, passes the answer down.
-    crate::plex::describe_server(id, &plan.name, credit, plan.owned);
 }
 
 /// Publish a completed server race onto the already-registered slot for that machine. A newly
@@ -2316,7 +2956,7 @@ fn activate_candidate(plan: &ProbePlan, c: &Candidate, origin: &Origin, credit: 
 /// probe failure is not authority to register an unverified endpoint. A retained/offline source,
 /// however, is already registered from its cached verified origin and receives the new state.
 #[derive(Clone)]
-struct SettledProbe {
+pub(crate) struct SettledProbe {
     machine_id: String,
     outcome: Outcome,
     tier: Option<probe::Location>,
@@ -2660,10 +3300,18 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
     ));
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let credit = credit_for_machine(&resources, &plan.machine_id, &[]);
-        let _ = with_live_epoch(epoch, || activate_candidate(plan, c, origin, &credit));
+        push_auth_progress(AuthProgress::Registry(RegistryProgress::Activate {
+            epoch,
+            expected: None,
+            candidate: candidate_activation(plan, c, origin, &credit),
+        }));
     };
     let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
-        let _ = with_live_epoch(epoch, || publish_server_probe(plan, outcome, tier));
+        push_auth_progress(AuthProgress::Registry(RegistryProgress::Settled {
+            epoch,
+            expected: None,
+            probe: settled_probe(plan, outcome, tier),
+        }));
     };
     // **No household ids here, and that is a fact about the ORDER rather than an omission**: the
     // Plex Home roster is fetched by `finish_sign_in`, *after* this runs, so at sign-in there is
@@ -2693,22 +3341,17 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
         // disagree about where the same server is. `reconcile_primary` keeps them together later.
         origin_url: p.origin_url.clone(),
     };
-    let applied = with_live_epoch(epoch, || {
-        log(&format!(
-            "auth: {} server(s) reached, primary '{}'",
-            found.len(),
-            found[primary].name
-        ));
-        // Final winner only. The first winner was made usable by the coordinator; this is the one
-        // allowed re-point after settlement and the one that becomes current/persisted. This is
-        // still gated on the SAME epoch check as before phase 6 — a cancelled flow must not
-        // register into the live server registry either, even though the `Ctl` write that used to
-        // sit right beside it has moved to [`apply_progress`] (see [`Discovery::Ok`]).
-        install_roster(&found, Some(primary));
-    });
-    if applied.is_none() {
-        return Discovery::Cancelled;
-    }
+    log(&format!(
+        "auth: {} server(s) reached, primary '{}'",
+        found.len(),
+        found[primary].name
+    ));
+    push_auth_progress(AuthProgress::Registry(RegistryProgress::Install {
+        epoch,
+        expected: None,
+        sources: found.clone(),
+        primary: Some(primary),
+    }));
     Discovery::Ok {
         server,
         sources: found,
@@ -2892,9 +3535,16 @@ fn reconcile_refresh_session(s: &mut Session, sources: &[SourceRef]) -> bool {
 pub fn refresh_roster() {
     // Capture file + generation atomically with sign-out. Loading first and reading the epoch
     // afterwards admits: load old session → sign out → capture new epoch → trust old credentials.
-    let (sess, epoch) = {
+    let (sess, epoch, expected) = {
         let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        (session::load(), network_epoch())
+        let sess = session::load();
+        let controller = SessionIdentity::of(&sess);
+        let expected = if with_ctl(|c| controller.matches(&c.session)) {
+            controller
+        } else {
+            SessionIdentity::persisted(&sess)
+        };
+        (sess, network_epoch(), expected)
     };
     if sess.account_token.is_empty() {
         return; // signed out; nothing to ask plex.tv with
@@ -2908,106 +3558,63 @@ pub fn refresh_roster() {
     // spawn site).
     let household = sess.household_ids();
     let _ = crate::task::spawn_small("roster-srv", move || {
-        let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-        let Some(resources) = ac.resources() else {
-            log("auth: roster refresh — plex.tv unreachable, keeping the stored roster");
-            return;
-        };
-        let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
-            let credit = credit_for_machine(&resources, &plan.machine_id, &household);
-            let _ = with_live_epoch(epoch, || activate_candidate(plan, c, origin, &credit));
-        };
-        let mut settled = Vec::new();
-        let found =
-            match resolve_roster_live(&resources, &household, &mut activate, &mut |plan, outcome, tier| {
-                let probe = settled_probe(plan, outcome, tier);
-                settled.push(probe.clone());
-                let _ = with_live_epoch(epoch, || publish_settled_probe(&probe));
-            }) {
-                Resolved::Reached(f) => f,
-                // "no server answered" is not evidence that the grant is gone: the friend's box may
-                // simply be off. Dropping the roster here would make an offline share un-browsable
-                // for good rather than until it comes back.
-                _ => {
-                    log("auth: roster refresh — nothing answered, keeping the stored roster");
-                    return;
-                }
-            };
-        // The comparison, primary reconcile, CTL merge, registry replacement and write are one
-        // auth-generation step. The resources response is the grant list; `found` is only the
-        // subset that happened to answer. Preserve a cached address for a still-granted offline
-        // share, while dropping a machine plex.tv no longer names.
-        let applied = with_live_epoch(epoch, || {
-            let mut reconciled: Option<(Vec<SourceRef>, ServerRef, bool, bool)> = None;
-            let persisted = session::update(|s| {
-                if !same_session_identity(s, &sess) {
-                    return None;
-                }
-                let refreshed = refreshed_sources(&s.sources, &found, &resources, &household);
-                // An unauthenticated `/identity` can answer even when plex.tv supplied no usable
-                // grant token. That is not evidence to erase the last offline-capable roster.
-                let usable_refresh = !refreshed.is_empty();
-                let sources = if usable_refresh {
-                    refreshed
-                } else {
-                    s.sources.clone()
-                };
-                let roster_changed = !same_sources(&sources, &s.sources);
-                let mut next = s.clone();
-                let moved = usable_refresh && reconcile_refresh_session(&mut next, &sources);
-                next.sources = sources.clone();
-                // the offline record of the active profile follows the refreshed roster — and a
-                // record that was stale before this refresh is repaired even when the roster
-                // itself did not move, which is why its verdict is part of `changed`
-                let record_repaired = next.refresh_profile_record();
-                let changed = roster_changed || moved || record_repaired;
-                reconciled = Some((sources, next.server.clone(), changed, usable_refresh));
-                if changed {
-                    Some(next)
-                } else {
-                    None
-                }
-            });
-            let Some((sources, server, changed, usable_refresh)) = reconciled else {
-                return None;
-            };
-
-            // `start_switch` keeps a live Session snapshot for the eventual `take_ready` handoff.
-            // Reconcile the same fields there even when disk already matched, or a later profile
-            // pick whole-saves the pre-refresh roster back over this result.
-            with_ctl(|c| {
-                reconcile_ctl_roster(c, &sess, &server, &sources);
-            });
-
-            if changed {
-                // Replacement, not additive registration: a server removed from the account grant
-                // must disappear from every live registry walk and lose its old token.
-                crate::plex::revoke_for_profile_switch();
-                let primary = sources
-                    .iter()
-                    .position(|s| s.machine_id == server.machine_id);
-                let installed = install_roster(&sources, primary);
-                crate::plex::finish_profile_switch(&installed);
-                // `revoke_for_profile_switch` deliberately resets every old profile's probe fact.
-                // Restore this refresh's completed per-machine answers only after the final slots
-                // and tokens are installed, so the Sources list never falls back to NotProbed.
-                publish_settled_probes(&settled);
-            }
-            Some((sources.len(), persisted, usable_refresh))
-        });
-        let Some(Some((n, persisted, usable_refresh))) = applied else {
-            return log("auth: roster refresh dropped — session identity changed while probing");
-        };
-        if !usable_refresh {
-            return log(
-                "auth: roster refresh — no usable granted token, keeping the stored roster",
-            );
-        }
-        log(&format!(
-            "auth: roster refresh — {n} server(s){}",
-            if persisted { ", persisted" } else { "" }
-        ));
+        server_roster_worker(sess, epoch, expected, household)
     });
+}
+
+fn server_roster_worker(sess: Session, epoch: u64, expected: SessionIdentity, household: Vec<i64>) {
+    let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
+    let Some(resources) = ac.resources() else {
+        push_auth_progress(AuthProgress::ServerRoster(ServerRosterProgress {
+            epoch,
+            expected,
+            outcome: ServerRosterOutcome::Unreachable,
+        }));
+        return;
+    };
+    let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
+        let credit = credit_for_machine(&resources, &plan.machine_id, &household);
+        push_auth_progress(AuthProgress::Registry(RegistryProgress::Activate {
+            epoch,
+            expected: Some(expected.clone()),
+            candidate: candidate_activation(plan, c, origin, &credit),
+        }));
+    };
+    let mut settled = Vec::new();
+    let found = match resolve_roster_live(
+        &resources,
+        &household,
+        &mut activate,
+        &mut |plan, outcome, tier| {
+            let probe = settled_probe(plan, outcome, tier);
+            settled.push(probe.clone());
+            push_auth_progress(AuthProgress::Registry(RegistryProgress::Settled {
+                epoch,
+                expected: Some(expected.clone()),
+                probe,
+            }));
+        },
+    ) {
+        Resolved::Reached(found) => found,
+        _ => {
+            push_auth_progress(AuthProgress::ServerRoster(ServerRosterProgress {
+                epoch,
+                expected,
+                outcome: ServerRosterOutcome::NoReachable,
+            }));
+            return;
+        }
+    };
+    push_auth_progress(AuthProgress::ServerRoster(ServerRosterProgress {
+        epoch,
+        expected,
+        outcome: ServerRosterOutcome::Reconcile {
+            resources,
+            found,
+            household,
+            settled,
+        },
+    }));
 }
 
 /// Replace only the route facts of one already-granted source.
@@ -3058,7 +3665,19 @@ fn apply_refreshed_endpoint(
 /// connection list even while a managed Home profile is active because [`apply_refreshed_endpoint`]
 /// intersects it with the profile's existing roster and preserves that profile's PMS credential.
 pub(crate) fn request_endpoint_refresh(id: ServerId) {
-    let raw = id.raw() as u32;
+    request_endpoint_refresh_using(id, |job| crate::task::spawn_small("endpoint", job),
+        |ac| ac.resources(), probe_profile_resource_live);
+}
+
+/// Inject only scheduling and transport; capture, admission, worker completion and application
+/// remain the same code in production and in host regression tests.
+fn request_endpoint_refresh_using(
+    id: ServerId,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+    resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>> + Send + 'static,
+    probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe) + Send + 'static,
+) {
+    let raw = id.raw() as usize;
     if raw >= 32 {
         return;
     }
@@ -3066,126 +3685,91 @@ pub(crate) fn request_endpoint_refresh(id: ServerId) {
         return;
     };
     let machine_id = client.machine_id().to_owned();
+    let lifecycle = ClientLifecycle {
+        client,
+        token_gen: client.token_gen(),
+    };
     if machine_id.is_empty() {
         return;
     }
-    let bit = 1u32 << raw;
-    if ENDPOINT_REFRESHING.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
+    let Some(flight) = admit_endpoint(raw) else {
         return;
-    }
-    let flight = EndpointRefreshFlight(bit);
-    let _ = crate::task::spawn_small("endpoint", move || {
-        let _flight = flight;
-        // CTL is the persistence baton while a profile handoff is pending. A straight-to-Home
-        // boot has no auth flow in CTL, so that path snapshots disk instead. The epoch captured
-        // beside CTL makes either snapshot inert if a profile/sign-out flow supersedes it.
-        let (epoch, ctl_session) = {
-            let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            (network_epoch(), with_ctl(|c| c.session.clone()))
-        };
-        let sess = if ctl_session.can_go_local()
+    };
+    let (epoch, sess, expected) = {
+        let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        let ctl_session = with_ctl(|c| c.session.clone());
+        if ctl_session.can_go_local()
             && ctl_session
                 .sources
                 .iter()
                 .any(|source| source.machine_id == machine_id)
         {
-            ctl_session
+            let expected = SessionIdentity::of(&ctl_session);
+            (network_epoch(), ctl_session, expected)
         } else {
-            session::peek()
-        };
-        if sess.account_token.is_empty()
-            || !sess
-                .sources
-                .iter()
-                .any(|source| source.machine_id == machine_id && source.usable())
-        {
-            return;
+            let persisted = session::peek();
+            let expected = SessionIdentity::persisted(&persisted);
+            (network_epoch(), persisted, expected)
         }
-
-        let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-        let Some(resources) = ac.resources() else {
-            return log(&format!(
-                "auth: endpoint refresh for source {} could not reach plex.tv",
-                id.raw()
-            ));
-        };
-        let Some(resource) = resources
+    };
+    if sess.account_token.is_empty()
+        || !sess
+            .sources
             .iter()
-            .find(|resource| resource.is_server() && resource.client_identifier == machine_id)
-        else {
-            // This pass is not a grant reconciliation. Absence in the owner's response is not
-            // authority to revoke a managed profile's cached source.
-            return log(&format!(
-                "auth: endpoint refresh for source {} found no matching resource",
-                id.raw()
-            ));
-        };
-        let (fresh, _) = probe_profile_resource_live(resource, &sess.household_ids());
-        let Some(fresh) = fresh else {
-            return;
-        };
+            .any(|source| source.machine_id == machine_id && source.usable())
+    {
+        finish_endpoint_flight(id, flight);
+        return;
+    }
+    if !spawn(Box::new(move || {
+        endpoint_refresh_worker(flight, epoch, expected, id, machine_id, lifecycle, sess, resources, probe)
+    })) {
+        finish_endpoint_flight(id, flight);
+    }
+}
 
-        let applied = with_live_epoch(epoch, || {
-            let mut from_ctl = None;
-            let mut pending = false;
-            with_ctl(|c| {
-                if same_session_identity(&c.session, &sess) {
-                    if let Some((source, _)) =
-                        apply_refreshed_endpoint(&mut c.session, &machine_id, &fresh)
-                    {
-                        from_ctl = Some(source);
-                        pending = c.apply_pending;
-                    }
-                }
-            });
-
-            // After `take_ready` lowers the baton, patch the latest disk snapshot through the
-            // session module's read-modify-write door. This preserves concurrent pins, recents and
-            // home-user roster updates instead of whole-saving the older probe snapshot.
-            let mut from_disk = None;
-            if !pending {
-                let _ = session::update(|disk| {
-                    if !same_session_identity(disk, &sess) {
-                        return None;
-                    }
-                    let mut next = disk.clone();
-                    let (source, changed) =
-                        apply_refreshed_endpoint(&mut next, &machine_id, &fresh)?;
-                    from_disk = Some(source);
-                    changed.then_some(next)
-                });
-            }
-            let Some(source) = from_disk.or(from_ctl) else {
-                return false;
-            };
-            let Some(origin) = source.origin() else {
-                return false;
-            };
-            let live_id = crate::plex::register_origin(
-                &source.machine_id,
-                &origin,
-                &source.token,
-                source.resolve_pin().as_ref(),
-            );
-            if live_id != id {
-                return false;
-            }
-            if let Some(client) = crate::plex::client_for(live_id) {
-                if let Some(tier) = source.tier {
-                    client.set_connection(tier, crate::plex::IpVersion::of_host(&source.address));
-                }
-            }
-            crate::plex::describe_server(live_id, &source.name, &source.shared_by, source.owned);
-            crate::plex::publish_probe_result(live_id, Outcome::Reachable);
-            true
-        });
-        if applied == Some(true) {
-            log(&format!(
-                "auth: source {} endpoint refreshed after transport failure",
-                id.raw()
-            ));
-        }
+fn endpoint_refresh_worker(
+    flight: u64,
+    epoch: u64,
+    expected: SessionIdentity,
+    id: ServerId,
+    machine_id: String,
+    lifecycle: ClientLifecycle,
+    sess: Session,
+    resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
+    probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
+) {
+    let mut terminal = EndpointTerminal::new(EndpointProgress {
+        flight,
+        epoch,
+        expected,
+        id,
+        machine_id: machine_id.clone(),
+        lifecycle: Some(lifecycle),
+        fresh: None,
     });
+    let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
+    let Some(resources) = resources(&ac) else {
+        log(&format!(
+            "auth: endpoint refresh for source {} could not reach plex.tv",
+            id.raw()
+        ));
+        return;
+    };
+    let Some(resource) = resources
+        .iter()
+        .find(|resource| resource.is_server() && resource.client_identifier == machine_id)
+    else {
+        log(&format!(
+            "auth: endpoint refresh for source {} found no matching resource",
+            id.raw()
+        ));
+        return;
+    };
+    let (fresh, _) = probe(resource, &sess.household_ids());
+    if let Some(fresh) = fresh {
+        terminal.success(fresh);
+    }
 }
 
 /// Point the persisted PRIMARY at wherever the refreshed roster says that machine now answers.
@@ -3277,7 +3861,8 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         // so this `else` is unreachable today and is a `continue` rather than an `expect` because
         // a roster entry has never been allowed to cost more than itself (`de_soft_vec`).
         let Some(origin) = s.origin() else { continue };
-        let id = crate::plex::register_origin(&s.machine_id, &origin, &s.token, s.resolve_pin().as_ref());
+        let id =
+            register_observed_origin(&s.machine_id, &origin, &s.token, s.resolve_pin().as_ref());
         if !id.is_set() {
             continue;
         }
@@ -3413,60 +3998,6 @@ fn ordered_profile_grants(resources: &[Resource]) -> Vec<usize> {
     grants
 }
 
-/// Land the non-critical probes from a profile activation without racing `take_ready`'s first
-/// whole-session save. Before that save the CTL snapshot owns persistence; afterwards this landing
-/// updates CTL and disk while holding the same activation gate.
-fn merge_profile_roster(
-    epoch: u64,
-    expected: &Session,
-    resources: &[Resource],
-    reached: &[SourceRef],
-    probes: &[SettledProbe],
-) {
-    let _gate = ACTIVATION_GATE.lock().unwrap_or_else(|e| e.into_inner());
-    if network_epoch() != epoch {
-        return;
-    }
-    let landed = with_ctl(|c| {
-        if !same_session_identity(&c.session, expected) {
-            return None;
-        }
-        let sources = profile_sources(&c.session.sources, reached, resources, &c.session.household_ids());
-        let Some(primary) = sources
-            .iter()
-            .find(|s| s.machine_id == c.session.server.machine_id)
-            .or_else(|| sources.get(primary_index(&sources)))
-            .cloned()
-        else {
-            return None;
-        };
-        c.session.sources = sources;
-        c.session.server = server_ref(&primary);
-        c.session.user.token = primary.token.clone();
-        // …and the offline record of this profile, or the next offline seat restores the
-        // roster as it stood before the late probes.
-        c.session.refresh_profile_record();
-        Some((c.session.clone(), c.apply_pending))
-    });
-    let Some((next, apply_pending)) = landed else {
-        return;
-    };
-    crate::plex::revoke_for_profile_switch();
-    let primary = next
-        .sources
-        .iter()
-        .position(|s| s.machine_id == next.server.machine_id);
-    let installed = install_roster(&next.sources, primary);
-    crate::plex::finish_profile_switch(&installed);
-    publish_settled_probes(probes);
-    if !apply_pending {
-        let expected = expected.clone();
-        let next = next.clone();
-        let _ =
-            session::update(|disk| same_session_identity(disk, &expected).then(|| next.clone()));
-    }
-}
-
 /// Where a failed `switch_user` is SHOWN — `(roster banner, blame the PIN)`.
 ///
 /// Pure, and split out of [`switch_thread`] for the reason [`may_resume`] is: its only caller runs
@@ -3546,38 +4077,32 @@ fn offline_activation(stored: &Session, tile: &UserTile, pin: Option<&str>) -> O
     OfflineSwitch::Seat(Box::new(next))
 }
 
-/// The switch worker's offline arm: seat `tile` from the cache, or say why not, under `epoch`.
+/// The switch worker's offline arm: verify/derive against captured data and return facts only.
 ///
 /// The seat is the online success arm with the probes removed — the same revoke / install /
 /// finish sequence, so the registry ends in the same state a network switch leaves it in. The
 /// cached tokens are the ones that were valid when the profile was last seated online; a server
 /// that has since revoked them answers 401 on Home exactly as it would after a stale boot, and
 /// the next online pick rewrites the record.
-fn seat_offline(epoch: u64, stored: &Session, tile: &UserTile, pin: Option<&str>) {
+fn offline_switch_outcome(
+    stored: &Session,
+    tile: &UserTile,
+    pin: Option<&str>,
+) -> ProfileSwitchOutcomeProgress {
     match offline_activation(stored, tile, pin) {
         OfflineSwitch::Seat(next) => {
             log(&format!(
                 "auth: switch '{}' -> ok (offline, cached credentials)",
                 tile.title
             ));
-            let applied = with_live_epoch(epoch, || {
-                crate::plex::revoke_for_profile_switch();
-                let primary_pos = next
-                    .sources
-                    .iter()
-                    .position(|s| s.machine_id == next.server.machine_id);
-                let installed = install_roster(&next.sources, primary_pos);
-                crate::plex::finish_profile_switch(&installed);
-                with_ctl(|c| {
-                    c.session = (*next).clone();
-                    c.error.clear();
-                    c.pin_denied = false;
-                    c.phase = Phase::Ready;
-                    c.apply_pending = true;
-                });
-            });
-            if applied.is_none() {
-                log("auth: offline profile seat dropped — a newer flow owns the session");
+            ProfileSwitchOutcomeProgress::Ready {
+                delta: ProfileDelta {
+                    server: next.server.clone(),
+                    sources: next.sources.clone(),
+                    user: next.user.clone(),
+                    cache: None,
+                },
+                probes: Vec::new(),
             }
         }
         OfflineSwitch::PinDenied => {
@@ -3585,13 +4110,10 @@ fn seat_offline(epoch: u64, stored: &Session, tile: &UserTile, pin: Option<&str>
                 "auth: switch '{}' -> offline, the PIN did not match this television's record",
                 tile.title
             ));
-            let _ = with_live_epoch(epoch, || {
-                with_ctl(|c| {
-                    c.error.clear();
-                    c.pin_denied = true;
-                    c.phase = Phase::Profiles;
-                });
-            });
+            ProfileSwitchOutcomeProgress::Failed {
+                error: String::new(),
+                pin_denied: true,
+            }
         }
         OfflineSwitch::NoCache => {
             log(&format!(
@@ -3602,18 +4124,203 @@ fn seat_offline(epoch: u64, stored: &Session, tile: &UserTile, pin: Option<&str>
             // and it says what would fix it, because "check the connection" reads as a fault
             // when the connection is down on purpose (owner, 2026-09-06: state that one online
             // pick is needed first).
-            let error = String::from(
-                "No internet connection. Pick this profile once while online, and it will work offline.",
-            );
-            let _ = with_live_epoch(epoch, || {
-                with_ctl(|c| {
-                    c.error = error;
-                    c.pin_denied = false;
-                    c.phase = Phase::Profiles;
-                });
-            });
+            ProfileSwitchOutcomeProgress::Failed {
+                error: String::from(
+                    "No internet connection. Pick this profile once while online, and it will work offline.",
+                ),
+                pin_denied: false,
+            }
         }
     }
+}
+
+fn profile_switch_worker(
+    epoch: u64,
+    expected: SessionIdentity,
+    stored: Session,
+    tile: UserTile,
+    pin: Option<String>,
+) {
+    profile_switch_worker_using(epoch, expected, stored, tile, pin,
+        |ac, uuid, pin| ac.switch_user(uuid, pin));
+}
+
+fn profile_switch_worker_using(
+    epoch: u64,
+    expected: SessionIdentity,
+    stored: Session,
+    tile: UserTile,
+    pin: Option<String>,
+    switch: impl FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome,
+) {
+    let cid = stored.client_id.clone();
+    let account_token = stored.account_token.clone();
+    let ac = AccountClient::new(&cid, Some(&account_token));
+    let cache_first = stored.cached_profile(&tile.uuid).is_some()
+        && crate::plex::account::plex_tv_recently_unreachable();
+    let outcome = if cache_first {
+        log("auth: switch — plex.tv was unreachable moments ago, trying the cached credentials first");
+        SwitchOutcome::Unreachable
+    } else {
+        switch(&ac, &tile.uuid, pin.as_deref())
+    };
+    let user = match outcome {
+        SwitchOutcome::Switched(user) => user,
+        SwitchOutcome::Refused(status) => {
+            log(&format!(
+                "auth: switch '{}' -> refused (HTTP {status})",
+                tile.title
+            ));
+            let (error, pin_denied) = switch_failure(pin.is_some());
+            push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+                epoch,
+                expected,
+                outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied },
+            }));
+            return;
+        }
+        SwitchOutcome::Unreachable => {
+            let outcome = offline_switch_outcome(&stored, &tile, pin.as_deref());
+            push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+                epoch,
+                expected,
+                outcome,
+            }));
+            return;
+        }
+    };
+    let Some(resources) = AccountClient::new(&cid, Some(&user.auth_token)).resources() else {
+        log("auth: profile resources request failed");
+        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            epoch,
+            expected,
+            outcome: ProfileSwitchOutcomeProgress::Failed {
+                error: "Couldn't switch profile — check the connection.".into(),
+                pin_denied: false,
+            },
+        }));
+        return;
+    };
+    let grants = ordered_profile_grants(&resources);
+    if grants.is_empty() {
+        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            epoch,
+            expected,
+            outcome: ProfileSwitchOutcomeProgress::Failed {
+                error: format!("{} has no server access", tile.title),
+                pin_denied: false,
+            },
+        }));
+        return;
+    }
+
+    let household = stored.household_ids();
+    let mut order = grants.clone();
+    if let Some(pos) = order
+        .iter()
+        .position(|&i| resources[i].client_identifier == stored.server.machine_id)
+    {
+        order.swap(0, pos);
+    }
+    let mut reached = Vec::new();
+    let mut probes = Vec::new();
+    let mut probed = vec![false; resources.len()];
+    let mut selected_mid = None;
+    for &i in &order {
+        let (winner, settled) = probe_profile_resource_live(&resources[i], &household);
+        probed[i] = true;
+        probes.push(settled);
+        if let Some(winner) = winner {
+            reached.push(winner);
+        }
+        let roster = profile_sources(&stored.sources, &reached, &resources, &household);
+        if roster
+            .iter()
+            .any(|s| s.machine_id == resources[i].client_identifier && s.usable())
+        {
+            selected_mid = Some(resources[i].client_identifier.clone());
+            break;
+        }
+    }
+    let initial = profile_sources(&stored.sources, &reached, &resources, &household);
+    let Some(primary) =
+        selected_mid.and_then(|mid| initial.iter().find(|s| s.machine_id == mid).cloned())
+    else {
+        log(&format!(
+            "auth: switch '{}' -> no server access",
+            tile.title
+        ));
+        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            epoch,
+            expected,
+            outcome: ProfileSwitchOutcomeProgress::Failed {
+                error: format!("{} has no access to this server", tile.title),
+                pin_denied: false,
+            },
+        }));
+        return;
+    };
+
+    log(&format!(
+        "auth: switch '{}' -> ok (per-user server token)",
+        tile.title
+    ));
+    let server = server_ref(&primary);
+    let user = UserRef {
+        id: user.id,
+        uuid: seated_uuid(&user, &tile),
+        title: user.title,
+        thumb: tile.thumb,
+        token: primary.token.clone(),
+    };
+    let cache = ProfileCreds {
+        uuid: user.uuid.clone(),
+        user: user.clone(),
+        server: server.clone(),
+        sources: initial.clone(),
+        pin: pin
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(session::PinVerifier::new),
+    };
+    let next_identity = SessionIdentity {
+        client_id: expected.client_id.clone(),
+        account_token: expected.account_token.clone(),
+        profile_uuid: user.uuid.clone(),
+        authority: SessionAuthority::Controller,
+    };
+    push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+        epoch,
+        expected,
+        outcome: ProfileSwitchOutcomeProgress::Ready {
+            delta: ProfileDelta {
+                server,
+                sources: initial,
+                user,
+                cache: Some(cache),
+            },
+            probes: probes.clone(),
+        },
+    }));
+
+    for &i in &grants {
+        if probed[i] {
+            continue;
+        }
+        std::thread::sleep(SERVER_GAP);
+        let (winner, settled) = probe_profile_resource_live(&resources[i], &household);
+        probes.push(settled);
+        if let Some(winner) = winner {
+            reached.push(winner);
+        }
+    }
+    push_auth_progress(AuthProgress::ProfileRoster(ProfileRosterProgress {
+        epoch,
+        expected: next_identity,
+        resources,
+        reached,
+        probes,
+    }));
 }
 
 fn switch_thread(index: usize, pin: Option<String>) {
@@ -3652,182 +4359,9 @@ fn switch_thread(index: usize, pin: Option<String>) {
             c.apply_pending = true;
         });
     }
-    let cid = stored.client_id.clone();
-    let account_token = stored.account_token.clone();
+    let expected = SessionIdentity::of(&stored);
     let spawned = crate::task::spawn_small("switch", move || {
-        let ac = AccountClient::new(&cid, Some(&account_token));
-        // plex.tv is the authority whenever it answers. When it failed to answer moments ago
-        // (the picker's own roster refresh usually finds that out while the person is still
-        // reading the screen), a profile this television has seated online before is seated
-        // from that record straight away rather than after another full connect timeout —
-        // `account::plex_tv_recently_unreachable` says why the memo is short-lived.
-        let cache_first = stored.cached_profile(&tile.uuid).is_some()
-            && crate::plex::account::plex_tv_recently_unreachable();
-        let outcome = if cache_first {
-            log("auth: switch — plex.tv was unreachable moments ago, trying the cached credentials first");
-            SwitchOutcome::Unreachable
-        } else {
-            ac.switch_user(&tile.uuid, pin.as_deref())
-        };
-        let u = match outcome {
-            SwitchOutcome::Switched(u) => u,
-            SwitchOutcome::Refused(status) => {
-                // plex.tv answered and declined: a wrong PIN (401) when one was submitted, or
-                // an account token it no longer honours. Only blame the PIN when one was sent.
-                log(&format!(
-                    "auth: switch '{}' -> refused (HTTP {status})",
-                    tile.title
-                ));
-                let (error, pin_denied) = switch_failure(pin.is_some());
-                let _ = with_live_epoch(epoch, || {
-                    with_ctl(|c| {
-                        c.error = error;
-                        c.pin_denied = pin_denied;
-                        c.phase = Phase::Profiles;
-                    });
-                });
-                return;
-            }
-            SwitchOutcome::Unreachable => {
-                seat_offline(epoch, &stored, &tile, pin.as_deref());
-                return;
-            }
-        };
-        // The /switch token is an ACCOUNT token, NOT a PMS access token — using it directly 401s for
-        // managed users (the admin's happens to double as one). Re-discover with the switched user's
-        // token to get THIS user's per-user server access token (the /resources `accessToken` the PMS
-        // accepts), scoped to what that profile is allowed to see.
-        let Some(resources) = AccountClient::new(&cid, Some(&u.auth_token)).resources() else {
-            log("auth: profile resources request failed");
-            let _ = with_live_epoch(epoch, || {
-                with_ctl(|c| {
-                    c.error = "Couldn't switch profile — check the connection.".into();
-                    c.phase = Phase::Profiles;
-                })
-            });
-            return;
-        };
-        let grants = ordered_profile_grants(&resources);
-        if grants.is_empty() {
-            let _ = with_live_epoch(epoch, || {
-                with_ctl(|c| {
-                    c.error = format!("{} has no server access", tile.title);
-                    c.phase = Phase::Profiles;
-                })
-            });
-            return;
-        }
-
-        // The house this profile belongs to, from the session that raised the picker — the
-        // switch's whole point is that `resources` is now answered ABOUT a managed user, so the
-        // admin's server arrives `owned:false` wearing the admin's handle. Without this the
-        // household's own library is credited to whoever pays for it, on every screen at once.
-        let household = stored.household_ids();
-        let mut order = grants.clone();
-        if let Some(pos) = order
-            .iter()
-            .position(|&i| resources[i].client_identifier == stored.server.machine_id)
-        {
-            order.swap(0, pos);
-        }
-        let mut reached = Vec::new();
-        let mut probes = Vec::new();
-        let mut probed = vec![false; resources.len()];
-        let mut selected_mid = None;
-        for &i in &order {
-            let (winner, settled) = probe_profile_resource_live(&resources[i], &household);
-            probed[i] = true;
-            probes.push(settled);
-            if let Some(winner) = winner {
-                reached.push(winner);
-            }
-            let roster = profile_sources(&stored.sources, &reached, &resources, &household);
-            if roster
-                .iter()
-                .any(|s| s.machine_id == resources[i].client_identifier && s.usable())
-            {
-                selected_mid = Some(resources[i].client_identifier.clone());
-                break;
-            }
-        }
-        let initial = profile_sources(&stored.sources, &reached, &resources, &household);
-        match selected_mid.and_then(|mid| initial.iter().find(|s| s.machine_id == mid).cloned()) {
-            Some(primary) => {
-                log(&format!(
-                    "auth: switch '{}' -> ok (per-user server token)",
-                    tile.title
-                ));
-                let mut next = stored.clone();
-                next.server = server_ref(&primary);
-                next.sources = initial;
-                next.user = UserRef {
-                    id: u.id,
-                    uuid: seated_uuid(&u, &tile),
-                    title: u.title.clone(),
-                    thumb: tile.thumb.clone(),
-                    token: primary.token.clone(),
-                };
-                // The record the offline fallback seats this profile from next time. The PIN
-                // plex.tv just accepted becomes a verifier, never the PIN (`session::PinVerifier`).
-                next.remember_profile(ProfileCreds {
-                    uuid: next.user.uuid.clone(),
-                    user: next.user.clone(),
-                    server: next.server.clone(),
-                    sources: next.sources.clone(),
-                    pin: pin
-                        .as_deref()
-                        .filter(|p| !p.is_empty())
-                        .map(session::PinVerifier::new),
-                });
-                let applied = with_live_epoch(epoch, || {
-                    crate::plex::revoke_for_profile_switch();
-                    let primary_pos = next
-                        .sources
-                        .iter()
-                        .position(|s| s.machine_id == next.server.machine_id);
-                    let installed = install_roster(&next.sources, primary_pos);
-                    crate::plex::finish_profile_switch(&installed);
-                    publish_settled_probes(&probes);
-                    with_ctl(|c| {
-                        c.session = next.clone();
-                        c.error.clear();
-                        c.phase = Phase::Ready;
-                        c.apply_pending = true;
-                    });
-                });
-                if applied.is_none() {
-                    log("auth: profile-switch result dropped — a newer flow owns the session");
-                    return;
-                }
-
-                // Ready is visible now. Resolve the remaining grants on this worker and merge only
-                // if this exact account/profile activation still owns the epoch.
-                for &i in &grants {
-                    if probed[i] {
-                        continue;
-                    }
-                    std::thread::sleep(SERVER_GAP);
-                    let (winner, settled) = probe_profile_resource_live(&resources[i], &household);
-                    probes.push(settled);
-                    if let Some(winner) = winner {
-                        reached.push(winner);
-                    }
-                }
-                merge_profile_roster(epoch, &next, &resources, &reached, &probes);
-            }
-            None => {
-                log(&format!(
-                    "auth: switch '{}' -> no server access",
-                    tile.title
-                ));
-                let _ = with_live_epoch(epoch, || {
-                    with_ctl(|c| {
-                        c.error = format!("{} has no access to this server", tile.title);
-                        c.phase = Phase::Profiles;
-                    });
-                });
-            }
-        }
+        profile_switch_worker(epoch, expected, stored, tile, pin)
     });
     if !spawned {
         // Phase::Switching is a spinner with nothing behind it now — drop back to the roster the
@@ -6752,6 +7286,644 @@ mod tests {
         with_ctl(|c| *c = Ctl::default());
     }
 
+    #[test]
+    fn a_worker_observation_is_inert_until_the_main_thread_applies_it() {
+        let _g = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        let stored = signed_in_as("u-kid");
+        let expected = SessionIdentity::of(&stored);
+        let (epoch, ()) = begin_flow(|c| {
+            *c = Ctl {
+                phase: Phase::Switching,
+                session: stored,
+                ..Ctl::default()
+            };
+        });
+        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            epoch,
+            expected,
+            outcome: ProfileSwitchOutcomeProgress::Failed {
+                error: "synthetic switch refusal".into(),
+                pin_denied: true,
+            },
+        }));
+        assert_eq!(phase(), Phase::Switching, "publishing is not applying");
+        assert!(error().is_empty());
+        assert!(!pin_denied());
+
+        let queued = take_progress();
+        assert_eq!(queued.len(), 1);
+        for progress in queued {
+            apply_progress(&mt, progress);
+        }
+        assert_eq!(phase(), Phase::Profiles);
+        assert_eq!(error(), "synthetic switch refusal");
+        assert!(pin_denied());
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    #[test]
+    fn a_late_profile_observation_cannot_replace_a_newer_flow() {
+        let _g = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        let old = signed_in_as("u-kid");
+        let expected = SessionIdentity::of(&old);
+        let (epoch, ()) = begin_flow(|c| {
+            *c = Ctl {
+                phase: Phase::Switching,
+                session: old,
+                ..Ctl::default()
+            };
+        });
+        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            epoch,
+            expected,
+            outcome: ProfileSwitchOutcomeProgress::Failed {
+                error: "stale failure".into(),
+                pin_denied: true,
+            },
+        }));
+        let newer = signed_in_as("u-adult");
+        begin_flow(|c| {
+            *c = Ctl {
+                phase: Phase::Ready,
+                session: newer,
+                apply_pending: true,
+                ..Ctl::default()
+            };
+        });
+        for progress in take_progress() {
+            apply_progress(&mt, progress);
+        }
+        assert_eq!(phase(), Phase::Ready);
+        assert!(error().is_empty());
+        assert!(!pin_denied());
+        assert_eq!(with_ctl(|c| c.session.user.uuid.clone()), "u-adult");
+        with_ctl(|c| *c = Ctl::default());
+    }
+
+    #[test]
+    fn a_profile_delta_preserves_unrelated_newer_session_preferences() {
+        let mut current = signed_in_as("u-adult");
+        current.recent_searches.push(session::RecentSearches {
+            user: "u-adult".into(),
+            terms: vec!["newer preference".into()],
+        });
+        let next = signed_in_as("u-kid");
+        merge_profile_delta(
+            &mut current,
+            ProfileDelta {
+                server: next.server,
+                sources: next.sources,
+                user: next.user,
+                cache: None,
+            },
+        );
+        assert_eq!(current.user.uuid, "u-kid");
+        assert_eq!(current.recent_searches.len(), 1);
+        assert_eq!(current.recent_searches[0].terms, ["newer preference"]);
+    }
+
+    #[test]
+    fn endpoint_terminal_release_is_main_applied_and_flight_matched() {
+        let _g = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        let id = ServerId::from_raw(31);
+        ENDPOINT_ADMISSION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .flights[31] = 0;
+        let first = admit_endpoint(31).expect("first flight");
+        {
+            let _terminal = EndpointTerminal::new(EndpointProgress {
+                flight: first,
+                epoch: network_epoch(),
+                expected: SessionIdentity::of(&Session::default()),
+                id,
+                machine_id: "synthetic-server".into(),
+                lifecycle: None,
+                fresh: None,
+            });
+        }
+        assert!(
+            admit_endpoint(31).is_none(),
+            "worker Drop only publishes; main still owns admission"
+        );
+        for progress in take_progress() {
+            apply_progress(&mt, progress);
+        }
+        let second = admit_endpoint(31).expect("terminal application releases the slot");
+        assert!(
+            !finish_endpoint_flight(id, first),
+            "a late first-flight terminal cannot clear its successor"
+        );
+        assert!(admit_endpoint(31).is_none());
+        assert!(finish_endpoint_flight(id, second));
+    }
+
+    #[test]
+    fn endpoint_unwind_and_cancel_still_queue_a_main_thread_release() {
+        let _g = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        let id = ServerId::from_raw(31);
+        ENDPOINT_ADMISSION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .flights[31] = 0;
+        let flight = admit_endpoint(31).expect("flight");
+        let epoch = network_epoch();
+        let _ = std::panic::catch_unwind(|| {
+            let _terminal = EndpointTerminal::new(EndpointProgress {
+                flight,
+                epoch,
+                expected: SessionIdentity::of(&Session::default()),
+                id,
+                machine_id: "synthetic-server".into(),
+                lifecycle: None,
+                fresh: None,
+            });
+            panic!("synthetic worker unwind");
+        });
+        AUTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+        assert!(admit_endpoint(31).is_none());
+        for progress in take_progress() {
+            apply_progress(&mt, progress);
+        }
+        let next =
+            admit_endpoint(31).expect("stale/cancelled terminal still releases its own admission");
+        assert!(finish_endpoint_flight(id, next));
+    }
+
+    fn stored_home(machine_id: &str, address: &str, token: &str) -> Session {
+        let mut stored = signed_in_as("u-adult");
+        let mut src = source(machine_id, true, token);
+        src.address = address.into();
+        stored.server = server_ref(&src);
+        stored.sources = vec![src];
+        stored
+    }
+
+    /// Same scenario as the immutable c38 behavioral RED: an offline cached pick completes
+    /// while CTL says Switching. The transport reports offline; all seating logic is production.
+    #[test]
+    fn r2a_offline_worker_completion_waits_for_main_application() {
+        let _g = crate::testlock::serial();
+        let tmp = session::TempSession::new("r2a-offline-worker-green");
+        crate::plex::reset_servers_for_test();
+        let _ = take_progress();
+        let stored = cached_session(None);
+        session::save(&stored);
+        let before = std::fs::read(tmp.path()).unwrap();
+        let id = crate::plex::register_for_test("ours", "10.0.0.1", 32400, "admin-token", "cid");
+        let client = crate::plex::client_for(id).unwrap();
+        let generation = client.token_gen();
+        let expected = SessionIdentity::of(&stored);
+        let (epoch, ()) = begin_flow(|c| *c = Ctl {
+            phase: Phase::Switching, session: stored.clone(), ..Ctl::default()
+        });
+        std::thread::spawn(move || profile_switch_worker_using(
+            epoch, expected, stored, tile("u-kid", false), None,
+            |_, _, _| SwitchOutcome::Unreachable,
+        )).join().unwrap();
+        assert_eq!(phase(), Phase::Switching,
+            "a worker completion mutated CTL before the main-thread result drain");
+        assert_eq!(with_ctl(|c| c.session.user.uuid.clone()), "u-admin");
+        assert_eq!(client.token_gen(), generation);
+        assert!(std::ptr::eq(client, crate::plex::client_for(id).unwrap()));
+        assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let progress = take_progress();
+        assert_eq!(progress.len(), 1);
+        for p in progress { apply_progress(&mt, p); }
+        assert_eq!(phase(), Phase::Ready);
+        assert_eq!(with_ctl(|c| c.session.user.uuid.clone()), "u-kid");
+        assert_ne!(client.token_gen(), generation);
+        assert_eq!(std::fs::read(tmp.path()).unwrap(), before);
+        assert!(take_ready().is_some());
+        assert_eq!(session::peek().user.uuid, "u-kid");
+        with_ctl(|c| *c = Ctl::default());
+        crate::plex::reset_servers_for_test();
+    }
+
+    fn successful_switch(epoch: u64, expected: SessionIdentity) -> AuthProgress {
+        let next = cached_session(None).cached_profile("u-kid").unwrap().clone();
+        AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            epoch, expected,
+            outcome: ProfileSwitchOutcomeProgress::Ready {
+                delta: ProfileDelta { server: next.server.clone(), sources: next.sources.clone(),
+                    user: next.user.clone(), cache: Some(next) }, probes: vec![],
+            },
+        })
+    }
+
+    fn late_profile_roster(epoch: u64, expected: SessionIdentity, address: &str) -> AuthProgress {
+        let mut reached = source("ours", true, "kid-token");
+        reached.address = address.into();
+        AuthProgress::ProfileRoster(ProfileRosterProgress {
+            epoch, expected,
+            resources: vec![resource(r#"{"clientIdentifier":"ours","provides":"server","owned":true,"accessToken":"kid-token"}"#)],
+            reached: vec![reached], probes: vec![],
+        })
+    }
+
+    #[test]
+    fn successful_profile_stream_preserves_handoff_preferences_and_erase_order() {
+        let _g = crate::testlock::serial();
+        let tmp = session::TempSession::new("r2a-profile-stream");
+        struct RestoreTelemetry(Option<crate::telemetry::consent::Consent>);
+        impl Drop for RestoreTelemetry {
+            fn drop(&mut self) {
+                crate::telemetry::redirect_for_test(None);
+                crate::telemetry::spool::set_test_path(None);
+                if let Some(saved) = self.0.take() { crate::telemetry::consent::install(saved); }
+            }
+        }
+        let _restore = RestoreTelemetry(crate::telemetry::consent::current());
+        // Isolate the other erase side effects as the existing logout test does.
+        crate::telemetry::redirect_for_test(Some(tmp.path().with_file_name("consent.json")));
+        crate::telemetry::spool::set_test_path(Some(tmp.path().with_file_name("spool.jsonl")));
+        let mt = unsafe { crate::task::MainThread::assume() };
+        crate::plex::reset_servers_for_test();
+        let _ = take_progress();
+        let stored = cached_session(None);
+        session::save(&stored);
+        let expected = SessionIdentity::of(&stored);
+        let (epoch, ()) = begin_flow(|c| *c = Ctl {
+            phase: Phase::Switching, session: stored, ..Ctl::default()
+        });
+        apply_progress(&mt, successful_switch(epoch, expected.clone()));
+        let seated = with_ctl(|c| SessionIdentity::of(&c.session));
+        assert_eq!(session::peek().user.uuid, "u-admin", "Ready has not handed off yet");
+        apply_progress(&mt, late_profile_roster(epoch, seated.clone(), "10.0.0.2"));
+        assert_eq!(session::peek().sources[0].address, "10.0.0.1");
+        assert!(take_ready().is_some());
+        assert!(take_ready().is_none());
+        assert_eq!(session::peek().sources[0].address, "10.0.0.2");
+        session::update(|s| {
+            let mut s = s.clone();
+            s.recent_searches.push(session::RecentSearches {
+                user: "u-kid".into(), terms: vec!["newer preference".into()],
+            });
+            Some(s)
+        });
+        apply_progress(&mt, late_profile_roster(epoch, seated.clone(), "10.0.0.3"));
+        let disk = session::peek();
+        assert_eq!(disk.sources[0].address, "10.0.0.3");
+        assert_eq!(disk.recent_searches[0].terms, ["newer preference"]);
+        push_auth_progress(successful_switch(epoch, expected));
+        push_auth_progress(late_profile_roster(epoch, seated, "10.0.0.9"));
+        erase_local_state();
+        for p in take_progress() { apply_progress(&mt, p); }
+        assert_eq!(phase(), Phase::Deleted);
+        assert!(session::peek().account_token.is_empty());
+        assert!(!tmp.path().exists());
+        assert_eq!(crate::plex::server_ids().count(), 0);
+        assert!(take_ready().is_none());
+        with_ctl(|c| *c = Ctl::default());
+        crate::plex::reset_servers_for_test();
+        crate::telemetry::redirect_for_test(None);
+        crate::telemetry::spool::set_test_path(None);
+    }
+
+    #[test]
+    fn endpoint_request_refusal_early_return_and_retoken_release_exact_admission() {
+        let _g = crate::testlock::serial();
+        let _tmp = session::TempSession::new("r2a-endpoint-wire");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        crate::plex::reset_servers_for_test();
+        let _ = take_progress();
+        session::save(&stored_home("ours", "10.0.0.1", "old-token"));
+        begin_flow(|c| *c = Ctl::default());
+        let id = crate::plex::register_for_test("ours", "10.0.0.1", 32400, "old-token", "cid");
+        let raw = id.raw() as usize;
+        let no_probe = |_: &Resource, _: &[i64]| -> (Option<SourceRef>, SettledProbe) {
+            panic!("resources early return must not probe")
+        };
+        request_endpoint_refresh_using(id, |_| false, |_| panic!("refused job ran"), no_probe);
+        assert!(finish_endpoint_flight(id, admit_endpoint(raw).expect("refusal released")));
+        for response in [None, Some(Vec::new())] {
+            request_endpoint_refresh_using(id, |job| { std::thread::spawn(job).join().unwrap(); true },
+                |_| response, no_probe);
+            assert!(admit_endpoint(raw).is_none(), "worker early return only queues release");
+            let progress = take_progress();
+            assert_eq!(progress.len(), 1);
+            for p in progress { apply_progress(&mt, p); }
+            assert!(finish_endpoint_flight(id, admit_endpoint(raw).expect("main released")));
+        }
+        // Unwind traverses the actual worker's terminal guard. Cancellation before application
+        // retires its data, but must still release the admission that this request acquired.
+        request_endpoint_refresh_using(id, |job| {
+            assert!(std::thread::spawn(job).join().is_err());
+            true
+        }, |_| panic!("synthetic endpoint transport unwind"), no_probe);
+        begin_flow(|c| *c = Ctl::default());
+        assert!(admit_endpoint(raw).is_none());
+        let progress = take_progress();
+        assert_eq!(progress.len(), 1, "unwind publishes exactly one terminal");
+        for p in progress { apply_progress(&mt, p); }
+        assert!(finish_endpoint_flight(id, admit_endpoint(raw).expect("cancelled unwind released")));
+        let client = crate::plex::client_for(id).unwrap();
+        request_endpoint_refresh_using(id, |job| { std::thread::spawn(job).join().unwrap(); true },
+            |_| Some(vec![resource(r#"{"clientIdentifier":"ours","provides":"server"}"#)]),
+            |_, _| {
+                let mut fresh = source("ours", true, "ignored-account-token");
+                fresh.address = "10.0.0.9".into();
+                (Some(fresh), SettledProbe { machine_id: "ours".into(),
+                    outcome: Outcome::Reachable, tier: None })
+            });
+        let generation = client.token_gen();
+        client.set_token("new-token");
+        assert!(std::ptr::eq(client, crate::plex::client_for(id).unwrap()));
+        assert_ne!(generation, client.token_gen());
+        for p in take_progress() { apply_progress(&mt, p); }
+        assert_eq!(client.host(), "10.0.0.1");
+        assert_eq!(session::peek().sources[0].address, "10.0.0.1");
+        assert!(finish_endpoint_flight(id, admit_endpoint(raw).expect("stale success released")));
+        with_ctl(|c| *c = Ctl::default());
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn accepted_activation_preserves_https_and_resolve_pin() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let origin = Origin::parse("https://192-0-2-10.h.plex.direct:32400").unwrap();
+        let pin = crate::plex::ResolvePin::for_origin(&origin, "192.0.2.10").unwrap();
+        apply_progress(&mt, AuthProgress::Registry(RegistryProgress::Activate {
+            epoch: network_epoch(), expected: None,
+            candidate: CandidateActivation { machine_id: "tls-test".into(), token: "synthetic".into(),
+                name: "Synthetic".into(), credit: String::new(), owned: true,
+                origin: origin.clone(), address: "192.0.2.10".into(),
+                location: probe::Location::Local, ipv6: false },
+        }));
+        let client = crate::plex::client_for(crate::plex::server_ids().next().unwrap()).unwrap();
+        assert_eq!(client.origin(), &origin);
+        assert_eq!(client.resolve_pin(), Some(&pin));
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn stored_home_without_auth_ctl_accepts_registry_roster_and_endpoint_observations() {
+        let _g = crate::testlock::serial();
+        let _tmp = session::TempSession::new("auth-stored-home-observations");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        crate::plex::reset_servers_for_test();
+        let stored = stored_home("stored-machine", "10.0.0.1", "profile-token-a");
+        session::save(&stored);
+        let (epoch, ()) = begin_flow(|c| *c = Ctl::default());
+        let expected = SessionIdentity::persisted(&stored);
+        let id = crate::plex::register_for_test(
+            "stored-machine",
+            "10.0.0.1",
+            32400,
+            "profile-token-a",
+            "cid",
+        );
+
+        apply_progress(
+            &mt,
+            AuthProgress::Registry(RegistryProgress::Settled {
+                epoch,
+                expected: Some(expected.clone()),
+                probe: SettledProbe {
+                    machine_id: "stored-machine".into(),
+                    outcome: Outcome::Reachable,
+                    tier: Some(probe::Location::Local),
+                },
+            }),
+        );
+        assert_eq!(
+            crate::plex::server_probe_result(id),
+            Some(Outcome::Reachable)
+        );
+
+        let mut roster_source = source("stored-machine", true, "profile-token-b");
+        roster_source.address = "10.0.0.2".into();
+        apply_progress(
+            &mt,
+            AuthProgress::ServerRoster(ServerRosterProgress {
+                epoch,
+                expected: expected.clone(),
+                outcome: ServerRosterOutcome::Reconcile {
+                    resources: vec![resource(
+                        r#"{"name":"stored-machine","clientIdentifier":"stored-machine",
+                            "provides":"server","owned":true,"accessToken":"profile-token-b"}"#,
+                    )],
+                    found: vec![roster_source],
+                    household: vec![],
+                    settled: vec![],
+                },
+            }),
+        );
+        assert_eq!(session::peek().sources[0].address, "10.0.0.2");
+        assert_eq!(crate::plex::client_for(id).unwrap().host(), "10.0.0.2");
+        assert!(
+            !with_ctl(|c| c.session.can_go_local()),
+            "stored Home does not synthesize auth Ctl"
+        );
+
+        let client = crate::plex::client_for(id).unwrap();
+        let lifecycle = ClientLifecycle {
+            client,
+            token_gen: client.token_gen(),
+        };
+        let flight = admit_endpoint(id.raw() as usize).expect("endpoint flight");
+        let mut endpoint = source("stored-machine", true, "account-token-not-authoritative");
+        endpoint.address = "10.0.0.3".into();
+        apply_progress(
+            &mt,
+            AuthProgress::Endpoint(EndpointProgress {
+                flight,
+                epoch,
+                expected,
+                id,
+                machine_id: "stored-machine".into(),
+                lifecycle: Some(lifecycle),
+                fresh: Some(endpoint),
+            }),
+        );
+        let persisted = session::peek();
+        assert_eq!(persisted.sources[0].address, "10.0.0.3");
+        assert_eq!(persisted.sources[0].token, "profile-token-b");
+        assert_eq!(crate::plex::client_for(id).unwrap().host(), "10.0.0.3");
+
+        with_ctl(|c| *c = Ctl::default());
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn conflicting_live_ctl_rejects_stored_home_observations() {
+        let _g = crate::testlock::serial();
+        let _tmp = session::TempSession::new("auth-stored-home-conflict");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        crate::plex::reset_servers_for_test();
+        let stored = stored_home("stored-machine", "10.0.0.1", "profile-token-a");
+        session::save(&stored);
+        let expected = SessionIdentity::persisted(&stored);
+        let mut conflicting = signed_in_as("u-kid");
+        conflicting.account_token = "different-account".into();
+        let (epoch, ()) = begin_flow(|c| {
+            *c = Ctl {
+                phase: Phase::Ready,
+                session: conflicting,
+                ..Ctl::default()
+            };
+        });
+        let id = crate::plex::register_for_test(
+            "stored-machine",
+            "10.0.0.1",
+            32400,
+            "profile-token-a",
+            "cid",
+        );
+        let client = crate::plex::client_for(id).unwrap();
+        let lifecycle = ClientLifecycle {
+            client,
+            token_gen: client.token_gen(),
+        };
+
+        apply_progress(
+            &mt,
+            AuthProgress::Registry(RegistryProgress::Settled {
+                epoch,
+                expected: Some(expected.clone()),
+                probe: SettledProbe {
+                    machine_id: "stored-machine".into(),
+                    outcome: Outcome::Reachable,
+                    tier: Some(probe::Location::Local),
+                },
+            }),
+        );
+        assert_eq!(crate::plex::server_probe_result(id), None);
+
+        let mut fresh = source("stored-machine", true, "profile-token-b");
+        fresh.address = "10.0.0.9".into();
+        apply_progress(
+            &mt,
+            AuthProgress::ServerRoster(ServerRosterProgress {
+                epoch,
+                expected: expected.clone(),
+                outcome: ServerRosterOutcome::Reconcile {
+                    resources: vec![resource(
+                        r#"{"name":"stored-machine","clientIdentifier":"stored-machine",
+                            "provides":"server","owned":true,"accessToken":"profile-token-b"}"#,
+                    )],
+                    found: vec![fresh.clone()],
+                    household: vec![],
+                    settled: vec![],
+                },
+            }),
+        );
+        assert_eq!(session::peek().sources[0].address, "10.0.0.1");
+        assert_eq!(crate::plex::client_for(id).unwrap().host(), "10.0.0.1");
+
+        let flight = admit_endpoint(id.raw() as usize).expect("endpoint flight");
+        apply_progress(
+            &mt,
+            AuthProgress::Endpoint(EndpointProgress {
+                flight,
+                epoch,
+                expected,
+                id,
+                machine_id: "stored-machine".into(),
+                lifecycle: Some(lifecycle),
+                fresh: Some(fresh),
+            }),
+        );
+        assert_eq!(session::peek().sources[0].address, "10.0.0.1");
+        assert_eq!(crate::plex::client_for(id).unwrap().host(), "10.0.0.1");
+        assert!(finish_endpoint_flight(
+            id,
+            admit_endpoint(id.raw() as usize).unwrap()
+        ));
+
+        with_ctl(|c| *c = Ctl::default());
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn endpoint_result_from_a_replaced_client_incarnation_cannot_overwrite_its_route() {
+        let _g = crate::testlock::serial();
+        let _tmp = session::TempSession::new("auth-endpoint-incarnation");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let _ = take_progress();
+        crate::plex::reset_servers_for_test();
+
+        let id = crate::plex::register_for_test(
+            "same-machine",
+            "10.0.0.1",
+            32400,
+            "profile-token-a",
+            "cid",
+        );
+        let old_client = crate::plex::client_for(id).expect("first client incarnation");
+        let lifecycle = ClientLifecycle {
+            client: old_client,
+            token_gen: old_client.token_gen(),
+        };
+
+        let newer = stored_home("same-machine", "10.0.0.2", "profile-token-b");
+        session::save(&newer);
+        let expected = SessionIdentity::persisted(&newer);
+        let (epoch, ()) = begin_flow(|c| *c = Ctl::default());
+
+        let replacement = crate::plex::register_for_test(
+            "same-machine",
+            "10.0.0.2",
+            32400,
+            "profile-token-b",
+            "cid",
+        );
+        assert_eq!(replacement, id, "a re-point keeps the stable registry slot");
+        let replacement_client = crate::plex::client_for(id).expect("replacement client");
+        assert!(!std::ptr::eq(old_client, replacement_client));
+
+        ENDPOINT_ADMISSION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .flights[id.raw() as usize] = 0;
+        let flight = admit_endpoint(id.raw() as usize).expect("endpoint flight");
+        let mut stale = source("same-machine", true, "account-token-not-authoritative");
+        stale.address = "10.0.0.9".into();
+        push_auth_progress(AuthProgress::Endpoint(EndpointProgress {
+            flight,
+            epoch,
+            expected,
+            id,
+            machine_id: "same-machine".into(),
+            lifecycle: Some(lifecycle),
+            fresh: Some(stale),
+        }));
+        for progress in take_progress() {
+            apply_progress(&mt, progress);
+        }
+
+        assert_eq!(crate::plex::client_for(id).unwrap().host(), "10.0.0.2");
+        assert_eq!(
+            session::peek().sources[0].address,
+            "10.0.0.2",
+            "the late endpoint observation must not overwrite the persisted replacement route",
+        );
+        assert!(
+            admit_endpoint(id.raw() as usize).is_some(),
+            "stale terminal still releases admission"
+        );
+        let active = ENDPOINT_ADMISSION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .flights[id.raw() as usize];
+        assert!(finish_endpoint_flight(id, active));
+        with_ctl(|c| *c = Ctl::default());
+        crate::plex::reset_servers_for_test();
+    }
+
     /// Extract one `fn NAME(` … `}` body, verbatim, from this file's OWN source. A tiny lexer —
     /// tracking only whether it is inside a `"…"` string literal or a `//` line comment — rather
     /// than a bare brace count, because several of these functions log a `format!("…{x}…")` whose
@@ -6865,11 +8037,9 @@ mod tests {
     /// interface a worker's module cannot name at all), not a longer prefix list. This is a
     /// materially stronger gate than the one it replaces, scoped to say exactly that.
     ///
-    /// Scoped to the functions this phase actually converted — [`login_thread`], [`mint_pin`],
-    /// [`finish_sign_in`], [`discover_and_store`] and [`retry_discovery_thread`] — not to the whole
-    /// file: `switch_thread` and the roster/endpoint-refresh workers still write `Ctl` directly, and
-    /// pretending otherwise here would be a false claim rather than a narrower true one. See the
-    /// section doc above [`LoginProgress`] for why those are out of scope for this phase.
+    /// This original QR-specific guard stays beside the broader R2A boundary below because it also
+    /// scans the helper chain called by login discovery. Profile, roster and endpoint workers are
+    /// covered by [`all_auth_worker_bodies_are_observation_only`].
     #[test]
     fn login_worker_functions_never_touch_ctl_directly() {
         let src = std::fs::read_to_string(
@@ -6911,6 +8081,59 @@ mod tests {
                  the family it belongs to; see the doc above this test for the mutation that made \
                  the narrower direct-spelling check insufficient:\n{body}"
             );
+        }
+    }
+
+    /// R2A's complete worker boundary. Each named function is the body handed to `task::spawn`;
+    /// keeping the names here makes adding one new worker without extending the boundary a test
+    /// failure. Workers may perform network/probe/PBKDF2 work and publish an immutable observation,
+    /// but every application mutation is reserved for the main-thread `apply_progress` drain.
+    #[test]
+    fn all_auth_worker_bodies_are_observation_only() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+        )
+        .expect("auth.rs must be readable from its own test");
+        let forbidden = [
+            "with_ctl(",
+            "CTL.lock(",
+            "with_live_epoch(",
+            "session::load(",
+            "session::peek(",
+            "session::save(",
+            "session::update(",
+            "session::clear(",
+            "session::set_current(",
+            "activate_candidate(",
+            "install_roster(",
+            "publish_settled_probe(",
+            "publish_settled_probes(",
+            "crate::plex::register_origin(",
+            "crate::plex::revoke_",
+            "crate::plex::finish_profile_switch(",
+            "crate::plex::publish_probe_result(",
+            "crate::plex::describe_server(",
+        ];
+        for name in [
+            "login_thread",
+            "retry_discovery_thread",
+            "discover_and_store",
+            "home_roster_worker",
+            "server_roster_worker",
+            "endpoint_refresh_worker",
+            "profile_switch_worker",
+            "profile_switch_worker_using",
+            "offline_switch_outcome",
+            "candidate_activation",
+            "probe_profile_resource_live",
+        ] {
+            let body = extract_fn_body(&src, name);
+            for call in forbidden {
+                assert!(
+                    !body.contains(call),
+                    "auth worker `{name}` crosses the observation boundary through `{call}`:\n{body}"
+                );
+            }
         }
     }
 }
