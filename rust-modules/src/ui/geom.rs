@@ -165,7 +165,7 @@ where
         });
     }
     fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as i32) < self.table.n_rows()).then_some(self.group)
+        (key.index()? < self.table.n_rows().max(0) as u32).then_some(self.group)
     }
     fn neighbour(&self, k: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
         let Some(i) = k.elem.index() else {
@@ -415,6 +415,20 @@ mod tests {
     }
 
     const E: EntryId = EntryId(3);
+
+    #[test]
+    fn table_ownership_rejects_foreign_full_u32_keys() {
+        use crate::ui::table::{Row, Section, TableView};
+        let (m, v) = (FixtureMeasure, FixtureView::default());
+        let c = cx(&m, &v);
+        let mut rows = TableView::new();
+        rows.set_sections(vec![Section::new("").row(Row::new("a")).row(Row::new("b"))], 0, false);
+        let table = Table { table: &rows, frame: Rect::FULL, group: GroupId(0), entry: E };
+        for k in [2, 0x4000_0000, 0x8000_0000, u32::MAX] {
+            assert_eq!(Focusable::<FixtureHost>::group_of(&table, &k, &c), None, "foreign key {k}");
+        }
+        assert_eq!(Focusable::<FixtureHost>::group_of(&table, &1, &c), Some(GroupId(0)));
+    }
 
     /// The shelf's `place` is the strip's tile formula: the same rect `card_row::strip` draws
     /// tile `i` at, popped by the same spring.
