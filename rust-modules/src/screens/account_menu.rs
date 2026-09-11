@@ -52,7 +52,8 @@ pub(crate) enum Action {
     SignIn,
     SignOut,
     /// **Settings** — the reachable owner of Home sources, Privacy, Legal notices and About
-    /// ([`crate::screens::settings`]). Offered in EVERY build and in **both** account states:
+    /// ([`crate::screens::registry::AppArg::Settings`]). Offered in EVERY build and in **both**
+    /// account states:
     /// someone who cannot sign in has still received a copy of this software, and LG's Privacy
     /// Guideline requires the policy to be readable *in the app* rather than only on the store
     /// listing.
