@@ -46,9 +46,12 @@ REPRODUCIBLE. Measured with ares-cli 2.4.0 on this payload — two runs of byte-
 two different sha256. That breaks the one integrity property this distribution has: nothing in the
 chain is code-signed, so the manifest hash a user's TV verifies at install is only meaningful if a
 third party can rebuild the package and get the same bytes, which the README tells them to do.
-Everything else ares-package does, this file already does identically — the same bare `ar` member
-names, the same `usr/palm/applications/<id>` + `usr/palm/packages/<id>/packageinfo.json` layout
-(verified by diffing an ares-built package against ours) — and one thing it does better:
+For ordinary application payload members, this file matches ares-package's layout — the same bare
+`ar` member names and the same `usr/palm/applications/<id>` +
+`usr/palm/packages/<id>/packageinfo.json` layout (verified by diffing an ares-built package
+against ours). The synthesized state directory is an intentional native-app runtime contract
+with numeric gid 5000, so it is checked separately rather than described as an ares-equivalent
+default. One thing this file does better:
 `Installed-Size` here is KiB, per Debian and what opkg expects, where ares-package writes BYTES.
 The control file carries `webOS-Package-Format-Version` and `webOS-Packager-Version` so the
 submission check's presence heuristic is satisfied honestly; the packager string names this file
@@ -78,6 +81,59 @@ import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and 
 
 # Any fixed epoch works; 2010-01-01 is safely inside the range old opkg builds accept.
 EPOCH = 1262304000
+STATE_GID = 5000
+
+
+def stage_state(repo: Path, data: Path, app: dict) -> Path:
+    """Create the empty per-install state directory in the staged application tree.
+
+    Runtime state is deliberately never copied from the checkout.  A checked-in ``pkg/state``
+    directory is therefore an error even when it is empty-looking to a caller: any entry beneath
+    it would become account data in every install.  The directory's webOS metadata is carried by
+    the tar writer below; the host staging directory only needs the writable mode for inspection.
+    """
+    source = repo / "pkg" / "state"
+    if os.path.lexists(source):
+        if source.is_symlink() or not source.is_dir() or any(source.iterdir()):
+            raise SystemExit(f"{source} must be absent or an empty directory; runtime state is not packaged")
+    appdir = data / "usr" / "palm" / "applications" / app["id"]
+    state = appdir / "state"
+    if os.path.lexists(state):
+        if state.is_symlink() or not state.is_dir() or any(state.iterdir()):
+            raise SystemExit(f"{state} is non-empty or not a directory; runtime state is not packaged")
+    else:
+        state.mkdir(parents=True)
+    state.chmod(0o775)
+    return state
+
+
+def state_archive_errors(blob: bytes, app_id: str) -> list[str]:
+    """Return violations for the required empty state directory in a data.tar.gz blob."""
+    state_name = f"usr/palm/applications/{app_id}/state"
+    try:
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+            members = tf.getmembers()
+    except (tarfile.TarError, OSError) as exc:
+        return [f"data.tar.gz is unreadable: {exc}"]
+    matches = [m for m in members if m.name == state_name]
+    errors = []
+    if len(matches) != 1:
+        errors.append(f"state directory appears exactly once (saw {len(matches)})")
+    elif not matches[0].isdir():
+        errors.append("state member is a directory")
+    else:
+        member = matches[0]
+        if (member.mode & 0o7777) != 0o775:
+            errors.append(f"state directory mode is exactly 0775 (saw {member.mode & 0o7777:04o})")
+        if member.uid != 0:
+            errors.append(f"state directory uid is 0 (saw {member.uid})")
+        if member.gid != STATE_GID:
+            errors.append(f"state directory gid is {STATE_GID} (saw {member.gid})")
+        if member.gname:
+            errors.append(f"state directory gname is empty (saw {member.gname!r})")
+    if any(m.name.startswith(state_name + "/") for m in members):
+        errors.append("state directory is empty")
+    return errors
 
 
 def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str, skip: set = ()) -> None:
@@ -91,12 +147,22 @@ def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str, skip: set = ()) -> N
         if rel in skip:
             continue
         ti = tf.gettarinfo(str(p), arcname=f"{arc_root}/{rel}" if arc_root else rel)
-        ti.uid = ti.gid = 0
-        ti.uname = ti.gname = "root"
+        is_state_dir = (
+            p.is_dir()
+            and p.name == "state"
+            and rel.startswith("usr/palm/applications/")
+            and rel.count("/") == 4
+        )
+        ti.uid = 0
+        ti.gid = STATE_GID if is_state_dir else 0
+        ti.uname = ""
+        ti.gname = "" if is_state_dir else "root"
+        if not is_state_dir:
+            ti.uname = "root"
         ti.mtime = EPOCH
         # Normalise mode: the binary and directories executable, everything else 0644. Otherwise
         # a stray local chmod changes the archive.
-        ti.mode = 0o755 if (ti.isdir() or p.name in {"plxnative", "sentry-crash"}) else 0o644
+        ti.mode = 0o775 if is_state_dir else (0o755 if (ti.isdir() or p.name in {"plxnative", "sentry-crash"}) else 0o644)
         if ti.isfile():
             with open(p, "rb") as fh:
                 tf.addfile(ti, fh)
@@ -265,6 +331,7 @@ def main() -> int:
     if [p.name for p in staged] != [app["id"]]:
         sys.exit(f"staged applications/{[p.name for p in staged]} does not match appinfo id {app['id']}")
     write_packageinfo(root / "data", app)
+    stage_state(repo, root / "data", app)
     # Before `control_with_size`, which sums the staged tree for `Installed-Size`.
     locales = stage_resources(repo, root / "data", app)
     control, kib = control_with_size(root / "ctl" / "control", root / "data", flav)

@@ -167,12 +167,10 @@ pub(crate) enum StorageStage {
     /// The key service could not be registered with at all (an LS2 setup failure inside the
     /// jail), so no call was ever made. No error code exists for it either.
     Unreachable,
-    /// **Stage B2 (issue #76 field report case 6): the write itself failed** — every candidate
-    /// path (`plex::session::auth_paths`) refused the write outright (permissions, a full or
-    /// read-only mount, a jailed directory that looked writable and was not). Distinct from every
-    /// stage above it, which all describe a seal/open call that a KEY SERVICE answered one way or
-    /// another — this one never reached a service at all, and the file system said no on its own.
-    /// No error code exists for it either: `write_atomic`'s own refusal carries none to report.
+    /// No new restart-authoritative session could be persisted: writes failed, or
+    /// a readable older candidate survived cleanup and would shadow the fallback.
+    /// This is not a key-service verdict. Fresh-save diagnostics separately carry
+    /// each candidate's OS errno or policy rejection (including `shadowed_candidate`).
     WriteFailed,
     /// **The 2026-09-10 trust-widening fix's own stage.** A candidate session file was found with
     /// any group/other WRITE bit set (any of `0o022`) — not merely readable-widened, which is a

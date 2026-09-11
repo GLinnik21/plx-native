@@ -35,6 +35,8 @@ So: two ids, two installs, two tiles.
 | install dir | `…/applications/com.beb.plxnative` | `…/applications/com.beb.plxnative.debug` |
 | runtime root | `/tmp` | `/tmp/com.beb.plxnative.debug` |
 | session file | `/media/developer/com.beb.plxnative-auth.json` | `/media/developer/com.beb.plxnative.debug-auth.json` |
+| app-local session fallback | `…/com.beb.plxnative/state/auth.json` | `…/com.beb.plxnative.debug/state/auth.json` |
+| app-local telemetry decision fallback | `…/com.beb.plxnative/state/telemetry.json` | `…/com.beb.plxnative.debug/state/telemetry.json` |
 | launcher title | `PlxNative` | `PlxNative debug` |
 | launcher artwork | `pkg/icon.png` | `pkg/dev/icon.png` (amber DEV bar) |
 | plex.tv device name | `PlxNative (LG TV)` | `PlxNative debug (LG TV)` |
@@ -356,10 +358,12 @@ takes — because creating a second *app* is not the same operation as writing f
 exists. SAM has to learn the id, and the LS2 role file that permits `com.webos.media.*` is written
 by the installer, not declared by us.
 
-**And then it deploys, deliberately.** `appinstalld` replaces `applications/<id>/` **wholesale** —
-the same fact that keeps the session file outside the app directory — so an install that stopped
-after installing would leave the *packaged* binary in place and you would be looking at a build you
-did not make. That is this project's least favourite failure mode wearing a different hat.
+**And then it deploys, deliberately.** The installer refreshes the packaged payload under
+`applications/<id>/`, so an install that stopped after installing would leave the *packaged* binary
+in place and you would be looking at a build you did not make. Do not infer from that that arbitrary
+files in the app directory are always wiped: a 1.0.0→1.0.1 Developer Mode probe preserved
+non-packaged state files across `update:true`. The packaged `state/` directory is shipped empty;
+runtime files created beneath it are not payload members and have their own lifetime.
 
 `make deploy` `test -d`s the app directory and fails naming `make FLAVOR=… install`, rather than
 `mkdir -p`-ing a directory SAM knows nothing about. A hand-made app directory gets no registration

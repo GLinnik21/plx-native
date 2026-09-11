@@ -95,12 +95,12 @@ fn candidates() -> Vec<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-static TEST_FILE: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+static TEST_FILE: std::sync::Mutex<Option<Vec<std::path::PathBuf>>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 fn candidates() -> Vec<std::path::PathBuf> {
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        Some(p) => vec![p],
+        Some(paths) => paths,
         None => crate::paths::telemetry_candidates(),
     }
 }
@@ -109,10 +109,16 @@ fn candidates() -> Vec<std::path::PathBuf> {
 /// caller holds `crate::testlock::serial()` for the whole test: this is a crate global.
 #[cfg(test)]
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
-    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p.map(|p| vec![p]);
+}
+
+#[cfg(test)]
+fn redirect_for_test_multi(paths: Vec<std::path::PathBuf>) {
+    *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(paths);
 }
 
 fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
+    let mut found: Option<Consent> = None;
     for p in candidates {
         let Some((bytes, trust)) = crate::plex::session::read_owned_regular_trusted(p) else {
             continue;
@@ -139,10 +145,17 @@ fn load_from(candidates: &[std::path::PathBuf]) -> Consent {
             return reset;
         }
         if let Ok(c) = serde_json::from_slice::<Consent>(&bytes) {
-            return consent::migrate_loaded(c);
+            let c = consent::migrate_loaded(c);
+            if found.as_ref().is_some_and(|old| old != &c) {
+                crate::log("telemetry: conflicting trusted consent candidates — resetting");
+                let reset = Consent::default();
+                spool::purge_withdrawn(&reset);
+                return reset;
+            }
+            found = Some(c);
         }
     }
-    Consent::default()
+    found.unwrap_or_default()
 }
 
 /// Record a decision: write it, then publish it. **Write first** — a decision that took effect but
@@ -156,9 +169,19 @@ pub(crate) fn record(c: Consent) {
     let Ok(json) = serde_json::to_vec_pretty(&c) else {
         return;
     };
-    let stored = candidates()
+    let paths = candidates();
+    let winner = paths
         .iter()
-        .any(|p| crate::plex::session::write_atomic(p, &json));
+        .find(|p| crate::plex::session::write_atomic(p, &json))
+        .cloned();
+    let stored = winner.is_some();
+    if let Some(winner) = winner {
+        for stale in paths.iter().filter(|p| **p != winner) {
+            if crate::plex::session::read_owned_regular_trusted(stale).is_some() {
+                let _ = std::fs::remove_file(stale);
+            }
+        }
+    }
     if !stored {
         crate::log("telemetry: could not persist the decision to ANY candidate path");
     }
@@ -222,7 +245,8 @@ pub(crate) fn record(c: Consent) {
 /// decision and both identifiers deliberately outlived the sign-in ("so that a decision you have
 /// already made is not put to you again"), which meant account B was never asked and every report
 /// B caused went out under A's consent and A's identifiers. A managed-profile switch is not a
-/// sign-out and keeps the decision; an uninstall keeps the sign-in, so it keeps the decision too.
+/// sign-out and keeps the decision. An external candidate may survive uninstall; app-local state
+/// is removed with the app.
 ///
 /// The crash MARK (`paths::telemetry_crashmark_candidates`) is deliberately left alone: it records
 /// how much of the crash log has been read — a fact about the log, not about anybody — and the
@@ -710,6 +734,148 @@ mod tests {
         assert!(after.install_id.is_none() && after.errors_id.is_none());
         assert!(consent::errors_id().is_none() && !consent::allows_errors());
         assert!(!file.exists(), "the decision file survived");
+    }
+
+    #[test]
+    fn consent_falls_back_to_packaged_state_and_forget_removes_every_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Reset {
+            dir: std::path::PathBuf,
+            saved: Option<Consent>,
+        }
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                spool::set_test_path(None);
+                redirect_for_test(None);
+                if let Some(c) = self.saved.take() { consent::install(c); }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let external = dir.join("missing-parent/telemetry.json");
+        let state_decision = state.join("telemetry.json");
+        let state_spool = state.join("telemetry-spool.bin");
+        let _reset = Reset { dir: dir.clone(), saved: consent::current() };
+        redirect_for_test_multi(vec![external.clone(), state_decision.clone()]);
+        spool::set_test_path(Some(state_spool.clone()));
+
+        let chosen = consent::apply(&Consent::default(), true, true, || Some("s".repeat(32)));
+        record(chosen.clone());
+        assert!(!external.exists());
+        assert_eq!(load_from(&[external.clone(), state_decision.clone()]), chosen);
+        assert_eq!(
+            std::fs::metadata(&state_decision).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(spool::append(&queue::Record {
+            category: queue::Category::OneOff,
+            dest: queue::Dest::Sentry,
+            event_id: "state-oneoff".into(),
+            body: b"{}".to_vec(),
+        }));
+
+        // A second candidate copy must be erased too, not only the winner used by `record`.
+        std::fs::create_dir_all(external.parent().unwrap()).unwrap();
+        std::fs::write(&external, serde_json::to_vec(&chosen).unwrap()).unwrap();
+        forget();
+        assert!(!external.exists() && !state_decision.exists());
+        assert!(spool::read().is_empty());
+
+    }
+
+    #[test]
+    fn conflicting_trusted_consent_candidates_fail_closed() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let higher = dir.join("higher.json");
+        let lower = dir.join("lower.json");
+        let yes = consent::apply(&Consent::default(), true, true, || Some("y".repeat(32)));
+        let no = consent::apply(&Consent::default(), false, false, || Some("n".repeat(32)));
+        std::fs::write(&higher, serde_json::to_vec(&yes).unwrap()).unwrap();
+        std::fs::write(&lower, serde_json::to_vec(&no).unwrap()).unwrap();
+        let loaded = load_from(&[higher, lower]);
+        assert!(!loaded.any() && !loaded.answered());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn identical_trusted_consent_duplicates_are_accepted() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-identical-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.json");
+        let b = dir.join("b.json");
+        let yes = consent::apply(&Consent::default(), true, true, || Some("i".repeat(32)));
+        let bytes = serde_json::to_vec(&yes).unwrap();
+        std::fs::write(&a, &bytes).unwrap();
+        std::fs::write(&b, &bytes).unwrap();
+        assert_eq!(load_from(&[a, b]), yes);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fallback_no_cannot_be_overridden_by_a_readonly_higher_yes() {
+        use std::os::unix::fs::PermissionsExt;
+        struct Reset(std::path::PathBuf, Option<Consent>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+                redirect_for_test(None);
+                if let Some(c) = self.1.take() { consent::install(c); }
+                let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+            }
+        }
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-readonly-{}", std::process::id()));
+        let higher_dir = dir.join("higher");
+        let state = dir.join("state/telemetry.json");
+        std::fs::create_dir_all(&higher_dir).unwrap();
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        let higher = higher_dir.join("telemetry.json");
+        let yes = consent::apply(&Consent::default(), true, true, || Some("h".repeat(32)));
+        std::fs::write(&higher, serde_json::to_vec(&yes).unwrap()).unwrap();
+        std::fs::set_permissions(&higher, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let _reset = Reset(higher_dir.clone(), consent::current());
+        redirect_for_test_multi(vec![higher.clone(), state.clone()]);
+        let no = consent::apply(&Consent::default(), false, false, || Some("n".repeat(32)));
+        record(no);
+        std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(higher.exists() && state.exists(), "the conflict survived the failed sweep");
+        let loaded = load_from(&[higher, state]);
+        assert!(!loaded.any() && !loaded.answered(), "old Yes was re-enabled");
+    }
+
+    #[test]
+    fn a_successful_decision_write_sweeps_an_owned_lower_duplicate() {
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-consent-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let higher = dir.join("higher.json");
+        let lower = dir.join("lower.json");
+        std::fs::write(&lower, b"{}").unwrap();
+        let saved = consent::current();
+        redirect_for_test_multi(vec![higher.clone(), lower.clone()]);
+        record(consent::apply(&Consent::default(), false, false, || Some("s".repeat(32))));
+        assert!(higher.exists());
+        assert!(!lower.exists(), "owned stale decision survived a successful replacement");
+        redirect_for_test(None);
+        if let Some(c) = saved { consent::install(c); }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// An unreadable or corrupt file is the DEFAULT decision, never a partial one — a file we

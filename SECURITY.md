@@ -70,8 +70,12 @@ looking at:
   is that it must not still be at the name the next launch reads. The consent file and the telemetry spool are deliberately
   unchanged: a discarded decision and a truncated spool leave nothing worth keeping. A downgrade of an existing encrypted file, a way to read it from another
   process, or a way to make the app write it somewhere world-readable is in scope.
+- **The packaged state directory.** The IPK carries an empty per-install `state/` directory with
+  uid 0, gid 5000 and mode 0775. It is a writable container for the jailed app; runtime files such
+  as `state/auth.json` and `state/telemetry.json` are created owner-only at 0600 and are not package
+  payload. The package checker grades the actual IPK member, not just the staging directory.
 - **The Developer Mode shared-namespace exposure, and why it is not the same claim as the above.**
-  A **sideloaded** (Developer Mode / Homebrew) install runs under `jail_native_devmode.conf`, which
+  A **sideloaded Developer Mode** install runs under `jail_native_devmode.conf`, which
   mounts `/media/developer` **read-write for the whole directory**, measured `drwxrwxrwx` root:root
   — every homebrew app has its own uid but shares one gid, so **mode is the entire boundary** a file
   there can draw against a sibling app, and a peer that cannot read a 0600 file can still `unlink`
@@ -89,15 +93,12 @@ looking at:
   document, not a guarantee any of them make; it is pinned by a test
   (`plex::session::tests::a_replayed_older_valid_session_file_is_indistinguishable_from_current`,
   and its consent-file twin) precisely so it stays documented rather than silently assumed away.
-  **This is a property of Developer Mode itself, not a bug in this app**, and it does not apply to a
-  **retail** install: `jail_native.conf` gives a store-distributed app `mountappdir` — only its own
-  directory in the mount namespace, nothing else on the device visible to it at all. A report
-  describing this exposure (substitution OR replay) on a retail install (were one ever to exist) is
-  in scope; the same exposure on a sideloaded install, reachable only by another process the user
-  chose to sideload beside this one, is disclosed here rather than treated as a vulnerability of
-  this app, and is not itself something to report. A storage error report may name which of these
-  tiers (`developer`/`internal`/`app_dir`/`runtime`/`other`) a candidate session file was found or
-  rejected at — a category word, never the path itself.
+  **This paragraph is limited to the measured Developer Mode namespace.** It is a property of that
+  profile, not a claim about every webOS installation mode. This document does not assert the
+  `mountappdir` layout or cross-app isolation of a retail/Homebrew jail because that behavior has
+  not been verified in this environment. A storage error report may name which candidate tier
+  (`developer`/`internal`/`app_dir`/`runtime`/`other`) was found or rejected — a category word, never
+  the path itself.
 - **The bundled FFmpeg.** Built from unmodified FFmpeg 9.0 with demuxers, parsers and subtitle
   decoders only — it is fed untrusted bytes from the network, so parser bugs reachable through
   `ff.rs` are in scope. Report FFmpeg's own bugs upstream as well.

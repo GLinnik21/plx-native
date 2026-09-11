@@ -69,7 +69,10 @@ fn path() -> Option<PathBuf> {
 /// writable, and picking a fresh empty file over one holding a crash report is the one ordering
 /// that loses the report this whole module exists to keep.
 fn resolve() -> Option<PathBuf> {
-    let cands = crate::paths::telemetry_spool_candidates();
+    resolve_from(crate::paths::telemetry_spool_candidates())
+}
+
+fn resolve_from(cands: Vec<PathBuf>) -> Option<PathBuf> {
     // Not `Path::exists()`: that follows symlinks and checks neither ownership nor file type, so a
     // peer-planted name at the first candidate would capture the spool for the whole process (every
     // later reader/writer refuses it on the owned-regular check, or blocks on it if it is a FIFO,
@@ -414,6 +417,29 @@ mod tests {
         );
         assert_eq!(append_if(&rec("allowed"), || true), Some(true));
         assert_eq!(ids(), vec!["allowed".to_string()]);
+    }
+
+    #[test]
+    fn resolver_uses_state_after_external_failure_but_prefers_an_existing_state_spool() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let dir = std::env::temp_dir().join(format!("plx-spool-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state_dir = dir.join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let external = dir.join("missing-parent/telemetry-spool.bin");
+        let state = state_dir.join("telemetry-spool.bin");
+
+        assert_eq!(resolve_from(vec![external.clone(), state.clone()]), Some(state.clone()));
+        assert!(!external.exists());
+        assert_eq!(std::fs::metadata(&state).unwrap().permissions().mode() & 0o777, 0o600);
+
+        // Once state exists, it outranks a merely writable earlier directory so queued records
+        // cannot be stranded in the old file.
+        std::fs::create_dir_all(external.parent().unwrap()).unwrap();
+        assert_eq!(resolve_from(vec![external.clone(), state.clone()]), Some(state.clone()));
+        assert!(!external.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// **The record queued while a flush was on the network must survive that flush's commit.**

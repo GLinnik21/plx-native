@@ -1060,6 +1060,7 @@ check: lint
 	@# it would be too late to learn otherwise. It also cross-checks the three copies of the app id
 	@# (here, ci/flavor.py, rust-modules/src/paths.rs), which no compiler can.
 	python3 ci/flavor.py --selftest
+	python3 ci/test_state_package.py
 	@# ...and the stamp decoder `ci/check-package.py` grades every "is this a RELEASE build?"
 	@# assertion through. It is pure string arithmetic over values only THIS file produces, and it
 	@# had been wrong since the telemetry field was added to RUST_CFG — decoding every real stamp as
@@ -1289,10 +1290,9 @@ release-guard:
 # that exercises the package (`make deploy` never consults packageinfo.json, which is how a missing
 # one hid for months; see ci/mkipk.py).
 #
-# AND THEN IT DEPLOYS, deliberately. appinstalld replaces `applications/<id>/` WHOLESALE — the same
-# fact that keeps the session file outside it (paths.rs) — so an install wipes whatever was in
-# there and leaves the PACKAGED binary behind. Ending here would leave you looking at a build you
-# did not make, which is the "plausible wrong data" failure this repo cares most about.
+# AND THEN IT DEPLOYS, deliberately. Installation refreshes the packaged payload, so ending here
+# leaves the PACKAGED binary rather than the locally built one. This is not a claim that all
+# app-created data is wiped: the isolated state probe retained its files across a normal update.
 install: ipk tv-lock-require
 	@echo "installing $(IPK) as $(APPID) on $(TV)"
 	$(SCP) $(IPK) root@$(TV):/tmp/

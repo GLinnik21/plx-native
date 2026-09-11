@@ -445,6 +445,12 @@ pub(crate) fn in_runtime_dir(name: &str) -> PathBuf {
     runtime_dir().join(name)
 }
 
+/// A persistent file under the package's pre-created, group-writable `state` directory.
+/// The directory is part of the IPK; callers create only owner-mode files inside it.
+pub(crate) fn in_state_dir(name: &str) -> PathBuf {
+    in_app_dir("state").join(name)
+}
+
 /// **Which jail-visible tier one [`session_candidates`] entry is**, carried beside the path rather
 /// than re-derived from it by prefix matching.
 ///
@@ -462,22 +468,17 @@ pub(crate) enum SessionTier {
     Developer,
     /// `/media/internal/.<id>-auth.json` — the retail-jail writable fallback.
     Internal,
-    /// Inside the app install directory — `in_app_dir("auth.json")`, or the legacy migration path.
+    /// Inside the app install directory — packaged `state/auth.json`, or a legacy migration path.
     AppDir,
 }
 
 /// Candidate locations for the persisted session, best first, each with the [`SessionTier`] it is.
 ///
-/// Ordering rationale — the first entry must stay first: `/media/developer/<id>-auth.json` is
-/// deliberately OUTSIDE the app directory because appinstalld replaces that directory wholesale on
-/// every (re)install, which silently signed the user out. It is writable in the Developer Mode
-/// jail and it survives a reinstall, so it remains the preferred home.
-///
-/// Under the production jail that path does not exist, and the app dir itself is `root:5000 0755`
-/// — not writable by the jailed uid. `/media/internal` is `mount rw` in that profile and is the
-/// only persistent writable location there, so it is the second candidate. The app dir is third
-/// on the theory that a future layout may make it writable; the legacy in-app-dir path is last and
-/// is read-only in practice (migration).
+/// The two established external locations remain first for compatibility with existing sessions.
+/// Some newer Developer Mode jails refuse both, so the IPK now provides `state/` as an app-local
+/// fallback. Native probes verified owner-mode files there across a restart on the affected newer
+/// TV and across a normal appInstallService update on the older development TV. The old app-root
+/// file remains last as a migration source.
 pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
     let mut v = Vec::new();
     // A steerable build gets its own identity, first. Without this every concurrent simulator
@@ -507,11 +508,12 @@ pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
             PathBuf::from(format!("/media/internal/.{id}-auth.json")),
             SessionTier::Internal,
         ),
+        (in_state_dir("auth.json"), SessionTier::AppDir),
         (in_app_dir("auth.json"), SessionTier::AppDir),
     ]);
     // The legacy in-app-dir path is a MIGRATION source and it names the SHIPPED install's directory
     // by literal, so only the shipped install may offer it. `session::load` takes the first
-    // candidate that EXISTS — so on a flavoured install, whose own three files are all absent on
+    // candidate that EXISTS — so on a flavoured install, whose own candidates are all absent on
     // first boot, this entry would hand a developer build the other install's account token, every
     // per-(user, server) PMS token and the Plex Home roster, which it would then write back under
     // its own name. Exactly the sharing the three lines above exist to prevent, arriving through
@@ -533,10 +535,10 @@ pub(crate) fn session_candidates() -> Vec<(PathBuf, SessionTier)> {
 /// person who had already answered, which is both worse for them and the exact pattern that makes
 /// a consent prompt feel like nagging rather than a choice.
 ///
-/// **So it outlives an uninstall** — webOS gives a native app no uninstall hook, so nothing can
-/// clear this on the way out — **but not a sign-out**: the decision belongs to the account that
-/// gave it, and `auth::forget_account` unlinks every candidate here (through `telemetry::forget`)
-/// when that account signs out, so a change of owner IS a fresh question. That is also why the
+/// External candidates can outlive an uninstall; the app-local fallback is removed with the app.
+/// None outlive a sign-out: the decision belongs to the account that gave it, and
+/// `auth::forget_account` unlinks every candidate here (through `telemetry::forget`) when that
+/// account signs out, so a change of owner IS a fresh question. That is also why the
 /// file holds a DECISION and, only after opt-in, one random identifier PER CHANNEL (the
 /// crash-report id and the analytics id, each owned by its own switch) — and why withdrawing a
 /// channel DELETES its identifier rather than merely disabling it. Recorded in `PRIVACY.md`,
@@ -605,6 +607,7 @@ pub(crate) fn telemetry_candidates() -> Vec<PathBuf> {
     v.extend([
         PathBuf::from(format!("/media/developer/{id}-telemetry.json")),
         PathBuf::from(format!("/media/internal/.{id}-telemetry.json")),
+        in_state_dir("telemetry.json"),
         in_app_dir("telemetry.json"),
     ]);
     // No legacy/migration entry, and no `flavour().is_none()` arm: there is no older location, and
@@ -879,8 +882,8 @@ mod tests {
         }
     }
 
-    /// The preferred session path must stay OUTSIDE the app directory: appinstalld replaces the
-    /// app dir wholesale on reinstall, and a session stored inside it is a silent sign-out.
+    /// The preferred session path stays outside the app directory for existing-install
+    /// compatibility; packaged state is a fallback, not a forced migration.
     #[test]
     fn preferred_session_path_survives_a_reinstall() {
         let c: Vec<std::path::PathBuf> =
@@ -920,5 +923,38 @@ mod tests {
             };
             assert_eq!(tier, expect, "{s} is labelled {tier:?}");
         }
+    }
+
+    #[test]
+    fn packaged_state_is_the_app_local_fallback_after_both_external_tiers() {
+        let paths: Vec<_> = super::session_candidates().into_iter().map(|(p, _)| p).collect();
+        let developer = paths.iter().position(|p| p.starts_with("/media/developer")).unwrap();
+        let internal = paths.iter().position(|p| p.starts_with("/media/internal")).unwrap();
+        let state = paths
+            .iter()
+            .position(|p| p == &super::app_dir().join("state/auth.json"))
+            .expect("packaged state/auth.json fallback");
+        assert!(developer < internal && internal < state);
+        assert_eq!(
+            super::session_candidates()[state].1,
+            super::SessionTier::AppDir
+        );
+    }
+
+    #[test]
+    fn telemetry_state_fallback_keeps_spool_and_crashmark_beside_the_decision() {
+        let decision = super::app_dir().join("state/telemetry.json");
+        let index = super::telemetry_candidates()
+            .iter()
+            .position(|p| p == &decision)
+            .expect("packaged telemetry decision fallback");
+        assert_eq!(
+            super::telemetry_spool_candidates()[index],
+            super::app_dir().join("state/telemetry-spool.bin")
+        );
+        assert_eq!(
+            super::telemetry_crashmark_candidates()[index],
+            super::app_dir().join("state/telemetry-crashmark.json")
+        );
     }
 }

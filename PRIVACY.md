@@ -32,6 +32,9 @@ random Analytics ID if you turned product analytics on, any report waiting to be
 marker recording how much of the crash log has already been read.
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
+On installs where the external candidates are unavailable, the packaged application directory also
+contains `state/auth.json` for the session and `state/telemetry.json` for the reporting decision;
+the package supplies that directory empty, and runtime files created there are not package payload.
 
 Your sign-in is protected with this television's own key service when one is available and this
 install has shown it can be trusted: the app checks, on a later launch, that the television's key
@@ -56,9 +59,11 @@ in next: the next sign-in is asked afresh. Switching between the profiles of one
 not a sign-out and keeps them. A queued report is deleted once sent. Switching a category off
 deletes that category's own queued reports; signing out, or Delete all local data, destroys
 everything queued, including a one-off report you already pressed "Send" for — a one-off report
-belongs to no category, so only those two erase it. The log rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
-sign-in and the reporting answers can survive an uninstall — use Delete all local data before
-uninstalling if you want nothing of PlxNative left on the television.
+belongs to no category, so only those two erase it. The log rotates continuously. External candidate
+files can survive an uninstall because webOS gives an application no way to run code as it is
+removed; the packaged app directory, including its `state/auth.json` and `state/telemetry.json`
+files, is removed with the application. Use Delete all local data before uninstalling if you also
+want external PlxNative data removed.
 
 ## Optional crash reports
 

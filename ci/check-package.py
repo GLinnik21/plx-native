@@ -5,6 +5,7 @@ The registry reads metadata straight out of the .ipk (webosbrew's repogen/ipk_fi
 Package/Version/Installed-Size from the control file, then appinfo.json), so any disagreement
 between the three places the version is written is a submission failure rather than a warning.
 """
+import io
 import json
 import re
 import struct
@@ -14,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
+from mkipk import state_archive_errors  # noqa: E402 — exact data.tar.gz state contract
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
@@ -24,6 +26,26 @@ def check(cond: bool, msg: str) -> None:
     else:
         FAILURES.append(msg)
         print(f"  FAIL — {msg}")
+
+
+def ar_payloads(blob: bytes) -> dict[str, bytes]:
+    """Read the short-name ar members needed to grade the artifact, not its staging tree."""
+    if blob[:8] != b"!<arch>\n":
+        return {}
+    out, off = {}, 8
+    while off + 60 <= len(blob):
+        name = blob[off:off + 16].decode("latin-1").strip()
+        try:
+            size = int(blob[off + 48:off + 58].decode("latin-1").strip() or 0)
+        except ValueError:
+            return {}
+        start = off + 60
+        end = start + size
+        if end > len(blob):
+            return {}
+        out[name] = blob[start:end]
+        off = end + (size % 2)
+    return out
 
 
 def lg_maintainer_address(value: str) -> bool:
@@ -1058,15 +1080,16 @@ expected = {
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
     "THIRD-PARTY-NOTICES.md", "LICENSE", "TRADEMARKS.md", *NEEDED_LICENCES,
 }
-data_tar = ROOT / "ipkroot/data.tar.gz"
-if data_tar.exists():
+artifact_data = ar_payloads(built[0].read_bytes()).get("data.tar.gz") if built else None
+if artifact_data is not None:
     import tarfile
-    with tarfile.open(data_tar) as t:
+    with tarfile.open(fileobj=io.BytesIO(artifact_data), mode="r:gz") as t:
         members = [m for m in t.getmembers() if m.isfile()]
         names = {Path(m.name).name for m in members}
         modes = {Path(m.name).name: m.mode & 0o777 for m in members}
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
+        state_errors = state_archive_errors(artifact_data, appinfo["id"])
     check(expected <= names, f"payload carries all {len(expected)} app files")
     check(modes.get("plxnative") == 0o755,
           "native app is executable by its jailed runtime uid")
@@ -1084,6 +1107,9 @@ if data_tar.exists():
     # rendering the whole theme::size ladder in DroidSans.
     check(owners <= {("root", "root"), ("", "")},
           f"payload is not owned by the developer's account (saw {sorted(owners)})")
+    check(not state_errors,
+          "the IPK data.tar.gz carries one empty state directory with uid 0, gid 5000, mode 0775"
+          + (f" ({'; '.join(state_errors)})" if state_errors else ""))
     # webOS's *package* descriptor, distinct from the app's appinfo.json. Absent from every ipk
     # built before 2026-08-02 and undetectable from the dev loop, which scp's into an app dir the
     # TV already has registered. Without it `appinstalld` unpacks nothing.
@@ -1114,7 +1140,7 @@ if data_tar.exists():
           f"payload carries resources/<locale>/appinfo.json for all {len(tracked_locales)} locales"
           + (f" (missing {' '.join(missing)})" if missing else ""))
 else:
-    print("  SKIP — ipkroot/data.tar.gz absent (run `make ipk` first)")
+    print("  SKIP — no IPK data.tar.gz member (run `make ipk` first)")
 
 print("== ar container ==")
 # `ar rcD` (GNU) terminates short member names with '/', which appinstalld rejects outright:

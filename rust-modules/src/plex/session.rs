@@ -153,9 +153,8 @@ pub fn current_gen() -> u32 {
 /// Channel install — where `save()` then dropped the error and the user re-did the QR sign-in on
 /// every boot, with a fresh `X-Plex-Client-Identifier` each time.
 ///
-/// The first entry is still deliberately OUTSIDE the app install dir: appinstalld replaces
-/// `applications/com.beb.plxnative/` wholesale on every ipk (re)install, which silently signed the
-/// user out when the file lived there.
+/// Existing external locations retain priority for compatibility. A packaged, writable
+/// app-local state directory covers newer jails that deny those external writes.
 #[cfg(not(test))]
 fn auth_candidates() -> Vec<(std::path::PathBuf, CandidateCategory)> {
     crate::paths::session_candidates()
@@ -2175,7 +2174,7 @@ pub(crate) enum CandidateCategory {
     Developer,
     /// `/media/internal/.<id>-auth.json` — the retail-jail writable fallback.
     Internal,
-    /// `paths::app_dir()`-relative (`in_app_dir("auth.json")`, or the legacy migration path).
+    /// `paths::app_dir()`-relative (packaged `state/auth.json`, or a legacy migration path).
     AppDir,
     /// `paths::runtime_dir()`-relative — a steerable build's own per-instance `auth.json`.
     Runtime,
@@ -2758,6 +2757,25 @@ fn sweep_other_candidates(winner: &std::path::Path) {
     }
 }
 
+/// A successful lower-tier rename is not enough: a readable old higher-tier
+/// file can survive a failed sweep when its directory became read-only.
+/// Check this before publishing the new session as restart-persistent. This
+/// deliberately needs no key-service call and never treats unknown bytes as
+/// an equivalent session. It cannot detect a later cross-app replay.
+fn earlier_candidates_allow_winner(winner: &std::path::Path, bytes: &[u8]) -> bool {
+    for path in auth_paths() {
+        if path == winner {
+            return true;
+        }
+        if read_owned_regular_trusted(&path)
+            .is_some_and(|(old, trust)| trust.content_trusted() && old != bytes)
+        {
+            return false;
+        }
+    }
+    false
+}
+
 /// Seed a quality only for a genuinely absent file. A parsable legacy file remains distinguishable
 /// even when it omitted `client_id`; otherwise opening the Auto gate in a future build would turn
 /// that old install into a fresh one merely because its identifier also needed repair.
@@ -3158,7 +3176,7 @@ fn save_with_authority(s: &Session, authority: SaveAuthority) -> PersistOutcome 
         if authority == SaveAuthority::FreshReauthentication && outcome.persisted() {
             verify_fresh_write_readback();
         }
-        // Success is consumed by `verify_fresh_write_readback`; failure wrote nothing. Either way,
+        // Success is consumed by `verify_fresh_write_readback`. Either way,
         // serialized credentials never outlive this save in the private scratch slot.
         *LAST_SESSION_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let pending_from_save = take_pending_reports();
@@ -3201,8 +3219,9 @@ pub enum PersistOutcome {
     /// a NEWER build's envelope that reads perfectly again after the upgrade. Only [`clear`]
     /// removes it.
     BlockedUnknownEnvelope,
-    /// Every candidate path refused the write. The file system said no; nothing about the key
-    /// service is being claimed. Reported on its own as `StorageStage::WriteFailed`.
+    /// No authoritative new session was persisted: candidate writes failed, or
+    /// an older higher-priority file could not be removed and would shadow them.
+    /// Nothing about the key service is claimed. Reported as `StorageStage::WriteFailed`.
     WriteFailed,
     /// The `Session` (or the envelope wrapping it) would not serialize — a bug, not a device
     /// condition, and the one outcome that says nothing about the disk at all.
@@ -3459,7 +3478,6 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
                 // A successful migration must not leave an older plaintext token file at a
                 // lower-priority jail path where another uid can recover it — nor destroy the one
                 // kind of file that is not ours to delete; see [`sweep_other_candidates`].
-                sweep_other_candidates(&winner);
                 not_locked_after_write();
                 LAST_CLASS.store(CLASS_SECURE, std::sync::atomic::Ordering::Relaxed);
                 publish_cache(s.clone());
@@ -3523,8 +3541,9 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
-    for path in auth_paths() {
-        if write_atomic(&path, &json) {
+    for (path, category) in auth_candidates() {
+        if write_session_candidate(&path, category, &json, saving_fresh_sign_in) {
+            note_session_write(&path, category, &json);
             LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
             publish_cache(s.clone());
             return PersistOutcome::PersistedPlaintext;
@@ -3537,11 +3556,10 @@ fn persist_locked(s: &Session, authority: SaveAuthority) -> PersistOutcome {
     PersistOutcome::WriteFailed
 }
 
-/// Stage B2 (issue #76 field report case 6): every candidate path refused the write outright —
+/// Stage B2 (issue #76): no restart-authoritative write succeeded —
 /// queued from every "could not persist to ANY candidate path" branch in this file so the failure
 /// leaves a trace independent of `auth::take_ready`'s own once-per-call log line. Distinct from
-/// every other [`crate::telemetry::storage::StorageStage`]: this one never reached a key service at
-/// all, so it carries no service error code — the file system itself said no.
+/// the seal/open stages: this is not a key-service verdict, so it carries no service error code.
 fn report_write_failed() {
     queue_report(crate::telemetry::storage::StorageErrorContext {
         stage: crate::telemetry::storage::StorageStage::WriteFailed,
@@ -3551,7 +3569,7 @@ fn report_write_failed() {
         key_outcome: crate::keymanager::last_key_outcome(),
         registered_with_app_id: crate::keymanager::registered_with_app_id(),
         registered_with_name: crate::keymanager::registered_with_name(),
-        // Nothing reached the disk, so there is nothing sealed for this report to be about.
+        // No newly authoritative envelope is being claimed by this report.
         sealed_identity: None,
     });
 }
@@ -3673,7 +3691,6 @@ fn write_plaintext_recovery(
     for (winner, category) in candidates {
         if !write_session_candidate(&winner, category, json, record_fresh) { continue; }
         note_session_write(&winner, category, json);
-        sweep_other_candidates(&winner);
         not_locked_after_write();
         LAST_CLASS.store(CLASS_PLAINTEXT, std::sync::atomic::Ordering::Relaxed);
         publish_cache(s.clone());
@@ -3688,7 +3705,15 @@ fn write_session_candidate(
     bytes: &[u8],
     record_fresh: bool,
 ) -> bool {
-    let result = write_atomic_checked(path, bytes);
+    let result = write_atomic_checked(path, bytes).and_then(|receipt| {
+        sweep_other_candidates(path);
+        if earlier_candidates_allow_winner(path, bytes) {
+            Ok(receipt)
+        } else {
+            crate::log("session: candidate was written but an older higher-priority file still shadows it");
+            Err(AtomicWriteFailure::Policy(AtomicWritePolicy::ShadowedCandidate))
+        }
+    });
     if record_fresh {
         let result = match result {
             Ok(receipt) => FreshWriteResult::Written {
@@ -3762,6 +3787,8 @@ pub(crate) enum AtomicWritePolicy {
     DestinationNotRegular,
     DestinationWrongOwner,
     TempNameExhausted,
+    /// Bytes were written, but the normal cold-read order still selects an older file.
+    ShadowedCandidate,
 }
 
 impl AtomicWritePolicy {
@@ -3771,6 +3798,7 @@ impl AtomicWritePolicy {
             Self::DestinationNotRegular => "destination_not_regular",
             Self::DestinationWrongOwner => "destination_wrong_owner",
             Self::TempNameExhausted => "temp_name_exhausted",
+            Self::ShadowedCandidate => "shadowed_candidate",
         }
     }
 }
@@ -5399,6 +5427,85 @@ mod tests {
             account_token: "acct".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn app_state_fallback_survives_cold_read_and_signout_clears_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        let t = TwoCandidateSession::new("app-state-fallback");
+        let state = t.dir.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let file = state.join("auth.json");
+        redirect_for_test_multi(vec![t.dir.join("absent-developer/auth.json"), file.clone()]);
+        assert!(save_after_reauthentication(&signed_in()).persisted());
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        clear_cache();
+        assert_eq!(peek().account_token, "acct");
+        clear();
+        assert!(!file.exists());
+        assert!(state.is_dir(), "sign-out must retain the packaged directory");
+    }
+
+    #[test]
+    fn legacy_app_root_session_migrates_to_packaged_state_on_save() {
+        let _g = crate::testlock::serial();
+        let t = TwoCandidateSession::new("legacy-to-state");
+        let state = t.dir.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let new_path = state.join("auth.json");
+        let legacy = t.dir.join("auth.json");
+        assert!(write_atomic(&legacy, &serde_json::to_vec(&signed_in()).unwrap()));
+        redirect_for_test_multi(vec![t.dir.join("absent/auth.json"), new_path.clone(), legacy.clone()]);
+        let old = peek();
+        assert_eq!(old.account_token, "acct");
+        assert!(save(&old).persisted());
+        assert!(new_path.is_file());
+        assert!(!legacy.exists(), "the migrated legacy file must not shadow later saves");
+        clear_cache();
+        assert_eq!(peek().account_token, "acct");
+    }
+
+    #[test]
+    fn unknown_envelope_in_packaged_state_is_not_replaced_by_fresh_signin() {
+        let _g = crate::testlock::serial();
+        let t = TwoCandidateSession::new("state-unknown-envelope");
+        let state = t.dir.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let file = state.join("auth.json");
+        let unknown = br#"{"format":"plxnative-secure-session","version":99}"#;
+        assert!(write_atomic(&file, unknown));
+        redirect_for_test_multi(vec![t.dir.join("absent/auth.json"), file.clone()]);
+        assert_eq!(save_after_reauthentication(&signed_in()), PersistOutcome::BlockedUnknownEnvelope);
+        assert_eq!(std::fs::read(file).unwrap(), unknown);
+    }
+
+    #[test]
+    fn lower_state_write_cannot_claim_success_when_readonly_old_session_shadows_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g = crate::testlock::serial();
+        // Root bypasses directory DAC. The ordinary non-root macOS/Linux host
+        // runners exercise the actual refusal, not a mocked successful sweep.
+        if unsafe { libc::geteuid() } == 0 { return; }
+        let t = TwoCandidateSession::new("state-shadowed");
+        let higher_dir = t.dir.join("readonly");
+        let state = t.dir.join("state");
+        std::fs::create_dir(&higher_dir).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let higher = higher_dir.join("auth.json");
+        let lower = state.join("auth.json");
+        assert!(write_atomic(&higher, &serde_json::to_vec(&signed_in()).unwrap()));
+        redirect_for_test_multi(vec![higher.clone(), lower.clone()]);
+        assert_eq!(peek().account_token, "acct");
+        std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let mut fresh = signed_in();
+        fresh.account_token = "new-account".into();
+        let outcome = save_after_reauthentication(&fresh);
+        std::fs::set_permissions(&higher_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(lower.exists(), "a lower physical write succeeds in this fixture");
+        assert!(!outcome.persisted(), "the cold reader would still choose the old higher file");
+        clear_cache();
+        assert_eq!(peek().account_token, "acct");
     }
 
     /// A save lands as a WHOLE file — written to a sibling tmp and renamed over — leaving nothing
