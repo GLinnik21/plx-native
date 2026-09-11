@@ -17,6 +17,7 @@
 pub(crate) mod consent;
 pub(crate) mod crashreport;
 pub(crate) mod native;
+pub(crate) mod window;
 pub(crate) mod oneoff;
 pub(crate) mod playback;
 pub(crate) mod posthog;
