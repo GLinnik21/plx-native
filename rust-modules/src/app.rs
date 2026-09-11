@@ -3247,6 +3247,21 @@ mod cold_boot_tests {
         let pending = &source[start..end];
         assert!(pending.contains("SDL_PollEvent"), "pending boot stopped pumping platform input");
         assert!(pending.contains("SDL_GL_SwapWindow"), "pending boot stopped presenting its status");
+        let lifecycle = pending
+            .find("window_activity.event(et)")
+            .expect("pending boot lost the lifecycle gate");
+        let early = pending
+            .find("if !boot_routed")
+            .expect("pending boot lost its early event branch");
+        assert!(lifecycle < early, "background state was updated after pending boot continued");
+        let common_lifecycle = &pending[lifecycle..early];
+        assert!(common_lifecycle.contains("crate::system::sys_release_wayland()"));
+        assert!(common_lifecycle.contains("else if et == 0x106"));
+        assert!(common_lifecycle.contains("crate::system::sys_grab_wayland(win)"));
+        assert!(common_lifecycle.contains("crate::ui::idle::invalidate()"));
+        assert!(pending.contains("window_activity.allow_present(true)"));
+        assert!(pending.contains("window_activity.begin_present(false)"));
+        assert!(pending.contains("window_activity.presented(false)"));
         for forbidden in [
             "crate::plex::session::load(",
             "crate::plex::session::peek(",
@@ -7790,6 +7805,13 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             cold_boot.poll();
             if let Some((telemetry, session)) = cold_boot.take_ready() {
                 _telemetry_guard = Some(crate::telemetry::finish_boot(telemetry));
+                // Pending boot may already have presented before stored consent activated the
+                // native backend. Re-arm only if the window is still foregrounded, and re-query
+                // SDL so the first reportable frame has the same WM evidence as the old
+                // synchronous boot. Never manufacture a DID-foreground edge while backgrounded.
+                if window_activity.telemetry_activated() {
+                    crate::system::sys_grab_wayland(win);
+                }
                 // The deliberate crash now waits for stored consent, prior-process imports and
                 // native capture readiness. It still precedes the first reportable launch event.
                 crate::dev::crash_on_purpose();
@@ -7880,6 +7902,18 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                 // kind — rather than in each of the ~30 arms below, where the next one added would
                 // silently draw nothing.
                 crate::ui::idle::invalidate();
+                // Lifecycle owns the OUTER presentation gate and SDL's borrowed Wayland handles.
+                // This must precede the pending-boot early continue below: loading local state is
+                // still a real window, and backgrounding it authorizes neither GL nor a stale
+                // surface borrow.
+                window_activity.event(et);
+                crate::telemetry::window::lifecycle(et, matches!(route, Route::Player { .. }));
+                if et == 0x103 || et == 0x104 {
+                    crate::system::sys_release_wayland();
+                } else if et == 0x106 {
+                    crate::system::sys_grab_wayland(win);
+                    crate::ui::idle::invalidate();
+                }
                 if !boot_routed {
                     if et == SDL_QUIT {
                         running = false;
@@ -7938,13 +7972,10 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         SDL_GetTicks()
                     ));
                 }
-                window_activity.event(et);
-                crate::telemetry::window::lifecycle(et, matches!(route, Route::Player { .. }));
                 if et == SDL_QUIT {
                     running = false;
                 } else if et == 0x103 || et == 0x104 {
                     // WILL/DID ENTER BACKGROUND
-                    crate::system::sys_release_wayland();
                     log(&format!(
                         "LIFECYCLE: background (playing={})",
                         matches!(route, Route::Player { .. }) as i32
@@ -8000,8 +8031,6 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
                         foreground.awaiting_load() as i32
                     ));
                     if et == 0x106 {
-                        crate::system::sys_grab_wayland(win);
-                        crate::ui::idle::invalidate();
                         let activation = drive_foreground(
                             &mut foreground,
                             ForegroundInput::DidForeground,
@@ -9149,28 +9178,32 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             }
 
             if !boot_routed {
-                let now = SDL_GetTicks();
-                crate::system::opaque_route(false);
-                crate::egl::frame_damage();
-                let (vx, vy, vw, vh) = crate::surface::viewport();
-                glViewport(vx, vy, vw, vh);
-                crate::gfx::frame_clear(
-                    crate::ui::theme::CLEAR_RGB.0,
-                    crate::ui::theme::CLEAR_RGB.1,
-                    crate::ui::theme::CLEAR_RGB.2,
-                );
-                crate::ui::guard(|| {
-                    use crate::ui::View;
-                    boot_status(boot_failed, now).draw(
-                        &crate::ui::Env::inert(),
-                        crate::ui::Painter::root(),
+                if window_activity.allow_present(true) {
+                    window_activity.begin_present(false);
+                    let now = SDL_GetTicks();
+                    crate::system::opaque_route(false);
+                    crate::egl::frame_damage();
+                    let (vx, vy, vw, vh) = crate::surface::viewport();
+                    glViewport(vx, vy, vw, vh);
+                    crate::gfx::frame_clear(
+                        crate::ui::theme::CLEAR_RGB.0,
+                        crate::ui::theme::CLEAR_RGB.1,
+                        crate::ui::theme::CLEAR_RGB.2,
                     );
-                });
-                crate::capture::tick(now);
-                #[cfg(feature = "hostsim")]
-                crate::shot::maybe_capture(vx, vy, vw, vh);
-                SDL_GL_SwapWindow(win);
-                crate::egl::late_probe();
+                    crate::ui::guard(|| {
+                        use crate::ui::View;
+                        boot_status(boot_failed, now).draw(
+                            &crate::ui::Env::inert(),
+                            crate::ui::Painter::root(),
+                        );
+                    });
+                    crate::capture::tick(now);
+                    #[cfg(feature = "hostsim")]
+                    crate::shot::maybe_capture(vx, vy, vw, vh);
+                    SDL_GL_SwapWindow(win);
+                    window_activity.presented(false);
+                    crate::egl::late_probe();
+                }
                 // COLD_BOOT_PENDING_PATH_END
                 continue;
             }
@@ -10966,7 +10999,8 @@ pub extern "C" fn plex_run(pms_host: *const c_char, pms_port: c_int) -> c_int {
             // takes-and-clears the discrete flag, and on the player route (which always presents)
             // a skipped take would leave a stale flag to fire spuriously on the way back out.
             // Lifecycle is a hard outer gate, including the player and noidle overrides.
-            let present = window_activity.allow_present(crate::ui::idle::should_present(now) || player);
+            let present =
+                window_activity.allow_present(crate::ui::idle::should_present(now) || player);
             // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
             // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
             let (mut fd_pc_draw, mut fd_pc_cap, mut fd_pc_swap) =
