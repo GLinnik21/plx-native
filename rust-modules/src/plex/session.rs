@@ -1035,7 +1035,9 @@ impl Session {
     ///
     /// `force_pick` is `/tmp/plxnative-pickuser`: it wins even on an automated boot. An empty
     /// `user.uuid` still raises the picker when the switch is on — that is the abandoned-at-picker
-    /// session whose PMS token falls back to the owner.
+    /// session whose PMS token falls back to the owner. A uuid that is no longer in
+    /// [`Session::home_users`] (removed Home user, stale roster) raises it too: the switch is an
+    /// opt-in to skip the list for someone still on it, not a licence to boot leftover tokens.
     pub(crate) fn boot_shows_picker(&self, automated: bool, force_pick: bool) -> bool {
         if !self.can_go_local() || self.home_users.len() <= 1 {
             return false;
@@ -1046,7 +1048,13 @@ impl Session {
         if automated {
             return false;
         }
-        !(self.auto_sign_in && !self.user.uuid.is_empty())
+        !(self.auto_sign_in && self.seated_in_roster())
+    }
+
+    /// True when [`Session::user`]'s uuid names someone still on the cached Plex Home roster.
+    pub(crate) fn seated_in_roster(&self) -> bool {
+        !self.user.uuid.is_empty()
+            && self.home_users.iter().any(|u| u.uuid == self.user.uuid)
     }
 
     /// True once we have a LAN server + a usable PMS token — i.e. we can run offline.
@@ -2148,6 +2156,12 @@ mod tests {
         assert!(
             abandoned.boot_shows_picker(false, false),
             "an empty uuid still raises the picker so the owner's token is not handed out"
+        );
+
+        let gone = dialable_home(2, "u-gone", true);
+        assert!(
+            gone.boot_shows_picker(false, false),
+            "a uuid no longer on the roster still raises the picker — leftover tokens are not a seat"
         );
 
         let solo = dialable_home(1, "u-0", false);

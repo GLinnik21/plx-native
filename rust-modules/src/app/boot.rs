@@ -648,7 +648,7 @@ pub(crate) unsafe fn boot(
             crate::auth::refresh_roster();
             if session.auto_sign_in()
                 && session.home_users.len() > 1
-                && !session.user.uuid.is_empty()
+                && session.seated_in_roster()
                 && !automated_boot()
                 && pick_user.is_none()
             {
