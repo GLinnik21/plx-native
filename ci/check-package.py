@@ -26,6 +26,11 @@ def check(cond: bool, msg: str) -> None:
         print(f"  FAIL — {msg}")
 
 
+def lg_maintainer_address(value: str) -> bool:
+    """Whether Maintainer uses the email form accepted by LG's package validator."""
+    return re.fullmatch(r"[^<>]+ <[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>", value) is not None
+
+
 def build_configuration(stamp: str) -> "str | None":
     """Decode `pkg/.build-config` into "dev", "release", or None for anything else.
 
@@ -114,6 +119,22 @@ def _selftest() -> int:
     without anything going red, and because the stamps it must decode are produced by make
     variables that no Python test can otherwise see. `make check` runs it, beside `flavor.py`'s.
     """
+    maintainer_cases = {
+        "Gleb Linnik <support@plxnative.com>": True,
+        "Gleb Linnik <GLinnik21@users.noreply.github.com>": True,
+        # RFC 5322 permits `+`, but LG's Seller Lounge IPK validator rejects it.
+        "Gleb Linnik <23104281+GLinnik21@users.noreply.github.com>": False,
+        "Gleb Linnik <not-an-email>": False,
+    }
+    maintainer_bad = 0
+    for value, want in maintainer_cases.items():
+        got = lg_maintainer_address(value)
+        if got != want:
+            maintainer_bad += 1
+            print(f"  FAIL — lg_maintainer_address({value!r}) = {got!r}, want {want!r}")
+    print(f"check-package: lg_maintainer_address "
+          f"{len(maintainer_cases) - maintainer_bad}/{len(maintainer_cases)} cases correct")
+
     cases = {
         # what the Makefile writes today, per documented configuration
         "features:+tel:98c4b7d37a4c": "dev",
@@ -161,7 +182,7 @@ def _selftest() -> int:
                   f"= ({got_version!r}, {got_err!r}), want version={want_version!r} err={want_err}")
     print(f"check-package: expected_dev_version {len(dev_cases) - dev_bad}/{len(dev_cases)} cases correct")
 
-    bad += dev_bad
+    bad += maintainer_bad + dev_bad
     return 1 if bad else 0
 
 
@@ -904,6 +925,8 @@ check("Homepage" in control, "control declares a Homepage")
 for field in ("webOS-Package-Format-Version", "webOS-Packager-Version"):
     check(field in control, f"control declares {field}")
 check(control.get("License") == "MIT", f'control License == MIT (saw {control.get("License")!r})')
+check(lg_maintainer_address(control["Maintainer"]),
+      f'control Maintainer has an LG-compatible email address ({control["Maintainer"]})')
 check("@users.noreply.github.com" in control["Maintainer"] or "@gmail.com" not in control["Maintainer"],
       f'control Maintainer is not a personal mailbox ({control["Maintainer"]})')
 
