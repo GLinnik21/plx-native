@@ -1142,6 +1142,9 @@ pub(crate) fn frame_with_tap(
     inputs: Vec<InputEvent<u32>>,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
+        execute_session_command(d, crate::auth::SessionCmd::TakeReady);
+    }
     frame_ingest(d, rig, tick, inputs, Bridge::take_live_results, tap)
 }
 

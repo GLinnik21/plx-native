@@ -1514,29 +1514,12 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // The person STORE is deliberately still installed on the press frame by `person::open`
         // — the detail page fading out reads none of it, so nothing blanks, and `enter_node`'s
         // re-open guard then makes the floor's entry a pure route flip.
-        // **Auth workers no longer write `auth`'s controller, persisted Session or registry from
-        // their own threads.** They publish typed `AuthProgress`, and this is the one place on the
-        // main thread that turns each observation into accepted application state
-        // (`auth::apply_progress`) — the same "drain a mailbox, then act on the result" shape
-        // `run()`'s own `super::adapters::poster::drain_decoded()` uses for landed images, just
-        // addressed by flow epoch plus the relevant session/server identity.
-        // Unconditional on `app.route`, unlike the phase→route follower two lines down: the
-        // worker can report progress while some OTHER screen is showing (a switch started from
-        // the Account surface, whose host page is still Home, before the loop has moved to
-        // `Route::Profiles`), and a route gate here would leave that progress queued an extra
-        // frame — or, worse, forever, if the route never becomes Login/Profiles at all before
-        // something else empties `app.route` back to Home. Draining BEFORE the poll below is what
-        // makes THIS frame's `auth::phase()`/`take_ready()` see whatever the worker reported this
-        // frame rather than lagging it by one iteration.
-        for progress in crate::auth::take_progress() {
-            // The token is `land_results`'s own proof this really runs on the main thread — the same
-            // token every other main-thread-only call in this function already carries.
-            crate::auth::apply_progress(app.adapters.player.mt(), progress);
-        }
-        // login flow: install resolved creds on the MAIN thread, then follow the flow phase →
-        // route (Login while creating/waiting/discovering/error, Profiles while picking/switching).
+        // Session observations are ingested unconditionally by Bridge, in Landing arrival
+        // order before Hubs. This route follower consumes only its exact committed handoff;
+        // it neither drains a process-global mailbox nor applies worker facts itself. A
+        // carried credential commit keeps its flow page until the queued ACK finishes.
         if matches!(app.route(), AppArg::Login | AppArg::Profiles) {
-            if let Some(c) = crate::auth::take_ready() {
+            if let Some(c) = app.bridge.take_session_ready() {
                 // A sign-out followed by a fresh sign-in can replace the session without
                 // restarting the process. Re-read only at this one credentials handoff so the
                 // old account's in-memory preference cannot leak into the new session.
@@ -1573,7 +1556,10 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     super::bridge::nav_root(&mut app.pages, AppArg::Home);
                 }
             } else {
-                match crate::auth::phase() {
+                match app.bridge.auth_read().0.phase {
+                    // A Ready decision can still await its queued disk/registry ACK. Keep
+                    // the current flow page until the exact owner handoff is available.
+                    crate::auth::Phase::Ready => {}
                     crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
                         // BEFORE the picker: the account is authorized, so the consent
                         // question is answerable, and the person holding the remote at this

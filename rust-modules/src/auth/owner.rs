@@ -627,10 +627,39 @@ pub(crate) struct SessionRead<'a>(pub &'a SessionSnapshot);
 impl SessionSnapshot {
     pub fn read(&self) -> SessionRead<'_> { SessionRead(self) }
     fn from_state(state: &SessionInit) -> Self {
+        Self::from_state_counted(state, None, &mut |_| {})
+    }
+    fn matches_state(&self, state: &SessionInit) -> bool {
+        self.phase == state.phase && self.qr_generation == state.qr_gen
+            && &*self.code == state.pin_code.as_str() && &*self.png == state.qr_png.as_slice()
+            && &*self.users == state.users.as_slice() && &*self.error == state.error.as_str()
+            && self.code_replaced == state.code_replaced && self.pin_denied == state.pin_denied
+            && self.scope == state.profile_scope && self.delete_leftovers == state.delete_leftovers
+            && match (&self.profile, &state.active_profile) {
+                (None, None) => true,
+                (Some(read), Some(profile)) => read.uuid == profile.uuid
+                    && read.title == profile.title && read.thumb == profile.thumb,
+                _ => false,
+            }
+    }
+    fn from_state_counted(state: &SessionInit, previous: Option<&Self>, built: &mut impl FnMut(usize)) -> Self {
+        let code = previous.filter(|old| &*old.code == state.pin_code.as_str())
+            .map(|old| Arc::clone(&old.code)).unwrap_or_else(|| {
+                built(0); Arc::from(state.pin_code.as_str())
+            });
+        let png = previous.filter(|old| &*old.png == state.qr_png.as_slice())
+            .map(|old| Arc::clone(&old.png)).unwrap_or_else(|| {
+                built(1); Arc::from(state.qr_png.as_slice())
+            });
+        let users = previous.filter(|old| &*old.users == state.users.as_slice())
+            .map(|old| Arc::clone(&old.users)).unwrap_or_else(|| {
+                built(2); Arc::from(state.users.as_slice())
+            });
+        let error = previous.filter(|old| &*old.error == state.error.as_str())
+            .map(|old| Arc::clone(&old.error)).unwrap_or_else(|| Arc::from(state.error.as_str()));
         Self { phase: state.phase, qr_generation: state.qr_gen,
-            code: Arc::from(state.pin_code.as_str()), png: Arc::from(state.qr_png.as_slice()),
-            code_replaced: state.code_replaced, users: Arc::from(state.users.as_slice()),
-            error: Arc::from(state.error.as_str()), pin_denied: state.pin_denied,
+            code, png, code_replaced: state.code_replaced, users,
+            error, pin_denied: state.pin_denied,
             profile: state.active_profile.as_ref().map(|p| ProfileRead {
                 uuid: p.uuid.clone(), title: p.title.clone(), thumb: p.thumb.clone(),
             }), scope: state.profile_scope, delete_leftovers: state.delete_leftovers }
@@ -642,6 +671,8 @@ pub(crate) struct SessionMachine {
     publication: Arc<SessionSnapshot>,
     subhash: u64,
     logical_dirty: bool,
+    #[cfg(test)]
+    publication_payload_allocations: [usize; 3],
 }
 
 impl SessionMachine {
@@ -652,7 +683,8 @@ impl SessionMachine {
         state.write(&mut canon);
         let subhash = canon.finish();
         let publication = Arc::new(SessionSnapshot::from_state(&state));
-        Self { state, publication, subhash, logical_dirty: true }
+        Self { state, publication, subhash, logical_dirty: true,
+            #[cfg(test)] publication_payload_allocations: [0; 3] }
     }
     pub fn snapshot_init(&self) -> SessionInit { self.state.clone() }
     pub fn read(&self) -> SessionRead<'_> { self.publication.read() }
@@ -673,6 +705,10 @@ impl SessionMachine {
     pub fn ready_is_current(&self, epoch: u64, scope: ProfileScope) -> bool {
         self.state.epoch == epoch && self.state.profile_scope == scope
             && self.state.phase == Phase::Ready && !self.state.apply_pending
+    }
+
+    pub fn needs_ready_commit(&self) -> bool {
+        self.state.phase == Phase::Ready && self.state.apply_pending && self.state.pending_commit.is_none()
     }
 
     pub fn publication_is_current(&self, publication: &ProfilePublication) -> bool {
@@ -1457,14 +1493,16 @@ impl SessionMachine {
     }
 
     fn replace_publication(&mut self) {
-        let next = SessionSnapshot::from_state(&self.state);
-        if next == *self.publication { return; }
-        self.publication = Arc::new(SessionSnapshot {
-            code: if next.code == self.publication.code { Arc::clone(&self.publication.code) } else { next.code },
-            png: if next.png == self.publication.png { Arc::clone(&self.publication.png) } else { next.png },
-            users: if next.users == self.publication.users { Arc::clone(&self.publication.users) } else { next.users },
-            ..next
+        // Compare borrowed fields first: constructing a throwaway snapshot here would copy
+        // QR/roster payloads even if equality then retained all of the old handles.
+        if self.publication.matches_state(&self.state) { return; }
+        let next = SessionSnapshot::from_state_counted(&self.state, Some(&self.publication), &mut |field| {
+            #[cfg(test)]
+            { self.publication_payload_allocations[field] += 1; }
+            #[cfg(not(test))]
+            { let _ = field; }
         });
+        self.publication = Arc::new(next);
     }
 }
 
@@ -1525,6 +1563,45 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_and_noop_transitions_do_not_temporarily_rebuild_shared_payloads() {
+        let mut init = captured_session();
+        init.phase = Phase::Waiting;
+        init.pin_code = "AAAA".into();
+        init.qr_png = vec![1, 2, 3];
+        init.qr_gen = 1;
+        init.next_qr = 1;
+        init.users = vec![UserTile { title: "Synthetic user".into(), ..Default::default() }];
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Login },
+            expected: Identity::of(&init.persisted), lifecycle: None, last_arrival: None,
+            phase: StreamPhase::Running, capture: None, admission: AdmissionState::Accepted(AdmissionId(1)) });
+        let mut owner = SessionMachine::from_init(init);
+        let old = owner.publication();
+        step(&mut owner, SessionEvent::Command(Command::NoteDeleteLeftovers(2)));
+        assert_eq!(owner.publication_payload_allocations, [0; 3],
+            "scalar publication changes must not allocate then discard copies of code/PNG/users");
+        assert!(Arc::ptr_eq(&old.code, &owner.publication.code));
+        assert!(Arc::ptr_eq(&old.png, &owner.publication.png));
+        assert!(Arc::ptr_eq(&old.users, &owner.publication.users));
+        let scalar = owner.publication();
+        step(&mut owner, SessionEvent::Command(Command::NoteDeleteLeftovers(2)));
+        step(&mut owner, SessionEvent::Command(Command::DismissPinError));
+        assert_eq!(owner.publication_payload_allocations, [0; 3]);
+        assert!(Arc::ptr_eq(&scalar, &owner.publication()));
+        let code = qr_event(&owner, 1, 1, super::super::LoginProgress::CodeReady {
+            epoch: 1, code: "BBBB".into(), qr_png: vec![4, 5, 6],
+        }, false);
+        step(&mut owner, SessionEvent::Result(code));
+        assert_eq!(owner.publication_payload_allocations, [1, 1, 0], "only changed payloads allocate");
+        assert_eq!(&*old.code, "AAAA");
+        assert_eq!(&*old.png, &[1, 2, 3]);
+        assert_eq!(old.qr_generation, 1);
+        assert_eq!(&*owner.publication.code, "BBBB");
+        assert_eq!(&*owner.publication.png, &[4, 5, 6]);
+        assert_eq!(owner.publication.qr_generation, 2);
+        assert!(Arc::ptr_eq(&old.users, &owner.publication.users));
+    }
 
     struct OwnerHost;
     impl crate::ui::machine::Host for OwnerHost {

@@ -40,11 +40,14 @@ enum Resources {
 }
 
 /// Test resource boundary, not a decision machine. Writes use the same CredentialPatch merge
-/// as live disk; native registry operations are recorded, never sent to the global registry.
+/// as live disk. Registry operations are recorded; only explicitly injected native endpoint
+/// slots execute the shared registry implementation (using its non-network test constructor).
 #[cfg(test)]
 pub(crate) struct FixtureResources {
     pub disk: crate::plex::session::Session,
     pub endpoints: BTreeMap<u16, EndpointCapture>,
+    /// Explicit native registry fixtures only; absence never falls back to a global client.
+    pub native_endpoints: BTreeMap<u16, &'static crate::plex::Client>,
     pub registry_writes: Vec<crate::auth::owner::RegistryPlan>,
     pub profile: Option<crate::auth::owner::ProfilePublication>,
     pub recently_unreachable: bool,
@@ -109,6 +112,8 @@ pub(crate) struct SessionAdapter {
     /// cancelling a request must not clear them before those unique records are discarded.
     receipts: BTreeMap<u64, TransferMetadata>,
     spawn: fn(&'static str, Box<dyn FnOnce() + Send>) -> bool,
+    #[cfg(test)]
+    fixture_work: BTreeMap<u32, Box<dyn FnOnce(WorkerOutput, crate::auth::owner::SessionWork) + Send>>,
     // Construction proves the live adapter originated on main without duplicating or moving the
     // Player adapter's exclusive token. The owned adapter remains !Send/!Sync afterwards.
     main_thread: PhantomData<Rc<()>>,
@@ -134,7 +139,7 @@ impl SessionAdapter {
     #[cfg(test)]
     pub(crate) fn fixture_with(disk: crate::plex::session::Session) -> Self {
         Self::empty(|_, _| false, Resources::Fixture(FixtureResources {
-            disk, endpoints: BTreeMap::new(), registry_writes: Vec::new(), profile: None,
+            disk, endpoints: BTreeMap::new(), native_endpoints: BTreeMap::new(), registry_writes: Vec::new(), profile: None,
             recently_unreachable: false, minted_client_id: "synthetic-client".into(),
             coordinator_events: Vec::new(), root_press_available: true, back_results: Vec::new(),
         }))
@@ -146,11 +151,19 @@ impl SessionAdapter {
         resources
     }
 
+    #[cfg(test)]
+    pub(crate) fn inject_fixture_work(&mut self, req: u32,
+        run: impl FnOnce(WorkerOutput, crate::auth::owner::SessionWork) + Send + 'static) {
+        assert!(matches!(self.resources, Resources::Fixture(_)));
+        assert!(self.fixture_work.insert(req, Box::new(run)).is_none());
+    }
+
     fn empty(spawn: fn(&'static str, Box<dyn FnOnce() + Send>) -> bool, resources: Resources) -> Self {
         Self { landing: Arc::new(Landing::with_limits(SESSION_DATA_RECORDS,
                 SESSION_OWNER_RESERVATIONS, SESSION_TOTAL_RESERVATIONS)),
             launches: BTreeMap::new(), native: BTreeMap::new(), resources,
-            receipts: BTreeMap::new(), spawn, main_thread: PhantomData }
+            receipts: BTreeMap::new(), spawn, main_thread: PhantomData,
+            #[cfg(test)] fixture_work: BTreeMap::new() }
     }
 
     pub(crate) fn capture(&mut self, req: u32, epoch: u64, request: SessionReadRequest) -> SessionReadReply {
@@ -181,6 +194,13 @@ impl SessionAdapter {
                     recently_unreachable: resources.recently_unreachable,
                 },
                 SessionReadRequest::Endpoint { sid } => {
+                    if let Some(&client) = resources.native_endpoints.get(&sid) {
+                        let native = crate::auth::ClientLifecycle::capture(client);
+                        let captured = EndpointCapture { lifecycle: native.logical(sid), machine_id: client.machine_id().into() };
+                        self.native.insert(req, NativeEndpoint::Live(native));
+                        return SessionReadReply { addr: Addr { to: MachineId::Session, req: RequestId(req) }, epoch,
+                            value: SessionReadValue::Endpoint(Some(captured)) };
+                    }
                     let endpoint = resources.endpoints.get(&sid).cloned();
                     if let Some(captured) = &endpoint {
                         self.native.insert(req, NativeEndpoint::Fixture(captured.clone()));
@@ -194,7 +214,7 @@ impl SessionAdapter {
 
     fn lifecycle_current(&self, req: u32, expected: ServerLifecycle) -> bool {
         match (&self.resources, self.native.get(&req)) {
-            (Resources::Live { .. }, Some(NativeEndpoint::Live(native))) => native.is_current(expected),
+            (_, Some(NativeEndpoint::Live(native))) => native.is_current(expected),
             #[cfg(test)]
             (Resources::Fixture(resources), Some(NativeEndpoint::Fixture(captured))) =>
                 captured.lifecycle == expected && resources.endpoints.get(&expected.sid)
@@ -250,6 +270,13 @@ impl SessionAdapter {
                     if !resources.disk.client_id.is_empty() {
                         if !plan.expected_disk.matches(&resources.disk) { return permit.reply(false); }
                         resources.disk = patch.merge_into(&resources.disk);
+                    }
+                }
+                for operation in &plan.registry {
+                    if matches!(operation, RegistryPlan::Endpoint { expected, .. }
+                        if resources.native_endpoints.contains_key(&expected.sid))
+                        && !crate::auth::execute_session_registry(operation) {
+                        return permit.reply(false);
                     }
                 }
                 resources.registry_writes.extend(plan.registry.iter().cloned());
@@ -341,8 +368,18 @@ impl SessionAdapter {
             }),
         };
         let spawn = self.spawn;
-        match self.launch_correlated(req, key, admission, stream, |job| spawn(name, job),
-            move |output| crate::auth::run_session_work(req.0, key, input, &output)) {
+        #[cfg(test)]
+        let launched = if let Some(run) = self.fixture_work.remove(&req.0) {
+            self.launch_correlated(req, key, admission, stream, |job| { job(); true },
+                move |output| run(output, input))
+        } else {
+            self.launch_correlated(req, key, admission, stream, |job| spawn(name, job),
+                move |output| crate::auth::run_session_work(req.0, key, input, &output))
+        };
+        #[cfg(not(test))]
+        let launched = self.launch_correlated(req, key, admission, stream, |job| spawn(name, job),
+            move |output| crate::auth::run_session_work(req.0, key, input, &output));
+        match launched {
             Ok(()) | Err(AdmissionError::Duplicate) => Ok(()),
             Err(AdmissionError::Capacity) => Err(AdmissionReply {
                 addr: Addr { to: MachineId::Session, req }, key, correlation: admission, accepted: false,

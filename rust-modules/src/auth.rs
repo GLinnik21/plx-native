@@ -54,12 +54,19 @@ pub(crate) fn run_session_work(req: u32, key: owner::SessionWorkKey,
                 probe_profile_resource_live, &|| output.live());
             // Native lifecycle validation stays in the adapter's launch metadata. This worker
             // carries no Client and cannot publish a native registry mutation.
-            output.terminal(AuthProgress::Endpoint(EndpointProgress {
-                flight: u64::from(req), epoch, expected: identity(expected), id, machine_id,
-                lifecycle: None, fresh,
-            }));
+            output.terminal(endpoint_work_fact(req, epoch, expected, lifecycle, machine_id, fresh));
         }
     }
+}
+
+/// Endpoint transport projection shared by the real worker and injected network-result tests.
+/// Admission, interest and native lifecycle validation remain in the adapter/owner protocol.
+pub(crate) fn endpoint_work_fact(req: u32, epoch: u64, expected: owner::Identity,
+    lifecycle: owner::ServerLifecycle, machine_id: String, fresh: Option<SourceRef>) -> AuthProgress {
+    AuthProgress::Endpoint(EndpointProgress { flight: u64::from(req), epoch,
+        expected: SessionIdentity { client_id: expected.client_id, account_token: expected.account_token,
+            profile_uuid: expected.profile_uuid, authority: SessionAuthority::Controller },
+        id: ServerId::from_raw(lifecycle.sid), machine_id, lifecycle: None, fresh })
 }
 
 /// Application commands are the concrete owner's domain vocabulary, not global operations.

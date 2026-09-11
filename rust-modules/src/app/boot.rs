@@ -619,7 +619,9 @@ pub(crate) unsafe fn boot(
         crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()),
     );
     let boot_to = if crate::dev::scenarios::login_forced() {
-        crate::auth::start_login();
+        super::bridge::execute_session_command(&mut pages, crate::auth::SessionCmd::StartLogin);
+        pages.frame_with(&mut bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            &mut crate::ui::dispatch::NoTap, false);
         log("boot: /tmp/plxnative-login — starting QR login");
         BootTo::Login
     } else if !dev_token.is_empty() {
@@ -680,7 +682,9 @@ pub(crate) unsafe fn boot(
             }
         }
     } else {
-        crate::auth::start_login();
+        super::bridge::execute_session_command(&mut pages, crate::auth::SessionCmd::StartLogin);
+        pages.frame_with(&mut bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
+            &mut crate::ui::dispatch::NoTap, false);
         log("boot: no session — starting QR sign-in");
         BootTo::Login
     };
