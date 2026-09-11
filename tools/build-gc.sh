@@ -259,6 +259,24 @@ drop() {
 # `pgrep -x` matches the process NAME exactly. Deliberately not `pgrep -f`, which matches whole
 # command lines and would find this script's own invocation the moment anything on it mentioned
 # cargo — the self-match trap that has already made a finished job here read as still running.
+# THE SAME LIVENESS RULE AS THE BUILDER, both halves of it. This checked only the pid, while
+# `ci/build-ffmpeg.sh` also checks the recorded PROCESS GROUP — so a build shell killed while its
+# `configure` or `make` child kept writing looked dead to the prune and alive to every other
+# builder, and `--cache` would take the lock and delete the tree out from under a live compiler.
+# Two implementations of one rule is how that happens; this is now the same test, written once.
+#
+# And `kill -0 0` does not mean "dead": POSIX reads pid 0 as the caller's process group, so it
+# SUCCEEDS. With the old `|| echo 0` fallback a lock with no pid file read as permanently alive.
+# Define this before the global preflight invokes build_is_running, not just before prune_lock.
+owner_is_alive() {   # $1 = lock directory
+  _pid=$(cat "$1/pid" 2>/dev/null || echo 0)
+  _pgid=$(cat "$1/pgid" 2>/dev/null || echo 0)
+  case "$_pid"  in ''|*[!0-9]*) _pid=0  ;; esac
+  case "$_pgid" in ''|*[!0-9]*) _pgid=0 ;; esac
+  [ "$_pid"  -gt 0 ] && kill -0 "$_pid" 2>/dev/null && return 0
+  [ "$_pgid" -gt 0 ] && pgrep -g "$_pgid" >/dev/null 2>&1 && return 0
+  return 1
+}
 build_is_running() {
   for n in cargo rustc make cc1 arm-webos-linux-gnueabi-gcc; do
     if pgrep -x "$n" >/dev/null 2>&1; then echo "a running $n"; return 0; fi
@@ -360,23 +378,6 @@ CACHE_MAX_DAYS=${PLX_CACHE_MAX_DAYS-30}
 # the thing that makes its tree permanently unprunable, so the entries most worth collecting are
 # exactly the ones that never are. `mv` is the atomic claim; a lock under a minute old is left
 # alone, because that is the window in which a live owner has not yet written its pid.
-# THE SAME LIVENESS RULE AS THE BUILDER, both halves of it. This checked only the pid, while
-# `ci/build-ffmpeg.sh` also checks the recorded PROCESS GROUP — so a build shell killed while its
-# `configure` or `make` child kept writing looked dead to the prune and alive to every other
-# builder, and `--cache` would take the lock and delete the tree out from under a live compiler.
-# Two implementations of one rule is how that happens; this is now the same test, written once.
-#
-# And `kill -0 0` does not mean "dead": POSIX reads pid 0 as the caller's process group, so it
-# SUCCEEDS. With the old `|| echo 0` fallback a lock with no pid file read as permanently alive.
-owner_is_alive() {   # $1 = lock directory
-  _pid=$(cat "$1/pid" 2>/dev/null || echo 0)
-  _pgid=$(cat "$1/pgid" 2>/dev/null || echo 0)
-  case "$_pid"  in ''|*[!0-9]*) _pid=0  ;; esac
-  case "$_pgid" in ''|*[!0-9]*) _pgid=0 ;; esac
-  [ "$_pid"  -gt 0 ] && kill -0 "$_pid" 2>/dev/null && return 0
-  [ "$_pgid" -gt 0 ] && pgrep -g "$_pgid" >/dev/null 2>&1 && return 0
-  return 1
-}
 prune_lock() {
   l="$1.lock"
   if mkdir "$l" 2>/dev/null; then echo $$ > "$l/pid"; ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' > "$l/pgid" || true; return 0; fi

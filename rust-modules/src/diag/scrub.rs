@@ -86,6 +86,7 @@ pub(crate) fn scrub_local_with(line: &str, ids: &[String]) -> String {
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
     let s = scrub_authority(&s);
+    let s = scrub_ipv6(&s);
     let s = scrub_addresses(&s);
     let s = scrub_viewing(&s);
     scrub_identities(&s, ids)
@@ -99,6 +100,7 @@ pub(crate) fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
     let s = scrub_authority(&s);
+    let s = scrub_ipv6(&s);
     let s = scrub_addresses(&s);
     let s = scrub_viewing(&s);
     let s = scrub_identities(&s, ids);
@@ -108,7 +110,9 @@ pub(crate) fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
     Scrubbed::Keep(s)
 }
 
-/// **A BARE ADDRESS, outside any URL** — `203.0.113.7:32400`, `10.0.0.2`, an IPv6 literal.
+/// **A BARE IPv4 ADDRESS, outside any URL** — `203.0.113.7:32400`, `10.0.0.2`.
+/// [`scrub_ipv6`] handles IPv6 first, including the unbracketed `address:port` spelling emitted by
+/// the probe diagnostics.
 ///
 /// [`scrub_authority`] only sees an address that follows `://`, and the device test found the gap
 /// immediately: `plex: server slot 0 re-pointed to 203.0.113.7:32400` is not a URL, and it puts a
@@ -120,7 +124,7 @@ pub(crate) fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
 /// bound locally — which is exactly what a networking bug report is about. Same list
 /// `outbound-guard.py` treats as generic.
 fn scrub_addresses(s: &str) -> String {
-    let keep = |a: &str| a.starts_with("127.") || a == "0.0.0.0" || a == "::1";
+    let keep = |a: &str| a.starts_with("127.") || a == "0.0.0.0";
     let mut out = String::with_capacity(s.len());
     let b = s.as_bytes();
     let mut i = 0;
@@ -171,6 +175,106 @@ fn scrub_addresses(s: &str) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+/// **A BARE IPv6 ADDRESS, outside any URL.** Handles compressed and expanded literals, brackets,
+/// IPv4-mapped tails, and both standard `[address]:port` and the probe's bare `address:port`
+/// spelling. The latter is parsed by accepting the final decimal group as a port when removing it
+/// leaves a valid IPv6 address; the whole token is redacted either way, so an inherently ambiguous
+/// final group cannot leak an address.
+///
+/// The standard library parser supplies the address grammar. Word boundaries keep Rust paths such
+/// as `Route::Player` out, while exact parsing rejects timestamps, MAC addresses, and ordinary
+/// `key:value` fields. Loopback and the unspecified address survive, matching the IPv4 exceptions.
+fn scrub_ipv6(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'[' {
+            if let Some(close) = s[i + 1..].find(']').map(|at| i + 1 + at) {
+                let body = &s[i + 1..close];
+                if let Some(addr) = parse_ipv6(body) {
+                    let end = port_end(b, close + 1);
+                    if addr.is_loopback() || addr.is_unspecified() {
+                        out.push_str(&s[i..end]);
+                    } else {
+                        out.push_str("<addr>");
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+        } else {
+            let left_boundary = i == 0
+                || (!b[i - 1].is_ascii_alphanumeric() && b[i - 1] != b'_' && b[i - 1] != b':');
+            if left_boundary && (b[i] == b':' || b[i].is_ascii_hexdigit()) {
+                let mut end = i;
+                while end < b.len() && (b[end].is_ascii_hexdigit() || matches!(b[end], b':' | b'.'))
+                {
+                    end += 1;
+                }
+                let address_end = s[i..end].trim_end_matches('.').len() + i;
+                let right_boundary = address_end == b.len()
+                    || (!b[address_end].is_ascii_alphanumeric() && b[address_end] != b'_');
+                if right_boundary {
+                    if let Some(addr) = parse_bare_ipv6(&s[i..address_end]) {
+                        if addr.is_loopback() || addr.is_unspecified() {
+                            out.push_str(&s[i..address_end]);
+                        } else {
+                            out.push_str("<addr>");
+                        }
+                        i = address_end;
+                        continue;
+                    }
+                }
+            }
+        }
+        let ch = s[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn parse_ipv6(token: &str) -> Option<std::net::Ipv6Addr> {
+    token.parse().ok()
+}
+
+/// Parse a bare address, optionally followed by the non-standard `:port` spelling used in logs.
+fn parse_bare_ipv6(token: &str) -> Option<std::net::Ipv6Addr> {
+    if let Some((host, port)) = token.rsplit_once(':') {
+        if !port.is_empty()
+            && port.bytes().all(|c| c.is_ascii_digit())
+            && port.parse::<u16>().is_ok()
+        {
+            if let Some(addr) = parse_ipv6(host) {
+                return Some(addr);
+            }
+        }
+    }
+    parse_ipv6(token)
+}
+
+/// Consume a bracketed address's optional decimal port.
+fn port_end(bytes: &[u8], close: usize) -> usize {
+    if close >= bytes.len() || bytes[close] != b':' {
+        return close;
+    }
+    let mut end = close + 1;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end > close + 1
+        && std::str::from_utf8(&bytes[close + 1..end])
+            .ok()
+            .and_then(|port| port.parse::<u16>().ok())
+            .is_some()
+    {
+        end
+    } else {
+        close
+    }
 }
 
 /// Shortest identity worth replacing. Below this a name matches inside ordinary words.
@@ -529,6 +633,61 @@ mod tests {
             scrub_addresses("listening on 10.0.0.7:32400"),
             "listening on <addr>"
         );
+    }
+
+    /// Issue #81: probe diagnostics spell an IPv6 origin as the bare address followed by its
+    /// port. Both compressed and fully expanded addresses used to pass through unchanged.
+    #[test]
+    fn issue_81_ipv6_probe_addresses_are_redacted() {
+        for line in [
+            "auth: '<name>' probe timed out at fd00::2:0:0:3:32400",
+            "auth: '<name>' probe timed out at fda4:3d42:9a74:4cd1:4799:7b6f:e86:7379:32400",
+        ] {
+            assert_eq!(
+                scrub_local_with(line, &[]),
+                "auth: '<name>' probe timed out at <addr>",
+                "IPv6 address survived: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_ipv6_log_spellings_are_redacted_without_eating_punctuation() {
+        for (line, expected) in [
+            ("connect to 2001:db8::1 failed", "connect to <addr> failed"),
+            (
+                "connect to 2001:db8::1. failed",
+                "connect to <addr>. failed",
+            ),
+            ("reached [2001:db8::1] now", "reached <addr> now"),
+            ("bound [2001:db8::1]:32400", "bound <addr>"),
+            ("peer ::ffff:192.168.1.5 connected", "peer <addr> connected"),
+            (
+                "resolved 2001:0db8:0000:0000:0000:ff00:0042:8329",
+                "resolved <addr>",
+            ),
+        ] {
+            assert_eq!(scrub_local_with(line, &[]), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn ipv6_loopback_unspecified_and_lookalikes_survive() {
+        for line in [
+            "bound to ::1",
+            "bound to ::1:8910",
+            "bound to [::1]:8910",
+            "bound to ::",
+            "bound to [::]:8910",
+            "at 12:04:05 something happened",
+            "mac 00:1a:2b:3c:4d:5e detected",
+            "bytes de:ad:be:ef on the wire",
+            "wcode:486 sym:0",
+            "player::engine::feed_stream fed a#12 v#34",
+            "restoring Route::Player",
+        ] {
+            assert_eq!(scrub_local_with(line, &[]), line, "mangled: {line}");
+        }
     }
 
     /// Things that LOOK like addresses and are not: a version, a frame rate, a timestamp, a
