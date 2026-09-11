@@ -1,0 +1,35 @@
+name: Storage probe (not a release)
+
+on:
+  push:
+    branches: ['diagnostics/storage-probe-76']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Host file-safety tests
+        run: python3 tools/storage-probe/test_probe.py
+      - id: ndk
+        uses: ./.github/actions/webos-ndk
+      - name: Build isolated diagnostic and verify package modes
+        run: python3 tools/storage-probe/build.py --sdk '${{ steps.ndk.outputs.sdk-dir }}' --out dist/storage-probe
+      - name: Check firmware loader compatibility
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+        run: python3 tools/fwcompat.py dist/storage-probe/storageprobe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: storage-probe-issue-76
+          path: |
+            dist/storage-probe/*.ipk
+            dist/storage-probe/SHA256SUMS
+            dist/storage-probe/README.md
+          if-no-files-found: error
+          retention-days: 30
