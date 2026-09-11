@@ -606,6 +606,8 @@ pub(crate) unsafe fn boot(
     // auto-select that roster tile once it's up (headless exercise of the who's-watching flow).
     let pick_user: Option<usize> = crate::dev::scenarios::pickuser_index();
     let session = crate::plex::session::load();
+    let bridge = super::bridge::Bridge::new(crate::diag::heartbeat::now_us,
+        crate::auth::SessionInit::captured(session.clone()), &mt);
     // Install-wide playback preference, restored before any route can resolve a stream.
     // A legacy file with no value resolves to Original; a new file can choose Auto only
     // through route's explicit readiness gate (session::load records that decision once).
@@ -1086,7 +1088,7 @@ pub(crate) unsafe fn boot(
             crate::ui::containers::transition::PageDip::new(),
         )),
         inputs: Vec::new(),
-        bridge: super::bridge::Bridge::new(crate::diag::heartbeat::now_us),
+        bridge,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
         scenarios: crate::dev::scenarios::Scenarios {
             pick_user,

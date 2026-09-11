@@ -836,6 +836,11 @@ pub(crate) trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a>;
 }
 
+/// Session's immutable frame publication; playback retains its separate `session` view.
+pub(crate) trait AuthLike: AppLike + Sized {
+    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a>;
+}
+
 /// The application's messages (spec §3.1).
 pub(crate) enum AppMsg {
     Store(StoreCmd),

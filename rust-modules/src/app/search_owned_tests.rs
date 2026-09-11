@@ -86,7 +86,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
     let field_y = |d: &Dispatcher<AppHost>, rig: &Bridge| {
         let parts = CxParts { tick: tick(0), press: Default::default(),
             focus: d.input.engine.read(InputOwner::Entry(field.entry)), owner: InputOwner::Entry(field.entry) };
-        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
             directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: crate::route::idle_session_for_test() }, rig.measure);
         d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
     };
@@ -517,7 +517,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
     let memory = match &ret.memory { PageMemory::Search(memory) => memory, _ => panic!("Search must supply entry memory") };
     let parts = CxParts { tick: tick(100), press: Default::default(), focus: d.input.engine.read(InputOwner::Entry(key.entry)), owner: InputOwner::Entry(key.entry) };
     let old_rect = {
-        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
             directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: crate::route::idle_session_for_test() }, rig.measure);
         d.top_screen().unwrap().place(&key.elem, &cx, At::Drawn).unwrap().rest_rect
     };
@@ -528,7 +528,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
             crate::search::publish_shelves_for_test(catalog());
             rig.search = crate::stores::search::snapshot();
         }
-        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
             directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: crate::route::idle_session_for_test() }, rig.measure);
         let mut restored = crate::screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);

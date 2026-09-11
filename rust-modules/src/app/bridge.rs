@@ -82,6 +82,7 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
+    pub(crate) auth: crate::auth::SessionRead<'a>,
     pub(crate) hubs: crate::pms::HubsView<'a>,
     pub(crate) listing: crate::stores::browse::ListingView<'a>,
     pub(crate) directory: crate::stores::browse::DirectoryView<'a>,
@@ -120,6 +121,10 @@ impl Host for AppHost {
 
 impl HomeLike for AppHost {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> crate::pms::HubsView<'a> { cx.views.hubs }
+}
+
+impl crate::screens::registry::AuthLike for AppHost {
+    fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a> { cx.views.auth }
 }
 
 impl crate::stores::StoreEffectHost for AppHost {
@@ -193,6 +198,8 @@ impl ConsentMachine {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    session: crate::auth::SessionMachine,
+    session_adapter: super::adapters::session::SessionAdapter,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
@@ -251,13 +258,14 @@ pub(crate) struct Bridge {
 }
 
 impl Bridge {
-    pub(crate) fn new(now_us: fn() -> u64) -> Self {
+    pub(crate) fn new(now_us: fn() -> u64, init: crate::auth::SessionInit,
+        mt: &crate::task::MainThread) -> Self {
         // A `static`, not `&TtfMeasure` inline: a unit-struct literal DOES const-promote to
         // `'static` today, but that is a rule about the expression rather than a promise about
         // this field, and a `static` states the lifetime outright. Same reasoning as the one
         // `screens::settings`'s test module writes out beside its own measure.
         static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
-        Self::with_measure(&TTF, now_us)
+        Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt))
     }
 
     /// The same bridge over a measure that needs no fonts — the ONLY constructor a host test may
@@ -266,13 +274,18 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn for_test(now_us: fn() -> u64) -> Self {
         static FIXTURE: crate::ui::fixture::FixtureMeasure = crate::ui::fixture::FixtureMeasure;
-        Self::with_measure(&FIXTURE, now_us)
+        Self::with_measure(&FIXTURE, now_us,
+            crate::auth::SessionInit::captured(crate::plex::session::Session::default()),
+            super::adapters::session::SessionAdapter::fixture())
     }
 
-    fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64) -> Self {
+    fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
+        init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter) -> Self {
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         directory.capture();
         Self {
+            session: crate::auth::SessionMachine::from_init(init),
+            session_adapter,
             mounter: AppMounter::default(),
             playback: crate::route::PlaybackSession::IDLE,
             playback_live: false,
@@ -339,7 +352,7 @@ impl Bridge {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
-        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
@@ -359,7 +372,7 @@ impl Bridge {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
-        let cx = parts.cx::<AppHost>(AppViews { hubs: self.hubs.view(), listing: self.listing.view(),
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
@@ -409,7 +422,7 @@ impl Bridge {
             let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
                 focus: crate::ui::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
-            let cx = parts.cx::<AppHost>(AppViews {
+            let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
@@ -450,7 +463,7 @@ impl Bridge {
         let focus = Self::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
-        let cx = parts.cx::<AppHost>(AppViews {
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
@@ -572,7 +585,7 @@ impl Bridge {
         if <crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
-        let cx = parts.cx::<AppHost>(AppViews {
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
@@ -597,7 +610,7 @@ impl Bridge {
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
-        let cx = parts.cx::<AppHost>(AppViews {
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
@@ -647,7 +660,7 @@ impl Bridge {
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = focus;
-        let cx = parts.cx::<AppHost>(AppViews {
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
@@ -731,6 +744,7 @@ impl Bridge {
 /// whoever took it, which is this type.
 impl Drop for Bridge {
     fn drop(&mut self) {
+        self.session_adapter.cancel_all();
         for (_, cached, closing) in self.held.drain(..) {
             crate::ui::popover::surface_released(cached, closing);
         }
@@ -824,7 +838,7 @@ impl Rig<AppHost> for Bridge {
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews {
+            views: AppViews { auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
@@ -851,7 +865,7 @@ impl Rig<AppHost> for Bridge {
             ));
             return Handled::No;
         }
-        let cx = parts.cx::<AppHost>(AppViews {
+        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
@@ -1195,7 +1209,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let focus = Bridge::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
-        let cx = parts.cx::<AppHost>(AppViews {
+        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(),
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
@@ -1220,7 +1234,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
-        let cx = parts.cx::<AppHost>(AppViews { hubs: rig.hubs.view(), listing: rig.listing.view(),
+        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
             directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback }, rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
@@ -1259,7 +1273,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
         press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
         focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
-    let cx = parts.cx::<AppHost>(AppViews {
+    let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(),
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
@@ -2237,6 +2251,18 @@ fn _measure_is_object_safe(m: &dyn Measure, s: &CStr) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_frame_read_borrows_the_bridge_publication() {
+        use crate::screens::registry::AuthLike;
+        let _guard = crate::testlock::serial();
+        let mut rig = Bridge::for_test(|| 0);
+        let retained = rig.session.publication();
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+        let split = rig.split();
+        let cx = parts.cx::<AppHost>(split.views, split.measure);
+        assert!(std::ptr::eq(AppHost::auth(&cx).0, &*retained));
+    }
     #[test]
     fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         let _g = crate::testlock::serial();

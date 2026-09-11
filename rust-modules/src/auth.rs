@@ -22,13 +22,53 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub(crate) mod owner;
+pub(crate) mod observation;
+pub(crate) use owner::{SessionInit, SessionMachine, SessionRead};
+
+/// Resource executor entry. Every credential and network-policy input is captured by the
+/// requesting owner/adapter; workers can only observe cancellation and publish stream facts.
+pub(crate) fn run_session_work(req: u32, key: owner::SessionWorkKey,
+    input: owner::SessionWork, output: &dyn owner::ObservationSink) {
+    fn identity(value: owner::Identity) -> SessionIdentity {
+        SessionIdentity { client_id: value.client_id, account_token: value.account_token,
+            profile_uuid: value.profile_uuid, authority: SessionAuthority::Controller }
+    }
+    let epoch = key.epoch;
+    match input {
+        owner::SessionWork::Login { client_id } => login_worker_with_output(epoch, client_id, output),
+        owner::SessionWork::Rediscover { client_id, account_token } =>
+            rediscovery_worker_with_output(client_id, account_token, epoch, output),
+        owner::SessionWork::HomeRoster { client_id, account_token, expected } =>
+            home_roster_worker_with_output(epoch, identity(expected), client_id, account_token, output),
+        owner::SessionWork::ServerRoster { session, expected } => {
+            let household = session.household_ids();
+            server_roster_worker_with_output(session, epoch, identity(expected), household, output);
+        }
+        owner::SessionWork::ProfileSwitch { session, expected, tile, pin, recently_unreachable } =>
+            profile_switch_worker_with_output(epoch, identity(expected), session, tile, pin,
+                recently_unreachable, output, |ac, uuid, pin| ac.switch_user(uuid, pin)),
+        owner::SessionWork::Endpoint { session, expected, lifecycle, machine_id } => {
+            let id = ServerId::from_raw(lifecycle.sid);
+            let fresh = probe_endpoint_work(id, &machine_id, &session, |ac| ac.resources(),
+                probe_profile_resource_live, &|| output.live());
+            // Native lifecycle validation stays in the adapter's launch metadata. This worker
+            // carries no Client and cannot publish a native registry mutation.
+            output.terminal(AuthProgress::Endpoint(EndpointProgress {
+                flight: u64::from(req), epoch, expected: identity(expected), id, machine_id,
+                lifecycle: None, fresh,
+            }));
+        }
+    }
+}
+
 /// Application command vocabulary; the concrete Session owner will receive this next stage.
 pub(crate) enum SessionCmd {
     RequestEndpoint { sid: ServerId },
 }
 
 /// Which stage the flow is in — the Login/Profiles screens switch on this each frame.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Phase {
     /// Not in the login flow (offline / dev-token path handles startup instead).
     #[default]
@@ -92,7 +132,7 @@ fn retry_kind(phase: Phase, authorized_in_flow: bool) -> RetryKind {
 /// the same roster), so every raise site names its own kind. Two go through [`start_switch`]; the
 /// third is `login_thread`, which sets that phase itself rather than calling it — which is also why
 /// "they all call [`start_switch`]" is the wrong place to infer this from.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Picker {
     /// The boot gate's who's-watching, before any profile has been chosen this run.
     ///
@@ -118,7 +158,7 @@ pub enum Picker {
 }
 
 /// One "who's watching" tile.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserTile {
     /// This member's plex.tv account id. Nothing on screen reads it — it rides through so that
     /// [`session::Session::household_ids`] is filled on the one path that writes the persisted
@@ -184,7 +224,6 @@ pub struct ReadyCreds {
 #[derive(Default)]
 struct Ctl {
     phase: Phase,
-    pin_id: i64,
     pin_code: String,
     qr_png: Vec<u8>, // Plex's server-rendered QR PNG bytes (decoded + shown by the login screen)
     users: Vec<UserTile>,
@@ -946,6 +985,12 @@ pub fn start_switch(from: Picker) {
 }
 
 fn home_roster_worker(epoch: u64, expected: SessionIdentity, cid: String, token: String) {
+    home_roster_worker_with_output(epoch, expected, cid, token, &MailboxOutput { epoch });
+}
+
+fn home_roster_worker_with_output(epoch: u64, expected: SessionIdentity, cid: String,
+    token: String, output: &dyn owner::ObservationSink) {
+    if !output.live() { return; }
     let ac = AccountClient::new(&cid, Some(&token));
     let users = match ac.home_users() {
         Some(users) if !users.is_empty() => {
@@ -958,7 +1003,7 @@ fn home_roster_worker(epoch: u64, expected: SessionIdentity, cid: String, token:
             None
         }
     };
-    push_auth_progress(AuthProgress::HomeRoster(HomeRosterProgress {
+    output.terminal(AuthProgress::HomeRoster(HomeRosterProgress {
         epoch,
         expected,
         users,
@@ -1052,7 +1097,7 @@ fn deleted_ctl() -> Ctl {
 /// The credential identity a worker captured at its spawn. It is validation only: accepted
 /// observations patch the latest controller/disk value field-by-field and never write this stale
 /// snapshot back over preferences that changed while the request was in flight.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SessionIdentity {
     client_id: String,
     account_token: String,
@@ -1060,7 +1105,7 @@ pub(crate) struct SessionIdentity {
     authority: SessionAuthority,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum SessionAuthority {
     /// This flow was launched from the controller snapshot and must still match it.
     Controller,
@@ -1113,18 +1158,21 @@ impl SessionIdentity {
 /// One candidate activation observed by a probe coordinator. This carries the exact origin,
 /// credential and link facts the old worker-side `activate_candidate` call used; applying them is
 /// delayed until the main thread accepts the epoch/session identity.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct CandidateActivation {
     machine_id: String,
     token: String,
     name: String,
     credit: String,
     owned: bool,
+    #[serde(with = "observation::origin")]
     origin: Origin,
     address: String,
     location: probe::Location,
     ipv6: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum RegistryProgress {
     Activate {
         epoch: u64,
@@ -1144,22 +1192,26 @@ pub(crate) enum RegistryProgress {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct HomeRosterProgress {
     epoch: u64,
     expected: SessionIdentity,
     users: Option<Vec<UserTile>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ServerRosterProgress {
     epoch: u64,
     expected: SessionIdentity,
     outcome: ServerRosterOutcome,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum ServerRosterOutcome {
     Unreachable,
     NoReachable,
     Reconcile {
+        #[serde(with = "observation::resources")]
         resources: Vec<Resource>,
         found: Vec<SourceRef>,
         household: Vec<i64>,
@@ -1181,9 +1233,15 @@ pub(crate) struct EndpointProgress {
 /// `machine_id` survive a re-point and a profile retoken, so neither can prove that a late route
 /// result still belongs to the client/token that launched it.
 #[derive(Clone, Copy)]
-struct ClientLifecycle {
+pub(crate) struct ClientLifecycle {
     client: &'static crate::plex::Client,
     token_gen: u32,
+}
+
+impl ClientLifecycle {
+    pub(crate) fn logical(self, sid: u16) -> owner::ServerLifecycle {
+        owner::ServerLifecycle { sid, instance_gen: self.client.instance_gen(), token_gen: self.token_gen }
+    }
 }
 
 /// Worker-owned terminal guarantee. Dropping on success, any early return, or unwind publishes
@@ -1210,6 +1268,7 @@ impl Drop for EndpointTerminal {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProfileDelta {
     server: ServerRef,
     sources: Vec<SourceRef>,
@@ -1217,6 +1276,7 @@ pub(crate) struct ProfileDelta {
     cache: Option<ProfileCreds>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum ProfileSwitchOutcomeProgress {
     Failed {
         error: String,
@@ -1228,15 +1288,18 @@ pub(crate) enum ProfileSwitchOutcomeProgress {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProfileSwitchProgress {
     epoch: u64,
     expected: SessionIdentity,
     outcome: ProfileSwitchOutcomeProgress,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProfileRosterProgress {
     epoch: u64,
     expected: SessionIdentity,
+    #[serde(with = "observation::resources")]
     resources: Vec<Resource>,
     reached: Vec<SourceRef>,
     probes: Vec<SettledProbe>,
@@ -1271,6 +1334,7 @@ impl From<LoginProgress> for AuthProgress {
 ///
 /// Named for what was seen, not for what to do: `apply_progress` decides the "do", including
 /// whether to do anything at all.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum LoginProgress {
     /// The code on screen just died (its own lifetime, or plex.tv answering [`PinPoll::Gone`]) and
     /// [`mint_pin`] is about to replace it. Mirrors the write `mint_pin` used to make directly for
@@ -1282,7 +1346,7 @@ pub(crate) enum LoginProgress {
     /// observation time, so a generation is only ever spent on a code that actually reaches the
     /// screen — exactly the property the old synchronous write had, and the reason the allocation
     /// does not travel on this variant.
-    CodeReady { epoch: u64, id: i64, code: String, qr_png: Vec<u8> },
+    CodeReady { epoch: u64, code: String, qr_png: Vec<u8> },
     /// The user authorized on their phone; discovery is starting.
     Authorized { epoch: u64, token: String },
     /// The whole attempt failed for the stated, already-user-facing reason — no server on the
@@ -1377,7 +1441,6 @@ fn apply_login_progress(p: LoginProgress) {
             let applied = with_live_epoch(epoch, || {
                 with_ctl(|c| {
                     c.phase = Phase::Creating;
-                    c.pin_id = 0;
                     c.pin_code.clear();
                     c.qr_png.clear();
                     // The screen says so once a code has been swapped under the user: somebody who
@@ -1392,13 +1455,11 @@ fn apply_login_progress(p: LoginProgress) {
         }
         LoginProgress::CodeReady {
             epoch,
-            id,
             code,
             qr_png,
         } => {
             let applied = with_live_epoch(epoch, || {
                 with_ctl(|c| {
-                    c.pin_id = id;
                     c.pin_code = code;
                     c.qr_png = qr_png;
                     // Allocated and stored inside the SAME write as the bytes it names, so no
@@ -1953,6 +2014,15 @@ fn apply_profile_roster_progress(progress: ProfileRosterProgress) {
 /// See the section doc above [`LoginProgress`]: a phase-6 worker has no `with_ctl` call left in it
 /// at all, reads included, so there is nothing for a future edit to widen into a write by accident.
 fn login_thread(epoch: u64, cid: String) {
+    login_worker_with_output(epoch, cid, &MailboxOutput { epoch });
+}
+
+fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str) {
+    output.terminal(LoginProgress::Failed { epoch, message: message.into() }.into());
+}
+
+fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::ObservationSink) {
+    if !output.live() { return; }
     let ac = AccountClient::new(&cid, None);
 
     // 1) create a pin, and KEEP creating one for as long as this screen is up and the last one
@@ -1962,14 +2032,14 @@ fn login_thread(epoch: u64, cid: String) {
     let mut generation: u32 = 0;
     let token = loop {
         generation += 1;
-        let Some(code) = mint_pin(&ac, epoch, generation) else {
+        let Some(code) = mint_pin(&ac, epoch, generation, output) else {
             return; // the flow was superseded, or pin creation failed and said so
         };
         // 2) poll until authorized (or the pin dies / the user cancels)
         let mut watch = LivePin {
             ac: &ac,
             id: code.id,
-            epoch,
+            output,
             started: code.minted,
         };
         match poll_for_token(&mut watch, pin_window(code.expires_in)) {
@@ -1980,7 +2050,7 @@ fn login_thread(epoch: u64, cid: String) {
             }
             PollEnd::Expired => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
-                return push_failed(epoch, "Sign-in timed out — try again.");
+                return output_failed(output, epoch, "Sign-in timed out — try again.");
             }
         }
     };
@@ -2001,13 +2071,13 @@ fn login_thread(epoch: u64, cid: String) {
     // lock holds — which was a real hazard for the synchronous write this thread used to perform,
     // and is not a hazard for a check that only ever reads the epoch, once, under one hold of the
     // same gate `cancel`/`restart` write it under ([`with_live_epoch`]/[`flow_is_live`]).
-    if !flow_is_live(epoch) {
+    if !output.live() {
         return log("auth: a newer sign-in superseded this one while the pin poll was in flight — token dropped");
     }
-    push_progress(LoginProgress::Authorized {
+    if !output.progress(LoginProgress::Authorized {
         epoch,
         token: token.clone(),
-    });
+    }.into()) { return; }
     let ac = AccountClient::new(&cid, Some(&token));
     // The failure copy is per outcome, and it used to be one line — "No local Plex server found on
     // this network." — for every one of them. That sentence was the discovery POLICY talking: a
@@ -2015,24 +2085,24 @@ fn login_thread(epoch: u64, cid: String) {
     // It now describes what actually happened, and none of the three sends the user to the wrong
     // place: a token refusal is not a router problem, and an account with no server is not an
     // outage.
-    let (server, sources) = match discover_and_store(&ac, epoch) {
+    let (server, sources) = match discover_and_store(&ac, epoch, output) {
         Discovery::Ok { server, sources } => (server, sources),
         Discovery::Cancelled => return,
-        Discovery::NoServers => return push_failed(epoch, "This Plex account has no server yet."),
+        Discovery::NoServers => return output_failed(output, epoch, "This Plex account has no server yet."),
         Discovery::Refused => {
-            return push_failed(
+            return output_failed(output,
                 epoch,
                 "Your Plex server refused the connection — check its network access settings.",
             )
         }
         Discovery::Silent => {
-            return push_failed(
+            return output_failed(output,
                 epoch,
                 "Couldn't reach any Plex server — check the connection.",
             )
         }
     };
-    finish_sign_in(&ac, epoch, server, sources);
+    finish_sign_in(&ac, epoch, server, sources, output);
 }
 
 /// How many codes ONE visit to the sign-in screen may burn through before it gives up and offers
@@ -2064,16 +2134,18 @@ fn another_code_allowed(generation: u32) -> bool {
 ///
 /// `None` means "stop": either the flow was superseded (silent — the successor owns the screen) or
 /// creation failed and has already said so on the error read-out.
-fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCode> {
+fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
+    output: &dyn owner::ObservationSink) -> Option<MintedCode> {
+    if !output.live() { return None; }
     if generation > 1 {
         // Liveness only, no write — see the section doc above [`login_thread`]. This is the same
         // "stop wasting plex.tv calls on a dead flow" courtesy the old synchronous check made:
         // without it, `ac.create_pin()` below would still burn a network round trip minting a code
         // nobody is left to scan.
-        if !flow_is_live(epoch) {
+        if !output.live() {
             return None;
         }
-        push_progress(LoginProgress::CodeReplacing { epoch });
+        if !output.progress(LoginProgress::CodeReplacing { epoch }.into()) { return None; }
     }
     let pin = match ac.create_pin() {
         Some(p) if p.id != 0 && !p.code.is_empty() => p,
@@ -2081,7 +2153,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
             // Says what the internet is FOR here, because the one time this screen appears
             // with the link deliberately down is the first boot of a set that has never signed
             // in — and that person needs to know the app works offline once it has.
-            push_failed(
+            output_failed(output,
                 epoch,
                 "Couldn't reach Plex — check the connection. Signing in needs the internet once.",
             );
@@ -2107,6 +2179,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
     } else {
         pin.qr.clone()
     };
+    if !output.live() { return None; }
     let qr_png = crate::net::https_get_public(&qr_url)
         .filter(|r| r.ok())
         .map(|r| r.body)
@@ -2115,15 +2188,14 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32) -> Option<MintedCod
     // Same liveness-only check as above, and the same reason: no point publishing a code the flow
     // this worker belongs to no longer exists to show. The QR_GENERATION allocation itself moved to
     // [`apply_progress`] — see [`LoginProgress::CodeReady`] for why.
-    if !flow_is_live(epoch) {
+    if !output.live() {
         return None;
     }
-    push_progress(LoginProgress::CodeReady {
+    if !output.progress(LoginProgress::CodeReady {
         epoch,
-        id: pin.id,
         code: pin.code.clone(),
         qr_png,
-    });
+    }.into()) { return None; }
     Some(MintedCode {
         id: pin.id,
         expires_in: pin.expires_in,
@@ -2144,7 +2216,9 @@ struct MintedCode {
 /// `server`/`sources` are discovery's OWN result, passed in rather than read back off `Ctl` —
 /// `discover_and_store` no longer writes `Ctl` at all (phase 6), so there is nothing there for this
 /// to read that this function does not already have more directly.
-fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Vec<SourceRef>) {
+fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Vec<SourceRef>,
+    output: &dyn owner::ObservationSink) {
+    if !output.live() { return; }
     // Discovery's coordinator already installed/re-pointed the final winner under the epoch gate.
     // Re-installing here would reopen a check→sign-out→old-token publication window.
     // `log_form`, not `base()`: byte-identical to the `{addr}:{port}` this line always printed
@@ -2165,25 +2239,31 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
     // One observation carrying everything [`apply_progress`] needs to update the session at once —
     // see [`LoginProgress::SignedIn`] for why this used to be three separate `with_ctl` writes and
     // is now one.
-    push_progress(LoginProgress::SignedIn {
+    output.terminal(LoginProgress::SignedIn {
         epoch,
         server,
         sources,
         users,
-    });
+    }.into());
 }
 
 fn retry_discovery_thread(cid: String, token: String, epoch: u64) {
+    rediscovery_worker_with_output(cid, token, epoch, &MailboxOutput { epoch });
+}
+
+fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64,
+    output: &dyn owner::ObservationSink) {
+    if !output.live() { return; }
     let ac = AccountClient::new(&cid, Some(&token));
-    match discover_and_store(&ac, epoch) {
-        Discovery::Ok { server, sources } => finish_sign_in(&ac, epoch, server, sources),
+    match discover_and_store(&ac, epoch, output) {
+        Discovery::Ok { server, sources } => finish_sign_in(&ac, epoch, server, sources, output),
         Discovery::Cancelled => {}
-        Discovery::NoServers => push_failed(epoch, "This Plex account has no server yet."),
-        Discovery::Refused => push_failed(
+        Discovery::NoServers => output_failed(output, epoch, "This Plex account has no server yet."),
+        Discovery::Refused => output_failed(output,
             epoch,
             "Your Plex server refused the connection — check its network access settings.",
         ),
-        Discovery::Silent => push_failed(
+        Discovery::Silent => output_failed(output,
             epoch,
             "Couldn't reach any Plex server — check the connection.",
         ),
@@ -2253,7 +2333,7 @@ trait PinWatch {
 struct LivePin<'a> {
     ac: &'a AccountClient,
     id: i64,
-    epoch: u64,
+    output: &'a dyn owner::ObservationSink,
     started: Instant,
 }
 
@@ -2269,7 +2349,7 @@ impl PinWatch for LivePin<'_> {
         const SLICE: Duration = Duration::from_secs(1);
         let deadline = Instant::now() + d;
         loop {
-            if !flow_is_live(self.epoch) {
+            if !self.output.live() {
                 return false;
             }
             let now = Instant::now();
@@ -2960,9 +3040,10 @@ fn candidate_activation(
 /// granted server that never verified an address has no slot yet and is deliberately ignored:
 /// probe failure is not authority to register an unverified endpoint. A retained/offline source,
 /// however, is already registered from its cached verified origin and receives the new state.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SettledProbe {
     machine_id: String,
+    #[serde(with = "observation::outcome")]
     outcome: Outcome,
     tier: Option<probe::Location>,
 }
@@ -3216,16 +3297,27 @@ fn resolve_roster_live(
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
 ) -> Resolved {
+    resolve_roster_live_while(resources, household, activate, observe, &|| true)
+}
+
+fn resolve_roster_live_while(
+    resources: &[Resource],
+    household: &[i64],
+    activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
+    observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>),
+    live: &dyn Fn() -> bool,
+) -> Resolved {
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let mut probe_one = |plan: &ProbePlan| {
+        if !live() { return Reach::No; }
         probe_server_racing(plan, Arc::clone(&dial), &spawn, PROBE_DEADLINES, activate)
     };
     resolve_roster_using(
         resources,
         household,
         &mut probe_one,
-        &mut || std::thread::sleep(SERVER_GAP),
+        &mut || { if live() { std::thread::sleep(SERVER_GAP); } },
         observe,
     )
 }
@@ -3287,7 +3379,8 @@ fn probe_profile_resource_live(
 ///
 /// The primary [`ServerRef`] is written exactly as before, so a single-server account produces the
 /// same session file it always did (plus a one-entry roster beside it).
-fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
+fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::ObservationSink) -> Discovery {
+    if !output.live() { return Discovery::Cancelled; }
     let resources = match ac.resources() {
         Some(r) => r,
         None => {
@@ -3305,14 +3398,14 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
     ));
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let credit = credit_for_machine(&resources, &plan.machine_id, &[]);
-        push_auth_progress(AuthProgress::Registry(RegistryProgress::Activate {
+        output.progress(AuthProgress::Registry(RegistryProgress::Activate {
             epoch,
             expected: None,
             candidate: candidate_activation(plan, c, origin, &credit),
         }));
     };
     let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>| {
-        push_auth_progress(AuthProgress::Registry(RegistryProgress::Settled {
+        output.progress(AuthProgress::Registry(RegistryProgress::Settled {
             epoch,
             expected: None,
             probe: settled_probe(plan, outcome, tier),
@@ -3325,7 +3418,8 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
     // (the QR flow authorizes the account, never a managed profile), so plex.tv's own `owned`
     // answers for their server and `home`/`ownerId` for the rest; the household refinement lands
     // with `refresh_roster` or the first profile switch, both of which pass the real roster.
-    let resolved = resolve_roster_live(&resources, &[], &mut activate, &mut observe);
+    let resolved = resolve_roster_live_while(&resources, &[], &mut activate, &mut observe, &|| output.live());
+    if !output.live() { return Discovery::Cancelled; }
     let found = match resolved {
         Resolved::NoServers => return Discovery::NoServers,
         Resolved::None { refused: true } => return Discovery::Refused,
@@ -3351,12 +3445,12 @@ fn discover_and_store(ac: &AccountClient, epoch: u64) -> Discovery {
         found.len(),
         found[primary].name
     ));
-    push_auth_progress(AuthProgress::Registry(RegistryProgress::Install {
+    if !output.progress(AuthProgress::Registry(RegistryProgress::Install {
         epoch,
         expected: None,
         sources: found.clone(),
         primary: Some(primary),
-    }));
+    })) { return Discovery::Cancelled; }
     Discovery::Ok {
         server,
         sources: found,
@@ -3568,9 +3662,15 @@ pub fn refresh_roster() {
 }
 
 fn server_roster_worker(sess: Session, epoch: u64, expected: SessionIdentity, household: Vec<i64>) {
+    server_roster_worker_with_output(sess, epoch, expected, household, &MailboxOutput { epoch });
+}
+
+fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: SessionIdentity,
+    household: Vec<i64>, output: &dyn owner::ObservationSink) {
+    if !output.live() { return; }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let Some(resources) = ac.resources() else {
-        push_auth_progress(AuthProgress::ServerRoster(ServerRosterProgress {
+        output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
             epoch,
             expected,
             outcome: ServerRosterOutcome::Unreachable,
@@ -3579,30 +3679,31 @@ fn server_roster_worker(sess: Session, epoch: u64, expected: SessionIdentity, ho
     };
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let credit = credit_for_machine(&resources, &plan.machine_id, &household);
-        push_auth_progress(AuthProgress::Registry(RegistryProgress::Activate {
+        output.progress(AuthProgress::Registry(RegistryProgress::Activate {
             epoch,
             expected: Some(expected.clone()),
             candidate: candidate_activation(plan, c, origin, &credit),
         }));
     };
     let mut settled = Vec::new();
-    let found = match resolve_roster_live(
+    let found = match resolve_roster_live_while(
         &resources,
         &household,
         &mut activate,
         &mut |plan, outcome, tier| {
             let probe = settled_probe(plan, outcome, tier);
             settled.push(probe.clone());
-            push_auth_progress(AuthProgress::Registry(RegistryProgress::Settled {
+            output.progress(AuthProgress::Registry(RegistryProgress::Settled {
                 epoch,
                 expected: Some(expected.clone()),
                 probe,
             }));
         },
+        &|| output.live(),
     ) {
         Resolved::Reached(found) => found,
         _ => {
-            push_auth_progress(AuthProgress::ServerRoster(ServerRosterProgress {
+            output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
                 epoch,
                 expected,
                 outcome: ServerRosterOutcome::NoReachable,
@@ -3610,7 +3711,7 @@ fn server_roster_worker(sess: Session, epoch: u64, expected: SessionIdentity, ho
             return;
         }
     };
-    push_auth_progress(AuthProgress::ServerRoster(ServerRosterProgress {
+    output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
         epoch,
         expected,
         outcome: ServerRosterOutcome::Reconcile {
@@ -3753,13 +3854,28 @@ fn endpoint_refresh_worker(
         lifecycle: Some(lifecycle),
         fresh: None,
     });
+    if let Some(fresh) = probe_endpoint_work(id, &machine_id, &sess, resources, probe,
+        &|| flow_is_live(epoch)) {
+        terminal.success(fresh);
+    }
+}
+
+fn probe_endpoint_work(
+    id: ServerId,
+    machine_id: &str,
+    sess: &Session,
+    resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
+    probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
+    live: &dyn Fn() -> bool,
+) -> Option<SourceRef> {
+    if !live() { return None; }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let Some(resources) = resources(&ac) else {
         log(&format!(
             "auth: endpoint refresh for source {} could not reach plex.tv",
             id.raw()
         ));
-        return;
+        return None;
     };
     let Some(resource) = resources
         .iter()
@@ -3769,12 +3885,11 @@ fn endpoint_refresh_worker(
             "auth: endpoint refresh for source {} found no matching resource",
             id.raw()
         ));
-        return;
+        return None;
     };
+    if !live() { return None; }
     let (fresh, _) = probe(resource, &sess.household_ids());
-    if let Some(fresh) = fresh {
-        terminal.success(fresh);
-    }
+    fresh
 }
 
 /// Point the persisted PRIMARY at wherever the refreshed roster says that machine now answers.
@@ -4158,11 +4273,41 @@ fn profile_switch_worker_using(
     pin: Option<String>,
     switch: impl FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome,
 ) {
+    profile_switch_worker_with_output(epoch, expected, stored, tile, pin,
+        crate::plex::account::plex_tv_recently_unreachable(), &MailboxOutput { epoch }, switch);
+}
+
+// Existing callers retain their mailbox during the caller migration. This is a transport
+// adapter only, not a Session owner; the instance adapter supplies its own ObservationSink.
+struct MailboxOutput { epoch: u64 }
+
+impl owner::ObservationSink for MailboxOutput {
+    fn live(&self) -> bool { flow_is_live(self.epoch) }
+    fn progress(&self, value: AuthProgress) -> bool {
+        if !self.live() { return false; }
+        push_auth_progress(value);
+        true
+    }
+    fn terminal(&self, value: AuthProgress) -> bool { self.progress(value) }
+}
+
+/// Shared worker policy for the existing and instance transports. Only the network operation
+/// is injectable; offline credential/PIN policy and the Ready/late-roster split are identical.
+fn profile_switch_worker_with_output(
+    epoch: u64,
+    expected: SessionIdentity,
+    stored: Session,
+    tile: UserTile,
+    pin: Option<String>,
+    recently_unreachable: bool,
+    output: &dyn owner::ObservationSink,
+    switch: impl FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome,
+) {
+    if !output.live() { return; }
     let cid = stored.client_id.clone();
     let account_token = stored.account_token.clone();
     let ac = AccountClient::new(&cid, Some(&account_token));
-    let cache_first = stored.cached_profile(&tile.uuid).is_some()
-        && crate::plex::account::plex_tv_recently_unreachable();
+    let cache_first = stored.cached_profile(&tile.uuid).is_some() && recently_unreachable;
     let outcome = if cache_first {
         log("auth: switch — plex.tv was unreachable moments ago, trying the cached credentials first");
         SwitchOutcome::Unreachable
@@ -4177,7 +4322,7 @@ fn profile_switch_worker_using(
                 tile.title
             ));
             let (error, pin_denied) = switch_failure(pin.is_some());
-            push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
                 expected,
                 outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied },
@@ -4186,7 +4331,7 @@ fn profile_switch_worker_using(
         }
         SwitchOutcome::Unreachable => {
             let outcome = offline_switch_outcome(&stored, &tile, pin.as_deref());
-            push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
                 expected,
                 outcome,
@@ -4194,9 +4339,10 @@ fn profile_switch_worker_using(
             return;
         }
     };
+    if !output.live() { return; }
     let Some(resources) = AccountClient::new(&cid, Some(&user.auth_token)).resources() else {
         log("auth: profile resources request failed");
-        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+        output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
@@ -4208,7 +4354,7 @@ fn profile_switch_worker_using(
     };
     let grants = ordered_profile_grants(&resources);
     if grants.is_empty() {
-        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+        output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
@@ -4232,6 +4378,7 @@ fn profile_switch_worker_using(
     let mut probed = vec![false; resources.len()];
     let mut selected_mid = None;
     for &i in &order {
+        if !output.live() { return; }
         let (winner, settled) = probe_profile_resource_live(&resources[i], &household);
         probed[i] = true;
         probes.push(settled);
@@ -4255,7 +4402,7 @@ fn profile_switch_worker_using(
             "auth: switch '{}' -> no server access",
             tile.title
         ));
-        push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+        output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
@@ -4278,6 +4425,7 @@ fn profile_switch_worker_using(
         thumb: tile.thumb,
         token: primary.token.clone(),
     };
+    if !output.live() { return; }
     let cache = ProfileCreds {
         uuid: user.uuid.clone(),
         user: user.clone(),
@@ -4294,7 +4442,7 @@ fn profile_switch_worker_using(
         profile_uuid: user.uuid.clone(),
         authority: SessionAuthority::Controller,
     };
-    push_auth_progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+    if !output.progress(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
         epoch,
         expected,
         outcome: ProfileSwitchOutcomeProgress::Ready {
@@ -4306,20 +4454,22 @@ fn profile_switch_worker_using(
             },
             probes: probes.clone(),
         },
-    }));
+    })) { return; }
 
     for &i in &grants {
         if probed[i] {
             continue;
         }
+        if !output.live() { return; }
         std::thread::sleep(SERVER_GAP);
+        if !output.live() { return; }
         let (winner, settled) = probe_profile_resource_live(&resources[i], &household);
         probes.push(settled);
         if let Some(winner) = winner {
             reached.push(winner);
         }
     }
-    push_auth_progress(AuthProgress::ProfileRoster(ProfileRosterProgress {
+    output.terminal(AuthProgress::ProfileRoster(ProfileRosterProgress {
         epoch,
         expected: next_identity,
         resources,
@@ -4424,6 +4574,15 @@ fn set_error_if_live(epoch: u64, msg: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_controller_has_no_process_global_owner() {
+        let source = include_str!("auth.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        for declaration in ["static CTL:", "static QR_GENERATION:", "static ENDPOINT_ADMISSION:",
+            "static DELETE_LEFTOVERS:", "static PROGRESS:", "static AUTH_EPOCH:", "static ACTIVATION_GATE:"] {
+            assert!(!production.contains(declaration), "global decision/queue remains: {declaration}");
+        }
+    }
     use super::*;
     use crate::plex::probe::Scheme;
     use std::cell::RefCell;
@@ -7512,6 +7671,41 @@ mod tests {
         assert_eq!(session::peek().user.uuid, "u-kid");
         with_ctl(|c| *c = Ctl::default());
         crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn instance_profile_worker_completes_offline_policy_on_its_own_landing() {
+        use crate::auth::owner::{SessionArrival, SessionOp, SessionWorkKey};
+        use crate::app::adapters::session::SessionAdapter;
+        use crate::ui::machine::RequestId;
+        // No serial lock: both input credentials and both output transports are instance-local.
+        let mut a = SessionAdapter::fixture();
+        let mut b = SessionAdapter::fixture();
+        for (adapter, epoch, uuid) in [(&mut a, 0x1_0000_0001, "u-kid"),
+            (&mut b, 7, "not-cached")] {
+            let stored = cached_session(None);
+            let expected = SessionIdentity::of(&stored);
+            let tile = UserTile { uuid: uuid.into(), title: "Synthetic profile".into(),
+                ..Default::default() };
+            adapter.launch(RequestId(1), SessionWorkKey { epoch, op: SessionOp::ProfileSwitch },
+                true, |job| { job(); true }, move |output| {
+                    profile_switch_worker_with_output(epoch, expected, stored, tile, None,
+                        false, &output, |_, _, _| SwitchOutcome::Unreachable);
+                }).unwrap();
+        }
+        let a = a.take_results();
+        let b = b.take_results();
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert!(a[0].terminal && b[0].terminal);
+        let SessionArrival::Data(a) = &a[0].outcome else { panic!("missing offline result") };
+        let SessionArrival::Data(b) = &b[0].outcome else { panic!("missing failure result") };
+        assert!(matches!(&**a, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
+            epoch: 0x1_0000_0001, outcome: ProfileSwitchOutcomeProgress::Ready { delta, .. }, ..
+        }) if delta.user.uuid == "u-kid"));
+        assert!(matches!(&**b, observation::Observation::ProfileSwitch(ProfileSwitchProgress {
+            epoch: 7, outcome: ProfileSwitchOutcomeProgress::Failed { pin_denied: false, .. }, ..
+        })));
     }
 
     fn successful_switch(epoch: u64, expected: SessionIdentity) -> AuthProgress {

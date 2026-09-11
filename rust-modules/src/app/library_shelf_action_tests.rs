@@ -133,6 +133,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             };
             let cx = parts.cx::<AppHost>(
                 AppViews {
+                    auth: rig.session.read(),
                     hubs: rig.hubs.view(),
                     listing: rig.listing.view(),
                     directory: rig.directory.view(),
