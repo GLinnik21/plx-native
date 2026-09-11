@@ -126,6 +126,11 @@ impl Drop for FixtureRoot {
 }
 
 fn assert_session_fields(tag: &str, actual: &super::Session, expected: &super::Session) {
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap(),
+        "{tag}: every typed session field"
+    );
     assert_eq!(actual.client_id, expected.client_id, "{tag}: client id");
     assert_eq!(
         actual.account_token, expected.account_token,
@@ -140,12 +145,21 @@ fn assert_session_fields(tag: &str, actual: &super::Session, expected: &super::S
         "{tag}: primary source name"
     );
     assert_eq!(
-        actual.user.uuid, expected.user.uuid,
-        "{tag}: selected profile"
-    );
-    assert_eq!(
-        actual.user.token, expected.user.token,
-        "{tag}: selected profile token"
+        (
+            actual.user.id,
+            actual.user.uuid.as_str(),
+            actual.user.title.as_str(),
+            actual.user.thumb.as_str(),
+            actual.user.token.as_str(),
+        ),
+        (
+            expected.user.id,
+            expected.user.uuid.as_str(),
+            expected.user.title.as_str(),
+            expected.user.thumb.as_str(),
+            expected.user.token.as_str(),
+        ),
+        "{tag}: selected profile identity"
     );
     assert_eq!(actual.home_users.len(), 1, "{tag}: profile metadata");
     assert_eq!(
@@ -157,27 +171,71 @@ fn assert_session_fields(tag: &str, actual: &super::Session, expected: &super::S
         actual.sources[0].machine_id, expected.sources[0].machine_id,
         "{tag}: source id"
     );
-    assert_eq!(actual.home_pins.len(), 1, "{tag}: pin setting");
-    assert_eq!(actual.home_pins[0].on.len(), 1, "{tag}: pinned-on setting");
     assert_eq!(
-        actual.home_pins[0].off.len(),
-        1,
-        "{tag}: pinned-off setting"
+        actual.home_pins, expected.home_pins,
+        "{tag}: exact pin setting"
+    );
+    let pins = actual.home_pins.first().expect("fixture has a pin setting");
+    assert_eq!(pins.user, actual.user.uuid, "{tag}: pin owner");
+    assert!(pins.asked, "{tag}: profile was asked");
+    assert_eq!(pins.on.len(), 1, "{tag}: pinned-on setting");
+    assert_eq!(pins.off.len(), 1, "{tag}: pinned-off setting");
+    assert_eq!(
+        (
+            pins.on[0].machine_id.as_str(),
+            pins.on[0].key,
+            pins.off[0].machine_id.as_str(),
+            pins.off[0].key,
+        ),
+        (
+            expected.home_pins[0].on[0].machine_id.as_str(),
+            expected.home_pins[0].on[0].key,
+            expected.home_pins[0].off[0].machine_id.as_str(),
+            expected.home_pins[0].off[0].key,
+        ),
+        "{tag}: exact on/off library identities"
     );
     assert_eq!(
-        actual.recent_searches.len(),
-        1,
-        "{tag}: recent-search setting"
-    );
-    assert_eq!(
-        actual.recent_searches[0].terms, expected.recent_searches[0].terms,
-        "{tag}: recents"
+        actual.recent_searches, expected.recent_searches,
+        "{tag}: exact profile-scoped recents"
     );
     assert_eq!(
         actual.playback_quality(),
         expected.playback_quality(),
         "{tag}: quality setting"
     );
+}
+
+#[test]
+fn every_published_06_fixture_is_byte_exact_at_the_migration_boundary() {
+    let _g = crate::testlock::serial();
+    for tag in TAGS {
+        let fixture = FixtureRoot::new(&format!("{tag}-exact-payload"));
+        let legacy = fixture.legacy_session();
+        let bytes = session_fixture(tag).as_bytes();
+        std::fs::write(&legacy, bytes).unwrap();
+        super::redirect_for_test(Some(legacy.clone()));
+
+        let (commit, source) = super::persistence::migrate_exact(&legacy, bytes);
+        assert!(
+            matches!(commit, super::persistence::CanonicalCommit::Durable { .. }),
+            "{tag}: exact migration commit"
+        );
+        assert_eq!(source, legacy, "{tag}: migration source identity");
+        let store = crate::storage::open(fixture.root.clone()).unwrap();
+        let Some(crate::storage::Record {
+            state: RecordState::Data { payload },
+            ..
+        }) = store.load(RecordKey::Session).unwrap()
+        else {
+            panic!("{tag}: exact migration did not write canonical data");
+        };
+        assert_eq!(
+            payload.as_bytes(),
+            bytes,
+            "{tag}: first canonical payload before typed normalization"
+        );
+    }
 }
 
 #[test]
@@ -192,7 +250,6 @@ fn every_published_06_session_fixture_migrates_reopens_and_accepts_a_routine_edi
 
         let migrated = super::load();
         assert_session_fields(tag, &migrated, &expected);
-        assert!(super::save(&migrated).persisted(), "{tag}: routine save");
 
         let store = crate::storage::open(fixture.root.clone()).unwrap();
         let Some(record) = store.load(RecordKey::Session).unwrap() else {
@@ -205,12 +262,28 @@ fn every_published_06_session_fixture_migrates_reopens_and_accepts_a_routine_edi
 
         let edited_term = format!("routine-edit-{tag}");
         assert!(
-            super::update(|current| {
+            super::update_ordinary(|current| {
                 let mut next = current.clone();
                 next.recent_searches[0].terms.push(edited_term.clone());
+                let pins = &mut next.home_pins[0];
+                std::mem::swap(&mut pins.on, &mut pins.off);
                 Some(next)
             }),
-            "{tag}: Session::update must persist a routine edit"
+            "{tag}: Session::update_ordinary must admit a routine edit"
+        );
+        let revision = super::ordinary_persistence_revision();
+        crate::storage_worker::drain_for_test();
+        let status = super::poll_ordinary_persistence();
+        assert_eq!(status.latest_revision, revision, "{tag}: receipt revision");
+        assert_eq!(
+            status.latest,
+            Some(super::async_persistence::LatestStatus::Durable),
+            "{tag}: ordinary edit receipt"
+        );
+        assert_eq!(
+            status.durable_revision,
+            Some(revision),
+            "{tag}: durable ordinary revision"
         );
 
         // Clear the process snapshot while retaining the fixture's canonical root.
@@ -220,6 +293,8 @@ fn every_published_06_session_fixture_migrates_reopens_and_accepts_a_routine_edi
         expected_after_edit.recent_searches[0]
             .terms
             .push(edited_term.clone());
+        let pins = &mut expected_after_edit.home_pins[0];
+        std::mem::swap(&mut pins.on, &mut pins.off);
         assert_session_fields(tag, &reopened, &expected_after_edit);
         assert!(
             reopened.recent_searches[0]
