@@ -518,6 +518,54 @@ pub(crate) enum RequestError {
     Transport,
 }
 
+/// Safe response evidence without a partial body, URL, headers or arbitrary error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RequestFailure {
+    pub cause: RequestError,
+    pub status: Option<u16>,
+    pub body_limit: Option<usize>,
+}
+
+impl From<RequestError> for RequestFailure {
+    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None } }
+}
+
+/// CURLINFO_RESPONSE_CODE is the last response, not the CONNECT proxy response:
+/// https://curl.se/libcurl/c/CURLINFO_RESPONSE_CODE.html . On errors following redirects we
+/// cannot prove it belongs to the final origin, so withhold it. Only documented body-transfer
+/// failures retain final HTTP evidence; TLS, setup and unrecognized failures cannot earn it.
+/// Codes: https://curl.se/libcurl/c/libcurl-errors.html (partial file, write callback, timeout,
+/// receive failure, HTTP/2 connection/stream errors). In curl-8_7_1/lib/http2.c,
+/// http2_handle_stream_close returns 92 on an error reset; cf_h2_recv returns 16 on a closed
+/// connection before body bytes, even after headers published status in lib/http.c.
+/// Its receive loop also flushes H2 control frames through h2_progress_egress, which can return
+/// CURLE_SEND_ERROR (55); a send error alone does not imply that no response was received.
+/// Setup can also return 16, so valid final status remains mandatory; no code alone is evidence.
+/// No new curl option/info constant or binding is required.
+fn response_status(rc: c_int, info_rc: c_int, code: c_long, follow_redirects: bool) -> Option<u16> {
+    if info_rc != 0 || !(100..=599).contains(&code) { return None; }
+    if rc == 0 { return u16::try_from(code).ok(); }
+    if !follow_redirects && code >= 200 && matches!(rc, 16 | 18 | 23 | 28 | 55 | 56 | 92) {
+        return u16::try_from(code).ok();
+    }
+    None
+}
+
+fn finish_response(
+    rc: c_int, info_rc: c_int, code: c_long, follow_redirects: bool,
+    max_body: Option<usize>, sink: BodySink,
+) -> Result<Resp, RequestFailure> {
+    let status = response_status(rc, info_rc, code, follow_redirects);
+    if sink.overflowed || rc != 0 || status.is_none() {
+        return Err(RequestFailure {
+            cause: if rc == 28 && !sink.overflowed { RequestError::TimedOut } else { RequestError::Transport },
+            status,
+            body_limit: if sink.overflowed { max_body } else { None },
+        });
+    }
+    Ok(Resp { status: status.unwrap(), body: sink.body })
+}
+
 /// **How long one call may take.** The values are a PER-CALL argument rather than constants
 /// because the right policy depends entirely on what is being fetched.
 ///
@@ -702,6 +750,24 @@ fn request_tls_result(
     tls: Tls<'_>,
     resolve: Option<&str>,
 ) -> Result<Resp, RequestError> {
+    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, tls, resolve)
+        .map_err(|failure| failure.cause)
+}
+
+/// Opt-in detailed twin; compatibility callers project only the original cause above.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_evidence(
+    url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
+    follow_redirects: bool, max_body: Option<usize>, resolve: Option<&str>,
+) -> Result<Resp, RequestFailure> {
+    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, Tls::Ca, resolve)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_tls_evidence(
+    url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
+    follow_redirects: bool, max_body: Option<usize>, tls: Tls<'_>, resolve: Option<&str>,
+) -> Result<Resp, RequestFailure> {
     // Every fallible CString is built BEFORE the easy handle exists. The RAII guards below still
     // make later early returns safe, but this ordering also means malformed caller input never
     // enters curl with a half-configured request.
@@ -715,7 +781,7 @@ fn request_tls_result(
     // with a pin. This is the ONE place every easy request passes (`request_result` enters here
     // directly), which is why the gate is here and not on `request_tls`.
     if resolve.is_none() && refuse_name(crate::plex::url_host(url), t.connect_s) {
-        return Err(RequestError::Transport);
+        return Err(RequestError::Transport.into());
     }
     let ua =
         CString::new(crate::plex::identity::user_agent()).map_err(|_| RequestError::Transport)?;
@@ -733,7 +799,7 @@ fn request_tls_result(
     // reaches `curl_easy_init`'s wrapper and takes `dynlib::missing_symbol`, which panics — an
     // account lookup failing should return None and let the caller fall back, not kill a thread.
     if !available() {
-        return Err(RequestError::Transport);
+        return Err(RequestError::Transport.into());
     }
     // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
     // but only one easy request at a time. The normal installed/existing-callback path never takes
@@ -756,13 +822,13 @@ fn request_tls_result(
                         "net: libcurl refused security option {} (rc={rc}); request cancelled",
                         $name
                     ));
-                    return Err(RequestError::Transport);
+                    return Err(RequestError::Transport.into());
                 }
             }};
         }
         let h = curl_easy_init();
         if h.is_null() {
-            return Err(RequestError::Transport);
+            return Err(RequestError::Transport.into());
         }
         let easy = Easy(h);
         curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
@@ -833,7 +899,7 @@ fn request_tls_result(
                 let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
                 if rc != 0 {
                     crate::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
-                    return Err(RequestError::Transport);
+                    return Err(RequestError::Transport.into());
                 }
             }
             TlsCfg::Pinned(p) => {
@@ -844,7 +910,7 @@ fn request_tls_result(
                 );
                 if rc != 0 {
                     crate::log(&format!("net: this libcurl refuses CURLOPT_PINNEDPUBLICKEY (rc={rc}) — refusing to send unpinned"));
-                    return Err(RequestError::Transport);
+                    return Err(RequestError::Transport.into());
                 }
                 require_setopt!(
                     curl_easy_setopt_long(easy.0, CURLOPT_SSL_VERIFYPEER, 0 as c_long),
@@ -872,7 +938,7 @@ fn request_tls_result(
         for c in &hdr_owned {
             let next = curl_slist_append(slist.0, c.as_ptr());
             if next.is_null() {
-                return Err(RequestError::Transport);
+                return Err(RequestError::Transport.into());
             }
             slist.0 = next;
         }
@@ -888,12 +954,12 @@ fn request_tls_result(
         if let Some(r) = &resolve_c {
             let l = curl_slist_append(ptr::null_mut(), r.as_ptr());
             if l.is_null() {
-                return Err(RequestError::Transport);
+                return Err(RequestError::Transport.into());
             }
             resolve_list.0 = l;
             let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_RESOLVE, l as *const c_void);
             if resolve::note_setopt(rc).is_err() {
-                return Err(RequestError::Transport);
+                return Err(RequestError::Transport.into());
             }
         }
         // The VERB. Three shapes, and the split is what keeps each one on the wire curl already
@@ -925,16 +991,15 @@ fn request_tls_result(
 
         let rc = curl_easy_perform(easy.0);
         let mut code: c_long = 0;
-        curl_easy_getinfo_long(easy.0, CURLINFO_RESPONSE_CODE, &mut code as *mut c_long);
+        let info_rc = curl_easy_getinfo_long(easy.0, CURLINFO_RESPONSE_CODE, &mut code as *mut c_long);
 
         if sink.overflowed {
             crate::log(&format!(
                 "net: response exceeded {} byte body limit",
                 max_body.unwrap_or(0)
             ));
-            return Err(RequestError::Transport);
         }
-        if rc != 0 {
+        if rc != 0 && !sink.overflowed {
             // NAMED, not just counted. Everything here rides the TELEVISION's curl and therefore
             // its OpenSSL and its CA store — the library webosbrew's caniuse data singles out as
             // the one that varies most across firmwares. Collapsing every failure to None made a
@@ -951,24 +1016,18 @@ fn request_tls_result(
                 _ => "transport error",
             };
             crate::log(&format!("net: curl rc={rc} — {why}"));
-            return Err(if rc == 28 {
-                RequestError::TimedOut
-            } else {
-                RequestError::Transport
-            });
         }
-        Ok(Resp {
-            status: code as u16,
-            body: sink.body,
-        })
+        finish_response(rc, info_rc, code, follow_redirects, max_body, sink)
     }
 }
 
-/// Blocking HTTPS GET on the [`API`] deadlines — the plex.tv account calls.
+/// Option-projected blocking HTTPS GET on the [`API`] deadlines.
+#[allow(dead_code)] // Preserve the Option compatibility API; account now opts into evidence.
 pub fn https_get(url: &str, headers: &[String]) -> Option<Resp> {
     request(url, headers, "GET", None, API, false, None, None)
 }
 /// Blocking HTTPS POST (`body` may be empty) on the [`API`] deadlines.
+#[allow(dead_code)] // Preserve the Option compatibility API; account now opts into evidence.
 pub fn https_post(url: &str, headers: &[String], body: &[u8]) -> Option<Resp> {
     request(url, headers, "POST", Some(body), API, false, None, None)
 }
@@ -1187,8 +1246,217 @@ pub(crate) mod resolve {
 }
 
 #[cfg(test)]
+pub(crate) fn with_test_response(reply: Vec<u8>, stall: bool, check: impl FnOnce(&str)) {
+    request_tests::with_response(reply, stall, check);
+}
+
+/// Test-only input at the curl completion boundary, not a simulated wire exchange.
+#[cfg(test)]
+pub(crate) fn test_response_failure(rc: c_int, info_rc: c_int, code: c_long, redirects: bool)
+    -> Result<Resp, RequestFailure> {
+    let mut sink = BodySink::new(None);
+    sink.push(b"synthetic partial body");
+    finish_response(rc, info_rc, code, redirects, None, sink)
+}
+
+#[cfg(test)]
 mod request_tests {
     use super::*;
+
+    pub(super) fn with_response(reply: Vec<u8>, stall: bool, check: impl FnOnce(&str)) {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let url = format!("http://127.0.0.1:{}/", server.local_addr().unwrap().port());
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let until = Instant::now() + Duration::from_secs(5);
+                while !stop.load(Ordering::Acquire) && Instant::now() < until {
+                    if let Ok((mut socket, _)) = server.accept() {
+                        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                        socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                        let _ = socket.read(&mut [0; 4096]);
+                        let _ = socket.write_all(&reply);
+                        while stall && !stop.load(Ordering::Acquire) && Instant::now() < until {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+            struct Stop<'a>(&'a AtomicBool);
+            impl Drop for Stop<'_> { fn drop(&mut self) { self.0.store(true, Ordering::Release); } }
+            let _stop = Stop(&stop);
+            check(&url);
+        });
+    }
+
+    fn truncated_refusal_keeps_status(status: u16) {
+        let _serial = crate::testlock::serial();
+        assert!(global_init() && available(), "this transport regression requires host libcurl");
+        let reply = format!("HTTP/1.1 {status} Refused\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nshort");
+        with_response(reply.into_bytes(), false, |url| {
+            let failure = request_evidence(url, &[], "GET", None, API, false, None, None).err().unwrap();
+            assert_eq!(failure.status, Some(status), "received refusal status was erased");
+            assert_eq!(failure.cause, RequestError::Transport);
+            assert_eq!(failure.body_limit, None);
+        });
+    }
+
+    #[test]
+    fn truncated_401_retains_response_evidence() { truncated_refusal_keeps_status(401); }
+
+    #[test]
+    fn truncated_403_retains_response_evidence() { truncated_refusal_keeps_status(403); }
+
+    #[test]
+    fn http2_reset_keeps_validated_final_status() {
+        for rc in [16, 55, 92] {
+            for code in [401, 403, 404, 410] {
+                assert_eq!(response_status(rc, 0, code, false), Some(code as u16));
+                assert_eq!(response_status(rc, 1, code, false), None);
+                assert_eq!(response_status(rc, 0, code, true), None);
+            }
+            for code in [0, 99, 100, 199, 600, 65536] {
+                assert_eq!(response_status(rc, 0, code, false), None);
+            }
+        }
+    }
+
+    #[test]
+    fn ca_trusted_http2_wire_reset_retains_refusal() {
+        use std::io::{BufRead, Write};
+        use std::process::{Command, Stdio};
+        let _serial = crate::testlock::serial();
+        assert!(global_init() && available());
+        struct Peer(std::process::Child);
+        impl Drop for Peer {
+            fn drop(&mut self) {
+                if let Some(mut input) = self.0.stdin.take() { let _ = input.write_all(b"\n"); }
+                let _ = self.0.wait();
+            }
+        }
+        for status in [401, 403, 404, 410] {
+            let mut peer = Peer(Command::new("python3")
+                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/net/h2_reset_fixture.py"))
+                .arg(status.to_string()).stdin(Stdio::piped()).stdout(Stdio::piped())
+                .stderr(Stdio::inherit()).spawn().expect("local Python/OpenSSL H2 fixture"));
+            let mut output = std::io::BufReader::new(peer.0.stdout.take().unwrap());
+            let mut ready = String::new(); output.read_line(&mut ready).unwrap();
+            let ready: serde_json::Value = serde_json::from_str(&ready).expect("fixture startup");
+            let url = format!("https://127.0.0.1:{}/", ready["port"].as_u64().unwrap());
+            let response = request_tls_evidence(&url, &[], "GET", None,
+                Timeouts { total_s: 5, ..API }, false, None,
+                Tls::CaBundle(ready["ca"].as_str().unwrap()), None);
+            let mut sent = String::new(); output.read_line(&mut sent).unwrap();
+            assert_eq!(sent.trim(), "h2-reset-sent", "fixture must negotiate H2 and send RST_STREAM");
+            let failure = response.err().expect("reset transfer cannot expose a partial body");
+            assert_eq!(failure.status, Some(status));
+            assert_eq!(failure.cause, RequestError::Transport);
+            assert_eq!(failure.body_limit, None);
+            crate::plex::account::test_refusal_evidence(status, Err(failure));
+            peer.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+            assert!(peer.0.wait().unwrap().success());
+        }
+    }
+
+    #[test]
+    fn evidence_bounds_and_completion_use_the_real_request_path() {
+        let _serial = crate::testlock::serial();
+        assert!(global_init() && available());
+        for status in [200, 401, 403] {
+            for len in [31, 32, 33, 65536] {
+                let mut reply = format!("HTTP/1.1 {status} Reply\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n").into_bytes();
+                reply.extend(vec![b'x'; len]);
+                with_response(reply, false, |url| {
+                    let response = request_evidence(url, &[], "GET", None, API, false, Some(32), None);
+                    if len <= 32 {
+                        let response = response.ok().expect("complete within-limit transfer");
+                        assert_eq!(response.status, status);
+                        assert_eq!(response.body.len(), len);
+                    } else {
+                        let failure = response.err().expect("no truncated response may escape");
+                        assert_eq!(failure.status, Some(status));
+                        assert_eq!(failure.body_limit, Some(32));
+                        assert_eq!(failure.cause, RequestError::Transport);
+                    }
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn body_timeout_retains_status_but_legacy_projection_stays_timed_out() {
+        let _serial = crate::testlock::serial();
+        assert!(global_init() && available());
+        let reply = b"HTTP/1.1 403 Refused\r\nContent-Length: 1000\r\n\r\nshort".to_vec();
+        let t = Timeouts { total_ms: 200, ..API };
+        with_response(reply.clone(), true, |url| {
+            let failure = request_evidence(url, &[], "GET", None, t, false, None, None).err().unwrap();
+            assert_eq!(failure.status, Some(403));
+            assert_eq!(failure.cause, RequestError::TimedOut);
+        });
+        with_response(reply, true, |url| {
+            assert!(matches!(request_result(url, &[], "GET", None, t, false, None, None), Err(RequestError::TimedOut)));
+        });
+    }
+
+    #[test]
+    fn absent_invalid_and_redirect_failure_status_are_not_evidence() {
+        let _serial = crate::testlock::serial();
+        assert!(global_init() && available());
+        for reply in [Vec::new(), b"HTTP/1.1 999 Invalid\r\nContent-Length: 0\r\n\r\n".to_vec()] {
+            with_response(reply, false, |url| {
+                let failure = request_evidence(url, &[], "GET", None, API, false, None, None).err().unwrap();
+                assert_eq!(failure.status, None);
+            });
+        }
+        // Redirect target is the same synthetic server, whose one reply ends its accept loop.
+        with_response(b"HTTP/1.1 302 Move\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n".to_vec(), false, |url| {
+            let failure = request_evidence(url, &[], "GET", None, Timeouts { total_ms: 200, ..API }, true, None, None).err().unwrap();
+            assert_eq!(failure.status, None, "a prior redirect is not final-origin evidence");
+        });
+    }
+
+    #[test]
+    fn evidence_validation_excludes_security_errors_and_invalid_getinfo() {
+        for rc in [35, 60, 77, 90, 47, 6, 7, 8] {
+            assert_eq!(response_status(rc, 0, 401, false), None, "rc={rc}");
+        }
+        for code in [-1, 0, 99, 600, 65536, c_long::MAX] {
+            assert_eq!(response_status(0, 0, code, false), None);
+        }
+        assert_eq!(response_status(18, 1, 401, false), None);
+        assert_eq!(response_status(18, 0, 100, false), None);
+        for rc in [16, 18, 23, 28, 55, 56, 92] {
+            assert_eq!(response_status(rc, 0, 401, false), Some(401));
+            assert_eq!(response_status(rc, 0, 401, true), None);
+        }
+        let mut sink = BodySink::new(Some(4));
+        assert!(!sink.push(b"synthetic-secret"));
+        let failure = finish_response(23, 1, 401, false, Some(4), sink).err().unwrap();
+        assert_eq!(failure.status, None);
+        assert_eq!(failure.body_limit, Some(4));
+        assert!(!format!("{failure:?}").contains("synthetic-secret"));
+    }
+
+    #[test]
+    fn option_wrappers_preserve_complete_and_incomplete_projection() {
+        let _serial = crate::testlock::serial();
+        assert!(global_init() && available());
+        for post in [false, true] {
+            for complete in [false, true] {
+                let length = if complete { 2 } else { 100 };
+                with_response(format!("HTTP/1.1 401 Refused\r\nContent-Length: {length}\r\nConnection: close\r\n\r\nok").into_bytes(), false, |url| {
+                    let response = if post { https_post(url, &[], b"") } else { https_get(url, &[]) };
+                    assert_eq!(response.map(|r| r.status), complete.then_some(401));
+                });
+            }
+        }
+    }
 
     #[test]
     fn a_bounded_sink_refuses_before_it_allocates_past_the_limit() {
