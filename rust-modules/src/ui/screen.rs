@@ -977,6 +977,71 @@ mod draw_frame_tests {
     }
 }
 
+#[cfg(test)]
+mod composed_owner_tests {
+    use super::*;
+    use crate::ui::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
+    use crate::ui::machine::{FocusRead, InputOwner, PressRead, Tick};
+
+    struct RepairPart { owned: Vec<u32>, placed: Vec<u32>, repaired: u32 }
+    impl Focusable<FixtureHost> for RepairPart {
+        fn groups(&self, _: &Cx<'_, FixtureHost>, _: &mut Vec<GroupSpec>) {}
+        fn group_of(&self, k: &u32, _: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+            self.owned.contains(k).then_some(GroupId(0))
+        }
+        fn neighbour(&self, _: FocusKey<u32>, _: Dir, _: &Cx<'_, FixtureHost>) -> Step<u32> { Step::Edge }
+        fn place(&self, k: &u32, _: &Cx<'_, FixtureHost>, _: At) -> Option<Placed> {
+            self.placed.contains(k).then_some(Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None })
+        }
+        fn reconcile(&self, want: FocusKey<u32>, _: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            FocusKey { elem: self.repaired, ..want }
+        }
+        fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, FixtureHost>) -> FocusKey<u32> { unreachable!() }
+    }
+    impl Part<FixtureHost> for RepairPart {
+        fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, FixtureHost>) {}
+        fn draw(&mut self, _: &mut DrawFrame<'_, '_, FixtureHost>, _: Rect) {}
+    }
+    struct Pair([RepairPart; 2]);
+    impl Composed<FixtureHost> for Pair {
+        fn layout(&self, _: &Cx<'_, FixtureHost>) -> Vec<(PartId, Rect)> {
+            vec![(PartId(0), Rect::FULL), (PartId(1), Rect::FULL)]
+        }
+        fn part(&self, id: PartId) -> &dyn Part<FixtureHost> { &self.0[id.0 as usize] }
+        fn part_mut(&mut self, id: PartId) -> &mut dyn Part<FixtureHost> { &mut self.0[id.0 as usize] }
+    }
+    fn repaired(pair: &Pair, elem: u32) -> u32 {
+        let (measure, store) = (FixtureMeasure, FixtureView::default());
+        let cx = Cx { views: FixtureViews { store: &store }, tick: Tick::default(), measure: &measure,
+            press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(EntryId(1)) };
+        composed_reconcile(pair, FocusKey { entry: EntryId(1), elem }, &cx).elem
+    }
+    fn pair(owned: Vec<u32>, placed: Vec<u32>, repair: u32) -> Pair {
+        Pair([RepairPart { owned: vec![0, 1], placed: vec![0, 1], repaired: 1 },
+              RepairPart { owned, placed, repaired: repair }])
+    }
+    #[test]
+    fn composed_owner_preserves_each_second_part_answer() {
+        for k in [0x4000_0000, 0x4000_0001, 0x8000_0000, u32::MAX] {
+            assert_eq!(repaired(&pair(vec![k], vec![k], k), k), k);
+        }
+    }
+    #[test]
+    fn composed_owner_repairs_even_a_still_placeable_slot() {
+        assert_eq!(repaired(&pair(vec![100, 101], vec![100, 101], 101), 100), 101);
+    }
+    #[test]
+    fn composed_owner_repairs_a_removed_item_before_unrelated_fallback() {
+        assert_eq!(repaired(&pair(vec![100], vec![101], 101), 100), 101);
+    }
+    #[test]
+    fn composed_owner_keeps_ordered_fallback_for_unknown_or_unplaceable_repairs() {
+        assert_eq!(repaired(&pair(vec![], vec![], 100), 100), 1, "removed band");
+        assert_eq!(repaired(&pair(vec![100], vec![], 101), 100), 1, "owner cannot repair");
+        assert_eq!(repaired(&pair(vec![100], vec![100], 100), 999), 1, "unknown key");
+    }
+}
+
 /// Lifecycle-sequence helper (§3.4): the events a Push delivers, in order, as `(entry, event)`.
 /// Kept as data so the dispatcher's tables are testable without a container.
 pub fn push_sequence<H: Host>(
